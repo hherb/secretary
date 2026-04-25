@@ -1,0 +1,17 @@
+[package]
+name = "secretary-ffi-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "PyO3 binding stub for secretary-core. Smoke-test only; full bindings live in the desktop sub-project."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+secretary-core = { path = "../../core" }
+
+[lints]
+workspace = true

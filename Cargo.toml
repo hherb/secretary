@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "ffi/secretary-ffi-py",
+    "ffi/secretary-ffi-uniffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/hherb/secretary"
+rust-version = "1.86"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

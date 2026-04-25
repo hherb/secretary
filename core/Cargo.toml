@@ -1,0 +1,19 @@
+[package]
+name = "secretary-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Secretary cryptographic core: vault format, identity, and unlock primitives."
+
+[dependencies]
+thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+subtle = "2"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
