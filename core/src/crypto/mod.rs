@@ -8,4 +8,5 @@
 pub mod aead;
 pub mod hash;
 pub mod kdf;
+pub mod kem;
 pub mod secret;
