@@ -5,5 +5,6 @@
 //!   - step 2: `kdf`, `aead`, `hash`
 //!   - step 3: `kem`, `sig` (hybrid constructions)
 
+pub mod aead;
 pub mod hash;
 pub mod secret;
