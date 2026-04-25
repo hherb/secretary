@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/secretary_logo.png" alt="Secretary" width="180">
+</p>
+
 # Secretary
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
