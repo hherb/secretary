@@ -10,3 +10,4 @@ pub mod hash;
 pub mod kdf;
 pub mod kem;
 pub mod secret;
+pub mod sig;
