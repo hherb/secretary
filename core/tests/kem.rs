@@ -9,9 +9,7 @@
 //!   3. End-to-end — round-trip plus five tampering negatives that pin the
 //!      §7.2 binding properties.
 
-use ml_kem::{
-    array::Array, EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768, B32,
-};
+use ml_kem::{array::Array, EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768, B32};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
@@ -357,6 +355,144 @@ fn hybrid_kem_tampered_pk_bundle_fails() {
     )
     .expect_err("tampered recipient_pk_bundle must fail (proves §7.2 binding)");
     assert!(matches!(err, KemError::AeadFailure(_)), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Section 7.2 binding — symmetric counterpart to `hybrid_kem_tampered_pk_bundle
+// _fails`. The HKDF input includes BOTH `sender_pk_bundle` and
+// `recipient_pk_bundle`; tampering with either must reject. Without this test
+// an implementation that only mixed `recipient_pk_bundle` into the HKDF
+// input would silently break sender-side §7.2 binding.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hybrid_kem_tampered_sender_pk_bundle_fails() {
+    let sender = make_recipient(101, 0xA1, 0xB1);
+    let recipient = make_recipient(202, 0xA2, 0xB2);
+    let block_uuid = [0xAAu8; 16];
+    let bck = fresh_block_content_key(2020);
+
+    let wrap = do_encap(2121, &sender, &recipient, &block_uuid, &bck);
+
+    let mut tampered_sender_bundle = sender.pk_bundle.clone();
+    tampered_sender_bundle[0] ^= 0x01;
+
+    let err = decap(
+        &wrap,
+        &sender.fp,
+        &recipient.fp,
+        &tampered_sender_bundle,
+        &recipient.pk_bundle,
+        &recipient.x_sk,
+        &recipient.pq_sk,
+        &block_uuid,
+    )
+    .expect_err("tampered sender_pk_bundle must fail (proves §7.2 binding)");
+    assert!(matches!(err, KemError::AeadFailure(_)), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// §7 step 3 transcript binds both fingerprints. Tamper either → wrap key
+// derived by decap differs from the one encap used → AEAD rejects. Without
+// these tests an implementation that dropped either fingerprint from the
+// transcript hash would still pass.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hybrid_kem_tampered_sender_fingerprint_fails() {
+    let sender = make_recipient(101, 0xA1, 0xB1);
+    let recipient = make_recipient(202, 0xA2, 0xB2);
+    let block_uuid = [0xBBu8; 16];
+    let bck = fresh_block_content_key(3030);
+
+    let wrap = do_encap(3131, &sender, &recipient, &block_uuid, &bck);
+
+    let mut tampered_sender_fp = sender.fp;
+    tampered_sender_fp[0] ^= 0x01;
+
+    let err = decap(
+        &wrap,
+        &tampered_sender_fp,
+        &recipient.fp,
+        &sender.pk_bundle,
+        &recipient.pk_bundle,
+        &recipient.x_sk,
+        &recipient.pq_sk,
+        &block_uuid,
+    )
+    .expect_err("tampered sender fingerprint must fail (transcript binding)");
+    assert!(matches!(err, KemError::AeadFailure(_)), "got {err:?}");
+}
+
+#[test]
+fn hybrid_kem_tampered_recipient_fingerprint_fails() {
+    let sender = make_recipient(101, 0xA1, 0xB1);
+    let recipient = make_recipient(202, 0xA2, 0xB2);
+    let block_uuid = [0xCCu8; 16];
+    let bck = fresh_block_content_key(4040);
+
+    let wrap = do_encap(4141, &sender, &recipient, &block_uuid, &bck);
+
+    let mut tampered_recipient_fp = recipient.fp;
+    tampered_recipient_fp[0] ^= 0x01;
+
+    let err = decap(
+        &wrap,
+        &sender.fp,
+        &tampered_recipient_fp,
+        &sender.pk_bundle,
+        &recipient.pk_bundle,
+        &recipient.x_sk,
+        &recipient.pq_sk,
+        &block_uuid,
+    )
+    .expect_err("tampered recipient fingerprint must fail (transcript binding)");
+    assert!(matches!(err, KemError::AeadFailure(_)), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// FIPS 203 ML-KEM implicit rejection: a malformed `ct_pq` produces a
+// pseudorandom shared secret rather than an error. The right end-to-end
+// behaviour is that the wrong shared secret derives a wrong wrap key and the
+// AEAD tag fails — i.e., we see `KemError::AeadFailure`, never
+// `KemError::MlKemDecapsFailed`. Pinning this distinguishes "AEAD caught it"
+// from "ML-KEM crashed" — a regression that flipped on explicit rejection
+// would surface here and be diagnostically clearer than `tampered_ct_pq_fails`
+// alone, which only asserts "some kind of AeadFailure."
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hybrid_kem_ml_kem_implicit_rejection_flows_to_aead_failure() {
+    let sender = make_recipient(101, 0xA1, 0xB1);
+    let recipient = make_recipient(202, 0xA2, 0xB2);
+    let block_uuid = [0xDDu8; 16];
+    let bck = fresh_block_content_key(5050);
+
+    let mut wrap = do_encap(5151, &sender, &recipient, &block_uuid, &bck);
+    // Wholesale-replace ct_pq with random-looking bytes. ML-KEM-768 implicit
+    // rejection means decap returns *some* shared secret, but not the one
+    // encap produced — so the AEAD wrap key is wrong, AEAD tag fails.
+    for (i, b) in wrap.ct_pq.iter_mut().enumerate() {
+        *b = ((i as u32 * 31 + 17) & 0xFF) as u8;
+    }
+
+    let err = decap(
+        &wrap,
+        &sender.fp,
+        &recipient.fp,
+        &sender.pk_bundle,
+        &recipient.pk_bundle,
+        &recipient.x_sk,
+        &recipient.pq_sk,
+        &block_uuid,
+    )
+    .expect_err("malformed ct_pq must surface as AEAD failure (implicit rejection)");
+    // Specifically NOT MlKemDecapsFailed — implicit rejection means ML-KEM
+    // returned a value, AEAD caught the divergence.
+    assert!(
+        matches!(err, KemError::AeadFailure(_)),
+        "expected AeadFailure (implicit rejection flowing through), got {err:?}",
+    );
 }
 
 #[test]

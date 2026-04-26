@@ -71,8 +71,7 @@ fn ed25519_kat_rfc8032_test1() {
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
     let sk_bytes = hex32("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
-    let expected_pk =
-        hex32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+    let expected_pk = hex32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
     let expected_sig = hex64(
         "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
     );
@@ -269,14 +268,52 @@ fn hybrid_sig_tampered_message_fails() {
     let msg = b"original";
     let sig = sign(SigRole::Block, msg, &id.ed_sk, &id.pq_sk).expect("sign");
 
-    // Verify against a different message — exactly one of the two primitives
-    // will reject first; we don't pin which (either is fine; the §8 spec
-    // requires *both* succeed for a valid signature).
+    // `verify` checks Ed25519 first; with both halves stale (the message
+    // bytes presented to each primitive differ from what was signed), the
+    // first failure is the Ed25519 half. Pinning the exact variant rather
+    // than `Ed | MlDsa` guards against an implementation that silently skips
+    // the Ed branch and relies on the PQ branch to reject. The PQ branch's
+    // independent rejection is proven by
+    // `test_hybrid_sig_fails_when_only_one_half_valid`.
     let r = verify(SigRole::Block, b"tampered", &sig, &id.ed_pk, &id.pq_pk);
-    assert!(matches!(
-        r,
-        Err(SigError::Ed25519VerifyFailed) | Err(SigError::MlDsa65VerifyFailed)
-    ));
+    assert!(matches!(r, Err(SigError::Ed25519VerifyFailed)), "got {r:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Contract test name from threat-model §5: §8 "AND verification" — if exactly
+// one half of the hybrid signature is valid, verify must reject. Pins both
+// directions explicitly so an implementation that silently accepts a zero PQ
+// half (or zero Ed half) cannot pass.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_hybrid_sig_fails_when_only_one_half_valid() {
+    let id = build_identity(0xF1);
+    let msg = b"both-must-verify";
+    let good = sign(SigRole::Block, msg, &id.ed_sk, &id.pq_sk).expect("sign");
+
+    // Case 1: valid Ed25519 half, garbage PQ half.
+    let zero_pq = MlDsa65Sig::from_bytes(&[0u8; ML_DSA_65_SIG_LEN][..]).expect("len");
+    let only_ed_valid = HybridSig {
+        sig_ed: good.sig_ed,
+        sig_pq: zero_pq,
+    };
+    let r = verify(SigRole::Block, msg, &only_ed_valid, &id.ed_pk, &id.pq_pk);
+    assert!(
+        matches!(r, Err(SigError::MlDsa65VerifyFailed)),
+        "ed-only-valid must reject with MlDsa65VerifyFailed, got {r:?}",
+    );
+
+    // Case 2: garbage Ed25519 half, valid PQ half.
+    let only_pq_valid = HybridSig {
+        sig_ed: [0u8; ED25519_SIG_LEN],
+        sig_pq: good.sig_pq.clone(),
+    };
+    let r = verify(SigRole::Block, msg, &only_pq_valid, &id.ed_pk, &id.pq_pk);
+    assert!(
+        matches!(r, Err(SigError::Ed25519VerifyFailed)),
+        "pq-only-valid must reject with Ed25519VerifyFailed, got {r:?}",
+    );
 }
 
 #[test]
@@ -285,11 +322,9 @@ fn hybrid_sig_wrong_role_fails() {
     let msg = b"role-bound message";
     let sig = sign(SigRole::Block, msg, &id.ed_sk, &id.pq_sk).expect("sign");
 
-    // Sign as Block, verify as Manifest — the prefix bytes differ, so the
-    // bytes presented to each underlying primitive differ; both will reject.
+    // Same reasoning as `hybrid_sig_tampered_message_fails`: pin the
+    // deterministic first rejection (Ed25519); independent PQ-half rejection
+    // is covered by `test_hybrid_sig_fails_when_only_one_half_valid`.
     let r = verify(SigRole::Manifest, msg, &sig, &id.ed_pk, &id.pq_pk);
-    assert!(matches!(
-        r,
-        Err(SigError::Ed25519VerifyFailed) | Err(SigError::MlDsa65VerifyFailed)
-    ));
+    assert!(matches!(r, Err(SigError::Ed25519VerifyFailed)), "got {r:?}");
 }

@@ -51,8 +51,10 @@ fn roundtrip_with_aad() {
     assert_eq!(pt.expose(), plaintext);
 }
 
+// Contract test name from threat-model §5. Do not rename without updating
+// the threat model.
 #[test]
-fn wrong_key_fails() {
+fn test_aead_decrypt_with_wrong_key_fails() {
     let key_a = key_from([0xAA; 32]);
     let key_b = key_from([0xBB; 32]);
     let nonce: AeadNonce = [0; 24];
@@ -92,8 +94,10 @@ fn tampered_ciphertext_fails() {
     assert!(matches!(err, AeadError::Decryption));
 }
 
+// Contract test name from threat-model §5. Do not rename without updating
+// the threat model.
 #[test]
-fn tampered_tag_fails() {
+fn test_aead_tag_failure_on_byte_flip() {
     let key = key_from([0x99; 32]);
     let nonce: AeadNonce = [0xAA; 24];
     let mut ct = encrypt(&key, &nonce, b"", b"abc").expect("encrypt");
@@ -102,6 +106,37 @@ fn tampered_tag_fails() {
     ct[last] ^= 0x01;
     let err = decrypt(&key, &nonce, b"", &ct).unwrap_err();
     assert!(matches!(err, AeadError::Decryption));
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases — empty plaintext and all-zero key. Both can break naive
+// wrappers ("len > 0" assumptions, "zero key means uninitialized → error"
+// defensive code). XChaCha20-Poly1305 has no such restrictions; pin that.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn roundtrip_empty_plaintext() {
+    let key = key_from([0x44; 32]);
+    let nonce: AeadNonce = [0x55; 24];
+    let ct = encrypt(&key, &nonce, b"some-aad", b"").expect("encrypt empty");
+    // Output is just the 16-byte tag.
+    assert_eq!(ct.len(), AEAD_TAG_LEN);
+
+    let pt = decrypt(&key, &nonce, b"some-aad", &ct).expect("decrypt empty");
+    assert_eq!(pt.expose(), b"");
+}
+
+#[test]
+fn roundtrip_all_zero_key() {
+    // A zero key is not a real-world concern (the CSPRNG never produces one
+    // with non-negligible probability), but pinning the round-trip guards
+    // against accidental "zero == uninitialized → return error" logic in
+    // future wrappers.
+    let key = key_from([0u8; 32]);
+    let nonce: AeadNonce = [0xEE; 24];
+    let ct = encrypt(&key, &nonce, b"", b"hello").expect("encrypt");
+    let pt = decrypt(&key, &nonce, b"", &ct).expect("decrypt");
+    assert_eq!(pt.expose(), b"hello");
 }
 
 #[test]
@@ -134,11 +169,10 @@ fn xchacha20_poly1305_kat_draft_irtf_cfrg_xchacha_03() {
     //               21f9664c 9763 7da9 7688 12f6 15c6 8b13
     //               b52e
     //   tag:        c0875924 c1c7 9879 47de afd8 780a cf49
-    let key_bytes: [u8; 32] = hex(
-        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
-    )
-    .try_into()
-    .unwrap();
+    let key_bytes: [u8; 32] =
+        hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+            .try_into()
+            .unwrap();
     let nonce: AeadNonce = hex("404142434445464748494a4b4c4d4e4f5051525354555657")
         .try_into()
         .unwrap();

@@ -180,6 +180,40 @@ fn card_self_verify_fails_on_pk_mismatch() {
 }
 
 // ---------------------------------------------------------------------------
+// 5a. Counterpart to test #5: force the ML-DSA-65 verify branch to be the one
+//     that rejects, by giving the card a `ml_dsa_65_pk` that does not match
+//     the secret key actually used to sign. Ed25519 keys are kept consistent
+//     so that Ed25519 verifies first (and succeeds), exposing the PQ branch
+//     as the rejecting one. Without this test, a regression that silently
+//     skipped the PQ branch in `card.verify_self` would still pass test #5.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn card_self_verify_fails_on_pq_pk_mismatch() {
+    let mut rng = ChaCha20Rng::from_seed([19u8; 32]);
+    let (ed_sk, ed_pk) = generate_ed25519(&mut rng);
+    let (pq_sk_a, _pq_pk_a) = generate_ml_dsa_65(&mut rng);
+    let (_pq_sk_b, pq_pk_b) = generate_ml_dsa_65(&mut rng);
+
+    let mut card = kat_card();
+    card.ed25519_pk = ed_pk;
+    // Embed pk_b in the card; sign with sk_a. The pq sig will be valid for
+    // the message-bytes-including-pk_b (sign is over `signed_bytes()`), but
+    // verifying against pk_b rejects — sk_a's verifying key is pk_a.
+    card.ml_dsa_65_pk = pq_pk_b.as_bytes().to_vec();
+    card.sign(&ed_sk, &pq_sk_a).expect("sign");
+
+    let err = card.verify_self().expect_err("verify_self should fail");
+    assert!(
+        matches!(
+            err,
+            CardError::SigVerifyFailed(SigError::MlDsa65VerifyFailed)
+        ),
+        "expected MlDsa65VerifyFailed, got {err:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 6. Reject non-v1 cards on parse.
 // ---------------------------------------------------------------------------
 
@@ -192,6 +226,159 @@ fn card_invalid_version_rejected() {
     assert!(
         matches!(err, CardError::InvalidVersion),
         "expected InvalidVersion, got {err:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6a. Reject non-canonical CBOR on import.
+//
+// The §6.1 fingerprint is over canonical bytes; if we tolerated non-canonical
+// inputs, a peer's published fingerprint could silently desynchronize from a
+// locally-recomputed one (parse → re-canonicalize → fingerprint differs).
+// Reject on import so OOB verification is meaningful.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 6b. Parser hardening — exercise the `set_once`, `take_*`, and unknown-field
+//     branches of `from_canonical_cbor`. Each branch existed before and was
+//     reachable in principle, but had no test coverage. A regression that
+//     dropped any of these guards would let attackers smuggle data past the
+//     decoder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn card_parse_rejects_duplicate_keys() {
+    use ciborium::Value;
+    // Two `display_name` entries; the rest of the map is irrelevant — the
+    // parser's `set_once` guard fires on the second occurrence and returns
+    // before checking field completeness.
+    let entries: Vec<(Value, Value)> = vec![
+        (
+            Value::Text("display_name".into()),
+            Value::Text("Alice".into()),
+        ),
+        (
+            Value::Text("display_name".into()),
+            Value::Text("Bob".into()),
+        ),
+    ];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(entries), &mut buf).expect("encode");
+
+    let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
+    assert!(
+        matches!(err, CardError::CborDecode(ref s) if s.contains("duplicate")),
+        "expected duplicate-field decode error, got {err:?}",
+    );
+}
+
+#[test]
+fn card_parse_rejects_wrong_field_type() {
+    use ciborium::Value;
+    // `card_version` arriving as a text string instead of an integer.
+    let entries: Vec<(Value, Value)> = vec![(
+        Value::Text("card_version".into()),
+        Value::Text("not a number".into()),
+    )];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(entries), &mut buf).expect("encode");
+
+    let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
+    assert!(
+        matches!(err, CardError::CborDecode(ref s) if s.contains("unsigned integer")),
+        "expected wrong-type decode error, got {err:?}",
+    );
+}
+
+#[test]
+fn card_parse_rejects_unknown_field() {
+    use ciborium::Value;
+    // An extra key the spec doesn't define. Decoder must reject — accepting
+    // unknown fields would let attackers smuggle data through the canonical
+    // re-encoding (or, worse, define a future field that diverges across
+    // implementations).
+    let entries: Vec<(Value, Value)> = vec![
+        (
+            Value::Text("card_version".into()),
+            Value::Integer(1u64.into()),
+        ),
+        (
+            Value::Text("rogue_field".into()),
+            Value::Text("payload".into()),
+        ),
+    ];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(entries), &mut buf).expect("encode");
+
+    let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
+    assert!(
+        matches!(err, CardError::CborDecode(ref s) if s.contains("unknown card field")),
+        "expected unknown-field decode error, got {err:?}",
+    );
+}
+
+#[test]
+fn card_from_canonical_cbor_rejects_non_canonical_input() {
+    use ciborium::Value;
+    let card = kat_card();
+    // §6 listing order — NOT canonical (canonical is bytewise lexicographic
+    // by encoded key, which puts shorter keys first: x25519_pk (9 chars)
+    // sorts before card_version (12 chars)).
+    let entries: Vec<(Value, Value)> = vec![
+        (
+            Value::Text("card_version".into()),
+            Value::Integer(u64::from(card.card_version).into()),
+        ),
+        (
+            Value::Text("contact_uuid".into()),
+            Value::Bytes(card.contact_uuid.to_vec()),
+        ),
+        (
+            Value::Text("display_name".into()),
+            Value::Text(card.display_name.clone()),
+        ),
+        (
+            Value::Text("x25519_pk".into()),
+            Value::Bytes(card.x25519_pk.to_vec()),
+        ),
+        (
+            Value::Text("ml_kem_768_pk".into()),
+            Value::Bytes(card.ml_kem_768_pk.clone()),
+        ),
+        (
+            Value::Text("ed25519_pk".into()),
+            Value::Bytes(card.ed25519_pk.to_vec()),
+        ),
+        (
+            Value::Text("ml_dsa_65_pk".into()),
+            Value::Bytes(card.ml_dsa_65_pk.clone()),
+        ),
+        (
+            Value::Text("created_at".into()),
+            Value::Integer(card.created_at_ms.into()),
+        ),
+        (
+            Value::Text("self_sig_ed".into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ),
+        (
+            Value::Text("self_sig_pq".into()),
+            Value::Bytes(card.self_sig_pq.clone()),
+        ),
+    ];
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(entries), &mut buf).expect("encode");
+
+    let canonical = card.to_canonical_cbor().expect("canonical encode");
+    assert_ne!(
+        buf, canonical,
+        "test setup error: §6-order bytes must differ from canonical bytes",
+    );
+
+    let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
+    assert!(
+        matches!(err, CardError::NonCanonicalCbor),
+        "expected NonCanonicalCbor, got {err:?}",
     );
 }
 

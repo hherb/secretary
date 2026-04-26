@@ -40,8 +40,8 @@ use zeroize::Zeroize as _;
 
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce};
 use crate::crypto::kdf::{
-    hkdf_sha256_extract_and_expand, TAG_BLOCK_CONTENT_KEY_WRAP, TAG_BLOCK_KEY_WRAP,
-    TAG_HYBRID_KEM, TAG_HYBRID_KEM_TRANSCRIPT,
+    hkdf_sha256_extract_and_expand, TAG_BLOCK_CONTENT_KEY_WRAP, TAG_BLOCK_KEY_WRAP, TAG_HYBRID_KEM,
+    TAG_HYBRID_KEM_TRANSCRIPT,
 };
 use crate::crypto::secret::{SecretBytes, Sensitive};
 
@@ -264,7 +264,12 @@ pub fn derive_wrap_key(
     let mut key = [0u8; 32];
     key.copy_from_slice(&okm);
     okm.zeroize();
-    Sensitive::new(key)
+    let s = Sensitive::new(key);
+    // `Sensitive::new` copied `key` (which is `[u8; 32]: Copy`); the original
+    // stack slot still holds the wrap key bytes until the frame is reused.
+    // Zeroize the stack copy so the secret only lives inside `s`.
+    key.zeroize();
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +284,10 @@ pub fn derive_wrap_key(
 pub fn generate_x25519<R: RngCore + CryptoRng>(rng: &mut R) -> (X25519Secret, X25519Public) {
     let sk = XStaticSecret::random_from_rng(&mut *rng);
     let pk = XPublicKey::from(&sk);
-    (Sensitive::new(sk.to_bytes()), pk.to_bytes())
+    let mut sk_bytes = sk.to_bytes();
+    let secret = Sensitive::new(sk_bytes);
+    sk_bytes.zeroize();
+    (secret, pk.to_bytes())
 }
 
 /// Generate a fresh ML-KEM-768 keypair using the provided CSPRNG.
@@ -347,8 +355,8 @@ pub fn encap<R: RngCore + CryptoRng>(
 
     // --- ML-KEM-768 half: encap against recipient's pq pk. ---
     type Ek = ml_kem::kem::EncapsulationKey<MlKem768Params>;
-    let ek_arr: Encoded<Ek> = Array::try_from(recipient_pq_pk.as_bytes())
-        .map_err(|_| KemError::InvalidKeyLength)?;
+    let ek_arr: Encoded<Ek> =
+        Array::try_from(recipient_pq_pk.as_bytes()).map_err(|_| KemError::InvalidKeyLength)?;
     let ek = Ek::from_bytes(&ek_arr);
     let (ct_pq_arr, ss_pq_arr) = ek
         .encapsulate(rng)
@@ -357,6 +365,7 @@ pub fn encap<R: RngCore + CryptoRng>(
     let mut ss_pq_bytes = [0u8; ML_KEM_768_SS_LEN];
     ss_pq_bytes.copy_from_slice(ss_pq_arr.as_slice());
     let ss_pq = Sensitive::new(ss_pq_bytes);
+    ss_pq_bytes.zeroize();
 
     // --- Combiner: transcript + HKDF wrap key (§7 steps 3–5). ---
     let t = transcript(
@@ -414,19 +423,20 @@ pub fn decap(
 
     // --- ML-KEM-768 half: rehydrate the typed dk and decapsulate. ---
     type Dk = ml_kem::kem::DecapsulationKey<MlKem768Params>;
-    let dk_arr: Encoded<Dk> = Array::try_from(recipient_pq_sk.expose())
-        .map_err(|_| KemError::InvalidKeyLength)?;
+    let dk_arr: Encoded<Dk> =
+        Array::try_from(recipient_pq_sk.expose()).map_err(|_| KemError::InvalidKeyLength)?;
     let dk = Dk::from_bytes(&dk_arr);
 
     type CtPq = ml_kem::Ciphertext<MlKem768>;
-    let ct_pq_arr: CtPq = Array::try_from(wrap.ct_pq.as_slice())
-        .map_err(|_| KemError::InvalidKeyLength)?;
+    let ct_pq_arr: CtPq =
+        Array::try_from(wrap.ct_pq.as_slice()).map_err(|_| KemError::InvalidKeyLength)?;
     let ss_pq_arr = dk
         .decapsulate(&ct_pq_arr)
         .map_err(|_| KemError::MlKemDecapsFailed)?;
     let mut ss_pq_bytes = [0u8; ML_KEM_768_SS_LEN];
     ss_pq_bytes.copy_from_slice(ss_pq_arr.as_slice());
     let ss_pq = Sensitive::new(ss_pq_bytes);
+    ss_pq_bytes.zeroize();
 
     // --- Recompute transcript and wrap key, then unwrap. ---
     let t = transcript(
@@ -452,5 +462,7 @@ pub fn decap(
     }
     let mut k = [0u8; BLOCK_CONTENT_KEY_LEN];
     k.copy_from_slice(plaintext.expose());
-    Ok(Sensitive::new(k))
+    let out = Sensitive::new(k);
+    k.zeroize();
+    Ok(out)
 }

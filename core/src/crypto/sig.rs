@@ -44,11 +44,13 @@
 //! `RngCore + CryptoRng` from `rand_core` 0.6, matching [`crate::crypto::kem`].
 
 use ed25519_dalek::ed25519::signature::{Signer as _, Verifier as _};
-use ed25519_dalek::{Signature as EdSignature, SigningKey as EdSigningKey, VerifyingKey as EdVerifyingKey};
+use ed25519_dalek::{
+    Signature as EdSignature, SigningKey as EdSigningKey, VerifyingKey as EdVerifyingKey,
+};
 use ml_dsa::signature::{Keypair as _, Signer as _, Verifier as _};
 use ml_dsa::{
-    EncodedSignature, EncodedVerifyingKey, KeyGen as _, MlDsa65,
-    Signature as MlDsaSignature, VerifyingKey as MlDsaVerifyingKey, B32,
+    EncodedSignature, EncodedVerifyingKey, KeyGen as _, MlDsa65, Signature as MlDsaSignature,
+    VerifyingKey as MlDsaVerifyingKey, B32,
 };
 use rand_core::{CryptoRng, RngCore};
 
@@ -277,8 +279,13 @@ pub fn signed_message(role: SigRole, message: &[u8]) -> Vec<u8> {
 pub fn generate_ed25519<R: RngCore + CryptoRng>(rng: &mut R) -> (Ed25519Secret, Ed25519Public) {
     let sk = EdSigningKey::generate(rng);
     let pk = sk.verifying_key().to_bytes();
-    let sk_bytes = sk.to_bytes();
-    (Sensitive::new(sk_bytes), pk)
+    let mut sk_bytes = sk.to_bytes();
+    let secret = Sensitive::new(sk_bytes);
+    // `Sensitive::new` copied `sk_bytes` (which is `[u8; 32]: Copy`); zeroize
+    // the stack copy so the secret only lives inside `secret`.
+    use zeroize::Zeroize as _;
+    sk_bytes.zeroize();
+    (secret, pk)
 }
 
 /// Generate a fresh ML-DSA-65 keypair using the provided CSPRNG.
@@ -290,9 +297,7 @@ pub fn generate_ed25519<R: RngCore + CryptoRng>(rng: &mut R) -> (Ed25519Secret, 
 /// the rest of this crate (and the existing `kem` module) is on `rand_core`
 /// 0.6. Driving `from_seed` from our own RNG read keeps the public API
 /// uniform across modules and avoids pulling in a second `rand_core` major.
-pub fn generate_ml_dsa_65<R: RngCore + CryptoRng>(
-    rng: &mut R,
-) -> (MlDsa65Secret, MlDsa65Public) {
+pub fn generate_ml_dsa_65<R: RngCore + CryptoRng>(rng: &mut R) -> (MlDsa65Secret, MlDsa65Public) {
     let mut seed_bytes = [0u8; ML_DSA_65_SEED_LEN];
     rng.fill_bytes(&mut seed_bytes);
     let seed: B32 = B32::from(seed_bytes);
@@ -385,8 +390,8 @@ pub fn verify(
         .as_bytes()
         .try_into()
         .map_err(|_| SigError::InvalidSignatureLength)?;
-    let pq_sig = MlDsaSignature::<MlDsa65>::decode(&pq_sig_arr)
-        .ok_or(SigError::MlDsa65VerifyFailed)?;
+    let pq_sig =
+        MlDsaSignature::<MlDsa65>::decode(&pq_sig_arr).ok_or(SigError::MlDsa65VerifyFailed)?;
     pq_verifying
         .verify(&m, &pq_sig)
         .map_err(|_| SigError::MlDsa65VerifyFailed)?;

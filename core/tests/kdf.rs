@@ -47,9 +47,8 @@ fn argon2id_kat_small_memory() {
     let password = SecretBytes::new(b"masterpassword12".to_vec());
     let salt = [0u8; 32];
     let params = Argon2idParams::new(8192, 1, 1);
-    let expected =
-        hex("3344bda57af2b472b9a7854da6340a57f33270d22fff6c807150c98068af3651");
-    let kek = derive_master_kek(&password, &salt, &params);
+    let expected = hex("3344bda57af2b472b9a7854da6340a57f33270d22fff6c807150c98068af3651");
+    let kek = derive_master_kek(&password, &salt, &params).expect("valid params");
     assert_eq!(kek.expose()[..], expected[..]);
 }
 
@@ -60,12 +59,15 @@ fn argon2id_v1_default_dimensions() {
     // machine), but proves the v1 default path works end to end.
     let password = SecretBytes::new(b"some user password".to_vec());
     let salt = [0xAB; 32];
-    let kek = derive_master_kek(&password, &salt, &Argon2idParams::V1_DEFAULT);
+    let kek = derive_master_kek(&password, &salt, &Argon2idParams::V1_DEFAULT)
+        .expect("v1 default params are valid");
     assert_eq!(kek.expose().len(), 32);
 }
 
+// Contract test name from threat-model §5. Do not rename without updating
+// the threat model.
 #[test]
-fn argon2id_params_try_new_v1_rejects_low_memory() {
+fn test_kdf_params_minimum_memory_kib() {
     let err = Argon2idParams::try_new_v1(65535, 3, 1).unwrap_err();
     assert!(matches!(err, KdfError::ParamsBelowV1Floor));
 }
@@ -98,6 +100,67 @@ fn argon2id_params_v1_default_matches_spec() {
 }
 
 // ---------------------------------------------------------------------------
+// Attacker-controlled vault.toml — derive_master_kek must report an error
+// rather than panic on params the underlying argon2 crate rejects. The fields
+// of `Argon2idParams` are `pub`, so even a future loader that goes through
+// `try_new_v1` cannot keep someone from constructing the struct directly with
+// raw values — the defense has to live in `derive_master_kek` itself.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn derive_master_kek_rejects_zero_iterations() {
+    let password = SecretBytes::new(b"x".to_vec());
+    let salt = [0u8; 32];
+    let bad = Argon2idParams {
+        memory_kib: 8192,
+        iterations: 0,
+        parallelism: 1,
+    };
+    let err = derive_master_kek(&password, &salt, &bad).expect_err("must reject");
+    assert!(matches!(err, KdfError::Argon2ParamsRejected));
+}
+
+#[test]
+fn derive_master_kek_rejects_zero_parallelism() {
+    let password = SecretBytes::new(b"x".to_vec());
+    let salt = [0u8; 32];
+    let bad = Argon2idParams {
+        memory_kib: 8192,
+        iterations: 1,
+        parallelism: 0,
+    };
+    let err = derive_master_kek(&password, &salt, &bad).expect_err("must reject");
+    assert!(matches!(err, KdfError::Argon2ParamsRejected));
+}
+
+#[test]
+fn derive_master_kek_rejects_zero_memory() {
+    let password = SecretBytes::new(b"x".to_vec());
+    let salt = [0u8; 32];
+    let bad = Argon2idParams {
+        memory_kib: 0,
+        iterations: 1,
+        parallelism: 1,
+    };
+    let err = derive_master_kek(&password, &salt, &bad).expect_err("must reject");
+    assert!(matches!(err, KdfError::Argon2ParamsRejected));
+}
+
+#[test]
+fn derive_master_kek_rejects_memory_below_8x_parallelism() {
+    // argon2 crate rule: m_cost >= 8 * p_cost. memory=8, parallel=2 violates.
+    let password = SecretBytes::new(b"x".to_vec());
+    let salt = [0u8; 32];
+    let bad = Argon2idParams {
+        memory_kib: 8,
+        iterations: 1,
+        parallelism: 2,
+    };
+    let err = derive_master_kek(&password, &salt, &bad).expect_err("must reject");
+    assert!(matches!(err, KdfError::Argon2ParamsRejected));
+}
+
+// ---------------------------------------------------------------------------
 // Recovery KEK (§4)
 // ---------------------------------------------------------------------------
 
@@ -106,8 +169,7 @@ fn recovery_kek_test_vector_zero_entropy() {
     // §4 with all-zero entropy (32 bytes). Cross-verified against the
     // `cryptography` Python package (independent HKDF-SHA-256 implementation).
     let entropy: Sensitive<[u8; 32]> = Sensitive::new([0u8; 32]);
-    let expected =
-        hex("32267cba4b0f75fcd6204457687526dce5e381e28878323b3e550ccff0898da8");
+    let expected = hex("32267cba4b0f75fcd6204457687526dce5e381e28878323b3e550ccff0898da8");
     let kek = derive_recovery_kek(&entropy);
     assert_eq!(kek.expose()[..], expected[..]);
 }

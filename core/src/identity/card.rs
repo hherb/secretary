@@ -33,16 +33,16 @@
 //! 4. **Definite-length, no tags, no floats, no indefinite-length items.**
 //! 5. **Duplicate keys** — rejected on parse (RFC 8949 §5.4).
 //!
-//! ## Parse leniency
+//! ## Strict canonical-input rule
 //!
-//! [`ContactCard::from_canonical_cbor`] tolerates inputs that arrive with
-//! keys in arbitrary order so long as no key is duplicated and every
-//! required field is present with the right type and length. Re-encoding
-//! through [`ContactCard::to_canonical_cbor`] then re-sorts to the RFC 8949
-//! §4.2.1 byte form. A non-canonical peer can therefore be re-canonicalized
-//! locally, but the locally-produced fingerprint will differ from the
-//! peer's if the peer was non-canonical to start with — which is correct
-//! behaviour: the protocol's interop contract is canonical bytes.
+//! [`ContactCard::from_canonical_cbor`] rejects any input that is not in the
+//! RFC 8949 §4.2.1 canonical form (key order, shortest-form lengths,
+//! definite-length items, no tags/floats). The §6.1 fingerprint commits to
+//! bytes — accepting non-canonical input would silently desynchronize a
+//! peer's published fingerprint from a locally-recomputed one (parse →
+//! re-canonicalize → fingerprint differs). Producers must canonicalize on
+//! the way out; consumers must re-canonicalize on the way in only by
+//! refusing input that wasn't already canonical.
 //!
 //! ## Field naming
 //!
@@ -107,6 +107,14 @@ pub enum CardError {
     /// trailing bytes followed the map.
     #[error("CBOR decode failure: {0}")]
     CborDecode(String),
+
+    /// Input parsed but was not in the RFC 8949 §4.2.1 canonical form (e.g.
+    /// keys not in bytewise lexicographic order, non-shortest length
+    /// prefixes, indefinite-length items). The §6.1 fingerprint contract is
+    /// over canonical bytes, so non-canonical input is rejected to keep
+    /// peer-to-peer fingerprints in sync.
+    #[error("CBOR is not in RFC 8949 §4.2.1 canonical form")]
+    NonCanonicalCbor,
 
     /// `card_version` was not 1. v1 implementations reject any other value;
     /// future suites may relax this on a per-suite basis.
@@ -199,8 +207,8 @@ impl ContactCard {
     ///
     /// Does **not** verify signatures. Call [`verify_self`] for that.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, CardError> {
-        let value: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| CardError::CborDecode(e.to_string()))?;
+        let value: Value =
+            ciborium::de::from_reader(bytes).map_err(|e| CardError::CborDecode(e.to_string()))?;
         let map = match value {
             Value::Map(m) => m,
             _ => return Err(CardError::CborDecode("expected top-level CBOR map".into())),
@@ -229,11 +237,9 @@ impl ContactCard {
                     &key,
                 )?,
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
-                KEY_X25519_PK => set_once(
-                    &mut x25519_pk,
-                    take_fixed_bytes::<X25519_PK_LEN>(v)?,
-                    &key,
-                )?,
+                KEY_X25519_PK => {
+                    set_once(&mut x25519_pk, take_fixed_bytes::<X25519_PK_LEN>(v)?, &key)?
+                }
                 KEY_ML_KEM_768_PK => set_once(
                     &mut ml_kem_768_pk,
                     take_sized_bytes(v, ML_KEM_768_PK_LEN)?,
@@ -274,7 +280,7 @@ impl ContactCard {
             return Err(CardError::InvalidVersion);
         }
 
-        Ok(ContactCard {
+        let card = ContactCard {
             card_version,
             contact_uuid: contact_uuid.ok_or_else(|| {
                 CardError::CborDecode(format!("missing field {KEY_CONTACT_UUID}"))
@@ -298,7 +304,18 @@ impl ContactCard {
                 .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_SELF_SIG_ED}")))?,
             self_sig_pq: self_sig_pq
                 .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_SELF_SIG_PQ}")))?,
-        })
+        };
+
+        // Reject non-canonical input. The §6.1 fingerprint contract is over
+        // canonical bytes, so a peer's fingerprint and ours can only agree
+        // when both encode canonically. Cheapest reliable check: re-encode
+        // and compare; passes iff the input was already canonical.
+        let canonical = card.to_canonical_cbor()?;
+        if canonical.as_slice() != bytes {
+            return Err(CardError::NonCanonicalCbor);
+        }
+
+        Ok(card)
     }
 
     /// Self-sign: build [`signed_bytes`], hand to
@@ -310,11 +327,7 @@ impl ContactCard {
     /// secret halves are passed here — the card commits to the embedded
     /// public keys, so a mismatch goes undetected by `sign` but is caught
     /// by [`verify_self`].
-    pub fn sign(
-        &mut self,
-        ed_sk: &Ed25519Secret,
-        pq_sk: &MlDsa65Secret,
-    ) -> Result<(), CardError> {
+    pub fn sign(&mut self, ed_sk: &Ed25519Secret, pq_sk: &MlDsa65Secret) -> Result<(), CardError> {
         let m = self.signed_bytes()?;
         let HybridSig { sig_ed, sig_pq } = sig::sign(SigRole::Card, &m, ed_sk, pq_sk)?;
         self.self_sig_ed = sig_ed;
@@ -445,7 +458,9 @@ fn take_fixed_bytes<const N: usize>(v: Value) -> Result<[u8; N], CardError> {
         Value::Bytes(b) => b,
         _ => return Err(CardError::CborDecode("expected byte string".into())),
     };
-    bytes.try_into().map_err(|_: Vec<u8>| CardError::InvalidFieldLength)
+    bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| CardError::InvalidFieldLength)
 }
 
 fn take_sized_bytes(v: Value, expected: usize) -> Result<Vec<u8>, CardError> {

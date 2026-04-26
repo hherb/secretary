@@ -64,6 +64,8 @@ All KDF inputs, signature inputs, and AEAD AAD values are prefixed with a fixed 
 
 All tags are encoded as ASCII bytes without trailing NUL or length prefix; they are concatenated directly with the bytes they domain-separate.
 
+**Tag-disambiguation invariant.** No tag in this table may be a prefix of any other tag *when the tagged inputs could collide as bytes for the same primitive*. v1 has one prefix relation — `secretary-v1-hybrid-kem` is a strict prefix of `secretary-v1-hybrid-kem-transcript` — but the two are unambiguous because they feed different primitives in different positions: the former is consumed as the HMAC-SHA-256 salt input to HKDF-Extract (where it is keyed into HMAC's setup, never read as raw bytes), the latter is the initial 34 bytes of a BLAKE3 input followed by fixed-length fingerprints and ciphertexts. Any future tag added to this table that participates in a same-primitive same-position role with an existing tag MUST first break the prefix relation.
+
 ---
 
 ## 2. Key hierarchy

@@ -23,6 +23,7 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroize as _;
 
 use crate::crypto::secret::{SecretBytes, Sensitive};
 
@@ -47,9 +48,22 @@ pub const TAG_ID_WRAP_REC: &[u8] = b"secretary-v1-id-wrap-rec";
 pub const TAG_ID_BUNDLE: &[u8] = b"secretary-v1-id-bundle";
 
 /// HKDF salt for the hybrid-KEM combiner (§7).
+///
+/// SAFETY of the prefix relation with [`TAG_HYBRID_KEM_TRANSCRIPT`]: this tag
+/// is a strict ASCII prefix of `TAG_HYBRID_KEM_TRANSCRIPT`. The two are
+/// nonetheless unambiguous in v1 because they feed *different* primitives
+/// in *different* positions: `TAG_HYBRID_KEM` is consumed as the HMAC-SHA-256
+/// salt input to HKDF-Extract, where it is keyed into HMAC's setup and
+/// cannot be confused with input bytes; `TAG_HYBRID_KEM_TRANSCRIPT` is the
+/// initial 34 bytes of a BLAKE3 hash input followed by fixed-length
+/// fingerprints and ciphertexts. No v1 construction takes either tag as a
+/// prefix to user-controlled bytes. Future tag additions MUST preserve this
+/// property — if a new construction uses one of these as a prefix to
+/// caller bytes, the prefix relation must be broken first.
 pub const TAG_HYBRID_KEM: &[u8] = b"secretary-v1-hybrid-kem";
 
-/// BLAKE3 prefix for the hybrid-KEM transcript hash (§7).
+/// BLAKE3 prefix for the hybrid-KEM transcript hash (§7). See safety note on
+/// [`TAG_HYBRID_KEM`] regarding the prefix relation.
 pub const TAG_HYBRID_KEM_TRANSCRIPT: &[u8] = b"secretary-v1-hybrid-kem-transcript";
 
 /// HKDF info for deriving the per-recipient block-key wrap key from the
@@ -88,6 +102,14 @@ pub enum KdfError {
     /// iterations ≥ 1, parallelism ≥ 1).
     #[error("Argon2id parameters below v1 floors")]
     ParamsBelowV1Floor,
+
+    /// Argon2id parameters were rejected by the underlying argon2 crate
+    /// (e.g. `iterations = 0`, `parallelism = 0`, `memory < 8`,
+    /// `memory < 8 × parallelism`). Reachable when params are loaded from
+    /// `vault.toml` — that file is cleartext and attacker-writable per
+    /// threat-model §2.1, so we surface the failure rather than panic.
+    #[error("Argon2id parameters rejected by primitive (out of accepted range)")]
+    Argon2ParamsRejected,
 }
 
 // ---------------------------------------------------------------------------
@@ -158,30 +180,30 @@ impl Argon2idParams {
 /// Derive the 32-byte Master KEK from a password and salt under the given
 /// Argon2id parameters (§3). Argon2 algorithm = Argon2id, version = 0x13.
 ///
-/// Panics only if Argon2id rejects the parameters internally — which cannot
-/// happen for valid `Argon2idParams` constructed via [`Argon2idParams::new`]
-/// or [`Argon2idParams::try_new_v1`] because their u32 ranges sit safely
-/// inside the underlying crate's accepted bounds.
-#[must_use]
+/// Returns [`KdfError::Argon2ParamsRejected`] if the underlying argon2 crate
+/// refuses the parameters. The fields of [`Argon2idParams`] are `pub`, and
+/// params can come from `vault.toml` (cleartext, attacker-writable per
+/// threat-model §2.1), so this path is reachable from external input and
+/// must not panic.
 pub fn derive_master_kek(
     password: &SecretBytes,
     salt: &[u8; 32],
     params: &Argon2idParams,
-) -> Sensitive<[u8; 32]> {
+) -> Result<Sensitive<[u8; 32]>, KdfError> {
     let argon_params = Params::new(
         params.memory_kib,
         params.iterations,
         params.parallelism,
         Some(32),
     )
-    .expect("Argon2idParams already satisfy crate-level bounds");
+    .map_err(|_| KdfError::Argon2ParamsRejected)?;
 
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut out = [0u8; 32];
     argon
         .hash_password_into(password.expose(), salt, &mut out)
-        .expect("hash_password_into only fails on invalid params or output length");
-    Sensitive::new(out)
+        .map_err(|_| KdfError::Argon2ParamsRejected)?;
+    Ok(Sensitive::new(out))
 }
 
 /// Derive the 32-byte Recovery KEK from BIP-39 mnemonic entropy (§4).
@@ -190,14 +212,30 @@ pub fn derive_master_kek(
 /// `info = "secretary-v1-recovery-kek"`. The mnemonic itself carries 256
 /// bits of CSPRNG entropy, so no password stretching is performed
 /// (Argon2id would only slow legitimate use here).
+///
+/// SECURITY: `hkdf` 0.12 / `hmac` 0.12 / `sha2` 0.10 do not implement
+/// `ZeroizeOnDrop` on the internal HMAC + compression state, which contains
+/// the PRK in keyed form during the `expand` call. We tightly scope the
+/// `Hkdf` instance and explicitly drop it; the residue then sits on the
+/// stack until the frame slot is reused. Eliminating that residue requires
+/// upstream changes (e.g., a future `hkdf` release with zeroize support) or
+/// rolling HMAC-SHA-256 manually with hand-zeroized state. Best-effort
+/// within current dependency constraints.
 #[must_use]
 pub fn derive_recovery_kek(entropy: &Sensitive<[u8; 32]>) -> Sensitive<[u8; 32]> {
     let salt = [0u8; 32];
-    let hk = Hkdf::<Sha256>::new(Some(&salt), entropy.expose());
     let mut out = [0u8; 32];
-    hk.expand(TAG_RECOVERY_KEK, &mut out)
-        .expect("32 bytes is well within HKDF-SHA-256 output limits");
-    Sensitive::new(out)
+    {
+        // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so this
+        // scope only bounds the lexical lifetime of `hk` — there is no
+        // zeroization callback. See SECURITY note above.
+        let hk = Hkdf::<Sha256>::new(Some(&salt), entropy.expose());
+        hk.expand(TAG_RECOVERY_KEK, &mut out)
+            .expect("32 bytes is well within HKDF-SHA-256 output limits");
+    }
+    let kek = Sensitive::new(out);
+    out.zeroize();
+    kek
 }
 
 // ---------------------------------------------------------------------------
@@ -219,24 +257,31 @@ pub fn derive_recovery_kek(entropy: &Sensitive<[u8; 32]>) -> Sensitive<[u8; 32]>
 /// Panics if `len` exceeds [`HKDF_SHA256_MAX_OUTPUT`] (8160 bytes per
 /// RFC 5869). The hybrid-KEM combiner asks for 32 bytes; this is a
 /// programmer-error guard, not a runtime input check.
+///
+/// SECURITY: see [`derive_recovery_kek`] — the upstream `Hkdf<Sha256>`
+/// instance does not zeroize its internal HMAC state. We tightly scope and
+/// drop it; the residue then sits in freed stack memory until the slot is
+/// reused. `sha2`'s compression state clears on drop via the crate's
+/// `zeroize` feature.
 #[must_use]
-pub fn hkdf_sha256_extract_and_expand(
-    salt: &[u8],
-    ikm: &[u8],
-    info: &[u8],
-    len: usize,
-) -> Vec<u8> {
+pub fn hkdf_sha256_extract_and_expand(salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> Vec<u8> {
     assert!(
         len <= HKDF_SHA256_MAX_OUTPUT,
         "HKDF-SHA-256 output capped at {HKDF_SHA256_MAX_OUTPUT} bytes (RFC 5869)",
     );
-    // Per RFC 5869 §2.2: passing salt = empty is equivalent to salt = HashLen
-    // zero bytes. The hkdf crate accepts `Some(&[])` and handles this
-    // internally; we always pass `Some(salt)` so the caller controls the
-    // distinction explicitly.
-    let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
     let mut out = vec![0u8; len];
-    hk.expand(info, &mut out)
-        .expect("output length already validated against HKDF-SHA-256 maximum");
+    {
+        // Per RFC 5869 §2.2: passing salt = empty is equivalent to salt =
+        // HashLen zero bytes. The hkdf crate accepts `Some(&[])` and handles
+        // this internally; we always pass `Some(salt)` so the caller
+        // controls the distinction explicitly.
+        //
+        // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so this
+        // scope only bounds the lexical lifetime of `hk`. See SECURITY note
+        // above.
+        let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
+        hk.expand(info, &mut out)
+            .expect("output length already validated against HKDF-SHA-256 maximum");
+    }
     out
 }
