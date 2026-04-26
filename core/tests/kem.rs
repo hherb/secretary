@@ -13,6 +13,9 @@ use ml_kem::{array::Array, EncapsulateDeterministic, EncodedSizeUser, KemCore, M
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
+mod common;
+use common::{load_kat, HybridKemKat, X25519Kat};
+
 use secretary_core::crypto::kem::{
     decap, derive_wrap_key, encap, generate_ml_kem_768, generate_x25519, transcript, HybridWrap,
     KemError, MlKem768Public, MlKem768Secret, ML_KEM_768_CT_LEN, ML_KEM_768_PK_LEN,
@@ -62,11 +65,16 @@ fn hex32(s: &str) -> [u8; 32] {
 
 #[test]
 fn x25519_kat_rfc7748() {
+    // RFC 7748 §5.2 vectors loaded from tests/data/x25519_kat.json.
     use x25519_dalek::x25519;
-    let k = hex32("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
-    let u = hex32("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c");
-    let expected = hex32("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552");
-    assert_eq!(x25519(k, u), expected);
+    let kat: X25519Kat = load_kat("x25519_kat.json");
+    assert!(!kat.vectors.is_empty(), "no X25519 vectors");
+    for v in &kat.vectors {
+        let k: [u8; 32] = v.k.as_slice().try_into().expect("k = 32 B");
+        let u: [u8; 32] = v.u.as_slice().try_into().expect("u = 32 B");
+        let expected: [u8; 32] = v.expected.as_slice().try_into().expect("expected = 32 B");
+        assert_eq!(x25519(k, u), expected, "vector {}", v.name);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,4 +525,67 @@ fn hybrid_kem_wrong_block_uuid_fails() {
     )
     .expect_err("wrong block_uuid must fail (it's bound in AAD)");
     assert!(matches!(err, KemError::AeadFailure(_)), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid KEM wire-byte KAT — pins the §7 wrap output for fixed seeds and
+// inputs. Loaded from tests/data/hybrid_kem_kat.json. A clean-room
+// implementation that wants to interop must reproduce these wire bytes
+// byte-for-byte.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hybrid_kem_wire_kat() {
+    let kat: HybridKemKat = load_kat("hybrid_kem_kat.json");
+
+    let sender_seed: [u8; 32] = kat.sender_seed.as_slice().try_into().expect("seed = 32 B");
+    let recipient_seed: [u8; 32] = kat
+        .recipient_seed
+        .as_slice()
+        .try_into()
+        .expect("seed = 32 B");
+    let encap_seed: [u8; 32] = kat.encap_seed.as_slice().try_into().expect("seed = 32 B");
+    let sender_fp: [u8; 16] = kat.sender_fp.as_slice().try_into().expect("fp = 16 B");
+    let recipient_fp: [u8; 16] = kat.recipient_fp.as_slice().try_into().expect("fp = 16 B");
+    let block_uuid: [u8; 16] = kat.block_uuid.as_slice().try_into().expect("uuid = 16 B");
+    let bck_arr: [u8; 32] = kat.bck.as_slice().try_into().expect("bck = 32 B");
+
+    // Recipient generates its own keys; we only need its public half here
+    // (encap path). Sender keys are generated to consume the same RNG
+    // sequence as a real sender would; we discard the values.
+    let mut rng_s = ChaCha20Rng::from_seed(sender_seed);
+    let _ = generate_x25519(&mut rng_s);
+    let _ = generate_ml_kem_768(&mut rng_s);
+
+    let mut rng_r = ChaCha20Rng::from_seed(recipient_seed);
+    let (_r_x_sk, r_x_pk) = generate_x25519(&mut rng_r);
+    let (_r_pq_sk, r_pq_pk): (_, MlKem768Public) = generate_ml_kem_768(&mut rng_r);
+
+    let bck = Sensitive::new(bck_arr);
+    let mut rng_e = ChaCha20Rng::from_seed(encap_seed);
+    let wrap = encap(
+        &mut rng_e,
+        &sender_fp,
+        &recipient_fp,
+        &kat.sender_bundle,
+        &kat.recipient_bundle,
+        &r_x_pk,
+        &r_pq_pk,
+        &block_uuid,
+        &bck,
+    )
+    .expect("encap");
+
+    assert_eq!(
+        wrap.ct_x.as_slice(),
+        kat.expected_wire.ct_x,
+        "ct_x mismatch"
+    );
+    assert_eq!(wrap.ct_pq, kat.expected_wire.ct_pq, "ct_pq mismatch");
+    assert_eq!(
+        wrap.nonce_w.as_slice(),
+        kat.expected_wire.nonce_w,
+        "nonce_w mismatch"
+    );
+    assert_eq!(wrap.ct_w, kat.expected_wire.ct_w, "ct_w mismatch");
 }

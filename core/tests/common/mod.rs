@@ -83,3 +83,187 @@ pub fn load_kat<T: DeserializeOwned>(filename: &str) -> T {
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|e| panic!("failed to parse KAT file {}: {}", path.display(), e))
 }
+
+// ---------------------------------------------------------------------------
+// Typed KAT structs — one per `tests/data/*.json` file.
+//
+// Field layout matches the JSON 1:1; hex fields go through `de_hex` so test
+// code receives `Vec<u8>` ready to feed into the crypto APIs.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct Argon2idKat {
+    pub vectors: Vec<Argon2idVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Argon2idVector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub password: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub salt: Vec<u8>,
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+    pub out_len: usize,
+    #[serde(deserialize_with = "de_hex")]
+    pub expected: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct XChaCha20Poly1305Kat {
+    pub vectors: Vec<XChaCha20Poly1305Vector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct XChaCha20Poly1305Vector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub key: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub nonce: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub aad: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub plaintext: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ciphertext: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub tag: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct X25519Kat {
+    pub vectors: Vec<X25519Vector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct X25519Vector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub k: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub u: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub expected: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Ed25519Kat {
+    pub vectors: Vec<Ed25519Vector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Ed25519Vector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub sk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub pk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub msg: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HkdfSha256Kat {
+    pub vectors: Vec<HkdfSha256Vector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HkdfSha256Vector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub ikm: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub salt: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub info: Vec<u8>,
+    pub okm_len: usize,
+    #[serde(deserialize_with = "de_hex")]
+    pub okm: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CardFingerprintKat {
+    pub card_fingerprint: CardFingerprintCardEntry,
+    pub presentations: Vec<CardFingerprintPresentation>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CardFingerprintCardEntry {
+    pub name: String,
+    pub card_cbor_file: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub expected: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CardFingerprintPresentation {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub fp: Vec<u8>,
+    #[serde(default)]
+    pub hex_form: Option<String>,
+    #[serde(default)]
+    pub mnemonic_form: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HybridKemKat {
+    #[serde(deserialize_with = "de_hex")]
+    pub sender_seed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub recipient_seed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub encap_seed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sender_fp: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub recipient_fp: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sender_bundle: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub recipient_bundle: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub block_uuid: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub bck: Vec<u8>,
+    pub expected_wire: HybridKemWire,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HybridKemWire {
+    #[serde(deserialize_with = "de_hex")]
+    pub ct_x: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ct_pq: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub nonce_w: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ct_w: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HybridSigKat {
+    #[serde(deserialize_with = "de_hex")]
+    pub identity_seed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ed_pk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ml_dsa_65_pk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub msg: Vec<u8>,
+    pub vectors: Vec<HybridSigVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HybridSigVector {
+    pub role: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig_ed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig_pq: Vec<u8>,
+}

@@ -12,6 +12,9 @@
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
+mod common;
+use common::{load_kat, CardFingerprintKat};
+
 use secretary_core::crypto::sig::{generate_ed25519, generate_ml_dsa_65, SigError};
 use secretary_core::identity::card::{CardError, ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::{fingerprint, hex_form, mnemonic_form, Fingerprint};
@@ -395,13 +398,19 @@ fn card_from_canonical_cbor_rejects_non_canonical_input() {
 
 #[test]
 fn fingerprint_kat() {
+    // Loaded from tests/data/card_fingerprint_kat.json. The KAT card itself
+    // is built inline (kat_card) and its canonical CBOR byte image is also
+    // pinned at tests/data/card_kat.cbor — checked by canonical_cbor_byte_kat.
+    let kat: CardFingerprintKat = load_kat("card_fingerprint_kat.json");
     let card = kat_card();
     let bytes = card.to_canonical_cbor().expect("encode");
     let fp = fingerprint(&bytes);
-    let expected: Fingerprint = [
-        0x58, 0xa2, 0xa2, 0x1a, 0x4b, 0x8f, 0x8f, 0x57, 0xd3, 0xd1, 0x09, 0xf5, 0x37, 0x8d, 0xa4,
-        0xa4,
-    ];
+    let expected: Fingerprint = kat
+        .card_fingerprint
+        .expected
+        .as_slice()
+        .try_into()
+        .expect("expected = 16 B");
     assert_eq!(fp, expected);
 }
 
@@ -412,25 +421,20 @@ fn fingerprint_kat() {
 
 #[test]
 fn fingerprint_hex_form_kat() {
-    // Fixed input chosen for human readability of the formatted output.
-    let fp: Fingerprint = [
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f,
-    ];
-    let s = hex_form(&fp);
-    assert_eq!(s, "0001 0203 0405 0607 0809 0a0b 0c0d 0e0f");
-    assert_eq!(s.len(), 39);
-
-    // All-zero and all-one boundary cases — the latter checks no off-by-one
-    // in group separation at the tail.
-    assert_eq!(
-        hex_form(&[0u8; 16]),
-        "0000 0000 0000 0000 0000 0000 0000 0000",
-    );
-    assert_eq!(
-        hex_form(&[0xffu8; 16]),
-        "ffff ffff ffff ffff ffff ffff ffff ffff",
-    );
+    // Hex-form vectors loaded from tests/data/card_fingerprint_kat.json.
+    let kat: CardFingerprintKat = load_kat("card_fingerprint_kat.json");
+    let mut checked = 0usize;
+    for p in &kat.presentations {
+        let Some(expected) = &p.hex_form else {
+            continue;
+        };
+        let fp: Fingerprint = p.fp.as_slice().try_into().expect("fp = 16 B");
+        let s = hex_form(&fp);
+        assert_eq!(s, *expected, "presentation {}: hex_form mismatch", p.name);
+        assert_eq!(s.len(), 39, "presentation {}: hex_form length", p.name);
+        checked += 1;
+    }
+    assert!(checked > 0, "no hex_form presentations in KAT");
 }
 
 // ---------------------------------------------------------------------------
@@ -441,43 +445,25 @@ fn fingerprint_hex_form_kat() {
 
 #[test]
 fn fingerprint_mnemonic_kat() {
-    // Same input as the hex KAT.
-    let fp: Fingerprint = [
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f,
-    ];
-    let m = mnemonic_form(&fp);
-    assert_eq!(
-        m,
-        "abandon amount liar amount expire adjust cage candy arch gather drum bulk",
-    );
-
-    // All-zero → all "abandon" (BIP-39 wordlist[0]). Important boundary case.
-    assert_eq!(
-        mnemonic_form(&[0u8; 16]),
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
-    );
-
-    // All-one boundary: bits 121..127 = 1111111 (= 0x7f), bits 128..131 = 0
-    // (the read-only-128-bits zero-pad), so word 11 = 0b11111110000 = 0x7f0
-    // = 2032 = "wrap". Word 0..10 see all-ones in their 11-bit windows
-    // (= 0x7ff = 2047 = "zoo"). Mismatch here means the bit-reading
-    // direction or the zero-padding got flipped.
-    assert_eq!(
-        mnemonic_form(&[0xffu8; 16]),
-        "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrap",
-    );
-
-    // KAT card's own fingerprint → its mnemonic. Cross-verified against
-    // Python `mnemonic` package + the canonical-CBOR-encoded KAT card.
-    let fp_card: Fingerprint = [
-        0x58, 0xa2, 0xa2, 0x1a, 0x4b, 0x8f, 0x8f, 0x57, 0xd3, 0xd1, 0x09, 0xf5, 0x37, 0x8d, 0xa4,
-        0xa4,
-    ];
-    assert_eq!(
-        mnemonic_form(&fp_card),
-        "flavor bench make novel wedding program exercise cancel vivid round hard elite",
-    );
+    // Mnemonic-form vectors loaded from tests/data/card_fingerprint_kat.json.
+    // Boundary cases (all-zero, all-one) and the KAT-card fingerprint are
+    // each pinned. Cross-verified against the Python mnemonic package.
+    let kat: CardFingerprintKat = load_kat("card_fingerprint_kat.json");
+    let mut checked = 0usize;
+    for p in &kat.presentations {
+        let Some(expected) = &p.mnemonic_form else {
+            continue;
+        };
+        let fp: Fingerprint = p.fp.as_slice().try_into().expect("fp = 16 B");
+        assert_eq!(
+            mnemonic_form(&fp),
+            *expected,
+            "presentation {}: mnemonic_form mismatch",
+            p.name,
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no mnemonic_form presentations in KAT");
 }
 
 // ---------------------------------------------------------------------------

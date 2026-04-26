@@ -1,6 +1,9 @@
 //! KDF integration tests: Argon2id (Master KEK), HKDF-SHA-256 (Recovery KEK
 //! and primitive). Each KAT cites its source.
 
+mod common;
+use common::{load_kat, Argon2idKat, HkdfSha256Kat};
+
 use secretary_core::crypto::kdf::{
     derive_master_kek, derive_recovery_kek, hkdf_sha256_extract_and_expand, Argon2idParams,
     KdfError, TAG_RECOVERY_KEK,
@@ -31,25 +34,22 @@ fn nib(c: u8) -> u8 {
 
 #[test]
 fn argon2id_kat_small_memory() {
-    // Self-derived KAT, computed via the libargon2 reference implementation
-    // (Python `argon2-cffi`, which wraps the official Argon2 C reference)
-    // and pinned here. Small memory (8 MiB) keeps the test fast; the v1
-    // production floor is 64 MiB and is enforced by `try_new_v1`, but the
-    // raw `Argon2idParams::new` constructor accepts any valid value.
-    //
-    //   password = b"masterpassword12"   (16 bytes ASCII)
-    //   salt     = [0x00; 32]
-    //   memory   = 8192 KiB              (8 MiB)
-    //   iter     = 1
-    //   parallel = 1
-    //   version  = 0x13 (Argon2 v1.3)
-    //   output   = 32 bytes
-    let password = SecretBytes::new(b"masterpassword12".to_vec());
-    let salt = [0u8; 32];
-    let params = Argon2idParams::new(8192, 1, 1);
-    let expected = hex("3344bda57af2b472b9a7854da6340a57f33270d22fff6c807150c98068af3651");
+    // KAT loaded from tests/data/argon2id_kat.json; cross-verified against
+    // argon2-cffi (libargon2 reference). Small memory (8 MiB) keeps the test
+    // fast; v1 production floor is enforced by Argon2idParams::try_new_v1
+    // separately.
+    let kat: Argon2idKat = load_kat("argon2id_kat.json");
+    let v = kat
+        .vectors
+        .iter()
+        .find(|v| v.name == "small_memory")
+        .expect("vector");
+    let salt: [u8; 32] = v.salt.as_slice().try_into().expect("salt = 32 B");
+    let password = SecretBytes::new(v.password.clone());
+    let params = Argon2idParams::new(v.memory_kib, v.iterations, v.parallelism);
     let kek = derive_master_kek(&password, &salt, &params).expect("valid params");
-    assert_eq!(kek.expose()[..], expected[..]);
+    assert_eq!(kek.expose().len(), v.out_len);
+    assert_eq!(kek.expose()[..], v.expected[..]);
 }
 
 #[test]
@@ -190,45 +190,17 @@ fn recovery_kek_uses_recovery_kek_tag() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hkdf_rfc5869_test_case_1() {
-    // RFC 5869 §A.1 (basic test case 1, SHA-256):
-    //   IKM   = 22 bytes of 0x0b
-    //   salt  = 0x000102030405060708090a0b0c
-    //   info  = 0xf0f1f2f3f4f5f6f7f8f9
-    //   L     = 42
-    //   OKM   = 0x3cb25f25faacd57a90434f64d0362f2a
-    //              2d2d0a90cf1a5a4c5db02d56ecc4c5bf
-    //              34007208d5b887185865
-    let ikm = vec![0x0b; 22];
-    let salt = hex("000102030405060708090a0b0c");
-    let info = hex("f0f1f2f3f4f5f6f7f8f9");
-    let expected = hex(concat!(
-        "3cb25f25faacd57a90434f64d0362f2a",
-        "2d2d0a90cf1a5a4c5db02d56ecc4c5bf",
-        "34007208d5b887185865",
-    ));
-    let okm = hkdf_sha256_extract_and_expand(&salt, &ikm, &info, 42);
-    assert_eq!(okm, expected);
-}
-
-#[test]
-fn hkdf_rfc5869_test_case_3_empty_salt_and_info() {
-    // RFC 5869 §A.3 (test case 3, SHA-256):
-    //   IKM   = 22 bytes of 0x0b
-    //   salt  = empty (treated as 32 bytes of zero per RFC 5869 §2.2)
-    //   info  = empty
-    //   L     = 42
-    //   OKM   = 0x8da4e775a563c18f715f802a063c5a31
-    //              b8a11f5c5ee1879ec3454e5f3c738d2d
-    //              9d201395faa4b61a96c8
-    let ikm = vec![0x0b; 22];
-    let expected = hex(concat!(
-        "8da4e775a563c18f715f802a063c5a31",
-        "b8a11f5c5ee1879ec3454e5f3c738d2d",
-        "9d201395faa4b61a96c8",
-    ));
-    let okm = hkdf_sha256_extract_and_expand(&[], &ikm, &[], 42);
-    assert_eq!(okm, expected);
+fn hkdf_rfc5869_kats() {
+    // RFC 5869 vectors loaded from tests/data/hkdf_sha256_kat.json. Includes
+    // test case 1 (§A.1) and test case 3 (§A.3, empty salt and info — RFC 5869
+    // §2.2 says empty salt is treated as 32 bytes of zero).
+    let kat: HkdfSha256Kat = load_kat("hkdf_sha256_kat.json");
+    assert!(!kat.vectors.is_empty(), "no HKDF vectors");
+    for v in &kat.vectors {
+        let okm = hkdf_sha256_extract_and_expand(&v.salt, &v.ikm, &v.info, v.okm_len);
+        assert_eq!(okm.len(), v.okm_len, "vector {}: okm_len mismatch", v.name);
+        assert_eq!(okm, v.okm, "vector {}: okm mismatch", v.name);
+    }
 }
 
 #[test]

@@ -1,0 +1,33 @@
+{
+  "comment": "Contact Card §6.1 fingerprint KATs. Cross-verified against Python blake3 (BLAKE3 keyed-hash) and the Python mnemonic package (BIP-39 English wordlist). Source tests: core/tests/identity.rs::fingerprint_kat, fingerprint_hex_form_kat, fingerprint_mnemonic_kat.",
+  "card_fingerprint": {
+    "name": "kat_card",
+    "card_cbor_file": "card_kat.cbor",
+    "expected": "58a2a21a4b8f8f57d3d109f5378da4a4"
+  },
+  "presentations": [
+    {
+      "name": "sequence_0_to_15",
+      "fp": "000102030405060708090a0b0c0d0e0f",
+      "hex_form": "0001 0203 0405 0607 0809 0a0b 0c0d 0e0f",
+      "mnemonic_form": "abandon amount liar amount expire adjust cage candy arch gather drum bulk"
+    },
+    {
+      "name": "all_zero",
+      "fp": "00000000000000000000000000000000",
+      "hex_form": "0000 0000 0000 0000 0000 0000 0000 0000",
+      "mnemonic_form": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+    },
+    {
+      "name": "all_one",
+      "fp": "ffffffffffffffffffffffffffffffff",
+      "hex_form": "ffff ffff ffff ffff ffff ffff ffff ffff",
+      "mnemonic_form": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrap"
+    },
+    {
+      "name": "kat_card_fp",
+      "fp": "58a2a21a4b8f8f57d3d109f5378da4a4",
+      "mnemonic_form": "flavor bench make novel wedding program exercise cancel vivid round hard elite"
+    }
+  ]
+}

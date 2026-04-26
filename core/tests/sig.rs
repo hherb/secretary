@@ -13,6 +13,9 @@
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
+mod common;
+use common::{load_kat, Ed25519Kat, HybridSigKat};
+
 use secretary_core::crypto::kdf::{TAG_BLOCK_SIG, TAG_CARD_SIG, TAG_MANIFEST_SIG};
 use secretary_core::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, sign, signed_message, verify, HybridSig, MlDsa65Public,
@@ -21,67 +24,37 @@ use secretary_core::crypto::sig::{
 };
 
 // ---------------------------------------------------------------------------
-// Tiny hex helper (mirrors the one in tests/kdf.rs and tests/kem.rs).
-// ---------------------------------------------------------------------------
-
-fn hex(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "odd-length hex string");
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for chunk in s.as_bytes().chunks(2) {
-        out.push((nib(chunk[0]) << 4) | nib(chunk[1]));
-    }
-    out
-}
-
-fn nib(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => panic!("non-hex char"),
-    }
-}
-
-fn hex32(s: &str) -> [u8; 32] {
-    let v = hex(s);
-    assert_eq!(v.len(), 32, "expected 32-byte hex");
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&v);
-    out
-}
-
-fn hex64(s: &str) -> [u8; 64] {
-    let v = hex(s);
-    assert_eq!(v.len(), 64, "expected 64-byte hex");
-    let mut out = [0u8; 64];
-    out.copy_from_slice(&v);
-    out
-}
-
-// ---------------------------------------------------------------------------
 // 1. Underlying Ed25519 primitive — RFC 8032 §7.1 test 1 (the all-zero-ish
 //    canonical vector: empty message, sk = 9d61b1...). This pins the
 //    `ed25519-dalek` wrapping: byte order, signature framing, deterministic
-//    signing per RFC 8032.
+//    signing per RFC 8032. Vectors loaded from tests/data/ed25519_kat.json.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ed25519_kat_rfc8032_test1() {
+    // RFC 8032 §7.1 test 1, loaded from tests/data/ed25519_kat.json.
     use ed25519_dalek::ed25519::signature::Signer as _;
     use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
-    let sk_bytes = hex32("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
-    let expected_pk = hex32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
-    let expected_sig = hex64(
-        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
-    );
+    let kat: Ed25519Kat = load_kat("ed25519_kat.json");
+    assert!(!kat.vectors.is_empty(), "no Ed25519 vectors");
+    for v in &kat.vectors {
+        let sk_bytes: [u8; 32] = v.sk.as_slice().try_into().expect("sk = 32 B");
+        let expected_pk: [u8; 32] = v.pk.as_slice().try_into().expect("pk = 32 B");
+        let expected_sig: [u8; 64] = v.sig.as_slice().try_into().expect("sig = 64 B");
 
-    let sk = SigningKey::from_bytes(&sk_bytes);
-    let pk: VerifyingKey = sk.verifying_key();
-    assert_eq!(pk.to_bytes(), expected_pk);
+        let sk = SigningKey::from_bytes(&sk_bytes);
+        let pk: VerifyingKey = sk.verifying_key();
+        assert_eq!(pk.to_bytes(), expected_pk, "vector {}: pk mismatch", v.name);
 
-    let sig: Signature = sk.sign(b"");
-    assert_eq!(sig.to_bytes(), expected_sig);
+        let sig: Signature = sk.sign(&v.msg);
+        assert_eq!(
+            sig.to_bytes(),
+            expected_sig,
+            "vector {}: sig mismatch",
+            v.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,4 +300,56 @@ fn hybrid_sig_wrong_role_fails() {
     // is covered by `test_hybrid_sig_fails_when_only_one_half_valid`.
     let r = verify(SigRole::Manifest, msg, &sig, &id.ed_pk, &id.pq_pk);
     assert!(matches!(r, Err(SigError::Ed25519VerifyFailed)), "got {r:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid signature wire-byte KAT — pins the §8 sign output for fixed seeds
+// and inputs across all three SigRole variants. Loaded from
+// tests/data/hybrid_sig_kat.json. A clean-room implementation that wants
+// to interop must reproduce these wire bytes byte-for-byte.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hybrid_sig_wire_kat() {
+    let kat: HybridSigKat = load_kat("hybrid_sig_kat.json");
+    let identity_seed: [u8; 32] = kat
+        .identity_seed
+        .as_slice()
+        .try_into()
+        .expect("seed = 32 B");
+
+    let mut rng = ChaCha20Rng::from_seed(identity_seed);
+    let (ed_sk, ed_pk) = generate_ed25519(&mut rng);
+    let (pq_sk, pq_pk) = generate_ml_dsa_65(&mut rng);
+
+    // Public keys must match the JSON-pinned values.
+    assert_eq!(ed_pk.as_slice(), kat.ed_pk, "ed_pk diverges from KAT");
+    assert_eq!(
+        pq_pk.as_bytes(),
+        kat.ml_dsa_65_pk,
+        "ml_dsa_65_pk diverges from KAT"
+    );
+
+    // Each role-tagged signature is also pinned.
+    for v in &kat.vectors {
+        let role = match v.role.as_str() {
+            "Block" => SigRole::Block,
+            "Manifest" => SigRole::Manifest,
+            "Card" => SigRole::Card,
+            other => panic!("unknown role in KAT: {other}"),
+        };
+        let s = sign(role, &kat.msg, &ed_sk, &pq_sk).expect("sign");
+        assert_eq!(
+            s.sig_ed.as_slice(),
+            v.sig_ed,
+            "role {}: sig_ed mismatch",
+            v.role
+        );
+        assert_eq!(
+            s.sig_pq.as_bytes(),
+            v.sig_pq,
+            "role {}: sig_pq mismatch",
+            v.role
+        );
+    }
 }

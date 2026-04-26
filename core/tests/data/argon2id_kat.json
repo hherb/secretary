@@ -1,0 +1,16 @@
+{
+  "comment": "Argon2id KAT for derive_master_kek. v1 production floor (262144 KiB / 3 / 1) is enforced by Argon2idParams::try_new_v1; this small-memory vector keeps the test fast. Cross-verified against argon2-cffi (Python wrapper around the official libargon2 reference). Source test: core/tests/kdf.rs::argon2id_kat_small_memory.",
+  "vectors": [
+    {
+      "name": "small_memory",
+      "password_ascii": "masterpassword12",
+      "password": "6d617374657270617373776f72643132",
+      "salt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "memory_kib": 8192,
+      "iterations": 1,
+      "parallelism": 1,
+      "out_len": 32,
+      "expected": "3344bda57af2b472b9a7854da6340a57f33270d22fff6c807150c98068af3651"
+    }
+  ]
+}
