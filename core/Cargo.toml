@@ -22,6 +22,7 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 ml-kem = { version = "0.2", features = ["deterministic"] }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "rand_core", "zeroize"] }
 ml-dsa = { version = "0.1.0-rc.8", default-features = false, features = ["alloc", "zeroize"] }
+ciborium = "0.2"
 rand_core = "0.6"
 
 [dev-dependencies]
