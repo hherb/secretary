@@ -212,8 +212,8 @@ fn fingerprint_kat() {
     let bytes = card.to_canonical_cbor().expect("encode");
     let fp = fingerprint(&bytes);
     let expected: Fingerprint = [
-        0x20, 0xfb, 0xd0, 0x65, 0x5a, 0x8c, 0x44, 0xae, 0xae, 0x7f, 0x0a, 0xdb, 0xa0, 0x43, 0x0d,
-        0x92,
+        0x58, 0xa2, 0xa2, 0x1a, 0x4b, 0x8f, 0x8f, 0x57, 0xd3, 0xd1, 0x09, 0xf5, 0x37, 0x8d, 0xa4,
+        0xa4,
     ];
     assert_eq!(fp, expected);
 }
@@ -281,14 +281,15 @@ fn fingerprint_mnemonic_kat() {
         "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrap",
     );
 
-    // KAT card's own fingerprint → its mnemonic. Cross-verified.
+    // KAT card's own fingerprint → its mnemonic. Cross-verified against
+    // Python `mnemonic` package + the canonical-CBOR-encoded KAT card.
     let fp_card: Fingerprint = [
-        0x20, 0xfb, 0xd0, 0x65, 0x5a, 0x8c, 0x44, 0xae, 0xae, 0x7f, 0x0a, 0xdb, 0xa0, 0x43, 0x0d,
-        0x92,
+        0x58, 0xa2, 0xa2, 0x1a, 0x4b, 0x8f, 0x8f, 0x57, 0xd3, 0xd1, 0x09, 0xf5, 0x37, 0x8d, 0xa4,
+        0xa4,
     ];
     assert_eq!(
         mnemonic_form(&fp_card),
-        "can teach bone relax session firm rigid throw sweet acoustic sell catch",
+        "flavor bench make novel wedding program exercise cancel vivid round hard elite",
     );
 }
 

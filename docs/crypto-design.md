@@ -250,6 +250,18 @@ For UI presentation:
 
 A clean-room implementation must produce identical mnemonic and hex strings for any given card.
 
+### 6.2 Canonical CBOR encoding
+
+Every byte string referenced as `canonical_cbor(...)` in this document — the §6 self-signed message, the §6.1 fingerprint input, the §5 Identity Bundle plaintext, the §9 block-record body, the §10 manifest, and `sender_pk_bundle` / `recipient_pk_bundle` in §7 — is produced by the **deterministic encoding profile of RFC 8949 §4.2.1**:
+
+1. **Map keys are sorted bytewise lexicographically by their canonical encoded form.** For maps with text-string keys (the common case in this spec), this reduces to: shorter keys first; among keys of equal length, bytewise UTF-8 compare. The field listings in this document are descriptive of *which* fields exist; they are **not** normative for byte order.
+2. **Definite-length encoding** for all maps, arrays, and byte/text strings.
+3. **Shortest-form integer and length prefixes.** Integers and length headers use the smallest CBOR major-type-0 / major-type-1 / length encoding that fits. Negative integers are encoded as major type 1 with the same shortest-form rule.
+4. **No tags, no floats, no indefinite-length items** anywhere in v1 records.
+5. **Duplicate map keys are forbidden** (RFC 8949 §5.4); decoders MUST reject input that contains them.
+
+A clean-room implementation passing the equivalent of `cbor2.dumps(record, canonical=True)` (Python) or sorting and shortest-form-encoding manually produces bit-identical bytes to this reference. The KAT files under `core/tests/data/` pin the byte form for v1 cards.
+
 ---
 
 ## 7. Hybrid KEM (per-recipient block-key wrap)

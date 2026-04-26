@@ -10,33 +10,36 @@
 //! ## Canonical CBOR encoding
 //!
 //! §6 specifies the wire form as a CBOR map. Both the self-signature
-//! ([`signed_bytes`]) and the fingerprint (`fingerprint::fingerprint`) commit
-//! to *bytes*, not to a logical record, so the encoding has to be
-//! deterministic: the same logical card must always produce the same bytes
-//! across implementations. This module pins the rules used here:
+//! ([`ContactCard::signed_bytes`]) and the fingerprint
+//! ([`super::fingerprint::fingerprint`]) commit to *bytes*, not to a logical
+//! record, so the encoding has to be deterministic: the same logical card
+//! must always produce the same bytes across implementations. The rules are
+//! the deterministic-encoding profile of **RFC 8949 §4.2.1** (also restated
+//! as `docs/crypto-design.md` §6.2):
 //!
 //! 1. **Map shape** — the card is encoded as a CBOR map with text-string
 //!    keys, never an array. (This is the §6 wire form.)
-//! 2. **Field order** — keys appear in §6's listed order, *not* RFC 8949
-//!    §4.2 lexicographic order. We treat the §6 listing as normative for
-//!    canonicalization. A CBOR-canonical (RFC 8949 §4.2) consumer that
-//!    reorders keys produces different bytes and therefore a different
-//!    fingerprint, breaking interop. The byte form is pinned by KAT
-//!    (`canonical_cbor_byte_kat`) and cross-verified against the Python
-//!    `cbor2` reference; clean-room implementations must match byte-for-byte.
-//! 3. **Shortest-form lengths and integers** — every length prefix and every
+//! 2. **Map keys sorted bytewise lexicographically by their canonical
+//!    encoded form.** For the all-tstr keys in this spec, that reduces to:
+//!    shorter keys first; among keys of equal length, bytewise UTF-8
+//!    compare. A consumer passing `canonical=True` to a conformant CBOR
+//!    encoder (e.g., Python `cbor2`) produces bit-identical bytes — which
+//!    is what `canonical_cbor_byte_kat` cross-verifies. The §6 spec listing
+//!    order is descriptive of *which* fields exist, not normative for byte
+//!    order.
+//! 3. **Shortest-form lengths and integers.** Every length prefix and every
 //!    integer is encoded in CBOR's shortest valid form. `ciborium`'s default
-//!    `Value` serializer enforces this for both. No floats, no
-//!    indefinite-length items, no tags.
-//! 4. **Duplicate keys** — rejected on parse (RFC 8949 §5.4).
+//!    `Value` serializer already enforces this for both.
+//! 4. **Definite-length, no tags, no floats, no indefinite-length items.**
+//! 5. **Duplicate keys** — rejected on parse (RFC 8949 §5.4).
 //!
 //! ## Parse leniency
 //!
 //! [`ContactCard::from_canonical_cbor`] tolerates inputs that arrive with
 //! keys in arbitrary order so long as no key is duplicated and every
 //! required field is present with the right type and length. Re-encoding
-//! through [`ContactCard::to_canonical_cbor`] then yields the canonical
-//! byte form. This means a non-canonical peer can be re-canonicalized
+//! through [`ContactCard::to_canonical_cbor`] then re-sorts to the RFC 8949
+//! §4.2.1 byte form. A non-canonical peer can therefore be re-canonicalized
 //! locally, but the locally-produced fingerprint will differ from the
 //! peer's if the peer was non-canonical to start with — which is correct
 //! behaviour: the protocol's interop contract is canonical bytes.
@@ -380,7 +383,22 @@ impl ContactCard {
 // ---------------------------------------------------------------------------
 
 fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
-    let value = Value::Map(entries.to_vec());
+    // RFC 8949 §4.2.1: map keys must be sorted bytewise lexicographically by
+    // their deterministic CBOR encoding. We materialize each key's encoded
+    // bytes and sort by that — robust against any future key shape (text,
+    // byte, integer) without a separate code path per type.
+    let mut sorted: Vec<(Vec<u8>, (Value, Value))> = entries
+        .iter()
+        .map(|pair| {
+            let mut key_bytes = Vec::new();
+            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
+                .map_err(|e| CardError::CborEncode(e.to_string()))?;
+            Ok((key_bytes, pair.clone()))
+        })
+        .collect::<Result<_, CardError>>()?;
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&value, &mut buf)
         .map_err(|e| CardError::CborEncode(e.to_string()))?;
