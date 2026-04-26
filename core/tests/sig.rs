@@ -14,7 +14,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
 mod common;
-use common::{load_kat, Ed25519Kat, HybridSigKat};
+use common::{load_kat, Ed25519Kat, HybridSigKat, MlDsa65Kat};
 
 use secretary_core::crypto::kdf::{TAG_BLOCK_SIG, TAG_CARD_SIG, TAG_MANIFEST_SIG};
 use secretary_core::crypto::sig::{
@@ -350,6 +350,63 @@ fn hybrid_sig_wire_kat() {
             v.sig_pq,
             "role {}: sig_pq mismatch",
             v.role
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NIST FIPS 204 KATs for ML-DSA-65. Cross-validates the underlying ml-dsa
+// crate against the NIST upstream conformance contract. Loaded from
+// tests/data/ml_dsa_65_kat.json (10-vector subset of NIST ACVP-Server).
+//
+// Sign-side determinism is exercised by ml_dsa_65_roundtrip and by the
+// hybrid_sig_wire_kat above (which pin our crate's sign output for fixed
+// inputs). The NIST sigGen vectors here exercise the verify-side: a
+// NIST-conformant (pk, msg, ctx, sig) tuple must verify under the
+// `verify_with_context` API.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ml_dsa_65_nist_keygen_kat() {
+    use ml_dsa::signature::Keypair as _;
+    use ml_dsa::{KeyGen as _, MlDsa65, B32};
+    let kat: MlDsa65Kat = load_kat("ml_dsa_65_kat.json");
+    assert!(!kat.keygen_vectors.is_empty(), "no NIST keygen vectors");
+
+    for v in &kat.keygen_vectors {
+        let seed_arr: [u8; 32] = v.seed.as_slice().try_into().expect("seed = 32 B");
+        let seed: B32 = B32::from(seed_arr);
+        let kp = MlDsa65::from_seed(&seed);
+        let pk_bytes = kp.verifying_key().encode();
+        assert_eq!(
+            pk_bytes.as_slice(),
+            v.pk.as_slice(),
+            "tcId {}: pk diverges from NIST",
+            v.tc_id
+        );
+    }
+}
+
+#[test]
+fn ml_dsa_65_nist_sigver_kat() {
+    use ml_dsa::{
+        EncodedSignature, EncodedVerifyingKey, MlDsa65, Signature as MlDsaSignature,
+        VerifyingKey as MlDsaVerifyingKey,
+    };
+    let kat: MlDsa65Kat = load_kat("ml_dsa_65_kat.json");
+    assert!(!kat.sigver_vectors.is_empty(), "no NIST sigver vectors");
+
+    for v in &kat.sigver_vectors {
+        let pk_arr: EncodedVerifyingKey<MlDsa65> = v.pk.as_slice().try_into().expect("pk length");
+        let vk = MlDsaVerifyingKey::<MlDsa65>::decode(&pk_arr);
+
+        let sig_arr: EncodedSignature<MlDsa65> = v.sig.as_slice().try_into().expect("sig length");
+        let sig = MlDsaSignature::<MlDsa65>::decode(&sig_arr).expect("sig decode");
+
+        assert!(
+            vk.verify_with_context(&v.msg, &v.ctx, &sig),
+            "tcId {}: NIST-conformant signature failed to verify",
+            v.tc_id
         );
     }
 }

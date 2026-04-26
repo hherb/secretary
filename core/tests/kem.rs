@@ -14,7 +14,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
 mod common;
-use common::{load_kat, HybridKemKat, X25519Kat};
+use common::{load_kat, HybridKemKat, MlKem768Kat, X25519Kat};
 
 use secretary_core::crypto::kem::{
     decap, derive_wrap_key, encap, generate_ml_kem_768, generate_x25519, transcript, HybridWrap,
@@ -588,4 +588,64 @@ fn hybrid_kem_wire_kat() {
         "nonce_w mismatch"
     );
     assert_eq!(wrap.ct_w, kat.expected_wire.ct_w, "ct_w mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// NIST FIPS 203 KATs for ML-KEM-768. Cross-validates the underlying ml-kem
+// crate against the NIST upstream conformance contract. Loaded from
+// tests/data/ml_kem_768_kat.json (10-vector subset of NIST ACVP-Server).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ml_kem_768_nist_keygen_kat() {
+    let kat: MlKem768Kat = load_kat("ml_kem_768_kat.json");
+    assert!(!kat.keygen_vectors.is_empty(), "no NIST keygen vectors");
+
+    for v in &kat.keygen_vectors {
+        let d_arr: B32 = Array(v.d.as_slice().try_into().expect("d = 32 B"));
+        let z_arr: B32 = Array(v.z.as_slice().try_into().expect("z = 32 B"));
+
+        let (dk, ek) = MlKem768::generate_deterministic(&d_arr, &z_arr);
+        assert_eq!(
+            ek.as_bytes().as_slice(),
+            v.ek.as_slice(),
+            "tcId {}: ek (encapsulation key) bytes diverge from NIST",
+            v.tc_id
+        );
+        assert_eq!(
+            dk.as_bytes().as_slice(),
+            v.dk.as_slice(),
+            "tcId {}: dk (decapsulation key) bytes diverge from NIST",
+            v.tc_id
+        );
+    }
+}
+
+#[test]
+fn ml_kem_768_nist_encap_kat() {
+    use ml_kem::kem::EncapsulationKey;
+    let kat: MlKem768Kat = load_kat("ml_kem_768_kat.json");
+    assert!(!kat.encap_vectors.is_empty(), "no NIST encap vectors");
+
+    for v in &kat.encap_vectors {
+        let ek_arr: ml_kem::Encoded<EncapsulationKey<ml_kem::MlKem768Params>> =
+            Array::try_from(v.ek.as_slice()).expect("ek length");
+        let ek = EncapsulationKey::<ml_kem::MlKem768Params>::from_bytes(&ek_arr);
+        let m_arr: B32 = Array(v.m.as_slice().try_into().expect("m = 32 B"));
+
+        // Deterministic encap: same m must yield same (c, K) every time.
+        let (ct, ss) = ek.encapsulate_deterministic(&m_arr).expect("ML-KEM encap");
+        assert_eq!(
+            ct.as_slice(),
+            v.c.as_slice(),
+            "tcId {}: ciphertext diverges from NIST",
+            v.tc_id
+        );
+        assert_eq!(
+            ss.as_slice(),
+            v.k.as_slice(),
+            "tcId {}: shared secret diverges from NIST",
+            v.tc_id
+        );
+    }
 }

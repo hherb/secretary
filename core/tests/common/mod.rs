@@ -267,3 +267,71 @@ pub struct HybridSigVector {
     #[serde(deserialize_with = "de_hex")]
     pub sig_pq: Vec<u8>,
 }
+
+// ---------------------------------------------------------------------------
+// NIST ACVP vectors (FIPS 203 / FIPS 204)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct MlKem768Kat {
+    pub keygen_vectors: Vec<MlKem768KeygenVector>,
+    pub encap_vectors: Vec<MlKem768EncapVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlKem768KeygenVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub d: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub z: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ek: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub dk: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlKem768EncapVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub ek: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub m: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub c: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub k: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlDsa65Kat {
+    pub keygen_vectors: Vec<MlDsa65KeygenVector>,
+    pub sigver_vectors: Vec<MlDsa65SigverVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlDsa65KeygenVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub seed: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub pk: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlDsa65SigverVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub pk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub msg: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ctx: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig: Vec<u8>,
+}
