@@ -8,6 +8,10 @@ rust-version.workspace = true
 description = "Secretary cryptographic core: vault format, identity, and unlock primitives."
 
 [dependencies]
+base64 = "0.22"
+bip39 = "2"
+toml = "0.8"
+unicode-normalization = "0.1"
 thiserror = "2"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 subtle = "2"
