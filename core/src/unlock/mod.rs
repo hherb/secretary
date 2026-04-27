@@ -42,6 +42,13 @@ pub enum UnlockError {
     KdfFailure(#[from] KdfError),
     #[error("AEAD primitive failure")]
     AeadFailure,
+
+    /// `kdf_params.memory_kib` is below the §1.2 v1 floor (currently 64 MiB).
+    /// Returned by [`create_vault`] to prevent silent production of weak
+    /// vaults. Tests that need fast Argon2id can call
+    /// [`create_vault_unchecked`] explicitly.
+    #[error("Argon2id memory_kib ({memory_kib}) is below v1 floor ({min_memory_kib})")]
+    WeakKdfParams { memory_kib: u32, min_memory_kib: u32 },
 }
 
 impl From<AeadError> for UnlockError {
@@ -100,7 +107,47 @@ impl fmt::Debug for UnlockedIdentity {
 // create_vault orchestrator (§3 Master KEK, §4 Recovery KEK, §5 bundle wrap)
 // ---------------------------------------------------------------------------
 
+/// Create a fresh v1 vault with the §1.2-compliant Argon2id floor enforced.
+///
+/// Rejects `kdf_params` whose `memory_kib` is below
+/// [`Argon2idParams::V1_MIN_MEMORY_KIB`] with [`UnlockError::WeakKdfParams`].
+/// Tests that need faster KDF can call [`create_vault_unchecked`] directly,
+/// at the cost of producing a vault that is NOT v1-conformance-compliant.
+///
+/// All other behaviour is identical to [`create_vault_unchecked`].
 pub fn create_vault(
+    password: &SecretBytes,
+    display_name: &str,
+    created_at_ms: u64,
+    kdf_params: Argon2idParams,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<CreatedVault, UnlockError> {
+    if kdf_params.memory_kib < Argon2idParams::V1_MIN_MEMORY_KIB {
+        return Err(UnlockError::WeakKdfParams {
+            memory_kib: kdf_params.memory_kib,
+            min_memory_kib: Argon2idParams::V1_MIN_MEMORY_KIB,
+        });
+    }
+    create_vault_unchecked(password, display_name, created_at_ms, kdf_params, rng)
+}
+
+/// Create a vault WITHOUT validating that `kdf_params` meets the §1.2 v1
+/// floor. Production code must use [`create_vault`] instead.
+///
+/// # When to use
+///
+/// Tests that exercise the full create→open round-trip and are dominated
+/// by Argon2id runtime. v1 floor (64 MiB / 3 iter / 1 par) at 256 proptest
+/// cases would cost minutes; the unchecked path with `Argon2idParams::new(8, 1, 1)`
+/// keeps a property under one second.
+///
+/// # Compatibility caveat
+///
+/// A vault produced with sub-floor params is byte-format-compatible with v1
+/// (same wire layout) but does NOT satisfy the §1.2 KDF strength contract.
+/// It will fail any `golden_vault_001/` cross-language conformance check
+/// that re-derives the Master KEK with the v1 floor.
+pub fn create_vault_unchecked(
     password: &SecretBytes,
     display_name: &str,
     created_at_ms: u64,
@@ -393,7 +440,7 @@ mod create_tests {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
         let params = Argon2idParams::new(8, 1, 1);
-        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+        let v = create_vault_unchecked(&password, "Alice", 0, params, &mut rng).unwrap();
 
         let opened = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password)
             .expect("open");
@@ -408,7 +455,7 @@ mod create_tests {
         let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
         let params = Argon2idParams::new(8, 1, 1);
-        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+        let v = create_vault_unchecked(&password, "Alice", 0, params, &mut rng).unwrap();
 
         let bad = SecretBytes::new(b"hunter3".to_vec());
         let err = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &bad)
@@ -417,12 +464,28 @@ mod create_tests {
     }
 
     #[test]
+    fn create_vault_rejects_sub_floor_argon2_params() {
+        // The safe create_vault entry point must refuse params below the
+        // §1.2 v1 floor; only create_vault_unchecked permits sub-floor use.
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let weak = Argon2idParams::new(8, 1, 1);
+        let err = create_vault(&password, "Alice", 0, weak, &mut rng).unwrap_err();
+        assert!(matches!(
+            err,
+            UnlockError::WeakKdfParams { memory_kib: 8, min_memory_kib }
+                if min_memory_kib == Argon2idParams::V1_MIN_MEMORY_KIB
+        ));
+    }
+
+    #[test]
     fn create_vault_produces_well_formed_artifacts() {
         let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
         let password = SecretBytes::new(b"correct horse battery staple".to_vec());
-        // Use minimal Argon2id params for test speed (memory floor relaxed via ::new).
+        // Use minimal Argon2id params for test speed; create_vault_unchecked
+        // bypasses the v1 floor enforced by create_vault.
         let params = Argon2idParams::new(8, 1, 1);
-        let v = create_vault(&password, "Alice", 1_714_060_800_000, params, &mut rng)
+        let v = create_vault_unchecked(&password, "Alice", 1_714_060_800_000, params, &mut rng)
             .expect("create_vault");
         assert!(!v.vault_toml_bytes.is_empty());
         assert!(!v.identity_bundle_bytes.is_empty());
@@ -446,7 +509,7 @@ mod create_tests {
         let mut rng = ChaCha20Rng::from_seed([9u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
         let params = Argon2idParams::new(8, 1, 1);
-        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+        let v = create_vault_unchecked(&password, "Alice", 0, params, &mut rng).unwrap();
 
         let words = v.recovery_mnemonic.phrase().to_string();
         let opened = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, &words)
@@ -462,7 +525,7 @@ mod create_tests {
         let mut rng = ChaCha20Rng::from_seed([10u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
         let params = Argon2idParams::new(8, 1, 1);
-        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+        let v = create_vault_unchecked(&password, "Alice", 0, params, &mut rng).unwrap();
 
         // A different fresh mnemonic — valid checksum, just not this vault's.
         let mut other_rng = ChaCha20Rng::from_seed([99u8; 32]);
@@ -475,7 +538,7 @@ mod create_tests {
     #[test]
     fn open_with_invalid_mnemonic_returns_invalid_mnemonic() {
         let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
-        let v = create_vault(
+        let v = create_vault_unchecked(
             &SecretBytes::new(b"x".to_vec()), "Alice", 0,
             Argon2idParams::new(8, 1, 1), &mut rng,
         ).unwrap();
@@ -488,7 +551,7 @@ mod create_tests {
     fn both_unlock_paths_yield_same_identity_block_key() {
         let mut rng = ChaCha20Rng::from_seed([12u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
-        let v = create_vault(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
+        let v = create_vault_unchecked(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
 
         let by_pw = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
         let by_rec = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, v.recovery_mnemonic.phrase()).unwrap();

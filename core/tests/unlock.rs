@@ -9,25 +9,26 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use secretary_core::crypto::kdf::{Argon2idParams, derive_recovery_kek, TAG_RECOVERY_KEK};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::unlock::{
-    self, bundle_file, create_vault, open_with_password, open_with_recovery, UnlockError,
+    self, bundle_file, create_vault_unchecked, open_with_password, open_with_recovery, UnlockError,
 };
 
 fn fast_params() -> Argon2idParams {
-    // Below v1 floor — only legal via Argon2idParams::new (not try_new_v1).
-    // Used here to keep tests fast (~ms instead of seconds).
+    // Below v1 floor — used with create_vault_unchecked to keep integration
+    // tests at ~ms instead of seconds. The safe create_vault entry point
+    // would reject these as UnlockError::WeakKdfParams.
     Argon2idParams::new(8, 1, 1)
 }
 
 fn create(seed: u8, pw: &[u8]) -> unlock::CreatedVault {
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
-    create_vault(
+    create_vault_unchecked(
         &SecretBytes::new(pw.to_vec()),
         "Alice",
         1_714_060_800_000,
         fast_params(),
         &mut rng,
     )
-    .expect("create_vault")
+    .expect("create_vault_unchecked")
 }
 
 #[test]

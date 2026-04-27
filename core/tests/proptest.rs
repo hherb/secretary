@@ -329,7 +329,7 @@ mod unlock {
     use secretary_core::crypto::kdf::Argon2idParams;
     use secretary_core::crypto::secret::SecretBytes;
     use secretary_core::unlock::{
-        bundle, bundle_file, create_vault, open_with_password, vault_toml,
+        bundle, bundle_file, create_vault_unchecked, open_with_password, vault_toml,
     };
 
     proptest! {
@@ -432,13 +432,14 @@ mod unlock {
             prop_assert!(matches!(err, vault_toml::VaultTomlError::TimestampOutOfRange(_)));
         }
 
-        /// `open_with_password(create_vault(...)) ` recovers the same IBK and
-        /// user UUID. Uses weak Argon2id params for speed.
+        /// `open_with_password(create_vault_unchecked(...))` recovers the
+        /// same IBK and user UUID. Uses sub-floor Argon2id params (only
+        /// permitted via the unchecked path) for proptest speed.
         #[test]
         fn create_then_open_roundtrip_preserves_identity(seed: [u8; 32], pw_seed: [u8; 16]) {
             let mut rng = ChaCha20Rng::from_seed(seed);
             let pw = SecretBytes::new(pw_seed.to_vec());
-            let v = create_vault(&pw, "X", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
+            let v = create_vault_unchecked(&pw, "X", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
             let opened = open_with_password(
                 &v.vault_toml_bytes, &v.identity_bundle_bytes, &pw,
             ).unwrap();
