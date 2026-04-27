@@ -256,13 +256,15 @@ pub struct Record {
     /// §6.3.1; any string is permitted (custom types render as
     /// generic key/value lists).
     pub record_type: String,
-    /// Field name → field. [`BTreeMap`] for canonical ordering: text-key
-    /// CBOR maps sort by length-then-bytewise, and `BTreeMap`'s natural
-    /// `String` ordering is a superset that the canonical sort step
-    /// re-imposes — but using `BTreeMap` keeps the in-memory iteration
-    /// order deterministic too, which makes test failures legible.
-    /// (`IndexMap` would preserve insertion order, which is the wrong
-    /// invariant for a canonical encoder.)
+    /// Field name → field. [`BTreeMap`] for in-memory iteration
+    /// determinism only; the wire ordering is decided by
+    /// [`canonical_sort_entries`] against materialised CBOR-encoded key
+    /// bytes (length-then-bytewise), which differs from `BTreeMap`'s
+    /// `String` ordering for keys of differing UTF-8 lengths (e.g. `"z"`
+    /// sorts before `"ab"` in canonical CBOR but after it in
+    /// `BTreeMap<String, _>`). The two orders coincide only for keys of
+    /// equal byte-length. (`IndexMap` would preserve insertion order,
+    /// which is the wrong invariant for a canonical encoder.)
     pub fields: BTreeMap<String, RecordField>,
     /// Cross-cutting tags. Empty `Vec` = absent on the wire.
     pub tags: Vec<String>,
