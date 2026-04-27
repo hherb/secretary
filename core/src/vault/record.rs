@@ -159,9 +159,12 @@ pub enum RecordError {
     DuplicateKey { key: String },
 
     /// Floats are forbidden in v1 records (canonical CBOR rule, §6.2 #4).
-    /// `field` is the deepest §6.3 key whose subtree contained the
-    /// float, or `"<unknown>"` if the float lived under a forward-compat
-    /// key.
+    /// `field` is `"<root>"` for floats found inside a record decoded via
+    /// [`decode`], or `"<unknown>"` for floats found inside a value
+    /// parsed via [`UnknownValue::from_canonical_cbor`]. The walker does
+    /// not thread per-key hints into nested subtrees, so the field hint
+    /// is coarse-grained: it identifies which entry-point caught the
+    /// violation, not which §6.3 key's subtree contained it.
     #[error("float values are not permitted in v1 records (in field {field})")]
     FloatRejected { field: &'static str },
 
@@ -1307,8 +1310,8 @@ mod tests {
         let bytes = encode_entries_canonical(&entries);
         let err = decode(&bytes).expect_err("float in known field must be rejected");
         assert!(
-            matches!(err, RecordError::FloatRejected { .. }),
-            "expected FloatRejected, got {err:?}"
+            matches!(err, RecordError::FloatRejected { field: "<root>" }),
+            "expected FloatRejected {{ field: \"<root>\" }}, got {err:?}"
         );
     }
 
@@ -1331,8 +1334,8 @@ mod tests {
         let bytes = encode_entries_canonical(&entries);
         let err = decode(&bytes).expect_err("float inside unknown must be rejected");
         assert!(
-            matches!(err, RecordError::FloatRejected { .. }),
-            "expected FloatRejected, got {err:?}"
+            matches!(err, RecordError::FloatRejected { field: "<root>" }),
+            "expected FloatRejected {{ field: \"<root>\" }} (decode walker uses a single coarse hint), got {err:?}"
         );
     }
 
@@ -1685,8 +1688,8 @@ mod tests {
         let err = UnknownValue::from_canonical_cbor(&bytes)
             .expect_err("UnknownValue must reject floats");
         assert!(
-            matches!(err, RecordError::FloatRejected { .. }),
-            "expected FloatRejected, got {err:?}"
+            matches!(err, RecordError::FloatRejected { field: "<unknown>" }),
+            "expected FloatRejected {{ field: \"<unknown>\" }}, got {err:?}"
         );
     }
 
