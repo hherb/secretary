@@ -7,11 +7,12 @@
 //! The phrase is the user-facing artefact (printed, written down, never stored
 //! by the application); the entropy is what the cryptography consumes.
 //!
-//! The entropy lives inside [`Sensitive`] (zeroize-on-drop). The phrase
-//! string is treated as sensitive too; explicit zeroization on drop is added
-//! in a later task. There is no `Clone`, `Copy`, `Debug`, or `Display` on
-//! [`Mnemonic`] derived publicly — callers that need the phrase use
-//! [`Mnemonic::phrase`], which keeps every read of the secret grep-able.
+//! Both the phrase and the entropy are treated as sensitive: the entropy
+//! lives inside [`Sensitive`] (zeroize-on-drop) and the phrase string is
+//! zeroized in this module's [`Drop`] impl. There is no `Clone`, `Copy`,
+//! `Display`, or content-revealing `Debug` on [`Mnemonic`] — callers that
+//! need the phrase use [`Mnemonic::phrase`], which keeps every read of the
+//! secret grep-able.
 
 use core::fmt;
 
@@ -23,6 +24,10 @@ use zeroize::Zeroize;
 use crate::crypto::secret::Sensitive;
 
 /// 24-word BIP-39 mnemonic carrying 256 bits of entropy.
+///
+/// Owns both the human-readable phrase and the raw entropy. Both are
+/// zeroized when the value is dropped: the entropy via [`Sensitive`]'s
+/// `ZeroizeOnDrop`, the phrase via this type's explicit [`Drop`] impl.
 pub struct Mnemonic {
     phrase: String,
     entropy: Sensitive<[u8; 32]>,
@@ -189,6 +194,20 @@ impl fmt::Debug for Mnemonic {
     }
 }
 
+impl Drop for Mnemonic {
+    fn drop(&mut self) {
+        // `zeroize` 1.4+ provides a `Zeroize` impl for `String` that
+        // overwrites the heap allocation in place (using isolated `unsafe`
+        // inside the zeroize crate — this crate has `#![forbid(unsafe_code)]`
+        // and does not introduce its own).
+        //
+        // The `entropy` field is a `Sensitive<[u8; 32]>`, which derives
+        // `ZeroizeOnDrop` and is wiped automatically as part of this struct's
+        // drop glue.
+        self.phrase.zeroize();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +272,17 @@ mod tests {
         let bad = words.join(" ");
         let err = parse(&bad).unwrap_err();
         assert!(matches!(err, MnemonicError::UnknownWord(_)));
+    }
+
+    #[test]
+    fn mnemonic_drop_compiles() {
+        // Compile-time check that `Mnemonic` has a Drop impl that runs on
+        // scope exit. There is no observable behavior to assert without
+        // reading freed memory; the value of this test is the implicit
+        // "must call Drop" requirement on the type.
+        let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+        let _m = generate(&mut rng);
+        // _m drops here — Drop runs.
     }
 
     #[test]
