@@ -135,25 +135,66 @@ For session-context retention. Five commits on `main`:
 `FIXME.md` is now removed. Test count: 6 proptest properties + 122
 unit/integration tests, all passing under `cargo test --release`.
 
-## What the next session delivered (2026-04-27 — `feature/unlock-module`)
+## What the next session delivered (2026-04-27 — PR #1, `feature/unlock-module`)
 
 The unlock module (Item 3) and the BIP-39 recovery KAT (Item 1a),
 shipped via subagent-driven TDD against
 [docs/superpowers/plans/2026-04-27-unlock-module.md](docs/superpowers/plans/2026-04-27-unlock-module.md).
 
-Twenty-three commits on `feature/unlock-module` — five from the original
-Opus run before context compaction (`a69c078..c43988a`, mnemonic + bundle
-plaintext) and eighteen from the resumed run (`a1f9add..3c5e361`,
-bundle_file + vault_toml + UnlockError + create_vault + the two open
-paths + integration tests + BIP-39 KAT + proptest + one latent-bug fix
-for `vault_toml::encode` rejecting timestamps > i64::MAX as a typed
-error rather than a panic — caught by proptest).
+29 commits on `feature/unlock-module` (PR #1):
 
-Test count after: 153 (was 122 + 6 proptest = 128). Breakdown:
-46 core unit tests + 4 unlock integration tests + 11 proptest
-properties + 92 other crypto/identity integration tests. All clean
-under `cargo test --release --workspace` and
+- Five from the original Opus run before context compaction
+  (`a69c078..c43988a`): `mnemonic.rs` (BIP-39 24-word with checksum +
+  zeroize) and `bundle.rs` (IdentityBundle plaintext + canonical CBOR).
+- Eighteen from the resumed Opus run (`a1f9add..e79ae2a`): `bundle_file.rs`
+  (envelope), `vault_toml.rs` (metadata), `UnlockError`, `create_vault`,
+  `open_with_password`, `open_with_recovery`, integration tests, BIP-39
+  KAT, proptest, plus a latent-bug fix for `vault_toml::encode` rejecting
+  timestamps > i64::MAX as a typed error (caught by proptest).
+- One cross-block cleanup (`1a09323`): unlock submodules switched to
+  `crate::version::{MAGIC, FORMAT_VERSION, SUITE_ID}` instead of duplicating
+  constants; `BundleError::MissingField` typed variant replaced eleven
+  CborError(format!("missing field …")) sites.
+- Five review-driven fixes (`4ffd388..63cda0f`) addressing every issue the
+  PR review surfaced:
+  1. KAT had two byte-identical entropy vectors — replaced with mixed-byte
+     Trezor canonical vectors plus a Python regression assert.
+  2. Open paths now cross-check `created_at_ms` between vault.toml and
+     identity.bundle.enc (was only checking `vault_uuid`).
+  3. `create_vault` enforces the §1.2 Argon2id v1 floor as a typed error
+     (`UnlockError::WeakKdfParams`); new `create_vault_unchecked` exposes
+     the previous behaviour for tests where Argon2id runtime dominates
+     (256 proptest cases × 64 MiB would cost minutes; sub-floor keeps
+     a property under one second).
+  4. Removed dead `UnlockError::AeadFailure` variant; encrypt is
+     structurally infallible for §5 input sizes, so its three call sites
+     use `.expect()` and the absence of `From<AeadError>` is documented
+     so a future contributor adding `?` gets a compile error + rationale.
+  5. `mnemonic::map_bip39_error` documentation: per-arm comments now
+     explain why each "unreachable" variant is listed for exhaustiveness
+     and why `BadChecksum` is the right fallback if the upstream contract
+     ever shifts.
+
+Test count after: 158 (was 122 + 6 proptest = 128). Breakdown:
+47 core unit tests + 7 unlock integration tests + 11 proptest properties
++ 93 other crypto/identity integration tests. All clean under
+`cargo test --release --workspace` and
 `cargo clippy --all-targets --workspace -- -D warnings`.
 
-Branch is on `feature/unlock-module` awaiting merge to `main`. Items 1b,
-2, and 4 below remain open for future sessions.
+### Public API surface added
+
+- `secretary_core::unlock::{create_vault, create_vault_unchecked,
+  open_with_password, open_with_recovery}` — orchestrators.
+- `secretary_core::unlock::{CreatedVault, UnlockedIdentity, UnlockError}`
+  — return types and umbrella error.
+- `secretary_core::unlock::mnemonic::{Mnemonic, MnemonicError, generate, parse}`
+  — BIP-39 layer.
+- `secretary_core::unlock::bundle::{IdentityBundle, BundleError, generate}`
+  — §5 plaintext + canonical CBOR encode/decode.
+- `secretary_core::unlock::bundle_file::{BundleFile, BundleFileError, encode, decode}`
+  — `identity.bundle.enc` envelope (vault-format §3).
+- `secretary_core::unlock::vault_toml::{VaultToml, KdfSection, VaultTomlError, encode, decode}`
+  — `vault.toml` metadata (vault-format §2).
+
+Branch is awaiting merge of PR #1 to `main`. Items 1b, 2, and 4 below
+remain open for future sessions.
