@@ -9,7 +9,7 @@ description = "Secretary cryptographic core: vault format, identity, and unlock 
 
 [dependencies]
 base64 = "0.22"
-bip39 = "2"
+bip39 = { version = "2", features = ["zeroize"] }
 toml = "0.8"
 unicode-normalization = "0.1"
 thiserror = "2"

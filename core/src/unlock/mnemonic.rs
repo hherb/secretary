@@ -101,12 +101,10 @@ pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
     let mut entropy = [0u8; 32];
     entropy.copy_from_slice(&full[..32]);
 
-    // `bip` is dropped at end of scope without zeroization (the bip39 crate's
-    // `zeroize` feature is off in our build, and `bip39::Mnemonic` therefore
-    // implements no `Drop`). The entropy bytes still live in its `[u16; 24]`
-    // words array on the stack until the slot is reused. Acceptable for the
-    // recovery path: the user is expected to be staring at the phrase on
-    // screen at this moment anyway. Best-effort within current dep choices.
+    // The bip39 crate's `zeroize` feature is enabled in our build, so the
+    // local `bip` value's internal `[u16; 24]` words array is wiped when it
+    // goes out of scope. We still zeroize the local entropy buffer here as
+    // defense in depth (DRY-violating but harmless).
     entropy_buf.zeroize();
 
     Mnemonic {
