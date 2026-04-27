@@ -298,13 +298,13 @@ pub struct Record {
 /// (§6.3.2) are spliced in alongside known keys; the canonical-key sort
 /// imposes the deterministic ordering.
 pub fn encode(record: &Record) -> Result<Vec<u8>, RecordError> {
-    let entries = record_to_entries(record);
+    let entries = record_to_entries(record)?;
     encode_canonical_map(&entries)
 }
 
 /// Build the unsorted `(key, value)` list for a record. Sorting happens
 /// inside [`encode_canonical_map`].
-fn record_to_entries(record: &Record) -> Vec<(Value, Value)> {
+fn record_to_entries(record: &Record) -> Result<Vec<(Value, Value)>, RecordError> {
     let mut entries: Vec<(Value, Value)> = Vec::new();
 
     entries.push((
@@ -317,7 +317,7 @@ fn record_to_entries(record: &Record) -> Vec<(Value, Value)> {
     ));
     entries.push((
         Value::Text(KEY_FIELDS.into()),
-        fields_to_value(&record.fields),
+        fields_to_value(&record.fields)?,
     ));
     if !record.tags.is_empty() {
         entries.push((
@@ -345,12 +345,12 @@ fn record_to_entries(record: &Record) -> Vec<(Value, Value)> {
         entries.push((Value::Text(k.clone()), v.clone()));
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Build the inner `fields` CBOR map. Each entry is itself a canonical
 /// sub-map.
-fn fields_to_value(fields: &BTreeMap<String, RecordField>) -> Value {
+fn fields_to_value(fields: &BTreeMap<String, RecordField>) -> Result<Value, RecordError> {
     // We construct the outer map's entries here but defer canonical
     // sorting to the outer encode pass. Each inner field-map IS sorted
     // here because we have to materialise its bytes for the parent's
@@ -365,11 +365,11 @@ fn fields_to_value(fields: &BTreeMap<String, RecordField>) -> Value {
     let mut outer: Vec<(Value, Value)> = Vec::with_capacity(fields.len());
     for (fname, f) in fields {
         let inner = field_to_entries(f);
-        let sorted_inner = canonical_sort_entries(&inner);
+        let sorted_inner = canonical_sort_entries(&inner)?;
         outer.push((Value::Text(fname.clone()), Value::Map(sorted_inner)));
     }
-    let sorted_outer = canonical_sort_entries(&outer);
-    Value::Map(sorted_outer)
+    let sorted_outer = canonical_sort_entries(&outer)?;
+    Ok(Value::Map(sorted_outer))
 }
 
 /// Build the unsorted `(key, value)` list for one field.
@@ -405,7 +405,7 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
 /// map. Robust against any future key shape (text, byte, integer)
 /// without per-type code paths.
 fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, RecordError> {
-    let sorted = canonical_sort_entries(entries);
+    let sorted = canonical_sort_entries(entries)?;
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
         .map_err(|e| RecordError::CborEncode(e.to_string()))?;
@@ -415,23 +415,26 @@ fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, RecordErr
 /// Sort a list of `(key, value)` entries by the canonical CBOR encoding
 /// of their keys. Used both at the top level and recursively for inner
 /// maps (`fields` outer + each per-field inner).
-fn canonical_sort_entries(entries: &[(Value, Value)]) -> Vec<(Value, Value)> {
+///
+/// Mirrors `unlock::bundle::encode_map`'s discipline: the
+/// `ciborium::ser::into_writer` call is structurally infallible against
+/// a `Vec<u8>` writer, but propagating the typed error keeps this
+/// function defensible against a future ciborium signature change
+/// without a panic-or-empty-key footgun.
+fn canonical_sort_entries(
+    entries: &[(Value, Value)],
+) -> Result<Vec<(Value, Value)>, RecordError> {
     let mut materialised: Vec<(Vec<u8>, (Value, Value))> = entries
         .iter()
         .map(|pair| {
             let mut key_bytes = Vec::new();
-            // Encoding a single CBOR Value to a Vec<u8> writer cannot
-            // fail in practice — Vec's `Write` impl is infallible — and
-            // the key shapes here are all simple text strings. A
-            // failure would indicate a bug in ciborium itself; falling
-            // back to an empty key-bytes preserves the sort's stability
-            // without panicking.
-            let _ = ciborium::ser::into_writer(&pair.0, &mut key_bytes);
-            (key_bytes, pair.clone())
+            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
+                .map_err(|e| RecordError::CborEncode(e.to_string()))?;
+            Ok((key_bytes, pair.clone()))
         })
-        .collect();
+        .collect::<Result<_, RecordError>>()?;
     materialised.sort_by(|a, b| a.0.cmp(&b.0));
-    materialised.into_iter().map(|(_, pair)| pair).collect()
+    Ok(materialised.into_iter().map(|(_, pair)| pair).collect())
 }
 
 // ---------------------------------------------------------------------------
