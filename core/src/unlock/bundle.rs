@@ -3,8 +3,31 @@
 //! The §5 record carries the four `(sk, pk)` pairs that constitute a user's
 //! cryptographic identity, plus a 16-byte UUID, a display name, and a
 //! creation timestamp (Unix milliseconds). The wire form is canonical CBOR
-//! per §6.2 (RFC 8949 §4.2.1 deterministic encoding) — implemented in the
-//! follow-up commit; this commit lands the struct and `generate`.
+//! per §6.2 (RFC 8949 §4.2.1 deterministic encoding).
+//!
+//! ## Canonical CBOR
+//!
+//! Mirrors the rules also documented in [`crate::identity::card`]:
+//!
+//! 1. Map shape with text-string keys.
+//! 2. Map keys sorted bytewise lexicographically by their canonical encoded
+//!    form. For all-tstr keys this reduces to: shorter key first; among
+//!    equal-length keys, bytewise UTF-8 compare. The §5 listing order is
+//!    descriptive, not normative for byte order.
+//! 3. Shortest-form lengths and integers (default for `ciborium`'s `Value`
+//!    serializer).
+//! 4. Definite-length, no tags, no floats, no indefinite-length items.
+//! 5. Duplicate keys rejected on parse.
+//!
+//! ## Strict canonical-input rule
+//!
+//! [`IdentityBundle::from_canonical_cbor`] rejects any input that is not in
+//! RFC 8949 §4.2.1 canonical form. Unlike the contact-card case, the bundle
+//! plaintext is never directly fingerprinted; the strictness is about
+//! defending against suite drift. Anything other than the exact §5 byte
+//! shape signals either an out-of-spec encoder or a deliberately malformed
+//! file, and is rejected so a future suite migration can rely on the v1
+//! reader recognising v1 inputs only.
 //!
 //! ## ML-DSA-65 secret-key representation (deviation from §5)
 //!
@@ -23,6 +46,7 @@
 
 use core::fmt;
 
+use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::kem::{
@@ -62,6 +86,72 @@ pub const BUNDLE_ED25519_PK_LEN: usize = ED25519_PK_LEN;
 pub const BUNDLE_ML_DSA_65_SK_LEN: usize = ML_DSA_65_SEED_LEN;
 /// Re-export of [`crate::crypto::sig::ML_DSA_65_PK_LEN`].
 pub const BUNDLE_ML_DSA_65_PK_LEN: usize = ML_DSA_65_PK_LEN;
+
+// CBOR map keys (§5). String literals only used here; centralised so a typo
+// becomes a compile-time fix rather than a silent encoding drift.
+const KEY_USER_UUID: &str = "user_uuid";
+const KEY_DISPLAY_NAME: &str = "display_name";
+const KEY_X25519_SK: &str = "x25519_sk";
+const KEY_X25519_PK: &str = "x25519_pk";
+const KEY_ML_KEM_768_SK: &str = "ml_kem_768_sk";
+const KEY_ML_KEM_768_PK: &str = "ml_kem_768_pk";
+const KEY_ED25519_SK: &str = "ed25519_sk";
+const KEY_ED25519_PK: &str = "ed25519_pk";
+const KEY_ML_DSA_65_SK: &str = "ml_dsa_65_sk";
+const KEY_ML_DSA_65_PK: &str = "ml_dsa_65_pk";
+const KEY_CREATED_AT: &str = "created_at";
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Errors from bundle CBOR encode and decode.
+#[derive(Debug, thiserror::Error)]
+pub enum BundleError {
+    /// CBOR encoding produced an I/O or serialization error from `ciborium`,
+    /// or the byte stream did not contain a top-level map, or trailing bytes
+    /// followed the map.
+    #[error("CBOR encode/decode error: {0}")]
+    CborDecode(String),
+
+    /// Input parsed but was not in RFC 8949 §4.2.1 canonical form (e.g. keys
+    /// not in bytewise lexicographic order, non-shortest length prefixes,
+    /// indefinite-length items). Strictness defends against suite drift —
+    /// the v1 bundle plaintext is fully specified, and any deviation in
+    /// shape signals an out-of-spec writer or tampering.
+    #[error("input was not in canonical CBOR form")]
+    NonCanonicalCbor,
+
+    /// A map key was present that the v1 spec does not define. The bundle is
+    /// fully-specified; an unknown field signals suite drift and is rejected.
+    #[error("unknown bundle field: {0}")]
+    UnknownField(String),
+
+    /// A map key appeared more than once. RFC 8949 §5.4 forbids duplicates
+    /// in canonical input.
+    #[error("duplicate field: {0}")]
+    DuplicateField(String),
+
+    /// A fixed-size byte string field arrived with an unexpected length.
+    #[error("wrong key size for {field}: expected {expected}, got {got}")]
+    WrongKeySize {
+        /// The §5 CBOR key whose value had the wrong length.
+        field: &'static str,
+        /// Expected byte length per §5 / `BUNDLE_*_LEN`.
+        expected: usize,
+        /// Actual byte length seen on the wire.
+        got: usize,
+    },
+
+    /// `user_uuid` was present but not the required 16 bytes.
+    #[error("invalid UUID")]
+    InvalidUuid,
+
+    /// `created_at` was present but did not fit a `u64` Unix-millisecond
+    /// timestamp.
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
+}
 
 // ---------------------------------------------------------------------------
 // IdentityBundle
@@ -181,6 +271,294 @@ pub fn generate(
     }
 }
 
+impl IdentityBundle {
+    /// Canonical CBOR encoding of the §5 plaintext map. Output is
+    /// deterministic: encoding twice produces identical bytes, and any
+    /// conformant RFC 8949 §4.2.1 encoder produces the same output.
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, BundleError> {
+        // Build the 11 entries; they will be sorted bytewise by canonical
+        // key encoding before serialisation. The order in this `vec!` is
+        // therefore not load-bearing — the sort step is.
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_USER_UUID.into()),
+                Value::Bytes(self.user_uuid.to_vec()),
+            ),
+            (
+                Value::Text(KEY_DISPLAY_NAME.into()),
+                Value::Text(self.display_name.clone()),
+            ),
+            (
+                Value::Text(KEY_X25519_SK.into()),
+                Value::Bytes(self.x25519_sk.expose().to_vec()),
+            ),
+            (
+                Value::Text(KEY_X25519_PK.into()),
+                Value::Bytes(self.x25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_SK.into()),
+                Value::Bytes(self.ml_kem_768_sk.expose().clone()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_PK.into()),
+                Value::Bytes(self.ml_kem_768_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_ED25519_SK.into()),
+                Value::Bytes(self.ed25519_sk.expose().to_vec()),
+            ),
+            (
+                Value::Text(KEY_ED25519_PK.into()),
+                Value::Bytes(self.ed25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_SK.into()),
+                Value::Bytes(self.ml_dsa_65_sk.expose().clone()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_PK.into()),
+                Value::Bytes(self.ml_dsa_65_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_CREATED_AT.into()),
+                Value::Integer(self.created_at_ms.into()),
+            ),
+        ];
+        encode_map(&entries)
+    }
+
+    /// Inverse of [`to_canonical_cbor`]. Validates that every required field
+    /// is present, fixed-size fields have the correct byte length, no
+    /// unknown fields appear, no duplicates appear, and the input was
+    /// already in RFC 8949 §4.2.1 canonical form.
+    ///
+    /// The strict canonical-input rule defends against suite drift: a v1
+    /// reader must recognise v1 inputs only, so a future v2 writer (or a
+    /// tampered file) is rejected loudly rather than silently accepted.
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
+        let value: Value = ciborium::de::from_reader(bytes)
+            .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+        let map = match value {
+            Value::Map(m) => m,
+            _ => {
+                return Err(BundleError::CborDecode(
+                    "expected top-level CBOR map".into(),
+                ))
+            }
+        };
+
+        let mut user_uuid: Option<[u8; USER_UUID_LEN]> = None;
+        let mut display_name: Option<String> = None;
+        let mut x25519_sk_bytes: Option<[u8; X25519_SK_LEN]> = None;
+        let mut x25519_pk: Option<[u8; X25519_PK_LEN]> = None;
+        let mut ml_kem_768_sk_bytes: Option<Vec<u8>> = None;
+        let mut ml_kem_768_pk: Option<Vec<u8>> = None;
+        let mut ed25519_sk_bytes: Option<[u8; ED25519_SK_LEN]> = None;
+        let mut ed25519_pk: Option<[u8; ED25519_PK_LEN]> = None;
+        let mut ml_dsa_65_sk_bytes: Option<Vec<u8>> = None;
+        let mut ml_dsa_65_pk: Option<Vec<u8>> = None;
+        let mut created_at_ms: Option<u64> = None;
+
+        for (k, v) in map {
+            let Value::Text(key) = k else {
+                return Err(BundleError::CborDecode("non-string map key".into()));
+            };
+            match key.as_str() {
+                KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, &key)?,
+                KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
+                KEY_X25519_SK => set_once(
+                    &mut x25519_sk_bytes,
+                    take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?,
+                    &key,
+                )?,
+                KEY_X25519_PK => set_once(
+                    &mut x25519_pk,
+                    take_fixed_bytes::<X25519_PK_LEN>(v, KEY_X25519_PK)?,
+                    &key,
+                )?,
+                KEY_ML_KEM_768_SK => set_once(
+                    &mut ml_kem_768_sk_bytes,
+                    take_sized_bytes(v, KEY_ML_KEM_768_SK, ML_KEM_768_SK_LEN)?,
+                    &key,
+                )?,
+                KEY_ML_KEM_768_PK => set_once(
+                    &mut ml_kem_768_pk,
+                    take_sized_bytes(v, KEY_ML_KEM_768_PK, ML_KEM_768_PK_LEN)?,
+                    &key,
+                )?,
+                KEY_ED25519_SK => set_once(
+                    &mut ed25519_sk_bytes,
+                    take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?,
+                    &key,
+                )?,
+                KEY_ED25519_PK => set_once(
+                    &mut ed25519_pk,
+                    take_fixed_bytes::<ED25519_PK_LEN>(v, KEY_ED25519_PK)?,
+                    &key,
+                )?,
+                KEY_ML_DSA_65_SK => set_once(
+                    &mut ml_dsa_65_sk_bytes,
+                    take_sized_bytes(v, KEY_ML_DSA_65_SK, ML_DSA_65_SEED_LEN)?,
+                    &key,
+                )?,
+                KEY_ML_DSA_65_PK => set_once(
+                    &mut ml_dsa_65_pk,
+                    take_sized_bytes(v, KEY_ML_DSA_65_PK, ML_DSA_65_PK_LEN)?,
+                    &key,
+                )?,
+                KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, &key)?,
+                other => {
+                    return Err(BundleError::UnknownField(other.to_string()));
+                }
+            }
+        }
+
+        let bundle = IdentityBundle {
+            user_uuid: user_uuid
+                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_USER_UUID}")))?,
+            display_name: display_name.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_DISPLAY_NAME}"))
+            })?,
+            x25519_sk: Sensitive::new(x25519_sk_bytes.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_X25519_SK}"))
+            })?),
+            x25519_pk: x25519_pk
+                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_X25519_PK}")))?,
+            ml_kem_768_sk: Sensitive::new(ml_kem_768_sk_bytes.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_ML_KEM_768_SK}"))
+            })?),
+            ml_kem_768_pk: ml_kem_768_pk.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_ML_KEM_768_PK}"))
+            })?,
+            ed25519_sk: Sensitive::new(ed25519_sk_bytes.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_ED25519_SK}"))
+            })?),
+            ed25519_pk: ed25519_pk
+                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_ED25519_PK}")))?,
+            ml_dsa_65_sk: Sensitive::new(ml_dsa_65_sk_bytes.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_ML_DSA_65_SK}"))
+            })?),
+            ml_dsa_65_pk: ml_dsa_65_pk.ok_or_else(|| {
+                BundleError::CborDecode(format!("missing field {KEY_ML_DSA_65_PK}"))
+            })?,
+            created_at_ms: created_at_ms
+                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_CREATED_AT}")))?,
+        };
+
+        // Reject non-canonical input. Cheapest reliable check: re-encode
+        // and compare; passes iff the input was already canonical. Same
+        // pattern as `card.rs::from_canonical_cbor`.
+        let canonical = bundle.to_canonical_cbor()?;
+        if canonical.as_slice() != bytes {
+            // Drop the partially-decoded bundle (zeroizing its sensitive
+            // fields) before returning the error; the caller never sees
+            // these bytes.
+            drop(bundle);
+            return Err(BundleError::NonCanonicalCbor);
+        }
+
+        Ok(bundle)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding helpers
+// ---------------------------------------------------------------------------
+
+fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
+    // RFC 8949 §4.2.1: map keys must be sorted bytewise lexicographically by
+    // their deterministic CBOR encoding. We materialize each key's encoded
+    // bytes and sort by that — robust against any future key shape (text,
+    // byte, integer) without a separate code path per type.
+    let mut sorted: Vec<(Vec<u8>, (Value, Value))> = entries
+        .iter()
+        .map(|pair| {
+            let mut key_bytes = Vec::new();
+            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
+                .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+            Ok((key_bytes, pair.clone()))
+        })
+        .collect::<Result<_, BundleError>>()?;
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&value, &mut buf)
+        .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+    Ok(buf)
+}
+
+fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), BundleError> {
+    if slot.is_some() {
+        return Err(BundleError::DuplicateField(key.to_string()));
+    }
+    *slot = Some(v);
+    Ok(())
+}
+
+fn take_text(v: Value) -> Result<String, BundleError> {
+    match v {
+        Value::Text(s) => Ok(s),
+        _ => Err(BundleError::CborDecode("expected text string".into())),
+    }
+}
+
+fn take_u64(v: Value) -> Result<u64, BundleError> {
+    let i = match v {
+        Value::Integer(i) => i,
+        _ => return Err(BundleError::InvalidTimestamp),
+    };
+    i.try_into().map_err(|_| BundleError::InvalidTimestamp)
+}
+
+fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
+    let bytes = match v {
+        Value::Bytes(b) => b,
+        _ => return Err(BundleError::InvalidUuid),
+    };
+    bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
+}
+
+fn take_fixed_bytes<const N: usize>(
+    v: Value,
+    field: &'static str,
+) -> Result<[u8; N], BundleError> {
+    let bytes = match v {
+        Value::Bytes(b) => b,
+        _ => return Err(BundleError::CborDecode("expected byte string".into())),
+    };
+    let got = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| BundleError::WrongKeySize {
+            field,
+            expected: N,
+            got,
+        })
+}
+
+fn take_sized_bytes(
+    v: Value,
+    field: &'static str,
+    expected: usize,
+) -> Result<Vec<u8>, BundleError> {
+    let bytes = match v {
+        Value::Bytes(b) => b,
+        _ => return Err(BundleError::CborDecode("expected byte string".into())),
+    };
+    if bytes.len() != expected {
+        return Err(BundleError::WrongKeySize {
+            field,
+            expected,
+            got: bytes.len(),
+        });
+    }
+    Ok(bytes)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -207,5 +585,35 @@ mod tests {
         // §5-spec'd 4032-byte expanded encoding.
         assert_eq!(b.ml_dsa_65_sk.expose().len(), ML_DSA_65_SEED_LEN);
         assert_eq!(b.ml_dsa_65_pk.len(), ML_DSA_65_PK_LEN);
+    }
+
+    #[test]
+    fn canonical_cbor_roundtrip() {
+        let mut rng = ChaCha20Rng::from_seed([6u8; 32]);
+        let b = generate("Bob", 1_714_060_800_001, &mut rng);
+        let bytes = b.to_canonical_cbor().expect("encode");
+        let parsed = IdentityBundle::from_canonical_cbor(&bytes).expect("decode");
+        // `Sensitive` does not impl PartialEq (see crypto::secret docs), so
+        // compare exposed contents explicitly.
+        assert_eq!(parsed.user_uuid, b.user_uuid);
+        assert_eq!(parsed.display_name, b.display_name);
+        assert_eq!(parsed.x25519_sk.expose(), b.x25519_sk.expose());
+        assert_eq!(parsed.x25519_pk, b.x25519_pk);
+        assert_eq!(parsed.ml_kem_768_sk.expose(), b.ml_kem_768_sk.expose());
+        assert_eq!(parsed.ml_kem_768_pk, b.ml_kem_768_pk);
+        assert_eq!(parsed.ed25519_sk.expose(), b.ed25519_sk.expose());
+        assert_eq!(parsed.ed25519_pk, b.ed25519_pk);
+        assert_eq!(parsed.ml_dsa_65_sk.expose(), b.ml_dsa_65_sk.expose());
+        assert_eq!(parsed.ml_dsa_65_pk, b.ml_dsa_65_pk);
+        assert_eq!(parsed.created_at_ms, b.created_at_ms);
+    }
+
+    #[test]
+    fn canonical_cbor_is_byte_stable() {
+        let mut rng = ChaCha20Rng::from_seed([6u8; 32]);
+        let b = generate("Bob", 1_714_060_800_001, &mut rng);
+        let bytes_1 = b.to_canonical_cbor().expect("encode");
+        let bytes_2 = b.to_canonical_cbor().expect("encode");
+        assert_eq!(bytes_1, bytes_2, "canonical encoding must be deterministic");
     }
 }
