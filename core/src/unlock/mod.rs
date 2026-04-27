@@ -7,6 +7,7 @@ pub mod bundle_file;
 pub mod mnemonic;
 pub mod vault_toml;
 
+use core::fmt;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::aead::{encrypt, AeadError};
@@ -68,6 +69,32 @@ pub struct UnlockedIdentity {
     pub identity: bundle::IdentityBundle,
 }
 
+/// Redacted Debug for CreatedVault — mirrors IdentityBundle / Mnemonic policy.
+/// Secret fields are replaced with `<redacted>`; byte-vector lengths and the
+/// non-secret display_name are shown so logs remain useful.
+impl fmt::Debug for CreatedVault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreatedVault")
+            .field("vault_toml_bytes_len", &self.vault_toml_bytes.len())
+            .field("identity_bundle_bytes_len", &self.identity_bundle_bytes.len())
+            .field("recovery_mnemonic", &self.recovery_mnemonic) // delegates to Mnemonic's redacting Debug
+            .field("identity_block_key", &"<redacted>")
+            .field("identity", &self.identity) // delegates to IdentityBundle's redacting Debug
+            .finish()
+    }
+}
+
+/// Redacted Debug for UnlockedIdentity — same no-leak-via-Debug policy as
+/// CreatedVault; the identity_block_key is the symmetric root secret.
+impl fmt::Debug for UnlockedIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnlockedIdentity")
+            .field("identity_block_key", &"<redacted>")
+            .field("identity", &self.identity)
+            .finish()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // create_vault orchestrator (§3 Master KEK, §4 Recovery KEK, §5 bundle wrap)
 // ---------------------------------------------------------------------------
@@ -92,7 +119,14 @@ pub fn create_vault(
     let recovery_mnemonic = mnemonic::generate(rng);
     let recovery_kek = derive_recovery_kek(recovery_mnemonic.entropy());
 
-    // Step 4: Identity Block Key (32 random bytes)
+    // Step 4: Identity Block Key — fresh CSPRNG bytes wrapped in Sensitive.
+    // SECURITY: rng.fill_bytes writes into a stack array, then Sensitive::new
+    // MOVES that array into the Sensitive wrapper — the original stack slot
+    // is logically dead but its bytes are not zeroized. This is a known Rust
+    // limitation (no MaybeUninit-aware fill_bytes). The Sensitive wrapper's
+    // Drop impl handles zeroization for the wrapped copy; the residual stack
+    // bytes persist briefly until the next stack frame overwrites them.
+    // Same pattern as bundle::generate's Identity Bundle keys.
     let mut ibk = [0u8; 32];
     rng.fill_bytes(&mut ibk);
     let identity_block_key = Sensitive::new(ibk);
@@ -101,7 +135,10 @@ pub fn create_vault(
     let identity = bundle::generate(display_name, created_at_ms, rng);
     let bundle_plaintext = identity.to_canonical_cbor()?;
 
-    // Step 6: three independent 24-byte AEAD nonces
+    // Step 6: three independent 24-byte AEAD nonces — one per AEAD call below.
+    // Each key (IBK, master_kek, recovery_kek) is used exactly once, but
+    // independent draws make the "never reuse nonce+key" §13 mandate visible
+    // rather than implicit, and survive future refactors that might share keys.
     let mut nonce_id = [0u8; 24];
     rng.fill_bytes(&mut nonce_id);
     let mut nonce_pw = [0u8; 24];
@@ -154,8 +191,8 @@ pub fn create_vault(
     };
     let identity_bundle_bytes = bundle_file::encode(&bf);
 
-    // Step 11: pack into VaultToml → vault_toml_bytes.
-    // Argon2idParams fields (memory_kib, iterations, parallelism) are pub.
+    // Step 11: emit vault.toml (§2) — KDF params mirror kdf_params so the
+    // vault is portable across devices that open with derive_master_kek (§3).
     let vt = vault_toml::VaultToml {
         format_version: 1,
         suite_id: 1,
@@ -198,7 +235,10 @@ fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
 #[cfg(test)]
 mod create_tests {
     use super::*;
-    use crate::crypto::kdf::Argon2idParams;
+    // NOTE: Argon2idParams is visible here via `super::*` because it is imported
+    // at module scope in mod.rs (`use crate::crypto::kdf::{..., Argon2idParams, ...}`).
+    // The explicit `use crate::crypto::kdf::Argon2idParams` import was therefore
+    // redundant and has been removed.
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
     #[test]
@@ -213,5 +253,16 @@ mod create_tests {
         assert!(!v.identity_bundle_bytes.is_empty());
         assert_eq!(v.recovery_mnemonic.phrase().split_whitespace().count(), 24);
         assert_eq!(v.identity.display_name, "Alice");
+
+        // Confirm vault_toml_bytes parses back to valid TOML with our kdf params.
+        let parsed_vt = vault_toml::decode(
+            std::str::from_utf8(&v.vault_toml_bytes).expect("vault_toml is utf-8"),
+        )
+        .expect("vault_toml decode");
+        assert_eq!(parsed_vt.kdf.memory_kib, 8);
+        assert_eq!(parsed_vt.kdf.iterations, 1);
+        assert_eq!(parsed_vt.kdf.parallelism, 1);
+        assert_eq!(parsed_vt.format_version, 1);
+        assert_eq!(parsed_vt.suite_id, 1);
     }
 }
