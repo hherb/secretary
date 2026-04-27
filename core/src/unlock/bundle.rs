@@ -66,26 +66,15 @@ use crate::crypto::sig::{
 /// User UUID length, in bytes (§5).
 pub const USER_UUID_LEN: usize = 16;
 
-/// Re-export of [`crate::crypto::kem::X25519_SK_LEN`] for callers consuming
-/// the bundle without pulling in the `kem` module directly.
-pub const BUNDLE_X25519_SK_LEN: usize = X25519_SK_LEN;
-/// Re-export of [`crate::crypto::kem::X25519_PK_LEN`].
-pub const BUNDLE_X25519_PK_LEN: usize = X25519_PK_LEN;
-/// Re-export of [`crate::crypto::kem::ML_KEM_768_SK_LEN`].
-pub const BUNDLE_ML_KEM_768_SK_LEN: usize = ML_KEM_768_SK_LEN;
-/// Re-export of [`crate::crypto::kem::ML_KEM_768_PK_LEN`].
-pub const BUNDLE_ML_KEM_768_PK_LEN: usize = ML_KEM_768_PK_LEN;
-/// Re-export of [`crate::crypto::sig::ED25519_SK_LEN`].
-pub const BUNDLE_ED25519_SK_LEN: usize = ED25519_SK_LEN;
-/// Re-export of [`crate::crypto::sig::ED25519_PK_LEN`].
-pub const BUNDLE_ED25519_PK_LEN: usize = ED25519_PK_LEN;
+// BUNDLE_ML_DSA_65_SK_LEN intentionally re-exposes the seed-length constant under a bundle-prefixed name to make the spec/seed semantic explicit at the bundle layer.
 /// ML-DSA-65 secret-key length as stored in the bundle, in bytes.
 ///
 /// This is the FIPS 204 seed length (32), not the §5 spec's 4032-byte
-/// expanded encoding. See module docs for the rationale.
+/// expanded encoding. The bundle-prefixed name makes the seed-vs-expanded
+/// distinction explicit at the bundle layer, where the on-disk encoding
+/// is fixed at 32 B regardless of any future renaming in `crypto::sig`.
+/// See module docs for the full rationale.
 pub const BUNDLE_ML_DSA_65_SK_LEN: usize = ML_DSA_65_SEED_LEN;
-/// Re-export of [`crate::crypto::sig::ML_DSA_65_PK_LEN`].
-pub const BUNDLE_ML_DSA_65_PK_LEN: usize = ML_DSA_65_PK_LEN;
 
 // CBOR map keys (§5). String literals only used here; centralised so a typo
 // becomes a compile-time fix rather than a silent encoding drift.
@@ -109,10 +98,9 @@ const KEY_CREATED_AT: &str = "created_at";
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
     /// CBOR encoding produced an I/O or serialization error from `ciborium`,
-    /// or the byte stream did not contain a top-level map, or trailing bytes
-    /// followed the map.
+    /// or the byte stream did not contain a top-level map.
     #[error("CBOR encode/decode error: {0}")]
-    CborDecode(String),
+    CborError(String),
 
     /// Input parsed but was not in RFC 8949 §4.2.1 canonical form (e.g. keys
     /// not in bytewise lexicographic order, non-shortest length prefixes,
@@ -137,7 +125,8 @@ pub enum BundleError {
     WrongKeySize {
         /// The §5 CBOR key whose value had the wrong length.
         field: &'static str,
-        /// Expected byte length per §5 / `BUNDLE_*_LEN`.
+        /// Expected byte length per §5 (see `crypto::kem` / `crypto::sig`
+        /// length constants and [`BUNDLE_ML_DSA_65_SK_LEN`]).
         expected: usize,
         /// Actual byte length seen on the wire.
         got: usize,
@@ -339,11 +328,11 @@ impl IdentityBundle {
     /// tampered file) is rejected loudly rather than silently accepted.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
         let value: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+            .map_err(|e| BundleError::CborError(e.to_string()))?;
         let map = match value {
             Value::Map(m) => m,
             _ => {
-                return Err(BundleError::CborDecode(
+                return Err(BundleError::CborError(
                     "expected top-level CBOR map".into(),
                 ))
             }
@@ -363,7 +352,7 @@ impl IdentityBundle {
 
         for (k, v) in map {
             let Value::Text(key) = k else {
-                return Err(BundleError::CborDecode("non-string map key".into()));
+                return Err(BundleError::CborError("non-string map key".into()));
             };
             match key.as_str() {
                 KEY_USER_UUID => set_once(
@@ -421,34 +410,34 @@ impl IdentityBundle {
 
         let bundle = IdentityBundle {
             user_uuid: user_uuid
-                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_USER_UUID}")))?,
+                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_USER_UUID}")))?,
             display_name: display_name.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_DISPLAY_NAME}"))
+                BundleError::CborError(format!("missing field {KEY_DISPLAY_NAME}"))
             })?,
             x25519_sk: Sensitive::new(x25519_sk_bytes.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_X25519_SK}"))
+                BundleError::CborError(format!("missing field {KEY_X25519_SK}"))
             })?),
             x25519_pk: x25519_pk
-                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_X25519_PK}")))?,
+                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_X25519_PK}")))?,
             ml_kem_768_sk: Sensitive::new(ml_kem_768_sk_bytes.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_ML_KEM_768_SK}"))
+                BundleError::CborError(format!("missing field {KEY_ML_KEM_768_SK}"))
             })?),
             ml_kem_768_pk: ml_kem_768_pk.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_ML_KEM_768_PK}"))
+                BundleError::CborError(format!("missing field {KEY_ML_KEM_768_PK}"))
             })?,
             ed25519_sk: Sensitive::new(ed25519_sk_bytes.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_ED25519_SK}"))
+                BundleError::CborError(format!("missing field {KEY_ED25519_SK}"))
             })?),
             ed25519_pk: ed25519_pk
-                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_ED25519_PK}")))?,
+                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_ED25519_PK}")))?,
             ml_dsa_65_sk: Sensitive::new(ml_dsa_65_sk_bytes.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_ML_DSA_65_SK}"))
+                BundleError::CborError(format!("missing field {KEY_ML_DSA_65_SK}"))
             })?),
             ml_dsa_65_pk: ml_dsa_65_pk.ok_or_else(|| {
-                BundleError::CborDecode(format!("missing field {KEY_ML_DSA_65_PK}"))
+                BundleError::CborError(format!("missing field {KEY_ML_DSA_65_PK}"))
             })?,
             created_at_ms: created_at_ms
-                .ok_or_else(|| BundleError::CborDecode(format!("missing field {KEY_CREATED_AT}")))?,
+                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_CREATED_AT}")))?,
         };
 
         // Reject non-canonical input. Cheapest reliable check: re-encode
@@ -456,10 +445,8 @@ impl IdentityBundle {
         // pattern as `card.rs::from_canonical_cbor`.
         let canonical = bundle.to_canonical_cbor()?;
         if canonical.as_slice() != bytes {
-            // Drop the partially-decoded bundle (zeroizing its sensitive
-            // fields) before returning the error; the caller never sees
-            // these bytes.
-            drop(bundle);
+            // `bundle` drops here at scope exit, zeroizing its sensitive
+            // fields; the caller never sees the partially-decoded value.
             return Err(BundleError::NonCanonicalCbor);
         }
 
@@ -481,7 +468,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
         .map(|pair| {
             let mut key_bytes = Vec::new();
             ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+                .map_err(|e| BundleError::CborError(e.to_string()))?;
             Ok((key_bytes, pair.clone()))
         })
         .collect::<Result<_, BundleError>>()?;
@@ -490,7 +477,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
     let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&value, &mut buf)
-        .map_err(|e| BundleError::CborDecode(e.to_string()))?;
+        .map_err(|e| BundleError::CborError(e.to_string()))?;
     Ok(buf)
 }
 
@@ -519,14 +506,18 @@ fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), BundleError>
 fn take_text(v: Value) -> Result<String, BundleError> {
     match v {
         Value::Text(s) => Ok(s),
-        _ => Err(BundleError::CborDecode("expected text string".into())),
+        _ => Err(BundleError::CborError("expected text string".into())),
     }
 }
 
 fn take_u64(v: Value) -> Result<u64, BundleError> {
+    // Mirror `card.rs::take_u64`'s split: a non-integer value is a type
+    // error (CborError), while an integer that doesn't fit `u64` is a
+    // value error (InvalidTimestamp — `created_at` is the only u64 field
+    // in the §5 record, so the variant name still describes the failure).
     let i = match v {
         Value::Integer(i) => i,
-        _ => return Err(BundleError::InvalidTimestamp),
+        _ => return Err(BundleError::CborError("expected unsigned integer".into())),
     };
     i.try_into().map_err(|_| BundleError::InvalidTimestamp)
 }
@@ -545,7 +536,7 @@ fn take_fixed_bytes<const N: usize>(
 ) -> Result<[u8; N], BundleError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(BundleError::CborDecode("expected byte string".into())),
+        _ => return Err(BundleError::CborError("expected byte string".into())),
     };
     let got = bytes.len();
     bytes.try_into().map_err(|_: Vec<u8>| BundleError::WrongKeySize {
@@ -562,7 +553,7 @@ fn take_sized_bytes(
 ) -> Result<Vec<u8>, BundleError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(BundleError::CborDecode("expected byte string".into())),
+        _ => return Err(BundleError::CborError("expected byte string".into())),
     };
     if bytes.len() != expected {
         return Err(BundleError::WrongKeySize {
@@ -706,6 +697,32 @@ mod tests {
                 }
             ),
             "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_distinguishes_created_at_type_mismatch_from_range() {
+        // A `created_at` set to a text string must report a CBOR type
+        // error, not the misleading `InvalidTimestamp` (which is reserved
+        // for "is an integer but doesn't fit u64").
+        let mut rng = ChaCha20Rng::from_seed([10u8; 32]);
+        let b = generate("X", 0, &mut rng);
+        let bytes = b.to_canonical_cbor().unwrap();
+        let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+        let Value::Map(mut entries) = value else { panic!() };
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_CREATED_AT {
+                    *v = Value::Text("not a timestamp".into());
+                }
+            }
+        }
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        assert!(
+            matches!(err, BundleError::CborError(_)),
+            "expected CborError for non-integer created_at, got: {err:?}"
         );
     }
 
