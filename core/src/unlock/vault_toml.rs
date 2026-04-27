@@ -13,6 +13,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
 
+use crate::version::{FORMAT_VERSION, SUITE_ID};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultToml {
     pub format_version: u16,
@@ -153,7 +155,7 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     // when the raw integer is out of range (e.g. 99999 → 65535 clearly signals
     // "out of range" to a reader). Same pattern for suite_id below.
     let format_version = u16::try_from(format_version).unwrap_or(u16::MAX);
-    if format_version != 1 {
+    if format_version != FORMAT_VERSION {
         return Err(VaultTomlError::UnsupportedFormatVersion(format_version));
     }
 
@@ -162,7 +164,7 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
         .and_then(Value::as_integer)
         .ok_or(VaultTomlError::MissingField("suite_id"))?;
     let suite_id = u16::try_from(suite_id).unwrap_or(u16::MAX);
-    if suite_id != 1 {
+    if suite_id != SUITE_ID {
         return Err(VaultTomlError::UnsupportedSuiteId(suite_id));
     }
 

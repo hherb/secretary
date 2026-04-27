@@ -8,10 +8,12 @@
 //! `crypto::aead::encrypt`'s combined output); the 16-byte tag is written as the
 //! separate `bundle_tag` §3 field and is NOT included in `bundle_ct_len`.
 
-/// `"SECR"` in big-endian ASCII — identifies a Secretary vault envelope.
-pub const MAGIC: u32 = 0x53454352;
-pub const FORMAT_VERSION_V1: u16 = 0x0001;
-pub const FILE_KIND_IDENTITY_BUNDLE: u16 = 0x0001;
+use crate::version::{FORMAT_VERSION, MAGIC};
+
+/// File-kind identifier for the identity bundle envelope. Distinct from
+/// FORMAT_VERSION — file kinds let multiple files (manifest, block, …) share
+/// the same FORMAT_VERSION while remaining distinguishable.
+pub(crate) const FILE_KIND_IDENTITY_BUNDLE: u16 = 0x0001;
 pub(crate) const NONCE_LEN: usize = 24;
 pub(crate) const WRAP_CT_PLUS_TAG_LEN: usize = 32 + 16;  // identity_block_key + tag
 
@@ -68,7 +70,7 @@ pub fn encode(file: &BundleFile) -> Vec<u8> {
             + NONCE_LEN + 4 + file.bundle_ct_with_tag.len()
     );
     out.extend_from_slice(&MAGIC.to_be_bytes());
-    out.extend_from_slice(&FORMAT_VERSION_V1.to_be_bytes());
+    out.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
     out.extend_from_slice(&FILE_KIND_IDENTITY_BUNDLE.to_be_bytes());
     out.extend_from_slice(&file.vault_uuid);
     out.extend_from_slice(&file.created_at_ms.to_be_bytes());
@@ -104,7 +106,7 @@ pub fn decode(bytes: &[u8]) -> Result<BundleFile, BundleFileError> {
         return Err(BundleFileError::BadMagic { got: magic });
     }
     let format_version = read_u16_be(bytes, &mut pos)?;
-    if format_version != FORMAT_VERSION_V1 {
+    if format_version != FORMAT_VERSION {
         return Err(BundleFileError::UnsupportedFormatVersion(format_version));
     }
     let file_kind = read_u16_be(bytes, &mut pos)?;

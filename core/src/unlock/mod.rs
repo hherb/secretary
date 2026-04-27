@@ -16,6 +16,7 @@ use crate::crypto::kdf::{
     TAG_ID_WRAP_PW, TAG_ID_WRAP_REC,
 };
 use crate::crypto::secret::{SecretBytes, Sensitive};
+use crate::version::{FORMAT_VERSION, SUITE_ID};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UnlockError {
@@ -194,8 +195,8 @@ pub fn create_vault(
     // Step 11: emit vault.toml (§2) — KDF params mirror kdf_params so the
     // vault is portable across devices that open with derive_master_kek (§3).
     let vt = vault_toml::VaultToml {
-        format_version: 1,
-        suite_id: 1,
+        format_version: FORMAT_VERSION,
+        suite_id: SUITE_ID,
         vault_uuid,
         created_at_ms,
         kdf: vault_toml::KdfSection {

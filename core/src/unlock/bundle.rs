@@ -120,6 +120,13 @@ pub enum BundleError {
     #[error("duplicate field: {0}")]
     DuplicateField(String),
 
+    /// A required field was absent from the parsed top-level CBOR map. The
+    /// payload is the §5 CBOR key name (e.g. "user_uuid", "x25519_pk") to keep
+    /// errors machine-readable; sibling errors include `UnknownField` and
+    /// `WrongKeySize` for the same field-shape concerns.
+    #[error("missing required field: {0}")]
+    MissingField(&'static str),
+
     /// A fixed-size byte string field arrived with an unexpected length.
     #[error("wrong key size for {field}: expected {expected}, got {got}")]
     WrongKeySize {
@@ -409,35 +416,25 @@ impl IdentityBundle {
         }
 
         let bundle = IdentityBundle {
-            user_uuid: user_uuid
-                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_USER_UUID}")))?,
-            display_name: display_name.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_DISPLAY_NAME}"))
-            })?,
-            x25519_sk: Sensitive::new(x25519_sk_bytes.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_X25519_SK}"))
-            })?),
-            x25519_pk: x25519_pk
-                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_X25519_PK}")))?,
-            ml_kem_768_sk: Sensitive::new(ml_kem_768_sk_bytes.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_ML_KEM_768_SK}"))
-            })?),
-            ml_kem_768_pk: ml_kem_768_pk.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_ML_KEM_768_PK}"))
-            })?,
-            ed25519_sk: Sensitive::new(ed25519_sk_bytes.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_ED25519_SK}"))
-            })?),
-            ed25519_pk: ed25519_pk
-                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_ED25519_PK}")))?,
-            ml_dsa_65_sk: Sensitive::new(ml_dsa_65_sk_bytes.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_ML_DSA_65_SK}"))
-            })?),
-            ml_dsa_65_pk: ml_dsa_65_pk.ok_or_else(|| {
-                BundleError::CborError(format!("missing field {KEY_ML_DSA_65_PK}"))
-            })?,
-            created_at_ms: created_at_ms
-                .ok_or_else(|| BundleError::CborError(format!("missing field {KEY_CREATED_AT}")))?,
+            user_uuid: user_uuid.ok_or(BundleError::MissingField(KEY_USER_UUID))?,
+            display_name: display_name.ok_or(BundleError::MissingField(KEY_DISPLAY_NAME))?,
+            x25519_sk: Sensitive::new(
+                x25519_sk_bytes.ok_or(BundleError::MissingField(KEY_X25519_SK))?,
+            ),
+            x25519_pk: x25519_pk.ok_or(BundleError::MissingField(KEY_X25519_PK))?,
+            ml_kem_768_sk: Sensitive::new(
+                ml_kem_768_sk_bytes.ok_or(BundleError::MissingField(KEY_ML_KEM_768_SK))?,
+            ),
+            ml_kem_768_pk: ml_kem_768_pk.ok_or(BundleError::MissingField(KEY_ML_KEM_768_PK))?,
+            ed25519_sk: Sensitive::new(
+                ed25519_sk_bytes.ok_or(BundleError::MissingField(KEY_ED25519_SK))?,
+            ),
+            ed25519_pk: ed25519_pk.ok_or(BundleError::MissingField(KEY_ED25519_PK))?,
+            ml_dsa_65_sk: Sensitive::new(
+                ml_dsa_65_sk_bytes.ok_or(BundleError::MissingField(KEY_ML_DSA_65_SK))?,
+            ),
+            ml_dsa_65_pk: ml_dsa_65_pk.ok_or(BundleError::MissingField(KEY_ML_DSA_65_PK))?,
+            created_at_ms: created_at_ms.ok_or(BundleError::MissingField(KEY_CREATED_AT))?,
         };
 
         // Reject non-canonical input. Cheapest reliable check: re-encode

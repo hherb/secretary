@@ -77,6 +77,41 @@ fn mnemonic_not_24_words_returns_invalid_mnemonic() {
 }
 
 #[test]
+fn flipped_bundle_ct_byte_returns_corrupt_vault_via_recovery() {
+    let pw = b"hunter2";
+    let v = create(4, pw);
+
+    let mut bf = bundle_file::decode(&v.identity_bundle_bytes).unwrap();
+    let mid = bf.bundle_ct_with_tag.len() / 2;
+    bf.bundle_ct_with_tag[mid] ^= 0xFF;
+    let tampered = bundle_file::encode(&bf);
+
+    let err = open_with_recovery(
+        &v.vault_toml_bytes,
+        &tampered,
+        v.recovery_mnemonic.phrase(),
+    ).unwrap_err();
+    // wrap_rec decrypts fine → bundle AEAD fails → CorruptVault.
+    assert!(matches!(err, UnlockError::CorruptVault));
+}
+
+#[test]
+fn non_utf8_vault_toml_returns_malformed_vault_toml() {
+    use secretary_core::unlock::vault_toml::VaultTomlError;
+
+    // Create a valid vault, then submit garbage non-UTF-8 bytes as vault.toml.
+    let v = create(5, b"hunter2");
+    let invalid: &[u8] = &[0xFF, 0xFE, 0x00, 0x80];
+
+    let err = open_with_password(invalid, &v.identity_bundle_bytes, &SecretBytes::new(b"hunter2".to_vec()))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        UnlockError::MalformedVaultToml(VaultTomlError::MalformedToml(ref m)) if m.contains("non-UTF-8")
+    ));
+}
+
+#[test]
 fn bip39_recovery_kat_vectors() {
     use common::{load_kat, Bip39RecoveryKat};
     use secretary_core::crypto::secret::Sensitive;
