@@ -611,6 +611,11 @@ fn plaintext_to_entries(
 /// resulting bytes as a `Value` so they can join the outer map. The
 /// extra serialise/parse round-trip is the price of keeping
 /// `record::encode` as the sole authority on record CBOR shape.
+///
+/// Performance hook: if profiling shows this on a hot path (Task 4
+/// onwards will bench AEAD-encrypted block writes), introduce a
+/// `pub(crate) fn record::record_to_value` and `value_to_record` that
+/// skip the byte round-trip. Defer until measurements warrant it.
 fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
     let mut items: Vec<Value> = Vec::with_capacity(records.len());
     for r in records {
@@ -641,6 +646,10 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 /// must stay in lockstep on the canonical-sort algorithm; if one is
 /// updated, update the other.
 fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BlockError> {
+    // We sort first because `ciborium` emits a `Value::Map`'s `Vec<(Value, Value)>`
+    // in iteration order, NOT in CBOR canonical order. `canonical_sort_entries`
+    // re-orders against materialised CBOR-encoded key bytes (length-then-bytewise
+    // per RFC 8949 §4.2.1) so the wire output is canonical.
     let sorted = canonical_sort_entries(entries)?;
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
@@ -812,7 +821,7 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
 /// bytes to [`super::record::decode`]. Same justification as
 /// [`records_to_value`]: keep `record::decode` the sole authority on
 /// record CBOR shape, even at the cost of a serialise/parse round-trip
-/// per record.
+/// per record. Same performance-hook note applies — see [`records_to_value`].
 fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
     let items = match v {
         Value::Array(a) => a,
