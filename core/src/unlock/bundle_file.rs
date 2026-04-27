@@ -1,9 +1,12 @@
 //! `identity.bundle.enc` binary envelope (`docs/vault-format.md` §3).
 //!
 //! Big-endian integers throughout. Three AEAD payloads (wrap_pw, wrap_rec,
-//! bundle), each stored as `nonce || ct_len || ct_with_tag`, where
-//! ct_with_tag is the AEAD ciphertext concatenated with its 16-byte
-//! Poly1305 tag (matching `crypto::aead::encrypt`'s output format).
+//! bundle). The wrap fields are stored as `nonce || ct_len(=32) || ct || tag`.
+//! The bundle field is stored as `nonce || bundle_ct_len || bundle_ct || bundle_tag`
+//! where `bundle_ct_len` is the length of `bundle_ct` ALONE, per §3 lines 102-104.
+//! Internally we keep `bundle_ct_with_tag = bundle_ct || bundle_tag` (matching
+//! `crypto::aead::encrypt`'s combined output); the 16-byte tag is written as the
+//! separate `bundle_tag` §3 field and is NOT included in `bundle_ct_len`.
 
 pub const MAGIC: u32 = 0x53454352;             // "SECR"
 pub const FORMAT_VERSION_V1: u16 = 0x0001;
@@ -27,6 +30,8 @@ pub struct BundleFile {
 pub enum BundleFileError {
     #[error("file truncated at offset {offset}")]
     Truncated { offset: usize },
+    #[error("trailing bytes after parse at offset {offset}")]
+    TrailingBytes { offset: usize },
     #[error("bad magic: expected SECR, got {got:#010x}")]
     BadMagic { got: u32 },
     #[error("unsupported format version: {0}")]
@@ -61,10 +66,14 @@ pub fn encode(file: &BundleFile) -> Vec<u8> {
     out.extend_from_slice(&file.wrap_rec_ct_with_tag);
 
     out.extend_from_slice(&file.bundle_nonce);
-    // bundle_ct_len = length of the AEAD ciphertext including the 16-byte
-    // tag (the §3 "bundle_ct" field is the AEAD output as a single blob).
-    out.extend_from_slice(&u32::try_from(file.bundle_ct_with_tag.len())
-        .expect("bundle ct < 4 GiB").to_be_bytes());
+    // bundle_ct_len = length of bundle_ct ALONE, per vault-format §3 lines 102-104.
+    // bundle_ct_with_tag stores ct||tag (matching crypto::aead::encrypt's output);
+    // the trailing 16 bytes are bundle_tag (a separate §3 field). We write both
+    // in a single extend_from_slice — the wire layout is bundle_ct then bundle_tag,
+    // which is exactly what bundle_ct_with_tag contains in order.
+    let bundle_ct_len = u32::try_from(file.bundle_ct_with_tag.len() - 16)
+        .expect("bundle ct < 4 GiB");
+    out.extend_from_slice(&bundle_ct_len.to_be_bytes());
     out.extend_from_slice(&file.bundle_ct_with_tag);
 
     out
@@ -106,15 +115,20 @@ pub fn decode(bytes: &[u8]) -> Result<BundleFile, BundleFileError> {
     // bundle
     let bundle_nonce = read_array::<NONCE_LEN>(bytes, &mut pos)?;
     let bundle_ct_len = read_u32_be(bytes, &mut pos)? as usize;
-    if pos + bundle_ct_len > bytes.len() {
+    // §3: bundle_tag is a separate 16-byte field after bundle_ct.
+    // We read both into a single combined buffer to match crypto::aead::decrypt's
+    // expected ct||tag input shape.
+    let total = bundle_ct_len
+        .checked_add(16)
+        .ok_or(BundleFileError::Truncated { offset: pos })?;
+    if pos + total > bytes.len() {
         return Err(BundleFileError::Truncated { offset: pos });
     }
-    let bundle_ct_with_tag = bytes[pos..pos + bundle_ct_len].to_vec();
-    pos += bundle_ct_len;
+    let bundle_ct_with_tag = bytes[pos..pos + total].to_vec();
+    pos += total;
 
     if pos != bytes.len() {
-        return Err(BundleFileError::Truncated { offset: pos });
-        // Trailing bytes treated as truncation indicator — file is wrong shape.
+        return Err(BundleFileError::TrailingBytes { offset: pos });
     }
 
     Ok(BundleFile {
@@ -225,6 +239,28 @@ mod tests {
         assert!(matches!(
             err,
             BundleFileError::WrapLengthMismatch { field: "wrap_pw", declared: 64 }
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let mut bytes = encode(&sample());
+        bytes.push(0xAA);
+        let err = decode(&bytes).unwrap_err();
+        assert!(matches!(err, BundleFileError::TrailingBytes { .. }));
+    }
+
+    #[test]
+    fn decode_rejects_wrap_rec_length_mismatch() {
+        let bytes = encode(&sample());
+        // wrap_rec_ct_len starts at:
+        //   header (32) + wrap_pw section (24 + 4 + 48 = 76) + wrap_rec_nonce (24) = 132
+        let mut tampered = bytes.clone();
+        tampered[132..136].copy_from_slice(&64u32.to_be_bytes());
+        let err = decode(&tampered).unwrap_err();
+        assert!(matches!(
+            err,
+            BundleFileError::WrapLengthMismatch { field: "wrap_rec", declared: 64 }
         ));
     }
 }
