@@ -8,11 +8,12 @@
 //! `crypto::aead::encrypt`'s combined output); the 16-byte tag is written as the
 //! separate `bundle_tag` §3 field and is NOT included in `bundle_ct_len`.
 
-pub const MAGIC: u32 = 0x53454352;             // "SECR"
+/// `"SECR"` in big-endian ASCII — identifies a Secretary vault envelope.
+pub const MAGIC: u32 = 0x53454352;
 pub const FORMAT_VERSION_V1: u16 = 0x0001;
 pub const FILE_KIND_IDENTITY_BUNDLE: u16 = 0x0001;
-pub const NONCE_LEN: usize = 24;
-pub const WRAP_CT_PLUS_TAG_LEN: usize = 32 + 16;  // identity_block_key + tag
+pub(crate) const NONCE_LEN: usize = 24;
+pub(crate) const WRAP_CT_PLUS_TAG_LEN: usize = 32 + 16;  // identity_block_key + tag
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleFile {
@@ -38,11 +39,28 @@ pub enum BundleFileError {
     UnsupportedFormatVersion(u16),
     #[error("unsupported file kind: {0}")]
     UnsupportedFileKind(u16),
-    #[error("declared length for {field} ({declared}) does not match expected (32)")]
-    WrapLengthMismatch { field: &'static str, declared: u32 },
+    /// A wrap length-prefix did not match the expected size.
+    #[error("declared length for {field}: expected {expected}, got {declared}")]
+    WrapLengthMismatch {
+        field: &'static str,
+        expected: u32,
+        declared: u32,
+    },
 }
 
+/// Serialize a [`BundleFile`] to its `vault-format.md` §3 byte form.
+///
+/// # Panics
+///
+/// Panics if `file.bundle_ct_with_tag.len() < 16` (a Poly1305 tag is always
+/// 16 bytes; a shorter buffer is structurally invalid). Callers should be
+/// constructing this from `crypto::aead::encrypt` output, which always
+/// includes the tag.
 pub fn encode(file: &BundleFile) -> Vec<u8> {
+    debug_assert!(
+        file.bundle_ct_with_tag.len() >= 16,
+        "bundle_ct_with_tag must include the trailing 16-byte Poly1305 tag"
+    );
     let mut out = Vec::with_capacity(
         4 + 2 + 2 + 16 + 8
             + NONCE_LEN + 4 + WRAP_CT_PLUS_TAG_LEN
@@ -100,7 +118,11 @@ pub fn decode(bytes: &[u8]) -> Result<BundleFile, BundleFileError> {
     let wrap_pw_nonce = read_array::<NONCE_LEN>(bytes, &mut pos)?;
     let wrap_pw_ct_len = read_u32_be(bytes, &mut pos)?;
     if wrap_pw_ct_len != 32 {
-        return Err(BundleFileError::WrapLengthMismatch { field: "wrap_pw", declared: wrap_pw_ct_len });
+        return Err(BundleFileError::WrapLengthMismatch {
+            field: "wrap_pw",
+            expected: 32,
+            declared: wrap_pw_ct_len,
+        });
     }
     let wrap_pw_ct_with_tag = read_array::<WRAP_CT_PLUS_TAG_LEN>(bytes, &mut pos)?;
 
@@ -108,7 +130,11 @@ pub fn decode(bytes: &[u8]) -> Result<BundleFile, BundleFileError> {
     let wrap_rec_nonce = read_array::<NONCE_LEN>(bytes, &mut pos)?;
     let wrap_rec_ct_len = read_u32_be(bytes, &mut pos)?;
     if wrap_rec_ct_len != 32 {
-        return Err(BundleFileError::WrapLengthMismatch { field: "wrap_rec", declared: wrap_rec_ct_len });
+        return Err(BundleFileError::WrapLengthMismatch {
+            field: "wrap_rec",
+            expected: 32,
+            declared: wrap_rec_ct_len,
+        });
     }
     let wrap_rec_ct_with_tag = read_array::<WRAP_CT_PLUS_TAG_LEN>(bytes, &mut pos)?;
 
@@ -191,6 +217,17 @@ mod tests {
     }
 
     #[test]
+    fn encode_decode_roundtrip_minimum_bundle_ct() {
+        // Smallest valid bundle_ct_with_tag is exactly 16 bytes (the tag with
+        // empty plaintext ciphertext) — boundary case for the encode subtraction.
+        let mut f = sample();
+        f.bundle_ct_with_tag = vec![0xAB; 16];
+        let bytes = encode(&f);
+        let parsed = decode(&bytes).expect("decode");
+        assert_eq!(parsed, f);
+    }
+
+    #[test]
     fn decode_rejects_bad_magic() {
         let mut bytes = encode(&sample());
         bytes[0] ^= 0xFF;
@@ -232,13 +269,16 @@ mod tests {
     #[test]
     fn decode_rejects_wrap_pw_length_mismatch() {
         let bytes = encode(&sample());
-        // wrap_pw_ct_len starts at offset 4+2+2+16+8 + NONCE_LEN = 32 + 24 = 56
+        // header(magic+ver+kind+uuid+ts) + wrap_pw_nonce
+        let wrap_pw_ct_len_offset = 4 + 2 + 2 + 16 + 8 + NONCE_LEN;
+        assert_eq!(wrap_pw_ct_len_offset, 56);
         let mut tampered = bytes.clone();
-        tampered[56..60].copy_from_slice(&64u32.to_be_bytes());
+        tampered[wrap_pw_ct_len_offset..wrap_pw_ct_len_offset + 4]
+            .copy_from_slice(&64u32.to_be_bytes());
         let err = decode(&tampered).unwrap_err();
         assert!(matches!(
             err,
-            BundleFileError::WrapLengthMismatch { field: "wrap_pw", declared: 64 }
+            BundleFileError::WrapLengthMismatch { field: "wrap_pw", expected: 32, declared: 64 }
         ));
     }
 
@@ -253,14 +293,17 @@ mod tests {
     #[test]
     fn decode_rejects_wrap_rec_length_mismatch() {
         let bytes = encode(&sample());
-        // wrap_rec_ct_len starts at:
-        //   header (32) + wrap_pw section (24 + 4 + 48 = 76) + wrap_rec_nonce (24) = 132
+        // header + wrap_pw_section(nonce+len+ct_with_tag) + wrap_rec_nonce
+        let wrap_rec_ct_len_offset =
+            4 + 2 + 2 + 16 + 8 + (NONCE_LEN + 4 + WRAP_CT_PLUS_TAG_LEN) + NONCE_LEN;
+        assert_eq!(wrap_rec_ct_len_offset, 132);
         let mut tampered = bytes.clone();
-        tampered[132..136].copy_from_slice(&64u32.to_be_bytes());
+        tampered[wrap_rec_ct_len_offset..wrap_rec_ct_len_offset + 4]
+            .copy_from_slice(&64u32.to_be_bytes());
         let err = decode(&tampered).unwrap_err();
         assert!(matches!(
             err,
-            BundleFileError::WrapLengthMismatch { field: "wrap_rec", declared: 64 }
+            BundleFileError::WrapLengthMismatch { field: "wrap_rec", expected: 32, declared: 64 }
         ));
     }
 }
