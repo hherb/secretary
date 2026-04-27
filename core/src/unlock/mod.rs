@@ -3,4 +3,5 @@
 //! and `docs/vault-format.md` §2 (vault.toml), §3 (identity.bundle.enc).
 
 pub mod bundle;
+pub mod bundle_file;
 pub mod mnemonic;
