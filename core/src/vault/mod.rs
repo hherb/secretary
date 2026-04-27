@@ -2,18 +2,21 @@
 //!
 //! The on-disk format is normatively specified in `docs/vault-format.md`.
 //! This module currently exposes the §6.3 record types ([`record`]) and
-//! the §6.1 / §6.3 block layer ([`block`] — binary header bytes through
-//! end of `vector_clock_entries`, plus the canonical-CBOR plaintext
-//! body). The recipient table (§6.2), AEAD body, signatures, and the
-//! manifest (§4) layers land in subsequent build-sequence steps and will
-//! plug into the [`VaultError`] umbrella below via additional `#[from]`
-//! variants.
+//! the §6.1 / §6.2 / §6.3 block layer ([`block`] — binary header,
+//! recipient table, AEAD body, plus the canonical-CBOR plaintext
+//! body and the [`block::encrypt_block`] / [`block::decrypt_block`]
+//! orchestrators). The trailing hybrid signature suffix and the
+//! manifest (§4) layers land in subsequent build-sequence steps and
+//! will plug into the [`VaultError`] umbrella below via additional
+//! `#[from]` variants.
 
 pub mod block;
 pub mod record;
 
 pub use block::{
-    Block, BlockError, BlockHeader, BlockPlaintext, VectorClockEntry, FILE_KIND_BLOCK,
+    decode_block_file, decrypt_block, encode_block_file, encrypt_block, BlockError, BlockFile,
+    BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
+    FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
