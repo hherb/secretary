@@ -228,6 +228,16 @@ fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
     out
 }
 
+/// Construct the layered error returned when vault.toml bytes aren't UTF-8.
+/// Used by both open paths; the underlying `MalformedToml` variant is the
+/// right inner error since "non-UTF-8 bytes" is a parse failure, not a
+/// missing field.
+fn vault_toml_not_utf8() -> UnlockError {
+    UnlockError::MalformedVaultToml(vault_toml::VaultTomlError::MalformedToml(
+        "non-UTF-8 input".to_string(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // open_with_password (§3 Master KEK unlock path)
 // ---------------------------------------------------------------------------
@@ -244,10 +254,7 @@ pub fn open_with_password(
     // structured errors, leaving MalformedToml for genuine parse failures.
     // Non-UTF-8 input IS a parse failure, so the inner MalformedToml is
     // appropriate here.
-    let vt_str = std::str::from_utf8(vault_toml_bytes)
-        .map_err(|_| UnlockError::MalformedVaultToml(vault_toml::VaultTomlError::MalformedToml(
-            "non-UTF-8 input".to_string(),
-        )))?;
+    let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| vault_toml_not_utf8())?;
     let vt = vault_toml::decode(vt_str)?;
 
     // Step 2: parse identity.bundle.enc; check vault_uuid match across both files.
@@ -275,6 +282,9 @@ pub fn open_with_password(
 
     // ibk_bytes is SecretBytes wrapping a Vec<u8>. The wrap_pw plaintext
     // is exactly 32 bytes (an IBK). Anything else is a corrupt vault.
+    // SECURITY: ibk_arr leaves a residual copy of the IBK on the stack after
+    // Sensitive::new moves it. Same limitation as create_vault's IBK
+    // construction — see the SECURITY note there for details.
     let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
         .map_err(|_| UnlockError::CorruptVault)?;
     let identity_block_key = Sensitive::new(ibk_arr);
@@ -307,10 +317,7 @@ pub fn open_with_recovery(
     mnemonic_words: &str,
 ) -> Result<UnlockedIdentity, UnlockError> {
     // Steps 1-2: vault.toml + bundle file (mirror open_with_password)
-    let vt_str = std::str::from_utf8(vault_toml_bytes)
-        .map_err(|_| UnlockError::MalformedVaultToml(vault_toml::VaultTomlError::MalformedToml(
-            "non-UTF-8 input".to_string(),
-        )))?;
+    let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| vault_toml_not_utf8())?;
     let vt = vault_toml::decode(vt_str)?;
     let bf = bundle_file::decode(identity_bundle_bytes)?;
     if bf.vault_uuid != vt.vault_uuid {
@@ -321,12 +328,15 @@ pub fn open_with_recovery(
     // surfaces as InvalidMnemonic via the From impl — distinct from
     // WrongMnemonicOrCorrupt because the failure mode is "this isn't a
     // valid BIP-39 phrase at all" rather than "valid phrase, wrong vault."
-    let parsed = mnemonic::parse(mnemonic_words)?;
+    let parsed_mnemonic = mnemonic::parse(mnemonic_words)?;
 
     // Step 4: derive Recovery KEK from the parsed entropy.
-    let recovery_kek = derive_recovery_kek(parsed.entropy());
+    let recovery_kek = derive_recovery_kek(parsed_mnemonic.entropy());
 
-    // Step 5: AEAD-decrypt wrap_rec → IBK bytes.
+    // Step 5: AEAD-decrypt wrap_rec → IBK bytes. AEAD failure here means wrong
+    // mnemonic (or vault corruption — indistinguishable on auth-tag failure,
+    // matching the §13 "wrong key looks like corruption" property). UI surfaces
+    // this as wrong-mnemonic.
     let wrap_rec_aad = compose_aad(TAG_ID_WRAP_REC, &vt.vault_uuid);
     let ibk_bytes = decrypt(
         &recovery_kek,
@@ -336,11 +346,15 @@ pub fn open_with_recovery(
     )
     .map_err(|_| UnlockError::WrongMnemonicOrCorrupt)?;
 
+    // SECURITY: ibk_arr leaves a residual copy of the IBK on the stack after
+    // Sensitive::new moves it. Same limitation as create_vault's IBK
+    // construction — see the SECURITY note there for details.
     let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
         .map_err(|_| UnlockError::CorruptVault)?;
     let identity_block_key = Sensitive::new(ibk_arr);
 
-    // Step 6: AEAD-decrypt bundle.
+    // Step 6: AEAD-decrypt the bundle plaintext under IBK. Post-IBK-recovery
+    // failure is unequivocally tampering, not user error.
     let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
     let bundle_plaintext = decrypt(
         &identity_block_key,
@@ -432,6 +446,8 @@ mod create_tests {
             .expect("open");
         assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
         assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
+        assert_eq!(opened.identity.display_name, v.identity.display_name);
+        assert_eq!(opened.identity.x25519_sk.expose(), v.identity.x25519_sk.expose());
     }
 
     #[test]
