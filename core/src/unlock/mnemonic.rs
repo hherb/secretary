@@ -171,9 +171,13 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
 
 /// Map the bip39 crate's error enum onto our caller-facing variant set.
 ///
-/// The `UnknownWord` arm is handled at the call site in [`parse`] (it needs
-/// the local token list to resolve an index back to the word) and therefore
-/// does not appear here.
+/// The `UnknownWord` arm IS listed in the match below for exhaustiveness,
+/// but it is intercepted at the call site in [`parse`] before reaching
+/// this function (the call site needs the local token list to resolve the
+/// crate's word *index* back to the offending word *content*). The match
+/// arm here is therefore unreachable in normal operation — see the
+/// comment on that arm for why mapping to `BadChecksum` is the right
+/// fallback if the bip39 crate's behaviour ever changes.
 fn map_bip39_error(e: bip39::Error) -> MnemonicError {
     use bip39::Error::{
         AmbiguousLanguages, BadEntropyBitCount, BadWordCount, InvalidChecksum, UnknownWord,
@@ -181,12 +185,22 @@ fn map_bip39_error(e: bip39::Error) -> MnemonicError {
     match e {
         InvalidChecksum => MnemonicError::BadChecksum,
         BadWordCount(n) => MnemonicError::WrongLength { got: n },
-        // BadEntropyBitCount cannot arise from `parse_in_normalized` (it's a
-        // from-entropy constructor failure); AmbiguousLanguages cannot arise
-        // because we pin the language to English. UnknownWord is handled by
-        // the caller. All other arms are folded into BadChecksum as a safe
-        // catch-all rejection — a parse failure is a parse failure regardless
-        // of which structural rule was broken.
+
+        // The three remaining variants are unreachable from
+        // `parse_in_normalized` in [`parse`]'s call pattern but must be
+        // listed for exhaustiveness:
+        //
+        // - `UnknownWord`: caught and converted to `MnemonicError::UnknownWord`
+        //   (carrying the actual offending word, not the crate's index)
+        //   at the [`parse`] call site BEFORE the result reaches this
+        //   function. If the bip39 crate's contract ever changes such that
+        //   `UnknownWord` slips past the call site, mapping to
+        //   `BadChecksum` is a safe fallback — bad input is bad input.
+        // - `BadEntropyBitCount`: only constructable by from-entropy
+        //   constructors (e.g. `Mnemonic::from_entropy_in`), not by the
+        //   parser.
+        // - `AmbiguousLanguages`: only constructable when the language is
+        //   auto-detected; we pin to English via `parse_in_normalized`.
         UnknownWord(_) | BadEntropyBitCount(_) | AmbiguousLanguages(_) => {
             MnemonicError::BadChecksum
         }
