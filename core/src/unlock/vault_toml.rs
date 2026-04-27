@@ -208,19 +208,46 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
 }
 
 /// Parse the RFC 4122 textual UUID form ("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").
-/// Returns `None` on any deviation from the expected 32 hex digits plus hyphens.
+///
+/// §2's "canonical 8-4-4-4-12 hyphenated lowercase hex" form is enforced
+/// strictly: exactly 36 bytes, hyphens at indices 8/13/18/23, every other
+/// byte must be a lowercase hex digit (`0-9` or `a-f`). Uppercase and
+/// non-hyphenated forms are rejected to keep the canonical form symmetric
+/// with the encoder, which emits lowercase via `{:02x}`.
 fn parse_uuid_canonical(s: &str) -> Option<[u8; 16]> {
-    // Strip hyphens and require exactly 32 hex chars.
-    let stripped: String = s.chars().filter(|c| *c != '-').collect();
-    if stripped.len() != 32 {
+    let b = s.as_bytes();
+    if b.len() != 36 {
         return None;
     }
+    for i in [8usize, 13, 18, 23] {
+        if b[i] != b'-' {
+            return None;
+        }
+    }
+    // Every non-hyphen byte must be lowercase hex (0-9, a-f).
+    for (i, &c) in b.iter().enumerate() {
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            continue;
+        }
+        if !c.is_ascii_digit() && !(b'a'..=b'f').contains(&c) {
+            return None;
+        }
+    }
     let mut out = [0u8; 16];
-    for i in 0..16 {
-        let byte = u8::from_str_radix(&stripped[i * 2..i * 2 + 2], 16).ok()?;
-        out[i] = byte;
+    // Walk absolute positions, skipping the four hyphen slots.
+    let hex_positions: Vec<usize> = (0..36).filter(|i| ![8, 13, 18, 23].contains(i)).collect();
+    for (byte_idx, hex_pair) in hex_positions.chunks_exact(2).enumerate() {
+        let hi = hex_nibble(b[hex_pair[0]]);
+        let lo = hex_nibble(b[hex_pair[1]]);
+        out[byte_idx] = (hi << 4) | lo;
     }
     Some(out)
+}
+
+/// Convert a pre-validated lowercase hex byte to its nibble value.
+#[inline]
+fn hex_nibble(c: u8) -> u8 {
+    if c.is_ascii_digit() { c - b'0' } else { c - b'a' + 10 }
 }
 
 #[cfg(test)]
@@ -308,5 +335,35 @@ mod tests {
         let s = s.replace(&original_b64, &short_b64);
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::InvalidSaltLength { got: 16 }));
+    }
+
+    #[test]
+    fn decode_rejects_uppercase_uuid() {
+        let s = encode(&sample()).replace(
+            "abababab-abab-abab-abab-abababababab",
+            "ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB",
+        );
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::InvalidUuid));
+    }
+
+    #[test]
+    fn decode_rejects_uuid_without_hyphens() {
+        let s = encode(&sample()).replace(
+            "abababab-abab-abab-abab-abababababab",
+            "abababababababababababababababababab",
+        );
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::InvalidUuid));
+    }
+
+    #[test]
+    fn decode_rejects_uuid_with_wrong_grouping() {
+        let s = encode(&sample()).replace(
+            "abababab-abab-abab-abab-abababababab",
+            "abab-abababab-abab-abab-abababababab",
+        );
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::InvalidUuid));
     }
 }
