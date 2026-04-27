@@ -800,13 +800,49 @@ fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], Rec
 }
 
 // ---------------------------------------------------------------------------
-// Tests — smoke-level sanity. Comprehensive coverage lands in Task 2.
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ---- Construction helpers --------------------------------------------
+
+    /// All-zeros 16-byte device UUID — deterministic for round-trip
+    /// equality checks.
+    const ZERO_DEVICE_UUID: [u8; RECORD_UUID_LEN] = [0u8; RECORD_UUID_LEN];
+
+    /// Build a `RecordField` with a deterministic device UUID. Used as the
+    /// base for both straight-through round-trip tests and for negative-
+    /// path tests that mutate one piece of the encoded form.
+    fn dummy_field(value: RecordFieldValue, last_mod: u64) -> RecordField {
+        RecordField {
+            value,
+            last_mod,
+            device_uuid: ZERO_DEVICE_UUID,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// Minimal valid record — empty `fields`, empty `tags`, live (no
+    /// tombstone). Useful as a base for tests that mutate one aspect.
+    fn dummy_record() -> Record {
+        Record {
+            record_uuid: [0xab; RECORD_UUID_LEN],
+            record_type: "login".to_string(),
+            fields: BTreeMap::new(),
+            tags: Vec::new(),
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_800_001,
+            tombstone: false,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// Original sample record — full-shape, used by the smoke test (kept
+    /// because `roundtrip_full_record` constructs its own and the smoke
+    /// covers a slightly different shape).
     fn sample_record() -> Record {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -839,6 +875,44 @@ mod tests {
         }
     }
 
+    /// Encode a single CBOR `Value` to bytes via ciborium directly. Used
+    /// by negative-path tests that need to splice raw CBOR fragments into
+    /// hand-built maps without going through `encode_canonical_map` (which
+    /// would re-sort them).
+    fn cbor_value_bytes(v: &Value) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(v, &mut buf).expect("ciborium encode of test Value");
+        buf
+    }
+
+    /// Encode a list of `(key, value)` entries as a definite-length CBOR
+    /// map *without* canonical sorting. Length prefix uses ciborium's
+    /// shortest-form rules (so the only non-canonical aspect is key
+    /// order). For maps with up to 23 entries this produces `0xa0 + n`
+    /// followed by entries in the order given.
+    fn cbor_map_bytes_unsorted(entries: &[(Value, Value)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries.to_vec()), &mut buf)
+            .expect("ciborium encode of unsorted map");
+        buf
+    }
+
+    /// Build a baseline canonical record-map entry list (the exact
+    /// `(key, value)` pairs the encoder would emit for `record`,
+    /// pre-canonical-sort). Used by tests that want to mutate one entry
+    /// (e.g. swap a u64 for a float) and re-emit canonically.
+    fn record_entries_canonical(record: &Record) -> Vec<(Value, Value)> {
+        let entries = record_to_entries(record).expect("record_to_entries");
+        canonical_sort_entries(&entries).expect("canonical_sort_entries")
+    }
+
+    /// Re-encode a list of entries as a canonical CBOR map (sorted).
+    fn encode_entries_canonical(entries: &[(Value, Value)]) -> Vec<u8> {
+        encode_canonical_map(entries).expect("encode_canonical_map")
+    }
+
+    // ---- Round-trip / encode-decode equivalence --------------------------
+
     #[test]
     fn smoke_encode_decode_roundtrip() {
         let r = sample_record();
@@ -847,5 +921,786 @@ mod tests {
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again, "encode is deterministic");
+    }
+
+    #[test]
+    fn roundtrip_full_record() {
+        // Every field populated: two `fields` (one Text, one Bytes),
+        // multiple tags, tombstone = true.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "username".to_string(),
+            dummy_field(RecordFieldValue::Text("alice".into()), 1_714_060_800_000),
+        );
+        fields.insert(
+            "totp_seed".to_string(),
+            dummy_field(
+                RecordFieldValue::Bytes(vec![0x11; 32]),
+                1_714_060_800_001,
+            ),
+        );
+        let record = Record {
+            record_uuid: [0x42; RECORD_UUID_LEN],
+            record_type: "login".to_string(),
+            fields,
+            tags: vec!["work".into(), "secret".into()],
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_800_010,
+            tombstone: true,
+            unknown: BTreeMap::new(),
+        };
+
+        let bytes = encode(&record).expect("encode full record");
+        let parsed = decode(&bytes).expect("decode full record");
+        assert_eq!(parsed, record);
+        let bytes_again = encode(&parsed).expect("re-encode");
+        assert_eq!(bytes, bytes_again, "round-trip is bit-identical");
+    }
+
+    #[test]
+    fn roundtrip_minimal_record() {
+        // Empty fields, empty tags, tombstone = false.
+        let r = dummy_record();
+        let bytes = encode(&r).expect("encode minimal");
+        let parsed = decode(&bytes).expect("decode minimal");
+        assert_eq!(parsed, r);
+        let bytes_again = encode(&parsed).expect("re-encode minimal");
+        assert_eq!(bytes, bytes_again, "minimal record round-trips bit-identically");
+    }
+
+    #[test]
+    fn roundtrip_custom_record_type() {
+        let mut r = dummy_record();
+        r.record_type = "weird_future_type".to_string();
+        let bytes = encode(&r).expect("encode custom type");
+        let parsed = decode(&bytes).expect("decode custom type");
+        assert_eq!(parsed, r);
+        let bytes_again = encode(&parsed).expect("re-encode");
+        assert_eq!(bytes, bytes_again);
+    }
+
+    #[test]
+    fn roundtrip_bytes_value() {
+        // A non-empty 32-byte payload (e.g. a parsed TOTP seed).
+        let mut r = dummy_record();
+        let mut fields = BTreeMap::new();
+        let totp_seed: Vec<u8> = (0..32).collect();
+        fields.insert(
+            "totp_seed".to_string(),
+            dummy_field(RecordFieldValue::Bytes(totp_seed.clone()), 7),
+        );
+        r.fields = fields;
+
+        let bytes = encode(&r).expect("encode bytes value");
+        let parsed = decode(&bytes).expect("decode bytes value");
+        assert_eq!(parsed, r);
+        match parsed
+            .fields
+            .get("totp_seed")
+            .expect("totp_seed present")
+            .value
+            .clone()
+        {
+            RecordFieldValue::Bytes(b) => assert_eq!(b, totp_seed),
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+        let bytes_again = encode(&parsed).expect("re-encode");
+        assert_eq!(bytes, bytes_again);
+    }
+
+    #[test]
+    fn roundtrip_text_value_with_unicode() {
+        let mut r = dummy_record();
+        let mut fields = BTreeMap::new();
+        // Multi-byte UTF-8: emoji + CJK + Latin-1 supplements.
+        let payload = "пароль-🔐-密码-naïve";
+        fields.insert(
+            "password".to_string(),
+            dummy_field(RecordFieldValue::Text(payload.into()), 9),
+        );
+        r.fields = fields;
+
+        let bytes = encode(&r).expect("encode unicode");
+        let parsed = decode(&bytes).expect("decode unicode");
+        assert_eq!(parsed, r);
+        match parsed
+            .fields
+            .get("password")
+            .expect("password present")
+            .value
+            .clone()
+        {
+            RecordFieldValue::Text(s) => assert_eq!(s, payload),
+            other => panic!("expected Text, got {other:?}"),
+        }
+        let bytes_again = encode(&parsed).expect("re-encode");
+        assert_eq!(bytes, bytes_again);
+    }
+
+    // ---- Absent-vs-default semantics -------------------------------------
+
+    #[test]
+    fn decode_omits_tombstone_treated_as_false() {
+        // Encode a Record (with tombstone=false → wire-absent), decode,
+        // verify the in-memory representation has tombstone == false.
+        let r = dummy_record();
+        assert!(!r.tombstone);
+        let bytes = encode(&r).expect("encode");
+        let parsed = decode(&bytes).expect("decode");
+        assert!(
+            !parsed.tombstone,
+            "absent tombstone key on the wire decodes to false"
+        );
+    }
+
+    #[test]
+    fn decode_explicit_tombstone_false_round_trips_as_absent() {
+        // Encoding `tombstone = false` MUST omit the "tombstone" key from
+        // the wire (canonical absence-equals-default per §6.3).
+        let r = dummy_record();
+        assert!(!r.tombstone);
+        let bytes = encode(&r).expect("encode");
+
+        // Re-parse via ciborium directly (bypassing decode()) so we can
+        // inspect the raw map keys without depending on Record's view.
+        let value: Value = ciborium::de::from_reader(&bytes[..])
+            .expect("ciborium parse of canonical record");
+        let entries = match value {
+            Value::Map(e) => e,
+            _ => panic!("encoded record is not a CBOR map"),
+        };
+        let has_tombstone_key = entries.iter().any(|(k, _)| match k {
+            Value::Text(s) => s == "tombstone",
+            _ => false,
+        });
+        assert!(
+            !has_tombstone_key,
+            "tombstone=false MUST be wire-absent (one canonical form)"
+        );
+    }
+
+    #[test]
+    fn decode_omits_tags_treated_as_empty() {
+        // Hand-build a CBOR map missing the "tags" key. The encoder also
+        // omits empty tags, so we can just rely on encode() of a record
+        // with empty tags and verify decode round-trips to Vec::new().
+        let r = dummy_record();
+        assert!(r.tags.is_empty());
+        let bytes = encode(&r).expect("encode");
+        let parsed = decode(&bytes).expect("decode");
+        assert!(parsed.tags.is_empty(), "absent tags key decodes to empty");
+    }
+
+    #[test]
+    fn decode_empty_tags_round_trips_as_absent() {
+        let r = dummy_record();
+        assert!(r.tags.is_empty());
+        let bytes = encode(&r).expect("encode");
+
+        let value: Value = ciborium::de::from_reader(&bytes[..])
+            .expect("ciborium parse");
+        let entries = match value {
+            Value::Map(e) => e,
+            _ => panic!("encoded record is not a CBOR map"),
+        };
+        let has_tags_key = entries.iter().any(|(k, _)| match k {
+            Value::Text(s) => s == "tags",
+            _ => false,
+        });
+        assert!(
+            !has_tags_key,
+            "empty tags MUST be wire-absent (one canonical form)"
+        );
+    }
+
+    // ---- Forward-compat (§6.3.2) -----------------------------------------
+
+    #[test]
+    fn roundtrip_preserves_unknown_record_level_key() {
+        // Build a record-level map by hand: take a canonical record's
+        // entry list, splice in a forward-compat key, sort, encode.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((
+            Value::Text("future_meta".into()),
+            Value::Text("v2-extra".into()),
+        ));
+        let bytes = encode_entries_canonical(&entries);
+
+        let parsed = decode(&bytes).expect("decode with unknown record-level key");
+        assert!(
+            parsed.unknown.contains_key("future_meta"),
+            "unknown record-level key landed in record.unknown"
+        );
+
+        let bytes_again = encode(&parsed).expect("re-encode with preserved unknown");
+        assert_eq!(
+            bytes, bytes_again,
+            "unknown record-level key round-trips bit-identically"
+        );
+    }
+
+    #[test]
+    fn roundtrip_preserves_unknown_field_level_key() {
+        // Build a single field's map by hand with one extra key, splice
+        // it into a record's "fields" map, and verify the record-level
+        // round-trip is bit-identical.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+
+        // Construct a hand-built field map: known keys + one unknown.
+        let inner_field_entries: Vec<(Value, Value)> = vec![
+            (Value::Text(KEY_VALUE.into()), Value::Text("alice".into())),
+            (
+                Value::Text(KEY_LAST_MOD.into()),
+                Value::Integer(11u64.into()),
+            ),
+            (
+                Value::Text(KEY_DEVICE_UUID.into()),
+                Value::Bytes(ZERO_DEVICE_UUID.to_vec()),
+            ),
+            (Value::Text("future_attr".into()), Value::Text("xyz".into())),
+        ];
+        let sorted_inner = canonical_sort_entries(&inner_field_entries)
+            .expect("canonical_sort_entries inner field");
+
+        let outer_fields_entries: Vec<(Value, Value)> = vec![(
+            Value::Text("username".into()),
+            Value::Map(sorted_inner),
+        )];
+        let sorted_fields = canonical_sort_entries(&outer_fields_entries)
+            .expect("canonical_sort_entries outer fields");
+
+        // Replace the existing "fields" entry in the record-level entry
+        // list (it currently points at an empty inner map).
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_FIELDS {
+                    *v = Value::Map(sorted_fields.clone());
+                }
+            }
+        }
+        let bytes = encode_entries_canonical(&entries);
+
+        let parsed = decode(&bytes).expect("decode with unknown field-level key");
+        let username = parsed
+            .fields
+            .get("username")
+            .expect("username field present");
+        assert!(
+            username.unknown.contains_key("future_attr"),
+            "unknown field-level key landed in field.unknown"
+        );
+
+        let bytes_again = encode(&parsed).expect("re-encode preserves unknown field key");
+        assert_eq!(
+            bytes, bytes_again,
+            "unknown field-level key round-trips bit-identically"
+        );
+    }
+
+    #[test]
+    fn roundtrip_preserves_both_levels() {
+        // Record-level unknown + field-level unknown simultaneously.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+
+        // Record-level unknown
+        entries.push((
+            Value::Text("future_meta".into()),
+            Value::Text("v2-record".into()),
+        ));
+
+        // Field-level unknown: build a fields-map containing one known
+        // field with one unknown key.
+        let inner_field_entries: Vec<(Value, Value)> = vec![
+            (Value::Text(KEY_VALUE.into()), Value::Text("alice".into())),
+            (
+                Value::Text(KEY_LAST_MOD.into()),
+                Value::Integer(13u64.into()),
+            ),
+            (
+                Value::Text(KEY_DEVICE_UUID.into()),
+                Value::Bytes(ZERO_DEVICE_UUID.to_vec()),
+            ),
+            (
+                Value::Text("future_attr".into()),
+                Value::Text("v2-field".into()),
+            ),
+        ];
+        let sorted_inner = canonical_sort_entries(&inner_field_entries)
+            .expect("sort inner field");
+        let outer_fields_entries: Vec<(Value, Value)> = vec![(
+            Value::Text("username".into()),
+            Value::Map(sorted_inner),
+        )];
+        let sorted_fields = canonical_sort_entries(&outer_fields_entries)
+            .expect("sort outer fields");
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_FIELDS {
+                    *v = Value::Map(sorted_fields.clone());
+                }
+            }
+        }
+
+        let bytes = encode_entries_canonical(&entries);
+        let parsed = decode(&bytes).expect("decode both-level unknowns");
+
+        assert!(parsed.unknown.contains_key("future_meta"));
+        let username = parsed.fields.get("username").expect("username present");
+        assert!(username.unknown.contains_key("future_attr"));
+
+        let bytes_again = encode(&parsed).expect("re-encode");
+        assert_eq!(bytes, bytes_again);
+    }
+
+    #[test]
+    fn unknown_value_with_nested_map_or_array() {
+        // Unknown record-level key whose value is a non-leaf CBOR
+        // structure: a map containing both a primitive and a sub-array.
+        let nested_inner = vec![
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+            (
+                Value::Text("b".into()),
+                Value::Array(vec![
+                    Value::Integer(2u64.into()),
+                    Value::Integer(3u64.into()),
+                ]),
+            ),
+        ];
+        let sorted_nested = canonical_sort_entries(&nested_inner)
+            .expect("sort nested map");
+
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((
+            Value::Text("future_struct".into()),
+            Value::Map(sorted_nested),
+        ));
+        let bytes = encode_entries_canonical(&entries);
+
+        let parsed = decode(&bytes).expect("decode nested unknown");
+        assert!(parsed.unknown.contains_key("future_struct"));
+        let bytes_again = encode(&parsed).expect("re-encode nested unknown");
+        assert_eq!(
+            bytes, bytes_again,
+            "nested-map unknown value round-trips bit-identically"
+        );
+    }
+
+    // ---- Strict canonical-input rejection --------------------------------
+
+    #[test]
+    fn reject_float_in_known_field() {
+        // Replace `created_at_ms`'s u64 with a float. The float walker at
+        // the top of decode() catches it before parse_record_map runs.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_CREATED_AT_MS {
+                    *v = Value::Float(1.0);
+                }
+            }
+        }
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("float in known field must be rejected");
+        assert!(
+            matches!(err, RecordError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_float_inside_unknown_value() {
+        // Unknown key whose value is a map that contains a float deeper
+        // in the tree. The float walker recurses into unknown subtrees.
+        let inner = vec![
+            (
+                Value::Text("nested".into()),
+                Value::Array(vec![Value::Float(2.5)]),
+            ),
+        ];
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((
+            Value::Text("future_struct".into()),
+            Value::Map(inner),
+        ));
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("float inside unknown must be rejected");
+        assert!(
+            matches!(err, RecordError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_cbor_tag_anywhere() {
+        // A tagged value (tag 0 = RFC 3339 datetime) appears as the value
+        // of an unknown key. The tag walker catches it.
+        let tagged = Value::Tag(0, Box::new(Value::Text("2024-04-25T00:00:00Z".into())));
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((Value::Text("future_when".into()), tagged));
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("CBOR tag must be rejected");
+        assert!(
+            matches!(err, RecordError::TagRejected),
+            "expected TagRejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_indefinite_length_map() {
+        // Hand-craft an indefinite-length CBOR map containing one entry
+        // (`record_uuid` → 16 zero bytes). Initial byte 0xBF starts the
+        // indefinite map; 0xFF closes it. The whole thing is shaped like
+        // a (very incomplete) record map; ciborium's Value reader accepts
+        // the indefinite form, parse_record_map will fail with
+        // MissingField, BUT the decode pipeline's first failure is the
+        // re-encode-and-compare step *only if* parse_record_map succeeds.
+        // To exercise NonCanonicalEncoding specifically, build a map
+        // whose KNOWN-field set is complete, just wrapped in an
+        // indefinite-length frame.
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(0xbf); // indefinite-length map start
+        // Build the entries by hand: take a canonical record's map bytes,
+        // strip the leading map-header byte, and append before our 0xFF.
+        let r = dummy_record();
+        let canonical = encode(&r).expect("baseline encode");
+        // The first byte of the canonical map is 0xa0 + n (n entries
+        // since dummy_record encodes 5 keys: record_uuid, record_type,
+        // fields, created_at_ms, last_mod_ms). Sanity-check then strip.
+        assert_eq!(
+            canonical[0], 0xa5,
+            "dummy_record encodes to a 5-entry definite-length map"
+        );
+        buf.extend_from_slice(&canonical[1..]);
+        buf.push(0xff); // break -> closes the indefinite map
+
+        let err = decode(&buf).expect_err("indefinite-length map must be rejected");
+        assert!(
+            matches!(err, RecordError::NonCanonicalEncoding),
+            "expected NonCanonicalEncoding, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_indefinite_length_array() {
+        // Build a record whose `tags` is an indefinite-length array. The
+        // canonical-input gate rejects on re-encode mismatch.
+        let mut r = dummy_record();
+        r.tags = vec!["work".into()];
+        let canonical = encode(&r).expect("baseline encode");
+
+        // ciborium parses the canonical bytes back to a Value tree, then
+        // we substitute the tags array with a hand-crafted indefinite
+        // array and emit by hand.
+        // Strategy: take the canonical bytes, locate the `tags` key
+        // sequence, and rewrite the array prefix from definite (0x81 for
+        // 1-element array) to indefinite (0x9f ... 0xff).
+        // The `tags` value is encoded as: 0x81 0x64 'w' 'o' 'r' 'k'.
+        // Replace with: 0x9f 0x64 'w' 'o' 'r' 'k' 0xff. The new bytes
+        // are 1 byte longer, so the surrounding map header byte (0xa? +
+        // n) is unchanged (entry count same), but we must emit a fresh
+        // wrapper.
+        //
+        // Easier: build the whole thing from scratch by emitting each
+        // entry by hand. Use ciborium for everything except the tags
+        // value, which we splice in raw.
+        //
+        // Take the canonical map and extract its (k, v) entries via
+        // ciborium, then re-emit the map header followed by the entries,
+        // substituting the tags entry's value with raw indefinite-array
+        // bytes.
+        let value: Value = ciborium::de::from_reader(&canonical[..])
+            .expect("parse canonical record");
+        let entries = match value {
+            Value::Map(e) => e,
+            _ => panic!("not a map"),
+        };
+        let n = entries.len();
+        assert!(n < 24, "test assumes single-byte map header");
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(0xa0 + (n as u8)); // definite-length map header
+        for (k, v) in &entries {
+            buf.extend_from_slice(&cbor_value_bytes(k));
+            if let Value::Text(s) = k {
+                if s == "tags" {
+                    // Indefinite-length array containing one tstr "work"
+                    buf.push(0x9f); // indefinite array start
+                    buf.push(0x64); // tstr length 4
+                    buf.extend_from_slice(b"work");
+                    buf.push(0xff); // break
+                    continue;
+                }
+            }
+            buf.extend_from_slice(&cbor_value_bytes(v));
+        }
+
+        let err = decode(&buf).expect_err("indefinite-length array must be rejected");
+        assert!(
+            matches!(err, RecordError::NonCanonicalEncoding),
+            "expected NonCanonicalEncoding, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_non_canonical_key_order() {
+        // Emit a record map with the spec's listing order (NOT canonical
+        // length-then-bytewise order) and verify the canonical-input
+        // gate catches it.
+        //
+        // Listing order from §6.3:
+        //   record_uuid, record_type, fields, created_at_ms, last_mod_ms
+        //
+        // Canonical order (length-then-bytewise):
+        //   fields (6), record_type (11), record_uuid (11),
+        //   created_at_ms (13), last_mod_ms (11)
+        // Length-sorted: fields, last_mod_ms, record_type, record_uuid,
+        // created_at_ms. So the listing order differs.
+        let r = dummy_record();
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_RECORD_UUID.into()),
+                Value::Bytes(r.record_uuid.to_vec()),
+            ),
+            (
+                Value::Text(KEY_RECORD_TYPE.into()),
+                Value::Text(r.record_type.clone()),
+            ),
+            (Value::Text(KEY_FIELDS.into()), Value::Map(Vec::new())),
+            (
+                Value::Text(KEY_CREATED_AT_MS.into()),
+                Value::Integer(r.created_at_ms.into()),
+            ),
+            (
+                Value::Text(KEY_LAST_MOD_MS.into()),
+                Value::Integer(r.last_mod_ms.into()),
+            ),
+        ];
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let err = decode(&bytes).expect_err("non-canonical key order must be rejected");
+        assert!(
+            matches!(err, RecordError::NonCanonicalEncoding),
+            "expected NonCanonicalEncoding, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_non_shortest_length_prefix() {
+        // Take a canonical record whose `record_type` is "login" (5
+        // bytes, encoded as `0x65` + the 5 ASCII bytes — a single
+        // initial byte with the length packed inline). Replace that
+        // prefix with the non-shortest 1-byte form: `0x78 0x05` + same
+        // payload.
+        let r = dummy_record();
+        let canonical = encode(&r).expect("baseline encode");
+
+        // Locate the byte sequence: 0x65 'l' 'o' 'g' 'i' 'n'
+        let needle: [u8; 6] = [0x65, b'l', b'o', b'g', b'i', b'n'];
+        let pos = canonical
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("login tstr present in canonical encoding");
+
+        // Build new bytes with the non-shortest length prefix.
+        let mut mutated: Vec<u8> = Vec::with_capacity(canonical.len() + 1);
+        mutated.extend_from_slice(&canonical[..pos]);
+        mutated.push(0x78); // tstr, 1-byte length follows
+        mutated.push(0x05); // length = 5 (non-shortest: should be inline)
+        mutated.extend_from_slice(b"login");
+        mutated.extend_from_slice(&canonical[pos + needle.len()..]);
+
+        let err = decode(&mutated).expect_err("non-shortest length must be rejected");
+        assert!(
+            matches!(err, RecordError::NonCanonicalEncoding),
+            "expected NonCanonicalEncoding, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_keys() {
+        // Two entries with the same text key. ciborium accepts this on
+        // encode; parse_record_map's seen_keys check catches it before
+        // the canonical-input gate runs.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        // Append a second copy of "record_type". (We don't need to keep
+        // canonical sort because the duplicate-key check fires inside
+        // parse_record_map, before the re-encode-and-compare step.)
+        entries.push((
+            Value::Text(KEY_RECORD_TYPE.into()),
+            Value::Text("imposter".into()),
+        ));
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let err = decode(&bytes).expect_err("duplicate key must be rejected");
+        assert!(
+            matches!(err, RecordError::DuplicateKey { ref key } if key == KEY_RECORD_TYPE),
+            "expected DuplicateKey {{ key: \"record_type\" }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_wrong_type_for_known_field() {
+        // last_mod_ms as a text string.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_LAST_MOD_MS {
+                    *v = Value::Text("not-a-number".into());
+                }
+            }
+        }
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("text for u64 field must be rejected");
+        assert!(
+            matches!(
+                err,
+                RecordError::WrongType {
+                    field: "last_mod_ms",
+                    expected: "unsigned integer",
+                }
+            ),
+            "expected WrongType {{ field: \"last_mod_ms\", expected: \"unsigned integer\" }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_invalid_uuid_length() {
+        // record_uuid = 15 bytes instead of 16.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_RECORD_UUID {
+                    *v = Value::Bytes(vec![0u8; 15]);
+                }
+            }
+        }
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("15-byte record_uuid must be rejected");
+        assert!(
+            matches!(
+                err,
+                RecordError::InvalidUuid {
+                    field: "record_uuid",
+                    length: 15,
+                }
+            ),
+            "expected InvalidUuid {{ field: \"record_uuid\", length: 15 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_missing_required_field() {
+        // Drop record_uuid entirely.
+        let r = dummy_record();
+        let entries: Vec<(Value, Value)> = record_entries_canonical(&r)
+            .into_iter()
+            .filter(|(k, _)| match k {
+                Value::Text(s) => s != KEY_RECORD_UUID,
+                _ => true,
+            })
+            .collect();
+        let bytes = encode_entries_canonical(&entries);
+        let err = decode(&bytes).expect_err("missing record_uuid must be rejected");
+        assert!(
+            matches!(
+                err,
+                RecordError::MissingField {
+                    field: "record_uuid"
+                }
+            ),
+            "expected MissingField {{ field: \"record_uuid\" }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_non_text_key_in_record_map() {
+        // Build a top-level record map with one integer key alongside
+        // the standard text keys. The float/tag walker accepts integer
+        // keys; parse_record_map's text-key check catches it.
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((Value::Integer(7u64.into()), Value::Text("oops".into())));
+        let bytes = cbor_map_bytes_unsorted(&entries);
+        let err = decode(&bytes).expect_err("integer key must be rejected");
+        assert!(
+            matches!(err, RecordError::NonTextKey),
+            "expected NonTextKey, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_top_level_not_a_map() {
+        // A CBOR array instead of a map.
+        let array = Value::Array(vec![
+            Value::Integer(1u64.into()),
+            Value::Integer(2u64.into()),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&array, &mut buf).expect("encode array");
+        let err = decode(&buf).expect_err("non-map top level must be rejected");
+        assert!(
+            matches!(err, RecordError::NotAMap),
+            "expected NotAMap, got {err:?}"
+        );
+    }
+
+    // ---- Direct UnknownValue API -----------------------------------------
+
+    #[test]
+    fn unknown_value_round_trip() {
+        // Construct from a small canonical CBOR map, then re-emit; bytes
+        // must match.
+        let entries = vec![
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+            (Value::Text("b".into()), Value::Text("two".into())),
+        ];
+        let sorted = canonical_sort_entries(&entries).expect("sort");
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(sorted), &mut bytes)
+            .expect("encode test map");
+
+        let uv = UnknownValue::from_canonical_cbor(&bytes)
+            .expect("from_canonical_cbor accepts canonical map");
+        let bytes_again = uv.to_canonical_cbor().expect("to_canonical_cbor");
+        assert_eq!(
+            bytes, bytes_again,
+            "UnknownValue round-trip is bit-identical for canonical input"
+        );
+    }
+
+    #[test]
+    fn unknown_value_rejects_floats() {
+        // A CBOR float value at the top level.
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Float(1.5), &mut bytes).expect("encode float");
+        let err = UnknownValue::from_canonical_cbor(&bytes)
+            .expect_err("UnknownValue must reject floats");
+        assert!(
+            matches!(err, RecordError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_value_rejects_tags() {
+        // A tagged value at the top level.
+        let tagged = Value::Tag(0, Box::new(Value::Text("2024-04-25T00:00:00Z".into())));
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&tagged, &mut bytes).expect("encode tagged");
+        let err = UnknownValue::from_canonical_cbor(&bytes)
+            .expect_err("UnknownValue must reject tags");
+        assert!(
+            matches!(err, RecordError::TagRejected),
+            "expected TagRejected, got {err:?}"
+        );
     }
 }
