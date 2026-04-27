@@ -175,4 +175,56 @@ mod tests {
         let parsed = decode(&bytes).expect("decode");
         assert_eq!(parsed, f);
     }
+
+    #[test]
+    fn decode_rejects_bad_magic() {
+        let mut bytes = encode(&sample());
+        bytes[0] ^= 0xFF;
+        let err = decode(&bytes).unwrap_err();
+        assert!(matches!(err, BundleFileError::BadMagic { .. }));
+    }
+
+    #[test]
+    fn decode_rejects_bad_format_version() {
+        let mut bytes = encode(&sample());
+        bytes[5] = 0x02;  // bump format_version low byte from 0x01 to 0x02
+        let err = decode(&bytes).unwrap_err();
+        assert!(matches!(err, BundleFileError::UnsupportedFormatVersion(2)));
+    }
+
+    #[test]
+    fn decode_rejects_bad_file_kind() {
+        let mut bytes = encode(&sample());
+        bytes[7] = 0x02;
+        let err = decode(&bytes).unwrap_err();
+        assert!(matches!(err, BundleFileError::UnsupportedFileKind(2)));
+    }
+
+    #[test]
+    fn decode_rejects_truncated_at_every_boundary() {
+        let bytes = encode(&sample());
+        for n in 0..bytes.len() {
+            let truncated = &bytes[..n];
+            let result = decode(truncated);
+            assert!(
+                result.is_err(),
+                "decode must fail on slice [..{n}] of {} bytes",
+                bytes.len()
+            );
+        }
+        decode(&bytes).expect("full bytes decode");
+    }
+
+    #[test]
+    fn decode_rejects_wrap_pw_length_mismatch() {
+        let bytes = encode(&sample());
+        // wrap_pw_ct_len starts at offset 4+2+2+16+8 + NONCE_LEN = 32 + 24 = 56
+        let mut tampered = bytes.clone();
+        tampered[56..60].copy_from_slice(&64u32.to_be_bytes());
+        let err = decode(&tampered).unwrap_err();
+        assert!(matches!(
+            err,
+            BundleFileError::WrapLengthMismatch { field: "wrap_pw", declared: 64 }
+        ));
+    }
 }
