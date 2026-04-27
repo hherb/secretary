@@ -162,11 +162,12 @@ pub enum BundleError {
 /// Carries the four `(sk, pk)` pairs of the v1 hybrid suite, plus the
 /// 16-byte user UUID, a display name, and a creation timestamp.
 ///
-/// Secret-key fields are wrapped in [`Sensitive`] so they zeroize on drop.
-/// The bundle does not derive `Clone`, `Debug`, or `PartialEq`: cloning
-/// would silently duplicate secret material; a derived `Debug` would leak
-/// it (a manual redacted impl is provided below); equality is only ever
-/// asked of test code, which compares exposed contents field-by-field.
+/// Secret-key fields are wrapped in [`Sensitive`] (or [`SecretBytes`] for
+/// runtime-sized PQC keys) so they zeroize on drop. The bundle does not
+/// derive `Clone`, `Debug`, or `PartialEq`: cloning would silently
+/// duplicate secret material; a derived `Debug` would leak it; equality is
+/// only ever asked of test code, which compares exposed contents
+/// field-by-field.
 pub struct IdentityBundle {
     /// 128-bit user UUID, the same bytes as `contact_uuid` on the §6
     /// Contact Card.
@@ -365,7 +366,11 @@ impl IdentityBundle {
                 return Err(BundleError::CborDecode("non-string map key".into()));
             };
             match key.as_str() {
-                KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, &key)?,
+                KEY_USER_UUID => set_once(
+                    &mut user_uuid,
+                    take_uuid(v)?,
+                    &key,
+                )?,
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
@@ -489,6 +494,20 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
     Ok(buf)
 }
 
+/// Compute the canonical CBOR sort order for two map keys. Test-only: lets
+/// the test module build deliberately non-canonical maps that are then
+/// sorted (or deliberately not sorted) to exercise the strict-decoder
+/// branches. Production encode does the sorting itself in [`encode_map`]
+/// against materialised key bytes.
+#[cfg(test)]
+pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    let mut a_buf = Vec::new();
+    let mut b_buf = Vec::new();
+    let _ = ciborium::ser::into_writer(a, &mut a_buf);
+    let _ = ciborium::ser::into_writer(b, &mut b_buf);
+    a_buf.cmp(&b_buf)
+}
+
 fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), BundleError> {
     if slot.is_some() {
         return Err(BundleError::DuplicateField(key.to_string()));
@@ -517,9 +536,7 @@ fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
         Value::Bytes(b) => b,
         _ => return Err(BundleError::InvalidUuid),
     };
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
+    bytes.try_into().map_err(|_: Vec<u8>| BundleError::InvalidUuid)
 }
 
 fn take_fixed_bytes<const N: usize>(
@@ -531,13 +548,11 @@ fn take_fixed_bytes<const N: usize>(
         _ => return Err(BundleError::CborDecode("expected byte string".into())),
     };
     let got = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| BundleError::WrongKeySize {
-            field,
-            expected: N,
-            got,
-        })
+    bytes.try_into().map_err(|_: Vec<u8>| BundleError::WrongKeySize {
+        field,
+        expected: N,
+        got,
+    })
 }
 
 fn take_sized_bytes(
@@ -615,5 +630,144 @@ mod tests {
         let bytes_1 = b.to_canonical_cbor().expect("encode");
         let bytes_2 = b.to_canonical_cbor().expect("encode");
         assert_eq!(bytes_1, bytes_2, "canonical encoding must be deterministic");
+    }
+
+    #[test]
+    fn parse_rejects_unknown_field() {
+        // Build a minimal map that is canonical-shaped (keys sorted) but
+        // contains a key the spec doesn't define. The decoder must reject
+        // before the missing-field check has a chance to fire.
+        let mut entries = vec![
+            (Value::Text(KEY_USER_UUID.into()), Value::Bytes(vec![0u8; 16])),
+            (Value::Text("rogue".into()), Value::Text("payload".into())),
+        ];
+        entries.sort_by(|a, b| super::canonical_key_cmp(&a.0, &b.0));
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        assert!(
+            matches!(err, BundleError::UnknownField(ref s) if s == "rogue"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_field() {
+        // Two identical text keys. ciborium accepts duplicates on encode (it
+        // does not police map invariants for `Value::Map`); our decoder must
+        // reject them.
+        let entries = vec![
+            (
+                Value::Text(KEY_DISPLAY_NAME.into()),
+                Value::Text("Alice".into()),
+            ),
+            (
+                Value::Text(KEY_DISPLAY_NAME.into()),
+                Value::Text("Bob".into()),
+            ),
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        assert!(
+            matches!(err, BundleError::DuplicateField(ref s) if s == "display_name"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_wrong_x25519_pk_size() {
+        // Build a full-shape valid bundle, then mutate `x25519_pk` to 30
+        // bytes. Re-encoding (without the canonical-key sort) is fine here
+        // because the original bundle was canonical and we are not changing
+        // any keys.
+        let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
+        let b = generate("X", 0, &mut rng);
+        let bytes = b.to_canonical_cbor().unwrap();
+        let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+        let Value::Map(mut entries) = value else { panic!() };
+        for (k, v) in entries.iter_mut() {
+            if let Value::Text(s) = k {
+                if s == KEY_X25519_PK {
+                    *v = Value::Bytes(vec![0u8; 30]);
+                }
+            }
+        }
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                BundleError::WrongKeySize {
+                    field: "x25519_pk",
+                    expected: 32,
+                    got: 30,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_non_canonical_key_order() {
+        // Emit fields in §5 listing order (which is NOT canonical: e.g.
+        // "user_uuid" sorts after "ml_*" because of length). The decoder
+        // must catch this via re-encode-and-compare.
+        let mut rng = ChaCha20Rng::from_seed([9u8; 32]);
+        let b = generate("X", 0, &mut rng);
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_USER_UUID.into()),
+                Value::Bytes(b.user_uuid.to_vec()),
+            ),
+            (
+                Value::Text(KEY_DISPLAY_NAME.into()),
+                Value::Text(b.display_name.clone()),
+            ),
+            (
+                Value::Text(KEY_X25519_SK.into()),
+                Value::Bytes(b.x25519_sk.expose().to_vec()),
+            ),
+            (
+                Value::Text(KEY_X25519_PK.into()),
+                Value::Bytes(b.x25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_SK.into()),
+                Value::Bytes(b.ml_kem_768_sk.expose().clone()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_PK.into()),
+                Value::Bytes(b.ml_kem_768_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_ED25519_SK.into()),
+                Value::Bytes(b.ed25519_sk.expose().to_vec()),
+            ),
+            (
+                Value::Text(KEY_ED25519_PK.into()),
+                Value::Bytes(b.ed25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_SK.into()),
+                Value::Bytes(b.ml_dsa_65_sk.expose().clone()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_PK.into()),
+                Value::Bytes(b.ml_dsa_65_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_CREATED_AT.into()),
+                Value::Integer(b.created_at_ms.into()),
+            ),
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        assert!(
+            matches!(err, BundleError::NonCanonicalCbor),
+            "unexpected error: {err:?}"
+        );
     }
 }
