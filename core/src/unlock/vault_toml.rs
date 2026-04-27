@@ -251,4 +251,62 @@ mod tests {
         let parsed = decode(&s).expect("decode");
         assert_eq!(parsed, v);
     }
+
+    #[test]
+    fn decode_ignores_unknown_top_level_key() {
+        // Insert the unknown key before [kdf] so TOML parses it as a top-level
+        // entry; appending after [kdf] would make it a kdf key (§2: unknown
+        // top-level keys are ignored, unknown kdf keys are errors).
+        let s = encode(&sample()).replacen("[kdf]\n", "future_key = \"some value\"\n[kdf]\n", 1);
+        let parsed = decode(&s).expect("unknown top-level key must be ignored");
+        assert_eq!(parsed, sample());
+    }
+
+    #[test]
+    fn decode_rejects_unknown_kdf_key() {
+        // Insert rogue key directly after [kdf] header so TOML parses it into
+        // the kdf table regardless of section ordering.
+        let s = encode(&sample()).replacen("[kdf]\n", "[kdf]\nrogue_param = 42\n", 1);
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::UnknownKdfKey(ref k) if k == "rogue_param"));
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_format_version() {
+        let s = encode(&sample()).replace("format_version = 1", "format_version = 2");
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::UnsupportedFormatVersion(2)));
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_suite_id() {
+        let s = encode(&sample()).replace("suite_id = 1", "suite_id = 2");
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::UnsupportedSuiteId(2)));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_kdf_algorithm() {
+        let s = encode(&sample()).replace("algorithm = \"argon2id\"", "algorithm = \"scrypt\"");
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::UnsupportedKdfAlgorithm(ref s) if s == "scrypt"));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_kdf_version() {
+        let s = encode(&sample()).replace("version = \"1.3\"", "version = \"1.0\"");
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::UnsupportedKdfVersion(ref s) if s == "1.0"));
+    }
+
+    #[test]
+    fn decode_rejects_short_salt() {
+        let v = sample();
+        let s = encode(&v);
+        let short_b64 = STANDARD.encode([0u8; 16]);
+        let original_b64 = STANDARD.encode([0xCDu8; 32]);
+        let s = s.replace(&original_b64, &short_b64);
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::InvalidSaltLength { got: 16 }));
+    }
 }
