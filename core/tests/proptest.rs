@@ -376,11 +376,9 @@ mod unlock {
 
         /// `decode(encode(v)) == v` for any well-formed VaultToml.
         ///
-        /// `created_at_ms` is constrained to `0..=i64::MAX as u64` because the
-        /// TOML integer type is a signed 64-bit value; the `toml` crate panics
-        /// on serialising a `u64` that exceeds `i64::MAX`. Values beyond that
-        /// range are unreachable in practice (> year 292 million) and are not
-        /// representable in the vault-format.md §2 wire form.
+        /// `created_at_ms` is bounded to `0..=i64::MAX as u64` — the representable
+        /// range for TOML's signed 64-bit integer. Values above i64::MAX are covered
+        /// by the `vault_toml_encode_rejects_timestamp_out_of_range` property below.
         #[test]
         fn vault_toml_roundtrip(
             vault_uuid in any::<[u8; 16]>(),
@@ -404,9 +402,34 @@ mod unlock {
                     salt,
                 },
             };
-            let s = vault_toml::encode(&v);
+            let s = vault_toml::encode(&v).unwrap();
             let parsed = vault_toml::decode(&s).unwrap();
             prop_assert_eq!(parsed, v);
+        }
+
+        /// `encode` returns `TimestampOutOfRange` — not a panic — for any
+        /// `created_at_ms` above i64::MAX. Documents and pins the typed-error
+        /// path that replaced the old `expect` panic.
+        #[test]
+        fn vault_toml_encode_rejects_timestamp_out_of_range(
+            created_at_ms in (i64::MAX as u64 + 1)..=u64::MAX,
+        ) {
+            let v = vault_toml::VaultToml {
+                format_version: 1,
+                suite_id: 1,
+                vault_uuid: [0u8; 16],
+                created_at_ms,
+                kdf: vault_toml::KdfSection {
+                    algorithm: "argon2id".to_string(),
+                    version: "1.3".to_string(),
+                    memory_kib: 8,
+                    iterations: 1,
+                    parallelism: 1,
+                    salt: [0u8; 32],
+                },
+            };
+            let err = vault_toml::encode(&v).unwrap_err();
+            prop_assert!(matches!(err, vault_toml::VaultTomlError::TimestampOutOfRange(_)));
         }
 
         /// `open_with_password(create_vault(...)) ` recovers the same IBK and

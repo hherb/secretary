@@ -56,6 +56,12 @@ pub enum VaultTomlError {
     InvalidSaltLength { got: usize },
     #[error("invalid UUID")]
     InvalidUuid,
+    /// `created_at_ms` exceeds i64::MAX — TOML's signed 64-bit integer cannot
+    /// represent the value. Practically unreachable (would require a timestamp
+    /// past year 292 million) but the API accepts u64, so we surface it as a
+    /// typed error rather than a panic.
+    #[error("created_at_ms ({0}) exceeds i64::MAX")]
+    TimestampOutOfRange(u64),
 }
 
 // Wire types used for TOML serialization only.
@@ -78,7 +84,10 @@ struct KdfSectionWire {
     salt_b64: String,
 }
 
-pub fn encode(v: &VaultToml) -> String {
+pub fn encode(v: &VaultToml) -> Result<String, VaultTomlError> {
+    if v.created_at_ms > i64::MAX as u64 {
+        return Err(VaultTomlError::TimestampOutOfRange(v.created_at_ms));
+    }
     let wire = VaultTomlWire {
         format_version: v.format_version,
         suite_id: v.suite_id,
@@ -93,7 +102,7 @@ pub fn encode(v: &VaultToml) -> String {
             salt_b64: STANDARD.encode(v.kdf.salt),
         },
     };
-    toml::to_string(&wire).expect("serializing primitive types cannot fail")
+    toml::to_string(&wire).map_err(|e| VaultTomlError::MalformedToml(e.to_string()))
 }
 
 /// Format a 16-byte UUID as the RFC 4122 textual form: 8-4-4-4-12 hex groups.
@@ -298,7 +307,7 @@ mod tests {
     #[test]
     fn encode_decode_roundtrip() {
         let v = sample();
-        let s = encode(&v);
+        let s = encode(&v).expect("encode");
         let parsed = decode(&s).expect("decode");
         assert_eq!(parsed, v);
     }
@@ -308,7 +317,7 @@ mod tests {
         // Insert the unknown key before [kdf] so TOML parses it as a top-level
         // entry; appending after [kdf] would make it a kdf key (§2: unknown
         // top-level keys are ignored, unknown kdf keys are errors).
-        let s = encode(&sample()).replacen("[kdf]\n", "future_key = \"some value\"\n[kdf]\n", 1);
+        let s = encode(&sample()).expect("encode").replacen("[kdf]\n", "future_key = \"some value\"\n[kdf]\n", 1);
         let parsed = decode(&s).expect("unknown top-level key must be ignored");
         assert_eq!(parsed, sample());
     }
@@ -317,35 +326,35 @@ mod tests {
     fn decode_rejects_unknown_kdf_key() {
         // Insert rogue key directly after [kdf] header so TOML parses it into
         // the kdf table regardless of section ordering.
-        let s = encode(&sample()).replacen("[kdf]\n", "[kdf]\nrogue_param = 42\n", 1);
+        let s = encode(&sample()).expect("encode").replacen("[kdf]\n", "[kdf]\nrogue_param = 42\n", 1);
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnknownKdfKey(ref k) if k == "rogue_param"));
     }
 
     #[test]
     fn decode_rejects_unsupported_format_version() {
-        let s = encode(&sample()).replace("format_version = 1", "format_version = 2");
+        let s = encode(&sample()).expect("encode").replace("format_version = 1", "format_version = 2");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedFormatVersion(2)));
     }
 
     #[test]
     fn decode_rejects_unsupported_suite_id() {
-        let s = encode(&sample()).replace("suite_id = 1", "suite_id = 2");
+        let s = encode(&sample()).expect("encode").replace("suite_id = 1", "suite_id = 2");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedSuiteId(2)));
     }
 
     #[test]
     fn decode_rejects_wrong_kdf_algorithm() {
-        let s = encode(&sample()).replace("algorithm = \"argon2id\"", "algorithm = \"scrypt\"");
+        let s = encode(&sample()).expect("encode").replace("algorithm = \"argon2id\"", "algorithm = \"scrypt\"");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedKdfAlgorithm(ref s) if s == "scrypt"));
     }
 
     #[test]
     fn decode_rejects_wrong_kdf_version() {
-        let s = encode(&sample()).replace("version = \"1.3\"", "version = \"1.0\"");
+        let s = encode(&sample()).expect("encode").replace("version = \"1.3\"", "version = \"1.0\"");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedKdfVersion(ref s) if s == "1.0"));
     }
@@ -353,7 +362,7 @@ mod tests {
     #[test]
     fn decode_rejects_short_salt() {
         let v = sample();
-        let s = encode(&v);
+        let s = encode(&v).expect("encode");
         let short_b64 = STANDARD.encode([0u8; 16]);
         let original_b64 = STANDARD.encode([0xCDu8; 32]);
         let s = s.replace(&original_b64, &short_b64);
@@ -363,7 +372,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_invalid_salt_b64() {
-        let s = encode(&sample()).replace(
+        let s = encode(&sample()).expect("encode").replace(
             &STANDARD.encode([0xCDu8; 32]),
             "not!valid!base64!!!",
         );
@@ -373,7 +382,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_uppercase_uuid() {
-        let s = encode(&sample()).replace(
+        let s = encode(&sample()).expect("encode").replace(
             "abababab-abab-abab-abab-abababababab",
             "ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB",
         );
@@ -383,7 +392,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_uuid_without_hyphens() {
-        let s = encode(&sample()).replace(
+        let s = encode(&sample()).expect("encode").replace(
             "abababab-abab-abab-abab-abababababab",
             "abababababababababababababababababab",
         );
@@ -393,11 +402,19 @@ mod tests {
 
     #[test]
     fn decode_rejects_uuid_with_wrong_grouping() {
-        let s = encode(&sample()).replace(
+        let s = encode(&sample()).expect("encode").replace(
             "abababab-abab-abab-abab-abababababab",
             "abab-abababab-abab-abab-abababababab",
         );
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::InvalidUuid));
+    }
+
+    #[test]
+    fn encode_rejects_timestamp_out_of_range() {
+        let mut v = sample();
+        v.created_at_ms = (i64::MAX as u64) + 1;
+        let err = encode(&v).unwrap_err();
+        assert!(matches!(err, VaultTomlError::TimestampOutOfRange(t) if t == (i64::MAX as u64) + 1));
     }
 }

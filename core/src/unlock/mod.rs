@@ -207,7 +207,7 @@ pub fn create_vault(
             salt: argon2_salt,
         },
     };
-    let vault_toml_bytes = vault_toml::encode(&vt).into_bytes();
+    let vault_toml_bytes = vault_toml::encode(&vt)?.into_bytes();
 
     // master_kek and recovery_kek go out of scope here → Sensitive Drop zeroizes.
 
