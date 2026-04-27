@@ -1,4 +1,14 @@
 //! `vault.toml` cleartext metadata (`docs/vault-format.md` §2).
+//!
+//! This file holds non-secret bootstrap metadata for a Secretary vault: the
+//! format version, suite identifier, vault UUID, creation timestamp, and the
+//! Argon2id KDF parameters (including the salt). It is parsed at vault open
+//! time to determine how to derive the Master KEK from the user's password.
+//!
+//! `decode` enforces v1's pinned values: `format_version = 1`, `suite_id = 1`,
+//! `kdf.algorithm = "argon2id"`, `kdf.version = "1.3"`. Forward compatibility
+//! per §2: unknown top-level keys are ignored, but unknown keys inside `[kdf]`
+//! are an error (a misinterpreted KDF parameter would derive the wrong key).
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
@@ -26,6 +36,12 @@ pub struct KdfSection {
 pub enum VaultTomlError {
     #[error("malformed TOML: {0}")]
     MalformedToml(String),
+    /// A required field was absent from the parsed TOML.
+    #[error("missing field: {0}")]
+    MissingField(&'static str),
+    /// A numeric field's value was outside the allowed range for its target type.
+    #[error("field {field} value out of range")]
+    FieldOutOfRange { field: &'static str },
     #[error("unknown key in [kdf] section: {0}")]
     UnknownKdfKey(String),
     #[error("unsupported format version: {0}")]
@@ -82,8 +98,33 @@ pub fn encode(v: &VaultToml) -> String {
 
 /// Format a 16-byte UUID as the RFC 4122 textual form: 8-4-4-4-12 hex groups.
 fn format_uuid_canonical(bytes: &[u8; 16]) -> String {
-    let h = bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(36);
+    for (i, b) in bytes.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            s.push('-');
+        }
+        write!(s, "{:02x}", b).expect("writing to String cannot fail");
+    }
+    s
+}
+
+/// Look up an integer field from a TOML table, returning `MissingField` if
+/// absent or not an integer.
+fn take_i64(table: &toml::value::Table, key: &'static str) -> Result<i64, VaultTomlError> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_integer)
+        .ok_or(VaultTomlError::MissingField(key))
+}
+
+/// Look up a string field from a TOML table, returning `MissingField` if
+/// absent or not a string.
+fn take_str<'a>(table: &'a toml::value::Table, key: &'static str) -> Result<&'a str, VaultTomlError> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .ok_or(VaultTomlError::MissingField(key))
 }
 
 pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
@@ -98,7 +139,7 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     let format_version = table
         .get("format_version")
         .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("format_version missing".into()))?;
+        .ok_or(VaultTomlError::MissingField("format_version"))?;
     // Saturate to u16::MAX so the error variant carries a meaningful value even
     // when the raw integer is out of range (e.g. 99999 → 65535 clearly signals
     // "out of range" to a reader). Same pattern for suite_id below.
@@ -110,23 +151,18 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     let suite_id = table
         .get("suite_id")
         .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("suite_id missing".into()))?;
+        .ok_or(VaultTomlError::MissingField("suite_id"))?;
     let suite_id = u16::try_from(suite_id).unwrap_or(u16::MAX);
     if suite_id != 1 {
         return Err(VaultTomlError::UnsupportedSuiteId(suite_id));
     }
 
-    let vault_uuid_str = table
-        .get("vault_uuid")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VaultTomlError::MalformedToml("vault_uuid missing".into()))?;
+    let vault_uuid_str = take_str(table, "vault_uuid")?;
     let vault_uuid = parse_uuid_canonical(vault_uuid_str).ok_or(VaultTomlError::InvalidUuid)?;
 
-    let created_at_ms = table
-        .get("created_at_ms")
-        .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("created_at_ms missing".into()))?
-        as u64;
+    let created_at_ms = take_i64(table, "created_at_ms")?;
+    let created_at_ms = u64::try_from(created_at_ms)
+        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "created_at_ms" })?;
 
     // Strict [kdf] decode: every key must be known. Unknown keys are a hard
     // error here because misinterpreting KDF parameters would derive a wrong key
@@ -134,7 +170,7 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     let kdf_table = table
         .get("kdf")
         .and_then(Value::as_table)
-        .ok_or_else(|| VaultTomlError::MalformedToml("[kdf] missing".into()))?;
+        .ok_or(VaultTomlError::MissingField("kdf"))?;
 
     const KNOWN_KDF_KEYS: &[&str] = &[
         "algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64",
@@ -145,44 +181,29 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
         }
     }
 
-    let algorithm = kdf_table
-        .get("algorithm")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.algorithm missing".into()))?
-        .to_string();
+    let algorithm = take_str(kdf_table, "algorithm")?.to_string();
     if algorithm != "argon2id" {
         return Err(VaultTomlError::UnsupportedKdfAlgorithm(algorithm));
     }
 
-    let version = kdf_table
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.version missing".into()))?
-        .to_string();
+    let version = take_str(kdf_table, "version")?.to_string();
     if version != "1.3" {
         return Err(VaultTomlError::UnsupportedKdfVersion(version));
     }
 
-    let memory_kib = kdf_table
-        .get("memory_kib")
-        .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.memory_kib missing".into()))?
-        as u32;
-    let iterations = kdf_table
-        .get("iterations")
-        .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.iterations missing".into()))?
-        as u32;
-    let parallelism = kdf_table
-        .get("parallelism")
-        .and_then(Value::as_integer)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.parallelism missing".into()))?
-        as u32;
+    let memory_kib = take_i64(kdf_table, "memory_kib")?;
+    let memory_kib = u32::try_from(memory_kib)
+        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.memory_kib" })?;
 
-    let salt_b64 = kdf_table
-        .get("salt_b64")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VaultTomlError::MalformedToml("kdf.salt_b64 missing".into()))?;
+    let iterations = take_i64(kdf_table, "iterations")?;
+    let iterations = u32::try_from(iterations)
+        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.iterations" })?;
+
+    let parallelism = take_i64(kdf_table, "parallelism")?;
+    let parallelism = u32::try_from(parallelism)
+        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.parallelism" })?;
+
+    let salt_b64 = take_str(kdf_table, "salt_b64")?;
     let salt_vec = STANDARD
         .decode(salt_b64)
         .map_err(|e| VaultTomlError::MalformedToml(format!("salt_b64: {e}")))?;
@@ -233,13 +254,16 @@ fn parse_uuid_canonical(s: &str) -> Option<[u8; 16]> {
             return None;
         }
     }
+    // Walk the five hex groups directly; no intermediate Vec needed.
+    // Pre-validation above guarantees lengths and character validity.
+    let groups: [&[u8]; 5] = [&b[0..8], &b[9..13], &b[14..18], &b[19..23], &b[24..36]];
     let mut out = [0u8; 16];
-    // Walk absolute positions, skipping the four hyphen slots.
-    let hex_positions: Vec<usize> = (0..36).filter(|i| ![8, 13, 18, 23].contains(i)).collect();
-    for (byte_idx, hex_pair) in hex_positions.chunks_exact(2).enumerate() {
-        let hi = hex_nibble(b[hex_pair[0]]);
-        let lo = hex_nibble(b[hex_pair[1]]);
-        out[byte_idx] = (hi << 4) | lo;
+    let mut byte_idx = 0;
+    for group in &groups {
+        for pair in group.chunks_exact(2) {
+            out[byte_idx] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+            byte_idx += 1;
+        }
     }
     Some(out)
 }
@@ -335,6 +359,16 @@ mod tests {
         let s = s.replace(&original_b64, &short_b64);
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::InvalidSaltLength { got: 16 }));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_salt_b64() {
+        let s = encode(&sample()).replace(
+            &STANDARD.encode([0xCDu8; 32]),
+            "not!valid!base64!!!",
+        );
+        let err = decode(&s).unwrap_err();
+        assert!(matches!(err, VaultTomlError::MalformedToml(ref m) if m.starts_with("salt_b64:")));
     }
 
     #[test]
