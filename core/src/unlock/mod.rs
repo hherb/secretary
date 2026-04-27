@@ -7,8 +7,14 @@ pub mod bundle_file;
 pub mod mnemonic;
 pub mod vault_toml;
 
-use crate::crypto::aead::AeadError;
-use crate::crypto::kdf::KdfError;
+use rand_core::{CryptoRng, RngCore};
+
+use crate::crypto::aead::{encrypt, AeadError};
+use crate::crypto::kdf::{
+    derive_master_kek, derive_recovery_kek, Argon2idParams, KdfError, TAG_ID_BUNDLE,
+    TAG_ID_WRAP_PW, TAG_ID_WRAP_REC,
+};
+use crate::crypto::secret::{SecretBytes, Sensitive};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UnlockError {
@@ -42,5 +48,170 @@ impl From<AeadError> for UnlockError {
         // Position-specific user-facing variants (WrongPasswordOrCorrupt etc.)
         // are produced explicitly at call sites, not via From.
         UnlockError::AeadFailure
+    }
+}
+
+// ---------------------------------------------------------------------------
+// create_vault output types
+// ---------------------------------------------------------------------------
+
+pub struct CreatedVault {
+    pub vault_toml_bytes: Vec<u8>,
+    pub identity_bundle_bytes: Vec<u8>,
+    pub recovery_mnemonic: mnemonic::Mnemonic,
+    pub identity_block_key: Sensitive<[u8; 32]>,
+    pub identity: bundle::IdentityBundle,
+}
+
+pub struct UnlockedIdentity {
+    pub identity_block_key: Sensitive<[u8; 32]>,
+    pub identity: bundle::IdentityBundle,
+}
+
+// ---------------------------------------------------------------------------
+// create_vault orchestrator (§3 Master KEK, §4 Recovery KEK, §5 bundle wrap)
+// ---------------------------------------------------------------------------
+
+pub fn create_vault(
+    password: &SecretBytes,
+    display_name: &str,
+    created_at_ms: u64,
+    kdf_params: Argon2idParams,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<CreatedVault, UnlockError> {
+    // Step 1: identifiers and salt
+    let mut vault_uuid = [0u8; 16];
+    rng.fill_bytes(&mut vault_uuid);
+    let mut argon2_salt = [0u8; 32];
+    rng.fill_bytes(&mut argon2_salt);
+
+    // Step 2: Master KEK
+    let master_kek = derive_master_kek(password, &argon2_salt, &kdf_params)?;
+
+    // Step 3: mnemonic + Recovery KEK
+    let recovery_mnemonic = mnemonic::generate(rng);
+    let recovery_kek = derive_recovery_kek(recovery_mnemonic.entropy());
+
+    // Step 4: Identity Block Key (32 random bytes)
+    let mut ibk = [0u8; 32];
+    rng.fill_bytes(&mut ibk);
+    let identity_block_key = Sensitive::new(ibk);
+
+    // Step 5: generate identity + canonical CBOR
+    let identity = bundle::generate(display_name, created_at_ms, rng);
+    let bundle_plaintext = identity.to_canonical_cbor()?;
+
+    // Step 6: three independent 24-byte AEAD nonces
+    let mut nonce_id = [0u8; 24];
+    rng.fill_bytes(&mut nonce_id);
+    let mut nonce_pw = [0u8; 24];
+    rng.fill_bytes(&mut nonce_pw);
+    let mut nonce_rec = [0u8; 24];
+    rng.fill_bytes(&mut nonce_rec);
+
+    // Step 7: AEAD-encrypt bundle under IBK.
+    // identity_block_key: Sensitive<[u8;32]> == AeadKey, pass by reference.
+    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vault_uuid);
+    let bundle_ct_with_tag = encrypt(&identity_block_key, &nonce_id, &bundle_aad, &bundle_plaintext)?;
+
+    // Step 8: wrap_pw — AEAD-encrypt the IBK bytes under master_kek.
+    // identity_block_key.expose() -> &[u8; 32] coerces to &[u8] (plaintext).
+    let wrap_pw_aad = compose_aad(TAG_ID_WRAP_PW, &vault_uuid);
+    let wrap_pw_with_tag = encrypt(
+        &master_kek,
+        &nonce_pw,
+        &wrap_pw_aad,
+        identity_block_key.expose(),
+    )?;
+    let wrap_pw_arr: [u8; 48] = wrap_pw_with_tag
+        .as_slice()
+        .try_into()
+        .expect("32-byte plaintext + 16-byte tag = 48 bytes");
+
+    // Step 9: wrap_rec — AEAD-encrypt the IBK bytes under recovery_kek.
+    let wrap_rec_aad = compose_aad(TAG_ID_WRAP_REC, &vault_uuid);
+    let wrap_rec_with_tag = encrypt(
+        &recovery_kek,
+        &nonce_rec,
+        &wrap_rec_aad,
+        identity_block_key.expose(),
+    )?;
+    let wrap_rec_arr: [u8; 48] = wrap_rec_with_tag
+        .as_slice()
+        .try_into()
+        .expect("32-byte plaintext + 16-byte tag = 48 bytes");
+
+    // Step 10: pack into BundleFile → identity_bundle_bytes
+    let bf = bundle_file::BundleFile {
+        vault_uuid,
+        created_at_ms,
+        wrap_pw_nonce: nonce_pw,
+        wrap_pw_ct_with_tag: wrap_pw_arr,
+        wrap_rec_nonce: nonce_rec,
+        wrap_rec_ct_with_tag: wrap_rec_arr,
+        bundle_nonce: nonce_id,
+        bundle_ct_with_tag,
+    };
+    let identity_bundle_bytes = bundle_file::encode(&bf);
+
+    // Step 11: pack into VaultToml → vault_toml_bytes.
+    // Argon2idParams fields (memory_kib, iterations, parallelism) are pub.
+    let vt = vault_toml::VaultToml {
+        format_version: 1,
+        suite_id: 1,
+        vault_uuid,
+        created_at_ms,
+        kdf: vault_toml::KdfSection {
+            algorithm: "argon2id".to_string(),
+            version: "1.3".to_string(),
+            memory_kib: kdf_params.memory_kib,
+            iterations: kdf_params.iterations,
+            parallelism: kdf_params.parallelism,
+            salt: argon2_salt,
+        },
+    };
+    let vault_toml_bytes = vault_toml::encode(&vt).into_bytes();
+
+    // master_kek and recovery_kek go out of scope here → Sensitive Drop zeroizes.
+
+    Ok(CreatedVault {
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        recovery_mnemonic,
+        identity_block_key,
+        identity,
+    })
+}
+
+/// Concatenate a domain-separation tag with a vault UUID to form the AEAD AAD.
+fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(tag.len() + vault_uuid.len());
+    out.extend_from_slice(tag);
+    out.extend_from_slice(vault_uuid);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod create_tests {
+    use super::*;
+    use crate::crypto::kdf::Argon2idParams;
+    use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    #[test]
+    fn create_vault_produces_well_formed_artifacts() {
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let password = SecretBytes::new(b"correct horse battery staple".to_vec());
+        // Use minimal Argon2id params for test speed (memory floor relaxed via ::new).
+        let params = Argon2idParams::new(8, 1, 1);
+        let v = create_vault(&password, "Alice", 1_714_060_800_000, params, &mut rng)
+            .expect("create_vault");
+        assert!(!v.vault_toml_bytes.is_empty());
+        assert!(!v.identity_bundle_bytes.is_empty());
+        assert_eq!(v.recovery_mnemonic.phrase().split_whitespace().count(), 24);
+        assert_eq!(v.identity.display_name, "Alice");
     }
 }
