@@ -235,4 +235,43 @@ mod tests {
         let parsed = parse(&messy).expect("messy input must normalize");
         assert_eq!(parsed.entropy().expose(), m.entropy().expose());
     }
+
+    #[test]
+    fn parse_rejects_wrong_word_count() {
+        let err = parse("abandon abandon abandon").unwrap_err();
+        assert_eq!(err, MnemonicError::WrongLength { got: 3 });
+    }
+
+    #[test]
+    fn parse_rejects_unknown_word() {
+        // 24 words, all "valid-looking" syntactically but one is not in the list.
+        // Take a real generated mnemonic and replace one word.
+        let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
+        let m = generate(&mut rng);
+        let mut words: Vec<&str> = m.phrase().split_whitespace().collect();
+        words[5] = "notarealbip39word";
+        let bad = words.join(" ");
+        let err = parse(&bad).unwrap_err();
+        assert!(matches!(err, MnemonicError::UnknownWord(_)));
+    }
+
+    #[test]
+    fn parse_rejects_bad_checksum() {
+        // Take a valid mnemonic and swap two words from the wordlist — words
+        // remain in the list but the checksum no longer matches.
+        let mut rng = ChaCha20Rng::from_seed([100u8; 32]);
+        let m = generate(&mut rng);
+        let mut words: Vec<String> =
+            m.phrase().split_whitespace().map(String::from).collect();
+        words.swap(0, 1);
+        let bad = words.join(" ");
+        // It's possible the swap yields a still-valid checksum; for a fixed
+        // seed this is deterministic. The asserted failure mode is "either
+        // BadChecksum or UnknownWord", never Ok.
+        let err = parse(&bad).unwrap_err();
+        assert!(
+            matches!(err, MnemonicError::BadChecksum | MnemonicError::UnknownWord(_)),
+            "expected BadChecksum or UnknownWord, got {err:?}",
+        );
+    }
 }
