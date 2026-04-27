@@ -138,13 +138,25 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let word_count = normalized.split_whitespace().count();
-    if word_count != 24 {
-        return Err(MnemonicError::WrongLength { got: word_count });
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    if tokens.len() != 24 {
+        return Err(MnemonicError::WrongLength { got: tokens.len() });
     }
 
-    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, &normalized)
-        .map_err(map_bip39_error)?;
+    // The bip39 crate reports `UnknownWord` by index into the phrase, not by
+    // content. We resolve the index against our local token list here so the
+    // caller-facing error variant carries the actual offending word.
+    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, &normalized).map_err(|e| {
+        match e {
+            bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord(
+                tokens
+                    .get(idx)
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| "(unknown)".to_string()),
+            ),
+            other => map_bip39_error(other),
+        }
+    })?;
 
     let (full, len) = bip.to_entropy_array();
     debug_assert_eq!(len, 32, "24-word BIP-39 must produce 32 bytes of entropy");
@@ -159,23 +171,25 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
 
 /// Map the bip39 crate's error enum onto our caller-facing variant set.
 ///
-/// The crate reports an unknown word by *index* (position in the phrase),
-/// not by content; we surface a placeholder string for now. A future
-/// enhancement could re-tokenize the input to recover the offending word.
+/// The `UnknownWord` arm is handled at the call site in [`parse`] (it needs
+/// the local token list to resolve an index back to the word) and therefore
+/// does not appear here.
 fn map_bip39_error(e: bip39::Error) -> MnemonicError {
     use bip39::Error::{
         AmbiguousLanguages, BadEntropyBitCount, BadWordCount, InvalidChecksum, UnknownWord,
     };
     match e {
-        UnknownWord(_idx) => MnemonicError::UnknownWord("(unknown)".to_string()),
         InvalidChecksum => MnemonicError::BadChecksum,
         BadWordCount(n) => MnemonicError::WrongLength { got: n },
         // BadEntropyBitCount cannot arise from `parse_in_normalized` (it's a
         // from-entropy constructor failure); AmbiguousLanguages cannot arise
-        // because we pin the language to English. Both are folded into
-        // BadChecksum as a safe catch-all rejection — a parse failure is a
-        // parse failure regardless of which structural rule was broken.
-        BadEntropyBitCount(_) | AmbiguousLanguages(_) => MnemonicError::BadChecksum,
+        // because we pin the language to English. UnknownWord is handled by
+        // the caller. All other arms are folded into BadChecksum as a safe
+        // catch-all rejection — a parse failure is a parse failure regardless
+        // of which structural rule was broken.
+        UnknownWord(_) | BadEntropyBitCount(_) | AmbiguousLanguages(_) => {
+            MnemonicError::BadChecksum
+        }
     }
 }
 
@@ -269,7 +283,8 @@ mod tests {
         words[5] = "notarealbip39word";
         let bad = words.join(" ");
         let err = parse(&bad).unwrap_err();
-        assert!(matches!(err, MnemonicError::UnknownWord(_)));
+        // The payload must carry the actual offending word, not a placeholder.
+        assert_eq!(err, MnemonicError::UnknownWord("notarealbip39word".to_string()));
     }
 
     #[test]
