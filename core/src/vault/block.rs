@@ -231,6 +231,17 @@ pub enum BlockError {
     #[error("ML-KEM-768 ciphertext wrong length: expected {ML_KEM_768_CT_LEN}, got {found}")]
     RecipientCtPqWrongLength { found: usize },
 
+    /// A recipient entry's `wrap_ct` (the AEAD-wrapped Block Content Key,
+    /// 32-byte ciphertext + 16-byte Poly1305 tag = 48 bytes) was not
+    /// exactly 48 bytes. Same shape as [`Self::RecipientCtPqWrongLength`]:
+    /// the wire pins the length per §6.2 but the in-memory
+    /// [`HybridWrap::ct_w`] is `Vec<u8>` so a hand-built recipient could
+    /// in principle be wrong-shaped. Encode rejects so the wire stays
+    /// well-formed and the §6.2 split between `wrap_ct` and `wrap_tag`
+    /// is unambiguous.
+    #[error("recipient wrap_ct wrong length: expected 48, got {found}")]
+    RecipientCtWrongLength { found: usize },
+
     /// The reading user's fingerprint was not present in the block's
     /// recipient table. Per §6.4 this is a distinct UI condition ("this
     /// block is not shared with you") from corruption.
@@ -1066,9 +1077,13 @@ fn encode_recipient(r: &RecipientWrap) -> Result<Vec<u8>, BlockError> {
     }
     // ct_w = wrap_ct (32 bytes BCK ciphertext) || wrap_tag (16 bytes
     // Poly1305). Reject any other length so the on-disk split is
-    // unambiguous.
+    // unambiguous. Position-specific error: this is a recipient-table
+    // wire-format violation, not a body-AEAD failure, so it gets its
+    // own variant rather than abusing BlockError::Aead.
     if r.wrap.ct_w.len() != kem::BLOCK_CONTENT_KEY_LEN + AEAD_TAG_LEN {
-        return Err(BlockError::Aead(AeadError::InvalidLength));
+        return Err(BlockError::RecipientCtWrongLength {
+            found: r.wrap.ct_w.len(),
+        });
     }
 
     let mut out = Vec::with_capacity(RECIPIENT_ENTRY_LEN);
