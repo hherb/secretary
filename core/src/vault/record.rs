@@ -191,6 +191,48 @@ pub enum RecordError {
 // In-memory types
 // ---------------------------------------------------------------------------
 
+/// Opaque container for forward-compat CBOR values from unknown
+/// record-level or field-level keys (§6.3.2).
+///
+/// Wraps [`ciborium::Value`] so that `ciborium` is not part of this
+/// crate's public API. Consumers that just round-trip values through
+/// [`encode`] / [`decode`] never need to construct or inspect an
+/// `UnknownValue` directly; consumers that need to *construct* unknown
+/// entries (e.g., tests, FFI clients) can use
+/// [`UnknownValue::from_canonical_cbor`] and
+/// [`UnknownValue::to_canonical_cbor`].
+///
+/// The [`PartialEq`] impl compares the wrapped CBOR values structurally,
+/// which is enough for round-trip equality checks because [`decode`]
+/// rejects floats — the only `Value` variant that breaks `Eq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownValue(Value);
+
+impl UnknownValue {
+    /// Parse `bytes` as a single canonical CBOR item, rejecting floats
+    /// and tags per §6.2 / §6.3.2.
+    ///
+    /// Note: this does not enforce the byte-identical re-encode check
+    /// that [`decode`] applies at the record level. The full canonical
+    /// invariant on a record is dispositive at the record boundary;
+    /// individual unknown values constructed in isolation are validated
+    /// only for the no-float / no-tag rules.
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecordError> {
+        let parsed: Value = ciborium::de::from_reader(bytes)
+            .map_err(|e| RecordError::CborDecode(e.to_string()))?;
+        reject_floats_and_tags(&parsed, "<unknown>")?;
+        Ok(UnknownValue(parsed))
+    }
+
+    /// Serialise back to canonical CBOR.
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, RecordError> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&self.0, &mut buf)
+            .map_err(|e| RecordError::CborEncode(e.to_string()))?;
+        Ok(buf)
+    }
+}
+
 /// Per-field value: human-readable text or opaque bytes (§6.3).
 ///
 /// §6.3 says: "A field's `value` is `tstr` for human-readable values and
@@ -209,11 +251,12 @@ pub enum RecordFieldValue {
 /// field rather than only on the record so per-field merge can detect
 /// concurrent edits to different fields without false conflict.
 ///
-/// Only [`PartialEq`] (not [`Eq`]) is implemented: [`ciborium::Value`]
-/// does not implement [`Eq`] because it can carry `f64` floats. Records
-/// reject floats on decode (see [`RecordError::FloatRejected`]) so any
-/// `RecordField` produced by [`decode`] is float-free in practice; the
-/// type contract is the conservative one.
+/// Only [`PartialEq`] (not [`Eq`]) is implemented: the [`UnknownValue`]
+/// payload wraps a [`ciborium::Value`] which does not implement [`Eq`]
+/// because it can carry `f64` floats. Records reject floats on decode
+/// (see [`RecordError::FloatRejected`]) so any `RecordField` produced by
+/// [`decode`] is float-free in practice; the type contract is the
+/// conservative one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordField {
     /// The field's payload.
@@ -228,10 +271,11 @@ pub struct RecordField {
     ///
     /// Stored in a [`BTreeMap`] keyed by the unknown key's text so the
     /// re-encode path produces a deterministic ordering before the
-    /// canonical-CBOR sort (which is then dispositive). Values are kept
-    /// as raw [`ciborium::Value`] so any v2 shape — sub-maps, arrays,
-    /// nested bytes — survives untouched.
-    pub unknown: BTreeMap<String, Value>,
+    /// canonical-CBOR sort (which is then dispositive). Values are
+    /// wrapped in [`UnknownValue`] so any v2 shape — sub-maps, arrays,
+    /// nested bytes — survives untouched without leaking the underlying
+    /// CBOR library type into this crate's public API.
+    pub unknown: BTreeMap<String, UnknownValue>,
 }
 
 /// One record within a block (§6.3).
@@ -246,8 +290,8 @@ pub struct RecordField {
 /// field yields `Vec::new()`.
 ///
 /// Only [`PartialEq`] (not [`Eq`]) is implemented for the same reason
-/// as [`RecordField`]: the embedded [`ciborium::Value`] in `unknown`
-/// cannot be `Eq`.
+/// as [`RecordField`]: the [`UnknownValue`] payload in `unknown` wraps
+/// a [`ciborium::Value`] which cannot be `Eq`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     /// 16-byte record UUID. Stable across edits and across devices.
@@ -281,7 +325,7 @@ pub struct Record {
     /// Unknown record-level keys preserved verbatim per §6.3.2 forward
     /// compatibility. See [`RecordField::unknown`] for the storage
     /// rationale.
-    pub unknown: BTreeMap<String, Value>,
+    pub unknown: BTreeMap<String, UnknownValue>,
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +386,7 @@ fn record_to_entries(record: &Record) -> Result<Vec<(Value, Value)>, RecordError
     // it does not matter whether unknowns are pushed before or after the
     // known entries.
     for (k, v) in &record.unknown {
-        entries.push((Value::Text(k.clone()), v.clone()));
+        entries.push((Value::Text(k.clone()), v.0.clone()));
     }
 
     Ok(entries)
@@ -391,7 +435,7 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
     ));
 
     for (k, v) in &field.unknown {
-        entries.push((Value::Text(k.clone()), v.clone()));
+        entries.push((Value::Text(k.clone()), v.0.clone()));
     }
 
     entries
@@ -523,7 +567,7 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     let mut created_at_ms: Option<u64> = None;
     let mut last_mod_ms: Option<u64> = None;
     let mut tombstone: Option<bool> = None;
-    let mut unknown: BTreeMap<String, Value> = BTreeMap::new();
+    let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     // `seen_keys` tracks every textual key we have observed at this map
     // level so duplicates (RFC 8949 §5.4) are caught even when both
     // copies fall into the unknown bucket.
@@ -561,7 +605,9 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
             }
             _ => {
                 // Forward-compat: any other key is preserved verbatim.
-                unknown.insert(key, v);
+                // The float/tag walker at the top of decode() has
+                // already vetted v's subtree.
+                unknown.insert(key, UnknownValue(v));
             }
         }
     }
@@ -625,7 +671,7 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     let mut value: Option<RecordFieldValue> = None;
     let mut last_mod: Option<u64> = None;
     let mut device_uuid: Option<[u8; RECORD_UUID_LEN]> = None;
-    let mut unknown: BTreeMap<String, Value> = BTreeMap::new();
+    let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeMap<String, ()> = BTreeMap::new();
 
     for (k, val) in entries {
@@ -656,7 +702,7 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
                 device_uuid = Some(take_uuid(val, KEY_DEVICE_UUID)?);
             }
             _ => {
-                unknown.insert(key, val);
+                unknown.insert(key, UnknownValue(val));
             }
         }
     }

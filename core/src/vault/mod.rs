@@ -8,7 +8,7 @@
 
 pub mod record;
 
-pub use record::{Record, RecordError, RecordField, RecordFieldValue};
+pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
 /// Umbrella error type for the vault format layer.
 ///
