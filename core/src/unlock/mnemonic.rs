@@ -15,8 +15,9 @@
 
 use core::fmt;
 
-use bip39::Mnemonic as Bip39Mnemonic;
+use bip39::{Language, Mnemonic as Bip39Mnemonic};
 use rand_core::{CryptoRng, RngCore};
+use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroize;
 
 use crate::crypto::secret::Sensitive;
@@ -109,6 +110,72 @@ pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
     }
 }
 
+/// Parse a mnemonic phrase, validating the wordlist and the BIP-39 checksum.
+///
+/// Input handling mirrors BIP-39 §3.1: the string is Unicode NFKD-normalized,
+/// split on whitespace, and lowercased before lookup. This means the function
+/// accepts mixed-case input, multiple/tabular whitespace separators, and
+/// composed/decomposed Unicode forms equivalently.
+///
+/// Returns:
+/// - [`MnemonicError::WrongLength`] if the normalized phrase is not exactly
+///   24 words (other BIP-39 sizes are intentionally rejected — see §4).
+/// - [`MnemonicError::UnknownWord`] if any token is not in the English
+///   wordlist.
+/// - [`MnemonicError::BadChecksum`] if the trailing checksum bits do not match
+///   the entropy.
+pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
+    // BIP-39 §3.1: phrases are compared in Unicode NFKD form. We also
+    // lowercase and collapse internal whitespace so that the canonicalized
+    // string matches exactly what the bip39 crate expects.
+    let nfkd: String = words.nfkd().collect();
+    let normalized = nfkd
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let word_count = normalized.split_whitespace().count();
+    if word_count != 24 {
+        return Err(MnemonicError::WrongLength { got: word_count });
+    }
+
+    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, &normalized)
+        .map_err(map_bip39_error)?;
+
+    let (full, len) = bip.to_entropy_array();
+    debug_assert_eq!(len, 32, "24-word BIP-39 must produce 32 bytes of entropy");
+    let mut entropy = [0u8; 32];
+    entropy.copy_from_slice(&full[..32]);
+
+    Ok(Mnemonic {
+        phrase: bip.to_string(),
+        entropy: Sensitive::new(entropy),
+    })
+}
+
+/// Map the bip39 crate's error enum onto our caller-facing variant set.
+///
+/// The crate reports an unknown word by *index* (position in the phrase),
+/// not by content; we surface a placeholder string for now. A future
+/// enhancement could re-tokenize the input to recover the offending word.
+fn map_bip39_error(e: bip39::Error) -> MnemonicError {
+    use bip39::Error::{
+        AmbiguousLanguages, BadEntropyBitCount, BadWordCount, InvalidChecksum, UnknownWord,
+    };
+    match e {
+        UnknownWord(_idx) => MnemonicError::UnknownWord("(unknown)".to_string()),
+        InvalidChecksum => MnemonicError::BadChecksum,
+        BadWordCount(n) => MnemonicError::WrongLength { got: n },
+        // BadEntropyBitCount cannot arise from `parse_in_normalized` (it's a
+        // from-entropy constructor failure); AmbiguousLanguages cannot arise
+        // because we pin the language to English. Both are folded into
+        // BadChecksum as a safe catch-all rejection — a parse failure is a
+        // parse failure regardless of which structural rule was broken.
+        BadEntropyBitCount(_) | AmbiguousLanguages(_) => MnemonicError::BadChecksum,
+    }
+}
+
 /// Redacted debug representation. Both the phrase and the entropy are
 /// secrets; the only externally observable property is "this is a 24-word
 /// mnemonic". A real `Debug` impl on the contents would defeat the
@@ -142,5 +209,30 @@ mod tests {
         let b = generate(&mut rng_b);
         assert_eq!(a.phrase(), b.phrase());
         assert_eq!(a.entropy().expose(), b.entropy().expose());
+    }
+
+    #[test]
+    fn parse_roundtrips_generated_mnemonic() {
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let original = generate(&mut rng);
+        let parsed = parse(original.phrase()).expect("valid mnemonic");
+        assert_eq!(parsed.entropy().expose(), original.entropy().expose());
+        assert_eq!(parsed.phrase(), original.phrase());
+    }
+
+    #[test]
+    fn parse_normalizes_whitespace_and_case() {
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let m = generate(&mut rng);
+        // Reformat: extra whitespace, mixed case
+        let messy: String = m
+            .phrase()
+            .split_whitespace()
+            .enumerate()
+            .map(|(i, w)| if i % 2 == 0 { w.to_uppercase() } else { w.to_string() })
+            .collect::<Vec<_>>()
+            .join("   \t  ");
+        let parsed = parse(&messy).expect("messy input must normalize");
+        assert_eq!(parsed.entropy().expose(), m.entropy().expose());
     }
 }
