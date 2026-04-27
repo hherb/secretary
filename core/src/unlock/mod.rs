@@ -10,7 +10,7 @@ pub mod vault_toml;
 use core::fmt;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::crypto::aead::{encrypt, AeadError};
+use crate::crypto::aead::{decrypt, encrypt, AeadError};
 use crate::crypto::kdf::{
     derive_master_kek, derive_recovery_kek, Argon2idParams, KdfError, TAG_ID_BUNDLE,
     TAG_ID_WRAP_PW, TAG_ID_WRAP_REC,
@@ -229,6 +229,75 @@ fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// open_with_password (§3 Master KEK unlock path)
+// ---------------------------------------------------------------------------
+
+pub fn open_with_password(
+    vault_toml_bytes: &[u8],
+    identity_bundle_bytes: &[u8],
+    password: &SecretBytes,
+) -> Result<UnlockedIdentity, UnlockError> {
+    // Step 1: parse vault.toml. Reject non-UTF-8 input cleanly rather than
+    // letting it surface as a `MalformedVaultToml(MalformedToml(...))`
+    // double-wrap — the underlying VaultTomlError's MalformedToml carries
+    // a String, but the codebase uses MissingField / UnsupportedXxx for
+    // structured errors, leaving MalformedToml for genuine parse failures.
+    // Non-UTF-8 input IS a parse failure, so the inner MalformedToml is
+    // appropriate here.
+    let vt_str = std::str::from_utf8(vault_toml_bytes)
+        .map_err(|_| UnlockError::MalformedVaultToml(vault_toml::VaultTomlError::MalformedToml(
+            "non-UTF-8 input".to_string(),
+        )))?;
+    let vt = vault_toml::decode(vt_str)?;
+
+    // Step 2: parse identity.bundle.enc; check vault_uuid match across both files.
+    let bf = bundle_file::decode(identity_bundle_bytes)?;
+    if bf.vault_uuid != vt.vault_uuid {
+        return Err(UnlockError::VaultMismatch);
+    }
+
+    // Step 3: derive Master KEK using parameters from vault.toml.
+    let kdf_params = Argon2idParams::new(vt.kdf.memory_kib, vt.kdf.iterations, vt.kdf.parallelism);
+    let master_kek = derive_master_kek(password, &vt.kdf.salt, &kdf_params)?;
+
+    // Step 4: AEAD-decrypt wrap_pw → IBK bytes. AEAD failure here means
+    // wrong password (or vault corruption — indistinguishable on auth-tag
+    // failure, which is the design for §13's "wrong key looks like
+    // corruption to crypto" property). UI surfaces this as wrong-password.
+    let wrap_pw_aad = compose_aad(TAG_ID_WRAP_PW, &vt.vault_uuid);
+    let ibk_bytes = decrypt(
+        &master_kek,
+        &bf.wrap_pw_nonce,
+        &wrap_pw_aad,
+        &bf.wrap_pw_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::WrongPasswordOrCorrupt)?;
+
+    // ibk_bytes is SecretBytes wrapping a Vec<u8>. The wrap_pw plaintext
+    // is exactly 32 bytes (an IBK). Anything else is a corrupt vault.
+    let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
+        .map_err(|_| UnlockError::CorruptVault)?;
+    let identity_block_key = Sensitive::new(ibk_arr);
+
+    // Step 5: AEAD-decrypt the bundle plaintext under the IBK. AEAD failure
+    // here is post-IBK-recovery: any failure is unequivocally corruption,
+    // not user error.
+    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
+    let bundle_plaintext = decrypt(
+        &identity_block_key,
+        &bf.bundle_nonce,
+        &bundle_aad,
+        &bf.bundle_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::CorruptVault)?;
+
+    // Step 6: CBOR decode (the From<BundleError> impl maps malformed CBOR cleanly).
+    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
+
+    Ok(UnlockedIdentity { identity_block_key, identity })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -240,6 +309,34 @@ mod create_tests {
     // The explicit `use crate::crypto::kdf::Argon2idParams` import was therefore
     // redundant and has been removed.
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    #[test]
+    fn create_then_open_with_password_roundtrips() {
+        let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let params = Argon2idParams::new(8, 1, 1);
+        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+
+        let opened = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password)
+            .expect("open");
+        assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
+        assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
+        assert_eq!(opened.identity.display_name, v.identity.display_name);
+        assert_eq!(opened.identity.x25519_sk.expose(), v.identity.x25519_sk.expose());
+    }
+
+    #[test]
+    fn open_with_wrong_password_returns_wrong_password_or_corrupt() {
+        let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let params = Argon2idParams::new(8, 1, 1);
+        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+
+        let bad = SecretBytes::new(b"hunter3".to_vec());
+        let err = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &bad)
+            .unwrap_err();
+        assert!(matches!(err, UnlockError::WrongPasswordOrCorrupt));
+    }
 
     #[test]
     fn create_vault_produces_well_formed_artifacts() {
