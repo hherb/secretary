@@ -5,3 +5,4 @@
 pub mod bundle;
 pub mod bundle_file;
 pub mod mnemonic;
+pub mod vault_toml;
