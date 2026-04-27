@@ -335,3 +335,20 @@ pub struct MlDsa65SigverVector {
     #[serde(deserialize_with = "de_hex")]
     pub sig: Vec<u8>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct Bip39RecoveryKat {
+    pub vectors: Vec<Bip39RecoveryVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Bip39RecoveryVector {
+    pub name: String,
+    pub mnemonic: String,
+    #[serde(deserialize_with = "de_hex_array::<32, _>")]
+    pub entropy: [u8; 32],
+    #[serde(deserialize_with = "de_hex")]
+    pub info_tag: Vec<u8>,
+    #[serde(deserialize_with = "de_hex_array::<32, _>")]
+    pub expected_recovery_kek: [u8; 32],
+}

@@ -6,7 +6,7 @@ mod common;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
-use secretary_core::crypto::kdf::Argon2idParams;
+use secretary_core::crypto::kdf::{Argon2idParams, derive_recovery_kek, TAG_RECOVERY_KEK};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::unlock::{
     self, bundle_file, create_vault, open_with_password, open_with_recovery, UnlockError,
@@ -74,4 +74,37 @@ fn mnemonic_not_24_words_returns_invalid_mnemonic() {
     )
     .unwrap_err();
     assert!(matches!(err, UnlockError::InvalidMnemonic(_)));
+}
+
+#[test]
+fn bip39_recovery_kat_vectors() {
+    use common::{load_kat, Bip39RecoveryKat};
+    use secretary_core::crypto::secret::Sensitive;
+    use secretary_core::unlock::mnemonic;
+
+    let kat: Bip39RecoveryKat = load_kat("bip39_recovery_kat.json");
+    assert!(!kat.vectors.is_empty(), "KAT file has no vectors");
+    for v in &kat.vectors {
+        // Pin 1: mnemonic → entropy (BIP-39 English wordlist + checksum).
+        let parsed = mnemonic::parse(&v.mnemonic).unwrap_or_else(|e| {
+            panic!("vector {}: parse failed: {e}", v.name)
+        });
+        assert_eq!(
+            parsed.entropy().expose(), &v.entropy,
+            "vector {}: mnemonic→entropy mismatch", v.name,
+        );
+
+        // Pin 2: info_tag is exactly TAG_RECOVERY_KEK bytes.
+        assert_eq!(
+            v.info_tag, TAG_RECOVERY_KEK,
+            "vector {}: info_tag does not match TAG_RECOVERY_KEK", v.name,
+        );
+
+        // Pin 3: entropy → recovery_kek (HKDF-SHA-256, 32-zero-byte salt, info=tag).
+        let kek = derive_recovery_kek(&Sensitive::new(v.entropy));
+        assert_eq!(
+            kek.expose(), &v.expected_recovery_kek,
+            "vector {}: HKDF output mismatch", v.name,
+        );
+    }
 }

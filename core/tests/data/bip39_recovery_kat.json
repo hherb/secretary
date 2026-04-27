@@ -1,0 +1,32 @@
+{
+  "vectors": [
+    {
+      "name": "all_zero_entropy",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "32267cba4b0f75fcd6204457687526dce5e381e28878323b3e550ccff0898da8"
+    },
+    {
+      "name": "all_ff_entropy",
+      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+      "entropy": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "8232bcb4f3b104b9ca3b74119c4035e1d424ac2ca08cf78b7aa50e611d71bf2b"
+    },
+    {
+      "name": "trezor_vector_24w_1",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "32267cba4b0f75fcd6204457687526dce5e381e28878323b3e550ccff0898da8"
+    },
+    {
+      "name": "trezor_vector_24w_2",
+      "mnemonic": "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
+      "entropy": "8080808080808080808080808080808080808080808080808080808080808080",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "949d57f2d0895b860b7a61d097842103e9b8859df57c57e988a267e0a8756429"
+    }
+  ]
+}
