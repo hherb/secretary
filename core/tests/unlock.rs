@@ -65,6 +65,27 @@ fn swapped_bundle_file_returns_vault_mismatch() {
 }
 
 #[test]
+fn mismatched_created_at_ms_returns_vault_mismatch() {
+    // Tamper the bundle file's created_at_ms while leaving vault_uuid intact —
+    // the cross-check should reject this as a swap-like attack on the
+    // cleartext vault.toml metadata.
+    let pw = b"hunter2";
+    let v = create(7, pw);
+
+    let mut bf = bundle_file::decode(&v.identity_bundle_bytes).unwrap();
+    bf.created_at_ms = bf.created_at_ms.wrapping_add(1);
+    let tampered = bundle_file::encode(&bf);
+
+    let err = open_with_password(
+        &v.vault_toml_bytes,
+        &tampered,
+        &SecretBytes::new(pw.to_vec()),
+    )
+    .unwrap_err();
+    assert!(matches!(err, UnlockError::VaultMismatch));
+}
+
+#[test]
 fn mnemonic_not_24_words_returns_invalid_mnemonic() {
     let v = create(3, b"x");
     let err = open_with_recovery(

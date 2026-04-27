@@ -258,9 +258,15 @@ pub fn open_with_password(
     let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| vault_toml_not_utf8())?;
     let vt = vault_toml::decode(vt_str)?;
 
-    // Step 2: parse identity.bundle.enc; check vault_uuid match across both files.
+    // Step 2: parse identity.bundle.enc; cross-check both `vault_uuid` and
+    // `created_at_ms` between the two files. Mismatch on either points at a
+    // file swap (a vault.toml from one vault paired with an identity bundle
+    // from another) — `vault.toml` is cleartext so it is the more easily
+    // tampered side. AEAD tags still protect the IBK and bundle plaintext,
+    // but cross-checking both metadata fields here gives a clear, early
+    // typed error before any KDF work.
     let bf = bundle_file::decode(identity_bundle_bytes)?;
-    if bf.vault_uuid != vt.vault_uuid {
+    if bf.vault_uuid != vt.vault_uuid || bf.created_at_ms != vt.created_at_ms {
         return Err(UnlockError::VaultMismatch);
     }
 
@@ -321,7 +327,7 @@ pub fn open_with_recovery(
     let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| vault_toml_not_utf8())?;
     let vt = vault_toml::decode(vt_str)?;
     let bf = bundle_file::decode(identity_bundle_bytes)?;
-    if bf.vault_uuid != vt.vault_uuid {
+    if bf.vault_uuid != vt.vault_uuid || bf.created_at_ms != vt.created_at_ms {
         return Err(UnlockError::VaultMismatch);
     }
 
