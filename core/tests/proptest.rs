@@ -316,3 +316,135 @@ proptest! {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Properties — unlock module (bundle CBOR, bundle-file wire, vault.toml,
+// and the full create/open path)
+// ---------------------------------------------------------------------------
+
+mod unlock {
+    use proptest::prelude::*;
+    use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    use secretary_core::crypto::kdf::Argon2idParams;
+    use secretary_core::crypto::secret::SecretBytes;
+    use secretary_core::unlock::{
+        bundle, bundle_file, create_vault_unchecked, open_with_password, vault_toml,
+    };
+
+    proptest! {
+        /// `from_canonical_cbor(to_canonical_cbor(b)) == b` for any seed.
+        /// Also checks that encoding twice yields identical bytes (determinism).
+        #[test]
+        fn identity_bundle_canonical_cbor_roundtrip(seed: [u8; 32]) {
+            let mut rng = ChaCha20Rng::from_seed(seed);
+            let b = bundle::generate("X", 0, &mut rng);
+            let bytes_1 = b.to_canonical_cbor().unwrap();
+            let bytes_2 = b.to_canonical_cbor().unwrap();
+            prop_assert_eq!(&bytes_1, &bytes_2, "encoding non-deterministic");
+            let parsed = bundle::IdentityBundle::from_canonical_cbor(&bytes_1).unwrap();
+            prop_assert_eq!(parsed.user_uuid, b.user_uuid);
+            prop_assert_eq!(parsed.x25519_pk, b.x25519_pk);
+        }
+
+        /// `decode(encode(f)) == f` for any well-formed BundleFile.
+        #[test]
+        fn bundle_file_roundtrip(
+            vault_uuid in any::<[u8; 16]>(),
+            created_at_ms in any::<u64>(),
+            wpw_nonce in any::<[u8; 24]>(),
+            wpw_ct in any::<[u8; 48]>(),
+            wrec_nonce in any::<[u8; 24]>(),
+            wrec_ct in any::<[u8; 48]>(),
+            bundle_nonce in any::<[u8; 24]>(),
+            bundle_ct in proptest::collection::vec(any::<u8>(), 16..1024),
+        ) {
+            let f = bundle_file::BundleFile {
+                vault_uuid,
+                created_at_ms,
+                wrap_pw_nonce: wpw_nonce,
+                wrap_pw_ct_with_tag: wpw_ct,
+                wrap_rec_nonce: wrec_nonce,
+                wrap_rec_ct_with_tag: wrec_ct,
+                bundle_nonce,
+                bundle_ct_with_tag: bundle_ct,
+            };
+            let bytes = bundle_file::encode(&f);
+            let parsed = bundle_file::decode(&bytes).unwrap();
+            prop_assert_eq!(parsed, f);
+        }
+
+        /// `decode(encode(v)) == v` for any well-formed VaultToml.
+        ///
+        /// `created_at_ms` is bounded to `0..=i64::MAX as u64` — the representable
+        /// range for TOML's signed 64-bit integer. Values above i64::MAX are covered
+        /// by the `vault_toml_encode_rejects_timestamp_out_of_range` property below.
+        #[test]
+        fn vault_toml_roundtrip(
+            vault_uuid in any::<[u8; 16]>(),
+            created_at_ms in 0u64..=(i64::MAX as u64),
+            memory_kib in 8u32..1024u32,
+            iterations in 1u32..16u32,
+            parallelism in 1u32..8u32,
+            salt in any::<[u8; 32]>(),
+        ) {
+            let v = vault_toml::VaultToml {
+                format_version: 1,
+                suite_id: 1,
+                vault_uuid,
+                created_at_ms,
+                kdf: vault_toml::KdfSection {
+                    algorithm: "argon2id".to_string(),
+                    version: "1.3".to_string(),
+                    memory_kib,
+                    iterations,
+                    parallelism,
+                    salt,
+                },
+            };
+            let s = vault_toml::encode(&v).unwrap();
+            let parsed = vault_toml::decode(&s).unwrap();
+            prop_assert_eq!(parsed, v);
+        }
+
+        /// `encode` returns `TimestampOutOfRange` — not a panic — for any
+        /// `created_at_ms` above i64::MAX. Documents and pins the typed-error
+        /// path that replaced the old `expect` panic.
+        #[test]
+        fn vault_toml_encode_rejects_timestamp_out_of_range(
+            created_at_ms in (i64::MAX as u64 + 1)..=u64::MAX,
+        ) {
+            let v = vault_toml::VaultToml {
+                format_version: 1,
+                suite_id: 1,
+                vault_uuid: [0u8; 16],
+                created_at_ms,
+                kdf: vault_toml::KdfSection {
+                    algorithm: "argon2id".to_string(),
+                    version: "1.3".to_string(),
+                    memory_kib: 8,
+                    iterations: 1,
+                    parallelism: 1,
+                    salt: [0u8; 32],
+                },
+            };
+            let err = vault_toml::encode(&v).unwrap_err();
+            prop_assert!(matches!(err, vault_toml::VaultTomlError::TimestampOutOfRange(_)));
+        }
+
+        /// `open_with_password(create_vault_unchecked(...))` recovers the
+        /// same IBK and user UUID. Uses sub-floor Argon2id params (only
+        /// permitted via the unchecked path) for proptest speed.
+        #[test]
+        fn create_then_open_roundtrip_preserves_identity(seed: [u8; 32], pw_seed: [u8; 16]) {
+            let mut rng = ChaCha20Rng::from_seed(seed);
+            let pw = SecretBytes::new(pw_seed.to_vec());
+            let v = create_vault_unchecked(&pw, "X", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
+            let opened = open_with_password(
+                &v.vault_toml_bytes, &v.identity_bundle_bytes, &pw,
+            ).unwrap();
+            prop_assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
+            prop_assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
+        }
+    }
+}

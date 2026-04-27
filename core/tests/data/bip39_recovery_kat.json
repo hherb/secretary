@@ -1,0 +1,39 @@
+{
+  "vectors": [
+    {
+      "name": "all_zero_entropy",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "32267cba4b0f75fcd6204457687526dce5e381e28878323b3e550ccff0898da8"
+    },
+    {
+      "name": "all_ff_entropy",
+      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+      "entropy": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "8232bcb4f3b104b9ca3b74119c4035e1d424ac2ca08cf78b7aa50e611d71bf2b"
+    },
+    {
+      "name": "trezor_vector_24w_1",
+      "mnemonic": "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
+      "entropy": "8080808080808080808080808080808080808080808080808080808080808080",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "949d57f2d0895b860b7a61d097842103e9b8859df57c57e988a267e0a8756429"
+    },
+    {
+      "name": "trezor_vector_24w_2",
+      "mnemonic": "panda eyebrow bullet gorilla call smoke muffin taste mesh discover soft ostrich alcohol speed nation flash devote level hobby quick inner drive ghost inside",
+      "entropy": "9f6a2878b2520799a44ef18bc7df394e7061a224d2c33cd015b157d746869863",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "8288b1b1b78eef4e775ba2f8be747fc4478a874eb006f06cb5f7563c7604f3b5"
+    },
+    {
+      "name": "trezor_vector_24w_3",
+      "mnemonic": "all hour make first leader extend hole alien behind guard gospel lava path output census museum junior mass reopen famous sing advance salt reform",
+      "entropy": "066dca1a2bb7e8a1db2832148ce9933eea0f3ac9548d793112d9a95c9407efad",
+      "info_tag": "7365637265746172792d76312d7265636f766572792d6b656b",
+      "expected_recovery_kek": "948dc81be09d85f0a174ecc54cd1129ef85c8861ff3ab875c7acac75da5ea4ae"
+    }
+  ]
+}

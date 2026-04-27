@@ -162,11 +162,13 @@ The Identity Bundle is the AEAD-encrypted CBOR-serialized record:
   "ml_kem_768_pk":   <bstr 1184>,
   "ed25519_sk":      <bstr 32>,
   "ed25519_pk":      <bstr 32>,
-  "ml_dsa_65_sk":    <bstr 4032>,
+  "ml_dsa_65_sk":    <bstr 32>,    ; FIPS 204 seed (xi); see note below
   "ml_dsa_65_pk":    <bstr 1952>,
   "created_at":      <u64 unix-millis>,
 }
 ```
+
+**Note on `ml_dsa_65_sk`:** The on-disk encoding is the 32-byte FIPS 204 KeyGen seed (`xi`), not the 4032-byte expanded signing-key form. The expanded form is a deterministic function of the seed (`MlDsa65::from_seed(xi)` recomputes it identically every time), so the seed is information-equivalent and 4 KiB smaller per identity bundle. We chose the seed because the upstream `ml-dsa` crate marks the 4032-byte expanded encoding `#[deprecated]` and our build runs `cargo clippy --all-targets -- -D warnings`. See `core/src/crypto/sig.rs` module docs for the full rationale, and §14 for the size-summary entry.
 
 Encryption proceeds as follows:
 
@@ -514,7 +516,8 @@ ed25519_sk                  = 32 bytes
 ed25519_sig                 = 64 bytes
 
 ml_dsa_65_pk                = 1952 bytes
-ml_dsa_65_sk                = 4032 bytes
+ml_dsa_65_sk_expanded       = 4032 bytes (FIPS 204 expanded form; not stored on disk in v1)
+ml_dsa_65_sk_seed           = 32 bytes   (FIPS 204 KeyGen seed xi; this is what §5 stores)
 ml_dsa_65_sig               = 3309 bytes (FIPS 204 fixed; length-prefixed on disk for forward compatibility)
 
 blake3_fingerprint_full     = 32 bytes

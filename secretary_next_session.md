@@ -18,38 +18,15 @@ Per `docs/crypto-design.md` §15, the §15 list has twelve entries. Ten are
 in `core/tests/data/*.json` already. Two remain, both blocked on modules
 that are still stubs as of this session:
 
-### 1a. `bip39_recovery_kat.json` — blocked on the `unlock` module
+### 1a. ~~`bip39_recovery_kat.json`~~ — DONE 2026-04-27
 
-§15 promises a KAT covering "Mnemonic encoding / decoding round-trip and
-HKDF derivation." The BIP-39 wordlist itself lives at
-[core/src/identity/bip39_wordlist.rs](core/src/identity/bip39_wordlist.rs)
-and the inverse (entropy → words) is exercised by `mnemonic_form` in
-[core/src/identity/fingerprint.rs](core/src/identity/fingerprint.rs) (used for
-fingerprint *presentation*, not recovery — see §6.1 vs §3).
-
-The recovery flow itself — 24-word mnemonic → 256-bit entropy →
-HKDF-SHA-256 → Recovery KEK — needs the [core/src/unlock/](core/src/unlock/)
-module, currently a stub. Once that module exists, the KAT shape is:
-
-```json
-{
-  "vectors": [
-    {
-      "name": "rfc_test_vector_or_reference_impl",
-      "mnemonic": "<24 words separated by single spaces>",
-      "entropy": "<32-byte hex>",
-      "info_tag": "<TAG_RECOVERY_KEK bytes from kdf.rs>",
-      "expected_recovery_kek": "<32-byte hex>"
-    }
-  ]
-}
-```
-
-Cross-verify against the `bip39` Python package + the existing HKDF
-implementation. The `recovery_kek_test_vector_zero_entropy` and
-`recovery_kek_uses_recovery_kek_tag` tests in
-[core/tests/kdf.rs](core/tests/kdf.rs) already pin the HKDF half; the new
-KAT will pin the mnemonic-to-entropy half plus their composition.
+Delivered as [core/tests/data/bip39_recovery_kat.json](core/tests/data/bip39_recovery_kat.json)
+(4 vectors: all-zero, all-FF, two Trezor canonical 24-word) plus the
+`bip39_recovery_kat_vectors` test in [core/tests/unlock.rs](core/tests/unlock.rs),
+which pins three relations end-to-end: mnemonic↔entropy, `info_tag` bytes
+match `TAG_RECOVERY_KEK`, and entropy→Recovery KEK under HKDF-SHA-256.
+Cross-verified against the Trezor `mnemonic` Python package + the
+`cryptography` library's HKDF.
 
 ### 1b. `golden_vault_001/` — blocked on the `vault` module
 
@@ -97,19 +74,27 @@ Not urgent — the existing coverage is meaningful — but worth noting.
 
 ---
 
-## Item 3 — Build-sequence next: `unlock` module
+## ~~Item 3 — Build-sequence next: `unlock` module~~ — DONE 2026-04-27
 
-Per `docs/crypto-design.md` §3 + §4, the unlock module owns:
+Per `docs/crypto-design.md` §3 + §4 + §5 and `docs/vault-format.md` §2 + §3,
+delivered across [core/src/unlock/](core/src/unlock/):
 
-- Master-password unlock path: vault.toml → derive Master KEK
-  (Argon2id) → unwrap Identity Bundle Key → unwrap identity.bundle.enc.
-- Recovery unlock path: 24-word mnemonic → entropy → derive Recovery
-  KEK (HKDF-SHA-256) → unwrap the dual-wrapped Identity Block Key.
-- BIP-39 mnemonic parsing + checksum validation (this also unblocks
-  Item 1a above).
+- [mnemonic.rs](core/src/unlock/mnemonic.rs) — BIP-39 24-word generate +
+  parse with NFKD normalization, checksum validation, and zeroization on drop.
+- [bundle.rs](core/src/unlock/bundle.rs) — `IdentityBundle` plaintext
+  type with canonical CBOR encode/decode (RFC 8949 §4.2.1).
+- [bundle_file.rs](core/src/unlock/bundle_file.rs) — binary envelope for
+  `identity.bundle.enc` (vault-format §3) — encode/decode with strict
+  truncation/version/kind/length error variants.
+- [vault_toml.rs](core/src/unlock/vault_toml.rs) — `vault.toml` cleartext
+  metadata (vault-format §2) — encode/decode with strict v1 KDF param
+  enforcement, lowercase-canonical UUID parsing, and typed `MissingField` /
+  `FieldOutOfRange` / `TimestampOutOfRange` error variants.
+- [mod.rs](core/src/unlock/mod.rs) — `UnlockError` umbrella + the three
+  orchestrators: `create_vault`, `open_with_password`, `open_with_recovery`.
 
-The kdf, aead, kem, sig, identity primitives are all in place.
-[core/src/unlock/mod.rs](core/src/unlock/mod.rs) is the stub to grow.
+Implementation plan and audit trail at
+[docs/superpowers/plans/2026-04-27-unlock-module.md](docs/superpowers/plans/2026-04-27-unlock-module.md).
 
 Sub-project A's design anchor lives at
 `/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md` —
@@ -149,3 +134,26 @@ For session-context retention. Five commits on `main`:
 
 `FIXME.md` is now removed. Test count: 6 proptest properties + 122
 unit/integration tests, all passing under `cargo test --release`.
+
+## What the next session delivered (2026-04-27 — `feature/unlock-module`)
+
+The unlock module (Item 3) and the BIP-39 recovery KAT (Item 1a),
+shipped via subagent-driven TDD against
+[docs/superpowers/plans/2026-04-27-unlock-module.md](docs/superpowers/plans/2026-04-27-unlock-module.md).
+
+Twenty-three commits on `feature/unlock-module` — five from the original
+Opus run before context compaction (`a69c078..c43988a`, mnemonic + bundle
+plaintext) and eighteen from the resumed run (`a1f9add..3c5e361`,
+bundle_file + vault_toml + UnlockError + create_vault + the two open
+paths + integration tests + BIP-39 KAT + proptest + one latent-bug fix
+for `vault_toml::encode` rejecting timestamps > i64::MAX as a typed
+error rather than a panic — caught by proptest).
+
+Test count after: 153 (was 122 + 6 proptest = 128). Breakdown:
+46 core unit tests + 4 unlock integration tests + 11 proptest
+properties + 92 other crypto/identity integration tests. All clean
+under `cargo test --release --workspace` and
+`cargo clippy --all-targets --workspace -- -D warnings`.
+
+Branch is on `feature/unlock-module` awaiting merge to `main`. Items 1b,
+2, and 4 below remain open for future sessions.
