@@ -298,6 +298,63 @@ pub fn open_with_password(
 }
 
 // ---------------------------------------------------------------------------
+// open_with_recovery (§4 Recovery KEK unlock path)
+// ---------------------------------------------------------------------------
+
+pub fn open_with_recovery(
+    vault_toml_bytes: &[u8],
+    identity_bundle_bytes: &[u8],
+    mnemonic_words: &str,
+) -> Result<UnlockedIdentity, UnlockError> {
+    // Steps 1-2: vault.toml + bundle file (mirror open_with_password)
+    let vt_str = std::str::from_utf8(vault_toml_bytes)
+        .map_err(|_| UnlockError::MalformedVaultToml(vault_toml::VaultTomlError::MalformedToml(
+            "non-UTF-8 input".to_string(),
+        )))?;
+    let vt = vault_toml::decode(vt_str)?;
+    let bf = bundle_file::decode(identity_bundle_bytes)?;
+    if bf.vault_uuid != vt.vault_uuid {
+        return Err(UnlockError::VaultMismatch);
+    }
+
+    // Step 3: parse mnemonic. Bad word-count / unknown word / bad checksum
+    // surfaces as InvalidMnemonic via the From impl — distinct from
+    // WrongMnemonicOrCorrupt because the failure mode is "this isn't a
+    // valid BIP-39 phrase at all" rather than "valid phrase, wrong vault."
+    let parsed = mnemonic::parse(mnemonic_words)?;
+
+    // Step 4: derive Recovery KEK from the parsed entropy.
+    let recovery_kek = derive_recovery_kek(parsed.entropy());
+
+    // Step 5: AEAD-decrypt wrap_rec → IBK bytes.
+    let wrap_rec_aad = compose_aad(TAG_ID_WRAP_REC, &vt.vault_uuid);
+    let ibk_bytes = decrypt(
+        &recovery_kek,
+        &bf.wrap_rec_nonce,
+        &wrap_rec_aad,
+        &bf.wrap_rec_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::WrongMnemonicOrCorrupt)?;
+
+    let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
+        .map_err(|_| UnlockError::CorruptVault)?;
+    let identity_block_key = Sensitive::new(ibk_arr);
+
+    // Step 6: AEAD-decrypt bundle.
+    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
+    let bundle_plaintext = decrypt(
+        &identity_block_key,
+        &bf.bundle_nonce,
+        &bundle_aad,
+        &bf.bundle_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::CorruptVault)?;
+
+    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
+    Ok(UnlockedIdentity { identity_block_key, identity })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -361,5 +418,57 @@ mod create_tests {
         assert_eq!(parsed_vt.kdf.parallelism, 1);
         assert_eq!(parsed_vt.format_version, 1);
         assert_eq!(parsed_vt.suite_id, 1);
+    }
+
+    #[test]
+    fn create_then_open_with_recovery_roundtrips() {
+        let mut rng = ChaCha20Rng::from_seed([9u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let params = Argon2idParams::new(8, 1, 1);
+        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+
+        let words = v.recovery_mnemonic.phrase().to_string();
+        let opened = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, &words)
+            .expect("open");
+        assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
+        assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
+    }
+
+    #[test]
+    fn open_with_wrong_mnemonic_returns_wrong_mnemonic_or_corrupt() {
+        let mut rng = ChaCha20Rng::from_seed([10u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let params = Argon2idParams::new(8, 1, 1);
+        let v = create_vault(&password, "Alice", 0, params, &mut rng).unwrap();
+
+        // A different fresh mnemonic — valid checksum, just not this vault's.
+        let mut other_rng = ChaCha20Rng::from_seed([99u8; 32]);
+        let other = mnemonic::generate(&mut other_rng);
+        let err = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, other.phrase())
+            .unwrap_err();
+        assert!(matches!(err, UnlockError::WrongMnemonicOrCorrupt));
+    }
+
+    #[test]
+    fn open_with_invalid_mnemonic_returns_invalid_mnemonic() {
+        let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
+        let v = create_vault(
+            &SecretBytes::new(b"x".to_vec()), "Alice", 0,
+            Argon2idParams::new(8, 1, 1), &mut rng,
+        ).unwrap();
+        let err = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, "abandon abandon")
+            .unwrap_err();
+        assert!(matches!(err, UnlockError::InvalidMnemonic(mnemonic::MnemonicError::WrongLength { .. })));
+    }
+
+    #[test]
+    fn both_unlock_paths_yield_same_identity_block_key() {
+        let mut rng = ChaCha20Rng::from_seed([12u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let v = create_vault(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
+
+        let by_pw = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
+        let by_rec = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, v.recovery_mnemonic.phrase()).unwrap();
+        assert_eq!(by_pw.identity_block_key.expose(), by_rec.identity_block_key.expose());
     }
 }
