@@ -10,7 +10,7 @@ pub mod vault_toml;
 use core::fmt;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::crypto::aead::{decrypt, encrypt, AeadError};
+use crate::crypto::aead::{decrypt, encrypt};
 use crate::crypto::kdf::{
     derive_master_kek, derive_recovery_kek, Argon2idParams, KdfError, TAG_ID_BUNDLE,
     TAG_ID_WRAP_PW, TAG_ID_WRAP_REC,
@@ -40,8 +40,6 @@ pub enum UnlockError {
 
     #[error("KDF failure: {0}")]
     KdfFailure(#[from] KdfError),
-    #[error("AEAD primitive failure")]
-    AeadFailure,
 
     /// `kdf_params.memory_kib` is below the §1.2 v1 floor (currently 64 MiB).
     /// Returned by [`create_vault`] to prevent silent production of weak
@@ -51,14 +49,17 @@ pub enum UnlockError {
     WeakKdfParams { memory_kib: u32, min_memory_kib: u32 },
 }
 
-impl From<AeadError> for UnlockError {
-    fn from(_: AeadError) -> Self {
-        // AEAD primitive errors collapse to AeadFailure — see spec §Error model.
-        // Position-specific user-facing variants (WrongPasswordOrCorrupt etc.)
-        // are produced explicitly at call sites, not via From.
-        UnlockError::AeadFailure
-    }
-}
+// AEAD failures are mapped at every call site:
+//   - decrypt failures → WrongPasswordOrCorrupt / WrongMnemonicOrCorrupt /
+//     CorruptVault depending on which payload failed (position-specific).
+//   - encrypt failures → infallible for §5 input sizes (max ~5 KB bundle
+//     plaintext, exactly 32 B IBK wraps) — handled with .expect rather
+//     than ? at the create_vault_unchecked call sites.
+//
+// There is therefore deliberately NO `From<AeadError> for UnlockError`
+// impl. A `?` on an aead::encrypt call inside this module would be a
+// compile error, which is the right outcome — every aead error site is
+// position-specific and must be mapped explicitly.
 
 // ---------------------------------------------------------------------------
 // create_vault output types
@@ -196,18 +197,23 @@ pub fn create_vault_unchecked(
 
     // Step 7: AEAD-encrypt bundle under IBK.
     // identity_block_key: Sensitive<[u8;32]> == AeadKey, pass by reference.
+    // .expect() is safe: AEAD encrypt fails only on absurd plaintext sizes
+    // (~2^36 bytes); §5 IdentityBundle CBOR is bounded at a few KB.
     let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vault_uuid);
-    let bundle_ct_with_tag = encrypt(&identity_block_key, &nonce_id, &bundle_aad, &bundle_plaintext)?;
+    let bundle_ct_with_tag = encrypt(&identity_block_key, &nonce_id, &bundle_aad, &bundle_plaintext)
+        .expect("AEAD encrypt of §5 bundle plaintext is structurally infallible");
 
     // Step 8: wrap_pw — AEAD-encrypt the IBK bytes under master_kek.
     // identity_block_key.expose() -> &[u8; 32] coerces to &[u8] (plaintext).
+    // .expect() safe: encrypt of a fixed 32-byte plaintext cannot fail.
     let wrap_pw_aad = compose_aad(TAG_ID_WRAP_PW, &vault_uuid);
     let wrap_pw_with_tag = encrypt(
         &master_kek,
         &nonce_pw,
         &wrap_pw_aad,
         identity_block_key.expose(),
-    )?;
+    )
+    .expect("AEAD encrypt of 32-byte IBK is structurally infallible");
     let wrap_pw_arr: [u8; 48] = wrap_pw_with_tag
         .as_slice()
         .try_into()
@@ -220,7 +226,8 @@ pub fn create_vault_unchecked(
         &nonce_rec,
         &wrap_rec_aad,
         identity_block_key.expose(),
-    )?;
+    )
+    .expect("AEAD encrypt of 32-byte IBK is structurally infallible");
     let wrap_rec_arr: [u8; 48] = wrap_rec_with_tag
         .as_slice()
         .try_into()
