@@ -535,6 +535,14 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
 /// the deepest §6.3 key the caller knows about; it ends up in the
 /// emitted error so the user sees which subtree contained the
 /// disallowed item.
+///
+/// Recurses without an explicit depth bound. Termination relies on
+/// `ciborium`'s default `from_reader` recursion limit (256), which has
+/// already capped the input tree depth before we walk it. If a future
+/// contributor switches the parser to
+/// `from_reader_with_recursion_limit(.., usize::MAX)` or similar, add
+/// an explicit `depth` parameter here to prevent stack overflow on
+/// adversarial input.
 fn reject_floats_and_tags(v: &Value, field_hint: &'static str) -> Result<(), RecordError> {
     match v {
         Value::Float(_) => Err(RecordError::FloatRejected { field: field_hint }),
