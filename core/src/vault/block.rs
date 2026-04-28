@@ -602,6 +602,33 @@ const _: () = {
     assert!(ED25519_SIG_LEN == 64);
 };
 
+const _: () = {
+    // Spec-conformance assertion: §6.1 / §14 pin the ML-DSA-65 signature
+    // length at 3309 bytes under suite v1 (`secretary-v1-pq-hybrid`,
+    // §1.3 / FIPS 204). decode_signature_suffix length-checks the wire
+    // sig_pq_len against this constant; if the upstream value ever
+    // shifts, this assertion catches it before runtime.
+    assert!(crate::crypto::sig::ML_DSA_65_SIG_LEN == 3309);
+};
+
+const _: () = {
+    // Spec-conformance assertion: §6.1 vector_clock entry layout is
+    // (device_uuid: 16) || (counter: u64 = 8) = 24 bytes. The encoder
+    // writes per-entry length unconditionally; pinning it here guards
+    // against an inadvertent shape change.
+    assert!(VECTOR_CLOCK_ENTRY_LEN == 24);
+};
+
+const _: () = {
+    // Spec-conformance assertion: §6.1 fixed-size header prefix is
+    // magic(4) + format_version(2) + suite_id(2) + file_kind(2) +
+    // vault_uuid(16) + block_uuid(16) + created_at_ms(8) +
+    // last_mod_ms(8) = 58 bytes, before the variable vector_clock
+    // section begins. Encoder pre-allocates against this; pinning here
+    // guards against silent header growth.
+    assert!(HEADER_PREFIX_LEN == 58);
+};
+
 // ---------------------------------------------------------------------------
 // Header encode
 // ---------------------------------------------------------------------------
