@@ -310,6 +310,7 @@ pub struct MlKem768EncapVector {
 pub struct MlDsa65Kat {
     pub keygen_vectors: Vec<MlDsa65KeygenVector>,
     pub sigver_vectors: Vec<MlDsa65SigverVector>,
+    pub siggen_vectors: Vec<MlDsa65SiggenVector>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -328,6 +329,26 @@ pub struct MlDsa65SigverVector {
     pub tc_id: u32,
     #[serde(deserialize_with = "de_hex")]
     pub pk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub msg: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ctx: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig: Vec<u8>,
+}
+
+/// NIST ACVP-Server ML-DSA-sigGen-FIPS204 test vector. The `sk` field is
+/// the FIPS 204 *expanded* signing-key encoding (4032 bytes for ML-DSA-65,
+/// per Algorithm 24 / 25 — `skEncode` / `skDecode`), not the 32-byte seed.
+/// Loading it goes through the deprecated `ExpandedSigningKey::from_expanded`
+/// in the `ml-dsa` crate; see `tests/sig.rs::ml_dsa_65_nist_siggen_kat` for
+/// the rationale on suppressing the deprecation warning.
+#[derive(Debug, Deserialize)]
+pub struct MlDsa65SiggenVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub sk: Vec<u8>,
     #[serde(deserialize_with = "de_hex")]
     pub msg: Vec<u8>,
     #[serde(deserialize_with = "de_hex")]
