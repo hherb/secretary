@@ -13,6 +13,7 @@
 
 pub mod block;
 pub(crate) mod canonical;
+pub(crate) mod io;
 pub mod record;
 
 pub use block::{

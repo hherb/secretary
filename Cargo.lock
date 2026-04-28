@@ -947,6 +947,7 @@ dependencies = [
  "sha2",
  "sha3 0.10.9",
  "subtle",
+ "tempfile",
  "thiserror",
  "toml",
  "unicode-normalization",

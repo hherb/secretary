@@ -28,6 +28,7 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["std", 
 ml-dsa = { version = "0.1.0-rc.8", default-features = false, features = ["alloc", "zeroize"] }
 ciborium = "0.2"
 rand_core = "0.6"
+tempfile = "3"
 
 [dev-dependencies]
 proptest = "1"
