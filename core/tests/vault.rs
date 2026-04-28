@@ -27,6 +27,8 @@ use std::collections::BTreeMap;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
+mod common;
+
 use secretary_core::crypto::aead::AEAD_TAG_LEN;
 use secretary_core::crypto::kem::{self, MlKem768Public, MlKem768Secret};
 use secretary_core::crypto::secret::Sensitive;
@@ -1112,3 +1114,319 @@ fn decode_rejects_vector_clock_unsorted() {
 // than going through `decrypt_block`). Revisit once PR-B's full
 // orchestrators land, at which point flipping the plaintext block_uuid
 // becomes a one-liner via the higher-level builder.
+
+// ---------------------------------------------------------------------------
+// §15 Block KAT — the spec-doc cross-language conformance contract
+// ---------------------------------------------------------------------------
+//
+// Pins the on-disk byte sequence of one fully-specified `BlockFile` against
+// `core/tests/data/block_kat.json`. Inputs (RNG seeds, identity, records)
+// are loaded from JSON; the test rebuilds the block deterministically and
+// asserts encode-bytes match the JSON's `expected.block_file` byte-for-byte.
+// The companion `core/tests/python/conformance.py` script proves the same
+// bytes can be parsed by a clean-room reader using only `vault-format.md`
+// and `crypto-design.md`.
+//
+// To regenerate after a deliberate spec/format change: rerun
+// `cargo test --test vault -p secretary-core block_kat_bootstrap_dump --
+// --ignored --nocapture` and paste the printed `block_file` hex (and the
+// `size_bytes` sentinel) into `block_kat.json`. Every other field in the
+// JSON is a *human-authored* input; only the `expected` block is generated
+// output.
+
+/// Build a [`BlockFile`] deterministically from a [`common::BlockKatVector`]
+/// — the closed-loop generator that pins the KAT bytes. Used by both the
+/// assertion test and the bootstrap dumper.
+fn build_block_from_kat(v: &common::BlockKatVector) -> (BlockFile, IdentityBundle) {
+    use secretary_core::vault::record::{
+        Record as RecRecord, RecordField as RecField, RecordFieldValue as RecValue,
+    };
+
+    let mut id_rng = ChaCha20Rng::from_seed(v.inputs.identity_seed);
+    let id = bundle::generate(&v.inputs.display_name, v.inputs.created_at_ms, &mut id_rng);
+
+    let pk_bundle = pk_bundle_for(&id);
+    let pq_pk = MlKem768Public::from_bytes(&id.ml_kem_768_pk).expect("ml-kem pk len");
+    let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
+    let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).expect("ml-dsa sk len");
+
+    // Build the header (vector_clock entries are emitted in input order;
+    // encoder sorts ascending by device_uuid before writing bytes).
+    let header = BlockHeader {
+        magic: MAGIC,
+        format_version: FORMAT_VERSION,
+        suite_id: SUITE_ID,
+        file_kind: FILE_KIND_BLOCK,
+        vault_uuid: v.inputs.vault_uuid,
+        block_uuid: v.inputs.block_uuid,
+        created_at_ms: v.inputs.created_at_ms,
+        last_mod_ms: v.inputs.last_mod_ms,
+        vector_clock: v
+            .inputs
+            .vector_clock
+            .iter()
+            .map(|e| VectorClockEntry {
+                device_uuid: e.device_uuid,
+                counter: e.counter,
+            })
+            .collect(),
+    };
+
+    // Build records from the JSON spec. Each field's `value_type` selects
+    // between the text and bytes payloads; missing companion fields are a
+    // KAT shape error.
+    let mut records: Vec<RecRecord> = Vec::with_capacity(v.inputs.records.len());
+    for r in &v.inputs.records {
+        let mut fields: BTreeMap<String, RecField> = BTreeMap::new();
+        for f in &r.fields {
+            let value = match f.value_type.as_str() {
+                "text" => RecValue::Text(
+                    f.value_text
+                        .clone()
+                        .expect("KAT: value_type=text requires value_text"),
+                ),
+                "bytes" => {
+                    let hex_str = f
+                        .value_hex
+                        .as_ref()
+                        .expect("KAT: value_type=bytes requires value_hex");
+                    RecValue::Bytes(common::hex(hex_str).expect("KAT: value_hex must be hex"))
+                }
+                other => panic!("KAT: unknown value_type {other:?}"),
+            };
+            fields.insert(
+                f.name.clone(),
+                RecField {
+                    value,
+                    last_mod: f.last_mod,
+                    device_uuid: f.device_uuid,
+                    unknown: BTreeMap::new(),
+                },
+            );
+        }
+        records.push(RecRecord {
+            record_uuid: r.record_uuid,
+            record_type: r.record_type.clone(),
+            fields,
+            tags: r.tags.clone(),
+            created_at_ms: r.created_at_ms,
+            last_mod_ms: r.last_mod_ms,
+            tombstone: r.tombstone,
+            unknown: BTreeMap::new(),
+        });
+    }
+
+    let plaintext = BlockPlaintext {
+        block_version: v.inputs.block_version,
+        block_uuid: v.inputs.block_uuid,
+        block_name: v.inputs.block_name.clone(),
+        schema_version: v.inputs.schema_version,
+        records,
+        unknown: BTreeMap::new(),
+    };
+
+    // Single self-recipient: author_fingerprint pinned by the JSON.
+    let recipients = [RecipientPublicKeys {
+        fingerprint: v.inputs.author_fingerprint,
+        pk_bundle: &pk_bundle,
+        x25519_pk: &id.x25519_pk,
+        ml_kem_768_pk: &pq_pk,
+    }];
+
+    let mut enc_rng = ChaCha20Rng::from_seed(v.inputs.encrypt_seed);
+    let block = encrypt_block(
+        &mut enc_rng,
+        &header,
+        &plaintext,
+        &v.inputs.author_fingerprint,
+        &pk_bundle,
+        &ed_sk,
+        &dsa_sk,
+        &recipients,
+    )
+    .expect("encrypt_block");
+
+    (block, id)
+}
+
+#[test]
+fn block_kat_self_recipient_one_record() {
+    let kat: common::BlockKat = common::load_kat("block_kat.json");
+    assert_eq!(kat.version, 1, "block_kat.json version must be 1");
+    assert!(!kat.vectors.is_empty(), "block_kat.json: no vectors");
+
+    let v = kat
+        .vectors
+        .iter()
+        .find(|v| v.name == "self_recipient_one_record")
+        .expect("block_kat.json: missing self_recipient_one_record vector");
+
+    let (block, id) = build_block_from_kat(v);
+
+    // 1. Encoded bytes match the pinned hex byte-for-byte.
+    let bytes = encode_block_file(&block).expect("encode_block_file");
+    assert_eq!(
+        bytes, v.expected.block_file,
+        "encoded block_file bytes mismatch — regenerate KAT via \
+         `cargo test --test vault block_kat_bootstrap_dump -- --ignored --nocapture` \
+         after a deliberate format change",
+    );
+    assert_eq!(bytes.len(), v.expected.size_bytes, "size_bytes sentinel");
+
+    // 2. Decode round-trips exactly.
+    let decoded = decode_block_file(&bytes).expect("decode_block_file");
+    assert_eq!(decoded, block, "decode→re-encode fixed point");
+    assert_eq!(decoded.recipients.len(), v.expected.recipients_count);
+
+    // 3. Decrypt recovers the plaintext and matches expected shape.
+    // pk_bundle is the same byte string used at encrypt time; the
+    // ml-kem PK handle is rebuilt for the decap path below.
+    let pk_bundle = pk_bundle_for(&id);
+    let dsa_pk = MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa pk len");
+    let x_sk: kem::X25519Secret = Sensitive::new(*id.x25519_sk.expose());
+    let pq_sk = MlKem768Secret::from_bytes(id.ml_kem_768_sk.expose()).expect("ml-kem sk len");
+    let plaintext = decrypt_block(
+        &decoded,
+        &v.inputs.author_fingerprint,
+        &pk_bundle,
+        &id.ed25519_pk,
+        &dsa_pk,
+        &v.inputs.author_fingerprint,
+        &pk_bundle,
+        &x_sk,
+        &pq_sk,
+    )
+    .expect("decrypt_block");
+
+    assert_eq!(plaintext.records.len(), v.expected.records_count);
+    assert_eq!(plaintext.records[0].record_type, v.expected.first_record_type);
+    assert_eq!(plaintext.block_uuid, v.inputs.block_uuid);
+    assert_eq!(plaintext.block_name, v.inputs.block_name);
+}
+
+/// Bootstrap helper: regenerates the `expected.block_file` hex sentinel
+/// for `block_kat.json`. Ignored by default — the assertion test above is
+/// the regression-locking gate, this helper just prints captured bytes.
+///
+/// Run with:
+///
+/// ```text
+/// cargo test --test vault -p secretary-core block_kat_bootstrap_dump \
+///     -- --ignored --nocapture
+/// ```
+///
+/// Then paste `block_file` and `size_bytes` into the JSON's `expected`
+/// block. All other JSON fields are human-authored inputs and must match
+/// the values used here in [`bootstrap_inputs`].
+#[test]
+#[ignore = "bootstrap helper; run manually to regenerate block_kat.json"]
+fn block_kat_bootstrap_dump() {
+    // Inputs are pinned in code so the dumper is hermetic and the JSON
+    // can be regenerated after a deliberate format change without first
+    // editing the JSON itself.
+    let v = bootstrap_inputs();
+    let (block, _id) = build_block_from_kat(&v);
+    let bytes = encode_block_file(&block).expect("encode_block_file");
+
+    eprintln!("---- BEGIN block_kat.json expected.* values ----");
+    eprintln!("size_bytes:       {}", bytes.len());
+    eprintln!("recipients_count: {}", block.recipients.len());
+    eprintln!("block_file (hex, {} bytes):", bytes.len());
+    eprintln!("{}", hex_encode(&bytes));
+    eprintln!("---- END ----");
+}
+
+/// Inputs hard-pinned for the `self_recipient_one_record` vector. Keep in
+/// sync with the same fields in `core/tests/data/block_kat.json` — the
+/// bootstrap test fails loudly if anything drifts.
+fn bootstrap_inputs() -> common::BlockKatVector {
+    common::BlockKatVector {
+        name: "self_recipient_one_record".to_string(),
+        description: "Single self-addressed block with one login record. Pins \
+            the encoded BlockFile byte sequence."
+            .to_string(),
+        inputs: common::BlockKatInputs {
+            identity_seed: [0xC0; 32],
+            encrypt_seed: [0xC1; 32],
+            vault_uuid: [
+                0x76, 0x61, 0x75, 0x6c, 0x74, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d, 0x6b, 0x61, 0x74,
+                0x2d, 0x31,
+            ],
+            block_uuid: [
+                0x62, 0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d, 0x6b, 0x61, 0x74,
+                0x2d, 0x31,
+            ],
+            author_fingerprint: [
+                0x66, 0x70, 0x2d, 0x73, 0x65, 0x6c, 0x66, 0x2d, 0x6b, 0x61, 0x74, 0x2d, 0x76, 0x30,
+                0x30, 0x31,
+            ],
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_800_500,
+            display_name: "Block KAT Identity".to_string(),
+            vector_clock: vec![common::BlockKatVectorClockEntry {
+                device_uuid: [
+                    0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d, 0x6b,
+                    0x61, 0x74, 0x31,
+                ],
+                counter: 1,
+            }],
+            block_name: "Banking".to_string(),
+            block_version: 1,
+            schema_version: 1,
+            records: vec![common::BlockKatRecord {
+                record_uuid: [
+                    0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d, 0x6b,
+                    0x61, 0x74, 0x31,
+                ],
+                record_type: "login".to_string(),
+                fields: vec![
+                    common::BlockKatField {
+                        name: "username".to_string(),
+                        value_type: "text".to_string(),
+                        value_text: Some("alice".to_string()),
+                        value_hex: None,
+                        last_mod: 1_714_060_800_000,
+                        device_uuid: [
+                            0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d,
+                            0x6b, 0x61, 0x74, 0x31,
+                        ],
+                    },
+                    common::BlockKatField {
+                        name: "totp_seed".to_string(),
+                        value_type: "bytes".to_string(),
+                        value_text: None,
+                        value_hex: Some("00010203fffefdfc".to_string()),
+                        last_mod: 1_714_060_800_000,
+                        device_uuid: [
+                            0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x75, 0x75, 0x69, 0x64, 0x2d,
+                            0x6b, 0x61, 0x74, 0x31,
+                        ],
+                    },
+                ],
+                tags: vec!["personal".to_string()],
+                created_at_ms: 1_714_060_800_000,
+                last_mod_ms: 1_714_060_800_000,
+                tombstone: false,
+            }],
+        },
+        // expected.* is filled in by the dumper; placeholders here.
+        expected: common::BlockKatExpected {
+            block_file: Vec::new(),
+            size_bytes: 0,
+            recipients_count: 1,
+            records_count: 1,
+            first_record_type: "login".to_string(),
+        },
+    }
+}
+
+/// Lowercase hex encoder (the `hex` crate is not a dev-dep here; copying
+/// bytes through `format!` per byte avoids pulling one in for one call
+/// site).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
