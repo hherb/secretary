@@ -25,12 +25,6 @@
 //! no-op there.
 
 #![forbid(unsafe_code)]
-// PR-B sequencing: these helpers ship one task ahead of their first
-// caller (the `create_vault` / `save_block` / `share_block`
-// orchestrators in [`super`]). Once those land, this allow can come
-// off — the test module already exercises both functions, so coverage
-// is unchanged.
-#![allow(dead_code)]
 
 use std::path::Path;
 
