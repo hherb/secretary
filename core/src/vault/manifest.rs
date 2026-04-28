@@ -51,6 +51,9 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
+use crate::crypto::aead::{self, AeadKey, AeadNonce};
+use crate::version::{FILE_KIND_MANIFEST, FORMAT_VERSION, MAGIC, SUITE_ID};
+
 use super::canonical::{
     canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
 };
@@ -192,6 +195,38 @@ pub enum ManifestError {
     /// the shared [`crate::vault::canonical`] helpers.
     #[error("canonical CBOR violation: {0}")]
     Canonical(#[from] CanonicalError),
+
+    /// Manifest binary header (§4.1) `magic` field did not match
+    /// [`crate::version::MAGIC`] (`"SECR"` big-endian). The `expected`
+    /// payload is included so the surface error renders both halves and
+    /// callers don't need to look up the constant. Same shape as
+    /// `BlockError::BadMagic` modulo the extra `expected` field.
+    #[error("bad magic: expected 0x{expected:08x}, got 0x{got:08x}")]
+    BadMagic { expected: u32, got: u32 },
+
+    /// Manifest binary header (§4.1) declared a `file_kind` other than
+    /// [`crate::version::FILE_KIND_MANIFEST`]. Catches mistaken attempts
+    /// to parse an identity bundle (0x0001) or a block (0x0003) as a
+    /// manifest. The §4.1 spec property: file_kind is bound into the
+    /// AEAD AAD, so a tampered or cross-typed file fails authentication
+    /// — but we reject early with a typed error so callers can
+    /// distinguish "wrong file" from "AEAD verification failed".
+    #[error("unsupported file_kind: 0x{got:04x} (expected 0x{expected:04x})")]
+    UnsupportedFileKind { expected: u16, got: u16 },
+
+    /// Manifest binary header (§4.1) input was shorter than
+    /// [`MANIFEST_HEADER_LEN`]. Distinguished from CBOR-body truncation
+    /// by carrying the binary-header expected/actual length pair.
+    #[error("manifest header truncated: need {need} bytes, got {got}")]
+    HeaderTruncated { need: usize, got: usize },
+
+    /// AEAD verification failed during manifest body decrypt (§4.1).
+    /// Could mean a tampered header (AAD mismatch), a tampered
+    /// ciphertext or tag, the wrong Identity Block Key, or a wrong
+    /// nonce — all reported uniformly per the AEAD security model
+    /// (see [`crate::crypto::aead::AeadError::Decryption`]).
+    #[error("AEAD verification failed")]
+    AeadFailure,
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,12 +1052,203 @@ fn value_to_unknown(v: Value) -> Result<UnknownValue, ManifestError> {
 }
 
 // ---------------------------------------------------------------------------
+// Binary header (§4.1) + AEAD body wiring
+// ---------------------------------------------------------------------------
+
+/// Wire-form byte length of the manifest binary header (`docs/vault-format.md`
+/// §4.1): `magic`(4) + `format_version`(2) + `suite_id`(2) + `file_kind`(2)
+/// + `vault_uuid`(16) + `created_at_ms`(8) + `last_mod_ms`(8) = 42 bytes.
+///
+/// These 42 bytes are bound into the AEAD as Additional Authenticated Data
+/// — the §4.1 cross-file-kind anti-substitution property — so any bit-flip
+/// inside the header invalidates the Poly1305 tag on decrypt.
+pub const MANIFEST_HEADER_LEN: usize = 4 + 2 + 2 + 2 + 16 + 8 + 8;
+
+const _: () = {
+    // Spec-conformance assertion: §4.1 fixes the manifest header at 42
+    // bytes from `magic` through `last_mod_ms` inclusive. Any future
+    // re-shuffle of constituent field widths must also update §4.1 of
+    // the spec; this compile-time check makes the contract explicit.
+    assert!(MANIFEST_HEADER_LEN == 42);
+};
+
+/// Manifest binary header (`docs/vault-format.md` §4.1).
+///
+/// The 42-byte prefix that sits in front of the AEAD nonce + ciphertext.
+/// `magic`, `format_version`, `suite_id`, and `file_kind` are constants
+/// pinned by the v1 cipher suite — callers don't pass them; [`encode`](Self::encode)
+/// emits them and [`decode`](Self::decode) verifies them. Bound into the
+/// AEAD as AAD so a tampered header invalidates the tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManifestHeader {
+    pub vault_uuid: [u8; UUID_LEN],
+    pub created_at_ms: u64,
+    pub last_mod_ms: u64,
+}
+
+impl ManifestHeader {
+    /// Encode the 42-byte header. Constant fields (magic, format_version,
+    /// suite_id, file_kind) are emitted from [`crate::version`] sentinels
+    /// — callers don't get to override them.
+    ///
+    /// Returns a fixed-size array rather than a `Vec` so the AEAD AAD
+    /// length is statically obvious at the call site (and so the result
+    /// can be passed directly as a `&[u8]` slice).
+    pub fn encode(&self) -> [u8; MANIFEST_HEADER_LEN] {
+        let mut out = [0u8; MANIFEST_HEADER_LEN];
+        let mut pos = 0;
+        out[pos..pos + 4].copy_from_slice(&MAGIC.to_be_bytes());
+        pos += 4;
+        out[pos..pos + 2].copy_from_slice(&FORMAT_VERSION.to_be_bytes());
+        pos += 2;
+        out[pos..pos + 2].copy_from_slice(&SUITE_ID.to_be_bytes());
+        pos += 2;
+        out[pos..pos + 2].copy_from_slice(&FILE_KIND_MANIFEST.to_be_bytes());
+        pos += 2;
+        out[pos..pos + UUID_LEN].copy_from_slice(&self.vault_uuid);
+        pos += UUID_LEN;
+        out[pos..pos + 8].copy_from_slice(&self.created_at_ms.to_be_bytes());
+        pos += 8;
+        out[pos..pos + 8].copy_from_slice(&self.last_mod_ms.to_be_bytes());
+        pos += 8;
+        debug_assert_eq!(pos, MANIFEST_HEADER_LEN);
+        out
+    }
+
+    /// Decode the 42-byte header. Returns the parsed [`ManifestHeader`]
+    /// alongside the trailing byte slice (so a caller mid-parse of the
+    /// surrounding §4.1 envelope — which Task 7's `ManifestFile` will be —
+    /// can keep parsing the AEAD section).
+    ///
+    /// Validates:
+    ///
+    /// 1. Sufficient input length ([`ManifestError::HeaderTruncated`]).
+    /// 2. `magic == MAGIC` ([`ManifestError::BadMagic`]).
+    /// 3. `format_version == FORMAT_VERSION`
+    ///    ([`ManifestError::UnsupportedFormatVersion`]).
+    /// 4. `suite_id == SUITE_ID` ([`ManifestError::UnsupportedSuiteId`]).
+    /// 5. `file_kind == FILE_KIND_MANIFEST`
+    ///    ([`ManifestError::UnsupportedFileKind`]) — the §4.1
+    ///    cross-file-kind protection.
+    ///
+    /// `created_at_ms` and `last_mod_ms` are read verbatim — temporal
+    /// invariants (e.g. `created_at_ms <= last_mod_ms`) are not policed
+    /// at this layer; the manifest body and orchestrator layers handle
+    /// rollback and freshness checks (Task 8 onward).
+    pub fn decode(bytes: &[u8]) -> Result<(ManifestHeader, &[u8]), ManifestError> {
+        if bytes.len() < MANIFEST_HEADER_LEN {
+            return Err(ManifestError::HeaderTruncated {
+                need: MANIFEST_HEADER_LEN,
+                got: bytes.len(),
+            });
+        }
+        let mut pos = 0;
+
+        let magic = u32::from_be_bytes(slice_array::<4>(bytes, &mut pos));
+        if magic != MAGIC {
+            return Err(ManifestError::BadMagic {
+                expected: MAGIC,
+                got: magic,
+            });
+        }
+        let format_version = u16::from_be_bytes(slice_array::<2>(bytes, &mut pos));
+        if format_version != FORMAT_VERSION {
+            return Err(ManifestError::UnsupportedFormatVersion(format_version));
+        }
+        let suite_id = u16::from_be_bytes(slice_array::<2>(bytes, &mut pos));
+        if suite_id != SUITE_ID {
+            return Err(ManifestError::UnsupportedSuiteId(suite_id));
+        }
+        let file_kind = u16::from_be_bytes(slice_array::<2>(bytes, &mut pos));
+        if file_kind != FILE_KIND_MANIFEST {
+            return Err(ManifestError::UnsupportedFileKind {
+                expected: FILE_KIND_MANIFEST,
+                got: file_kind,
+            });
+        }
+        let vault_uuid = slice_array::<UUID_LEN>(bytes, &mut pos);
+        let created_at_ms = u64::from_be_bytes(slice_array::<8>(bytes, &mut pos));
+        let last_mod_ms = u64::from_be_bytes(slice_array::<8>(bytes, &mut pos));
+        debug_assert_eq!(pos, MANIFEST_HEADER_LEN);
+
+        Ok((
+            ManifestHeader {
+                vault_uuid,
+                created_at_ms,
+                last_mod_ms,
+            },
+            &bytes[MANIFEST_HEADER_LEN..],
+        ))
+    }
+}
+
+/// Read a fixed-size byte chunk out of `bytes`, advancing `pos`. The
+/// caller has already length-checked the input, so this helper takes
+/// ownership of that invariant — a panic here is a bug in the caller.
+/// Mirrors block.rs's `read_array` style minus the truncation check
+/// (we hoist it once at the top of [`ManifestHeader::decode`] since the
+/// header is a fixed 42 bytes, not variable-length like a block header).
+fn slice_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes[*pos..*pos + N]);
+    *pos += N;
+    out
+}
+
+/// AEAD-encrypt a canonical-CBOR-encoded manifest body under `ibk` with
+/// `nonce`, binding `header.encode()` into the AAD per §4.1.
+///
+/// Returns `aead_ct || aead_tag` — the concatenation that the §4.1
+/// envelope places between `aead_nonce` and the (Task 7) signature
+/// suffix. The tag length is [`crate::crypto::aead::AEAD_TAG_LEN`] (16
+/// bytes); the ciphertext length matches `manifest_bytes.len()`.
+///
+/// `manifest_bytes` is the output of [`encode_manifest`]; callers that
+/// haven't encoded yet should pipe through that function first. We don't
+/// take a `&Manifest` directly because callers occasionally already have
+/// the canonical bytes in hand (e.g. cached on a previous read).
+pub fn encrypt_manifest_body(
+    header: &ManifestHeader,
+    manifest_bytes: &[u8],
+    ibk: &AeadKey,
+    nonce: &AeadNonce,
+) -> Result<Vec<u8>, ManifestError> {
+    let aad = header.encode();
+    aead::encrypt(ibk, nonce, &aad, manifest_bytes).map_err(|_| ManifestError::AeadFailure)
+}
+
+/// AEAD-decrypt a manifest body. `ct_with_tag` is the concatenation of
+/// `aead_ct` (length declared upstream by the §4.1 envelope's
+/// `aead_ct_len` field — Task 7 territory) and `aead_tag`. AAD is
+/// `header.encode()`.
+///
+/// On AEAD success, parses the recovered plaintext via [`decode_manifest`]
+/// and returns the [`Manifest`]. AEAD failure (wrong key, wrong nonce,
+/// tampered header, tampered ciphertext) collapses to a single
+/// [`ManifestError::AeadFailure`] per the AEAD security model
+/// — distinguishing causes would leak information to a probing attacker.
+pub fn decrypt_manifest_body(
+    header: &ManifestHeader,
+    ct_with_tag: &[u8],
+    ibk: &AeadKey,
+    nonce: &AeadNonce,
+) -> Result<Manifest, ManifestError> {
+    let aad = header.encode();
+    let plaintext = aead::decrypt(ibk, nonce, &aad, ct_with_tag)
+        .map_err(|_| ManifestError::AeadFailure)?;
+    decode_manifest(plaintext.expose())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::crypto::aead::AEAD_TAG_LEN;
+    use crate::crypto::secret::Sensitive;
 
     fn dummy_kdf_params() -> KdfParamsRef {
         KdfParamsRef {
@@ -1494,6 +1720,290 @@ mod tests {
                 }
             ),
             "expected MissingField {{ field: \"vault_uuid\" }}, got {err:?}"
+        );
+    }
+
+    // ---- Binary header encode/decode (§4.1) ------------------------------
+    //
+    // The header is the 42-byte AAD prefix that wraps the AEAD body. Every
+    // negative test below pins one §4.1 invariant; the round-trip and
+    // tamper tests pin the AAD-binding property (a tampered header
+    // invalidates the Poly1305 tag).
+
+    /// Pinned 32-byte test IBK. The `Sensitive` wrapper zeroizes on drop,
+    /// so each test gets a fresh instance — we don't share one across
+    /// tests. Same fixture style as PR-A's block.rs tests.
+    fn test_ibk(byte: u8) -> AeadKey {
+        Sensitive::new([byte; 32])
+    }
+
+    fn test_nonce() -> AeadNonce {
+        // Deterministic 24-byte nonce for fixture stability. NOT
+        // representative of production: real callers must source nonces
+        // from `crypto::rand` (or pinned KAT inputs in tests).
+        let mut n = [0u8; 24];
+        for (i, b) in n.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        n
+    }
+
+    fn fixed_manifest_header() -> ManifestHeader {
+        ManifestHeader {
+            vault_uuid: [0x42; UUID_LEN],
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_900_000,
+        }
+    }
+
+    #[test]
+    fn header_encode_round_trips() {
+        let h = fixed_manifest_header();
+        let bytes = h.encode();
+        assert_eq!(bytes.len(), MANIFEST_HEADER_LEN, "encoded header is 42 bytes");
+        assert_eq!(bytes.len(), 42, "MANIFEST_HEADER_LEN spec value");
+
+        // Pin the constant prefix. magic = "SECR" big-endian.
+        assert_eq!(&bytes[0..4], b"SECR");
+        // format_version 0x0001
+        assert_eq!(&bytes[4..6], &[0x00, 0x01]);
+        // suite_id 0x0001
+        assert_eq!(&bytes[6..8], &[0x00, 0x01]);
+        // file_kind 0x0002 (manifest)
+        assert_eq!(&bytes[8..10], &[0x00, 0x02]);
+
+        let (decoded, tail) = ManifestHeader::decode(&bytes).expect("decode round-trip");
+        assert!(tail.is_empty(), "exact-length input leaves no tail");
+        assert_eq!(decoded, h, "header round-trips");
+    }
+
+    #[test]
+    fn header_decode_returns_tail() {
+        // Decoder leaves any post-header bytes as the returned tail so a
+        // future ManifestFile decoder (Task 7) can keep parsing.
+        let h = fixed_manifest_header();
+        let mut buf = h.encode().to_vec();
+        buf.extend_from_slice(&[0xab, 0xcd, 0xef]);
+        let (decoded, tail) = ManifestHeader::decode(&buf).expect("decode with trailer");
+        assert_eq!(decoded, h);
+        assert_eq!(tail, &[0xab, 0xcd, 0xef]);
+    }
+
+    #[test]
+    fn header_decode_rejects_bad_magic() {
+        let mut bytes = [0u8; MANIFEST_HEADER_LEN];
+        // First 4 bytes deliberately wrong; rest doesn't matter — magic
+        // is checked first.
+        let err = ManifestHeader::decode(&bytes).expect_err("bad magic must reject");
+        assert!(
+            matches!(err, ManifestError::BadMagic { expected, got }
+                if expected == MAGIC && got == 0),
+            "expected BadMagic with expected=MAGIC and got=0, got {err:?}"
+        );
+        // Also try a non-zero wrong magic to make sure the comparison is
+        // structural, not just zero-vs-nonzero.
+        bytes[0..4].copy_from_slice(&0xdead_beef_u32.to_be_bytes());
+        let err = ManifestHeader::decode(&bytes).expect_err("bad magic must reject");
+        assert!(
+            matches!(err, ManifestError::BadMagic { expected, got }
+                if expected == MAGIC && got == 0xdead_beef),
+            "expected BadMagic with got=0xdeadbeef, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn header_decode_rejects_wrong_format_version() {
+        let mut bytes = fixed_manifest_header().encode();
+        // format_version lives at offset 4..6 (after magic).
+        bytes[4..6].copy_from_slice(&0x0002_u16.to_be_bytes());
+        let err = ManifestHeader::decode(&bytes)
+            .expect_err("non-v1 format_version must reject");
+        assert!(
+            matches!(err, ManifestError::UnsupportedFormatVersion(2)),
+            "expected UnsupportedFormatVersion(2), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn header_decode_rejects_wrong_suite_id() {
+        let mut bytes = fixed_manifest_header().encode();
+        // suite_id lives at offset 6..8.
+        bytes[6..8].copy_from_slice(&0x0099_u16.to_be_bytes());
+        let err = ManifestHeader::decode(&bytes).expect_err("non-v1 suite_id must reject");
+        assert!(
+            matches!(err, ManifestError::UnsupportedSuiteId(0x99)),
+            "expected UnsupportedSuiteId(0x99), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn header_decode_rejects_wrong_file_kind() {
+        let mut bytes = fixed_manifest_header().encode();
+        // file_kind lives at offset 8..10. 0x0001 is the identity-bundle
+        // file kind; rejecting it here pins the §4.1 cross-file-kind
+        // anti-substitution check at the binary layer (the AEAD AAD also
+        // catches it later, but we'd rather fail with a typed error than
+        // a generic AEAD failure when the file-kind alone is enough to
+        // disambiguate).
+        bytes[8..10].copy_from_slice(&0x0001_u16.to_be_bytes());
+        let err = ManifestHeader::decode(&bytes).expect_err("non-manifest file_kind must reject");
+        assert!(
+            matches!(
+                err,
+                ManifestError::UnsupportedFileKind {
+                    expected: FILE_KIND_MANIFEST,
+                    got: 0x0001
+                }
+            ),
+            "expected UnsupportedFileKind {{ expected: 0x0002, got: 0x0001 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn header_decode_rejects_truncation() {
+        // 41 bytes — one short of the §4.1 header length.
+        let bytes = [0u8; MANIFEST_HEADER_LEN - 1];
+        let err = ManifestHeader::decode(&bytes).expect_err("41 bytes must reject as truncated");
+        assert!(
+            matches!(
+                err,
+                ManifestError::HeaderTruncated {
+                    need: MANIFEST_HEADER_LEN,
+                    got: 41
+                }
+            ),
+            "expected HeaderTruncated {{ need: 42, got: 41 }}, got {err:?}"
+        );
+
+        // Also: empty input.
+        let err = ManifestHeader::decode(&[])
+            .expect_err("empty input must reject as truncated");
+        assert!(
+            matches!(
+                err,
+                ManifestError::HeaderTruncated {
+                    need: MANIFEST_HEADER_LEN,
+                    got: 0
+                }
+            ),
+            "expected HeaderTruncated with got=0, got {err:?}"
+        );
+    }
+
+    // ---- AEAD body encrypt/decrypt round-trip ---------------------------
+
+    #[test]
+    fn encrypt_decrypt_body_round_trip() {
+        let m = populated_manifest();
+        let manifest_bytes = encode_manifest(&m).expect("encode manifest body");
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+
+        let ct_with_tag = encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce)
+            .expect("encrypt body");
+        // The tag is appended to the ciphertext per crypto::aead's contract.
+        assert_eq!(
+            ct_with_tag.len(),
+            manifest_bytes.len() + AEAD_TAG_LEN,
+            "ct||tag length is plaintext+16"
+        );
+
+        let ibk2 = test_ibk(0x00);
+        let recovered = decrypt_manifest_body(&header, &ct_with_tag, &ibk2, &nonce)
+            .expect("decrypt body");
+
+        // populated_manifest's input arrays are non-canonical-order; the
+        // decoded copy is in canonical order. Use the same sort-then-compare
+        // discipline as the existing `roundtrip_populated_manifest` test.
+        let mut m_sorted = m.clone();
+        m_sorted
+            .vector_clock
+            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+        m_sorted.blocks.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        for blk in &mut m_sorted.blocks {
+            blk.recipients.sort();
+            blk.vector_clock_summary
+                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+        }
+        m_sorted.trash.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        assert_eq!(recovered, m_sorted, "decrypted manifest matches original");
+    }
+
+    #[test]
+    fn tamper_header_breaks_aead() {
+        // Central §4.1 spec property: the header is bound into the AEAD
+        // tag via AAD, so a single-byte flip in the header invalidates
+        // the tag on decrypt.
+        let m = minimal_manifest();
+        let manifest_bytes = encode_manifest(&m).expect("encode");
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let ct_with_tag =
+            encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce).expect("encrypt");
+
+        // Tamper #1: flip a byte in vault_uuid.
+        let mut tampered = header;
+        tampered.vault_uuid[0] ^= 0xff;
+        let err = decrypt_manifest_body(&tampered, &ct_with_tag, &ibk, &nonce)
+            .expect_err("tampered header must fail AEAD");
+        assert!(
+            matches!(err, ManifestError::AeadFailure),
+            "expected AeadFailure (tampered vault_uuid), got {err:?}"
+        );
+
+        // Tamper #2: change last_mod_ms.
+        let tampered = ManifestHeader {
+            last_mod_ms: header.last_mod_ms.wrapping_add(1),
+            ..header
+        };
+        let err = decrypt_manifest_body(&tampered, &ct_with_tag, &ibk, &nonce)
+            .expect_err("tampered last_mod_ms must fail AEAD");
+        assert!(
+            matches!(err, ManifestError::AeadFailure),
+            "expected AeadFailure (tampered last_mod_ms), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tamper_ct_breaks_aead() {
+        let m = minimal_manifest();
+        let manifest_bytes = encode_manifest(&m).expect("encode");
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let mut ct_with_tag =
+            encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce).expect("encrypt");
+
+        // Flip a byte deep inside the ciphertext (not the tag region).
+        // `manifest_bytes.len()` would be the start of the tag; pick
+        // somewhere safely before that.
+        ct_with_tag[2] ^= 0xff;
+        let err = decrypt_manifest_body(&header, &ct_with_tag, &ibk, &nonce)
+            .expect_err("tampered ct must fail AEAD");
+        assert!(
+            matches!(err, ManifestError::AeadFailure),
+            "expected AeadFailure on flipped ciphertext byte, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_ibk_breaks_aead() {
+        let m = minimal_manifest();
+        let manifest_bytes = encode_manifest(&m).expect("encode");
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let ct_with_tag =
+            encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce).expect("encrypt");
+
+        let wrong_ibk = test_ibk(0xff);
+        let err = decrypt_manifest_body(&header, &ct_with_tag, &wrong_ibk, &nonce)
+            .expect_err("wrong IBK must fail AEAD");
+        assert!(
+            matches!(err, ManifestError::AeadFailure),
+            "expected AeadFailure under wrong IBK, got {err:?}"
         );
     }
 }
