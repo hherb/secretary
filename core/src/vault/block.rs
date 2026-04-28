@@ -1,6 +1,6 @@
 //! Block file format: binary header (`docs/vault-format.md` §6.1),
-//! recipient table (§6.2), AEAD body (§6.1 + §6.3), and the on-disk
-//! [`BlockFile`] composite.
+//! recipient table (§6.2), AEAD body (§6.1 + §6.3), trailing hybrid
+//! signature suffix (§6.1 / §8), and the on-disk [`BlockFile`] composite.
 //!
 //! This module ships these pieces:
 //!
@@ -26,16 +26,21 @@
 //!
 //! 4. [`BlockFile`] / [`encode_block_file`] / [`decode_block_file`] /
 //!    [`encrypt_block`] / [`decrypt_block`] — the on-disk composite
-//!    type (header + recipients + AEAD body) and the high-level encrypt
-//!    and decrypt orchestrators. The trailing hybrid signature suffix
-//!    (`author_fingerprint`, `sig_ed`, `sig_pq`) lands in a subsequent
-//!    build-sequence step; [`decode_block_file`] returns the unconsumed
-//!    bytes after `aead_tag` for that step to consume.
+//!    type (header + recipients + AEAD body + trailing hybrid signature
+//!    suffix) and the high-level encrypt and decrypt orchestrators.
+//!    The signature suffix is `author_fingerprint (16) || sig_ed_len (u16
+//!    BE) || sig_ed (64) || sig_pq_len (u16 BE) || sig_pq` per §6.1.
+//!    The signed message is the bytes from `magic` through `aead_tag`
+//!    inclusive, with the role-tag prefix [`crate::crypto::kdf::TAG_BLOCK_SIG`]
+//!    added by [`crate::crypto::sig::sign`] (and stripped by
+//!    [`crate::crypto::sig::verify`]).
 //!
 //! The §6.4 step 9 cross-check (`plaintext.block_uuid == header.block_uuid`)
 //! is enforced by [`decrypt_block`]. [`BlockError::BlockUuidMismatch`]
 //! surfaces a header-vs-plaintext mismatch as a typed error distinct from
-//! corruption.
+//! corruption. Likewise [`BlockError::AuthorFingerprintMismatch`]
+//! surfaces a §6.4 step 6 cross-check between the on-disk
+//! `author_fingerprint` and the expected sender's fingerprint.
 //!
 //! ## Canonical CBOR (plaintext only)
 //!
@@ -66,6 +71,10 @@ use rand_core::{CryptoRng, RngCore};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::Sensitive;
+use crate::crypto::sig::{
+    self, Ed25519Public, Ed25519Secret, HybridSig, MlDsa65Public, MlDsa65Secret, MlDsa65Sig,
+    SigError, SigRole, ED25519_SIG_LEN,
+};
 use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
@@ -326,6 +335,54 @@ pub enum BlockError {
     /// prefixes).
     #[error("non-canonical CBOR encoding in block plaintext (e.g. indefinite-length item, key disorder, or non-shortest length)")]
     NonCanonicalEncoding,
+
+    /// Hybrid signature sign or verify failed — for the *block-hybrid-sig
+    /// position only*. §6.1 places exactly one hybrid signature on a
+    /// block file (`sig_ed` + `sig_pq` immediately after `aead_tag`); this
+    /// variant represents that one position. Other future signature
+    /// positions (manifest sig per §10, contact-card self-sig per §6)
+    /// will get their own variants per the PR #1 review-fix `97af857`
+    /// discipline — there is no blanket `From<SigError>` impl beyond the
+    /// `#[from]` here, which only fires inside this module.
+    #[error("block signature error: {0}")]
+    Sig(#[from] SigError),
+
+    /// On-disk `sig_ed_len` (the u16 BE length prefix immediately before
+    /// the Ed25519 signature bytes) was not [`ED25519_SIG_LEN`] (64).
+    /// §6.1 / §14 fix the Ed25519 signature length; this variant catches
+    /// both decode-side wire-format violations and (defensively) any
+    /// encode-side mismatch should the upstream type alias ever change.
+    #[error("sig_ed wrong length: expected {ED25519_SIG_LEN}, got {found}")]
+    SigEdWrongLength { found: usize },
+    /// `sig_pq_len` would not fit a u16 on encode. The §6.1 wire-format
+    /// `sig_pq_len` field is u16 BE, capping the on-disk PQ signature at
+    /// `u16::MAX`. ML-DSA-65 signatures are 3309 bytes so this is a
+    /// defensive bound; a future suite migration to a PQ scheme with a
+    /// larger signature would need a wider length field and a suite bump.
+    #[error("sig_pq too long for u16 length prefix: {found}")]
+    SigPqTooLong { found: usize },
+
+    /// On-disk `author_fingerprint` did not match the expected sender's
+    /// fingerprint passed to [`decrypt_block`] (§6.4 step 6). Distinct
+    /// from corruption and from signature-verify failure: this means the
+    /// block claims a different author than the caller is expecting,
+    /// which the UI should surface as "wrong sender" rather than as
+    /// "tampered file".
+    #[error(
+        "author fingerprint mismatch: expected {expected:02x?}, found {found:02x?}"
+    )]
+    AuthorFingerprintMismatch {
+        expected: Fingerprint,
+        found: Fingerprint,
+    },
+
+    /// [`decode_block_file`] found bytes after the trailing signature
+    /// suffix. The §6.1 file format has a fixed-length suffix; any bytes
+    /// after `sig_pq` are corruption (or wire-format extension by a
+    /// future suite that the v1 reader does not understand). Strict
+    /// reject — the v1 spec defines no forward-compat trailing fields.
+    #[error("trailing bytes after signature suffix: {count}")]
+    TrailingBytes { count: usize },
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +404,9 @@ pub struct VectorClockEntry {
 ///
 /// Fields after the vector clock (`recipient_count`, `recipient_entries`,
 /// `aead_nonce`, `aead_ct_len`, `aead_ct`, `aead_tag`, `author_fingerprint`,
-/// signature suffix) live in subsequent build-sequence steps and will be
-/// modelled in a wider type that wraps this one.
+/// signature suffix) are modelled by [`BlockFile`] which wraps this header
+/// alongside the recipient table, AEAD body, and the trailing hybrid
+/// signature suffix.
 ///
 /// All multi-byte integers are big-endian on disk per §6.1 / §14.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -468,14 +526,12 @@ pub struct RecipientPublicKeys<'a> {
     pub ml_kem_768_pk: &'a kem::MlKem768Public,
 }
 
-/// On-disk block file representation (`docs/vault-format.md` §6.1) up to
-/// and including `aead_tag`.
+/// On-disk block file representation (`docs/vault-format.md` §6.1).
 ///
-/// The trailing hybrid-signature suffix (`author_fingerprint`,
-/// `sig_ed_len`/`sig_ed`, `sig_pq_len`/`sig_pq`) is appended by a
-/// subsequent build-sequence step; [`decode_block_file`] returns the
-/// trailing slice positioned at `author_fingerprint` for that step to
-/// consume.
+/// Wraps the header (§6.1), recipient table (§6.2), AEAD body section
+/// (§6.1, `aead_nonce` / `aead_ct` / `aead_tag`), and the trailing hybrid
+/// signature suffix (§6.1, `author_fingerprint` plus the
+/// length-prefixed `sig_ed` / `sig_pq` pair).
 ///
 /// [`BlockPlaintext`] is the *opened* (decrypted) form of the body;
 /// [`BlockFile`] is the on-disk form. They are intentionally distinct
@@ -499,6 +555,15 @@ pub struct BlockFile {
     pub aead_ct: Vec<u8>,
     /// 16-byte Poly1305 authentication tag for the body AEAD.
     pub aead_tag: [u8; AEAD_TAG_LEN],
+    /// 16-byte fingerprint of the block author's contact card (§6.1).
+    /// Cross-checked against the expected sender on read
+    /// ([`BlockError::AuthorFingerprintMismatch`]).
+    pub author_fingerprint: Fingerprint,
+    /// Hybrid (Ed25519 + ML-DSA-65) signature over the bytes from `magic`
+    /// through `aead_tag` inclusive, with the [`SigRole::Block`] role tag
+    /// prepended internally by [`crate::crypto::sig::sign`] (§8 / §6.5
+    /// step 7). Verified before hybrid-decap on read (§6.4 step 6–7).
+    pub sig: HybridSig,
 }
 
 /// Wire-form byte length of one recipient table entry (§6.2): exactly
@@ -511,6 +576,16 @@ const _: () = {
     // change to one of the size constants this expression sums must be
     // matched by a §6.2 spec amendment.
     assert!(RECIPIENT_ENTRY_LEN == 1208);
+};
+
+const _: () = {
+    // Spec-conformance assertion: §6.1 / §14 pin the Ed25519 signature
+    // length at 64 bytes; the wire `sig_ed_len` field declares the same
+    // value. Any future widening of [`ED25519_SIG_LEN`] in
+    // `crypto::sig` would invalidate the §6.1 wire format and must
+    // surface as a loud compile failure here, mirroring the
+    // `RECIPIENT_ENTRY_LEN` assertion.
+    assert!(ED25519_SIG_LEN == 64);
 };
 
 // ---------------------------------------------------------------------------
@@ -1304,48 +1379,134 @@ fn decode_aead_section(bytes: &[u8]) -> Result<AeadSection<'_>, BlockError> {
 }
 
 // ---------------------------------------------------------------------------
+// Signature suffix encode / decode (§6.1)
+// ---------------------------------------------------------------------------
+
+/// Serialize the §6.1 trailing hybrid-signature suffix:
+/// `author_fingerprint (16) || sig_ed_len (u16 BE) || sig_ed (64) ||
+/// sig_pq_len (u16 BE) || sig_pq`.
+///
+/// `sig_ed_len` is hard-validated against [`ED25519_SIG_LEN`] (64). The
+/// type alias [`Ed25519Sig`](crate::crypto::sig::Ed25519Sig) is
+/// `[u8; 64]` so a [`HybridSig`] always carries a 64-byte `sig_ed`, but
+/// the check belongs here for future-proofing if the alias ever changes
+/// shape. `sig_pq_len` is bounded by `u16::MAX`; the spec does not pin
+/// the PQ signature length on the wire (only [`ED25519_SIG_LEN`] is
+/// fixed), so we only enforce the length-prefix's u16 ceiling rather
+/// than [`crate::crypto::sig::ML_DSA_65_SIG_LEN`].
+fn encode_signature_suffix(
+    author: &Fingerprint,
+    sig: &HybridSig,
+) -> Result<Vec<u8>, BlockError> {
+    if sig.sig_ed.len() != ED25519_SIG_LEN {
+        return Err(BlockError::SigEdWrongLength {
+            found: sig.sig_ed.len(),
+        });
+    }
+    let sig_pq_bytes = sig.sig_pq.as_bytes();
+    if sig_pq_bytes.len() > u16::MAX as usize {
+        return Err(BlockError::SigPqTooLong {
+            found: sig_pq_bytes.len(),
+        });
+    }
+    // Length narrowings safe — both bounds-checked above.
+    let sig_ed_len_u16 = sig.sig_ed.len() as u16;
+    let sig_pq_len_u16 = sig_pq_bytes.len() as u16;
+
+    let mut out = Vec::with_capacity(
+        16 + 2 + sig.sig_ed.len() + 2 + sig_pq_bytes.len(),
+    );
+    out.extend_from_slice(author);
+    out.extend_from_slice(&sig_ed_len_u16.to_be_bytes());
+    out.extend_from_slice(&sig.sig_ed);
+    out.extend_from_slice(&sig_pq_len_u16.to_be_bytes());
+    out.extend_from_slice(sig_pq_bytes);
+    Ok(out)
+}
+
+/// Parse the §6.1 trailing hybrid-signature suffix from `bytes`,
+/// returning `(author_fingerprint, sig, &remaining)` where `&remaining`
+/// is the slice after the suffix. End-of-file in v1 leaves `remaining`
+/// empty; [`decode_block_file`] enforces that with
+/// [`BlockError::TrailingBytes`].
+///
+/// Validates `sig_ed_len == ED25519_SIG_LEN` strictly and rejects
+/// truncated input at every field boundary.
+fn decode_signature_suffix(
+    bytes: &[u8],
+) -> Result<(Fingerprint, HybridSig, &[u8]), BlockError> {
+    let mut pos = 0;
+    let author = read_array::<16>(bytes, &mut pos)?;
+    let sig_ed_len = read_u16_be(bytes, &mut pos)? as usize;
+    if sig_ed_len != ED25519_SIG_LEN {
+        return Err(BlockError::SigEdWrongLength { found: sig_ed_len });
+    }
+    let sig_ed = read_array::<ED25519_SIG_LEN>(bytes, &mut pos)?;
+
+    let sig_pq_len = read_u16_be(bytes, &mut pos)? as usize;
+    let available = bytes.len().saturating_sub(pos);
+    if available < sig_pq_len {
+        return Err(BlockError::Truncated {
+            needed: sig_pq_len,
+            got: available,
+        });
+    }
+    let sig_pq_bytes = bytes[pos..pos + sig_pq_len].to_vec();
+    pos += sig_pq_len;
+
+    // MlDsa65Sig::from_bytes hard-pins the length at ML_DSA_65_SIG_LEN
+    // (3309). Any other PQ signature length surfaces as
+    // SigError::InvalidSignatureLength via #[from].
+    let sig_pq = MlDsa65Sig::from_bytes(&sig_pq_bytes)?;
+
+    Ok((author, HybridSig { sig_ed, sig_pq }, &bytes[pos..]))
+}
+
+// ---------------------------------------------------------------------------
 // Full BlockFile encode / decode
 // ---------------------------------------------------------------------------
 
-/// Serialize a [`BlockFile`] to its §6.1 wire form (bytes from `magic`
-/// through `aead_tag` inclusive). The trailing hybrid-signature suffix
-/// (`author_fingerprint`, `sig_ed_*`, `sig_pq_*`) is appended by a
-/// subsequent build-sequence step.
+/// Serialize a [`BlockFile`] to its complete §6.1 wire form (bytes from
+/// `magic` through `sig_pq` inclusive — header, recipient table, AEAD
+/// body, and the trailing hybrid-signature suffix).
 pub fn encode_block_file(block: &BlockFile) -> Result<Vec<u8>, BlockError> {
     let header_bytes = encode_header(&block.header)?;
     let recipient_bytes = encode_recipient_table(&block.recipients)?;
     let aead_bytes = encode_aead_section(block)?;
+    let sig_bytes = encode_signature_suffix(&block.author_fingerprint, &block.sig)?;
 
-    let mut out =
-        Vec::with_capacity(header_bytes.len() + recipient_bytes.len() + aead_bytes.len());
+    let mut out = Vec::with_capacity(
+        header_bytes.len() + recipient_bytes.len() + aead_bytes.len() + sig_bytes.len(),
+    );
     out.extend_from_slice(&header_bytes);
     out.extend_from_slice(&recipient_bytes);
     out.extend_from_slice(&aead_bytes);
+    out.extend_from_slice(&sig_bytes);
     Ok(out)
 }
 
-/// Parse a [`BlockFile`] from `bytes`, returning the parsed structure
-/// alongside the trailing slice (positioned at `author_fingerprint` for
-/// the signature-suffix decoder added in a subsequent build-sequence step).
-///
-/// In this commit the trailing slice is empty for well-formed inputs.
-/// Callers that pass bytes containing a signature suffix will see those
-/// bytes returned untouched — the decoder does not validate anything
-/// after `aead_tag`.
-pub fn decode_block_file(bytes: &[u8]) -> Result<(BlockFile, &[u8]), BlockError> {
+/// Parse a complete [`BlockFile`] from `bytes` (header, recipient table,
+/// AEAD body, signature suffix). Rejects any trailing bytes after the
+/// signature suffix with [`BlockError::TrailingBytes`] — the §6.1 file
+/// format is fixed-length-suffix and v1 defines no forward-compat
+/// trailing fields.
+pub fn decode_block_file(bytes: &[u8]) -> Result<BlockFile, BlockError> {
     let (header, rest) = decode_header(bytes)?;
     let (recipients, rest) = decode_recipient_table(rest)?;
     let aead = decode_aead_section(rest)?;
-    Ok((
-        BlockFile {
-            header,
-            recipients,
-            aead_nonce: aead.aead_nonce,
-            aead_ct: aead.aead_ct,
-            aead_tag: aead.aead_tag,
-        },
-        aead.rest,
-    ))
+    let (author_fingerprint, sig, rest) = decode_signature_suffix(aead.rest)?;
+    if !rest.is_empty() {
+        return Err(BlockError::TrailingBytes { count: rest.len() });
+    }
+    Ok(BlockFile {
+        header,
+        recipients,
+        aead_nonce: aead.aead_nonce,
+        aead_ct: aead.aead_ct,
+        aead_tag: aead.aead_tag,
+        author_fingerprint,
+        sig,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,11 +1530,50 @@ fn build_body_aad(
     Ok(aad)
 }
 
+/// Build the signed-message bytes for the §6.1 / §8 block hybrid
+/// signature: the on-disk bytes from `magic` through `aead_tag`
+/// inclusive — i.e. everything before the signature suffix starts.
+/// Mirrors [`build_body_aad`] in shape: re-encode the header and
+/// recipient table, then concatenate the AEAD section.
+///
+/// Critical: do NOT prepend [`crate::crypto::kdf::TAG_BLOCK_SIG`] here.
+/// [`crate::crypto::sig::sign`] / [`crate::crypto::sig::verify`] add the
+/// role-tag prefix internally (see [`SigRole::tag`]). Doing it again
+/// here would double-tag and break round-trip verification.
+fn signed_message_bytes(
+    header: &BlockHeader,
+    recipients: &[RecipientWrap],
+    aead_nonce: &[u8; 24],
+    aead_ct: &[u8],
+    aead_tag: &[u8; AEAD_TAG_LEN],
+) -> Result<Vec<u8>, BlockError> {
+    let header_bytes = encode_header(header)?;
+    let recipient_bytes = encode_recipient_table(recipients)?;
+    let ct_len_u32 =
+        u32::try_from(aead_ct.len()).map_err(|_| BlockError::IntegerOverflow {
+            field: "aead_ct_len",
+        })?;
+    let mut out = Vec::with_capacity(
+        header_bytes.len()
+            + recipient_bytes.len()
+            + 24
+            + 4
+            + aead_ct.len()
+            + AEAD_TAG_LEN,
+    );
+    out.extend_from_slice(&header_bytes);
+    out.extend_from_slice(&recipient_bytes);
+    out.extend_from_slice(aead_nonce);
+    out.extend_from_slice(&ct_len_u32.to_be_bytes());
+    out.extend_from_slice(aead_ct);
+    out.extend_from_slice(aead_tag);
+    Ok(out)
+}
+
 /// Build a complete on-disk [`BlockFile`] from a header, a plaintext, and
 /// the recipient list (§6.5).
 ///
-/// Steps (mirroring §6.5 1–6, minus signing which lands in a subsequent
-/// build-sequence step):
+/// Steps (mirroring §6.5 1–7):
 ///
 /// 1. Generate a fresh 32-byte Block Content Key from `rng`.
 /// 2. For each recipient, [`crate::crypto::kem::encap`] wraps the BCK against
@@ -1386,15 +1586,24 @@ fn build_body_aad(
 ///    `magic..end_of_recipient_entries`. The returned `ct || tag` is
 ///    split into the wire-form `aead_ct` (variable-length) and `aead_tag`
 ///    (fixed 16 bytes).
+/// 7. Compute the §8 hybrid signature over the bytes from `magic`
+///    through `aead_tag` inclusive (the role-tag prefix is added by
+///    [`crate::crypto::sig::sign`]). The author of the block is the
+///    sender, so [`BlockFile::author_fingerprint`] = `sender_card_fingerprint`.
 ///
 /// `rng` is consumed for the BCK, every per-recipient encap, and the
-/// body AEAD nonce — in production pass `rand_core::OsRng`.
+/// body AEAD nonce — in production pass `rand_core::OsRng`. Hybrid
+/// signing is deterministic (RFC 8032 Ed25519 + ML-DSA hedged-deterministic),
+/// so no extra RNG draws happen at the sign step.
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_block<R: RngCore + CryptoRng>(
     rng: &mut R,
     header: &BlockHeader,
     plaintext: &BlockPlaintext,
     sender_card_fingerprint: &Fingerprint,
     sender_pk_bundle: &[u8],
+    sender_ed_sk: &Ed25519Secret,
+    sender_pq_sk: &MlDsa65Secret,
     recipients: &[RecipientPublicKeys<'_>],
 ) -> Result<BlockFile, BlockError> {
     if recipients.is_empty() {
@@ -1466,42 +1675,82 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     let mut aead_tag = [0u8; AEAD_TAG_LEN];
     aead_tag.copy_from_slice(&ct_with_tag[split_at..]);
 
+    // Step 7 (§6.5 step 7): hybrid-sign the bytes from `magic` through
+    // `aead_tag` inclusive. crypto::sig::sign prepends TAG_BLOCK_SIG
+    // internally — passing it here would double-tag.
+    let m = signed_message_bytes(header, &wraps, &aead_nonce, &aead_ct, &aead_tag)?;
+    let sig = sig::sign(SigRole::Block, &m, sender_ed_sk, sender_pq_sk)?;
+
     Ok(BlockFile {
         header: header.clone(),
         recipients: wraps,
         aead_nonce,
         aead_ct,
         aead_tag,
+        author_fingerprint: *sender_card_fingerprint,
+        sig,
     })
 }
 
 /// Open a [`BlockFile`] and return the decrypted [`BlockPlaintext`]
 /// (§6.4).
 ///
-/// Steps (§6.4 1–9, minus signature verify which lands in a subsequent
-/// build-sequence step):
+/// Steps (§6.4 1–9):
 ///
-/// 1. Locate the reader's entry by `reader_card_fingerprint` lookup
+/// 1. Cross-check `block.author_fingerprint == sender_card_fingerprint`
+///    (§6.4 step 6 — "look up author_fingerprint to obtain verification
+///    keys"). Mismatch → [`BlockError::AuthorFingerprintMismatch`].
+/// 2. Hybrid-verify the §8 signature over the bytes from `magic`
+///    through `aead_tag` inclusive (§6.4 step 7). Failure →
+///    [`BlockError::Sig`]. Verify happens BEFORE hybrid-decap so a
+///    forged file is rejected before any secret-key operation runs.
+/// 3. Locate the reader's entry by `reader_card_fingerprint` lookup
 ///    against the recipient table. Missing → [`BlockError::NotARecipient`].
-/// 2. Hybrid-decap that entry to recover the BCK
+/// 4. Hybrid-decap that entry to recover the BCK
 ///    ([`crate::crypto::kem::decap`]).
-/// 3. Compute AAD = bytes from `magic` through end of `recipient_entries`.
-/// 4. AEAD-decrypt `aead_ct || aead_tag` under the BCK with that AAD.
+/// 5. Compute AAD = bytes from `magic` through end of `recipient_entries`.
+/// 6. AEAD-decrypt `aead_ct || aead_tag` under the BCK with that AAD.
 ///    Failure surfaces as [`BlockError::Aead`] (position-specific to
 ///    the block body).
-/// 5. Parse the plaintext as canonical CBOR ([`decode_plaintext`]).
-/// 6. Cross-check `plaintext.block_uuid == header.block_uuid`
+/// 7. Parse the plaintext as canonical CBOR ([`decode_plaintext`]).
+/// 8. Cross-check `plaintext.block_uuid == header.block_uuid`
 ///    ([`BlockError::BlockUuidMismatch`]).
+#[allow(clippy::too_many_arguments)]
 pub fn decrypt_block(
     block: &BlockFile,
     sender_card_fingerprint: &Fingerprint,
     sender_pk_bundle: &[u8],
+    sender_ed_pk: &Ed25519Public,
+    sender_pq_pk: &MlDsa65Public,
     reader_card_fingerprint: &Fingerprint,
     reader_pk_bundle: &[u8],
     reader_x_sk: &kem::X25519Secret,
     reader_pq_sk: &kem::MlKem768Secret,
 ) -> Result<BlockPlaintext, BlockError> {
-    // Step 1: locate the reader's entry. Linear scan is fine — the
+    // Step 1: author fingerprint cross-check (§6.4 step 6). Reject
+    // before any signature- or KEM-related work to make the diagnostic
+    // point at the actual problem (wrong sender, not bad signature).
+    if &block.author_fingerprint != sender_card_fingerprint {
+        return Err(BlockError::AuthorFingerprintMismatch {
+            expected: *sender_card_fingerprint,
+            found: block.author_fingerprint,
+        });
+    }
+
+    // Step 2: hybrid-verify the §8 block signature. Done BEFORE
+    // hybrid-decap so a tampered/forged file never causes a private-key
+    // operation to run. crypto::sig::verify prepends TAG_BLOCK_SIG
+    // internally — passing it here would double-tag and break verify.
+    let m = signed_message_bytes(
+        &block.header,
+        &block.recipients,
+        &block.aead_nonce,
+        &block.aead_ct,
+        &block.aead_tag,
+    )?;
+    sig::verify(SigRole::Block, &m, &block.sig, sender_ed_pk, sender_pq_pk)?;
+
+    // Step 3: locate the reader's entry. Linear scan is fine — the
     // recipient list is small (typical: handful, hard cap u16::MAX) and
     // this avoids materialising a HashMap for one lookup.
     let entry = block
@@ -1512,7 +1761,7 @@ pub fn decrypt_block(
             fingerprint: *reader_card_fingerprint,
         })?;
 
-    // Step 2: hybrid-decap to recover the BCK.
+    // Step 4: hybrid-decap to recover the BCK.
     let bck = kem::decap(
         &entry.wrap,
         sender_card_fingerprint,
@@ -1524,23 +1773,23 @@ pub fn decrypt_block(
         &block.header.block_uuid,
     )?;
 
-    // Step 3: AAD from the on-disk bytes magic..end_of_recipient_entries.
+    // Step 5: AAD from the on-disk bytes magic..end_of_recipient_entries.
     let aad = build_body_aad(&block.header, &block.recipients)?;
 
-    // Step 4: re-concatenate (aead_ct || aead_tag) for the AEAD API.
+    // Step 6: re-concatenate (aead_ct || aead_tag) for the AEAD API.
     let mut ct_with_tag = Vec::with_capacity(block.aead_ct.len() + AEAD_TAG_LEN);
     ct_with_tag.extend_from_slice(&block.aead_ct);
     ct_with_tag.extend_from_slice(&block.aead_tag);
     let bck_key: AeadKey = Sensitive::new(*bck.expose());
     let pt_secret = aead::decrypt(&bck_key, &block.aead_nonce, &aad, &ct_with_tag)?;
 
-    // Step 5: parse the canonical-CBOR plaintext. SecretBytes derefs to
+    // Step 7: parse the canonical-CBOR plaintext. SecretBytes derefs to
     // a byte slice via `expose`; the resulting `BlockPlaintext` itself
     // contains record fields whose `value` may carry secret material —
     // the surrounding caller is responsible for handling it accordingly.
     let plaintext = decode_plaintext(pt_secret.expose())?;
 
-    // Step 6: §6.4 step 9 cross-check.
+    // Step 8: §6.4 step 9 cross-check.
     if plaintext.block_uuid != block.header.block_uuid {
         return Err(BlockError::BlockUuidMismatch {
             header: block.header.block_uuid,
@@ -1711,6 +1960,18 @@ mod tests {
         let pq_pk =
             kem::MlKem768Public::from_bytes(&id.ml_kem_768_pk).expect("ml-kem-768 pk length");
 
+        // ---- Reconstitute the sig keys for sign / verify -------------
+        // bundle.ed25519_sk is already typed Sensitive<[u8;32]> = Ed25519Secret.
+        // bundle.ml_dsa_65_sk is Sensitive<Vec<u8>>; rewrap into the
+        // MlDsa65Secret newtype for sig::sign. Public side: ed25519_pk
+        // is a [u8;32] = Ed25519Public; ml_dsa_65_pk is Vec<u8> that we
+        // wrap into MlDsa65Public.
+        let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
+        let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose())
+            .expect("ml-dsa-65 sk length");
+        let dsa_pk =
+            MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
+
         // ---- Header / plaintext --------------------------------------
         let block_uuid: [u8; BLOCK_UUID_LEN] = [0x42; BLOCK_UUID_LEN];
         let header = BlockHeader {
@@ -1770,17 +2031,23 @@ mod tests {
             &plaintext,
             &card_fp,
             &pk_bundle,
+            &ed_sk,
+            &dsa_sk,
             &recipients,
         )
         .expect("encrypt_block");
 
+        // Signature is well-formed: 64-byte Ed25519 + 3309-byte ML-DSA-65.
+        assert_eq!(block.sig.sig_ed.len(), ED25519_SIG_LEN);
+        assert_eq!(
+            block.sig.sig_pq.as_bytes().len(),
+            crate::crypto::sig::ML_DSA_65_SIG_LEN
+        );
+        assert_eq!(block.author_fingerprint, card_fp);
+
         // ---- encode → decode round-trip -----------------------------
         let bytes = encode_block_file(&block).expect("encode_block_file");
-        let (decoded, rest) = decode_block_file(&bytes).expect("decode_block_file");
-        assert!(
-            rest.is_empty(),
-            "trailing bytes must be empty in this build step (signature suffix is Task 5)"
-        );
+        let decoded = decode_block_file(&bytes).expect("decode_block_file");
         // BlockFile derives Eq — bit-identical bytes ⇒ bit-identical
         // structure. (The encoder sorts the vector clock, so the decoded
         // header's vector_clock is in sorted order; we built `header`
@@ -1792,6 +2059,8 @@ mod tests {
             &decoded,
             &card_fp,
             &pk_bundle,
+            &id.ed25519_pk,
+            &dsa_pk,
             &card_fp,
             &pk_bundle,
             &x_sk,
@@ -1834,6 +2103,13 @@ mod tests {
         let owner_pq_pk = kem::MlKem768Public::from_bytes(&owner.ml_kem_768_pk)
             .expect("ml-kem-768 pk length");
 
+        // Owner sign / verify keys for encrypt_block / decrypt_block.
+        let owner_ed_sk: Ed25519Secret = Sensitive::new(*owner.ed25519_sk.expose());
+        let owner_dsa_sk = MlDsa65Secret::from_bytes(owner.ml_dsa_65_sk.expose())
+            .expect("ml-dsa-65 sk length");
+        let owner_dsa_pk = MlDsa65Public::from_bytes(&owner.ml_dsa_65_pk)
+            .expect("ml-dsa-65 pk length");
+
         // ---- Block addressed only to the owner ----------------------
         let block_uuid = [0x42; BLOCK_UUID_LEN];
         let header = BlockHeader {
@@ -1868,6 +2144,8 @@ mod tests {
             &plaintext,
             &owner_fp,
             &owner_bundle,
+            &owner_ed_sk,
+            &owner_dsa_sk,
             &recipients,
         )
         .expect("encrypt_block");
@@ -1880,6 +2158,8 @@ mod tests {
             &block,
             &owner_fp,
             &owner_bundle,
+            &owner.ed25519_pk,
+            &owner_dsa_pk,
             &other_fp,
             &other_bundle,
             &other_x_sk,
@@ -1891,6 +2171,107 @@ mod tests {
                 assert_eq!(fingerprint, other_fp);
             }
             other => panic!("expected NotARecipient, got {other:?}"),
+        }
+    }
+
+    /// Smoke test: tamper with the Ed25519 half of the trailing block
+    /// signature and assert [`decrypt_block`] returns
+    /// [`BlockError::Sig`] wrapping [`SigError::Ed25519VerifyFailed`].
+    /// Comprehensive corruption coverage (every byte field flipped)
+    /// lands in Task 6 — this test fixes the verify happy + sad path
+    /// contract before then.
+    #[test]
+    fn smoke_decrypt_block_rejects_tampered_signature() {
+        use crate::unlock::bundle;
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        // ---- Identity (sender == sole recipient == self) -------------
+        let mut id_rng = ChaCha20Rng::from_seed([0x66; 32]);
+        let id = bundle::generate("Owner", 1_714_060_800_000, &mut id_rng);
+
+        let mut pk_bundle: Vec<u8> = Vec::new();
+        pk_bundle.extend_from_slice(&id.x25519_pk);
+        pk_bundle.extend_from_slice(&id.ml_kem_768_pk);
+        pk_bundle.extend_from_slice(&id.ed25519_pk);
+        pk_bundle.extend_from_slice(&id.ml_dsa_65_pk);
+
+        let card_fp: Fingerprint = [0xab; 16];
+
+        let pq_pk =
+            kem::MlKem768Public::from_bytes(&id.ml_kem_768_pk).expect("ml-kem-768 pk length");
+        let x_sk: kem::X25519Secret = Sensitive::new(*id.x25519_sk.expose());
+        let pq_sk = kem::MlKem768Secret::from_bytes(id.ml_kem_768_sk.expose())
+            .expect("ml-kem-768 sk length");
+        let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
+        let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose())
+            .expect("ml-dsa-65 sk length");
+        let dsa_pk =
+            MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
+
+        // ---- Build a valid block ------------------------------------
+        let block_uuid = [0x42; BLOCK_UUID_LEN];
+        let header = BlockHeader {
+            magic: MAGIC,
+            format_version: FORMAT_VERSION,
+            suite_id: SUITE_ID,
+            file_kind: FILE_KIND_BLOCK,
+            vault_uuid: [0x11; 16],
+            block_uuid,
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_800_500,
+            vector_clock: Vec::new(),
+        };
+        let plaintext = BlockPlaintext {
+            block_version: 1,
+            block_uuid,
+            block_name: "personal".to_string(),
+            schema_version: 1,
+            records: Vec::new(),
+            unknown: BTreeMap::new(),
+        };
+        let mut enc_rng = ChaCha20Rng::from_seed([0x77; 32]);
+        let recipients = [RecipientPublicKeys {
+            fingerprint: card_fp,
+            pk_bundle: &pk_bundle,
+            x25519_pk: &id.x25519_pk,
+            ml_kem_768_pk: &pq_pk,
+        }];
+        let mut block = encrypt_block(
+            &mut enc_rng,
+            &header,
+            &plaintext,
+            &card_fp,
+            &pk_bundle,
+            &ed_sk,
+            &dsa_sk,
+            &recipients,
+        )
+        .expect("encrypt_block");
+
+        // ---- Tamper: flip one bit in the Ed25519 signature ---------
+        // sig_ed[0] ^= 0x01 is the simplest single-bit flip; verify
+        // must reject it as Ed25519VerifyFailed (the deterministic-
+        // signature property guarantees the unmodified half would
+        // still pass — only Ed25519 was disturbed).
+        block.sig.sig_ed[0] ^= 0x01;
+
+        let err = decrypt_block(
+            &block,
+            &card_fp,
+            &pk_bundle,
+            &id.ed25519_pk,
+            &dsa_pk,
+            &card_fp,
+            &pk_bundle,
+            &x_sk,
+            &pq_sk,
+        )
+        .expect_err("tampered signature must be rejected");
+        match err {
+            BlockError::Sig(SigError::Ed25519VerifyFailed) => {}
+            other => panic!(
+                "expected BlockError::Sig(Ed25519VerifyFailed), got {other:?}"
+            ),
         }
     }
 }
