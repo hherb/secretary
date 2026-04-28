@@ -14,6 +14,7 @@
 pub mod block;
 pub(crate) mod canonical;
 pub(crate) mod io;
+pub mod manifest;
 pub mod record;
 
 pub use block::{
@@ -21,6 +22,13 @@ pub use block::{
     BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
     FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
+pub use manifest::{
+    decode_manifest, encode_manifest, BlockEntry, KdfParamsRef, Manifest, ManifestError,
+    TrashEntry,
+};
+// NOTE: VectorClockEntry is re-used from block.rs by manifest.rs (re-exported
+// there via `pub use super::block::VectorClockEntry`). Do NOT add a second
+// re-export here — the type is already re-exported above via block.rs.
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
 /// Umbrella error type for the vault format layer.
