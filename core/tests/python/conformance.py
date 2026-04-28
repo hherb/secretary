@@ -57,7 +57,6 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 # ---------------------------------------------------------------------------
 # §1.0 / §14 constants from docs/crypto-design.md and docs/vault-format.md.
@@ -93,6 +92,11 @@ AEAD_TAG_LEN = 16  # Poly1305.
 
 ED25519_SIG_LEN = 64
 ML_DSA_65_SIG_LEN = 3309  # FIPS 204 ML-DSA-65 signature length.
+# §6.1 declares sig_pq_len as a u16 length-prefixed field but does not
+# annotate the constant the way it annotates `sig_ed_len = 64`. Suite v1
+# (`secretary-v1-pq-hybrid`, §1.3) pins ML-DSA-65 / FIPS 204, so the wire
+# field is always 3309 bytes here. PR-B may add the explicit annotation
+# in §6.1 to remove the asymmetry.
 
 # Fixed prefix of header up to and including last_mod_ms (§6.1).
 HEADER_PREFIX_LEN = 4 + 2 + 2 + 2 + VAULT_UUID_LEN + BLOCK_UUID_LEN + 8 + 8
@@ -258,6 +262,11 @@ def parse_recipient_entry(cur: Cursor, idx: int) -> tuple[RecipientEntry, Cursor
     ct_x, cur = take(cur, X25519_PK_LEN, f"recipients[{idx}].ct_x")
     ct_pq, cur = take(cur, ML_KEM_768_CT_LEN, f"recipients[{idx}].ct_pq")
     nonce_w, cur = take(cur, WRAP_NONCE_LEN, f"recipients[{idx}].nonce_w")
+    # §6.2 presents wrap_ct (32) and wrap_tag (16) as two separate rows,
+    # but they are adjacent on the wire with no separator or length
+    # prefix — read as one 48-byte block. The two-row presentation is
+    # purely structural; the AEAD-decrypt step treats them as a single
+    # ciphertext-with-tag value.
     ct_w, cur = take(cur, WRAP_CT_LEN + WRAP_TAG_LEN, f"recipients[{idx}].ct_w||tag")
     return (
         RecipientEntry(fingerprint=fp, ct_x=ct_x, ct_pq=ct_pq, nonce_w=nonce_w, ct_w=ct_w),
@@ -468,7 +477,7 @@ def load_fixture(path: Path) -> dict:
         sys.exit(2)
 
 
-def main(argv: Iterable[str]) -> int:
+def main() -> int:
     fixture = load_fixture(fixture_path())
 
     if fixture.get("version") != 1:
@@ -503,4 +512,4 @@ def main(argv: Iterable[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

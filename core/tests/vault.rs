@@ -1337,8 +1337,11 @@ fn block_kat_bootstrap_dump() {
 }
 
 /// Inputs hard-pinned for the `self_recipient_one_record` vector. Keep in
-/// sync with the same fields in `core/tests/data/block_kat.json` — the
-/// bootstrap test fails loudly if anything drifts.
+/// sync with the same fields in `core/tests/data/block_kat.json`. This
+/// dumper is hermetic (pinned in code); drift detection comes from the
+/// assertion test [`block_kat_self_recipient_one_record`], which loads
+/// the JSON and asserts the encoded bytes match — any mismatch between
+/// these inputs and the JSON's `expected.block_file` fails that test.
 fn bootstrap_inputs() -> common::BlockKatVector {
     common::BlockKatVector {
         name: "self_recipient_one_record".to_string(),
