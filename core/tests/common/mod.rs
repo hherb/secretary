@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Shared helpers for integration tests — KAT loader and hex utilities.
 //!
 //! Each `tests/*.rs` is its own crate; this module is included via

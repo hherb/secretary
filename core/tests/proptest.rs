@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Property-based tests for the crypto core, per FIXME.md §Item 2.
 //!
 //! These complement the fixed KATs in the sibling test files. Fixed KATs catch

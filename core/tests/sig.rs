@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Hybrid-signature integration tests (`docs/crypto-design.md` §8).
 //!
 //! KATs come in three layers:
