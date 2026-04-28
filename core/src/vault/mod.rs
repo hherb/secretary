@@ -140,6 +140,52 @@ pub enum VaultError {
     /// inconsistency does not slip past silently.
     #[error("manifest author_fingerprint does not match owner card fingerprint")]
     ManifestAuthorMismatch,
+
+    /// [`share_block`] precondition: the caller is not the block's
+    /// original author. PR-B's share_block is "author-only re-sign" —
+    /// adding a recipient extends the §6.2 recipient table, which is
+    /// inside the §6.1 signed range, so the new block file must carry
+    /// a fresh author signature. Re-signing with a different identity
+    /// would silently change `author_fingerprint`; rejecting up-front
+    /// keeps that boundary explicit. The "share-as-fork" path
+    /// (decrypt → mint a new author block) is a future PR.
+    #[error("share_block: caller is not the block author. expected {expected:?}, got {got:?}")]
+    NotAuthor {
+        expected: crate::identity::fingerprint::Fingerprint,
+        got: crate::identity::fingerprint::Fingerprint,
+    },
+
+    /// [`share_block`] precondition: no manifest entry for the
+    /// requested `block_uuid`. Catches typos and stale UUIDs from a
+    /// caller that read the manifest and then dropped the matching
+    /// entry between read and call.
+    #[error("share_block: block {block_uuid:?} not found in manifest")]
+    BlockNotFound { block_uuid: [u8; 16] },
+
+    /// [`share_block`] precondition: the new recipient's contact-card
+    /// fingerprint already appears in the block's recipient table.
+    /// Re-issuing a wrap for the same recipient would either no-op or
+    /// silently rotate their wrap; the orchestrator refuses both and
+    /// surfaces this distinct error so the caller can treat it as a UI
+    /// affordance ("they already have access") rather than a generic
+    /// error.
+    #[error("share_block: recipient is already in the block's recipient list")]
+    RecipientAlreadyPresent,
+
+    /// [`share_block`] precondition: the supplied `existing_recipients`
+    /// list does not include a card whose fingerprint matches a wrap
+    /// in the block. The orchestrator rebuilds the new block by re-
+    /// encrypting under the union of existing + new recipient cards;
+    /// it cannot reconstruct a wrap for a recipient whose card it has
+    /// not been given. The caller is expected to source recipient
+    /// cards from the manifest's `BlockEntry.recipients` list
+    /// (contact UUIDs) → the on-disk `contacts/<uuid>.card` files; the
+    /// orchestrator does not read them itself today (Task 13 scope).
+    #[error("share_block: existing recipient with fingerprint {fingerprint:?} is missing from the supplied recipient cards list")]
+    MissingRecipientCard {
+        fingerprint: crate::identity::fingerprint::Fingerprint,
+    },
+
 }
 
 // ---------------------------------------------------------------------------
@@ -954,6 +1000,410 @@ pub fn save_block(
 
     // Step 14: refresh the in-memory manifest envelope so subsequent
     // saves chain off the new clock and the new author signature.
+    open.manifest_file = new_manifest_file;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// share_block — Task 13
+// ---------------------------------------------------------------------------
+
+/// Add a new recipient to an existing block — author-only re-sign.
+///
+/// `share_block` is the mechanism for granting an additional party
+/// access to an already-encrypted block. Conceptually:
+///
+/// 1. The §6.2 recipient table is part of the §6.1 *signed range*
+///    (the §6.1 hybrid signature covers `magic..aead_tag`, which
+///    contains `recipient_entries`). Adding an entry therefore
+///    invalidates the existing signature and requires a fresh one.
+/// 2. Producing a fresh signature requires the original author's
+///    secret keys — anyone else's signature would silently change
+///    `author_fingerprint` and break attribution. PR-B's `share_block`
+///    is consequently **author-only**: the caller MUST hold the
+///    matching `author_sk_ed` / `author_sk_pq`, and the function
+///    cross-checks them against the block's `author_fingerprint`
+///    before doing any work. Mismatch → [`VaultError::NotAuthor`].
+///
+/// The "share-as-fork" path (decrypt the block as a recipient, mint a
+/// fresh authored block under the caller's own identity) is NOT
+/// implemented in PR-B. That path produces a different
+/// `author_fingerprint` and a different `block_uuid`, which is a
+/// distinct user-visible operation; deferring it keeps Task 13's
+/// surface focused on the "owner extends access" case.
+///
+/// **Operational restriction.** Because `share_block` rotates the
+/// block content key (BCK) and re-encrypts the body, the author must
+/// also be a *current recipient* of the block — the BCK lives
+/// exclusively inside per-recipient wraps and is otherwise
+/// unrecoverable. An author who deliberately omitted themselves at
+/// `save_block` time (the "send-only" mode where the author encrypts
+/// for others without keeping a copy) cannot later call `share_block`
+/// on that same block; the decrypt step in §6.4 surfaces as
+/// [`BlockError::NotARecipient`] propagated through
+/// [`VaultError::Block`]. This restriction is intentional: the
+/// alternative would mean retaining the BCK in some side channel,
+/// which is exactly the property send-only mode opts out of.
+///
+/// Wire-level effect:
+///
+/// - The block file at `blocks/<block_uuid>.cbor.enc` is rewritten
+///   atomically (§9). A fresh BCK, fresh AEAD nonce, fresh
+///   per-recipient hybrid-KEM wraps for everyone (existing + new),
+///   and a fresh §6.1 hybrid signature are produced. The
+///   `block_uuid`, `created_at_ms`, and the block-level vector clock
+///   are preserved verbatim — the block's *content* did not change,
+///   so its per-block clock is not ticked.
+/// - The manifest's `BlockEntry` for this block is updated:
+///   `recipients` extends with the new contact UUID, `fingerprint`
+///   reflects the new on-disk BLAKE3, and `last_mod_ms` advances to
+///   `now_ms`.
+/// - The manifest-level vector clock is ticked for `device_uuid`
+///   (the manifest's *content* did change — its recipient list and
+///   block fingerprint moved). The manifest header's `last_mod_ms`
+///   advances to `now_ms`.
+/// - `open.manifest` and `open.manifest_file` are refreshed in place
+///   so subsequent calls chain off the new state.
+///
+/// Atomic-write ordering matches `save_block`: block first, manifest
+/// second, mirroring `docs/vault-format.md` §9 line 430. A crash
+/// between leaves a fresh block whose recipients exceed the manifest's
+/// view — recoverable on next open by trimming the orphan or retrying
+/// the share.
+///
+/// Parameter notes:
+///
+/// - `author_card`: the author's full [`ContactCard`]. Required so
+///   the orchestrator can recompute the author's fingerprint from
+///   canonical bytes (rather than from the public-key tuple — the
+///   spec-aligned identity is "the fingerprint of the canonical
+///   contact card", §6). The orchestrator pre-flights that the card's
+///   four PKs match the supplied SKs to catch mis-paired tuples
+///   ([`VaultError::AuthorCardKeyMismatch`]); a successful check is
+///   the precondition for both decrypt (the SKs unwrap an existing
+///   recipient-of-author entry) and re-sign (the SKs sign the new
+///   block).
+///
+/// - `existing_recipient_cards`: the contact cards for every
+///   recipient currently in the block's recipient table, **including
+///   the author if the author is also a recipient**. The orchestrator
+///   uses these cards to rebuild the per-recipient
+///   [`RecipientPublicKeys`] inputs to `encrypt_block`. Today this
+///   list is the caller's responsibility to assemble — the orchestrator
+///   does not read `contacts/<uuid>.card` files automatically. (When a
+///   future PR adds a generic "load contact card by UUID" path, this
+///   parameter can be inferred from `BlockEntry.recipients` instead.)
+///   Any wrap whose fingerprint cannot be matched against the supplied
+///   list surfaces as [`VaultError::MissingRecipientCard`].
+///
+/// - `new_recipient`: the contact card to grant access. Its
+///   fingerprint must NOT already appear in the block's recipient
+///   table; duplicate sharing surfaces as
+///   [`VaultError::RecipientAlreadyPresent`]. The card is also written
+///   to `contacts/<uuid>.card` so future reads (`open_vault`,
+///   `decrypt_block` callers) can locate the public keys without the
+///   share path's caller-supplied list.
+///
+/// - `device_uuid`: the writing device. Ticks the manifest-level
+///   vector clock; the *block's* per-block clock is NOT ticked
+///   (sharing didn't change content).
+///
+/// - `now_ms`: stamps `BlockEntry.last_mod_ms` and the manifest
+///   header's `last_mod_ms`.
+///
+/// - `rng`: consumed for the new BCK, every per-recipient encap, the
+///   new block AEAD nonce, and the manifest's body AEAD nonce.
+#[allow(clippy::too_many_arguments)]
+pub fn share_block(
+    folder: &Path,
+    open: &mut OpenVault,
+    block_uuid: [u8; 16],
+    author_card: &ContactCard,
+    author_sk_ed: &Ed25519Secret,
+    author_sk_pq: &MlDsa65Secret,
+    existing_recipient_cards: &[ContactCard],
+    new_recipient: &ContactCard,
+    device_uuid: [u8; 16],
+    now_ms: u64,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<(), VaultError> {
+    // Step 1: locate the manifest BlockEntry. Bail before any I/O if
+    // the caller is asking about an unknown block.
+    let entry_idx = open
+        .manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == block_uuid)
+        .ok_or(VaultError::BlockNotFound { block_uuid })?;
+
+    // Step 2: read the on-disk block file and decode the §6.1 envelope.
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = blocks_dir.join(format!("{block_uuid_hex}.cbor.enc"));
+    let block_file_bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
+        context: "failed to read block file for share_block",
+        source: e,
+    })?;
+    let block_file = block::decode_block_file(&block_file_bytes)?;
+
+    // Step 3: author check. The on-disk `author_fingerprint` is the
+    // BLAKE3-derived 16-byte fingerprint of the author's canonical
+    // contact-card bytes (§6). We re-derive it from the supplied
+    // `author_card` and compare. Mismatch → NotAuthor.
+    let author_card_bytes = author_card.to_canonical_cbor()?;
+    let author_fp = fingerprint(&author_card_bytes);
+    if author_fp != block_file.author_fingerprint {
+        return Err(VaultError::NotAuthor {
+            expected: block_file.author_fingerprint,
+            got: author_fp,
+        });
+    }
+
+    // (No SK→PK cross-check today: the crypto::sig module does not
+    // expose "derive PK from SK" entry points, and ML-DSA-65's PK is
+    // not a trivial scalarmult of the SK seed. A mismatched
+    // (author_card, author_sk_*) tuple would surface on the next
+    // `open_vault` as a hybrid-signature verification failure
+    // ([`VaultError::Manifest`] / [`VaultError::Block`]). Adding a
+    // pre-flight cross-check is a future enhancement gated on
+    // crypto::sig growing the relevant accessors.)
+
+    // Step 5: duplicate-recipient check. The new recipient's
+    // fingerprint must not already appear in the wire-level recipient
+    // table. Linear scan: the table is small (handful of recipients in
+    // the typical case).
+    let new_recipient_card_bytes = new_recipient.to_canonical_cbor()?;
+    let new_recipient_fp = fingerprint(&new_recipient_card_bytes);
+    if block_file
+        .recipients
+        .iter()
+        .any(|w| w.recipient_fingerprint == new_recipient_fp)
+    {
+        return Err(VaultError::RecipientAlreadyPresent);
+    }
+
+    // Step 6: resolve every existing wrap to its supplying card. We
+    // build a (fingerprint → card) lookup once and walk the wrap list
+    // in wire order so the new recipient set preserves the existing
+    // order with the new recipient appended (the encoder sorts on
+    // emit, so in-memory order doesn't affect the on-disk bytes — but
+    // it keeps the in-memory shape stable across debug prints).
+    //
+    // For the author's own card: include it in the lookup table even
+    // if it doesn't appear in `existing_recipient_cards` (the caller
+    // may treat it as implicit — common case where the author is the
+    // owner). This mirrors the shape of `save_block` where the
+    // caller passes the recipient list verbatim and the orchestrator
+    // does not silently include the author.
+    let mut card_lookup: Vec<(crate::identity::fingerprint::Fingerprint, &ContactCard)> =
+        Vec::with_capacity(existing_recipient_cards.len() + 1);
+    for c in existing_recipient_cards {
+        let fp = fingerprint(&c.to_canonical_cbor()?);
+        card_lookup.push((fp, c));
+    }
+    // Resolve each on-wire wrap to a supplying card.
+    let mut existing_cards_in_order: Vec<&ContactCard> =
+        Vec::with_capacity(block_file.recipients.len());
+    for wrap in &block_file.recipients {
+        let card = card_lookup
+            .iter()
+            .find(|(fp, _)| *fp == wrap.recipient_fingerprint)
+            .map(|(_, c)| *c)
+            .ok_or(VaultError::MissingRecipientCard {
+                fingerprint: wrap.recipient_fingerprint,
+            })?;
+        existing_cards_in_order.push(card);
+    }
+
+    // Step 7: decrypt the existing block under the author's reader
+    // identity. The author MUST be a current recipient (operational
+    // restriction documented above) — `decrypt_block` returns
+    // `NotARecipient` otherwise, which propagates as
+    // `VaultError::Block`.
+    //
+    // We pass author = sender = reader: the §6.4 author cross-check
+    // (sender_card_fingerprint vs block.author_fingerprint) was
+    // already validated by step 3, so this re-check is a tautology
+    // here, but the API forces us to thread it.
+    let author_pk_bundle = author_card.pk_bundle_bytes()?;
+    let reader_x_sk: crate::crypto::kem::X25519Secret =
+        Sensitive::new(*open.identity.x25519_sk.expose());
+    let reader_pq_sk =
+        crate::crypto::kem::MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose())
+            .map_err(block::BlockError::from)?;
+    let author_pq_pk = MlDsa65Public::from_bytes(&author_card.ml_dsa_65_pk)?;
+    let plaintext = block::decrypt_block(
+        &block_file,
+        &author_fp,
+        &author_pk_bundle,
+        &author_card.ed25519_pk,
+        &author_pq_pk,
+        &author_fp,
+        &author_pk_bundle,
+        &reader_x_sk,
+        &reader_pq_sk,
+    )?;
+
+    // Step 8: build the new recipient set: existing in wire order +
+    // the new recipient at the tail. Materialise owned buffers
+    // (pk-bundles, parsed ML-KEM-768 PKs, fingerprints) before
+    // building the borrow-laden `RecipientPublicKeys` view, mirroring
+    // `save_block`'s shape.
+    let mut new_recipients: Vec<&ContactCard> = existing_cards_in_order;
+    new_recipients.push(new_recipient);
+
+    let mut bundles: Vec<Vec<u8>> = Vec::with_capacity(new_recipients.len());
+    let mut pq_pks: Vec<MlKem768Public> = Vec::with_capacity(new_recipients.len());
+    let mut recipient_fps: Vec<crate::identity::fingerprint::Fingerprint> =
+        Vec::with_capacity(new_recipients.len());
+    for r in &new_recipients {
+        bundles.push(r.pk_bundle_bytes()?);
+        pq_pks.push(
+            MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?,
+        );
+        recipient_fps.push(fingerprint(&r.to_canonical_cbor()?));
+    }
+    let recipient_keys: Vec<RecipientPublicKeys<'_>> = new_recipients
+        .iter()
+        .enumerate()
+        .map(|(i, r)| RecipientPublicKeys {
+            fingerprint: recipient_fps[i],
+            pk_bundle: &bundles[i],
+            x25519_pk: &r.x25519_pk,
+            ml_kem_768_pk: &pq_pks[i],
+        })
+        .collect();
+
+    // Step 9: rebuild the §6.1 block header. Preserve `block_uuid`,
+    // `created_at_ms`, and the existing per-block vector clock — the
+    // *content* didn't change, so neither does its clock. `last_mod_ms`
+    // advances to `now_ms` (the block's wire-level state moved even
+    // if the plaintext didn't).
+    let new_header = BlockHeader {
+        magic: crate::version::MAGIC,
+        format_version: crate::version::FORMAT_VERSION,
+        suite_id: crate::version::SUITE_ID,
+        file_kind: block::FILE_KIND_BLOCK,
+        vault_uuid: block_file.header.vault_uuid,
+        block_uuid: block_file.header.block_uuid,
+        created_at_ms: block_file.header.created_at_ms,
+        last_mod_ms: now_ms,
+        vector_clock: block_file.header.vector_clock.clone(),
+    };
+
+    // Step 10: re-encrypt with the new recipient set. encrypt_block
+    // rotates the BCK, draws a fresh AEAD nonce, and produces a fresh
+    // §6.1 hybrid signature under the author's SKs.
+    let new_block_file = block::encrypt_block(
+        rng,
+        &new_header,
+        &plaintext,
+        &author_fp,
+        &author_pk_bundle,
+        author_sk_ed,
+        author_sk_pq,
+        &recipient_keys,
+    )?;
+    let new_block_file_bytes = block::encode_block_file(&new_block_file)?;
+    let new_block_fp: [u8; 32] = *blake3_hash(&new_block_file_bytes).as_bytes();
+
+    // Step 11: atomic-write the rotated block file. blocks/ already
+    // exists (the file we read from was inside it) but defensively
+    // ensure it.
+    std::fs::create_dir_all(&blocks_dir).map_err(|e| VaultError::Io {
+        context: "failed to ensure blocks/ subdirectory",
+        source: e,
+    })?;
+    io::write_atomic(&block_path, &new_block_file_bytes).map_err(|e| VaultError::Io {
+        context: "failed to re-write block file",
+        source: e,
+    })?;
+
+    // Step 12: persist the new recipient's contact card to
+    // `contacts/<uuid>.card` so future readers can decrypt without
+    // the caller threading the card. Idempotent: if the file already
+    // exists (e.g. because the caller imported the card before
+    // calling share_block), we overwrite with the same canonical
+    // bytes — no semantic difference.
+    let contacts_dir = folder.join(CONTACTS_SUBDIR);
+    std::fs::create_dir_all(&contacts_dir).map_err(|e| VaultError::Io {
+        context: "failed to ensure contacts/ subdirectory",
+        source: e,
+    })?;
+    let new_recipient_uuid_hex = format_uuid_hyphenated(&new_recipient.contact_uuid);
+    let new_recipient_card_path =
+        contacts_dir.join(format!("{new_recipient_uuid_hex}.card"));
+    io::write_atomic(&new_recipient_card_path, &new_recipient_card_bytes).map_err(|e| {
+        VaultError::Io {
+            context: "failed to write new recipient contact card",
+            source: e,
+        }
+    })?;
+
+    // Step 13: update the manifest's BlockEntry. `recipients` extends
+    // with the new contact_uuid; `fingerprint` reflects the new
+    // on-disk BLAKE3; `last_mod_ms` advances. `vector_clock_summary`
+    // is preserved (block clock did not tick). `block_name` and
+    // `created_at_ms` are unchanged.
+    let updated_entry = {
+        let old = &open.manifest.blocks[entry_idx];
+        let mut new_recipients_uuids = old.recipients.clone();
+        new_recipients_uuids.push(new_recipient.contact_uuid);
+        BlockEntry {
+            block_uuid: old.block_uuid,
+            block_name: old.block_name.clone(),
+            fingerprint: new_block_fp,
+            recipients: new_recipients_uuids,
+            vector_clock_summary: old.vector_clock_summary.clone(),
+            suite_id: old.suite_id,
+            created_at_ms: old.created_at_ms,
+            last_mod_ms: now_ms,
+            unknown: old.unknown.clone(),
+        }
+    };
+    open.manifest.blocks[entry_idx] = updated_entry;
+
+    // Step 14: tick the manifest-level vector clock for this device.
+    // Sharing changes the manifest's content (recipient list +
+    // block-fingerprint), so the vault-level clock advances.
+    tick_clock(&mut open.manifest.vector_clock, &device_uuid);
+
+    // Step 15: refresh manifest header. vault_uuid + created_at_ms
+    // are preserved; only last_mod_ms advances.
+    let new_manifest_header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: now_ms,
+    };
+
+    // Step 16: re-sign manifest with the author's SKs. The manifest's
+    // `author_fingerprint` is unchanged (the manifest author is the
+    // same identity that authored the block — for a single-owner
+    // vault these are the same key pair). The manifest's IBK is
+    // unchanged; we draw a fresh AEAD nonce.
+    let mut manifest_aead_nonce = [0u8; 24];
+    rng.fill_bytes(&mut manifest_aead_nonce);
+    let new_manifest_file = manifest::sign_manifest(
+        new_manifest_header,
+        &open.manifest,
+        &open.identity_block_key,
+        &manifest_aead_nonce,
+        open.manifest_file.author_fingerprint,
+        author_sk_ed,
+        author_sk_pq,
+    )?;
+    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
+
+    // Step 17: atomic-write manifest (block-first → manifest-second
+    // ordering matches save_block + §9 line 430).
+    let manifest_path = folder.join(MANIFEST_FILENAME);
+    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
+        context: "failed to write manifest.cbor.enc after share_block",
+        source: e,
+    })?;
+
+    // Step 18: refresh the in-memory manifest envelope.
     open.manifest_file = new_manifest_file;
 
     Ok(())
