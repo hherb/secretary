@@ -448,3 +448,536 @@ mod unlock {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Properties — vault module (record CBOR, recipient table, BlockFile
+// round-trip, full encrypt/decrypt round-trip, and verify-before-decap
+// fuzzing on the §6.4 signed range)
+// ---------------------------------------------------------------------------
+//
+// Strategy budgeting mirrors the crypto-heavy block above: anything that
+// triggers `IdentityBundle::generate` (Argon2id-light + ML-KEM-768 keygen +
+// ML-DSA-65 keygen) runs at `cases = 8` or `cases = 16`. Pure CBOR / pure
+// byte-shape properties run at the proptest default (256).
+//
+// `signed_message_bytes` (§6.4) is private to `vault::block`; the signed
+// range covers `magic..=aead_tag` inclusive. The trailing signature suffix
+// is fixed-size 3393 bytes:
+//   author_fingerprint  16
+//   sig_ed_len           2
+//   sig_ed              64
+//   sig_pq_len           2
+//   sig_pq            3309
+// → SIGNATURE_SUFFIX_LEN = 16 + 2 + 64 + 2 + 3309 = 3393. Property E uses
+// `bytes.len() - 3393` as the signed-range upper bound.
+
+mod vault {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+    use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    // Re-implement the small helpers from the outer scope — proptest
+    // strategies live inside `mod vault` and can't see top-of-file free
+    // functions without `super::`. Local copies keep the inner module
+    // self-contained.
+
+    fn vec_exact(len: usize) -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), len..=len)
+    }
+
+    fn arr16() -> impl Strategy<Value = [u8; 16]> {
+        any::<[u8; 16]>()
+    }
+
+    fn arr32() -> impl Strategy<Value = [u8; 32]> {
+        any::<[u8; 32]>()
+    }
+
+    use secretary_core::crypto::aead::AEAD_TAG_LEN;
+    use secretary_core::crypto::kem::{
+        self, HybridWrap, MlKem768Public, MlKem768Secret, BLOCK_CONTENT_KEY_LEN,
+        ML_KEM_768_CT_LEN, X25519_PK_LEN,
+    };
+    use secretary_core::crypto::secret::Sensitive;
+    use secretary_core::crypto::sig::{
+        Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN,
+    };
+    use secretary_core::unlock::bundle::{self, IdentityBundle};
+    use secretary_core::vault::block::{
+        decode_block_file, decode_recipient_table, decrypt_block, encode_block_file,
+        encode_recipient_table, encrypt_block, BlockError, BlockHeader, BlockPlaintext,
+        RecipientPublicKeys, RecipientWrap, FILE_KIND_BLOCK,
+    };
+    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue};
+    use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
+
+    /// Fixed-size signature suffix per §6.1: author_fp(16) + sig_ed_len(2) +
+    /// sig_ed(64) + sig_pq_len(2) + sig_pq(3309) = 3393 bytes. The signed
+    /// range (`magic..=aead_tag`) is therefore `bytes.len() - 3393` bytes.
+    const SIGNATURE_SUFFIX_LEN: usize = 16 + 2 + ED25519_SIG_LEN + 2 + 3309;
+
+    // -----------------------------------------------------------------------
+    // Strategies
+    // -----------------------------------------------------------------------
+
+    /// Strategy for `RecordFieldValue` — half Text, half Bytes.
+    fn field_value_strategy() -> impl Strategy<Value = RecordFieldValue> {
+        prop_oneof![
+            prop::collection::vec(any::<char>(), 0..=64)
+                .prop_map(|cs| RecordFieldValue::Text(cs.into_iter().collect())),
+            prop::collection::vec(any::<u8>(), 0..=128).prop_map(RecordFieldValue::Bytes),
+        ]
+    }
+
+    /// Strategy for one `RecordField`. Per-field `unknown` left empty —
+    /// modelling forward-compat unknowns in proptest adds significant
+    /// strategy complexity beyond Task 7's scope; the integration tests
+    /// in `core/tests/vault.rs` and the fixed KATs cover that path.
+    fn record_field_strategy() -> impl Strategy<Value = RecordField> {
+        (field_value_strategy(), any::<u64>(), any::<[u8; 16]>()).prop_map(
+            |(value, last_mod, device_uuid)| RecordField {
+                value,
+                last_mod,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        )
+    }
+
+    /// Strategy for `Record`. `record_type` is drawn from a small fixed set
+    /// plus a "future_unknown" string so the property exercises both the
+    /// §6.3.1 standard types and the open-ended-string contract. Field
+    /// names are short ASCII to keep the strategy tractable. Record-level
+    /// `unknown` left empty — same rationale as `record_field_strategy`.
+    fn record_strategy() -> impl Strategy<Value = Record> {
+        let record_type = prop_oneof![
+            Just("login".to_string()),
+            Just("note".to_string()),
+            Just("totp".to_string()),
+            Just("future_unknown".to_string()),
+        ];
+        let field_name = prop_oneof![
+            Just("username".to_string()),
+            Just("password".to_string()),
+            Just("seed".to_string()),
+            Just("notes".to_string()),
+        ];
+        let fields_strategy = prop::collection::btree_map(field_name, record_field_strategy(), 0..=3);
+        let tags_strategy = prop::collection::vec("[a-z]{1,8}", 0..=3);
+
+        (
+            any::<[u8; 16]>(),    // record_uuid
+            record_type,          // record_type
+            fields_strategy,      // fields
+            tags_strategy,        // tags
+            any::<u64>(),         // created_at_ms
+            any::<u64>(),         // last_mod_ms
+            any::<bool>(),        // tombstone
+        )
+            .prop_map(|(record_uuid, record_type, fields, tags, created, last, tombstone)| {
+                Record {
+                    record_uuid,
+                    record_type,
+                    fields,
+                    tags,
+                    created_at_ms: created,
+                    last_mod_ms: last,
+                    tombstone,
+                    unknown: BTreeMap::new(),
+                }
+            })
+    }
+
+    /// Strategy for an ad-hoc `RecipientWrap`. The four `HybridWrap`
+    /// fields use the spec-pinned wire lengths; the underlying bytes are
+    /// arbitrary (decode does not crypto-validate them). The fingerprint
+    /// drives the §6.2 sort invariant we test on `decode_recipient_table`.
+    fn recipient_wrap_strategy() -> impl Strategy<Value = RecipientWrap> {
+        (
+            any::<[u8; 16]>(),
+            any::<[u8; X25519_PK_LEN]>(),
+            vec_exact(ML_KEM_768_CT_LEN),
+            any::<[u8; 24]>(),
+            vec_exact(BLOCK_CONTENT_KEY_LEN + AEAD_TAG_LEN),
+        )
+            .prop_map(|(fp, ct_x, ct_pq, nonce_w, ct_w)| RecipientWrap {
+                recipient_fingerprint: fp,
+                wrap: HybridWrap {
+                    ct_x,
+                    ct_pq,
+                    nonce_w,
+                    ct_w,
+                },
+            })
+    }
+
+    /// Inputs to the plaintext (all primitive proptest types) so the
+    /// crypto-heavy properties can derive a `BlockPlaintext` keyed to
+    /// the header's `block_uuid` without the closure-over-uuid pattern
+    /// proptest macros don't compose with.
+    type PlaintextInputs = (String, Vec<Record>);
+
+    fn plaintext_inputs_strategy() -> impl Strategy<Value = PlaintextInputs> {
+        (
+            "[a-z ]{0,32}",
+            prop::collection::vec(record_strategy(), 0..=2),
+        )
+    }
+
+    fn build_plaintext(block_uuid: [u8; 16], inputs: PlaintextInputs) -> BlockPlaintext {
+        let (block_name, records) = inputs;
+        BlockPlaintext {
+            block_version: 1,
+            block_uuid,
+            block_name,
+            schema_version: 1,
+            records,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// Strategy for a minimal `BlockHeader`. Empty vector clock keeps the
+    /// signed-range fuzzer's offset arithmetic simple — every test case
+    /// puts the recipient table at the same offset.
+    fn block_header_strategy() -> impl Strategy<Value = BlockHeader> {
+        (
+            any::<[u8; 16]>(), // vault_uuid
+            any::<[u8; 16]>(), // block_uuid
+            any::<u64>(),      // created_at_ms
+            any::<u64>(),      // last_mod_ms
+        )
+            .prop_map(
+                |(vault_uuid, block_uuid, created_at_ms, last_mod_ms)| BlockHeader {
+                    magic: MAGIC,
+                    format_version: FORMAT_VERSION,
+                    suite_id: SUITE_ID,
+                    file_kind: FILE_KIND_BLOCK,
+                    vault_uuid,
+                    block_uuid,
+                    created_at_ms,
+                    last_mod_ms,
+                    vector_clock: Vec::new(),
+                },
+            )
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers — identity + handles for the crypto-heavy properties
+    // -----------------------------------------------------------------------
+
+    struct VaultHandles {
+        id: IdentityBundle,
+        fp: [u8; 16],
+        pk_bundle: Vec<u8>,
+        pq_pk: MlKem768Public,
+        ed_sk: Ed25519Secret,
+        dsa_sk: MlDsa65Secret,
+        dsa_pk: MlDsa65Public,
+        x_sk: kem::X25519Secret,
+        pq_sk: MlKem768Secret,
+    }
+
+    fn build_vault_handles(seed: [u8; 32], fp: [u8; 16]) -> VaultHandles {
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        let id = bundle::generate("X", 1_714_060_800_000, &mut rng);
+
+        let mut pk_bundle = Vec::with_capacity(
+            id.x25519_pk.len() + id.ml_kem_768_pk.len() + id.ed25519_pk.len() + id.ml_dsa_65_pk.len(),
+        );
+        pk_bundle.extend_from_slice(&id.x25519_pk);
+        pk_bundle.extend_from_slice(&id.ml_kem_768_pk);
+        pk_bundle.extend_from_slice(&id.ed25519_pk);
+        pk_bundle.extend_from_slice(&id.ml_dsa_65_pk);
+
+        let pq_pk = MlKem768Public::from_bytes(&id.ml_kem_768_pk).expect("ml-kem pk len");
+        let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
+        let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).expect("ml-dsa sk len");
+        let dsa_pk = MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa pk len");
+        let x_sk: kem::X25519Secret = Sensitive::new(*id.x25519_sk.expose());
+        let pq_sk = MlKem768Secret::from_bytes(id.ml_kem_768_sk.expose()).expect("ml-kem sk len");
+
+        VaultHandles {
+            id,
+            fp,
+            pk_bundle,
+            pq_pk,
+            ed_sk,
+            dsa_sk,
+            dsa_pk,
+            x_sk,
+            pq_sk,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Properties — pure CBOR / pure byte-shape (default cases)
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        /// Property A. Pure CBOR canonicalisation: `encode(decode(encode(r)))
+        /// == encode(r)` and `decode(encode(r)) == r`. Pins the §6.3 record
+        /// canonical-form invariant on arbitrary records, complementing the
+        /// fixed KATs.
+        #[test]
+        fn record_canonical_cbor_bit_identical(r in record_strategy()) {
+            let bytes_1 = record::encode(&r).expect("encode r");
+            let parsed = record::decode(&bytes_1).expect("decode r");
+            prop_assert_eq!(&parsed, &r, "decode(encode(r)) != r");
+            let bytes_2 = record::encode(&parsed).expect("re-encode");
+            prop_assert_eq!(&bytes_1, &bytes_2, "encode→decode→encode not bit-identical");
+        }
+
+        /// Property B. Pure byte-manipulation: encode_recipient_table
+        /// sorts ascending by fingerprint and re-encoding the decoded
+        /// table is bit-identical. Covers the §6.2 sort invariant under
+        /// arbitrary fingerprint orderings (proptest will shrink toward
+        /// the smallest disordering counterexample if the invariant breaks).
+        #[test]
+        fn block_recipient_table_sort_invariant(
+            wraps in prop::collection::vec(recipient_wrap_strategy(), 1..=4)
+                .prop_filter(
+                    "duplicate fingerprints rejected by encode_recipient_table",
+                    |ws| {
+                        let mut fps: Vec<_> =
+                            ws.iter().map(|w| w.recipient_fingerprint).collect();
+                        fps.sort();
+                        fps.windows(2).all(|p| p[0] != p[1])
+                    },
+                ),
+        ) {
+            let bytes_1 = encode_recipient_table(&wraps).expect("encode rt");
+            let (decoded, rest) = decode_recipient_table(&bytes_1).expect("decode rt");
+            prop_assert!(rest.is_empty(), "decode left trailing bytes");
+            // Sorted ascending by fingerprint.
+            for w in decoded.windows(2) {
+                prop_assert!(
+                    w[0].recipient_fingerprint < w[1].recipient_fingerprint,
+                    "recipient table not sorted ascending"
+                );
+            }
+            // Re-encoding the decoded table is bit-identical.
+            let bytes_2 = encode_recipient_table(&decoded).expect("re-encode rt");
+            prop_assert_eq!(bytes_1, bytes_2, "encode→decode→encode not bit-identical");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Properties — crypto-heavy (IdentityBundle keygen, reduced cases)
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+
+        /// Property C. Full BlockFile encode/decode is a fixed point on
+        /// arbitrary block content. Generates a fresh IdentityBundle, builds
+        /// a single-self-recipient block, and asserts:
+        /// `decode(encode(b)) == b` AND `encode(decode(encode(b))) == encode(b)`.
+        #[test]
+        fn block_file_encode_decode_bit_identical(
+            id_seed in arr32(),
+            aead_seed in arr32(),
+            fp in arr16(),
+            header in block_header_strategy(),
+            pt_inputs in plaintext_inputs_strategy(),
+        ) {
+            let h = build_vault_handles(id_seed, fp);
+            let plaintext = build_plaintext(header.block_uuid, pt_inputs);
+
+            let mut rng = ChaCha20Rng::from_seed(aead_seed);
+            let recipients = [RecipientPublicKeys {
+                fingerprint: h.fp,
+                pk_bundle: &h.pk_bundle,
+                x25519_pk: &h.id.x25519_pk,
+                ml_kem_768_pk: &h.pq_pk,
+            }];
+            let block = encrypt_block(
+                &mut rng,
+                &header,
+                &plaintext,
+                &h.fp,
+                &h.pk_bundle,
+                &h.ed_sk,
+                &h.dsa_sk,
+                &recipients,
+            ).expect("encrypt_block");
+
+            let bytes_1 = encode_block_file(&block).expect("encode_block_file");
+            let decoded = decode_block_file(&bytes_1).expect("decode_block_file");
+            prop_assert_eq!(&decoded, &block, "decode(encode(b)) != b");
+            let bytes_2 = encode_block_file(&decoded).expect("re-encode");
+            prop_assert_eq!(bytes_1, bytes_2, "encode→decode→encode not bit-identical");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        /// Property D. Full encrypt → decrypt round-trip recovers the
+        /// plaintext on arbitrary input. Covers the §6.5 → §6.4 inverse
+        /// path under the single-self-recipient configuration; multi-
+        /// recipient is exercised by the integration tests.
+        #[test]
+        fn block_encrypt_decrypt_roundtrip_self(
+            id_seed in arr32(),
+            aead_seed in arr32(),
+            fp in arr16(),
+            header in block_header_strategy(),
+            pt_inputs in plaintext_inputs_strategy(),
+        ) {
+            let h = build_vault_handles(id_seed, fp);
+            let plaintext = build_plaintext(header.block_uuid, pt_inputs);
+
+            let mut rng = ChaCha20Rng::from_seed(aead_seed);
+            let recipients = [RecipientPublicKeys {
+                fingerprint: h.fp,
+                pk_bundle: &h.pk_bundle,
+                x25519_pk: &h.id.x25519_pk,
+                ml_kem_768_pk: &h.pq_pk,
+            }];
+            let block = encrypt_block(
+                &mut rng,
+                &header,
+                &plaintext,
+                &h.fp,
+                &h.pk_bundle,
+                &h.ed_sk,
+                &h.dsa_sk,
+                &recipients,
+            ).expect("encrypt_block");
+
+            let recovered = decrypt_block(
+                &block,
+                &h.fp,
+                &h.pk_bundle,
+                &h.id.ed25519_pk,
+                &h.dsa_pk,
+                &h.fp,
+                &h.pk_bundle,
+                &h.x_sk,
+                &h.pq_sk,
+            ).expect("decrypt_block");
+            prop_assert_eq!(recovered, plaintext);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+
+        /// Property E. Verify-before-decap fuzzing. Flip a single byte
+        /// anywhere inside the §6.4 signed range (`magic..=aead_tag`).
+        /// The full `decode_block_file` → `decrypt_block` pipeline must
+        /// reject the result with EITHER the §8 hybrid signature failure
+        /// (`BlockError::Sig`) OR a structural decode error from the
+        /// header / recipient-table / AEAD-section parser.
+        ///
+        /// What MUST NOT happen — pinning the security contract:
+        ///
+        /// 1. `Ok(_)` — silent acceptance of a forged file.
+        /// 2. `BlockError::Aead(_)` — body AEAD-decrypt should never run
+        ///    on a tampered file (§6.4 step 2 verifies first).
+        /// 3. `BlockError::Kem(_)` — hybrid-decap should never run on a
+        ///    tampered file (§6.4 step 4 runs after step 2).
+        /// 4. `BlockError::AuthorFingerprintMismatch` — the
+        ///    author_fingerprint field sits AFTER `aead_tag` in the
+        ///    signature suffix, outside our flip range, so this cannot
+        ///    fire from a flip in the signed range.
+        /// 5. `BlockError::NotARecipient` — decap-side lookup, only
+        ///    reached after the signature verifies.
+        #[test]
+        fn block_decrypt_rejects_corrupted_signed_range(
+            id_seed in arr32(),
+            aead_seed in arr32(),
+            fp in arr16(),
+            header in block_header_strategy(),
+            pt_inputs in plaintext_inputs_strategy(),
+            byte_idx_seed in any::<u32>(),
+            xor_byte in 1u8..=255,
+        ) {
+            let h = build_vault_handles(id_seed, fp);
+            let plaintext = build_plaintext(header.block_uuid, pt_inputs);
+
+            let mut rng = ChaCha20Rng::from_seed(aead_seed);
+            let recipients = [RecipientPublicKeys {
+                fingerprint: h.fp,
+                pk_bundle: &h.pk_bundle,
+                x25519_pk: &h.id.x25519_pk,
+                ml_kem_768_pk: &h.pq_pk,
+            }];
+            let block = encrypt_block(
+                &mut rng,
+                &header,
+                &plaintext,
+                &h.fp,
+                &h.pk_bundle,
+                &h.ed_sk,
+                &h.dsa_sk,
+                &recipients,
+            ).expect("encrypt_block");
+
+            let mut bytes = encode_block_file(&block).expect("encode_block_file");
+            // Signed range is `magic..=aead_tag`, i.e. everything before
+            // the fixed-size signature suffix. SIGNATURE_SUFFIX_LEN is the
+            // §6.1 trailing block: author_fp + sig_ed_len + sig_ed +
+            // sig_pq_len + sig_pq.
+            let signed_len = bytes.len() - SIGNATURE_SUFFIX_LEN;
+            prop_assert!(signed_len > 0, "encoded block too small");
+            let i = (byte_idx_seed as usize) % signed_len;
+            bytes[i] ^= xor_byte;
+
+            let result = (|| -> Result<BlockPlaintext, BlockError> {
+                let tampered = decode_block_file(&bytes)?;
+                decrypt_block(
+                    &tampered,
+                    &h.fp,
+                    &h.pk_bundle,
+                    &h.id.ed25519_pk,
+                    &h.dsa_pk,
+                    &h.fp,
+                    &h.pk_bundle,
+                    &h.x_sk,
+                    &h.pq_sk,
+                )
+            })();
+
+            match result {
+                Ok(_) => prop_assert!(
+                    false,
+                    "tampered byte at offset {} of {} (signed range) was silently accepted",
+                    i, signed_len,
+                ),
+                Err(BlockError::Aead(e)) => prop_assert!(
+                    false,
+                    "verify-before-decap bypassed: AEAD ran on tampered byte at offset {}: {}",
+                    i, e,
+                ),
+                Err(BlockError::Kem(e)) => prop_assert!(
+                    false,
+                    "verify-before-decap bypassed: KEM ran on tampered byte at offset {}: {}",
+                    i, e,
+                ),
+                Err(BlockError::AuthorFingerprintMismatch { .. }) => prop_assert!(
+                    false,
+                    "AuthorFingerprintMismatch unreachable from flip in signed range at offset {}",
+                    i,
+                ),
+                Err(BlockError::NotARecipient { .. }) => prop_assert!(
+                    false,
+                    "NotARecipient unreachable from flip in signed range at offset {}",
+                    i,
+                ),
+                // Permitted: §8 signature verify failure OR any structural
+                // decode rejection (BadMagic, UnsupportedFormatVersion,
+                // UnsupportedSuiteId, WrongFileKind, Truncated,
+                // RecipientsNotSorted, DuplicateRecipient, EmptyRecipientList,
+                // RecipientCtPqWrongLength, RecipientCtWrongLength,
+                // VectorClockNotSorted, VectorClockDuplicateDevice,
+                // VectorClockCountMismatch, TooManyRecipients,
+                // SigEdWrongLength, SigPqWrongLength, SigPqTooLong,
+                // TrailingBytes, IntegerOverflow). All are valid responses
+                // to a single-byte tamper inside the signed range.
+                Err(_) => {}
+            }
+        }
+    }
+}
