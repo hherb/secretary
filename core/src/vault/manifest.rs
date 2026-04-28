@@ -1729,6 +1729,72 @@ pub fn verify_manifest(
 }
 
 // ---------------------------------------------------------------------------
+// §10 — Rollback resistance
+// ---------------------------------------------------------------------------
+
+/// Returns `true` iff `incoming` is *strictly dominated by* `local`,
+/// per `docs/crypto-design.md` §10 ("Vector-clock rollback resistance").
+///
+/// Both inputs are interpreted as logical maps from `device_uuid` to
+/// `counter`, regardless of slice order. Devices missing from a slice
+/// are treated as having counter 0 — a device that has never bumped its
+/// clock is indistinguishable from a device that is absent.
+///
+/// Decision rules (caller is the OS-keystore-backed orchestrator that
+/// holds the per-vault "highest-seen" clock):
+///
+/// - **Equal** clocks → NOT a rollback. Returns `false`.
+/// - **`incoming` dominates** (every counter ≥ local, at least one
+///   strictly more — or `incoming` introduces a device with counter > 0
+///   that `local` does not have) → NOT a rollback. Caller accepts and
+///   updates highest-seen. Returns `false`.
+/// - **`incoming` strictly dominated** (every counter ≤ local, at least
+///   one strictly less — or `local` carries a device at counter > 0 that
+///   `incoming` lacks) → rollback. Returns `true`.
+/// - **Concurrent** (some incoming counters strictly higher, some
+///   strictly lower) → NOT a rollback per se. Returns `false`. Caller
+///   triggers merge (PR-C territory; not implemented here).
+///
+/// Duplicate device UUIDs in either input are NOT detected here —
+/// callers must reject them earlier. [`decode_manifest`] (§4.2's
+/// `vector_clock` array sort discipline) already does this on the
+/// incoming side.
+///
+/// PR-C will replace this boolean with a richer `ClockRelation` enum
+/// (Equal / IncomingDominates / IncomingDominated / Concurrent); for
+/// PR-B the reject-on-rollback predicate is the only consumer.
+pub fn is_rollback(local: &[VectorClockEntry], incoming: &[VectorClockEntry]) -> bool {
+    // Build maps so we can compare component-wise regardless of slice
+    // order. Use BTreeMap for deterministic union iteration (test
+    // diagnostics stay reproducible) and to side-step any hash-DoS
+    // concerns at zero perf cost on these tiny inputs.
+    let local_map: BTreeMap<[u8; 16], u64> = local
+        .iter()
+        .map(|e| (e.device_uuid, e.counter))
+        .collect();
+    let incoming_map: BTreeMap<[u8; 16], u64> = incoming
+        .iter()
+        .map(|e| (e.device_uuid, e.counter))
+        .collect();
+
+    let mut any_strictly_less = false;
+    let mut any_strictly_more = false;
+
+    // Iterate the union of device UUIDs, treating "absent" as counter 0.
+    for uuid in local_map.keys().chain(incoming_map.keys()) {
+        let l = local_map.get(uuid).copied().unwrap_or(0);
+        let i = incoming_map.get(uuid).copied().unwrap_or(0);
+        match i.cmp(&l) {
+            std::cmp::Ordering::Less => any_strictly_less = true,
+            std::cmp::Ordering::Greater => any_strictly_more = true,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+
+    any_strictly_less && !any_strictly_more
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2887,5 +2953,138 @@ mod tests {
             .trash
             .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
         assert_eq!(recovered, body_sorted, "decrypted manifest matches original");
+    }
+
+    // ---- §10 rollback resistance --------------------------------------
+
+    /// Tiny construction shorthand for the rollback test matrix.
+    fn vc(uuid_byte: u8, counter: u64) -> VectorClockEntry {
+        VectorClockEntry {
+            device_uuid: [uuid_byte; 16],
+            counter,
+        }
+    }
+
+    // (9) Spec-discipline lodestone: `is_rollback` must be defined on
+    //     the *logical* clock (a map from device_uuid → counter), not on
+    //     the slice. A consumer that confuses ordering with semantics
+    //     will silently mis-classify reorderings of the very same clock.
+    //     Pin two pairs that differ only in slice order.
+    #[test]
+    fn order_independence() {
+        let local_a = vec![vc(0x01, 5), vc(0x02, 3), vc(0x03, 7)];
+        let local_b = vec![vc(0x03, 7), vc(0x01, 5), vc(0x02, 3)];
+
+        let incoming_a = vec![vc(0x01, 4), vc(0x02, 3), vc(0x03, 7)];
+        let incoming_b = vec![vc(0x02, 3), vc(0x03, 7), vc(0x01, 4)];
+
+        // Same logical clocks; differing slice orders. The boolean
+        // verdict must not move with the order.
+        assert_eq!(
+            is_rollback(&local_a, &incoming_a),
+            is_rollback(&local_b, &incoming_b),
+            "is_rollback must be order-independent in both arguments"
+        );
+
+        // And likewise for the equal-clocks case in both directions.
+        let eq_a = vec![vc(0x01, 5), vc(0x02, 3)];
+        let eq_b = vec![vc(0x02, 3), vc(0x01, 5)];
+        assert_eq!(
+            is_rollback(&eq_a, &eq_b),
+            is_rollback(&eq_b, &eq_a),
+            "equal logical clocks reordered must compare identically"
+        );
+    }
+
+    #[test]
+    fn equal_clocks_not_rollback() {
+        let clock = vec![vc(0x01, 5), vc(0x02, 3)];
+        assert!(
+            !is_rollback(&clock, &clock),
+            "identical clocks are not a rollback"
+        );
+    }
+
+    #[test]
+    fn incoming_dominates_not_rollback() {
+        let local = vec![vc(0x01, 5), vc(0x02, 3)];
+        let incoming = vec![vc(0x01, 6), vc(0x02, 3)]; // ≥ everywhere, > on D1
+        assert!(
+            !is_rollback(&local, &incoming),
+            "incoming strictly dominates local — accept, not rollback"
+        );
+    }
+
+    #[test]
+    fn incoming_strictly_dominated_is_rollback() {
+        let local = vec![vc(0x01, 5), vc(0x02, 3)];
+        let incoming = vec![vc(0x01, 4), vc(0x02, 3)]; // ≤ everywhere, < on D1
+        assert!(
+            is_rollback(&local, &incoming),
+            "incoming strictly dominated by local — rollback"
+        );
+    }
+
+    #[test]
+    fn incoming_introduces_new_device_not_rollback() {
+        let local = vec![vc(0x01, 5)];
+        // incoming carries D1 unchanged AND introduces D2 with counter > 0.
+        // That's "incoming dominates" (D2's counter is implicitly 0 in local).
+        let incoming = vec![vc(0x01, 5), vc(0x02, 1)];
+        assert!(
+            !is_rollback(&local, &incoming),
+            "incoming introducing a new device dominates — not a rollback"
+        );
+    }
+
+    #[test]
+    fn local_introduces_device_incoming_lacks_is_rollback() {
+        // local has D1 and D2; incoming has only D1 at the same counter.
+        // D2 in incoming is implicitly 0, so any_strictly_less fires.
+        // No counter in incoming is strictly more → rollback.
+        let local = vec![vc(0x01, 5), vc(0x02, 2)];
+        let incoming = vec![vc(0x01, 5)];
+        assert!(
+            is_rollback(&local, &incoming),
+            "incoming missing a device that local has at counter > 0 — rollback"
+        );
+    }
+
+    #[test]
+    fn concurrent_not_rollback() {
+        // D1 higher in incoming, D2 higher in local → concurrent.
+        let local = vec![vc(0x01, 5), vc(0x02, 4)];
+        let incoming = vec![vc(0x01, 6), vc(0x02, 3)];
+        assert!(
+            !is_rollback(&local, &incoming),
+            "concurrent clocks are not a rollback per se — caller will merge"
+        );
+    }
+
+    #[test]
+    fn empty_incoming_against_nonempty_local_is_rollback() {
+        let local = vec![vc(0x01, 1)];
+        let incoming: Vec<VectorClockEntry> = Vec::new();
+        assert!(
+            is_rollback(&local, &incoming),
+            "empty incoming against local with counter > 0 — rollback"
+        );
+    }
+
+    #[test]
+    fn empty_local_against_any_incoming_not_rollback() {
+        let local: Vec<VectorClockEntry> = Vec::new();
+        let incoming = vec![vc(0x01, 5), vc(0x02, 3)];
+        assert!(
+            !is_rollback(&local, &incoming),
+            "empty local — any incoming dominates (or is also empty)"
+        );
+
+        // And the both-empty edge: equal, not a rollback.
+        let empty: Vec<VectorClockEntry> = Vec::new();
+        assert!(
+            !is_rollback(&empty, &empty),
+            "both empty — equal, not a rollback"
+        );
     }
 }
