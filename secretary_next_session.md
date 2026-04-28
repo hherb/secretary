@@ -157,6 +157,64 @@ shape: ~25 commits, ~5,000 lines, 2-3 sessions matching PR-A's cadence.
 5. `BlockFile` round-trip + manifest round-trip + create_vault → open_vault round-trip all proven by integration tests.
 6. `decrypt_manifest` enforces the §10 rollback resistance check (typed `VaultError::Rollback { local_clock, incoming_clock }` variant).
 
+### PR-B follow-ups from PR #3 reviewer audit
+
+Surfaced by parallel reviewers (code-reviewer, silent-failure-hunter,
+pr-test-analyzer) when PR-A was audited end-to-end before merge.
+Medium-rated, non-blocking on PR-A merge but tracked here so they don't
+slip into PR-C or beyond:
+
+1. **Python conformance must verify, not just parse.** The
+   `conformance.py` row above already plans the full hybrid-decap +
+   AEAD-decrypt + hybrid-verify extension. The reviewer's framing for
+   *why* it matters: today
+   [conformance.py](core/tests/python/conformance.py) confirms wire-format
+   byte layout but runs no crypto — no Ed25519 / ML-DSA-65 verify, no
+   X25519 / ML-KEM-768 decap, no AEAD decrypt. A second-language client
+   could parse correctly while computing the signed range wrong, getting
+   AAD wrong, or reversing hybrid concat order — and conformance would
+   still print PASS. Since §15 cross-language conformance is the line of
+   defence for the Python/Swift/Kotlin clients, the parse-only stance is
+   too weak for `golden_vault_001/`. Minimum bar (in addition to the
+   Item 5 plan): recompute the signed-range bytes from the hex fixture
+   and assert they match what the embedded signatures cover.
+
+2. **Encrypted-for-other-not-self path untested.** Today's tests cover
+   owner+alice+bob all decrypting and stranger-rejected. Missing: owner
+   encrypts for `{alice, bob}` only (NOT self) → alice decrypts, bob
+   decrypts, owner gets `NotARecipient`. This is the send-only-mode
+   semantics path. Add to `core/tests/vault.rs` integration suite.
+
+3. **`VectorClockDuplicateDevice` / `VectorClockCountMismatch` lack
+   dedicated negative tests.** Both are production rejection sites
+   ([block.rs:649,758](core/src/vault/block.rs)) and the proptest at
+   [proptest.rs:981-983](core/tests/proptest.rs) lists them as
+   *permitted* outcomes — allowed but not asserted to fire. A regression
+   that demoted `VectorClockDuplicateDevice` into a generic "ok" path
+   would not be caught. `VectorClockNotSorted` already has a dedicated
+   test ([vault.rs:1076](core/tests/vault.rs)); these two siblings
+   deserve the same treatment.
+
+4. **Plaintext-level `unknown` bag round-trip untested at the
+   block-cycle level.** Record-level + field-level forward-compat is
+   well covered in `record.rs` tests. The `BlockPlaintext::unknown`
+   field is always `BTreeMap::new()` in current tests. Add a test that
+   survives an encrypt → encode → decode → decrypt cycle bit-identically.
+   Subsumes Item 7's "unknown BTreeMap forward-compat in proptests" note
+   if approached as an integration test rather than a property.
+
+5. **Optional polish (low value, do only if convenient)**:
+   - One negative ML-DSA-65 sigGen vector (mutated message) would prove
+     the assertion isn't tautological. 5 positive vectors is thin but
+     deterministic, so this is a nice-to-have.
+   - `seen_keys: BTreeMap<String, ()>` → `BTreeSet<String>` in
+     [record.rs:585,686](core/src/vault/record.rs) and
+     [block.rs:1043](core/src/vault/block.rs) — set-in-disguise idiom.
+   - [block.rs:1317-1319](core/src/vault/block.rs)
+     `count_usize.checked_mul(RECIPIENT_ENTRY_LEN)` cannot overflow
+     (`u16::MAX × 1208 ≈ 79 MB`); `BlockError::TooManyRecipients` is
+     dead. Defensive code is fine; flag only.
+
 ### Spec-doc tickets to fold in
 
 These surfaced during PR-A review and are bundled with PR-B because the

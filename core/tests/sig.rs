@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Hybrid-signature integration tests (`docs/crypto-design.md` §8).
 //!
 //! KATs come in three layers:
@@ -410,3 +412,78 @@ fn ml_dsa_65_nist_sigver_kat() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// NIST FIPS 204 sigGen KATs for ML-DSA-65 — sign-side cross-validation.
+//
+// The sigver KAT above pins the verify-side; this one closes the §15 sigGen
+// gap by feeding NIST's expanded-form signing key (FIPS 204 Algorithm 24
+// `skEncode`, 4032 bytes for ML-DSA-65) and NIST's (message, ctx) into the
+// deterministic ML-DSA.Sign and asserting the resulting 3309-byte signature
+// matches NIST's reference output byte-for-byte.
+//
+// Source group is ACVP-Server `ML-DSA-sigGen-FIPS204` tgId=3:
+// parameterSet=ML-DSA-65, AFT, deterministic=true, signatureInterface=external,
+// preHash=pure. That maps onto `ExpandedSigningKey::sign_deterministic(M, ctx)`
+// in the `ml-dsa` crate (Algorithm 2 ML-DSA.Sign, deterministic variant).
+//
+// `ExpandedSigningKey::from_expanded` is `#[deprecated]` in `ml-dsa 0.1.0-rc.8`
+// because the modern API is seed-only (`from_seed` / `to_seed`). We
+// `#[allow(deprecated)]` *locally on this fn* (not on a wider scope) because:
+//   1. NIST publishes vectors against the expanded form, so cross-validating
+//      against the authoritative reference requires loading expanded sks.
+//   2. The seed-only API cannot accept an arbitrary expanded sk that wasn't
+//      produced by the same seed expansion — NIST's vectors are independently
+//      generated, and re-deriving the seed from the expanded sk is not
+//      defined by FIPS 204.
+//   3. When `ml-dsa` ships a non-deprecated way to load expanded sks (or its
+//      own NIST KAT harness), this test should switch over.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[allow(deprecated)] // see fn-level comment above for the rationale + upgrade path.
+fn ml_dsa_65_nist_siggen_kat() {
+    use ml_dsa::{ExpandedSigningKey, ExpandedSigningKeyBytes, MlDsa65};
+
+    let kat: MlDsa65Kat = load_kat("ml_dsa_65_kat.json");
+    assert!(!kat.siggen_vectors.is_empty(), "no NIST siggen vectors");
+
+    for v in &kat.siggen_vectors {
+        // Each vector pins the FIPS 204 §14 sizes implicitly via try_into:
+        // sk → 4032 B, sig → 3309 B. Mis-sized vectors fail with a clear msg.
+        assert_eq!(
+            v.sk.len(),
+            ML_DSA_65_EXPANDED_SK_LEN,
+            "tcId {}: sk len {} != FIPS 204 expanded sk len {}",
+            v.tc_id,
+            v.sk.len(),
+            ML_DSA_65_EXPANDED_SK_LEN,
+        );
+
+        let sk_bytes: ExpandedSigningKeyBytes<MlDsa65> =
+            v.sk.as_slice().try_into().expect("sk length");
+        let sk = ExpandedSigningKey::<MlDsa65>::from_expanded(&sk_bytes);
+
+        // ACVP `signatureInterface=external, preHash=pure, deterministic=true`
+        // → Algorithm 2 ML-DSA.Sign, deterministic variant, called via the
+        // crate's `sign_deterministic(M, ctx)`. ctx may be empty (some
+        // vectors carry a 0-byte ctx); `sign_deterministic` accepts that.
+        let sig = sk
+            .sign_deterministic(&v.msg, &v.ctx)
+            .expect("sign_deterministic");
+        let sig_bytes = sig.encode();
+        assert_eq!(sig_bytes.len(), ML_DSA_65_SIG_LEN);
+
+        assert_eq!(
+            sig_bytes.as_slice(),
+            v.sig.as_slice(),
+            "tcId {}: sigGen output diverges from NIST",
+            v.tc_id
+        );
+    }
+}
+
+/// FIPS 204 §14 expanded-form ML-DSA-65 signing key length, asserted by
+/// `ml_dsa_65_nist_siggen_kat`. The crate stores sks as the 32-byte seed in
+/// production; this constant is the size the *NIST KAT* sks come in.
+const ML_DSA_65_EXPANDED_SK_LEN: usize = 4032;
