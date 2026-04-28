@@ -362,6 +362,20 @@ pub enum BlockError {
     #[error("sig_pq too long for u16 length prefix: {found}")]
     SigPqTooLong { found: usize },
 
+    /// On-disk `sig_pq_len` was not [`crate::crypto::sig::ML_DSA_65_SIG_LEN`]
+    /// (3309). §6.1 / §14 fix the ML-DSA-65 signature length under suite
+    /// `secretary-v1-pq-hybrid`. Mirrors [`Self::SigEdWrongLength`]: a
+    /// wire-format length violation is a parse error, not a sign / verify
+    /// failure, and gets its own variant rather than being collapsed into
+    /// [`Self::Sig`] (same discipline as the Task 4 fix `7fa9a7b` that
+    /// introduced [`Self::RecipientCtWrongLength`] rather than reusing
+    /// [`Self::Aead`]).
+    #[error(
+        "sig_pq wrong length: expected {}, got {found}",
+        crate::crypto::sig::ML_DSA_65_SIG_LEN
+    )]
+    SigPqWrongLength { found: usize },
+
     /// On-disk `author_fingerprint` did not match the expected sender's
     /// fingerprint passed to [`decrypt_block`] (§6.4 step 6). Distinct
     /// from corruption and from signature-verify failure: this means the
@@ -1444,6 +1458,17 @@ fn decode_signature_suffix(
     let sig_ed = read_array::<ED25519_SIG_LEN>(bytes, &mut pos)?;
 
     let sig_pq_len = read_u16_be(bytes, &mut pos)? as usize;
+    // §6.1 / §14 pin sig_pq at ML_DSA_65_SIG_LEN (3309) under suite
+    // secretary-v1-pq-hybrid. Reject a wire-format length mismatch
+    // before reading the bytes, as a parse error — same shape as the
+    // SigEdWrongLength check above. Letting MlDsa65Sig::from_bytes
+    // surface this as SigError::InvalidSignatureLength via the Sig
+    // variant would conflate parse errors with sign / verify failures
+    // and break symmetry with SigEdWrongLength (PR #1 review-fix
+    // 97af857 / Task 4 fix 7fa9a7b discipline).
+    if sig_pq_len != crate::crypto::sig::ML_DSA_65_SIG_LEN {
+        return Err(BlockError::SigPqWrongLength { found: sig_pq_len });
+    }
     let available = bytes.len().saturating_sub(pos);
     if available < sig_pq_len {
         return Err(BlockError::Truncated {
@@ -1454,9 +1479,9 @@ fn decode_signature_suffix(
     let sig_pq_bytes = bytes[pos..pos + sig_pq_len].to_vec();
     pos += sig_pq_len;
 
-    // MlDsa65Sig::from_bytes hard-pins the length at ML_DSA_65_SIG_LEN
-    // (3309). Any other PQ signature length surfaces as
-    // SigError::InvalidSignatureLength via #[from].
+    // MlDsa65Sig::from_bytes hard-pins length at ML_DSA_65_SIG_LEN; the
+    // earlier wire-format check makes this defensive (cannot fire today)
+    // but it stays as the construction path for the typed wrapper.
     let sig_pq = MlDsa65Sig::from_bytes(&sig_pq_bytes)?;
 
     Ok((author, HybridSig { sig_ed, sig_pq }, &bytes[pos..]))
