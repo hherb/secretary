@@ -23,8 +23,10 @@ pub use block::{
     FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
 pub use manifest::{
-    decode_manifest, decrypt_manifest_body, encode_manifest, encrypt_manifest_body, BlockEntry,
-    KdfParamsRef, Manifest, ManifestError, ManifestHeader, TrashEntry, MANIFEST_HEADER_LEN,
+    decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
+    encode_manifest_file, encrypt_manifest_body, sign_manifest, verify_manifest, BlockEntry,
+    KdfParamsRef, Manifest, ManifestError, ManifestFile, ManifestHeader, TrashEntry,
+    MANIFEST_HEADER_LEN,
 };
 // NOTE: VectorClockEntry is re-used from block.rs by manifest.rs (re-exported
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second

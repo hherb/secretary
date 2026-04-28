@@ -51,7 +51,12 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
-use crate::crypto::aead::{self, AeadKey, AeadNonce};
+use crate::crypto::aead::{self, AeadKey, AeadNonce, AEAD_TAG_LEN};
+use crate::crypto::sig::{
+    self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
+    MlDsa65Sig, SigError, SigRole, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
+};
+use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FILE_KIND_MANIFEST, FORMAT_VERSION, MAGIC, SUITE_ID};
 
 use super::canonical::{
@@ -227,6 +232,79 @@ pub enum ManifestError {
     /// (see [`crate::crypto::aead::AeadError::Decryption`]).
     #[error("AEAD verification failed")]
     AeadFailure,
+
+    /// Manifest file (§4.1) input was shorter than expected at a named
+    /// section. Distinguished from the binary-header-specific
+    /// [`Self::HeaderTruncated`] by carrying the section name so a
+    /// caller can pinpoint *which* part of the §4.1 envelope is short
+    /// (aead_nonce, aead_ct_len, aead_ct, aead_tag, author_fingerprint,
+    /// sig_ed_len, sig_ed, sig_pq_len, sig_pq).
+    #[error("manifest file truncated at {section}: need at least {need} bytes, got {got}")]
+    SectionTruncated {
+        section: &'static str,
+        need: usize,
+        got: usize,
+    },
+
+    /// On-disk `aead_ct_len` (the u32 BE length prefix immediately
+    /// before the AEAD ciphertext) declared a length that does not match
+    /// the bytes available between it and the trailing signature suffix
+    /// (after subtracting the fixed 16-byte AEAD tag). Position-specific
+    /// to the §4.1 manifest file format; the block layer uses the
+    /// generic `Truncated` variant for the equivalent failure mode but
+    /// the manifest layer emits a typed mismatch error so callers can
+    /// distinguish "wrong length declared" from "input cut off mid-way".
+    #[error("aead_ct_len ({declared}) does not match remaining body ({remaining})")]
+    AeadCtLenMismatch { declared: u32, remaining: usize },
+
+    /// [`decode_manifest_file`] found bytes after the trailing `sig_pq`.
+    /// The §4.1 file format has a fixed-length suffix; any bytes after
+    /// the last byte of `sig_pq` are corruption (or wire-format
+    /// extension by a future suite that the v1 reader does not
+    /// understand). Strict reject — the v1 spec defines no forward-
+    /// compat trailing fields. Mirrors `BlockError::TrailingBytes`.
+    #[error("trailing bytes after manifest file: {0} extra")]
+    TrailingBytes(usize),
+
+    /// On-disk `sig_ed_len` (the u16 BE length prefix immediately
+    /// before the Ed25519 signature bytes) was not [`ED25519_SIG_LEN`]
+    /// (64). §4.1 / §14 fix the Ed25519 signature length; this variant
+    /// catches wire-format violations. Mirrors
+    /// `BlockError::SigEdWrongLength`.
+    #[error("sig_ed_len wrong: expected {expected}, got {got}")]
+    SigEdWrongLength { expected: u16, got: u16 },
+
+    /// On-disk `sig_pq_len` was not [`ML_DSA_65_SIG_LEN`] (3309). §4.1
+    /// / §14 fix the ML-DSA-65 signature length under suite
+    /// `secretary-v1-pq-hybrid`. Mirrors `BlockError::SigPqWrongLength`:
+    /// a wire-format length violation is a parse error, not a sign /
+    /// verify failure, and gets its own variant rather than being
+    /// collapsed.
+    #[error("sig_pq_len wrong: expected {expected}, got {got}")]
+    SigPqWrongLength { expected: u16, got: u16 },
+
+    /// Ed25519 half of the §8 hybrid signature on the manifest file
+    /// rejected. Position-specific to the manifest signature. Mirrors
+    /// `BlockError::Sig(SigError::Ed25519VerifyFailed)` but is its own
+    /// typed variant so a caller can distinguish "manifest signature
+    /// invalid" from "block signature invalid".
+    #[error("Ed25519 signature invalid")]
+    Ed25519SignatureInvalid,
+
+    /// ML-DSA-65 half of the §8 hybrid signature on the manifest file
+    /// rejected. Same position-specific discipline as
+    /// [`Self::Ed25519SignatureInvalid`].
+    #[error("ML-DSA-65 signature invalid")]
+    MlDsa65SignatureInvalid,
+
+    /// `sign_manifest` could not produce a valid signature (e.g. the
+    /// underlying [`crate::crypto::sig::sign`] rejected the secret-key
+    /// bytes). Wraps the inner [`SigError`] for diagnostics. Decode-
+    /// side length mismatches do NOT flow through this variant — they
+    /// have their own typed `SigEdWrongLength` / `SigPqWrongLength` /
+    /// `*SignatureInvalid` variants.
+    #[error("manifest sign internal error: {0}")]
+    SignInternal(SigError),
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,6 +1318,417 @@ pub fn decrypt_manifest_body(
 }
 
 // ---------------------------------------------------------------------------
+// ManifestFile — full §4.1 envelope (header + AEAD section + sig suffix)
+// ---------------------------------------------------------------------------
+
+const _: () = {
+    // Spec-conformance assertion: §4.1 / §14 pin the Ed25519 signature
+    // length at 64 bytes; the wire `sig_ed_len` field declares the same
+    // value. Mirrors block.rs's compile-time guard.
+    assert!(ED25519_SIG_LEN == 64);
+};
+
+const _: () = {
+    // Spec-conformance assertion: §4.1 / §14 pin the ML-DSA-65 signature
+    // length at 3309 bytes under suite v1 (`secretary-v1-pq-hybrid`).
+    assert!(ML_DSA_65_SIG_LEN == 3309);
+};
+
+/// 16-byte fingerprint length: matches [`Fingerprint`]'s underlying
+/// type alias. Pinned here so the §4.1 envelope size arithmetic is
+/// self-evident at the call site.
+const FINGERPRINT_LEN_BYTES: usize = 16;
+
+/// The complete manifest file as it sits on disk: header (§4.1, 42
+/// bytes) + AEAD section (24-byte nonce + 4-byte ct-len + variable ct
+/// + 16-byte tag) + signature suffix (16-byte author fingerprint +
+///   length-prefixed Ed25519 sig + length-prefixed ML-DSA-65 sig).
+///
+/// [`Manifest`] is the *opened* (decrypted) body that lives inside
+/// `aead_ct`; `ManifestFile` is the on-disk envelope. They are
+/// intentionally distinct types: a [`ManifestFile`] never holds
+/// plaintext, and [`sign_manifest`] / [`verify_manifest`] +
+/// [`decrypt_manifest_body`] are the only conversion paths between the
+/// two. Same discipline as [`super::block::BlockFile`] vs
+/// [`super::block::BlockPlaintext`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestFile {
+    /// Binary header (§4.1, 42 bytes from `magic` through `last_mod_ms`).
+    pub header: ManifestHeader,
+    /// 24-byte XChaCha20 nonce for the body AEAD.
+    pub aead_nonce: [u8; 24],
+    /// AEAD ciphertext of the canonical-CBOR manifest body (§4.2),
+    /// *without* the trailing 16-byte Poly1305 tag. The tag is held
+    /// separately because §4.1 splits them on the wire (`aead_ct` is
+    /// variable-length, `aead_tag` is a fixed 16-byte field).
+    pub aead_ct: Vec<u8>,
+    /// 16-byte Poly1305 authentication tag for the body AEAD.
+    pub aead_tag: [u8; AEAD_TAG_LEN],
+    /// 16-byte fingerprint of the manifest author's contact card
+    /// (§4.1). For the single-user vault case this is the owner's
+    /// fingerprint.
+    pub author_fingerprint: Fingerprint,
+    /// Ed25519 half of the §8 hybrid signature, 64 bytes.
+    pub sig_ed: Ed25519Sig,
+    /// ML-DSA-65 half of the §8 hybrid signature, 3309 bytes (suite v1).
+    pub sig_pq: MlDsa65Sig,
+}
+
+/// Build the bytes the §4.1 hybrid signature commits to: header(42) ||
+/// aead_nonce(24) || aead_ct_len(4 BE) || aead_ct(var) || aead_tag(16).
+///
+/// This is the bytes-from-`magic`-through-`aead_tag`-inclusive range.
+/// The role-tag prefix `"secretary-v1-manifest-sig"` is added by
+/// [`crate::crypto::sig::sign`] / [`crate::crypto::sig::verify`] via
+/// [`SigRole::Manifest`] — DO NOT prepend it here, or both halves of
+/// the hybrid signature would double-tag and round-trip verify would
+/// break. Same discipline as [`super::block::signed_message_bytes`].
+fn signed_message_bytes(file: &ManifestFile) -> Result<Vec<u8>, ManifestError> {
+    let header_bytes = file.header.encode();
+    let ct_len_u32 = u32::try_from(file.aead_ct.len()).map_err(|_| {
+        // u32 overflow on aead_ct.len() is a degenerate case: a single
+        // manifest body would have to exceed 4 GiB. Surface it as the
+        // declared/remaining mismatch rather than inventing a fresh
+        // variant — the resulting envelope would be unparseable anyway.
+        ManifestError::AeadCtLenMismatch {
+            declared: u32::MAX,
+            remaining: file.aead_ct.len(),
+        }
+    })?;
+    let mut out = Vec::with_capacity(
+        MANIFEST_HEADER_LEN + 24 + 4 + file.aead_ct.len() + AEAD_TAG_LEN,
+    );
+    out.extend_from_slice(&header_bytes);
+    out.extend_from_slice(&file.aead_nonce);
+    out.extend_from_slice(&ct_len_u32.to_be_bytes());
+    out.extend_from_slice(&file.aead_ct);
+    out.extend_from_slice(&file.aead_tag);
+    Ok(out)
+}
+
+/// Encode a complete [`ManifestFile`] to its §4.1 wire form: header
+/// (42) || aead_nonce (24) || aead_ct_len (u32 BE = 4) || aead_ct
+/// (var) || aead_tag (16) || author_fingerprint (16) || sig_ed_len
+/// (u16 BE = 2) || sig_ed (64) || sig_pq_len (u16 BE = 2) || sig_pq
+/// (3309 in suite v1).
+///
+/// Length-prefix fields (`aead_ct_len`, `sig_ed_len`, `sig_pq_len`)
+/// are written from the corresponding field's actual length; encode-
+/// time validation ensures the lengths fit their declared widths and
+/// match the suite-v1 fixed sizes. A `sig_ed` whose alias has shifted
+/// shape (defensive — the type is pinned `[u8; 64]`), or a `sig_pq`
+/// whose suite version mismatches the wire format, surfaces as a
+/// typed [`ManifestError::SigEdWrongLength`] /
+/// [`ManifestError::SigPqWrongLength`] before any bytes are written.
+pub fn encode_manifest_file(file: &ManifestFile) -> Result<Vec<u8>, ManifestError> {
+    // Defensive length checks. `sig_ed: Ed25519Sig` is a `[u8; 64]`
+    // alias so the first check cannot fire today, but pinning it here
+    // matches the §4.1 wire contract and protects against a future
+    // alias change. `sig_pq: MlDsa65Sig` is constructed via
+    // `MlDsa65Sig::from_bytes` which already pins the length, so the
+    // second check is also defensive. Both stay for symmetry with the
+    // decode path's strict validation.
+    if file.sig_ed.len() != ED25519_SIG_LEN {
+        return Err(ManifestError::SigEdWrongLength {
+            expected: ED25519_SIG_LEN as u16,
+            got: file.sig_ed.len() as u16,
+        });
+    }
+    if file.sig_pq.as_bytes().len() != ML_DSA_65_SIG_LEN {
+        return Err(ManifestError::SigPqWrongLength {
+            expected: ML_DSA_65_SIG_LEN as u16,
+            got: file.sig_pq.as_bytes().len() as u16,
+        });
+    }
+    let ct_len_u32 = u32::try_from(file.aead_ct.len()).map_err(|_| {
+        ManifestError::AeadCtLenMismatch {
+            declared: u32::MAX,
+            remaining: file.aead_ct.len(),
+        }
+    })?;
+
+    let header_bytes = file.header.encode();
+    let sig_pq_bytes = file.sig_pq.as_bytes();
+    let total = MANIFEST_HEADER_LEN
+        + 24
+        + 4
+        + file.aead_ct.len()
+        + AEAD_TAG_LEN
+        + FINGERPRINT_LEN_BYTES
+        + 2
+        + ED25519_SIG_LEN
+        + 2
+        + sig_pq_bytes.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&header_bytes);
+    out.extend_from_slice(&file.aead_nonce);
+    out.extend_from_slice(&ct_len_u32.to_be_bytes());
+    out.extend_from_slice(&file.aead_ct);
+    out.extend_from_slice(&file.aead_tag);
+    out.extend_from_slice(&file.author_fingerprint);
+    out.extend_from_slice(&(ED25519_SIG_LEN as u16).to_be_bytes());
+    out.extend_from_slice(&file.sig_ed);
+    out.extend_from_slice(&(sig_pq_bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(sig_pq_bytes);
+    debug_assert_eq!(out.len(), total);
+    Ok(out)
+}
+
+/// Decode a complete [`ManifestFile`] from `bytes`. Strict on lengths:
+/// every section has a typed truncation diagnostic that pinpoints
+/// which §4.1 field is short. Trailing bytes after `sig_pq` are
+/// rejected with [`ManifestError::TrailingBytes`].
+///
+/// Validates:
+///
+/// 1. Header (42 bytes) via [`ManifestHeader::decode`] — magic,
+///    format_version, suite_id, file_kind.
+/// 2. Sufficient input for `aead_nonce` (24), `aead_ct_len` (4),
+///    `aead_ct` (declared), `aead_tag` (16), `author_fingerprint` (16),
+///    `sig_ed_len` (2), `sig_ed` (64), `sig_pq_len` (2), and `sig_pq`
+///    (3309 in suite v1) — each surfaces as
+///    [`ManifestError::SectionTruncated`] with a section-specific name.
+/// 3. `aead_ct_len` matches the bytes available between the length
+///    prefix and the trailing signature suffix (after subtracting the
+///    fixed 16-byte AEAD tag and the trailing fixed-size suffix);
+///    surfaces as [`ManifestError::AeadCtLenMismatch`] when the wire
+///    declares a length the envelope cannot satisfy.
+/// 4. `sig_ed_len == 64` and `sig_pq_len == 3309` —
+///    [`ManifestError::SigEdWrongLength`] / [`ManifestError::SigPqWrongLength`].
+/// 5. No bytes remain after `sig_pq` —
+///    [`ManifestError::TrailingBytes`].
+///
+/// Does NOT decrypt the AEAD body and does NOT verify the hybrid
+/// signature. Those are separate concerns: an orchestrator sequences
+/// `decode_manifest_file` → `verify_manifest` → `decrypt_manifest_body`.
+pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError> {
+    // Step 1: header (42 bytes). Returns the trailing slice for the
+    // AEAD section to pick up from.
+    let (header, rest) = ManifestHeader::decode(bytes)?;
+
+    let mut pos = 0usize;
+
+    // Step 2: aead_nonce (24).
+    if rest.len().saturating_sub(pos) < 24 {
+        return Err(ManifestError::SectionTruncated {
+            section: "aead_nonce",
+            need: 24,
+            got: rest.len().saturating_sub(pos),
+        });
+    }
+    let mut aead_nonce = [0u8; 24];
+    aead_nonce.copy_from_slice(&rest[pos..pos + 24]);
+    pos += 24;
+
+    // Step 3: aead_ct_len (u32 BE).
+    if rest.len().saturating_sub(pos) < 4 {
+        return Err(ManifestError::SectionTruncated {
+            section: "aead_ct_len",
+            need: 4,
+            got: rest.len().saturating_sub(pos),
+        });
+    }
+    let mut len_buf = [0u8; 4];
+    len_buf.copy_from_slice(&rest[pos..pos + 4]);
+    pos += 4;
+    let declared_ct_len = u32::from_be_bytes(len_buf);
+    let declared_ct_len_usize = declared_ct_len as usize;
+
+    // Step 4: We must reserve room for aead_tag(16), author_fingerprint(16),
+    // sig_ed_len(2), sig_ed(64), sig_pq_len(2), sig_pq(ML_DSA_65_SIG_LEN=3309).
+    // The "remaining" expected after the ct_len prefix is:
+    //   declared_ct_len + 16 (tag) + 16 (fp) + 2 (sig_ed_len) + 64 (sig_ed)
+    //                  + 2 (sig_pq_len) + 3309 (sig_pq)
+    // If the declared aead_ct_len asks for more bytes than are present
+    // (after subtracting the fixed-size suffix), surface the typed
+    // mismatch rather than waiting for a downstream truncation.
+    let fixed_suffix_after_ct = AEAD_TAG_LEN
+        + FINGERPRINT_LEN_BYTES
+        + 2
+        + ED25519_SIG_LEN
+        + 2
+        + ML_DSA_65_SIG_LEN;
+    let remaining_after_len_prefix = rest.len().saturating_sub(pos);
+    if remaining_after_len_prefix < fixed_suffix_after_ct {
+        // We don't even have enough bytes for the fixed-size tail; report
+        // truncation at the aead_ct boundary because that's the first
+        // section to overflow available bytes.
+        return Err(ManifestError::SectionTruncated {
+            section: "aead_ct",
+            need: declared_ct_len_usize + fixed_suffix_after_ct,
+            got: remaining_after_len_prefix,
+        });
+    }
+    let max_possible_ct_len = remaining_after_len_prefix - fixed_suffix_after_ct;
+    if declared_ct_len_usize > max_possible_ct_len {
+        return Err(ManifestError::AeadCtLenMismatch {
+            declared: declared_ct_len,
+            remaining: max_possible_ct_len,
+        });
+    }
+
+    // Step 5: aead_ct (declared length).
+    let aead_ct = rest[pos..pos + declared_ct_len_usize].to_vec();
+    pos += declared_ct_len_usize;
+
+    // Step 6: aead_tag (16). Length already reserved above.
+    let mut aead_tag = [0u8; AEAD_TAG_LEN];
+    aead_tag.copy_from_slice(&rest[pos..pos + AEAD_TAG_LEN]);
+    pos += AEAD_TAG_LEN;
+
+    // Step 7: author_fingerprint (16).
+    let mut author_fingerprint = [0u8; FINGERPRINT_LEN_BYTES];
+    author_fingerprint.copy_from_slice(&rest[pos..pos + FINGERPRINT_LEN_BYTES]);
+    pos += FINGERPRINT_LEN_BYTES;
+
+    // Step 8: sig_ed_len (u16 BE).
+    let mut sig_ed_len_buf = [0u8; 2];
+    sig_ed_len_buf.copy_from_slice(&rest[pos..pos + 2]);
+    pos += 2;
+    let sig_ed_len = u16::from_be_bytes(sig_ed_len_buf);
+    if sig_ed_len as usize != ED25519_SIG_LEN {
+        return Err(ManifestError::SigEdWrongLength {
+            expected: ED25519_SIG_LEN as u16,
+            got: sig_ed_len,
+        });
+    }
+
+    // Step 9: sig_ed (64). Length already reserved above.
+    let mut sig_ed: Ed25519Sig = [0u8; ED25519_SIG_LEN];
+    sig_ed.copy_from_slice(&rest[pos..pos + ED25519_SIG_LEN]);
+    pos += ED25519_SIG_LEN;
+
+    // Step 10: sig_pq_len (u16 BE).
+    let mut sig_pq_len_buf = [0u8; 2];
+    sig_pq_len_buf.copy_from_slice(&rest[pos..pos + 2]);
+    pos += 2;
+    let sig_pq_len = u16::from_be_bytes(sig_pq_len_buf);
+    if sig_pq_len as usize != ML_DSA_65_SIG_LEN {
+        return Err(ManifestError::SigPqWrongLength {
+            expected: ML_DSA_65_SIG_LEN as u16,
+            got: sig_pq_len,
+        });
+    }
+
+    // Step 11: sig_pq. Length already reserved.
+    let sig_pq_bytes = rest[pos..pos + ML_DSA_65_SIG_LEN].to_vec();
+    pos += ML_DSA_65_SIG_LEN;
+
+    // MlDsa65Sig::from_bytes hard-pins length at ML_DSA_65_SIG_LEN; the
+    // wire-format check above makes this defensive (cannot fire today)
+    // but it stays as the construction path for the typed wrapper.
+    let sig_pq = MlDsa65Sig::from_bytes(&sig_pq_bytes).map_err(|e| match e {
+        SigError::InvalidSignatureLength => ManifestError::SigPqWrongLength {
+            expected: ML_DSA_65_SIG_LEN as u16,
+            got: sig_pq_bytes.len() as u16,
+        },
+        // Other SigError variants do not fire on this path; lift
+        // defensively into the closest equivalent.
+        other => ManifestError::SignInternal(other),
+    })?;
+
+    // Step 12: trailing-bytes check.
+    if pos != rest.len() {
+        return Err(ManifestError::TrailingBytes(rest.len() - pos));
+    }
+
+    Ok(ManifestFile {
+        header,
+        aead_nonce,
+        aead_ct,
+        aead_tag,
+        author_fingerprint,
+        sig_ed,
+        sig_pq,
+    })
+}
+
+/// Build a complete on-disk [`ManifestFile`] from `header`, plaintext
+/// `body`, and signing keys. Steps mirror §4.1 / §8 step 6:
+///
+/// 1. Canonical-CBOR-encode `body` (§4.2).
+/// 2. AEAD-encrypt under `ibk` with `nonce` and `header.encode()` AAD,
+///    yielding `ct || tag`. Split into `aead_ct` (variable) and
+///    `aead_tag` (16 bytes).
+/// 3. Hybrid-sign the bytes from `magic` through `aead_tag` inclusive
+///    via [`crate::crypto::sig::sign`] with [`SigRole::Manifest`]. The
+///    role tag `"secretary-v1-manifest-sig"` is prepended *internally*
+///    by [`crate::crypto::sig::sign`] — DO NOT prepend it here.
+///
+/// Returns the populated [`ManifestFile`]. Encoding it to the wire
+/// form is the caller's job ([`encode_manifest_file`]).
+pub fn sign_manifest(
+    header: ManifestHeader,
+    body: &Manifest,
+    ibk: &AeadKey,
+    nonce: &AeadNonce,
+    author: Fingerprint,
+    sk_ed: &Ed25519Secret,
+    sk_pq: &MlDsa65Secret,
+) -> Result<ManifestFile, ManifestError> {
+    // Step 1: encode the manifest body to canonical CBOR.
+    let body_bytes = encode_manifest(body)?;
+
+    // Step 2: AEAD-encrypt with header AAD.
+    let ct_with_tag = encrypt_manifest_body(&header, &body_bytes, ibk, nonce)?;
+    debug_assert_eq!(ct_with_tag.len(), body_bytes.len() + AEAD_TAG_LEN);
+
+    // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
+    let split_at = ct_with_tag.len() - AEAD_TAG_LEN;
+    let aead_ct = ct_with_tag[..split_at].to_vec();
+    let mut aead_tag = [0u8; AEAD_TAG_LEN];
+    aead_tag.copy_from_slice(&ct_with_tag[split_at..]);
+
+    // Step 3: build a partial ManifestFile for the signed-bytes view,
+    // sign it, and fill in the signatures. The struct is partial in
+    // that the sig fields are placeholders until step 3's outputs land.
+    let placeholder_sig_pq = MlDsa65Sig::from_bytes(&vec![0u8; ML_DSA_65_SIG_LEN])
+        .expect("placeholder ML-DSA-65 sig length");
+    let mut file = ManifestFile {
+        header,
+        aead_nonce: *nonce,
+        aead_ct,
+        aead_tag,
+        author_fingerprint: author,
+        sig_ed: [0u8; ED25519_SIG_LEN],
+        sig_pq: placeholder_sig_pq,
+    };
+
+    let m = signed_message_bytes(&file)?;
+    let hybrid = sig::sign(SigRole::Manifest, &m, sk_ed, sk_pq).map_err(ManifestError::SignInternal)?;
+    file.sig_ed = hybrid.sig_ed;
+    file.sig_pq = hybrid.sig_pq;
+    Ok(file)
+}
+
+/// Verify the §8 hybrid signature on a complete [`ManifestFile`].
+/// Does NOT decrypt the AEAD body — that's a separate concern via
+/// [`decrypt_manifest_body`]. Position-specific error variants
+/// distinguish "Ed25519 half rejected" from "ML-DSA-65 half rejected"
+/// (see [`ManifestError::Ed25519SignatureInvalid`] /
+/// [`ManifestError::MlDsa65SignatureInvalid`]); other failures (wrong
+/// key length, etc.) surface as [`ManifestError::SignInternal`].
+///
+/// The role tag `"secretary-v1-manifest-sig"` is prepended internally
+/// by [`crate::crypto::sig::verify`] — DO NOT prepend it here.
+pub fn verify_manifest(
+    file: &ManifestFile,
+    pk_ed: &Ed25519Public,
+    pk_pq: &MlDsa65Public,
+) -> Result<(), ManifestError> {
+    let m = signed_message_bytes(file)?;
+    let hybrid = HybridSig {
+        sig_ed: file.sig_ed,
+        sig_pq: file.sig_pq.clone(),
+    };
+    sig::verify(SigRole::Manifest, &m, &hybrid, pk_ed, pk_pq).map_err(|e| match e {
+        SigError::Ed25519VerifyFailed => ManifestError::Ed25519SignatureInvalid,
+        SigError::MlDsa65VerifyFailed => ManifestError::MlDsa65SignatureInvalid,
+        other => ManifestError::SignInternal(other),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1247,7 +1736,6 @@ pub fn decrypt_manifest_body(
 mod tests {
     use super::*;
 
-    use crate::crypto::aead::AEAD_TAG_LEN;
     use crate::crypto::secret::Sensitive;
 
     fn dummy_kdf_params() -> KdfParamsRef {
@@ -2005,5 +2493,399 @@ mod tests {
             matches!(err, ManifestError::AeadFailure),
             "expected AeadFailure under wrong IBK, got {err:?}"
         );
+    }
+
+    // ---- ManifestFile envelope encode/decode (§4.1) ----------------------
+
+    /// Build a deterministic, fully-populated `ManifestFile` for the
+    /// envelope-level tests: pinned header, pinned AEAD ciphertext and
+    /// tag, pinned author fingerprint, and a length-correct (but
+    /// fake-content) ML-DSA-65 signature. The "fake content" makes the
+    /// envelope tests truly orthogonal to signature verification — the
+    /// signature is just bytes here. The sign/verify tests below use
+    /// real `sign_manifest` output.
+    fn fixture_manifest_file() -> ManifestFile {
+        ManifestFile {
+            header: fixed_manifest_header(),
+            aead_nonce: test_nonce(),
+            aead_ct: vec![0x77; 32],
+            aead_tag: [0x88; AEAD_TAG_LEN],
+            author_fingerprint: [0xa5; 16],
+            sig_ed: [0x44; ED25519_SIG_LEN],
+            sig_pq: MlDsa65Sig::from_bytes(&vec![0x55; ML_DSA_65_SIG_LEN])
+                .expect("ML-DSA-65 sig bytes"),
+        }
+    }
+
+    #[test]
+    fn manifest_file_encode_decode_round_trip() {
+        let file = fixture_manifest_file();
+        let bytes = encode_manifest_file(&file).expect("encode_manifest_file");
+        let decoded = decode_manifest_file(&bytes).expect("decode_manifest_file");
+        assert_eq!(decoded, file, "ManifestFile round-trips bit-identically");
+        let bytes_again =
+            encode_manifest_file(&decoded).expect("re-encode_manifest_file");
+        assert_eq!(bytes, bytes_again, "encode is deterministic");
+    }
+
+    #[test]
+    fn encode_decode_pinned_byte_layout() {
+        // Spec arithmetic for §4.1:
+        //   header(42) + aead_nonce(24) + aead_ct_len(4) + aead_ct(N)
+        //   + aead_tag(16) + author_fingerprint(16) + sig_ed_len(2)
+        //   + sig_ed(64) + sig_pq_len(2) + sig_pq(3309)
+        let file = fixture_manifest_file();
+        let bytes = encode_manifest_file(&file).expect("encode");
+        let ct_len = file.aead_ct.len();
+        let expected = 42 + 24 + 4 + ct_len + 16 + 16 + 2 + 64 + 2 + 3309;
+        assert_eq!(
+            bytes.len(),
+            expected,
+            "encoded length matches §4.1 spec arithmetic"
+        );
+
+        // Spot-check: sig_ed_len at offset (42+24+4+ct_len+16+16) = 64.
+        let sig_ed_len_offset = 42 + 24 + 4 + ct_len + 16 + 16;
+        let sig_ed_len_bytes = [
+            bytes[sig_ed_len_offset],
+            bytes[sig_ed_len_offset + 1],
+        ];
+        assert_eq!(
+            u16::from_be_bytes(sig_ed_len_bytes),
+            64,
+            "sig_ed_len encodes 64 at the spec offset"
+        );
+
+        // Spot-check: aead_ct_len is u32 BE at offset 42+24=66.
+        let ct_len_offset = 42 + 24;
+        let ct_len_bytes = [
+            bytes[ct_len_offset],
+            bytes[ct_len_offset + 1],
+            bytes[ct_len_offset + 2],
+            bytes[ct_len_offset + 3],
+        ];
+        assert_eq!(
+            u32::from_be_bytes(ct_len_bytes) as usize,
+            ct_len,
+            "aead_ct_len encodes the actual aead_ct length"
+        );
+
+        // Spot-check: sig_pq_len at offset (sig_ed_len_offset+2+64) = 3309.
+        let sig_pq_len_offset = sig_ed_len_offset + 2 + 64;
+        let sig_pq_len_bytes = [
+            bytes[sig_pq_len_offset],
+            bytes[sig_pq_len_offset + 1],
+        ];
+        assert_eq!(
+            u16::from_be_bytes(sig_pq_len_bytes),
+            3309,
+            "sig_pq_len encodes 3309 at the spec offset"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_sig_ed_wrong_length() {
+        let file = fixture_manifest_file();
+        let mut bytes = encode_manifest_file(&file).expect("encode");
+        let ct_len = file.aead_ct.len();
+        // sig_ed_len lives at offset (42+24+4+ct_len+16+16); flip it from
+        // 64 to 63.
+        let off = 42 + 24 + 4 + ct_len + 16 + 16;
+        bytes[off..off + 2].copy_from_slice(&63u16.to_be_bytes());
+        let err = decode_manifest_file(&bytes).expect_err("sig_ed_len=63 must reject");
+        assert!(
+            matches!(
+                err,
+                ManifestError::SigEdWrongLength {
+                    expected: 64,
+                    got: 63
+                }
+            ),
+            "expected SigEdWrongLength {{ expected: 64, got: 63 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_sig_pq_wrong_length() {
+        let file = fixture_manifest_file();
+        let mut bytes = encode_manifest_file(&file).expect("encode");
+        let ct_len = file.aead_ct.len();
+        // sig_pq_len lives at offset (42+24+4+ct_len+16+16+2+64).
+        let off = 42 + 24 + 4 + ct_len + 16 + 16 + 2 + 64;
+        bytes[off..off + 2].copy_from_slice(&3308u16.to_be_bytes());
+        let err = decode_manifest_file(&bytes).expect_err("sig_pq_len=3308 must reject");
+        assert!(
+            matches!(
+                err,
+                ManifestError::SigPqWrongLength {
+                    expected: 3309,
+                    got: 3308
+                }
+            ),
+            "expected SigPqWrongLength {{ expected: 3309, got: 3308 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_aead_ct_len_overflow() {
+        // Encode a valid file, then bump aead_ct_len past the available
+        // remaining body. Decoder must surface AeadCtLenMismatch (or, if
+        // the declared length pushes the suffix-reservation impossible,
+        // SectionTruncated at "aead_ct"). We pin the AeadCtLenMismatch
+        // case here: declared = ct_len + 100, plenty of fixed-suffix
+        // bytes still present.
+        let file = fixture_manifest_file();
+        let mut bytes = encode_manifest_file(&file).expect("encode");
+        let original_ct_len = file.aead_ct.len() as u32;
+        // aead_ct_len lives at offset 42+24=66.
+        let off = 42 + 24;
+        let bumped = original_ct_len + 100;
+        bytes[off..off + 4].copy_from_slice(&bumped.to_be_bytes());
+        let err = decode_manifest_file(&bytes).expect_err("oversized aead_ct_len must reject");
+        assert!(
+            matches!(
+                err,
+                ManifestError::AeadCtLenMismatch {
+                    declared,
+                    remaining,
+                } if declared == bumped && remaining == original_ct_len as usize
+            ),
+            "expected AeadCtLenMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let file = fixture_manifest_file();
+        let mut bytes = encode_manifest_file(&file).expect("encode");
+        bytes.push(0x99);
+        let err = decode_manifest_file(&bytes).expect_err("trailing junk byte must reject");
+        assert!(
+            matches!(err, ManifestError::TrailingBytes(1)),
+            "expected TrailingBytes(1), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_truncation_at_header() {
+        // 41 bytes — one short of the §4.1 header.
+        let bytes = [0u8; MANIFEST_HEADER_LEN - 1];
+        let err = decode_manifest_file(&bytes).expect_err("41 bytes must reject as truncated");
+        assert!(
+            matches!(
+                err,
+                ManifestError::HeaderTruncated {
+                    need: MANIFEST_HEADER_LEN,
+                    got: 41
+                }
+            ),
+            "expected HeaderTruncated, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_truncation_at_aead_section() {
+        // Header (42) plus 23 of the 24 nonce bytes.
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&fixed_manifest_header().encode());
+        bytes.extend_from_slice(&[0u8; 23]);
+        let err = decode_manifest_file(&bytes)
+            .expect_err("header + 23 bytes must reject as nonce-truncated");
+        assert!(
+            matches!(
+                err,
+                ManifestError::SectionTruncated {
+                    section: "aead_nonce",
+                    need: 24,
+                    got: 23
+                }
+            ),
+            "expected SectionTruncated at aead_nonce, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_truncation_at_signature_suffix() {
+        // Header (42) + nonce (24) + aead_ct_len (4) + nothing else —
+        // the fixed-size suffix needs 16 (tag) + 16 (fp) + 2 + 64 + 2 +
+        // 3309 = 3409 bytes; we provide 0 so the decoder should reject
+        // truncated at the aead_ct boundary.
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&fixed_manifest_header().encode());
+        bytes.extend_from_slice(&[0u8; 24]); // nonce
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // aead_ct_len = 0
+        // No more bytes — the fixed suffix-after-ct (3409) is missing.
+        let err = decode_manifest_file(&bytes)
+            .expect_err("missing signature suffix must reject");
+        assert!(
+            matches!(
+                err,
+                ManifestError::SectionTruncated {
+                    section: "aead_ct",
+                    need,
+                    got: 0,
+                } if need == AEAD_TAG_LEN + 16 + 2 + 64 + 2 + ML_DSA_65_SIG_LEN
+            ),
+            "expected SectionTruncated at aead_ct (need=fixed-suffix, got=0), got {err:?}"
+        );
+    }
+
+    // ---- Sign / verify (§4.1 / §8) ---------------------------------------
+
+    /// Build a fresh hybrid keypair from a pinned ChaCha20Rng seed.
+    /// Same pattern as block.rs's signing-key fixtures.
+    fn fixture_hybrid_keypair(
+        seed: u8,
+    ) -> (
+        Ed25519Secret,
+        Ed25519Public,
+        MlDsa65Secret,
+        MlDsa65Public,
+    ) {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+        let mut ed_rng = ChaCha20Rng::from_seed([seed; 32]);
+        let mut pq_rng = ChaCha20Rng::from_seed([seed.wrapping_add(1); 32]);
+        let (sk_ed, pk_ed) = sig::generate_ed25519(&mut ed_rng);
+        let (sk_pq, pk_pq) = sig::generate_ml_dsa_65(&mut pq_rng);
+        (sk_ed, pk_ed, sk_pq, pk_pq)
+    }
+
+    #[test]
+    fn sign_then_verify_round_trips() {
+        let body = populated_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x10);
+
+        let file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        verify_manifest(&file, &pk_ed, &pk_pq).expect("verify_manifest");
+    }
+
+    #[test]
+    fn verify_rejects_tampered_aead_ct() {
+        let body = minimal_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x20);
+
+        let mut file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        // Flip a byte deep inside the ciphertext.
+        if file.aead_ct.is_empty() {
+            // minimal_manifest's CBOR is non-empty in practice, but guard
+            // against a future trim.
+            file.aead_ct.push(0x00);
+        }
+        file.aead_ct[0] ^= 0xff;
+        let err = verify_manifest(&file, &pk_ed, &pk_pq)
+            .expect_err("tampered aead_ct must fail verify");
+        assert!(
+            matches!(
+                err,
+                ManifestError::Ed25519SignatureInvalid
+                    | ManifestError::MlDsa65SignatureInvalid
+            ),
+            "expected hybrid verify failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_tampered_header() {
+        let body = minimal_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x30);
+
+        let mut file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        // Mutate last_mod_ms — the header is part of the signed bytes.
+        file.header.last_mod_ms = file.header.last_mod_ms.wrapping_add(1);
+        let err = verify_manifest(&file, &pk_ed, &pk_pq)
+            .expect_err("tampered header must fail verify");
+        assert!(
+            matches!(
+                err,
+                ManifestError::Ed25519SignatureInvalid
+                    | ManifestError::MlDsa65SignatureInvalid
+            ),
+            "expected hybrid verify failure on header tamper, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_wrong_pk() {
+        let body = minimal_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, _pk_ed, sk_pq, _pk_pq) = fixture_hybrid_keypair(0x40);
+        let (_sk_ed2, pk_ed2, _sk_pq2, pk_pq2) = fixture_hybrid_keypair(0x50);
+
+        let file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        // Verify with a *different* keypair's public keys.
+        let err = verify_manifest(&file, &pk_ed2, &pk_pq2)
+            .expect_err("wrong pk must fail verify");
+        assert!(
+            matches!(
+                err,
+                ManifestError::Ed25519SignatureInvalid
+                    | ManifestError::MlDsa65SignatureInvalid
+            ),
+            "expected hybrid verify failure under wrong pk, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sign_then_decrypt_round_trips() {
+        // Full pipeline: sign → verify → decrypt → compare body.
+        let body = populated_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x60);
+
+        let file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+
+        // Verify before decrypt — orchestrator-style sequencing.
+        verify_manifest(&file, &pk_ed, &pk_pq).expect("verify_manifest");
+
+        // Reconstruct ct_with_tag = aead_ct ++ aead_tag for the AEAD API.
+        let mut ct_with_tag =
+            Vec::with_capacity(file.aead_ct.len() + AEAD_TAG_LEN);
+        ct_with_tag.extend_from_slice(&file.aead_ct);
+        ct_with_tag.extend_from_slice(&file.aead_tag);
+        let recovered = decrypt_manifest_body(&file.header, &ct_with_tag, &ibk, &nonce)
+            .expect("decrypt_manifest_body");
+
+        // populated_manifest's input arrays are non-canonical-order; the
+        // decoded copy is in canonical order. Use the same sort-then-compare
+        // discipline as the existing `roundtrip_populated_manifest` test.
+        let mut body_sorted = body.clone();
+        body_sorted
+            .vector_clock
+            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+        body_sorted
+            .blocks
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        for blk in &mut body_sorted.blocks {
+            blk.recipients.sort();
+            blk.vector_clock_summary
+                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+        }
+        body_sorted
+            .trash
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        assert_eq!(recovered, body_sorted, "decrypted manifest matches original");
     }
 }
