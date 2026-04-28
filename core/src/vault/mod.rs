@@ -164,9 +164,11 @@ use std::path::Path;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::aead::AEAD_TAG_LEN;
+use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kdf::Argon2idParams;
+use crate::crypto::kem::MlKem768Public;
 use crate::crypto::secret::{SecretBytes, Sensitive};
-use crate::crypto::sig::{MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
+use crate::crypto::sig::{Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use crate::identity::card::{ContactCard, CARD_VERSION_V1};
 use crate::identity::fingerprint::fingerprint;
 use crate::unlock::{self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml};
@@ -184,6 +186,10 @@ const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 /// Subdirectory holding imported / owner contact cards
 /// (vault-format.md §1, §5).
 const CONTACTS_SUBDIR: &str = "contacts";
+
+/// Subdirectory holding encrypted block files
+/// (vault-format.md §1, §6.1).
+const BLOCKS_SUBDIR: &str = "blocks";
 
 /// Format a 16-byte UUID as canonical lowercase 8-4-4-4-12 hex
 /// (`docs/vault-format.md` §1).
@@ -713,6 +719,244 @@ pub fn open_vault(
         manifest: manifest_body,
         manifest_file,
     })
+}
+
+// ---------------------------------------------------------------------------
+// save_block — Task 12
+// ---------------------------------------------------------------------------
+
+/// Tick a vector clock for `device_uuid`: increment its existing counter, or
+/// insert a new entry at counter 1 if absent. Pure helper shared by both the
+/// block-level and manifest-level clocks. The output is left unsorted; the
+/// canonical-CBOR encoders sort on emit so in-memory order doesn't matter.
+fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) {
+    if let Some(entry) = clock.iter_mut().find(|e| &e.device_uuid == device_uuid) {
+        entry.counter = entry.counter.saturating_add(1);
+    } else {
+        clock.push(VectorClockEntry {
+            device_uuid: *device_uuid,
+            counter: 1,
+        });
+    }
+}
+
+/// Encrypt and persist a new (or updated) block in the vault.
+///
+/// Updates the in-memory `OpenVault.manifest` and `OpenVault.manifest_file`,
+/// then re-writes both `blocks/<uuid>.cbor.enc` and `manifest.cbor.enc`
+/// atomically. The block file is written FIRST and the manifest SECOND
+/// (`docs/vault-format.md` §9 line 430): a crash between leaves a fresh
+/// orphan block plus a stale manifest — recoverable on next open by either
+/// retrying the save or trimming the orphan.
+///
+/// Recipients are public-key holders who can decrypt the block. The
+/// caller's own owner card is NOT automatically included — pass it
+/// explicitly if the caller should be a recipient (this matches the
+/// "send-only mode" semantics where the owner can encrypt for others
+/// without keeping a copy themselves). [`encrypt_block`] rejects an empty
+/// recipient list with [`BlockError::EmptyRecipientList`].
+///
+/// `device_uuid` identifies the writing device. This device's counter in
+/// both the block's vector clock AND the manifest's vault-level vector
+/// clock is incremented by 1 (or inserted at 1 if previously absent).
+///
+/// The block's `block_uuid` is taken from `plaintext.block_uuid` — the
+/// caller is responsible for generating it. If a block with the same
+/// `block_uuid` already exists in the manifest, this call replaces it
+/// in-place (same UUID = update); otherwise a new entry is appended.
+/// The block's `created_at_ms` is preserved across updates from the
+/// existing manifest entry; for a brand-new block, `now_ms` is used.
+///
+/// `now_ms` stamps:
+/// - The new `BlockEntry.last_mod_ms`,
+/// - The new `BlockEntry.created_at_ms` (only on first save),
+/// - The manifest header's `last_mod_ms`,
+/// - The block header's `last_mod_ms` (the block-level header is rebuilt
+///   in full from `plaintext`'s metadata; `created_at_ms` carries the
+///   block-entry value).
+///
+/// `rng` is consumed for: the block's BCK, every per-recipient KEM encap,
+/// the block's body AEAD nonce, and the manifest's body AEAD nonce. Pass
+/// `rand_core::OsRng` in production.
+pub fn save_block(
+    folder: &Path,
+    open: &mut OpenVault,
+    plaintext: BlockPlaintext,
+    recipients: &[ContactCard],
+    device_uuid: [u8; 16],
+    now_ms: u64,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<(), VaultError> {
+    // Determine whether this is an update (preserve created_at_ms and
+    // continue the per-block clock from the existing manifest entry) or
+    // a fresh insert (created_at_ms = now_ms, empty starting clock).
+    let existing_idx = open
+        .manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == plaintext.block_uuid);
+    let (block_created_at_ms, mut block_clock) = match existing_idx {
+        Some(i) => (
+            open.manifest.blocks[i].created_at_ms,
+            open.manifest.blocks[i].vector_clock_summary.clone(),
+        ),
+        None => (now_ms, Vec::new()),
+    };
+
+    // Step 1: tick the block-level vector clock for this device.
+    tick_clock(&mut block_clock, &device_uuid);
+
+    // Step 2: build the §6.1 block header. The header's vector_clock
+    // mirrors the block-entry summary so a single-author write produces
+    // identical clocks at both layers.
+    let header = BlockHeader {
+        magic: crate::version::MAGIC,
+        format_version: crate::version::FORMAT_VERSION,
+        suite_id: crate::version::SUITE_ID,
+        file_kind: block::FILE_KIND_BLOCK,
+        vault_uuid: open.manifest.vault_uuid,
+        block_uuid: plaintext.block_uuid,
+        created_at_ms: block_created_at_ms,
+        last_mod_ms: now_ms,
+        vector_clock: block_clock.clone(),
+    };
+
+    // Step 3: translate &[ContactCard] → Vec<RecipientPublicKeys>.
+    // We materialise the pk_bundle bytes and the typed ML-KEM-768 public
+    // key once per recipient, then borrow into RecipientPublicKeys for
+    // encrypt_block. Owned buffers live in `bundles` / `pq_pks`; the
+    // borrowed `RecipientPublicKeys` references them.
+    let mut bundles: Vec<Vec<u8>> = Vec::with_capacity(recipients.len());
+    let mut pq_pks: Vec<MlKem768Public> = Vec::with_capacity(recipients.len());
+    for r in recipients {
+        bundles.push(r.pk_bundle_bytes()?);
+        pq_pks.push(
+            MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?,
+        );
+    }
+    // Each recipient's fingerprint is the 16-byte identity fingerprint
+    // over the canonical-CBOR signed contact card bytes (§6.1). This is
+    // what lands in the §6.2 recipient table on the wire.
+    let mut recipient_fps: Vec<[u8; 16]> = Vec::with_capacity(recipients.len());
+    for r in recipients {
+        recipient_fps.push(fingerprint(&r.to_canonical_cbor()?));
+    }
+    let recipient_keys: Vec<RecipientPublicKeys<'_>> = recipients
+        .iter()
+        .enumerate()
+        .map(|(i, r)| RecipientPublicKeys {
+            fingerprint: recipient_fps[i],
+            pk_bundle: &bundles[i],
+            x25519_pk: &r.x25519_pk,
+            ml_kem_768_pk: &pq_pks[i],
+        })
+        .collect();
+
+    // Owner-side sender keys. Re-wrap the bundle's raw seed bytes into the
+    // typed ML-DSA-65 / Ed25519 secret-key holders that encrypt_block
+    // expects. Ed25519Secret is a Sensitive<[u8; 32]> alias — we allocate a
+    // fresh Sensitive to keep the bundle's owner copy intact.
+    let owner_pk_bundle = open.owner_card.pk_bundle_bytes()?;
+    let owner_fp = fingerprint(&open.owner_card.to_canonical_cbor()?);
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
+
+    // Step 4: encrypt_block (signs internally, §6.5 step 7).
+    let block_file = block::encrypt_block(
+        rng,
+        &header,
+        &plaintext,
+        &owner_fp,
+        &owner_pk_bundle,
+        &owner_ed_sk,
+        &owner_pq_sk,
+        &recipient_keys,
+    )?;
+
+    // Step 5: encode the block file to its on-disk byte form.
+    let block_file_bytes = block::encode_block_file(&block_file)?;
+
+    // Step 6: BLAKE3-256 fingerprint of the on-disk bytes — this is the
+    // value the manifest's BlockEntry.fingerprint commits to.
+    let block_fp: [u8; 32] = *blake3_hash(&block_file_bytes).as_bytes();
+
+    // Step 7: atomic-write the block file. blocks/ subdirectory is created
+    // if missing; filename is the lowercase hyphenated UUID + ".cbor.enc"
+    // (mirrors Task 10's contacts/<uuid>.card pattern).
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    std::fs::create_dir_all(&blocks_dir).map_err(|e| VaultError::Io {
+        context: "failed to create blocks/ subdirectory",
+        source: e,
+    })?;
+    let block_uuid_hex = format_uuid_hyphenated(&plaintext.block_uuid);
+    let block_path = blocks_dir.join(format!("{block_uuid_hex}.cbor.enc"));
+    io::write_atomic(&block_path, &block_file_bytes).map_err(|e| VaultError::Io {
+        context: "failed to write block file",
+        source: e,
+    })?;
+
+    // Step 8: build the new BlockEntry. recipients[i].contact_uuid drives
+    // the §4.2 BlockEntry.recipients list. The encoder sorts on emit so
+    // in-memory order is irrelevant; we keep insertion order for clarity.
+    let new_entry = BlockEntry {
+        block_uuid: plaintext.block_uuid,
+        block_name: plaintext.block_name.clone(),
+        fingerprint: block_fp,
+        recipients: recipients.iter().map(|r| r.contact_uuid).collect(),
+        vector_clock_summary: block_clock,
+        suite_id: crate::version::SUITE_ID,
+        created_at_ms: block_created_at_ms,
+        last_mod_ms: now_ms,
+        unknown: std::collections::BTreeMap::new(),
+    };
+
+    // Step 9: replace existing entry or append. Same-UUID = update.
+    match existing_idx {
+        Some(i) => open.manifest.blocks[i] = new_entry,
+        None => open.manifest.blocks.push(new_entry),
+    }
+
+    // Step 10: tick the manifest-level (vault-level) vector clock.
+    tick_clock(&mut open.manifest.vector_clock, &device_uuid);
+
+    // Step 11: refresh the manifest header — vault_uuid and created_at_ms
+    // are preserved from the existing on-disk envelope; only last_mod_ms
+    // moves forward.
+    let new_header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: now_ms,
+    };
+
+    // Step 12: fresh AEAD nonce + re-sign the manifest. `sign_manifest`
+    // canonical-encodes the body, AEAD-encrypts with the IBK (header AAD),
+    // and produces both halves of the §8 hybrid signature.
+    let mut aead_nonce = [0u8; 24];
+    rng.fill_bytes(&mut aead_nonce);
+    let new_manifest_file = manifest::sign_manifest(
+        new_header,
+        &open.manifest,
+        &open.identity_block_key,
+        &aead_nonce,
+        owner_fp,
+        &owner_ed_sk,
+        &owner_pq_sk,
+    )?;
+    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
+
+    // Step 13: atomic-write the manifest. Block-first-then-manifest
+    // ordering is preserved by step 7 → step 13.
+    let manifest_path = folder.join(MANIFEST_FILENAME);
+    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
+        context: "failed to write manifest.cbor.enc",
+        source: e,
+    })?;
+
+    // Step 14: refresh the in-memory manifest envelope so subsequent
+    // saves chain off the new clock and the new author signature.
+    open.manifest_file = new_manifest_file;
+
+    Ok(())
 }
 
 #[cfg(test)]
