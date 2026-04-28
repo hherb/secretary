@@ -12,6 +12,7 @@
 //! variant.
 
 pub mod block;
+pub(crate) mod canonical;
 pub mod record;
 
 pub use block::{

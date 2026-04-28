@@ -69,6 +69,10 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
+use super::canonical::{
+    canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
+};
+
 // ---------------------------------------------------------------------------
 // Constants — record-level CBOR keys (§6.3)
 // ---------------------------------------------------------------------------
@@ -188,6 +192,27 @@ pub enum RecordError {
     /// covers the full set.
     #[error("non-canonical CBOR encoding (e.g. indefinite-length item, key disorder, or non-shortest length)")]
     NonCanonicalEncoding,
+}
+
+/// Lift a [`CanonicalError`] from the shared
+/// [`crate::vault::canonical`] helpers into the record-layer error
+/// surface, preserving the pre-extraction variant shape verbatim. The
+/// public [`RecordError`] surface stays bit-identical to its
+/// pre-refactor shape so that existing pattern-matches on
+/// [`RecordError::FloatRejected`] / [`RecordError::TagRejected`] /
+/// [`RecordError::CborEncode`] keep matching after the helpers were
+/// pulled out into the shared module. The `field` hint on
+/// `CanonicalError::TagRejected` is intentionally discarded here because
+/// the original `RecordError::TagRejected` did not carry one — the
+/// `From` is a behaviour-preserving bridge, not a surface enrichment.
+impl From<CanonicalError> for RecordError {
+    fn from(e: CanonicalError) -> Self {
+        match e {
+            CanonicalError::CborEncode(s) => RecordError::CborEncode(s),
+            CanonicalError::FloatRejected { field } => RecordError::FloatRejected { field },
+            CanonicalError::TagRejected { .. } => RecordError::TagRejected,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +371,7 @@ pub struct Record {
 /// imposes the deterministic ordering.
 pub fn encode(record: &Record) -> Result<Vec<u8>, RecordError> {
     let entries = record_to_entries(record)?;
-    encode_canonical_map(&entries)
+    Ok(encode_canonical_map(&entries)?)
 }
 
 /// Build the unsorted `(key, value)` list for a record. Sorting happens
@@ -444,45 +469,12 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
     entries
 }
 
-/// Encode an entry list as a top-level canonical-CBOR map.
-///
-/// Implements RFC 8949 §4.2.1 sort: each key is materialised to its
-/// canonical CBOR encoding, the entries are sorted bytewise on those
-/// encodings, and the result is serialised as a single definite-length
-/// map. Robust against any future key shape (text, byte, integer)
-/// without per-type code paths.
-fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, RecordError> {
-    let sorted = canonical_sort_entries(entries)?;
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
-        .map_err(|e| RecordError::CborEncode(e.to_string()))?;
-    Ok(buf)
-}
-
-/// Sort a list of `(key, value)` entries by the canonical CBOR encoding
-/// of their keys. Used both at the top level and recursively for inner
-/// maps (`fields` outer + each per-field inner).
-///
-/// Mirrors `unlock::bundle::encode_map`'s discipline: the
-/// `ciborium::ser::into_writer` call is structurally infallible against
-/// a `Vec<u8>` writer, but propagating the typed error keeps this
-/// function defensible against a future ciborium signature change
-/// without a panic-or-empty-key footgun.
-fn canonical_sort_entries(
-    entries: &[(Value, Value)],
-) -> Result<Vec<(Value, Value)>, RecordError> {
-    let mut materialised: Vec<(Vec<u8>, (Value, Value))> = entries
-        .iter()
-        .map(|pair| {
-            let mut key_bytes = Vec::new();
-            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| RecordError::CborEncode(e.to_string()))?;
-            Ok((key_bytes, pair.clone()))
-        })
-        .collect::<Result<_, RecordError>>()?;
-    materialised.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(materialised.into_iter().map(|(_, pair)| pair).collect())
-}
+// `encode_canonical_map` and `canonical_sort_entries` live in
+// [`crate::vault::canonical`] so block / record / manifest share one
+// implementation. The shared helpers return a [`CanonicalError`]; the
+// `From<CanonicalError> for RecordError` impl above lifts those errors
+// to the existing record-layer variants so the public surface stays
+// unchanged.
 
 // ---------------------------------------------------------------------------
 // Decode
@@ -534,39 +526,10 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     Ok(record)
 }
 
-/// Walk a `Value` tree and reject floats and tags. `field_hint` gives
-/// the deepest §6.3 key the caller knows about; it ends up in the
-/// emitted error so the user sees which subtree contained the
-/// disallowed item.
-///
-/// Recurses without an explicit depth bound. Termination relies on
-/// `ciborium`'s default `from_reader` recursion limit (256), which has
-/// already capped the input tree depth before we walk it. If a future
-/// contributor switches the parser to
-/// `from_reader_with_recursion_limit(.., usize::MAX)` or similar, add
-/// an explicit `depth` parameter here to prevent stack overflow on
-/// adversarial input.
-fn reject_floats_and_tags(v: &Value, field_hint: &'static str) -> Result<(), RecordError> {
-    match v {
-        Value::Float(_) => Err(RecordError::FloatRejected { field: field_hint }),
-        Value::Tag(_, _) => Err(RecordError::TagRejected),
-        Value::Array(items) => {
-            for item in items {
-                reject_floats_and_tags(item, field_hint)?;
-            }
-            Ok(())
-        }
-        Value::Map(entries) => {
-            for (k, val) in entries {
-                reject_floats_and_tags(k, field_hint)?;
-                reject_floats_and_tags(val, field_hint)?;
-            }
-            Ok(())
-        }
-        // Integer / Bytes / Text / Bool / Null are all permitted in v1.
-        _ => Ok(()),
-    }
-}
+// `reject_floats_and_tags` lives in [`crate::vault::canonical`]; see the
+// `From<CanonicalError> for RecordError` impl above for how its
+// `FloatRejected` / `TagRejected` errors map back to the record-layer
+// variants without changing the public surface.
 
 /// Parse a top-level CBOR map (already extracted from `Value::Map`) into
 /// a [`Record`]. Unknown record-level keys land in [`Record::unknown`].
