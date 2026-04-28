@@ -383,7 +383,7 @@ pub struct Bip39RecoveryVector {
 // specified set of inputs (RNG seed, identity bundle, plaintext records).
 // Each vector is a self-contained closed-loop fixture: a clean-room
 // reader can use only `docs/vault-format.md` and `docs/crypto-design.md`
-// to parse `expected.block_file_hex`, locate the recipient entry by
+// to parse `expected.block_file`, locate the recipient entry by
 // fingerprint, hybrid-decap, AEAD-decrypt, and recover the plaintext.
 
 #[derive(Debug, Deserialize)]
