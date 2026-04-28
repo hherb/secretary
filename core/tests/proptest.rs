@@ -501,7 +501,7 @@ mod vault {
     };
     use secretary_core::crypto::secret::Sensitive;
     use secretary_core::crypto::sig::{
-        Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN,
+        Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
     };
     use secretary_core::unlock::bundle::{self, IdentityBundle};
     use secretary_core::vault::block::{
@@ -513,9 +513,14 @@ mod vault {
     use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
     /// Fixed-size signature suffix per §6.1: author_fp(16) + sig_ed_len(2) +
-    /// sig_ed(64) + sig_pq_len(2) + sig_pq(3309) = 3393 bytes. The signed
-    /// range (`magic..=aead_tag`) is therefore `bytes.len() - 3393` bytes.
-    const SIGNATURE_SUFFIX_LEN: usize = 16 + 2 + ED25519_SIG_LEN + 2 + 3309;
+    /// sig_ed(`ED25519_SIG_LEN`=64) + sig_pq_len(2) + sig_pq(`ML_DSA_65_SIG_LEN`=3309)
+    /// = 3393 bytes. The signed range (`magic..=aead_tag`) is therefore
+    /// `bytes.len() - SIGNATURE_SUFFIX_LEN`.
+    ///
+    /// Computed from upstream constants so a future widening of either
+    /// signature length breaks compile loudly rather than silently
+    /// desynchronising the byte-flip strategy in property E.
+    const SIGNATURE_SUFFIX_LEN: usize = 16 + 2 + ED25519_SIG_LEN + 2 + ML_DSA_65_SIG_LEN;
 
     // -----------------------------------------------------------------------
     // Strategies
