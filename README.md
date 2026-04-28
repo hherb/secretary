@@ -6,7 +6,7 @@
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
 
-> **Status: pre-alpha.** Architecture and cryptographic design are complete and frozen for v1; foundational implementation is just beginning. The repository contains documentation and (soon) the Rust core. There is no usable application yet. See [docs/](docs/) for the full design.
+> **Status: pre-alpha, Sub-project A nearing completion.** Architecture and cryptographic design are complete and frozen for v1. The Rust core is well underway: cryptographic primitives, identity, vault unlock, and the v1 block file format are implemented and test-covered (230+ tests, including NIST KATs and a stdlib-only Python wire-format conformance script). The manifest layer and high-level orchestrators (PR-B) are next; FFI bindings and platform UIs come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
 
 ---
 
@@ -119,9 +119,24 @@ The user-facing application and the source code are *both* free of charge. Only 
 
 ## Project status
 
-This repository was initialized in April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust workspace skeleton — is in active design. Implementation begins after the spec docs are reviewed.
+Repository initialized April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust core — is in active implementation:
 
-The project is intentionally being built slowly and carefully. Cryptographic systems that handle multi-decade-lifetime secrets are not the right place to optimize for time-to-MVP.
+| Component | Status |
+|---|---|
+| Cryptographic design + on-disk format spec (frozen for v1) | ✅ Complete |
+| Cryptographic primitives (AEAD, KDF, KEM, sig, hash, identity) | ✅ Complete, NIST KAT-pinned |
+| Vault unlock (BIP-39, identity bundle, vault.toml, recovery key) | ✅ Complete (PR #1) |
+| Block file format (record CBOR, header, recipients, AEAD, hybrid sig) | ✅ Complete (PR #3) |
+| Manifest layer + atomic writes + high-level orchestrators | 🚧 Next (PR-B) |
+| `golden_vault_001/` end-to-end §15 conformance fixture | 🚧 Next (PR-B) |
+| FFI bindings (PyO3, uniffi for Swift/Kotlin) | ⏳ Sub-project B |
+| Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project C |
+
+230+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors).
+
+A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that parses the §15 block KAT directly from spec constants. Full crypto verification in Python comes with the manifest layer.
+
+The project is intentionally being built slowly and carefully. Cryptographic systems that handle multi-decade-lifetime secrets are not the right place to optimize for time-to-MVP. See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
 ## Contact
 

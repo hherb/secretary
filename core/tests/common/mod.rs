@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Shared helpers for integration tests — KAT loader and hex utilities.
 //!
 //! Each `tests/*.rs` is its own crate; this module is included via
@@ -310,6 +312,7 @@ pub struct MlKem768EncapVector {
 pub struct MlDsa65Kat {
     pub keygen_vectors: Vec<MlDsa65KeygenVector>,
     pub sigver_vectors: Vec<MlDsa65SigverVector>,
+    pub siggen_vectors: Vec<MlDsa65SiggenVector>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +339,26 @@ pub struct MlDsa65SigverVector {
     pub sig: Vec<u8>,
 }
 
+/// NIST ACVP-Server ML-DSA-sigGen-FIPS204 test vector. The `sk` field is
+/// the FIPS 204 *expanded* signing-key encoding (4032 bytes for ML-DSA-65,
+/// per Algorithm 24 / 25 — `skEncode` / `skDecode`), not the 32-byte seed.
+/// Loading it goes through the deprecated `ExpandedSigningKey::from_expanded`
+/// in the `ml-dsa` crate; see `tests/sig.rs::ml_dsa_65_nist_siggen_kat` for
+/// the rationale on suppressing the deprecation warning.
+#[derive(Debug, Deserialize)]
+pub struct MlDsa65SiggenVector {
+    #[serde(rename = "tcId")]
+    pub tc_id: u32,
+    #[serde(deserialize_with = "de_hex")]
+    pub sk: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub msg: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub ctx: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub sig: Vec<u8>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Bip39RecoveryKat {
     pub vectors: Vec<Bip39RecoveryVector>,
@@ -351,4 +374,130 @@ pub struct Bip39RecoveryVector {
     pub info_tag: Vec<u8>,
     #[serde(deserialize_with = "de_hex_array::<32, _>")]
     pub expected_recovery_kek: [u8; 32],
+}
+
+// ---------------------------------------------------------------------------
+// Block KAT — vault-format §6.1 / crypto-design §15
+// ---------------------------------------------------------------------------
+//
+// Pins the on-disk byte sequence of a complete `BlockFile` (header,
+// recipient table, AEAD body, hybrid-signature suffix) for a fully
+// specified set of inputs (RNG seed, identity bundle, plaintext records).
+// Each vector is a self-contained closed-loop fixture: a clean-room
+// reader can use only `docs/vault-format.md` and `docs/crypto-design.md`
+// to parse `expected.block_file`, locate the recipient entry by
+// fingerprint, hybrid-decap, AEAD-decrypt, and recover the plaintext.
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKat {
+    pub version: u32,
+    #[serde(default)]
+    pub comment: String,
+    pub vectors: Vec<BlockKatVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatVector {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub inputs: BlockKatInputs,
+    pub expected: BlockKatExpected,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatInputs {
+    /// 32-byte ChaCha20 seed driving identity-bundle generation.
+    #[serde(deserialize_with = "de_hex_array::<32, _>")]
+    pub identity_seed: [u8; 32],
+    /// 32-byte ChaCha20 seed driving block-encryption RNG (BCK, encap
+    /// ephemerals, AEAD nonce).
+    #[serde(deserialize_with = "de_hex_array::<32, _>")]
+    pub encrypt_seed: [u8; 32],
+    /// 16-byte vault UUID stamped in the header.
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub vault_uuid: [u8; 16],
+    /// 16-byte block UUID stamped in both the header and the plaintext.
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub block_uuid: [u8; 16],
+    /// 16-byte recipient fingerprint (here, the self-recipient = author).
+    /// Pinned because Task 6 fingerprints are opaque test handles —
+    /// real fingerprints from the §6 contact card land with PR-B.
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub author_fingerprint: [u8; 16],
+    /// Header `created_at_ms`.
+    pub created_at_ms: u64,
+    /// Header `last_mod_ms`.
+    pub last_mod_ms: u64,
+    /// Display-name fed into `bundle::generate`. The bundle's
+    /// `display_name` is part of the IdentityBundle envelope (§5) but
+    /// NOT serialized into the block bytes; pinned here so the
+    /// generator is fully deterministic.
+    pub display_name: String,
+    /// Vector-clock entries (in input order; encoder sorts ascending by
+    /// device_uuid before emission).
+    pub vector_clock: Vec<BlockKatVectorClockEntry>,
+    /// Plaintext metadata: the §6.3 `block_name`.
+    pub block_name: String,
+    /// Plaintext metadata: the §6.3 `block_version`.
+    pub block_version: u32,
+    /// Plaintext metadata: the §6.3 `schema_version`.
+    pub schema_version: u32,
+    /// Plaintext records (§6.3).
+    pub records: Vec<BlockKatRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatVectorClockEntry {
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub device_uuid: [u8; 16],
+    pub counter: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatRecord {
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub record_uuid: [u8; 16],
+    pub record_type: String,
+    pub fields: Vec<BlockKatField>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at_ms: u64,
+    pub last_mod_ms: u64,
+    #[serde(default)]
+    pub tombstone: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatField {
+    pub name: String,
+    /// One of `"text"` or `"bytes"`. The companion field
+    /// (`value_text` or `value_hex`) carries the payload.
+    pub value_type: String,
+    #[serde(default)]
+    pub value_text: Option<String>,
+    /// Hex-encoded bytes; used when `value_type == "bytes"`.
+    #[serde(default)]
+    pub value_hex: Option<String>,
+    pub last_mod: u64,
+    #[serde(deserialize_with = "de_hex_array::<16, _>")]
+    pub device_uuid: [u8; 16],
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlockKatExpected {
+    /// Full encoded `BlockFile` bytes per §6.1 (header → signature
+    /// suffix), hex-encoded.
+    #[serde(deserialize_with = "de_hex")]
+    pub block_file: Vec<u8>,
+    /// Sentinel: total file size in bytes. Lets a clean-room reader
+    /// sanity-check up-front (matches `block_file.len()`).
+    pub size_bytes: usize,
+    /// Number of recipients in the recipient table.
+    pub recipients_count: usize,
+    /// Number of records in the decrypted plaintext.
+    pub records_count: usize,
+    /// `record_type` of records[0], to pin the expected post-decrypt
+    /// shape against an independent assertion.
+    pub first_record_type: String,
 }
