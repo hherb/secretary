@@ -442,7 +442,46 @@ merge_record(l, r) -> record:
     return record_with_fields(out_fields)
 ```
 
-Tombstoned records (those marked deleted in either side) are tombstoned in the merged result if either side has tombstoned them at a later `last_mod` than any non-tombstone version. Tombstones are garbage-collected only after a configurable retention window (default: 90 days) to ensure all syncing devices have observed the deletion.
+### 11.1 Per-record metadata merge
+
+The pseudocode above pins the field-level merge core. The remaining record-level metadata follow these deterministic rules so the merge is total over well-formed inputs and remains commutative, associative, and idempotent.
+
+| Field | Merge rule |
+|---|---|
+| `record_uuid` | Equal by precondition (records merge only when their UUIDs match). |
+| `record_type` | Take the value from the side with greater record-level `last_mod_ms`; **local wins on tie**. v1 writers SHOULD NOT change `record_type` after creation. |
+| `fields` | Per-field LWW per the pseudocode (`last_mod` greater wins; ties broken by `device_uuid` lexicographically). |
+| `tags` | Take the side with greater record-level `last_mod_ms`; **local wins on tie**. |
+| `created_at_ms` | `min(l.created_at_ms, r.created_at_ms)` — the earliest creation observed across all replicas. |
+| `last_mod_ms` | `max(l.last_mod_ms, r.last_mod_ms)`. |
+| `tombstone` | Tombstone tie-break — see §11.3. |
+| `unknown` (forward-compat) | Local-wins on every key. v2 writers that need CRDT-correct merging of new top-level record keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. |
+
+### 11.2 Per-block metadata merge
+
+| Field | Merge rule |
+|---|---|
+| `block_version`, `block_name`, `schema_version` | Local-wins. v1 does not version these per-edit; cross-device divergence is rare and resolves on the next manifest update. |
+| `block_uuid` | Equal by precondition. A `block_uuid` mismatch is a programmer error, not a mergeable conflict, and implementations MUST surface it as a typed error rather than attempting to merge. |
+| `records` | Per-record union + per-field LWW per the pseudocode. |
+| `vector_clock` | Component-wise max of the two clocks, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). |
+| `unknown` (forward-compat) | Local-wins. |
+
+### 11.3 Tombstone tie-break
+
+For a pairwise merge where one side is tombstoned at record-level `last_mod_ms = T_d` and the other is live at `last_mod_ms = T_l`:
+
+- The tombstone wins iff `T_d ≥ T_l`. This is the *tombstone-on-tie* rule: deletion is sticky.
+- The merged record carries the tombstoning side's `tags`, empty `fields` per §6.3, and `last_mod_ms = max(T_d, T_l)`.
+- When both sides are tombstoned, the merged record is tombstoned, `tags` follow record-level LWW per §11.1, and `fields` are empty.
+- When both sides are live, the merged record is live and follows the per-field rules above.
+- A live edit observed *strictly after* a tombstone (`T_l > T_d`) resurrects the record. This is intentional: the retention window in §11.4 ensures all devices have observed the deletion before tombstones are GC'd, so a post-deletion edit is a deliberate undelete.
+
+Tombstones are garbage-collected only after a configurable retention window (default: 90 days) to ensure all syncing devices have observed the deletion before the on-disk evidence is removed.
+
+### 11.4 Concurrent value collisions and UI resolution
+
+When the per-field LWW resolves a field where both sides held differing values, the LWW winner is the persisted value, but implementations MAY surface the field name and the loser's value to a UI for explicit user resolution. The on-disk record carries no `_conflicts` shadow in suite v1; conflict surfacing is a Rust API affordance returned by the merge primitives, not a wire-format feature. This keeps the merge total and the persisted record canonical regardless of whether a UI is present to consume the collision report.
 
 The merge function must be **commutative**, **associative**, and **idempotent**. These properties are enforced by property-based tests in `core/tests/`.
 
