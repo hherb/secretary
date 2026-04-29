@@ -1810,6 +1810,441 @@ def section3_ml_dsa_65_verify_regression() -> tuple[bool, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Section 4: conflict_kat.json — CRDT merge cross-language replay
+# ---------------------------------------------------------------------------
+#
+# Implements crypto-design.md §11 (per-record / per-block CRDT merge) from
+# the spec docs only and replays each KAT vector through the Python
+# implementation, asserting bit-equal output against the JSON's `expected`.
+#
+# This is the §15 cross-language conformance witness for Phase A.6 / PR-C.
+# A reader should be able to implement this section from §11 alone without
+# consulting any Rust source. Tombstone interactions are exercised by the
+# inline Rust unit tests + Rust integration tests; this section focuses on
+# the four ClockRelation branches and the field-collision surface.
+
+
+def conflict_kat_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "data" / "conflict_kat.json"
+
+
+# §11 — clock_relation {Equal, IncomingDominates, IncomingDominated, Concurrent}.
+
+def py_clock_relation(local: list[dict], incoming: list[dict]) -> str:
+    """Component-wise comparison of two vector clocks. Missing device =
+    counter 0. Returns "Equal", "IncomingDominates", "IncomingDominated",
+    or "Concurrent" per §10 / §11."""
+    counters: dict[bytes, list[int]] = {}
+    for e in local:
+        counters.setdefault(bytes.fromhex(e["device_uuid_hex"]), [0, 0])[0] = e["counter"]
+    for e in incoming:
+        counters.setdefault(bytes.fromhex(e["device_uuid_hex"]), [0, 0])[1] = e["counter"]
+    local_greater = False
+    incoming_greater = False
+    for l, i in counters.values():
+        if l > i:
+            local_greater = True
+        elif i > l:
+            incoming_greater = True
+        if local_greater and incoming_greater:
+            return "Concurrent"
+    if not local_greater and not incoming_greater:
+        return "Equal"
+    if incoming_greater:
+        return "IncomingDominates"
+    return "IncomingDominated"
+
+
+def py_merge_vector_clocks(a: list[dict], b: list[dict]) -> list[dict]:
+    """Component-wise max. Output sorted ascending by device_uuid bytes."""
+    counters: dict[bytes, int] = {}
+    for e in list(a) + list(b):
+        d = bytes.fromhex(e["device_uuid_hex"])
+        counters[d] = max(counters.get(d, 0), e["counter"])
+    return [
+        {"device_uuid_hex": d.hex(), "counter": c}
+        for d, c in sorted(counters.items())
+    ]
+
+
+def py_tick_for_device(clock: list[dict], device_hex: str) -> list[dict]:
+    """`+1` for `device_hex`; insert a fresh entry at counter 1 when
+    absent. Output sorted ascending by device_uuid."""
+    out = [dict(e) for e in clock]
+    found = False
+    for entry in out:
+        if entry["device_uuid_hex"] == device_hex:
+            entry["counter"] += 1
+            found = True
+            break
+    if not found:
+        out.append({"device_uuid_hex": device_hex, "counter": 1})
+    out.sort(key=lambda e: bytes.fromhex(e["device_uuid_hex"]))
+    return out
+
+
+# §11.1 — per-record metadata and field merges.
+
+def py_lww_picks_local_field(l: dict, r: dict) -> bool:
+    """Return True iff the local field beats the remote per §11
+    pseudocode: greater last_mod wins; on tie, smaller device_uuid
+    wins; on full tie (different value), lex-larger value bytes wins."""
+    if l["last_mod"] != r["last_mod"]:
+        return l["last_mod"] > r["last_mod"]
+    l_dev = bytes.fromhex(l["device_uuid_hex"])
+    r_dev = bytes.fromhex(r["device_uuid_hex"])
+    if l_dev != r_dev:
+        return l_dev < r_dev
+    return _value_lex_bytes(l) >= _value_lex_bytes(r)
+
+
+def _value_lex_bytes(field: dict) -> bytes:
+    """Same prefix-tag scheme as the Rust impl: 0x00 for Text, 0x01 for
+    Bytes, then the raw content bytes. Used only as the malformed-input
+    full-tie tiebreaker."""
+    if field["value_type"] == "text":
+        return b"\x00" + field["value_text"].encode("utf-8")
+    if field["value_type"] == "bytes":
+        return b"\x01" + bytes.fromhex(field["value_hex"])
+    raise ValueError(f"unknown value_type: {field['value_type']}")
+
+
+def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
+    """Merge two records with the same record_uuid per §11. Returns the
+    merged record dict and the list of field collisions (in sorted
+    field_name order). Tombstone interactions follow §11.3."""
+    # §11.3 tombstone tie-break.
+    l_t, r_t = local["tombstone"], remote["tombstone"]
+    if l_t and r_t:
+        outcome = "BothTombstoned"
+    elif not l_t and not r_t:
+        outcome = "BothLive"
+    elif l_t and not r_t:
+        outcome = (
+            "LocalTombstoneWins" if local["last_mod_ms"] >= remote["last_mod_ms"]
+            else "LocalTombstoneLost"
+        )
+    else:
+        outcome = (
+            "RemoteTombstoneWins" if remote["last_mod_ms"] >= local["last_mod_ms"]
+            else "RemoteTombstoneLost"
+        )
+
+    tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
+
+    # Field merge per outcome.
+    fields: list[dict] = []
+    collisions: list[dict] = []
+    if outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins"):
+        # §11.3: tombstoned merged record carries empty fields.
+        pass
+    elif outcome == "BothLive":
+        l_fields = {f["name"]: f for f in local["fields"]}
+        r_fields = {f["name"]: f for f in remote["fields"]}
+        for name in sorted(set(l_fields) | set(r_fields)):
+            l = l_fields.get(name)
+            r = r_fields.get(name)
+            if l is not None and r is not None:
+                pick_local = py_lww_picks_local_field(l, r)
+                winner = l if pick_local else r
+                loser = r if pick_local else l
+                if l.get("value_type") != r.get("value_type") or l.get(
+                    "value_text", l.get("value_hex")
+                ) != r.get("value_text", r.get("value_hex")):
+                    collisions.append(
+                        {"field_name": name, "winner": winner, "loser": loser}
+                    )
+                merged_field = dict(winner)
+                merged_field["name"] = name
+                fields.append(merged_field)
+            elif l is not None:
+                merged_field = dict(l)
+                merged_field["name"] = name
+                fields.append(merged_field)
+            else:
+                merged_field = dict(r)
+                merged_field["name"] = name
+                fields.append(merged_field)
+    elif outcome == "LocalTombstoneLost":
+        # Live wins (remote). Take only remote's fields.
+        fields = [dict(f) for f in remote["fields"]]
+    elif outcome == "RemoteTombstoneLost":
+        fields = [dict(f) for f in local["fields"]]
+
+    # §11.1 record-level metadata.
+    if local["last_mod_ms"] > remote["last_mod_ms"]:
+        record_type = local["record_type"]
+    elif remote["last_mod_ms"] > local["last_mod_ms"]:
+        record_type = remote["record_type"]
+    elif local["record_type"].encode("utf-8") >= remote["record_type"].encode("utf-8"):
+        record_type = local["record_type"]
+    else:
+        record_type = remote["record_type"]
+
+    # tags: §11.3 mixed-tombstone override → tombstoning side wins; else
+    # §11.1 (greater last_mod_ms; set union on tie).
+    if outcome == "LocalTombstoneWins":
+        tags = list(local["tags"])
+    elif outcome == "RemoteTombstoneWins":
+        tags = list(remote["tags"])
+    elif outcome == "LocalTombstoneLost":
+        tags = list(remote["tags"])
+    elif outcome == "RemoteTombstoneLost":
+        tags = list(local["tags"])
+    else:
+        if local["last_mod_ms"] > remote["last_mod_ms"]:
+            tags = list(local["tags"])
+        elif remote["last_mod_ms"] > local["last_mod_ms"]:
+            tags = list(remote["tags"])
+        else:
+            tags = sorted(set(local["tags"]) | set(remote["tags"]))
+
+    merged = {
+        "record_uuid_hex": local["record_uuid_hex"],
+        "record_type": record_type,
+        "fields": fields,
+        "tags": tags,
+        "created_at_ms": min(local["created_at_ms"], remote["created_at_ms"]),
+        "last_mod_ms": max(local["last_mod_ms"], remote["last_mod_ms"]),
+        "tombstone": tombstone,
+    }
+    return merged, collisions
+
+
+def py_merge_block(
+    local_block: dict,
+    local_clock: list[dict],
+    remote_block: dict,
+    remote_clock: list[dict],
+    merging_device_hex: str,
+) -> dict:
+    """Per §11.2 — dispatch on clock_relation and emit a merged block
+    plaintext + clock + relation + per-record collision list."""
+    if local_block["block_uuid_hex"] != remote_block["block_uuid_hex"]:
+        raise ValueError(
+            f"block_uuid mismatch: local {local_block['block_uuid_hex']!r}, "
+            f"remote {remote_block['block_uuid_hex']!r}"
+        )
+
+    relation = py_clock_relation(local_clock, remote_clock)
+
+    if relation == "Equal":
+        return {
+            "relation": "Equal",
+            "block": local_block,
+            "vector_clock": list(local_clock),
+            "collisions": [],
+        }
+    if relation == "IncomingDominates":
+        return {
+            "relation": "IncomingDominates",
+            "block": remote_block,
+            "vector_clock": list(remote_clock),
+            "collisions": [],
+        }
+    if relation == "IncomingDominated":
+        return {
+            "relation": "IncomingDominated",
+            "block": local_block,
+            "vector_clock": list(local_clock),
+            "collisions": [],
+        }
+    # Concurrent: union by record_uuid + per-record merge.
+    l_recs = {r["record_uuid_hex"]: r for r in local_block["records"]}
+    r_recs = {r["record_uuid_hex"]: r for r in remote_block["records"]}
+    all_uuids = sorted(set(l_recs) | set(r_recs), key=bytes.fromhex)
+    merged_records: list[dict] = []
+    record_collisions: list[dict] = []
+    for uuid in all_uuids:
+        l = l_recs.get(uuid)
+        r = r_recs.get(uuid)
+        if l is not None and r is not None:
+            merged, fcs = py_merge_record(l, r)
+            if fcs:
+                record_collisions.append(
+                    {"record_uuid_hex": uuid, "field_collisions": fcs}
+                )
+            merged_records.append(merged)
+        elif l is not None:
+            merged_records.append(l)
+        else:
+            merged_records.append(r)
+
+    merged_clock = py_merge_vector_clocks(local_clock, remote_clock)
+    merged_clock = py_tick_for_device(merged_clock, merging_device_hex)
+    merged_block = {
+        "block_version": max(local_block["block_version"], remote_block["block_version"]),
+        "block_uuid_hex": local_block["block_uuid_hex"],
+        "block_name": local_block["block_name"]
+        if local_block["block_name"].encode("utf-8")
+        >= remote_block["block_name"].encode("utf-8")
+        else remote_block["block_name"],
+        "schema_version": max(local_block["schema_version"], remote_block["schema_version"]),
+        "records": merged_records,
+    }
+    return {
+        "relation": "Concurrent",
+        "block": merged_block,
+        "vector_clock": merged_clock,
+        "collisions": record_collisions,
+    }
+
+
+def _normalise_record(r: dict) -> dict:
+    """Trim a record dict to the comparison keys used by the KAT
+    `expected.block.records[*]` shape — strip per-field `name` to match
+    the JSON's name-keyed-array layout."""
+    fields = []
+    for f in r["fields"]:
+        nf = {
+            "name": f["name"],
+            "value_type": f["value_type"],
+            "last_mod": f["last_mod"],
+            "device_uuid_hex": f["device_uuid_hex"],
+        }
+        if "value_text" in f:
+            nf["value_text"] = f["value_text"]
+        if "value_hex" in f:
+            nf["value_hex"] = f["value_hex"]
+        fields.append(nf)
+    return {
+        "record_uuid_hex": r["record_uuid_hex"],
+        "record_type": r["record_type"],
+        "fields": fields,
+        "tags": list(r["tags"]),
+        "created_at_ms": r["created_at_ms"],
+        "last_mod_ms": r["last_mod_ms"],
+        "tombstone": r["tombstone"],
+    }
+
+
+def _normalise_block(b: dict) -> dict:
+    return {
+        "block_version": b["block_version"],
+        "block_uuid_hex": b["block_uuid_hex"],
+        "block_name": b["block_name"],
+        "schema_version": b["schema_version"],
+        "records": [_normalise_record(r) for r in b["records"]],
+    }
+
+
+def section4_conflict_kat() -> tuple[bool, list[str]]:
+    lines: list[str] = []
+    path = conflict_kat_path()
+    if not path.exists():
+        print(f"MISSING: conflict_kat.json at {path}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        kat = load_json_fixture(path, "conflict_kat.json")
+    except (json.JSONDecodeError, OSError):
+        sys.exit(2)
+    if kat.get("version") != 1:
+        lines.append(f"FAIL  conflict_kat.json version={kat.get('version')}, expected 1")
+        return False, lines
+    vectors = kat.get("vectors") or []
+    if not vectors:
+        lines.append("FAIL  conflict_kat.json has no vectors")
+        return False, lines
+
+    all_ok = True
+    for vector in vectors:
+        name = vector["name"]
+        local_block = vector["local"]["block"]
+        local_clock = vector["local"]["vector_clock"]
+        remote_block = vector["remote"]["block"]
+        remote_clock = vector["remote"]["vector_clock"]
+        merging_device_hex = vector["merging_device_hex"]
+        expected = vector["expected"]
+
+        try:
+            got = py_merge_block(
+                local_block, local_clock, remote_block, remote_clock, merging_device_hex
+            )
+        except Exception as exc:
+            lines.append(f"FAIL  vector {name!r}: merge raised {exc!r}")
+            all_ok = False
+            continue
+
+        if got["relation"] != expected["relation"]:
+            lines.append(
+                f"FAIL  vector {name!r}: relation got {got['relation']}, "
+                f"expected {expected['relation']}"
+            )
+            all_ok = False
+            continue
+
+        got_block = _normalise_block(got["block"])
+        expected_block = _normalise_block(expected["block"])
+        if got_block != expected_block:
+            lines.append(f"FAIL  vector {name!r}: merged block plaintext mismatch")
+            lines.append(f"  got:      {json.dumps(got_block, sort_keys=True)}")
+            lines.append(f"  expected: {json.dumps(expected_block, sort_keys=True)}")
+            all_ok = False
+            continue
+
+        if got["vector_clock"] != expected["vector_clock"]:
+            lines.append(f"FAIL  vector {name!r}: merged vector clock mismatch")
+            lines.append(f"  got:      {got['vector_clock']}")
+            lines.append(f"  expected: {expected['vector_clock']}")
+            all_ok = False
+            continue
+
+        if len(got["collisions"]) != len(expected["collisions"]):
+            lines.append(
+                f"FAIL  vector {name!r}: collision count got "
+                f"{len(got['collisions'])}, expected {len(expected['collisions'])}"
+            )
+            all_ok = False
+            continue
+
+        collisions_ok = True
+        for g, e in zip(got["collisions"], expected["collisions"]):
+            if g["record_uuid_hex"] != e["record_uuid_hex"]:
+                lines.append(
+                    f"FAIL  vector {name!r}: collision record_uuid mismatch "
+                    f"{g['record_uuid_hex']!r} vs {e['record_uuid_hex']!r}"
+                )
+                collisions_ok = False
+                break
+            if len(g["field_collisions"]) != len(e["field_collisions"]):
+                lines.append(
+                    f"FAIL  vector {name!r}: field collision count mismatch"
+                )
+                collisions_ok = False
+                break
+            for gfc, efc in zip(g["field_collisions"], e["field_collisions"]):
+                if gfc["field_name"] != efc["field_name"]:
+                    lines.append(
+                        f"FAIL  vector {name!r}: collision field_name "
+                        f"{gfc['field_name']!r} vs {efc['field_name']!r}"
+                    )
+                    collisions_ok = False
+                    break
+                # Strip 'name' from winner/loser to match the KAT expected shape.
+                got_w = {k: v for k, v in gfc["winner"].items() if k != "name"}
+                got_l = {k: v for k, v in gfc["loser"].items() if k != "name"}
+                if got_w != efc["winner"]:
+                    lines.append(f"FAIL  vector {name!r}: collision winner mismatch")
+                    lines.append(f"  got:      {got_w}")
+                    lines.append(f"  expected: {efc['winner']}")
+                    collisions_ok = False
+                    break
+                if got_l != efc["loser"]:
+                    lines.append(f"FAIL  vector {name!r}: collision loser mismatch")
+                    lines.append(f"  got:      {got_l}")
+                    lines.append(f"  expected: {efc['loser']}")
+                    collisions_ok = False
+                    break
+        if not collisions_ok:
+            all_ok = False
+            continue
+
+        lines.append(f"PASS  conflict_kat.json {name!r}: {expected['relation']}")
+
+    return all_ok, lines
+
+
+# ---------------------------------------------------------------------------
 # Combined entry point
 # ---------------------------------------------------------------------------
 
@@ -1832,7 +2267,13 @@ def main() -> int:
         print(ln)
 
     print()
-    if section1_ok and section2_ok and section3_ok:
+    print("--- Section 4: conflict_kat.json CRDT merge cross-language replay ---")
+    section4_ok, section4_lines = section4_conflict_kat()
+    for ln in section4_lines:
+        print(ln)
+
+    print()
+    if section1_ok and section2_ok and section3_ok and section4_ok:
         print("PASS")
         return 0
     if not section1_ok:
@@ -1841,6 +2282,8 @@ def main() -> int:
         print("FAIL: golden_vault_001 full crypto verify", file=sys.stderr)
     if not section3_ok:
         print("FAIL: ml_dsa_65_verify tamper-rejection regression", file=sys.stderr)
+    if not section4_ok:
+        print("FAIL: conflict_kat.json CRDT merge cross-language replay", file=sys.stderr)
     return 1
 
 

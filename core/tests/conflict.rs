@@ -423,3 +423,196 @@ fn merge_vector_clocks_yields_lattice_join() {
     // join is commutative
     assert_eq!(merge_vector_clocks(&a, &b), merge_vector_clocks(&b, &a));
 }
+
+// ---------------------------------------------------------------------------
+// §15 cross-language KAT replay
+// ---------------------------------------------------------------------------
+//
+// Loads `core/tests/data/conflict_kat.json` and replays each vector through
+// the Rust merge primitives, asserting bit-equal output against the JSON's
+// `expected` field. The Python sibling (`core/tests/python/conformance.py`
+// Section 4) re-runs the merge from spec docs only and asserts the same
+// expected output, completing the §15 cross-language conformance contract
+// for the merge layer.
+
+fn parse_hex_array<const N: usize>(s: &str) -> [u8; N] {
+    let bytes: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect();
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+fn parse_field_value(spec: &serde_json::Value) -> RecordFieldValue {
+    let value_type = spec["value_type"].as_str().expect("value_type");
+    match value_type {
+        "text" => RecordFieldValue::Text(
+            spec["value_text"]
+                .as_str()
+                .expect("value_text")
+                .to_string(),
+        ),
+        "bytes" => {
+            let hex = spec["value_hex"].as_str().expect("value_hex");
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+                .collect();
+            RecordFieldValue::Bytes(bytes)
+        }
+        other => panic!("unknown value_type {other}"),
+    }
+}
+
+fn parse_record_field(spec: &serde_json::Value) -> RecordField {
+    RecordField {
+        value: parse_field_value(spec),
+        last_mod: spec["last_mod"].as_u64().expect("last_mod"),
+        device_uuid: parse_hex_array(spec["device_uuid_hex"].as_str().expect("device_uuid_hex")),
+        unknown: BTreeMap::new(),
+    }
+}
+
+fn parse_record(spec: &serde_json::Value) -> Record {
+    let mut fields = BTreeMap::new();
+    for f in spec["fields"].as_array().expect("fields[]") {
+        fields.insert(
+            f["name"].as_str().expect("name").to_string(),
+            parse_record_field(f),
+        );
+    }
+    let tags: Vec<String> = spec["tags"]
+        .as_array()
+        .expect("tags[]")
+        .iter()
+        .map(|t| t.as_str().expect("tag").to_string())
+        .collect();
+    Record {
+        record_uuid: parse_hex_array(spec["record_uuid_hex"].as_str().expect("record_uuid_hex")),
+        record_type: spec["record_type"].as_str().expect("record_type").to_string(),
+        fields,
+        tags,
+        created_at_ms: spec["created_at_ms"].as_u64().expect("created_at_ms"),
+        last_mod_ms: spec["last_mod_ms"].as_u64().expect("last_mod_ms"),
+        tombstone: spec["tombstone"].as_bool().expect("tombstone"),
+        unknown: BTreeMap::new(),
+    }
+}
+
+fn parse_block(spec: &serde_json::Value) -> BlockPlaintext {
+    let records: Vec<Record> = spec["records"]
+        .as_array()
+        .expect("records[]")
+        .iter()
+        .map(parse_record)
+        .collect();
+    BlockPlaintext {
+        block_version: spec["block_version"].as_u64().expect("block_version") as u32,
+        block_uuid: parse_hex_array(spec["block_uuid_hex"].as_str().expect("block_uuid_hex")),
+        block_name: spec["block_name"].as_str().expect("block_name").to_string(),
+        schema_version: spec["schema_version"].as_u64().expect("schema_version") as u32,
+        records,
+        unknown: BTreeMap::new(),
+    }
+}
+
+fn parse_clock(spec: &serde_json::Value) -> Vec<VectorClockEntry> {
+    spec.as_array()
+        .expect("vector_clock[]")
+        .iter()
+        .map(|e| VectorClockEntry {
+            device_uuid: parse_hex_array(e["device_uuid_hex"].as_str().expect("device_uuid_hex")),
+            counter: e["counter"].as_u64().expect("counter"),
+        })
+        .collect()
+}
+
+fn parse_relation(s: &str) -> ClockRelation {
+    match s {
+        "Equal" => ClockRelation::Equal,
+        "IncomingDominates" => ClockRelation::IncomingDominates,
+        "IncomingDominated" => ClockRelation::IncomingDominated,
+        "Concurrent" => ClockRelation::Concurrent,
+        other => panic!("unknown ClockRelation {other}"),
+    }
+}
+
+#[test]
+fn kat_replays_match_rust_merge() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("conflict_kat.json");
+    let raw = std::fs::read_to_string(&path).expect("read conflict_kat.json");
+    let kat: serde_json::Value = serde_json::from_str(&raw).expect("parse conflict_kat.json");
+    assert_eq!(kat["version"], 1);
+
+    let vectors = kat["vectors"].as_array().expect("vectors[]");
+    assert!(!vectors.is_empty(), "KAT has at least one vector");
+
+    for vector in vectors {
+        let name = vector["name"].as_str().expect("name");
+        let merging_device: [u8; 16] =
+            parse_hex_array(vector["merging_device_hex"].as_str().expect("merging_device_hex"));
+
+        let local_block = parse_block(&vector["local"]["block"]);
+        let local_clock = parse_clock(&vector["local"]["vector_clock"]);
+        let remote_block = parse_block(&vector["remote"]["block"]);
+        let remote_clock = parse_clock(&vector["remote"]["vector_clock"]);
+
+        let merged =
+            merge_block(&local_block, &local_clock, &remote_block, &remote_clock, merging_device)
+                .unwrap_or_else(|e| panic!("vector {name}: merge_block failed: {e}"));
+
+        let expected_relation = parse_relation(vector["expected"]["relation"].as_str().expect("relation"));
+        assert_eq!(merged.relation, expected_relation, "vector {name}: relation");
+
+        let expected_block = parse_block(&vector["expected"]["block"]);
+        assert_eq!(merged.merged, expected_block, "vector {name}: merged block plaintext");
+
+        let expected_clock = parse_clock(&vector["expected"]["vector_clock"]);
+        assert_eq!(merged.vector_clock, expected_clock, "vector {name}: merged vector clock");
+
+        let expected_collisions = vector["expected"]["collisions"]
+            .as_array()
+            .expect("collisions[]");
+        assert_eq!(
+            merged.collisions.len(),
+            expected_collisions.len(),
+            "vector {name}: collision count"
+        );
+        for (got, want) in merged.collisions.iter().zip(expected_collisions.iter()) {
+            let want_uuid: [u8; 16] = parse_hex_array(
+                want["record_uuid_hex"].as_str().expect("record_uuid_hex"),
+            );
+            assert_eq!(got.record_uuid, want_uuid, "vector {name}: collision record_uuid");
+            let want_fcs = want["field_collisions"]
+                .as_array()
+                .expect("field_collisions[]");
+            assert_eq!(
+                got.field_collisions.len(),
+                want_fcs.len(),
+                "vector {name}: field collision count"
+            );
+            for (gfc, wfc) in got.field_collisions.iter().zip(want_fcs.iter()) {
+                assert_eq!(
+                    gfc.field_name,
+                    wfc["field_name"].as_str().expect("field_name"),
+                    "vector {name}: field_name"
+                );
+                assert_eq!(
+                    gfc.winner,
+                    parse_record_field(&wfc["winner"]),
+                    "vector {name}: collision winner"
+                );
+                assert_eq!(
+                    gfc.loser,
+                    parse_record_field(&wfc["loser"]),
+                    "vector {name}: collision loser"
+                );
+            }
+        }
+    }
+}

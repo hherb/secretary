@@ -1,0 +1,328 @@
+{
+  "version": 1,
+  "comment": "Per-record / per-block CRDT merge KAT (Phase A.6 / PR-C, docs/crypto-design.md §11). Pins the merged output (block plaintext, vector clock, relation, collision list) for hand-authored inputs covering each ClockRelation branch and the field-level LWW collision path. Verified end-to-end by core/tests/conflict.rs::kat_replays_match_rust_merge and core/tests/python/conformance.py Section 4. The Python side is the cross-language witness — it implements §11 from the spec docs only and asserts bit-equal merged outputs.",
+  "vectors": [
+    {
+      "name": "equal_relation_returns_local",
+      "description": "Identical block plaintexts and identical vector clocks → ClockRelation::Equal. Merge returns local plaintext and clock unchanged; no clock tick.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 3 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 3 }
+        ]
+      },
+      "expected": {
+        "relation": "Equal",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 3 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "incoming_dominates_returns_remote",
+      "description": "Local clock strictly dominated by incoming → ClockRelation::IncomingDominates. Merge returns remote plaintext and remote clock unchanged.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "old-name",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "new-name",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 5 }
+        ]
+      },
+      "expected": {
+        "relation": "IncomingDominates",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "new-name",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 5 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_disjoint_records",
+      "description": "Concurrent clocks; each side has a different record_uuid. Merge unions the records (sorted ascending by record_uuid), the merged clock is component-wise max plus +1 for the merging device, no field collisions.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "20202020202020202020202020202020",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "01010101010101010101010101010101"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 50,
+              "last_mod_ms": 100,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "30303030303030303030303030303030",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "bob",
+                  "last_mod": 200,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 60,
+              "last_mod_ms": 200,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "20202020202020202020202020202020",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "01010101010101010101010101010101"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 50,
+              "last_mod_ms": 100,
+              "tombstone": false
+            },
+            {
+              "record_uuid_hex": "30303030303030303030303030303030",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "bob",
+                  "last_mod": 200,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 60,
+              "last_mod_ms": 200,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_field_collision",
+      "description": "Concurrent clocks; same record_uuid on both sides with conflicting `username` values. Per-field LWW picks the larger last_mod (remote's). The collision is surfaced in the per-record collision list with the loser preserved for UI resolution.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "v1",
+                  "last_mod": 100,
+                  "device_uuid_hex": "01010101010101010101010101010101"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 50,
+              "last_mod_ms": 100,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "v2",
+                  "last_mod": 200,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 50,
+              "last_mod_ms": 200,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "username",
+                  "value_type": "text",
+                  "value_text": "v2",
+                  "last_mod": 200,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 50,
+              "last_mod_ms": 200,
+              "tombstone": false
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": [
+          {
+            "record_uuid_hex": "10101010101010101010101010101010",
+            "field_collisions": [
+              {
+                "field_name": "username",
+                "winner": {
+                  "value_type": "text",
+                  "value_text": "v2",
+                  "last_mod": 200,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                },
+                "loser": {
+                  "value_type": "text",
+                  "value_text": "v1",
+                  "last_mod": 100,
+                  "device_uuid_hex": "01010101010101010101010101010101"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
