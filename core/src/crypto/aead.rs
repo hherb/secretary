@@ -21,6 +21,49 @@
 //!   this module deterministic makes it trivially testable from KATs.
 //! - It does not hash, derive keys, or read AAD/key material from any source
 //!   other than its parameters. AEAD here is a leaf primitive.
+//!
+//! ## Caller-side nonce generation idiom
+//!
+//! Every production call site that draws a fresh nonce uses this exact
+//! two-line pattern:
+//!
+//! ```ignore
+//! let mut aead_nonce = [0u8; 24];
+//! rng.fill_bytes(&mut aead_nonce);
+//! aead::encrypt(&key, &aead_nonce, &aad, plaintext)?;
+//! ```
+//!
+//! The `[0u8; 24]` literal is **buffer allocation, not a hardcoded value**.
+//! Rust requires stack arrays to be initialised before the borrow checker
+//! will let `rng.fill_bytes` write into them; the zeros are placeholders
+//! that exist for one source line and are overwritten by the CSPRNG before
+//! any cryptographic primitive observes the buffer. Open-sourcing this
+//! pattern is safe because what an attacker reading the source learns is
+//! "the nonce buffer is 24 bytes and is filled by `rng.fill_bytes`" — both
+//! of which are also stated in the format spec.
+//!
+//! Nonces are public values by design (they ride along with the ciphertext
+//! on disk and over the wire). Their only security requirement is "never
+//! reuse the same `(key, nonce)` pair", which is satisfied by drawing them
+//! from a CSPRNG with a 192-bit space (no birthday-bound risk at realistic
+//! volumes).
+//!
+//! What WOULD be a bug, by contrast:
+//!
+//! - `aead::encrypt(&key, &[0u8; 24], …)` — passing the literal zero-nonce
+//!   directly to `encrypt` (or any path where the buffer reaches `encrypt`
+//!   *before* `rng.fill_bytes` runs). That's a constant nonce reused across
+//!   calls, which collapses XChaCha20-Poly1305's confidentiality and
+//!   integrity guarantees on the second call under the same key.
+//! - A nonce drawn from a *deterministic* RNG outside `#[cfg(test)]` —
+//!   tests use `ChaCha20Rng::from_seed([0u8; 32])` for reproducibility, but
+//!   production paths must take `&mut (impl RngCore + CryptoRng)` (which
+//!   in production is `OsRng`).
+//!
+//! Audit recipe: `rg -B0 -A2 '\[0u8;' core/src/ --type rust` — every match
+//! whose next line is `rng.fill_bytes(&mut …)` or `copy_from_slice(…)` (a
+//! decoder reading the nonce out of an on-disk envelope) is fine; a buffer
+//! that flows directly into a crypto call without one of those is a bug.
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
