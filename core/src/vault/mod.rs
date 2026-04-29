@@ -1146,12 +1146,14 @@ pub fn save_block(
 ///   the orchestrator can recompute the author's fingerprint from
 ///   canonical bytes (rather than from the public-key tuple — the
 ///   spec-aligned identity is "the fingerprint of the canonical
-///   contact card", §6). The orchestrator pre-flights that the card's
-///   four PKs match the supplied SKs to catch mis-paired tuples
-///   ([`VaultError::AuthorCardKeyMismatch`]); a successful check is
-///   the precondition for both decrypt (the SKs unwrap an existing
-///   recipient-of-author entry) and re-sign (the SKs sign the new
-///   block).
+///   contact card", §6). PR-B's `share_block` is restricted to the
+///   single-owner case: `author_card.contact_uuid` must equal
+///   `open.identity.user_uuid`, else [`VaultError::NotAuthor`]. A
+///   future "share-as-fork" PR lifts this restriction. There is no
+///   SK↔PK pre-flight cross-check today (`crypto::sig` does not
+///   expose "derive PK from SK" entry points); a mismatched
+///   (author_card, author_sk_*) tuple surfaces on the next
+///   `open_vault` as a hybrid-signature verification failure.
 ///
 /// - `existing_recipient_cards`: the contact cards for every
 ///   recipient currently in the block's recipient table, **including
@@ -1228,6 +1230,23 @@ pub fn share_block(
         });
     }
 
+    // Step 4: PR-B single-owner restriction. The decrypt path at step
+    // 7 below uses `open.identity.{x25519_sk, ml_kem_768_sk}` as the
+    // reader-side decap material while passing `author_fp` as the
+    // reader-side fingerprint into `decrypt_block`. That pairing is
+    // sound only when the calling owner IS the author. A mismatched
+    // (open.identity, author_card) tuple would yield a cryptic
+    // KemError or AeadFailure deep in the decrypt path; surfacing
+    // `NotAuthor` up-front keeps the failure mode unambiguous. The
+    // "share-as-fork" path (decrypt-as-non-author-recipient → mint a
+    // fresh authored block) is a future PR that lifts this restriction.
+    if author_card.contact_uuid != open.identity.user_uuid {
+        return Err(VaultError::NotAuthor {
+            expected: block_file.author_fingerprint,
+            got: author_fp,
+        });
+    }
+
     // (No SK→PK cross-check today: the crypto::sig module does not
     // expose "derive PK from SK" entry points, and ML-DSA-65's PK is
     // not a trivial scalarmult of the SK seed. A mismatched
@@ -1258,14 +1277,16 @@ pub fn share_block(
     // emit, so in-memory order doesn't affect the on-disk bytes — but
     // it keeps the in-memory shape stable across debug prints).
     //
-    // For the author's own card: include it in the lookup table even
-    // if it doesn't appear in `existing_recipient_cards` (the caller
-    // may treat it as implicit — common case where the author is the
-    // owner). This mirrors the shape of `save_block` where the
-    // caller passes the recipient list verbatim and the orchestrator
-    // does not silently include the author.
+    // The caller is responsible for assembling `existing_recipient_cards`
+    // to cover every recipient currently in the block's wire-level
+    // recipient table — INCLUDING the author if the author is also a
+    // recipient. The orchestrator does NOT implicitly add `author_card`:
+    // a wrap whose fingerprint isn't matched by the supplied list
+    // surfaces as `VaultError::MissingRecipientCard` (loud, typed). The
+    // shape mirrors `save_block` where the caller passes the recipient
+    // list verbatim.
     let mut card_lookup: Vec<(crate::identity::fingerprint::Fingerprint, &ContactCard)> =
-        Vec::with_capacity(existing_recipient_cards.len() + 1);
+        Vec::with_capacity(existing_recipient_cards.len());
     for c in existing_recipient_cards {
         let fp = fingerprint(&c.to_canonical_cbor()?);
         card_lookup.push((fp, c));
