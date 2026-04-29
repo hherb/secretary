@@ -405,7 +405,7 @@ The "highest seen" state is stored per-vault in the OS keystore (so it shares th
 
 ## 11. Per-record CRDT merge
 
-When two devices have concurrently edited the same block (vector clocks are incomparable), Secretary performs field-level last-writer-wins merge:
+When two devices have concurrently edited the same block (vector clocks are incomparable), Secretary performs field-level last-writer-wins merge with a record-level "death clock" that makes the merge associative under arbitrary tombstone histories:
 
 ```
 merge(local_block, remote_block) -> merged_block:
@@ -427,19 +427,27 @@ merge(local_block, remote_block) -> merged_block:
     return merged_block
 
 merge_record(l, r) -> record:
-    # union fields; per-field LWW
+    # 1. Death clock: the high-water mark of every tombstone observation
+    #    on this record across both replicas. Always non-decreasing.
+    merged_tombstoned_at_ms = max(l.tombstoned_at_ms, r.tombstoned_at_ms)
+
+    # 2. Per-field LWW union with staleness filter.
     out_fields = {}
     for fname in union(l.fields, r.fields):
         lf = l.fields.get(fname)
         rf = r.fields.get(fname)
-        if lf and not rf:    out_fields[fname] = lf
-        elif rf and not lf:  out_fields[fname] = rf
-        elif lf.last_mod > rf.last_mod: out_fields[fname] = lf
-        elif rf.last_mod > lf.last_mod: out_fields[fname] = rf
+        if lf and not rf:    winner = lf
+        elif rf and not lf:  winner = rf
+        elif lf.last_mod > rf.last_mod: winner = lf
+        elif rf.last_mod > lf.last_mod: winner = rf
         else:
             # last_mod tie — break by device_uuid lexicographically
-            out_fields[fname] = (lf if lf.device_uuid < rf.device_uuid else rf)
-    return record_with_fields(out_fields)
+            winner = (lf if lf.device_uuid < rf.device_uuid else rf)
+        # Staleness filter: any field at or below the death clock has
+        # been deleted by an observed tombstone. Drop it.
+        if winner.last_mod > merged_tombstoned_at_ms:
+            out_fields[fname] = winner
+    return record_with_fields(out_fields, tombstoned_at_ms=merged_tombstoned_at_ms)
 ```
 
 ### 11.1 Per-record metadata merge
@@ -455,6 +463,7 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | `created_at_ms` | `min(l.created_at_ms, r.created_at_ms)` — the earliest creation observed across all replicas. |
 | `last_mod_ms` | `max(l.last_mod_ms, r.last_mod_ms)`. |
 | `tombstone` | Tombstone tie-break — see §11.3. |
+| `tombstoned_at_ms` | `max(l.tombstoned_at_ms, r.tombstoned_at_ms)` — the *death clock*, the high-water mark of every tombstone observation. Monotone non-decreasing across merges; preserved across resurrection (a live edit after a tombstone keeps the prior `tombstoned_at_ms`). Drives the §11.3 staleness filter. |
 | `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. v2 writers that need value-aware merging of new top-level keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. |
 
 ### 11.2 Per-block metadata merge
@@ -468,15 +477,29 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | `vector_clock` | Component-wise max of the two clocks, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). |
 | `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. |
 
-### 11.3 Tombstone tie-break
+### 11.3 Tombstone tie-break and the death-clock staleness filter
 
 For a pairwise merge where one side is tombstoned at record-level `last_mod_ms = T_d` and the other is live at `last_mod_ms = T_l`:
 
 - The tombstone wins iff `T_d ≥ T_l`. This is the *tombstone-on-tie* rule: deletion is sticky.
 - The merged record carries the tombstoning side's `tags`, empty `fields` per §6.3, and `last_mod_ms = max(T_d, T_l)`.
 - When both sides are tombstoned, the merged record is tombstoned, `tags` follow record-level LWW per §11.1, and `fields` are empty.
-- When both sides are live, the merged record is live and follows the per-field rules above.
+- When both sides are live, the merged record is live and follows the per-field rules above (with the staleness filter described next).
 - A live edit observed *strictly after* a tombstone (`T_l > T_d`) resurrects the record. This is intentional: the retention window in §11.4 ensures all devices have observed the deletion before tombstones are GC'd, so a post-deletion edit is a deliberate undelete.
+
+**The death clock and the staleness filter.** Tombstone-wins-on-tie is per-pair deterministic, but without a record-level marker that propagates across replicas, a three-way merge can resurrect deleted fields in one ordering and not another (the tombstone information is "lost" when live wins over a tombstone in an early pairwise merge, then the live state is mixed with a stale-edit replica that never observed the tombstone). The `tombstoned_at_ms` field — the **death clock** — is the propagating marker that closes this gap.
+
+Death-clock invariants:
+
+- `tombstoned_at_ms ≤ last_mod_ms` always (the death clock cannot exceed the record's most recent edit).
+- Newly created records: `tombstoned_at_ms = 0`.
+- On tombstoning at time T: `last_mod_ms = T`, `tombstoned_at_ms = T`.
+- On resurrection (live edit at `T_r > tombstoned_at_ms`): `last_mod_ms = T_r`, `tombstone = false`, `tombstoned_at_ms` is **preserved unchanged**.
+- On merge: `merged.tombstoned_at_ms = max(local.tombstoned_at_ms, remote.tombstoned_at_ms)`. Monotone non-decreasing, lattice join.
+
+**Staleness filter.** When the merged record is live, every field is checked against `merged.tombstoned_at_ms`: a field with `field.last_mod ≤ merged.tombstoned_at_ms` was edited at or before an observed tombstone and is therefore dead. Drop it. Fields with `field.last_mod > merged.tombstoned_at_ms` (post-resurrection edits) survive.
+
+The staleness filter applies uniformly: in the `BothLive` outcome (where the field union runs through per-field LWW), in the `LocalTombstoneLost` / `RemoteTombstoneLost` outcomes (where the live side's fields would otherwise pass through unchanged), and trivially in tombstone-wins outcomes (where `fields` is already empty).
 
 Tombstones are garbage-collected only after a configurable retention window (default: 90 days) to ensure all syncing devices have observed the deletion before the on-disk evidence is removed.
 
@@ -486,18 +509,17 @@ When the per-field LWW resolves a field where both sides held differing values, 
 
 The merge function must be **commutative**, **associative**, and **idempotent**. These properties are enforced by property-based tests in `core/tests/`.
 
-### 11.5 Input invariants and the v1 associativity domain
+### 11.5 Well-formedness invariants and the full-domain CRDT correctness
 
-Well-formed records satisfy two invariants that the §11 merge relies on. Implementations SHOULD enforce them on the write path; the merge primitives canonicalise opportunistically but do not validate.
+Well-formed records satisfy three invariants that the §11 merge relies on. Implementations SHOULD enforce them on the write path; the merge primitives canonicalise opportunistically but do not validate.
 
 | Invariant | Justification |
 |---|---|
 | `tags` sorted lex and deduped before encode | §11.1's set-union output is always canonical; bit-identical commutativity (`merge(a, b) == merge(b, a)` over the entire `MergedRecord`) requires inputs in the same canonical form. |
 | `last_mod_ms ≥ max(field.last_mod across fields)` | Real clients bump `last_mod_ms` on every field edit. The merge's tombstone-vs-live interaction reasons about record-level vs field-level timestamps and assumes the record clock at least as recent as any field clock. |
+| `tombstoned_at_ms ≤ last_mod_ms`; equality when `tombstone = true` | The death clock cannot exceed the record's most recent edit. A currently-tombstoned record was tombstoned at its most recent edit, so the two are equal. |
 
-**v1 associativity is restricted to the non-tombstoned domain.** Tombstone-on-tie semantics (§11.3) provide deterministic outcomes for any individual merge, but full associativity across mixed-tombstone replicas requires a record-level `tombstoned_at_ms` field that propagates "this record was tombstoned at time T" across merges. v1 does not carry that field; without it, two live replicas can disagree on whether a field surviving from before a tombstone should be dropped, and a three-way merge `merge(a, merge(b, c))` vs `merge(merge(a, b), c)` can produce different field sets when `b` is tombstoned and `c` is a later live edit that "lost" tombstone history. Phase A.7 hardening introduces `tombstoned_at_ms` to close this gap.
-
-Property-based tests in `core/tests/proptest.rs` therefore certify commutativity, associativity, and idempotence on the live-only sub-domain (records with `tombstone = false`). Tombstone interactions are exercised by the inline unit tests in `core/src/vault/conflict.rs` and the integration tests in `core/tests/conflict.rs`, which pin the per-pair behaviour without claiming the strict associativity property.
+**The merge is commutative, associative, and idempotent across the full record domain — including arbitrary tombstone histories.** The death clock (`tombstoned_at_ms`, §11.3) is itself a CRDT: `max` is a commutative-associative-idempotent lattice join, and the staleness filter is a function of the merged death clock alone, independent of merge order. Property-based tests in `core/tests/proptest.rs` certify the three properties on the full record domain (records with arbitrary `tombstone` values, arbitrary `tombstoned_at_ms`, arbitrary field counts and last-mods). Tombstone interactions are additionally exercised by the inline unit tests in `core/src/vault/conflict.rs`, the integration tests in `core/tests/conflict.rs`, and the §15 cross-language KAT replayed by both the Rust integration tests and `core/tests/python/conformance.py` Section 4.
 
 ---
 
