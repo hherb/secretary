@@ -141,6 +141,34 @@ pub enum VaultError {
     #[error("manifest author_fingerprint does not match owner card fingerprint")]
     ManifestAuthorMismatch,
 
+    /// `docs/vault-format.md` §4.3 step 5 cross-check failed: the
+    /// `vault_uuid` inside the encrypted+signed manifest body does not
+    /// match the `vault_uuid` in the (AAD-bound) binary header. The
+    /// AEAD AAD already binds the header to the body, so a successful
+    /// decrypt implies the AAD-as-encrypted matches; this explicit
+    /// equality check defends a v2/multi-suite migration where AAD
+    /// could legitimately decouple from header layout, and surfaces
+    /// the disagreement loudly when both UUIDs round-trip but disagree.
+    #[error("manifest vault_uuid mismatch: header has {header:?}, body has {body:?}")]
+    ManifestVaultUuidMismatch {
+        header: [u8; 16],
+        body: [u8; 16],
+    },
+
+    /// `docs/vault-format.md` §4.3 step 6 cross-check failed: the
+    /// `kdf_params` in the (signed) manifest body do not equal the
+    /// `[kdf]` block in the (cleartext) `vault.toml`. The duplication
+    /// is the load-bearing tamper-detection surface for `vault.toml`:
+    /// per §4.2 line 205, "a modified vault.toml cannot trick a reader
+    /// into deriving a wrong master_kek without also producing an
+    /// invalid manifest signature". Without this comparison a
+    /// malicious cloud host could swap memory_kib for a DoS or
+    /// swap the salt to confuse the user; the manifest signature
+    /// attests to the real params, but only this check actually
+    /// rejects the swap.
+    #[error("manifest kdf_params do not match vault.toml [kdf]")]
+    KdfParamsMismatch,
+
     /// [`share_block`] precondition: the caller is not the block's
     /// original author. PR-B's share_block is "author-only re-sign" —
     /// adding a recipient extends the §6.2 recipient table, which is
@@ -742,6 +770,19 @@ pub fn open_vault(
         return Err(VaultError::OwnerUuidMismatch {
             vault: unlocked.identity.user_uuid,
             found: manifest_body.owner_user_uuid,
+        });
+    }
+
+    // §4.3 step 5 cross-check: the encrypted body's vault_uuid must
+    // equal the (AAD-bound) header's vault_uuid. AEAD AAD already
+    // binds the header to the body, so a successful decrypt implies
+    // the AAD-as-encrypted equals the header bytes we passed; this
+    // explicit equality is defence-in-depth for a future v2 layout
+    // that could decouple AAD from header.
+    if manifest_body.vault_uuid != manifest_file.header.vault_uuid {
+        return Err(VaultError::ManifestVaultUuidMismatch {
+            header: manifest_file.header.vault_uuid,
+            body: manifest_body.vault_uuid,
         });
     }
 
