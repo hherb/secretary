@@ -676,17 +676,24 @@ def ed25519_verify(pk: bytes, sig: bytes, message: bytes) -> bool:
 def ml_dsa_65_verify(pk: bytes, sig: bytes, message: bytes) -> bool:
     """ML-DSA-65 verify. Returns True iff the signature is valid.
 
-    `pqcrypto.sign.ml_dsa_65.verify` takes (message, signature,
-    public_key) in that order and returns the message on success or
-    raises on failure. We treat any exception as 'invalid' to match
-    the Rust side's `verify` returning a typed error.
+    `pqcrypto.sign.ml_dsa_65.verify(public_key, message, signature)`
+    returns True/False on a well-formed input pair (a tampered or
+    invalid signature returns False — it does NOT raise), and raises
+    `TypeError` / `ValueError` only when the inputs are mis-typed or
+    wrong-length. The previous implementation discarded the return
+    value and reported "no exception" as success, which silently
+    accepted invalid signatures; the Ed25519 path is unaffected
+    because `cryptography` raises `InvalidSignature` on bad sigs.
+
+    We propagate the boolean and narrow the except to the two
+    documented input-format exceptions, matching the Rust side's
+    typed-error → bool collapse.
     """
     from pqcrypto.sign import ml_dsa_65
 
     try:
-        ml_dsa_65.verify(pk, message, sig)
-        return True
-    except Exception:
+        return ml_dsa_65.verify(pk, message, sig)
+    except (TypeError, ValueError):
         return False
 
 
