@@ -33,7 +33,10 @@ pub use block::{
     BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
     FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
-pub use conflict::{clock_relation, merge_vector_clocks, ClockRelation};
+pub use conflict::{
+    clock_relation, merge_record, merge_vector_clocks, ClockRelation, FieldCollision,
+    MergedRecord,
+};
 pub use manifest::{
     decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
     encode_manifest_file, encrypt_manifest_body, sign_manifest, verify_manifest, BlockEntry,
