@@ -169,6 +169,16 @@ pub enum VaultError {
     #[error("manifest kdf_params do not match vault.toml [kdf]")]
     KdfParamsMismatch,
 
+    /// A vector-clock per-device counter would overflow `u64::MAX` on
+    /// `tick_clock`. The §10 rollback-resistance check is order-only
+    /// on per-device counters; a `saturating_add` would silently
+    /// freeze a maxed-out counter and `is_rollback` would then declare
+    /// two distinct writes "Equal". Practical reachability is zero
+    /// (~10¹¹ years at one write/ns) but a typed surface keeps the
+    /// invariant explicit.
+    #[error("vector-clock overflow on device {device_uuid:?}")]
+    ClockOverflow { device_uuid: [u8; 16] },
+
     /// [`share_block`] precondition: the caller is not the block's
     /// original author. PR-B's share_block is "author-only re-sign" —
     /// adding a recipient extends the §6.2 recipient table, which is
@@ -843,15 +853,31 @@ pub fn open_vault(
 /// insert a new entry at counter 1 if absent. Pure helper shared by both the
 /// block-level and manifest-level clocks. The output is left unsorted; the
 /// canonical-CBOR encoders sort on emit so in-memory order doesn't matter.
-fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) {
+///
+/// Returns [`VaultError::ClockOverflow`] if the per-device counter is already
+/// at `u64::MAX`. The §10 rollback-resistance check is order-only on
+/// per-device counters; a frozen counter would silently break that property
+/// (a non-incrementing tick makes two writes look like one and `is_rollback`
+/// would declare them "Equal"). Practical reachability is essentially zero
+/// (~10¹¹ years at one write/ns) but a typed surface beats a silent freeze.
+fn tick_clock(
+    clock: &mut Vec<VectorClockEntry>,
+    device_uuid: &[u8; 16],
+) -> Result<(), VaultError> {
     if let Some(entry) = clock.iter_mut().find(|e| &e.device_uuid == device_uuid) {
-        entry.counter = entry.counter.saturating_add(1);
+        entry.counter = entry
+            .counter
+            .checked_add(1)
+            .ok_or(VaultError::ClockOverflow {
+                device_uuid: *device_uuid,
+            })?;
     } else {
         clock.push(VectorClockEntry {
             device_uuid: *device_uuid,
             counter: 1,
         });
     }
+    Ok(())
 }
 
 /// Encrypt and persist a new (or updated) block in the vault.
@@ -918,7 +944,7 @@ pub fn save_block(
     };
 
     // Step 1: tick the block-level vector clock for this device.
-    tick_clock(&mut block_clock, &device_uuid);
+    tick_clock(&mut block_clock, &device_uuid)?;
 
     // Step 2: build the §6.1 block header. The header's vector_clock
     // mirrors the block-entry summary so a single-author write produces
@@ -1031,7 +1057,7 @@ pub fn save_block(
     }
 
     // Step 10: tick the manifest-level (vault-level) vector clock.
-    tick_clock(&mut open.manifest.vector_clock, &device_uuid);
+    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
 
     // Step 11: refresh the manifest header — vault_uuid and created_at_ms
     // are preserved from the existing on-disk envelope; only last_mod_ms
@@ -1456,7 +1482,7 @@ pub fn share_block(
     // Step 14: tick the manifest-level vector clock for this device.
     // Sharing changes the manifest's content (recipient list +
     // block-fingerprint), so the vault-level clock advances.
-    tick_clock(&mut open.manifest.vector_clock, &device_uuid);
+    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
 
     // Step 15: refresh manifest header. vault_uuid + created_at_ms
     // are preserved; only last_mod_ms advances.
