@@ -3161,6 +3161,79 @@ mod tests {
         );
     }
 
+    // (Group C) Pin the §8 signed-range invariants for the two regions
+    // exercised only stochastically by proptest property G:
+    // `aead_nonce` (24 bytes) and `aead_tag` (16 bytes). Both are inside
+    // the §8 signed-message range (magic..aead_tag inclusive — see
+    // `signed_message_bytes`), so a deterministic single-byte flip MUST
+    // fail signature verification. Companion to the existing
+    // `verify_rejects_tampered_aead_ct` / `verify_rejects_tampered_header`
+    // tests; this closes the §8 coverage to all four mutable regions.
+
+    /// Regression: ensures `aead_nonce` is inside the §8 signed range.
+    /// If a future signed_message_bytes refactor accidentally drops the
+    /// nonce from the signed prefix, this test catches it (verify would
+    /// suddenly accept a flipped-nonce file).
+    #[test]
+    fn tamper_aead_nonce_breaks_signature() {
+        let body = minimal_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x70);
+
+        let mut file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        // Flip a byte in the nonce. Pick the middle to avoid any
+        // boundary-mistake regressions where the signed slice off-by-ones
+        // either edge.
+        file.aead_nonce[12] ^= 0x01;
+        let err = verify_manifest(&file, &pk_ed, &pk_pq)
+            .expect_err("tampered aead_nonce must fail verify");
+        assert!(
+            matches!(
+                err,
+                ManifestError::Ed25519SignatureInvalid
+                    | ManifestError::MlDsa65SignatureInvalid
+            ),
+            "expected hybrid verify failure on aead_nonce tamper, got {err:?}"
+        );
+    }
+
+    /// Regression: ensures `aead_tag` is inside the §8 signed range.
+    /// If a future signed_message_bytes refactor accidentally truncates
+    /// the signed prefix at aead_ct (excluding the tag), this test
+    /// catches it. The §8 spec range is "magic..aead_tag inclusive" —
+    /// a flipped tag byte must still fail the signature even though
+    /// AEAD verification (which would also catch it) is sequenced AFTER
+    /// the verify per the verify-before-decrypt discipline.
+    #[test]
+    fn tamper_aead_tag_breaks_signature() {
+        let body = minimal_manifest();
+        let header = fixed_manifest_header();
+        let ibk = test_ibk(0x00);
+        let nonce = test_nonce();
+        let author: Fingerprint = [0xa5; 16];
+        let (sk_ed, pk_ed, sk_pq, pk_pq) = fixture_hybrid_keypair(0x80);
+
+        let mut file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
+            .expect("sign_manifest");
+        // Flip a byte in the AEAD tag. Tag is fixed-size (16 bytes), so
+        // any index 0..AEAD_TAG_LEN works; pick the first.
+        file.aead_tag[0] ^= 0x01;
+        let err = verify_manifest(&file, &pk_ed, &pk_pq)
+            .expect_err("tampered aead_tag must fail verify");
+        assert!(
+            matches!(
+                err,
+                ManifestError::Ed25519SignatureInvalid
+                    | ManifestError::MlDsa65SignatureInvalid
+            ),
+            "expected hybrid verify failure on aead_tag tamper, got {err:?}"
+        );
+    }
+
     #[test]
     fn sign_then_decrypt_round_trips() {
         // Full pipeline: sign → verify → decrypt → compare body.
