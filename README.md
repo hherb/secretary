@@ -6,7 +6,7 @@
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
 
-> **Status: pre-alpha, Sub-project A feature-complete; hardening + audit next.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers the full v1 vault surface: cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, and the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`). 340+ tests pass, including NIST KATs, vector-clock CRDT proptests, and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture. What remains for Sub-project A is hardening + an external audit; FFI bindings and platform UIs come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
+> **Status: pre-alpha, Sub-project A's manifest layer landed; CRDT merge primitives + proptests next, then hardening + audit.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, and the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`). 340+ tests pass, including NIST KATs and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture. What remains in Sub-project A is the vector-clock CRDT merge primitives (`conflict.rs`) plus their commutativity / associativity / idempotence proptests, then a hardening + external-audit phase; FFI bindings (Sub-project B), the headless sync-orchestration layer (Sub-project C), and platform UIs (Sub-project D) come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
 
 ---
 
@@ -119,7 +119,7 @@ The user-facing application and the source code are *both* free of charge. Only 
 
 ## Project status
 
-Repository initialized April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust core — is feature-complete; hardening and external audit are next:
+Repository initialized April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust core — is in active implementation:
 
 | Component | Status |
 |---|---|
@@ -129,10 +129,12 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | Block file format (record CBOR, header, recipients, AEAD, hybrid sig) | ✅ Complete (PR #3) |
 | Manifest layer + atomic writes + high-level orchestrators | ✅ Complete (PR #5) |
 | `golden_vault_001/` end-to-end §15 conformance fixture (full crypto) | ✅ Complete (PR #5) |
-| Hardening: fuzz, side-channel review, memory hygiene audit | 🚧 Next (Phase A.6) |
-| External cryptographic audit | 🚧 Next (Phase A.6) |
+| CRDT merge primitives (`conflict.rs`) + commutativity / associativity / idempotence proptests + `conflict_kat.json` | 🚧 Next (Phase A.6 / PR-C) |
+| Hardening: fuzz, side-channel review, memory hygiene audit | ⏳ Phase A.7 |
+| External cryptographic audit | ⏳ Phase A.7 |
 | FFI bindings (PyO3, uniffi for Swift/Kotlin) | ⏳ Sub-project B |
-| Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project C |
+| Sync orchestration (file watching, cloud-folder integration, conflict-detection scheduling — headless, exposed via FFI) | ⏳ Sub-project C |
+| Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project D |
 
 340+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors).
 

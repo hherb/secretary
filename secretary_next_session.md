@@ -1,422 +1,356 @@
 # secretary — next session entry point
 
 This file is the entry point for the **next** session, in the same role
-[FIXME.md](FIXME.md) played until 2026-04-26 (now closed and removed).
-It captures: closed items (kept for context), one open §15 KAT still
-blocked on a later module, and the two remaining sub-modules in
-Sub-project A's build sequence.
+the previous `secretary_next_session.md` played until 2026-04-29 (closed
+on the merge of PR #5 + PR #6 — the manifest / atomic-I/O / orchestrators
+slice + review follow-ups).
 
-When all the items below are done, delete this file and create the next
-one.
+It captures: phases now closed (kept for context, with PR refs), the two
+remaining items in Sub-project A's build sequence, and a small set of
+carry-over dribbles.
+
+When the items below are done, delete this file and create the next one.
 
 Sub-project A's design anchor lives at
 `/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md` —
 re-read at the start of any session that touches Sub-project A code.
+The "Conflict resolution" section (around line 279) and the
+"Verification" section (around line 375, especially Definition-of-Done
+item #3) are the load-bearing parts for Phase A.6.
 
 PR-A's approved plan with PR-B / PR-C sketches lives at
 `/Users/hherb/.claude/plans/please-read-secretary-next-session-md-an-wondrous-cray.md` —
-the items below extend that plan with everything PR-A's review surfaced.
+the Phase A.6 scope below extends its PR-C sketch with everything
+PR-A's and PR-B's reviews surfaced.
 
 ---
 
-## Item 1 — Finish the §15 KAT contract
+## Phases now closed (kept for context)
 
-Per `docs/crypto-design.md` §15, the §15 list has twelve entries.
-Eleven now ship; one remains.
+### Phase A.1 — Cryptographic primitives ✅ — pre-PR #1
 
-### 1a. ~~`bip39_recovery_kat.json`~~ — DONE 2026-04-27 (PR #1)
+NIST KAT-pinned implementations of the v1 cipher suite:
+`crypto::{aead, kdf, hash, sig, kem}`. KATs in
+[core/tests/data/*.json](core/tests/data/) loaded by the shared
+[core/tests/kat_loader.rs](core/tests/kat_loader.rs).
 
-Delivered as [core/tests/data/bip39_recovery_kat.json](core/tests/data/bip39_recovery_kat.json)
-(4 vectors: all-zero, all-FF, two Trezor canonical 24-word) plus the
-`bip39_recovery_kat_vectors` test in [core/tests/unlock.rs](core/tests/unlock.rs),
-which pins three relations end-to-end: mnemonic↔entropy, `info_tag` bytes
-match `TAG_RECOVERY_KEK`, and entropy→Recovery KEK under HKDF-SHA-256.
-Cross-verified against the Trezor `mnemonic` Python package + the
-`cryptography` library's HKDF.
+### Phase A.2 — Identity ✅ — pre-PR #1
 
-### 1b. `golden_vault_001/` — blocked on PR-B's manifest layer
+[core/src/identity/](core/src/identity/): identity seed, role-keyed
+derivation (auth, KEM, recovery), Contact Cards, recipient fingerprints.
+Position-specific signature roles (`SigRole::Block`, `SigRole::Manifest`,
+…) so a signature for one purpose cannot be replayed in another.
 
-§15 promises a complete v1 vault: `vault.toml`, `manifest.cbor.enc`,
-`identity.bundle.enc`, one block, one Contact Card, decryptable from
-the spec alone via `core/tests/python/conformance.py`.
+### Phase A.3 — Unlock module ✅ — PR #1, 2026-04-27
 
-PR-A delivered the **block** slice ([core/tests/data/block_kat.json](core/tests/data/block_kat.json)
-+ a stdlib-only [core/tests/python/conformance.py](core/tests/python/conformance.py)
-that parses the §6.1 wire layout and cross-checks against the JSON
-inputs). What still needs to land before §15 is closed:
+[core/src/unlock/](core/src/unlock/): BIP-39 24-word mnemonic
+generate/parse, identity bundle (master KEK + recovery KEK dual wrap),
+`vault.toml` cleartext metadata, three orchestrators (`create_vault`,
+`open_with_password`, `open_with_recovery`). Argon2id v1 floor enforced
+as a typed error. BIP-39 recovery KAT in
+[core/tests/data/bip39_recovery_kat.json](core/tests/data/bip39_recovery_kat.json)
+(4 vectors: all-zero, all-FF, two Trezor canonical 24-word).
 
-- `manifest.cbor.enc` envelope and CBOR schema (PR-B Item 5).
-- A complete vault folder containing all four file types
-  (PR-B Item 5 — `golden_vault_001/`).
-- `conformance.py` extension to perform full hybrid-decap +
-  AEAD-decrypt + hybrid-verify across both block and manifest
-  (currently structural-only at the block level; PR-B Item 5).
+### Phase A.4 — Vault block file format ✅ — PR #3 (PR-A), 2026-04-28
 
----
+[core/src/vault/{record,block}.rs](core/src/vault/):
 
-## ~~Item 2 — Optional: ML-DSA sign-side NIST cross-validation~~ — DONE 2026-04-28 (PR #3)
+- `Record` types (login, secure note, API key, SSH key, custom) with
+  canonical CBOR encode/decode (RFC 8949 §4.2.1) and a forward-compat
+  `UnknownValue` opaque wrapper preserving bit-identical round-trips at
+  record + field level.
+- Binary block file: header (§6.1, 58 B prefix + vector clock), recipient
+  table (§6.2, 1208 B/entry, sorted by fingerprint), AEAD body under
+  per-block content key (§6.3), trailing hybrid signature suffix (§8).
+- `encrypt_block` / `decrypt_block` orchestrators as free `fn`s.
+  Verify-before-decap structurally enforced: a forged file never triggers
+  a private-key operation.
+- §15 block KAT: [core/tests/data/block_kat.json](core/tests/data/block_kat.json)
+  parsed wire-format-only (at the time) by
+  [core/tests/python/conformance.py](core/tests/python/conformance.py).
+- ML-DSA-65 NIST sigGen KAT (`ml_dsa_65_nist_siggen_kat`,
+  [core/tests/sig.rs](core/tests/sig.rs)): 5 ACVP-Server vectors
+  asserting NIST signatures come out byte-for-byte through our signer.
 
-Closed as `ml_dsa_65_nist_siggen_kat` in [core/tests/sig.rs](core/tests/sig.rs)
-(commit `7609b4e`), which feeds NIST's expanded sk (FIPS 204, 4032 bytes)
-into our signer and asserts NIST's signature comes out byte-for-byte for
-5 ACVP-Server vectors. The deprecated `ExpandedSigningKey::from_expanded`
-call is locally `#[allow(deprecated)]` with a 3-bullet rationale +
-upgrade path documented inline. Vectors appended to
-[core/tests/data/ml_dsa_65_kat.json](core/tests/data/ml_dsa_65_kat.json)
-under a new `siggen_vectors` array.
+### Phase A.5 — Manifest layer + atomic I/O + orchestrators ✅ — PR #5 + PR #6, 2026-04-29
 
----
+[core/src/vault/{manifest,io,canonical,orchestrators}.rs](core/src/vault/):
 
-## ~~Item 3 — Build-sequence next: `unlock` module~~ — DONE 2026-04-27 (PR #1)
+- **Manifest** ([manifest.rs](core/src/vault/manifest.rs)):
+  AEAD-encrypted under Identity Block Key with AAD = manifest header
+  bytes (§4.1), hybrid-signed with `SigRole::Manifest`, per-block
+  fingerprint table, vault-level vector clock (`tick_clock` errors on
+  `u64::MAX` overflow, does not saturate), `kdf_params`,
+  `owner_user_uuid`, trash list. `VectorClockEntry` is re-exported from
+  the block layer — same shape, same purpose.
+- **Atomic I/O** ([io.rs](core/src/vault/io.rs)): write-temp + fsync +
+  rename + parent-dir fsync, per ADR-0003. `tempfile` exact-pinned
+  (`=3.27.0`) as a security-critical path dependency.
+- **Shared canonical-CBOR helpers** ([canonical.rs](core/src/vault/canonical.rs)):
+  `canonical_sort_entries`, `encode_canonical_map`, the float/tag
+  walker, extracted before the third copy could land.
+- **Orchestrators** ([orchestrators.rs](core/src/vault/orchestrators.rs)):
+  `create_vault` (atomic four-file initial layout),
+  `open_vault` (verify-then-decrypt with `vault_uuid` and `kdf_params`
+  cross-checks per §4.3 step 5+6),
+  `save_block` (atomic write ordering per §9),
+  `share_block` (author-only re-sign with author-equals-identity
+  precondition; share-as-fork TODO markers pinned for the v2 follow-up).
+- **§15 closure**: [core/tests/data/golden_vault_001/](core/tests/data/golden_vault_001/)
+  deterministic full-vault fixture (vault.toml + manifest.cbor.enc +
+  identity.bundle.enc + one block + one Contact Card) verified end-to-end
+  by [core/tests/python/conformance.py](core/tests/python/conformance.py)
+  (full hybrid-decap + AEAD-decrypt + hybrid-verify, stdlib-only,
+  `uv run`-compatible). A regression test pins the silent-accept bug
+  found and fixed in the Python ML-DSA-65 verifier during this phase
+  (PR #6 commit `1c90852`).
 
-Per `docs/crypto-design.md` §3 + §4 + §5 and `docs/vault-format.md` §2 + §3,
-delivered across [core/src/unlock/](core/src/unlock/):
-
-- [mnemonic.rs](core/src/unlock/mnemonic.rs) — BIP-39 24-word generate +
-  parse with NFKD normalization, checksum validation, and zeroization on drop.
-- [bundle.rs](core/src/unlock/bundle.rs) — `IdentityBundle` plaintext
-  type with canonical CBOR encode/decode (RFC 8949 §4.2.1).
-- [bundle_file.rs](core/src/unlock/bundle_file.rs) — binary envelope for
-  `identity.bundle.enc` (vault-format §3) — encode/decode with strict
-  truncation/version/kind/length error variants.
-- [vault_toml.rs](core/src/unlock/vault_toml.rs) — `vault.toml` cleartext
-  metadata (vault-format §2) — encode/decode with strict v1 KDF param
-  enforcement, lowercase-canonical UUID parsing, and typed `MissingField` /
-  `FieldOutOfRange` / `TimestampOutOfRange` error variants.
-- [mod.rs](core/src/unlock/mod.rs) — `UnlockError` umbrella + the three
-  orchestrators: `create_vault`, `open_with_password`, `open_with_recovery`.
-
-Implementation plan and audit trail at
-[docs/superpowers/plans/2026-04-27-unlock-module.md](docs/superpowers/plans/2026-04-27-unlock-module.md).
-
----
-
-## Item 4 — Build-sequence: `vault` module (PARTIAL — block slice DONE in PR-A)
-
-Per `docs/crypto-design.md` §10–§11, the vault module owns:
-
-- ~~Block format: encrypted payload + per-recipient HybridWrap entries~~
-  ~~(the ones already produced by `kem::encap`).~~ — **DONE in PR-A**.
-- Manifest format: per-block recipient table, vector clocks for CRDT
-  merge, atomic writes — **PR-B (Item 5)**.
-- On-disk layout: `vault.toml` + `manifest.cbor.enc` +
-  `identity.bundle.enc` + per-block files — **PR-B (Item 5)**.
-- Conflict resolution: vector-clock-driven merge, since multiple
-  devices write through the same cloud-folder transport — **PR-C (Item 6)**.
-
-[core/src/vault/mod.rs](core/src/vault/mod.rs) is no longer a stub:
-[`record.rs`](core/src/vault/record.rs) and [`block.rs`](core/src/vault/block.rs)
-now hold the §6.3 record CBOR layer and the full §6.1 / §6.2 binary
-block file (encode + decode + encrypt_block + decrypt_block, hybrid-signed
-with `SigRole::Block`, verify-before-decap discipline pinned by proptest
-property E in [core/tests/proptest.rs](core/tests/proptest.rs)).
+After PR #6: 340+ tests pass (`cargo test --release --workspace`),
+clippy clean with `-D warnings`, `#![forbid(unsafe_code)]` crate-wide.
 
 ---
 
-## Item 5 — PR-B: manifest + atomic I/O + orchestrators + golden_vault_001
+## Open Item 1 — Phase A.6 / PR-C: vector-clock CRDT merge primitives
 
-PR-B is the next piece of Sub-project A and unblocks Item 1b. Estimated
-shape: ~25 commits, ~5,000 lines, 2-3 sessions matching PR-A's cadence.
+The remaining v1 functional piece of Sub-project A. Closes
+Definition-of-Done item #3 in
+`/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md` (CRDT
+merge is commutative, associative, and idempotent under random
+sequences of edits).
+
+**Scope boundary**: this is the *primitive* layer only. Pure functions,
+no I/O, no scheduling. Orchestration of when/where the merge runs (file
+watching, cloud-folder integration, conflict-detection scheduling) is
+explicitly Sub-project C in the current ROADMAP (the sync-orchestration
+layer that sits between FFI and the platform UIs). The design anchor at
+`/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md`
+(around line 279) labels orchestration as "Sub-project B" under its
+older breakdown, but the ROADMAP has since split FFI off as B and
+demoted sync orchestration to its own phase C — same scope, different
+label. Push back if Phase A.6 scope drifts toward orchestration under
+either label.
+
+Estimated shape: ~10–15 commits, ~1,500 lines, one session.
 
 ### Files to create
 
 | Path | Purpose |
 |---|---|
-| `core/src/vault/manifest.rs` | `Manifest` CBOR schema (§4 of vault-format, §10–§11 of crypto-design). AEAD-encrypted under Identity Block Key with AAD = manifest header bytes (§4.1). Hybrid-signed with `SigRole::Manifest`. Per-block fingerprint table, vault-level vector clock, kdf_params, owner_user_uuid, trash list. |
-| `core/src/vault/io.rs` | Atomic-write helpers: `write_atomic(path, bytes)` writes to `<path>.tmp.<random>`, fsync, rename. `fsync_dir(parent)` after rename. Used by manifest + block writes. **Pure functions; the only place vault code touches the filesystem.** |
-| `core/src/vault/canonical.rs` | Shared canonical-CBOR helpers. **Threshold-crossing extraction**: PR-A's `record.rs` and `block.rs` each carry private copies of `canonical_sort_entries`, `encode_canonical_map`, and `reject_floats_and_tags`. Two copies were defensible; manifest brings a third. Extract a `pub(crate) fn` taking the error type as a generic parameter (or three concrete error types via macro). Reviewer (Task 3 quality review) explicitly flagged this as the trigger point. |
-| `core/tests/data/golden_vault_001/` | Full deterministic vault: `vault.toml` + `identity.bundle.enc` + `manifest.cbor.enc` + `blocks/<uuid>.cbor.enc` + `contacts/<uuid>.card`. Fixed seeds, fixed timestamps, regenerable via a `bootstrap_dump`-style ignored test (mirroring PR-A's `block_kat_bootstrap_dump`). |
-| `core/tests/python/conformance.py` (extend) | Add full hybrid-decap + AEAD-decrypt + hybrid-verify for both block and manifest. Re-derive identity from a JSON-pinned secret-key set (NOT from a seed — the Rust/Python keygen-from-seed match is too fragile, see PR-A Concern 2). Run via `uv run --with cryptography --with pqcrypto-mlkem --with pqcrypto-mldsa core/tests/python/conformance.py`. Exit 0 on PASS, 1 on FAIL, 2 on missing fixture. |
-| `core/tests/vault_e2e.rs` | Rust integration tests mirroring the Python checks plus full create/open/save/share orchestrator round-trips. |
+| `core/src/vault/conflict.rs` | Pure functions:<br>`pub fn merge_vector_clocks(a: &[VectorClockEntry], b: &[VectorClockEntry]) -> Vec<VectorClockEntry>` — component-wise max over `{device_uuid → counter}`, sorted ascending by `device_uuid` per §6.1.<br>`pub fn clock_relation(a, b) -> ClockRelation { Equal, IncomingDominates, IncomingDominated, Concurrent }`.<br>`pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord { Clean(Record), Conflict(Record /* with `_conflicts` shadow */) }` — field-level LWW with `device_uuid` lex tiebreak when `last_mod_ms` ties; tombstone takes precedence iff its `last_mod_ms` is strictly newer; conflicting "real" edits (different values written by both devices since the last common ancestor) preserved in `_conflicts`.<br>`pub fn merge_block(local: &BlockPlaintext, remote: &BlockPlaintext) -> MergedBlock` — record-level union, then per-record merge. |
+| `core/tests/data/conflict_kat.json` | §15 cross-language vector. Golden conflict-resolution inputs (two divergent record sets + their vector clocks + the device IDs of the writers) and the expected merged output. Replayable from `conformance.py`. |
+| `core/tests/conflict.rs` | Integration tests: hand-built scenarios for each `ClockRelation` outcome, each tombstone-vs-edit case, each `_conflicts` shadow case. Mirror the structure of [core/tests/vault.rs](core/tests/vault.rs). |
 
 ### Files to modify
 
-- `core/src/vault/mod.rs` — orchestrators:
-  - `pub fn create_vault(folder, password, mnemonic_seed, identity_seed, owner_card, kdf_params, rng) -> Result<(), VaultError>` produces the four canonical files in an empty directory.
-  - `pub fn save_block(folder, identity, manifest, plaintext, vector_clock_tick) -> Result<(), VaultError>` encrypts a new block, atomic-writes, updates manifest fingerprint, atomic-writes the manifest.
-  - `pub fn share_block(folder, block_uuid, identity, recipient_card) -> Result<(), VaultError>` adds a recipient wrap and re-writes the block.
-  - `pub fn open_vault(folder, unlocker) -> Result<OpenVault, VaultError>` wraps `unlock::open_with_password` / `open_with_recovery`, decrypts manifest, hybrid-verifies, runs rollback check, returns a handle.
-- `core/src/vault/block.rs` — switch private CBOR helpers to call into `vault::canonical` (matches the new shared module).
-- `core/src/vault/record.rs` — same switch.
-- `core/src/identity/card.rs` — add `pub fn pk_bundle_bytes(&self) -> Vec<u8>` (canonical CBOR of the four-pk tuple). Documented in `identity::mod.rs:11` as if it exists; PR-A's smoke tests use ad-hoc concatenation pending this. Adding it lets PR-B's golden_vault_001 use the real bundle bytes everywhere.
+- `core/src/vault/mod.rs` — `pub mod conflict;` and re-export
+  `MergedRecord`, `MergedBlock`, `ClockRelation`,
+  `merge_vector_clocks`, `merge_record`, `merge_block`. Add
+  `Conflict(#[from] ConflictError)` to `VaultError` if
+  `ConflictError` ends up needed (likely not — the merge is total over
+  well-formed inputs).
+- `core/tests/proptest.rs` — extend with three CRDT properties at
+  proptest defaults (~256 cases):
+  - **Property I — `merge_commutativity`**: `merge_record(a, b)` and
+    `merge_record(b, a)` produce the same `MergedRecord` (modulo
+    `_conflicts` ordering, which must itself be canonical so the
+    equality holds bit-identically).
+  - **Property J — `merge_associativity`**:
+    `merge_record(merge_record(a, b).into_record(), c) ==
+     merge_record(a, merge_record(b, c).into_record())`.
+  - **Property K — `merge_idempotence`**: `merge_record(a, a) == a`.
+
+  Reuse / extend the existing `card_strategy` / `build_identity` helpers
+  ([proptest.rs:66, 105](core/tests/proptest.rs)). Add a strategy that
+  produces random `Record` plus random `device_uuid` / `last_mod_ms`
+  mutations simulating concurrent edits.
+- `core/tests/python/conformance.py` — add a `conflict_kat.json` path:
+  decode, run a Python translation of `merge_block`, assert the merged
+  output bit-identically matches the JSON `expected` field.
+  This Python merge is the smallest second-implementation that proves
+  the spec describes the merge unambiguously.
+- `docs/crypto-design.md` §10–§11 — surface the `_conflicts` shadow
+  schema: how a field with concurrent real edits is represented in the
+  CBOR record so a UI can present both values for user resolution.
+  This may turn out to need a small schema addition (a `_conflicts`
+  reserved key) — coordinate with the spec section that documents
+  reserved field-name prefixes.
 
 ### Reusable bits already shipped
 
-- AEAD: `crypto::aead::{encrypt, decrypt}` — manifest body re-uses these with AAD = manifest header bytes.
-- Hybrid sig: `crypto::sig::{sign, verify}` with `SigRole::Manifest` — already supported, just call.
-- Hybrid KEM: `crypto::kem::{encap, decap}` — manifest doesn't need KEM, but `share_block` does (for adding recipient wraps).
-- Identity Block Key + Master KEK derivation: `unlock::{create_vault, open_with_password, open_with_recovery}` — open paths already produce the IBK; manifest decrypts under it.
-- `ContactCard` + `Fingerprint`: from PR #1, already canonical.
+- `VectorClockEntry` ([block.rs](core/src/vault/block.rs), re-exported
+  from [manifest.rs](core/src/vault/manifest.rs)) — same shape used by
+  both block headers and manifest entries.
+- `tick_clock` rejects `u64::MAX` overflow as typed error (PR #5
+  commit `1608bd9`) — `merge_vector_clocks` should not need to call
+  `tick_clock`; it only takes max of existing counters.
+- `Record` + `RecordField` types from
+  [record.rs](core/src/vault/record.rs) already include the per-field
+  `last_mod_ms` and `device_uuid` needed for LWW. Verify before relying:
+  the design anchor talks about field-level metadata; confirm what's
+  actually present in the type today before designing the merge against
+  it.
+- `proptest.rs` strategies (`arr16`, `arr32`, `card_strategy`, etc.)
+  give a starting point for `Record` strategies.
 
-### Verification (PR-B done when)
+### Verification (Phase A.6 done when, and Sub-project A v1-feature-done when)
 
-1. `cargo test --release --workspace` green; new test count target ~280 (was 230 after PR-A).
+1. `cargo test --release --workspace` green; new test count target ~370
+   (was 345 + 6 ignored after PR #6).
 2. `cargo clippy --all-targets --workspace -- -D warnings` clean.
-3. `uv run core/tests/python/conformance.py` exits 0, parses both block and manifest end-to-end with full crypto verify.
-4. `golden_vault_001/` regenerable via `bootstrap_dump`-style ignored test; bytes pinned and stable across machines.
-5. `BlockFile` round-trip + manifest round-trip + create_vault → open_vault round-trip all proven by integration tests.
-6. `decrypt_manifest` enforces the §10 rollback resistance check (typed `VaultError::Rollback { local_clock, incoming_clock }` variant).
-
-### PR-B follow-ups from PR #3 reviewer audit
-
-Surfaced by parallel reviewers (code-reviewer, silent-failure-hunter,
-pr-test-analyzer) when PR-A was audited end-to-end before merge.
-Medium-rated, non-blocking on PR-A merge but tracked here so they don't
-slip into PR-C or beyond:
-
-1. **Python conformance must verify, not just parse.** The
-   `conformance.py` row above already plans the full hybrid-decap +
-   AEAD-decrypt + hybrid-verify extension. The reviewer's framing for
-   *why* it matters: today
-   [conformance.py](core/tests/python/conformance.py) confirms wire-format
-   byte layout but runs no crypto — no Ed25519 / ML-DSA-65 verify, no
-   X25519 / ML-KEM-768 decap, no AEAD decrypt. A second-language client
-   could parse correctly while computing the signed range wrong, getting
-   AAD wrong, or reversing hybrid concat order — and conformance would
-   still print PASS. Since §15 cross-language conformance is the line of
-   defence for the Python/Swift/Kotlin clients, the parse-only stance is
-   too weak for `golden_vault_001/`. Minimum bar (in addition to the
-   Item 5 plan): recompute the signed-range bytes from the hex fixture
-   and assert they match what the embedded signatures cover.
-
-2. **Encrypted-for-other-not-self path untested.** Today's tests cover
-   owner+alice+bob all decrypting and stranger-rejected. Missing: owner
-   encrypts for `{alice, bob}` only (NOT self) → alice decrypts, bob
-   decrypts, owner gets `NotARecipient`. This is the send-only-mode
-   semantics path. Add to `core/tests/vault.rs` integration suite.
-
-3. **`VectorClockDuplicateDevice` / `VectorClockCountMismatch` lack
-   dedicated negative tests.** Both are production rejection sites
-   ([block.rs:649,758](core/src/vault/block.rs)) and the proptest at
-   [proptest.rs:981-983](core/tests/proptest.rs) lists them as
-   *permitted* outcomes — allowed but not asserted to fire. A regression
-   that demoted `VectorClockDuplicateDevice` into a generic "ok" path
-   would not be caught. `VectorClockNotSorted` already has a dedicated
-   test ([vault.rs:1076](core/tests/vault.rs)); these two siblings
-   deserve the same treatment.
-
-4. **Plaintext-level `unknown` bag round-trip untested at the
-   block-cycle level.** Record-level + field-level forward-compat is
-   well covered in `record.rs` tests. The `BlockPlaintext::unknown`
-   field is always `BTreeMap::new()` in current tests. Add a test that
-   survives an encrypt → encode → decode → decrypt cycle bit-identically.
-   Subsumes Item 7's "unknown BTreeMap forward-compat in proptests" note
-   if approached as an integration test rather than a property.
-
-5. **Optional polish (low value, do only if convenient)**:
-   - One negative ML-DSA-65 sigGen vector (mutated message) would prove
-     the assertion isn't tautological. 5 positive vectors is thin but
-     deterministic, so this is a nice-to-have.
-   - `seen_keys: BTreeMap<String, ()>` → `BTreeSet<String>` in
-     [record.rs:585,686](core/src/vault/record.rs) and
-     [block.rs:1043](core/src/vault/block.rs) — set-in-disguise idiom.
-   - [block.rs:1317-1319](core/src/vault/block.rs)
-     `count_usize.checked_mul(RECIPIENT_ENTRY_LEN)` cannot overflow
-     (`u16::MAX × 1208 ≈ 79 MB`); `BlockError::TooManyRecipients` is
-     dead. Defensive code is fine; flag only.
-
-### Spec-doc tickets to fold in
-
-These surfaced during PR-A review and are bundled with PR-B because the
-manifest layer is where they materially affect documentation:
-
-- **§6.2 wire-form clarification**: spec presents `wrap_ct (32)` and
-  `wrap_tag (16)` as two rows, but they sit adjacent on the wire with no
-  separator or length prefix. Add: "wrap_ct and wrap_tag are concatenated
-  on disk; the row split is purely presentational."
-- **§6.1 sig_pq_len annotation**: spec annotates `sig_ed_len = u16, 64`
-  but writes `sig_pq_len = u16` without the value pin. Mirror the Ed25519
-  annotation: `sig_pq_len = u16, 3309 (suite v1)`.
-
-Both are documentation-only edits to `docs/vault-format.md`.
-
-### Carry-overs from PR-A reviews
-
-These are tracking notes filed during PR-A; PR-B is the natural place
-to act on them:
-
-- ~~Float/tag walker duplication~~ — extracted to `vault/canonical.rs`
-  (the threshold-crossing trigger).
-- ~~`canonical_sort_entries` / `encode_canonical_map` duplication~~ —
-  extracted at the same time.
-- `records_to_value` / `take_records` byte round-trip — defer until
-  profiling shows it on a hot path; PR-B's manifest workload is the
-  first realistic profiling target.
-
----
-
-## Item 6 — PR-C: vector-clock conflict resolution + CRDT proptests
-
-Closes Sub-project A's CRDT acceptance criterion (point 3 of
-`/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md`
-Verification §). Estimated ~10-15 commits, ~1,500 lines, one session.
-
-### Files to create
-
-| Path | Purpose |
-|---|---|
-| `core/src/vault/conflict.rs` | Pure functions (no state):<br>`pub fn merge_vector_clocks(a, b) -> VectorClock` (component-wise max).<br>`pub fn clock_relation(a, b) -> ClockRelation { Equal, IncomingDominates, IncomingDominated, Concurrent }`.<br>`pub fn merge_record(local, remote) -> MergedRecord { Clean(Record), Conflict(Record /*with _conflicts shadow*/) }` — field-level LWW with `device_uuid` lex tiebreak; tombstone takes precedence if its `last_mod_ms` is strictly newer.<br>`pub fn merge_block(local, remote) -> MergedBlock` — record-level union, then per-record merge. |
-| `core/tests/data/conflict_kat.json` | Golden conflict-resolution vectors so the CRDT semantics are pinned cross-language (the §15 vector that future Python/Swift/Kotlin clients must reproduce). |
-
-### Files to modify
-
-- `core/tests/proptest.rs` — extend with three CRDT properties:
-  - `merge_commutativity`: `merge(a, b) == merge(b, a)` for arbitrary records with shared / divergent fields.
-  - `merge_associativity`: `merge(merge(a, b), c) == merge(a, merge(b, c))`.
-  - `merge_idempotence`: `merge(a, a) == a`.
-
-  Use proptest default cases (~256). Strategy: random `Record` from PR-A's
-  helper plus random `device_uuid`/`last_mod_ms` mutations that simulate
-  concurrent edits.
-
-### Verification (PR-C done when, and Sub-project A done when)
-
-1. `cargo test --release --workspace` green; test count ~310-320.
-2. `cargo clippy --all-targets --workspace -- -D warnings` clean.
-3. CRDT proptests pass at default proptest cases.
+3. Three CRDT proptests pass at default proptest cases. None of the
+   three is allowed to be tagged `#[ignore]`.
 4. `conflict_kat.json` decoded by `conformance.py` and replayed through
-   `merge_block` to assert the same merged output cross-language.
-5. **Sub-project A definition-of-done** (per the design anchor): a new
-   contributor can clone the repo, run
+   a Python `merge_block` to assert the same merged output
+   cross-language. Exit 0 on PASS, 1 on FAIL, 2 on missing fixture
+   (matches the existing `conformance.py` exit-code convention).
+5. **Sub-project A v1-feature-done test** (per the design anchor's DoD):
+   a new contributor can clone the repo, run
    `cargo test --workspace && uv run core/tests/python/conformance.py`,
    see all green, read `docs/crypto-design.md` + `docs/vault-format.md`
    alone, and write an interoperable client in any language without
    reading any Rust source.
 
----
+### Known risks / things to watch
 
-## Item 7 — Carry-over notes (small tickets)
-
-Surfaced during PR-A reviews; bundle into PR-B unless noted:
-
-- **`ContactCard::pk_bundle_bytes()` helper** — see Item 5 list above.
-  PR-B's natural home; PR-A's smoke tests work around it.
-- **`unknown` BTreeMap forward-compat in proptests** — PR-A's record-level
-  proptest A uses `BTreeMap::new()` for the unknown bag, with the tradeoff
-  documented inline. Add a strategy generating bounded `ciborium::Value`
-  trees if future regressions warrant. Not urgent.
-- **`bootstrap_inputs` doc-comment correction** — the dumper at
-  `core/tests/vault.rs:1342` is hermetic; drift detection comes from the
-  assertion test, not the dumper. Wording corrected in PR-A commit
-  `84bed1a`. No further action.
-- **Cross-cutting cleanup of pre-existing review-fix patterns** — none
-  outstanding from PR #1; PR-A's own review-fix commits (`7fa9a7b`,
-  `1e85e2b`, `cf42bb5`, `6a19e10`, `84bed1a`, `a5e37ca`, `e971abe`,
-  `d1ae5c8`) closed every issue raised during its reviews.
+- **`_conflicts` shadow schema not yet pinned in the spec.** The design
+  anchor describes the *behaviour* (both values preserved until UI
+  resolves) but not the *byte representation*. PR-C must either pin it
+  in `docs/crypto-design.md` §10–§11 *and* the CBOR record schema, or
+  defer the schema decision and ship merge primitives that return a
+  Rust enum without serialising `_conflicts` to disk. Pick one
+  explicitly; do not paper over it.
+- **Field-level `last_mod_ms` / `device_uuid` may not yet exist on
+  `Record`.** If they don't, adding them is a record-format change and
+  needs to be done on disk-compatibly with `golden_vault_001/`. Verify
+  the current `Record` shape before designing the merge.
+- **`merge_record` totality.** The merge must be total over all
+  well-formed `Record` pairs. Don't introduce error cases for
+  "incompatible" records — that would let an attacker who can shape
+  records cause a denial of merge. If two records collide irreconcilably,
+  `_conflicts` is the answer, not an error.
 
 ---
 
-## What this session delivered (2026-04-26 → 2026-04-26)
+## Open Item 2 — Phase A.7: hardening + external audit prep
 
-For session-context retention. Five commits on `main`:
+After Phase A.6 lands, Sub-project A has one phase left before FFI
+bindings begin. This is the gate before any Sub-project B work.
 
-1. `1fe9693` — security-review fixes #1–#5, #7–#11, #13 (carried over
-   from the previous session, committed at start of this one).
-2. `88a1c0b` — proptest file with 6 properties (FIXME #12).
-3. `e523f7d` — JSON KAT loader infrastructure (FIXME #6, step 1a).
-4. `06c6e1a` — 8 KAT fixtures externalized to JSON (FIXME #6, step 1b).
-5. `dcfd1e1` — NIST FIPS 203 / FIPS 204 KAT vectors (FIXME #6, step 1c).
+- **Independent cryptographic review** (paid, external). Engage early —
+  the design has been frozen since the PR #1 / PR #3 / PR #5 cadence,
+  so the spec docs are stable enough to send out. Especially valuable:
+  reviewer with FIPS 203 / FIPS 204 implementer experience and
+  AAD/signed-range eyes.
+- **Fuzz harness for the wire-format decoders** (`cargo fuzz`). Targets:
+  `decode_block_file`, `decode_manifest`, `decode_identity_bundle`,
+  `decode_record`, `decode_contact_card`. Coverage-guided; corpus
+  seeded from the §15 KAT fixtures.
+- **Side-channel review**. Constant-time critical paths:
+  - All AEAD verify-then-decap flows (already structurally verified
+    per PR-A; needs constant-time primitive review).
+  - `Fingerprint` comparison and recipient-table lookup.
+  - Argon2id comparison sites if any (unlock paths).
+- **Memory hygiene audit**. `zeroize` coverage on every secret type;
+  `secrecy::Secret` typestate where it's load-bearing; drop ordering
+  in `IdentityBundle`, `BlockPlaintext`, `Identity`. Especially the
+  paths that hold a secret across an `?` propagation site.
+- **Documentation pass**.
+  `docs/threat-model.md` updated to reference the as-implemented surface
+  (currently written from spec, not from code — small gaps will have
+  surfaced).
+  `docs/vault-format.md` clarifications surfaced during PR-A / PR-B / PR-C.
+  Two known docs tickets carried forward: §6.2 wire-form
+  clarification (`wrap_ct (32)` and `wrap_tag (16)` adjacent on wire),
+  and §6.1 `sig_pq_len = u16, 3309 (suite v1)` annotation.
 
-`FIXME.md` is now removed. Test count: 6 proptest properties + 122
-unit/integration tests, all passing under `cargo test --release`.
+End of Sub-project A: Rust core is feature-complete for v1, audited,
+and ready to be wrapped by FFI in Sub-project B (which then unblocks
+Sub-project C — sync orchestration — and Sub-project D — platform UIs).
 
-## What the next session delivered (2026-04-27 — PR #1, `feature/unlock-module`)
+---
 
-The unlock module (Item 3) and the BIP-39 recovery KAT (Item 1a),
-shipped via subagent-driven TDD against
-[docs/superpowers/plans/2026-04-27-unlock-module.md](docs/superpowers/plans/2026-04-27-unlock-module.md).
+## Carry-over dribbles
 
-29 commits on `feature/unlock-module` (PR #1):
+Small open items not big enough to merit their own phase. Bundle into
+the next PR they touch.
 
-- Five from the original Opus run before context compaction
-  (`a69c078..c43988a`): `mnemonic.rs` (BIP-39 24-word with checksum +
-  zeroize) and `bundle.rs` (IdentityBundle plaintext + canonical CBOR).
-- Eighteen from the resumed Opus run (`a1f9add..e79ae2a`): `bundle_file.rs`
-  (envelope), `vault_toml.rs` (metadata), `UnlockError`, `create_vault`,
-  `open_with_password`, `open_with_recovery`, integration tests, BIP-39
-  KAT, proptest, plus a latent-bug fix for `vault_toml::encode` rejecting
-  timestamps > i64::MAX as a typed error (caught by proptest).
-- One cross-block cleanup (`1a09323`): unlock submodules switched to
-  `crate::version::{MAGIC, FORMAT_VERSION, SUITE_ID}` instead of duplicating
-  constants; `BundleError::MissingField` typed variant replaced eleven
-  CborError(format!("missing field …")) sites.
-- Five review-driven fixes (`4ffd388..63cda0f`) addressing every issue the
-  PR review surfaced (BIP-39 KAT mixed-byte vectors, `created_at_ms`
-  cross-check, Argon2id v1 floor, dead `AeadFailure` variant, `map_bip39_error`
-  exhaustiveness comments).
+- **`unknown` BTreeMap forward-compat in proptests.** PR-A's
+  record-level proptest A uses `BTreeMap::new()` for the unknown bag,
+  with the tradeoff documented inline. Add a strategy generating
+  bounded `ciborium::Value` trees if future regressions warrant. Not
+  urgent. PR-B added a block-cycle integration test for the
+  `BlockPlaintext::unknown` path; the proptest strategy gap is
+  field-level only.
+- **`share-as-fork` v2 follow-up.** PR #5 / PR #6 pinned two TODO
+  markers for share-as-fork at the encrypt/decrypt call sites. This is
+  a v2 vault-format change (out of scope for Sub-project A), but
+  re-validate the markers when Phase A.6 touches `share_block`-adjacent
+  code so they don't drift.
+- **`records_to_value` / `take_records` byte round-trip.** Defer until
+  profiling shows it on a hot path; the manifest workload is the
+  earliest realistic profiling target and Phase A.6 doesn't add new
+  hot paths.
+- **`§6.2 wrap_ct + wrap_tag` and `§6.1 sig_pq_len` annotations** —
+  bundled into Phase A.7's documentation pass above; flag here so they
+  don't slip if Phase A.7 gets reorganised.
 
-Test count after: 158. All clean under `cargo test --release --workspace`
-and `cargo clippy --all-targets --workspace -- -D warnings`.
+---
 
-## What this session delivered (2026-04-28 — PR #3, `feature/vault-block-format`)
+## What previous sessions delivered
 
-PR-A: the block-file slice of the vault module (Item 4 partial), the
-§15 block KAT (Item 1b's block half), and Item 2's ML-DSA NIST sigGen
-KAT. Shipped via subagent-driven TDD against
-[/Users/hherb/.claude/plans/please-read-secretary-next-session-md-an-wondrous-cray.md](/Users/hherb/.claude/plans/please-read-secretary-next-session-md-an-wondrous-cray.md).
+### PR #5, `feature/vault-manifest` — 2026-04-28 → 2026-04-29
 
-22 commits on `feature/vault-block-format` (PR #3):
+Phase A.5 in one PR. ~30 commits, the full manifest + atomic I/O +
+orchestrators + golden-vault scope:
 
-- **5 feat commits** (`7cf076f`, `e085fa7`, `ae91485`, `9a4d128`, `e4bcdec`):
-  record types + canonical CBOR, record CBOR test corpus, block plaintext
-  + binary header, block AEAD body + recipient table, block hybrid sign /
-  verify wired.
-- **5 review-driven fix commits** (`7fa9a7b`, `1e85e2b`, `cf42bb5`,
-  `6a19e10`, `a5e37ca`): position-specific error variants restored
-  (`RecipientCtWrongLength`, `SigPqWrongLength`); `FloatRejected` doc
-  vs code reconciliation; `SIGNATURE_SUFFIX_LEN` derived from
-  `ML_DSA_65_SIG_LEN` not hard-coded; `expected.block_file_hex` doc drift.
-- **3 refactor commits** (`abfc670`, `182f075`, `0fe15bc`):
-  `canonical_sort_entries` propagates errors instead of swallowing;
-  `UnknownValue` opaque newtype keeps ciborium out of the public API;
-  BTreeMap-vs-canonical-CBOR doc-comment corrected.
-- **3 test commits** (`572329c`, `d5d1a20`, `d53ca23`):
-  integration tests (round-trip, multi-recipient, every byte field
-  flipped), 5 proptest properties (incl. verify-before-decap fuzzing),
-  §15 block KAT JSON fixture + Rust pin + Python conformance stub.
-- **1 Item 2 commit** (`7609b4e`): ML-DSA-65 NIST sigGen KAT —
-  5 NIST ACVP-Server vectors against the deprecated `from_expanded`
-  API, locally `#[allow(deprecated)]` with documented upgrade path.
-- **5 polish commits** (`48eee89`, `e1cd5ee`, `84bed1a`, `e971abe`,
-  `d1ae5c8`): tracking notes from reviews; `forbid(unsafe_code)`
-  consistency across integration test files; const-asserts on
-  `HEADER_PREFIX_LEN`, `VECTOR_CLOCK_ENTRY_LEN`, `ML_DSA_65_SIG_LEN`.
+- **`feat(vault)` commits** (`5719277`, `5af1906`, `1e0ff58`, `13ace27`):
+  the four orchestrators — `create_vault` (atomic four-file initial
+  layout), `save_block` (atomic write ordering per §9), `open_vault`
+  (verify-then-decrypt with rollback check), `share_block` (author-only
+  re-sign with send-only-mode test).
+- **`fix(vault)` commits** (`58cf8de`, `83d2ab9`, `785560e`, `1608bd9`):
+  `open_vault` enforces §4.3 step 5 (`vault_uuid` cross-check) and
+  step 6 (`kdf_params` cross-check); `share_block` enforces
+  author == open.identity precondition; `tick_clock` errors on
+  `u64::MAX` overflow instead of saturating.
+- **`refactor(vault)` commits** (`70660c5`, `7e0178d`, `d771fc4`):
+  `BTreeMap<String, ()>` → `BTreeSet<String>` for `seen_keys`;
+  `signed_message_bytes` takes loose fields and drops the sign
+  placeholder; `FINGERPRINT_LEN` renamed to disambiguate, `kdf_params`
+  check simplified.
+- **`test(vault)` commits** (`a66cc5a`, `b7d598b`, `464d6dc`,
+  `81935b1`, `815c329`, `b043e9f`, `ccdc11c`, `6e3a64b`, `2b733a4`):
+  `golden_vault_001/` deterministic fixture and pin; full
+  hybrid-decap + AEAD-decrypt + hybrid-verify in `conformance.py`;
+  proptest properties F/G/H for manifest; dedicated negatives for
+  `VaultError` and `ManifestError` variants reachable from `open_vault`
+  and `share_block`; unit-level tampers for `aead_nonce` / `aead_tag`
+  inside the signed range; proptest property G closes the
+  `author_fingerprint` hole; tightened broad `except` in
+  `conformance.py` CBOR decode sites.
 
-Test count after: 230 + 1 ignored bootstrap (was 158 + 11 proptest =
-169). Breakdown: 81 lib + 33 vault integration + 16 proptest +
-16 sig + 16 kem + 17 identity + 8 aead + 11 kdf + 8 secret + 7 hash
-+ 16 unlock + 1 ignored bootstrap dump. All clean under
-`cargo test --release --workspace` and
-`cargo clippy --all-targets --workspace -- -D warnings`. Python
-conformance stub (`uv run core/tests/python/conformance.py`) exits 0
-on the canonical fixture; verified to exit 1 on flipped magic byte
-and on truncation.
+After merge: 345 tests pass + 6 ignored.
 
-### Public API surface added
+### PR #6, `chore/pr-b-review-followups` — 2026-04-29
 
-- `secretary_core::vault::record::{Record, RecordField, RecordFieldValue,
-  UnknownValue, RecordError, encode, decode}` — §6.3 record CBOR.
-- `secretary_core::vault::block::{BlockHeader, BlockPlaintext, BlockFile,
-  RecipientWrap, RecipientPublicKeys, VectorClockEntry, BlockError,
-  encode_block_file, decode_block_file, encrypt_block, decrypt_block,
-  encode_recipient_table, decode_recipient_table, FILE_KIND_BLOCK,
-  RECIPIENT_ENTRY_LEN}` — §6.1 / §6.2 / §8 binary block file.
-- `secretary_core::vault::VaultError` — umbrella with
-  `Record(#[from] RecordError)` + `Block(#[from] BlockError)`.
+PR-B review follow-ups, all small but worth pinning:
 
-### Cross-language conformance scaffold
+- `8236ae7` — split orchestrators out of `mod.rs` into
+  `orchestrators.rs` (file-size hygiene; `mod.rs` stays a re-export
+  hub).
+- `069c0ce` — exact-pin `tempfile = "=3.27.0"` for the security-critical
+  atomic-write path; documented in `Cargo.toml` why exact pinning here.
+- `9fda717` + `1c90852` — fix and regression-test for a silent-accept
+  bug in the Python `conformance.py` ML-DSA-65 verifier (it accepted
+  invalid signatures). The fix was conformance-only (no Rust change),
+  but the regression test now ensures any future verifier rewrite
+  doesn't silently re-introduce the same hole.
+- `121e7c2` + `75390ac` — share-as-fork TODO markers pinned at the
+  encrypt and decrypt call sites for v2 follow-up.
+- `68cf44e` — tempfile documented as a security-critical path
+  dependency.
+- `19604b6` — caller-side nonce generation idiom documented in the
+  AEAD module (orientation for future contributors; no API change).
 
-- `core/tests/data/block_kat.json` — one canonical 5076-byte BlockFile
-  with all inputs (RNG seed, identity SKs, vault/block UUIDs, vector
-  clock, plaintext records). Drift-pinned by
-  `block_kat_self_recipient_one_record` (assertion) and
-  `block_kat_bootstrap_dump` (`#[ignore]` regenerator using
-  `eprintln!`, NEVER auto-overwrites the JSON).
-- `core/tests/python/conformance.py` — UV-runnable, PEP 723, stdlib-only.
-  Walks §6.1 byte-by-byte from the spec docs alone, enforces §14
-  length constants and the §6.2 sort invariant, cross-checks parsed
-  values against JSON inputs. Full crypto verify (decap + AEAD-decrypt
-  + hybrid-verify) deferred to PR-B per Item 5.
-
-Branch is awaiting merge of PR #3 to `main`. After merge, Items 1b, 5,
-6, and 7 remain open for future sessions.
+After merge: 345 tests pass + 6 ignored, tree state matches the
+"Phases now closed" inventory above.

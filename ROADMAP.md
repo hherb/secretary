@@ -2,9 +2,9 @@
 
 This roadmap shows where Secretary is today and what comes next. It is meant for potential contributors deciding whether and where to help, and for users trying to gauge when the project will be usable.
 
-The project is structured as three sequential sub-projects. Each sub-project is a coherent unit of work that can be reviewed end-to-end before the next begins. **Sub-project A** is the Rust cryptographic core and on-disk format. **Sub-project B** is the FFI binding layer (PyO3 + uniffi). **Sub-project C** is the platform UIs.
+The project is structured as four sequential sub-projects. Each sub-project is a coherent unit of work that can be reviewed end-to-end before the next begins. **Sub-project A** is the Rust cryptographic core and on-disk format. **Sub-project B** is the FFI binding layer (PyO3 + uniffi). **Sub-project C** is the headless sync-orchestration layer — file watching, cloud-folder integration, conflict-detection scheduling — exposed across the FFI so every UI gets the same orchestration semantics for free. **Sub-project D** is the platform UIs.
 
-This ordering is deliberate. The cryptographic core is the only piece where mistakes are hard to walk back — once a vault format is in the wild and people have stored multi-decade secrets in it, you cannot fix a flaw without a forced migration. So the core ships first, with rigour, and only then do the bindings and UIs go on top.
+This ordering is deliberate. The cryptographic core is the only piece where mistakes are hard to walk back — once a vault format is in the wild and people have stored multi-decade secrets in it, you cannot fix a flaw without a forced migration. So the core ships first, with rigour. Sync orchestration sits between FFI and the UIs as its own phase rather than being folded into per-platform UI work, so the orchestration logic is built and tested once (with a headless `secretary sync` CLI as a reference consumer) instead of being re-invented and re-debugged across desktop, iOS, and Android.
 
 For the full design specifications see [docs/](docs/). For the next-session entry point with concrete TODOs see [secretary_next_session.md](secretary_next_session.md).
 
@@ -12,12 +12,13 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ## Where we are: 2026-04-29
 
-Sub-project A is feature-complete for v1. The manifest layer, atomic I/O, the four high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the `golden_vault_001/` end-to-end §15 fixture all landed in PR #5. PR #6 cleaned up follow-ups from review (orchestrator-module split, exact-pin of `tempfile` as a security-critical dependency, plus a regression test for an ML-DSA silent-accept bug surfaced in the Python conformance script). What remains for Sub-project A is hardening — fuzz harness, side-channel review, memory-hygiene audit — and an independent external cryptographic audit.
+The manifest layer, atomic I/O, the four high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the `golden_vault_001/` end-to-end §15 fixture all landed in PR #5. PR #6 cleaned up follow-ups from review (orchestrator-module split, exact-pin of `tempfile` as a security-critical dependency, plus a regression test for an ML-DSA silent-accept bug surfaced in the Python conformance script). What remains in Sub-project A is the CRDT merge primitives (`core/src/vault/conflict.rs`, plus commutativity / associativity / idempotence proptests and a `conflict_kat.json` cross-language vector — Definition-of-Done item #3 in the design anchor) and then the hardening + external-audit phase.
 
 ```
-[==============================================================  ] Sub-project A — Rust core
+[========================================================        ] Sub-project A — Rust core
 [                                                                ] Sub-project B — FFI bindings
-[                                                                ] Sub-project C — Platform UIs
+[                                                                ] Sub-project C — Sync orchestration
+[                                                                ] Sub-project D — Platform UIs
 ```
 
 340+ tests pass. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs, and the `golden_vault_001/` fixture is verified end-to-end by both the Rust suite and the stdlib-only Python conformance script.
@@ -73,7 +74,20 @@ Hybrid constructions are implemented and KAT-pinned: X25519 ⊕ ML-KEM-768 KEM, 
 - **§15 closure**: [core/tests/data/golden_vault_001/](core/tests/data/golden_vault_001/) — deterministic end-to-end fixture (`vault.toml`, `manifest.cbor.enc`, `identity.bundle.enc`, one block, one Contact Card) verified end-to-end by [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify, stdlib-only, `uv run`-compatible). A regression test pins the silent-accept bug found and fixed in the Python ML-DSA-65 verifier during this phase.
 - **Shared canonical-CBOR helpers**: [core/src/vault/canonical.rs](core/src/vault/canonical.rs) — `canonical_sort_entries`, `encode_canonical_map`, the float/tag walker, extracted before the third copy could land.
 
-### Phase A.6 — Hardening + audit prep 🚧 (next)
+### Phase A.6 — Vector-clock CRDT merge primitives 🚧 (next, PR-C)
+
+The remaining v1 functional piece of Sub-project A. Per the design anchor's Definition-of-Done #3, the merge function must be commutative, associative, and idempotent under random sequences of edits. Per `docs/crypto-design.md` §10–§11 and the design anchor's "Conflict resolution" section, the merge is field-level last-writer-wins with `device_uuid` lexicographic tiebreak, with unresolvable conflicts surfaced via a `_conflicts` shadow rather than silently dropped. Orchestration of when/where to invoke the merge belongs to Sub-project C; the pure primitives belong here.
+
+- **`core/src/vault/conflict.rs`** — pure functions, no state:
+  - `merge_vector_clocks(a, b) -> VectorClock` — component-wise max over `{device_uuid → counter}`.
+  - `clock_relation(a, b) -> ClockRelation` — `Equal | IncomingDominates | IncomingDominated | Concurrent`.
+  - `merge_record(local, remote) -> MergedRecord` — field-level LWW; ties broken by `device_uuid` lex order; tombstones win when strictly newer.
+  - `merge_block(local, remote) -> MergedBlock` — record-level union, then per-record merge.
+- **CRDT proptests** in `core/tests/proptest.rs`: `merge_commutativity`, `merge_associativity`, `merge_idempotence` at proptest defaults (~256 cases).
+- **§15 cross-language vector**: `core/tests/data/conflict_kat.json` — golden conflict-resolution inputs and expected merged outputs, replayable from the Python conformance script.
+- **Conformance extension**: `core/tests/python/conformance.py` decodes `conflict_kat.json` and replays through a Python translation of `merge_block`, asserting bit-identical merged output.
+
+### Phase A.7 — Hardening + audit prep ⏳ (after A.6)
 
 - Independent cryptographic review (paid, external).
 - Fuzz harness for the wire-format decoders (`cargo fuzz`).
@@ -103,16 +117,38 @@ Sub-project B is bounded work — there is no design ambiguity, just careful tra
 
 ---
 
-## Sub-project C — Platform UIs ⏳ (planned)
+## Sub-project C — Sync orchestration ⏳ (planned)
 
-The UIs are deliberately written natively per platform (see [ADR-0001](docs/adr/0001-rust-core.md)). UI is not shared across platforms — each platform's idiom matters more than code reuse on the UI tier.
+This is the layer that turns "the Rust core knows how to merge two manifests" into "two devices sharing a cloud folder converge on the same vault state without user intervention". It sits between the FFI and the platform UIs as its own phase rather than being folded into UI work, so the orchestration logic is built and tested once with a headless reference consumer instead of being re-invented per platform.
+
+Scope:
+
+- **File watching**: detect when files in the vault folder change. Cross-platform via the `notify` crate on desktop (FSEvents, inotify, `ReadDirectoryChangesW`); per-platform shims on iOS (`NSFilePresenter` / `NSMetadataQuery` for iCloud Drive) and Android (Storage Access Framework). The state machine that consumes events is the same on every platform.
+- **Cloud-folder integration**: wait for the cloud-folder client (iCloud, Drive, Dropbox, OneDrive, WebDAV) to mark a file as fully downloaded before reading it. Per ADR-0003 — the orchestration must not race a partial download.
+- **Conflict-detection scheduling**: when manifest fingerprints diverge between local and remote, invoke the Sub-project A merge primitives, persist the merged manifest atomically, surface unresolvable `_conflicts` to the UI layer.
+- **Retry / backoff / power-and-network awareness**: especially on mobile, where the OS may suspend the process at any time.
 
 Phase plan:
 
-- **C.1 — Desktop / Web (Python + NiceGUI)**: vault create / unlock / browse / add credential / share. NiceGUI runs the same codebase as a native desktop window or as a browser app.
-- **C.2 — iOS (Swift + SwiftUI)**: native app with the same feature set, plus Apple Keychain interop and AutoFill provider.
-- **C.3 — Android (Kotlin + Jetpack Compose)**: native app with the same feature set, plus Android AutoFill Service.
-- **C.4 — Browser autofill extensions**: future, after the platform clients stabilise.
+- **C.1 — Sync state machine in pure Rust**. No OS dependencies. Inputs: manifest-changed event, peer-manifest-fingerprint event. Outputs: merge-needed, persist-merged-manifest, conflict-needs-user. Property-tested for convergence under random event interleavings.
+- **C.2 — Headless `secretary sync` CLI (desktop)**. Wraps the state machine + the `notify` crate + Sub-project A core. Doubles as the reference consumer for testing and as a real user-facing tool for headless deployments (NAS, server). Two-instance tests run two CLIs against a shared temp directory and assert convergence.
+- **C.3 — Mobile sync adapters**. iOS adapter using `NSFilePresenter` / `NSMetadataQuery`, exposed via uniffi-bound state machine. Android adapter using the Storage Access Framework + `WorkManager`, exposed via uniffi-bound state machine.
+- **C.4 — Cross-device convergence conformance**. Two simulated devices (or two real CLIs) edit `golden_vault_001/` concurrently through a shared folder; both converge to the same merged manifest fingerprint with no data loss across power-cycle, network-partition, and clock-skew scenarios.
+
+Sub-project C is where shippable software starts to exist. The `secretary sync` CLI alone is enough for a technically inclined user with a NAS to run a real multi-device vault.
+
+---
+
+## Sub-project D — Platform UIs ⏳ (planned)
+
+The UIs are deliberately written natively per platform (see [ADR-0001](docs/adr/0001-rust-core.md)). UI is not shared across platforms — each platform's idiom matters more than code reuse on the UI tier. Each UI consumes Sub-project A (vault crypto + format) and Sub-project C (sync orchestration) through the Sub-project B FFI, so UI code never touches a file watcher or a merge function directly.
+
+Phase plan:
+
+- **D.1 — Desktop / Web (Python + NiceGUI)**: vault create / unlock / browse / add credential / share. NiceGUI runs the same codebase as a native desktop window or as a browser app.
+- **D.2 — iOS (Swift + SwiftUI)**: native app with the same feature set, plus Apple Keychain interop and AutoFill provider.
+- **D.3 — Android (Kotlin + Jetpack Compose)**: native app with the same feature set, plus Android AutoFill Service.
+- **D.4 — Browser autofill extensions**: future, after the platform clients stabilise.
 
 Each platform UI is independent — they can ship in any order and at independent paces. Desktop / web is likely first because Python iteration is fastest and it doubles as the reference UI for spec-conformance testing.
 
@@ -138,7 +174,7 @@ The project is currently a solo effort and intentionally gated on cryptographic 
 - **Review the design docs.** [docs/threat-model.md](docs/threat-model.md), [docs/crypto-design.md](docs/crypto-design.md), [docs/vault-format.md](docs/vault-format.md), and [docs/adr/](docs/adr/) are the source of truth. Ambiguities or errors there have outsized impact. Open issues against the docs.
 - **Build a clean-room implementation.** Use only `docs/` and verify against [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify against `golden_vault_001/`, stdlib-only). If your implementation works without reading the Rust source, the spec is doing its job. If it doesn't, please open an issue.
 - **Cryptographic review.** Independent scrutiny of the hybrid constructions, KAT coverage, and AAD/signed-range definitions is welcome. Especially valuable: someone with FIPS 203 / FIPS 204 implementer experience.
-- **Wait for Sub-project B / C.** If your interest is the UI layer or platform integration, those phases haven't started. Star the repo and check back.
+- **Wait for Sub-project B / C / D.** If your interest is the FFI bindings, sync orchestration, or platform UI layer, those phases haven't started. Star the repo and check back.
 
 PRs against the Rust core are accepted but the bar is high: every change must come with KAT-level tests, no `unsafe`, typed errors only, and adherence to the conventions documented in `secretary_next_session.md` and the existing source.
 
@@ -152,8 +188,9 @@ Rough order-of-magnitude expectations (no commitments):
 
 - **Sub-project A complete + audited**: months, not weeks.
 - **Sub-project B (FFI)**: weeks once A is frozen.
-- **Sub-project C.1 (desktop/web)**: weeks-to-months on top of B.
-- **Sub-project C.2 + C.3 (iOS, Android)**: parallelisable; pace depends on contributors.
+- **Sub-project C (sync orchestration + headless CLI)**: weeks-to-months on top of B; the C.1 state machine and C.2 CLI are bounded, the C.3 mobile adapters depend on per-platform OS work.
+- **Sub-project D.1 (desktop/web)**: weeks on top of C — much of the heavy lifting is done by then.
+- **Sub-project D.2 + D.3 (iOS, Android)**: parallelisable; pace depends on contributors.
 - **v1.0 release**: when all of the above ship and the spec has been stable across at least one external review cycle.
 
 The project will not have a "1.0" tag until the cryptographic foundation has stood up to independent scrutiny and the first reference UI is real software people can use to store real secrets.
