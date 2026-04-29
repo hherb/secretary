@@ -1939,18 +1939,30 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
 
-    # Defensive clamp: enforce the §11.5 invariant
-    # `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms` on each
-    # input before the lattice join. Without this, a malformed input
-    # with `tombstone=true, tombstoned_at_ms=0` would suppress the
-    # death clock's advance and let stale fields slip through the
-    # §11.3 staleness filter.
-    local_dc = local.get("tombstoned_at_ms", 0)
-    if local["tombstone"]:
-        local_dc = max(local_dc, local["last_mod_ms"])
-    remote_dc = remote.get("tombstoned_at_ms", 0)
-    if remote["tombstone"]:
-        remote_dc = max(remote_dc, remote["last_mod_ms"])
+    # Defensive clamp: enforce the §11.5 invariants on each input
+    # before the lattice join. Two malformations to defend against:
+    #
+    #  * Tombstoned input with `tombstoned_at_ms != last_mod_ms`:
+    #    violates `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms`.
+    #    Inflated DC propagates through merge; lowered DC suppresses
+    #    the death clock's advance and lets pre-tombstone stale fields
+    #    slip through the §11.3 staleness filter.
+    #  * Live input with `tombstoned_at_ms > last_mod_ms`: violates
+    #    `tombstoned_at_ms ≤ last_mod_ms`. With `tombstoned_at_ms =
+    #    2**64 - 1` the merged DC would clamp every field with
+    #    `last_mod < 2**64 - 1`, wiping the merged record's fields
+    #    while keeping it live — a deniable data-loss attack.
+    #
+    # Bidirectional clamp: tombstoned inputs forced to
+    # `last_mod_ms` exactly; live inputs clamped to `min(DC,
+    # last_mod_ms)`. No-op on well-formed inputs.
+    def _clamp_death_clock(rec: dict) -> int:
+        if rec["tombstone"]:
+            return rec["last_mod_ms"]
+        return min(rec.get("tombstoned_at_ms", 0), rec["last_mod_ms"])
+
+    local_dc = _clamp_death_clock(local)
+    remote_dc = _clamp_death_clock(remote)
     # §11.3 death clock: lattice join via max.
     death = max(local_dc, remote_dc)
 
