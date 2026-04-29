@@ -2,26 +2,24 @@
 
 This file is the entry point for the **next** session, in the same role
 the previous `secretary_next_session.md` played until 2026-04-29 (closed
-on the merge of PR #5 + PR #6 — the manifest / atomic-I/O / orchestrators
-slice + review follow-ups).
+on the merge of PR-C — the CRDT merge primitives, record-level
+`tombstoned_at_ms` death-clock, full-domain CRDT proptests, and
+nine-vector cross-language KAT). With PR-C, **Sub-project A is feature-
+complete for v1**; what remains is the hardening + external-audit phase
+(below) before FFI bindings (Sub-project B) can begin.
 
-It captures: phases now closed (kept for context, with PR refs), the two
-remaining items in Sub-project A's build sequence, and a small set of
-carry-over dribbles.
+It captures: phases now closed (kept for context, with PR refs), the
+single remaining open item in Sub-project A's build sequence, and a
+small set of carry-over dribbles.
 
 When the items below are done, delete this file and create the next one.
 
 Sub-project A's design anchor lives at
 `/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md` —
 re-read at the start of any session that touches Sub-project A code.
-The "Conflict resolution" section (around line 279) and the
-"Verification" section (around line 375, especially Definition-of-Done
-item #3) are the load-bearing parts for Phase A.6.
-
-PR-A's approved plan with PR-B / PR-C sketches lives at
-`/Users/hherb/.claude/plans/please-read-secretary-next-session-md-an-wondrous-cray.md` —
-the Phase A.6 scope below extends its PR-C sketch with everything
-PR-A's and PR-B's reviews surfaced.
+The "Verification" section (around line 375, especially the §15
+cross-language conformance contract) is the load-bearing part for
+Phase A.7.
 
 ---
 
@@ -108,133 +106,78 @@ as a typed error. BIP-39 recovery KAT in
 After PR #6: 340+ tests pass (`cargo test --release --workspace`),
 clippy clean with `-D warnings`, `#![forbid(unsafe_code)]` crate-wide.
 
----
+### Phase A.6 — Vector-clock CRDT merge primitives ✅ — PR-C, 2026-04-29
 
-## Open Item 1 — Phase A.6 / PR-C: vector-clock CRDT merge primitives
+[core/src/vault/conflict.rs](core/src/vault/conflict.rs) — pure
+functions, no I/O, no scheduling:
 
-The remaining v1 functional piece of Sub-project A. Closes
-Definition-of-Done item #3 in
-`/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md` (CRDT
-merge is commutative, associative, and idempotent under random
-sequences of edits).
+- **Vector-clock primitives**: `clock_relation(local, incoming)` →
+  `Equal | IncomingDominates | IncomingDominated | Concurrent`
+  (anti-symmetric, missing-device-as-zero; the `IncomingDominated`
+  variant is the manifest §10 rollback signal).
+  `merge_vector_clocks(a, b)` — lattice join (component-wise max,
+  sorted ascending by `device_uuid` per §6.1).
+- **Per-record merge** with field-level LWW + record-level
+  death-clock: `merge_record(local, remote) -> MergedRecord`.
+  `device_uuid` lex tiebreak on `last_mod` ties; tombstone-on-tie
+  (`T_d ≥ T_l`); `tombstoned_at_ms` propagated via `max`; staleness
+  filter drops fields with `last_mod ≤ death_clock`. Concurrent
+  value collisions surfaced as `Vec<FieldCollision>` informational
+  metadata (no `_conflicts` shadow on disk per §11.4).
+- **Per-block merge** dispatching on `clock_relation`:
+  `merge_block(local, local_clock, remote, remote_clock,
+  merging_device) -> Result<MergedBlock, ConflictError>`. Returns
+  the dominant side unchanged for `Equal` /
+  `IncomingDominates` / `IncomingDominated`; runs the per-record
+  union + per-record merge for `Concurrent` and ticks the merging
+  device into the merged clock. `block_uuid` mismatch surfaced as
+  a typed error.
+- **`tombstoned_at_ms` death-clock** added to `Record` (encoded
+  absent-when-zero; backward-compatible with `golden_vault_001`).
+  Lattice join via `max`; preserved across resurrection. Drives
+  the §11.3 staleness filter that closes the three-way-merge
+  associativity gap. Spec at `docs/crypto-design.md` §11.3 +
+  `docs/vault-format.md` §6.3.
+- **§11.3 identity-metadata override**: on `LocalTombstoneWins` /
+  `RemoteTombstoneWins`, the merged record's `tags`,
+  `record_type`, and record-level `unknown` come wholesale from
+  the tombstoning side — so a UI surfacing a tombstoned record
+  reflects the deleter's view, not a concurrent edit they never
+  saw.
+- **Defensive canonicalisation** in `merge_record`: clamps
+  `tombstoned_at_ms` upward to `last_mod_ms` for any input where
+  `tombstone == true`, so a malformed peer
+  (`tombstone = true, tombstoned_at_ms = 0`) cannot suppress the
+  death-clock's advance.
+- **CRDT proptests** in [core/tests/proptest.rs](core/tests/proptest.rs)'s
+  `mod vault` PR-C section: `crdt_merge_record_commutativity`,
+  `_associativity`, `_idempotence` at proptest defaults (~256 cases).
+  All three pass on the **full record domain** — arbitrary
+  `tombstone`, arbitrary `tombstoned_at_ms`, arbitrary fields
+  predating or surviving any tombstone.
+- **§15 cross-language KAT**:
+  [core/tests/data/conflict_kat.json](core/tests/data/conflict_kat.json) —
+  nine vectors covering each `ClockRelation` branch, the death-
+  clock staleness filter, the §11.3 identity-metadata override,
+  both-tombstoned merges, and resurrection-preserves-death-clock.
+  Replayed by both Rust ([core/tests/conflict.rs](core/tests/conflict.rs)
+  `kat_replays_match_rust_merge`) and a clean-room Python
+  `py_merge_record` written from §11 spec docs only
+  ([core/tests/python/conformance.py](core/tests/python/conformance.py)
+  Section 4).
 
-**Scope boundary**: this is the *primitive* layer only. Pure functions,
-no I/O, no scheduling. Orchestration of when/where the merge runs (file
-watching, cloud-folder integration, conflict-detection scheduling) is
-explicitly Sub-project C in the current ROADMAP (the sync-orchestration
-layer that sits between FFI and the platform UIs). The design anchor at
-`/Users/hherb/.claude/plans/we-are-starting-with-logical-newt.md`
-(around line 279) labels orchestration as "Sub-project B" under its
-older breakdown, but the ROADMAP has since split FFI off as B and
-demoted sync orchestration to its own phase C — same scope, different
-label. Push back if Phase A.6 scope drifts toward orchestration under
-either label.
-
-Estimated shape: ~10–15 commits, ~1,500 lines, one session.
-
-### Files to create
-
-| Path | Purpose |
-|---|---|
-| `core/src/vault/conflict.rs` | Pure functions:<br>`pub fn merge_vector_clocks(a: &[VectorClockEntry], b: &[VectorClockEntry]) -> Vec<VectorClockEntry>` — component-wise max over `{device_uuid → counter}`, sorted ascending by `device_uuid` per §6.1.<br>`pub fn clock_relation(a, b) -> ClockRelation { Equal, IncomingDominates, IncomingDominated, Concurrent }`.<br>`pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord { Clean(Record), Conflict(Record /* with `_conflicts` shadow */) }` — field-level LWW with `device_uuid` lex tiebreak when `last_mod_ms` ties; tombstone takes precedence iff its `last_mod_ms` is strictly newer; conflicting "real" edits (different values written by both devices since the last common ancestor) preserved in `_conflicts`.<br>`pub fn merge_block(local: &BlockPlaintext, remote: &BlockPlaintext) -> MergedBlock` — record-level union, then per-record merge. |
-| `core/tests/data/conflict_kat.json` | §15 cross-language vector. Golden conflict-resolution inputs (two divergent record sets + their vector clocks + the device IDs of the writers) and the expected merged output. Replayable from `conformance.py`. |
-| `core/tests/conflict.rs` | Integration tests: hand-built scenarios for each `ClockRelation` outcome, each tombstone-vs-edit case, each `_conflicts` shadow case. Mirror the structure of [core/tests/vault.rs](core/tests/vault.rs). |
-
-### Files to modify
-
-- `core/src/vault/mod.rs` — `pub mod conflict;` and re-export
-  `MergedRecord`, `MergedBlock`, `ClockRelation`,
-  `merge_vector_clocks`, `merge_record`, `merge_block`. Add
-  `Conflict(#[from] ConflictError)` to `VaultError` if
-  `ConflictError` ends up needed (likely not — the merge is total over
-  well-formed inputs).
-- `core/tests/proptest.rs` — extend with three CRDT properties at
-  proptest defaults (~256 cases):
-  - **Property I — `merge_commutativity`**: `merge_record(a, b)` and
-    `merge_record(b, a)` produce the same `MergedRecord` (modulo
-    `_conflicts` ordering, which must itself be canonical so the
-    equality holds bit-identically).
-  - **Property J — `merge_associativity`**:
-    `merge_record(merge_record(a, b).into_record(), c) ==
-     merge_record(a, merge_record(b, c).into_record())`.
-  - **Property K — `merge_idempotence`**: `merge_record(a, a) == a`.
-
-  Reuse / extend the existing `card_strategy` / `build_identity` helpers
-  ([proptest.rs:66, 105](core/tests/proptest.rs)). Add a strategy that
-  produces random `Record` plus random `device_uuid` / `last_mod_ms`
-  mutations simulating concurrent edits.
-- `core/tests/python/conformance.py` — add a `conflict_kat.json` path:
-  decode, run a Python translation of `merge_block`, assert the merged
-  output bit-identically matches the JSON `expected` field.
-  This Python merge is the smallest second-implementation that proves
-  the spec describes the merge unambiguously.
-- `docs/crypto-design.md` §10–§11 — surface the `_conflicts` shadow
-  schema: how a field with concurrent real edits is represented in the
-  CBOR record so a UI can present both values for user resolution.
-  This may turn out to need a small schema addition (a `_conflicts`
-  reserved key) — coordinate with the spec section that documents
-  reserved field-name prefixes.
-
-### Reusable bits already shipped
-
-- `VectorClockEntry` ([block.rs](core/src/vault/block.rs), re-exported
-  from [manifest.rs](core/src/vault/manifest.rs)) — same shape used by
-  both block headers and manifest entries.
-- `tick_clock` rejects `u64::MAX` overflow as typed error (PR #5
-  commit `1608bd9`) — `merge_vector_clocks` should not need to call
-  `tick_clock`; it only takes max of existing counters.
-- `Record` + `RecordField` types from
-  [record.rs](core/src/vault/record.rs) already include the per-field
-  `last_mod_ms` and `device_uuid` needed for LWW. Verify before relying:
-  the design anchor talks about field-level metadata; confirm what's
-  actually present in the type today before designing the merge against
-  it.
-- `proptest.rs` strategies (`arr16`, `arr32`, `card_strategy`, etc.)
-  give a starting point for `Record` strategies.
-
-### Verification (Phase A.6 done when, and Sub-project A v1-feature-done when)
-
-1. `cargo test --release --workspace` green; new test count target ~370
-   (was 345 + 6 ignored after PR #6).
-2. `cargo clippy --all-targets --workspace -- -D warnings` clean.
-3. Three CRDT proptests pass at default proptest cases. None of the
-   three is allowed to be tagged `#[ignore]`.
-4. `conflict_kat.json` decoded by `conformance.py` and replayed through
-   a Python `merge_block` to assert the same merged output
-   cross-language. Exit 0 on PASS, 1 on FAIL, 2 on missing fixture
-   (matches the existing `conformance.py` exit-code convention).
-5. **Sub-project A v1-feature-done test** (per the design anchor's DoD):
-   a new contributor can clone the repo, run
-   `cargo test --workspace && uv run core/tests/python/conformance.py`,
-   see all green, read `docs/crypto-design.md` + `docs/vault-format.md`
-   alone, and write an interoperable client in any language without
-   reading any Rust source.
-
-### Known risks / things to watch
-
-- **`_conflicts` shadow schema not yet pinned in the spec.** The design
-  anchor describes the *behaviour* (both values preserved until UI
-  resolves) but not the *byte representation*. PR-C must either pin it
-  in `docs/crypto-design.md` §10–§11 *and* the CBOR record schema, or
-  defer the schema decision and ship merge primitives that return a
-  Rust enum without serialising `_conflicts` to disk. Pick one
-  explicitly; do not paper over it.
-- **Field-level `last_mod_ms` / `device_uuid` may not yet exist on
-  `Record`.** If they don't, adding them is a record-format change and
-  needs to be done on disk-compatibly with `golden_vault_001/`. Verify
-  the current `Record` shape before designing the merge.
-- **`merge_record` totality.** The merge must be total over all
-  well-formed `Record` pairs. Don't introduce error cases for
-  "incompatible" records — that would let an attacker who can shape
-  records cause a denial of merge. If two records collide irreconcilably,
-  `_conflicts` is the answer, not an error.
+After PR-C: 399+ tests pass; clippy clean; `#![forbid(unsafe_code)]`
+crate-wide. Sub-project A is feature-complete for v1; Phase A.7
+(hardening + external audit) is next.
 
 ---
 
-## Open Item 2 — Phase A.7: hardening + external audit prep
+## Open Item 1 — Phase A.7: hardening + external audit prep
 
-After Phase A.6 lands, Sub-project A has one phase left before FFI
-bindings begin. This is the gate before any Sub-project B work.
+With Phase A.6 / PR-C landed, Sub-project A is feature-complete for v1.
+Phase A.7 is the gate before any Sub-project B (FFI) work and the
+phase that turns "the Rust core implements the v1 design" into "the
+Rust core has been independently scrutinised against the v1 design."
 
 - **Independent cryptographic review** (paid, external). Engage early —
   the design has been frozen since the PR #1 / PR #3 / PR #5 cadence,
@@ -276,20 +219,28 @@ the next PR they touch.
 
 - **`unknown` BTreeMap forward-compat in proptests.** PR-A's
   record-level proptest A uses `BTreeMap::new()` for the unknown bag,
-  with the tradeoff documented inline. Add a strategy generating
-  bounded `ciborium::Value` trees if future regressions warrant. Not
-  urgent. PR-B added a block-cycle integration test for the
-  `BlockPlaintext::unknown` path; the proptest strategy gap is
-  field-level only.
+  with the tradeoff documented inline. PR-C did NOT close this — the
+  `crdt_merge_record_*` proptests inherit the same gap (record-level
+  unknown is empty in the strategy). Adding a strategy generating
+  bounded `ciborium::Value` trees would tighten coverage. Not urgent;
+  the integration tests in `core/tests/conflict.rs` exercise non-empty
+  record-level `unknown` directly, and the §15 KAT pins the
+  tombstone-wins override behavior cross-language.
+- **Python `py_merge_record` does not model record-level `unknown`.**
+  The Python clean-room merge in `core/tests/python/conformance.py`
+  Section 4 currently doesn't carry `unknown` keys through the merged
+  record dict (the existing 9 KAT vectors don't exercise it). If a
+  future KAT vector adds record-level `unknown`, extend `py_merge_record`
+  to handle it (mirror Rust: §11.1 per-key lex-larger CBOR bytes; §11.3
+  override on tombstone-wins outcomes).
 - **`share-as-fork` v2 follow-up.** PR #5 / PR #6 pinned two TODO
   markers for share-as-fork at the encrypt/decrypt call sites. This is
-  a v2 vault-format change (out of scope for Sub-project A), but
-  re-validate the markers when Phase A.6 touches `share_block`-adjacent
-  code so they don't drift.
+  a v2 vault-format change (out of scope for Sub-project A); PR-C did
+  not touch them. Re-validate when Sub-project C orchestration brings
+  the share path back into focus.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
-  profiling shows it on a hot path; the manifest workload is the
-  earliest realistic profiling target and Phase A.6 doesn't add new
-  hot paths.
+  profiling shows it on a hot path. Phase A.6 did not add any new hot
+  paths (the merge primitives operate on already-decoded `Record`s).
 - **`§6.2 wrap_ct + wrap_tag` and `§6.1 sig_pq_len` annotations** —
   bundled into Phase A.7's documentation pass above; flag here so they
   don't slip if Phase A.7 gets reorganised.
@@ -354,3 +305,48 @@ PR-B review follow-ups, all small but worth pinning:
 
 After merge: 345 tests pass + 6 ignored, tree state matches the
 "Phases now closed" inventory above.
+
+### PR-C, `feature/vault-conflict` — 2026-04-29
+
+Phase A.6 in one PR, plus the death-clock follow-up after the
+review surfaced a three-way-merge associativity gap. ~19 commits
+along three axes:
+
+- **Spec first, then code** (`ca74791`, `de91797`, `94afacf`,
+  `34a5141`): pinned §11.1–§11.5 metadata rules, tightened tags /
+  record_type / unknown tie-breaks for strict commutativity, added
+  §11.3 death-clock + staleness filter, extended the §11.3
+  identity-metadata override from tags-only to also cover
+  `record_type` and record-level `unknown` on tombstone-wins
+  outcomes.
+- **Implementation in step-by-step slices**:
+  `6752701` (vector-clock primitives), `a1e8468` (`merge_record` +
+  `MergedRecord` / `FieldCollision`), `7d293fa` (`merge_block`
+  dispatching on `clock_relation` + `ConflictError` typed errors
+  wired into `VaultError`), `f4f554b` (`tombstoned_at_ms` field on
+  `Record` — encode-omit-when-zero, decode-default-zero, all 15
+  Record construction sites updated), `2fc7f4e` (death-clock
+  staleness filter that closes the three-way associativity gap),
+  `65def86` (extended §11.3 override implementation),
+  `d058fc9` (defensive clamp against malformed
+  `tombstone=true, tombstoned_at_ms=0` inputs).
+- **Tests at every layer** (`fbbc307` integration tests via the
+  public API, `2348c9d` initial CRDT proptests, `f408ba8` 5-vector
+  cross-language KAT + Rust + Python replay, `6463259` proptest
+  domain expanded to the full tombstone domain, `82a9375` KAT vector
+  for the death-clock staleness filter, `94906c1` test data §11.5
+  invariant fixes + collisions × staleness doc, `64f975a` 4
+  additional KAT vectors covering IncomingDominated, both-tombstoned,
+  identity-metadata override, and resurrection-preserves-death-clock).
+
+Misc: `876e587` untracked `.claude/` user state and
+`proptest.proptest-regressions` accidentally swept in by `git add -A`.
+
+After merge: 399+ tests pass + 6 ignored. Three CRDT proptests pass
+on the full record domain (arbitrary tombstone histories, arbitrary
+`tombstoned_at_ms`) at proptest defaults. Nine-vector
+`conflict_kat.json` replayed bit-identically by both Rust and a
+clean-room Python `py_merge_record`. clippy clean with `-D warnings`;
+`#![forbid(unsafe_code)]` crate-wide. **Sub-project A is feature-
+complete for v1**; Phase A.7 (hardening + external audit) is the
+next gate.

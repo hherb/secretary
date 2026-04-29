@@ -1895,6 +1895,7 @@ mod tests {
             created_at_ms: 1_714_060_800_000,
             last_mod_ms: 1_714_060_800_001,
             tombstone: false,
+            tombstoned_at_ms: 0,
             unknown: BTreeMap::new(),
         };
 
@@ -2030,6 +2031,7 @@ mod tests {
                 created_at_ms: 1_714_060_800_000,
                 last_mod_ms: 1_714_060_800_001,
                 tombstone: false,
+                tombstoned_at_ms: 0,
                 unknown: BTreeMap::new(),
             }],
             unknown: BTreeMap::new(),

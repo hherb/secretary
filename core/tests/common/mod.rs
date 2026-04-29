@@ -466,6 +466,8 @@ pub struct BlockKatRecord {
     pub last_mod_ms: u64,
     #[serde(default)]
     pub tombstone: bool,
+    #[serde(default)]
+    pub tombstoned_at_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]

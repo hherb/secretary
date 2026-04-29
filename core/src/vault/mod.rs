@@ -22,6 +22,7 @@
 
 pub mod block;
 pub(crate) mod canonical;
+pub mod conflict;
 pub(crate) mod io;
 pub mod manifest;
 mod orchestrators;
@@ -31,6 +32,10 @@ pub use block::{
     decode_block_file, decrypt_block, encode_block_file, encrypt_block, BlockError, BlockFile,
     BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
     FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
+};
+pub use conflict::{
+    clock_relation, merge_block, merge_record, merge_vector_clocks, ClockRelation, ConflictError,
+    FieldCollision, MergedBlock, MergedRecord, RecordCollision,
 };
 pub use manifest::{
     decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
@@ -65,6 +70,15 @@ pub enum VaultError {
     /// Manifest-level encode / decode / sign / verify failure (§4 / §8).
     #[error("manifest error: {0}")]
     Manifest(#[from] ManifestError),
+
+    /// CRDT merge primitive failure (`docs/crypto-design.md` §11).
+    /// Reachable from [`merge_block`] — the only fallible merge call —
+    /// when the two block plaintexts have mismatched `block_uuid`s
+    /// (a programmer error per §11.2) or when the merging device's
+    /// vector-clock counter would overflow `u64::MAX`. `#[from]`
+    /// propagates from [`ConflictError`] through `?`.
+    #[error("conflict error: {0}")]
+    Conflict(#[from] ConflictError),
 
     /// Rollback resistance check (§10) rejected an incoming manifest:
     /// its vector clock is *strictly dominated* by the local "highest

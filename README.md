@@ -6,7 +6,7 @@
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
 
-> **Status: pre-alpha, Sub-project A's manifest layer landed; CRDT merge primitives + proptests next, then hardening + audit.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, and the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`). 340+ tests pass, including NIST KATs and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture. What remains in Sub-project A is the vector-clock CRDT merge primitives (`conflict.rs`) plus their commutativity / associativity / idempotence proptests, then a hardening + external-audit phase; FFI bindings (Sub-project B), the headless sync-orchestration layer (Sub-project C), and platform UIs (Sub-project D) come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
+> **Status: pre-alpha, Sub-project A is feature-complete for v1; hardening + external audit next.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the vector-clock CRDT merge primitives (`merge_record` and `merge_block` with a record-level death-clock that makes the merge associative across arbitrary tombstone histories). 399+ tests pass, including NIST KATs, three property-based CRDT proofs (commutativity, associativity, idempotence) on the full record domain at proptest defaults, and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture and replays nine merge KATs cross-language. What remains in Sub-project A is the hardening + external-audit phase; FFI bindings (Sub-project B), the headless sync-orchestration layer (Sub-project C), and platform UIs (Sub-project D) come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
 
 ---
 
@@ -129,16 +129,16 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | Block file format (record CBOR, header, recipients, AEAD, hybrid sig) | ✅ Complete (PR #3) |
 | Manifest layer + atomic writes + high-level orchestrators | ✅ Complete (PR #5) |
 | `golden_vault_001/` end-to-end §15 conformance fixture (full crypto) | ✅ Complete (PR #5) |
-| CRDT merge primitives (`conflict.rs`) + commutativity / associativity / idempotence proptests + `conflict_kat.json` | 🚧 Next (Phase A.6 / PR-C) |
-| Hardening: fuzz, side-channel review, memory hygiene audit | ⏳ Phase A.7 |
-| External cryptographic audit | ⏳ Phase A.7 |
+| CRDT merge primitives (`conflict.rs`: `merge_record`, `merge_block`, `clock_relation`, `merge_vector_clocks`) + record-level `tombstoned_at_ms` death-clock for full-domain associativity + commutativity / associativity / idempotence proptests on the full record domain (incl. arbitrary tombstone histories) + 9-vector `conflict_kat.json` cross-language replay | ✅ Complete (PR-C) |
+| Hardening: fuzz, side-channel review, memory hygiene audit | 🚧 Next (Phase A.7) |
+| External cryptographic audit | 🚧 Phase A.7 |
 | FFI bindings (PyO3, uniffi for Swift/Kotlin) | ⏳ Sub-project B |
 | Sync orchestration (file watching, cloud-folder integration, conflict-detection scheduling — headless, exposed via FFI) | ⏳ Sub-project C |
 | Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project D |
 
-340+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors).
+399+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors). The CRDT merge layer is additionally proven commutative, associative, and idempotent over the full record domain — including arbitrary tombstone-and-resurrection histories — by `proptest` properties at default (~256 cases each) under `core/tests/proptest.rs`'s PR-C section.
 
-A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that parses the §15 block KAT directly from spec constants and performs full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault, with no dependencies on the Rust source.
+A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that performs (1) full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault using only the spec, and (2) a cross-language replay of nine `conflict_kat.json` merge vectors covering each `ClockRelation` branch and the `tombstoned_at_ms` death-clock semantics. Both halves run from spec docs alone, with no dependencies on the Rust source.
 
 The project is intentionally being built slowly and carefully. Cryptographic systems that handle multi-decade-lifetime secrets are not the right place to optimize for time-to-MVP. See [ROADMAP.md](ROADMAP.md) for the phased plan.
 

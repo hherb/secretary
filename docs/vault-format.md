@@ -332,7 +332,8 @@ Recipients are listed in a stable order: ascending lexicographic by `recipient_f
       "tags":            [<tstr>, ...],    ; optional cross-cutting labels
       "created_at_ms":   <u64>,
       "last_mod_ms":     <u64>,
-      "tombstone":       <bool, optional>  ; absent or false = live; true = deleted
+      "tombstone":       <bool, optional>, ; absent or false = live; true = deleted
+      "tombstoned_at_ms": <u64, optional>  ; absent or 0 = never tombstoned; otherwise the high-water mark of every tombstone observation on this record (see crypto-design §11)
     },
     ...
   ]
@@ -408,7 +409,9 @@ Deleting a block:
 
 The tombstone entry in the manifest must persist for at least the retention window so that all syncing devices have a chance to observe the deletion.
 
-Deleting a record (within a block) sets `tombstone: true` on the record and updates `last_mod_ms`. The record's `fields` may be cleared on tombstoning (recommended) or kept for undelete; a tombstoned record is invisible to UI but its presence prevents resurrection on merge from a device that hadn't seen the deletion.
+Deleting a record (within a block) sets `tombstone: true` on the record, updates `last_mod_ms`, and sets `tombstoned_at_ms = last_mod_ms`. The record's `fields` may be cleared on tombstoning (recommended) or kept for undelete; a tombstoned record is invisible to UI but its presence prevents resurrection on merge from a device that hadn't seen the deletion.
+
+`tombstoned_at_ms` is the high-water mark of every tombstone observation this record has been part of. It is preserved (not reset) across merges and across resurrection: a record that was tombstoned at T1 and later resurrected by a live edit at T2 > T1 carries `tombstone = false`, `last_mod_ms = T2`, `tombstoned_at_ms = T1`. The merge primitive uses this field to drop fields whose `last_mod` is at or below the death-clock — see crypto-design §11.3 for the staleness filter that keeps merge associative under arbitrary tombstone histories.
 
 ---
 
