@@ -1265,9 +1265,18 @@ pub fn share_block(
     // sound only when the calling owner IS the author. A mismatched
     // (open.identity, author_card) tuple would yield a cryptic
     // KemError or AeadFailure deep in the decrypt path; surfacing
-    // `NotAuthor` up-front keeps the failure mode unambiguous. The
-    // "share-as-fork" path (decrypt-as-non-author-recipient → mint a
-    // fresh authored block) is a future PR that lifts this restriction.
+    // `NotAuthor` up-front keeps the failure mode unambiguous.
+    //
+    // TODO(share-as-fork): the "share-as-fork" path (decrypt-as-non-
+    // author-recipient → mint a fresh authored block under the caller's
+    // own identity) is a future PR that lifts this restriction. When
+    // that PR lands, the reader-side fingerprint passed into
+    // `decrypt_block` at step 7 must change from `author_fp` to the
+    // calling owner's fingerprint (the fingerprint of `open.owner_card`),
+    // and this `contact_uuid == user_uuid` guard must be replaced with a
+    // path-selector argument distinguishing "extend recipients in place"
+    // (current behaviour) from "fork into a new authored block" (new
+    // behaviour). Grep for `share-as-fork` to find the touchpoints.
     if author_card.contact_uuid != open.identity.user_uuid {
         return Err(VaultError::NotAuthor {
             expected: block_file.author_fingerprint,
