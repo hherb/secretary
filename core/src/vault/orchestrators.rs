@@ -1136,6 +1136,18 @@ pub fn share_block(
     // (sender_card_fingerprint vs block.author_fingerprint) was
     // already validated by step 3, so this re-check is a tautology
     // here, but the API forces us to thread it.
+    //
+    // TODO(share-as-fork): the reader-side arguments below
+    // (`&author_fp`, `&author_pk_bundle`, `&reader_x_sk`,
+    // `&reader_pq_sk`) are the second touchpoint of the single-owner
+    // restriction pinned at the `contact_uuid == user_uuid` guard
+    // above. When share-as-fork lands, the reader fingerprint /
+    // pk-bundle pair must come from `open.owner_card` (the calling
+    // owner) rather than from the original author, and the reader
+    // secret-keys already do come from `open.identity` — the pairing
+    // (author-fp, owner-secret-keys) is what makes the current
+    // arrangement only valid when caller == author. Grep for
+    // `share-as-fork` to find the matching guard.
     let author_pk_bundle = author_card.pk_bundle_bytes()?;
     let reader_x_sk: crate::crypto::kem::X25519Secret =
         Sensitive::new(*open.identity.x25519_sk.expose());
