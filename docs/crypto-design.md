@@ -457,14 +457,14 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | Field | Merge rule |
 |---|---|
 | `record_uuid` | Equal by precondition (records merge only when their UUIDs match). |
-| `record_type` | Greater record-level `last_mod_ms` wins; on tie, the **lex-larger byte string** wins (compared as UTF-8 bytes). v1 writers SHOULD NOT change `record_type` after creation; the lex-larger tie-break only matters for adversarial / malformed inputs. |
+| `record_type` | Greater record-level `last_mod_ms` wins; on tie, the **lex-larger byte string** wins (compared as UTF-8 bytes). v1 writers SHOULD NOT change `record_type` after creation; the lex-larger tie-break only matters for adversarial / malformed inputs. **Overridden by §11.3** in the mixed-tombstone-wins outcomes. |
 | `fields` | Per-field LWW per the pseudocode (`last_mod` greater wins; ties broken by `device_uuid` lexicographically). |
-| `tags` | Greater record-level `last_mod_ms` wins; on tie, the **set union** of both sides' tags is taken (canonical-CBOR sort applied on encode). Set union is itself commutative, associative, and idempotent, so it preserves the global merge invariant when ties occur. |
+| `tags` | Greater record-level `last_mod_ms` wins; on tie, the **set union** of both sides' tags is taken (canonical-CBOR sort applied on encode). Set union is itself commutative, associative, and idempotent, so it preserves the global merge invariant when ties occur. **Overridden by §11.3** in the mixed-tombstone-wins outcomes. |
 | `created_at_ms` | `min(l.created_at_ms, r.created_at_ms)` — the earliest creation observed across all replicas. |
 | `last_mod_ms` | `max(l.last_mod_ms, r.last_mod_ms)`. |
 | `tombstone` | Tombstone tie-break — see §11.3. |
 | `tombstoned_at_ms` | `max(l.tombstoned_at_ms, r.tombstoned_at_ms)` — the *death clock*, the high-water mark of every tombstone observation. Monotone non-decreasing across merges; preserved across resurrection (a live edit after a tombstone keeps the prior `tombstoned_at_ms`). Drives the §11.3 staleness filter. |
-| `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. v2 writers that need value-aware merging of new top-level keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. |
+| `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. v2 writers that need value-aware merging of new top-level keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. **Overridden by §11.3** in the mixed-tombstone-wins outcomes (the entire record-level `unknown` map is taken from the tombstoning side). |
 
 ### 11.2 Per-block metadata merge
 
@@ -482,8 +482,8 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 For a pairwise merge where one side is tombstoned at record-level `last_mod_ms = T_d` and the other is live at `last_mod_ms = T_l`:
 
 - The tombstone wins iff `T_d ≥ T_l`. This is the *tombstone-on-tie* rule: deletion is sticky.
-- The merged record carries the tombstoning side's `tags`, empty `fields` per §6.3, and `last_mod_ms = max(T_d, T_l)`.
-- When both sides are tombstoned, the merged record is tombstoned, `tags` follow record-level LWW per §11.1, and `fields` are empty.
+- The merged record carries the tombstoning side's identity metadata (`tags`, `record_type`, record-level `unknown`), empty `fields` per §6.3, and `last_mod_ms = max(T_d, T_l)`. **Identity-metadata override**: this rule overrides §11.1's per-field LWW for `tags`, `record_type`, and record-level `unknown` *only when one side is tombstoned and the other is live* and the tombstoning side wins (the `LocalTombstoneWins` and `RemoteTombstoneWins` outcomes). It does not apply when both sides are tombstoned (§11.1 LWW applies normally) or when both sides are live (§11.1 LWW with the staleness filter applies). The override exists so that a UI surfacing a tombstoned record (in a trash bin, undelete prompt, or audit log) reflects the deleter's view of the record — its `record_type`, its `tags`, and any forward-compat metadata they observed at deletion time, not a concurrent edit they never saw.
+- When both sides are tombstoned, the merged record is tombstoned, `tags` / `record_type` / `unknown` follow record-level LWW per §11.1, and `fields` are empty.
 - When both sides are live, the merged record is live and follows the per-field rules above (with the staleness filter described next).
 - A live edit observed *strictly after* a tombstone (`T_l > T_d`) resurrects the record. This is intentional: the retention window in §11.4 ensures all devices have observed the deletion before tombstones are GC'd, so a post-deletion edit is a deliberate undelete.
 
