@@ -1198,7 +1198,7 @@ def parse_and_verify_card(card_bytes: bytes) -> dict[str, Any]:
 
     try:
         decoded = cbor2.loads(card_bytes)
-    except Exception as e:
+    except cbor2.CBORDecodeError as e:
         raise ParseError(f"card CBOR decode failed: {e}") from e
     if not isinstance(decoded, dict):
         raise ParseError("card top-level CBOR is not a map")
@@ -1379,7 +1379,7 @@ def verify_block_and_manifest(
 
     try:
         block_pt = cbor2.loads(block_pt_bytes)
-    except Exception as e:
+    except cbor2.CBORDecodeError as e:
         issues.append(f"block plaintext CBOR decode: {e}")
         return False, issues
 
@@ -1523,7 +1523,7 @@ def verify_block_and_manifest(
 
     try:
         manifest_pt = cbor2.loads(manifest_pt_bytes)
-    except Exception as e:
+    except cbor2.CBORDecodeError as e:
         issues.append(f"manifest plaintext CBOR decode: {e}")
         return False, issues
 
