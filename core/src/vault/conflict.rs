@@ -43,7 +43,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::block::VectorClockEntry;
+use super::block::{BlockPlaintext, VectorClockEntry};
 use super::record::{Record, RecordField, RecordFieldValue, UnknownValue};
 
 // ---------------------------------------------------------------------------
@@ -498,6 +498,258 @@ fn merge_unknown_map(
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Per-block merge
+// ---------------------------------------------------------------------------
+
+/// Errors emitted by [`merge_block`]. A typed surface so callers can
+/// pattern-match on the failure mode rather than parsing strings.
+#[derive(Debug, thiserror::Error)]
+pub enum ConflictError {
+    /// [`merge_block`] called with two blocks whose `block_uuid` fields
+    /// differ. Per `docs/crypto-design.md` §11.2 a `block_uuid`
+    /// mismatch is a programmer error (callers should iterate the
+    /// manifest's `BlockEntry` table by UUID and only call merge_block
+    /// on matching UUIDs), not a mergeable conflict.
+    #[error("block_uuid mismatch: local has {local:?}, remote has {remote:?}")]
+    BlockUuidMismatch {
+        local: [u8; 16],
+        remote: [u8; 16],
+    },
+    /// A vector-clock per-device counter would overflow `u64::MAX` when
+    /// the merging device's component is incremented. Mirror of
+    /// [`super::VaultError::ClockOverflow`] so the merge primitive can
+    /// stay layer-typed without depending on `VaultError`. Practical
+    /// reachability is ~10¹¹ years at one merge per nanosecond; the
+    /// typed surface keeps the invariant explicit.
+    #[error("vector-clock overflow on device {device_uuid:?}")]
+    ClockOverflow { device_uuid: [u8; 16] },
+}
+
+/// A record where the per-record merge surfaced one or more
+/// [`FieldCollision`]s. The per-record LWW winner is already in the
+/// merged block plaintext; this struct is the informational view the
+/// caller can hand to a UI for explicit conflict resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordCollision {
+    /// The record whose merge produced collisions.
+    pub record_uuid: [u8; 16],
+    /// Field-level collisions for this record. Sorted ascending by
+    /// `field_name` (inherited from [`FieldCollision`]'s ordering).
+    pub field_collisions: Vec<FieldCollision>,
+}
+
+/// The result of merging two block plaintexts.
+///
+/// `merged` and `vector_clock` are the persisted outputs (caller writes
+/// these to disk via the orchestrator layer). `relation` records which
+/// branch [`merge_block`] took so callers can introspect the merge.
+/// `collisions` is the informational per-record collision list; sorted
+/// ascending by `record_uuid`. Empty when `relation` is not
+/// [`ClockRelation::Concurrent`] (no per-record merge happens for the
+/// other relations — the dominant block is adopted as-is).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedBlock {
+    /// Merged plaintext. For non-Concurrent relations this is a clone
+    /// of the dominant side (or `local` for `Equal`). For Concurrent
+    /// relations this is the per-record merge output.
+    pub merged: BlockPlaintext,
+    /// Merged vector clock. For non-Concurrent relations this is the
+    /// dominant side's clock unchanged. For Concurrent relations this
+    /// is `merge_vector_clocks(local_clock, remote_clock)` with `+1`
+    /// applied to `merging_device`'s component (a fresh entry inserted
+    /// when the merging device has none).
+    pub vector_clock: Vec<VectorClockEntry>,
+    /// Which branch the merge took.
+    pub relation: ClockRelation,
+    /// Per-record collisions encountered during a Concurrent merge.
+    /// Empty for the other relations.
+    pub collisions: Vec<RecordCollision>,
+}
+
+/// Top-level per-block merge primitive (`docs/crypto-design.md` §11).
+///
+/// Inspects the [`ClockRelation`] between `local_clock` and
+/// `remote_clock` and dispatches:
+///
+/// - [`Equal`](ClockRelation::Equal) — return `local` and
+///   `local_clock` unchanged.
+/// - [`IncomingDominates`](ClockRelation::IncomingDominates) — return
+///   `remote` and `remote_clock` unchanged. The remote replica
+///   captures all of local's history plus more.
+/// - [`IncomingDominated`](ClockRelation::IncomingDominated) — return
+///   `local` and `local_clock` unchanged. Mirror of the above.
+/// - [`Concurrent`](ClockRelation::Concurrent) — run the per-record
+///   union + per-record merge per §11; return a freshly-constructed
+///   block plaintext, a vector clock equal to
+///   `merge_vector_clocks(local_clock, remote_clock)` with `+1`
+///   applied to `merging_device`, and the per-record collision list.
+///
+/// **Precondition** — `local.block_uuid == remote.block_uuid`. A
+/// mismatch is surfaced as [`ConflictError::BlockUuidMismatch`] so the
+/// caller can route a programmer error distinctly from a merge
+/// outcome.
+///
+/// Pure function (no I/O, no `unsafe`). The only error path is
+/// `BlockUuidMismatch` plus the `ClockOverflow` corner case during the
+/// Concurrent branch's `+1` tick.
+pub fn merge_block(
+    local: &BlockPlaintext,
+    local_clock: &[VectorClockEntry],
+    remote: &BlockPlaintext,
+    remote_clock: &[VectorClockEntry],
+    merging_device: [u8; 16],
+) -> Result<MergedBlock, ConflictError> {
+    if local.block_uuid != remote.block_uuid {
+        return Err(ConflictError::BlockUuidMismatch {
+            local: local.block_uuid,
+            remote: remote.block_uuid,
+        });
+    }
+
+    let relation = clock_relation(local_clock, remote_clock);
+
+    match relation {
+        ClockRelation::Equal => Ok(MergedBlock {
+            merged: local.clone(),
+            vector_clock: local_clock.to_vec(),
+            relation,
+            collisions: Vec::new(),
+        }),
+        ClockRelation::IncomingDominates => Ok(MergedBlock {
+            merged: remote.clone(),
+            vector_clock: remote_clock.to_vec(),
+            relation,
+            collisions: Vec::new(),
+        }),
+        ClockRelation::IncomingDominated => Ok(MergedBlock {
+            merged: local.clone(),
+            vector_clock: local_clock.to_vec(),
+            relation,
+            collisions: Vec::new(),
+        }),
+        ClockRelation::Concurrent => {
+            let (merged_pt, collisions) = concurrent_merge_plaintext(local, remote);
+            let max_clock = merge_vector_clocks(local_clock, remote_clock);
+            let bumped = tick_for_device(max_clock, merging_device)?;
+            Ok(MergedBlock {
+                merged: merged_pt,
+                vector_clock: bumped,
+                relation,
+                collisions,
+            })
+        }
+    }
+}
+
+/// Per-record union + per-record merge for the Concurrent branch of
+/// [`merge_block`]. Records emerge sorted ascending by `record_uuid`
+/// for canonical determinism.
+fn concurrent_merge_plaintext(
+    local: &BlockPlaintext,
+    remote: &BlockPlaintext,
+) -> (BlockPlaintext, Vec<RecordCollision>) {
+    let mut local_lookup: BTreeMap<[u8; 16], &Record> = BTreeMap::new();
+    let mut remote_lookup: BTreeMap<[u8; 16], &Record> = BTreeMap::new();
+    for r in &local.records {
+        local_lookup.insert(r.record_uuid, r);
+    }
+    for r in &remote.records {
+        remote_lookup.insert(r.record_uuid, r);
+    }
+
+    let all_uuids: BTreeSet<[u8; 16]> = local_lookup
+        .keys()
+        .chain(remote_lookup.keys())
+        .copied()
+        .collect();
+
+    let mut merged_records: Vec<Record> = Vec::with_capacity(all_uuids.len());
+    let mut record_collisions: Vec<RecordCollision> = Vec::new();
+
+    for uuid in all_uuids {
+        let merged = match (local_lookup.get(&uuid), remote_lookup.get(&uuid)) {
+            (Some(&l), Some(&r)) => {
+                let m = merge_record(l, r);
+                if !m.collisions.is_empty() {
+                    record_collisions.push(RecordCollision {
+                        record_uuid: uuid,
+                        field_collisions: m.collisions,
+                    });
+                }
+                m.merged
+            }
+            (Some(&l), None) => l.clone(),
+            (None, Some(&r)) => r.clone(),
+            (None, None) => unreachable!("BTreeSet union excludes the absent-from-both case"),
+        };
+        merged_records.push(merged);
+    }
+
+    let merged_pt = BlockPlaintext {
+        block_version: local.block_version.max(remote.block_version),
+        block_uuid: local.block_uuid,
+        block_name: merge_block_name(&local.block_name, &remote.block_name),
+        schema_version: local.schema_version.max(remote.schema_version),
+        records: merged_records,
+        unknown: merge_unknown_map(&local.unknown, &remote.unknown),
+    };
+
+    (merged_pt, record_collisions)
+}
+
+/// `block_name` LWW per §11.2: lex-larger UTF-8 byte string wins.
+fn merge_block_name(l: &str, r: &str) -> String {
+    if l.as_bytes() >= r.as_bytes() {
+        l.to_string()
+    } else {
+        r.to_string()
+    }
+}
+
+/// Apply `+1` to `device`'s component of `clock`, inserting a fresh
+/// entry at counter `1` when the device has no current entry. The
+/// result is sorted ascending by `device_uuid` to keep the §6.1
+/// wire-format invariant in the in-memory representation.
+///
+/// Mirrors the orchestrator layer's private `tick_clock` but is pure
+/// (takes `clock` by value, returns a new `Vec`) and produces a
+/// layer-local error rather than `VaultError` so this module stays
+/// independent of the umbrella enum.
+fn tick_for_device(
+    clock: Vec<VectorClockEntry>,
+    device: [u8; 16],
+) -> Result<Vec<VectorClockEntry>, ConflictError> {
+    let mut clock = clock;
+    let mut found = false;
+    for entry in clock.iter_mut() {
+        if entry.device_uuid == device {
+            entry.counter = entry
+                .counter
+                .checked_add(1)
+                .ok_or(ConflictError::ClockOverflow {
+                    device_uuid: device,
+                })?;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        let pos = clock
+            .iter()
+            .position(|e| e.device_uuid > device)
+            .unwrap_or(clock.len());
+        clock.insert(
+            pos,
+            VectorClockEntry {
+                device_uuid: device,
+                counter: 1,
+            },
+        );
+    }
+    Ok(clock)
 }
 
 // ---------------------------------------------------------------------------
@@ -958,5 +1210,221 @@ mod tests {
         let m = merge_record(&a, &a);
         assert_eq!(m.merged, a);
         assert!(m.collisions.is_empty(), "merge(a, a) yields no collisions");
+    }
+
+    // --- merge_block helpers ------------------------------------------
+
+    fn pt(block_uuid: [u8; 16]) -> BlockPlaintext {
+        BlockPlaintext {
+            block_version: 1,
+            block_uuid,
+            block_name: "vault".to_string(),
+            schema_version: 1,
+            records: Vec::new(),
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    // --- merge_block: dispatch on relation ---------------------------
+
+    #[test]
+    fn merge_block_uuid_mismatch_is_typed_error() {
+        let a = pt([1; 16]);
+        let b = pt([2; 16]);
+        let err = merge_block(&a, &[], &b, &[], [9; 16]).expect_err("should error");
+        match err {
+            ConflictError::BlockUuidMismatch { local, remote } => {
+                assert_eq!(local, [1; 16]);
+                assert_eq!(remote, [2; 16]);
+            }
+            ConflictError::ClockOverflow { .. } => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn merge_block_equal_relation_returns_local_unchanged() {
+        let a = pt([5; 16]);
+        let clock = vec![entry(1, 3)];
+        let m = merge_block(&a, &clock, &a, &clock, [9; 16]).expect("ok");
+        assert_eq!(m.relation, ClockRelation::Equal);
+        assert_eq!(m.merged, a);
+        assert_eq!(m.vector_clock, clock);
+        assert!(m.collisions.is_empty());
+    }
+
+    #[test]
+    fn merge_block_incoming_dominates_returns_remote() {
+        let a = pt([5; 16]);
+        let mut b = pt([5; 16]);
+        b.block_name = "newer".to_string();
+        let local_clock = vec![entry(1, 3)];
+        let remote_clock = vec![entry(1, 5)];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, [9; 16]).expect("ok");
+        assert_eq!(m.relation, ClockRelation::IncomingDominates);
+        assert_eq!(m.merged, b, "remote (incoming) is the dominant side");
+        assert_eq!(m.vector_clock, remote_clock);
+        assert!(m.collisions.is_empty());
+    }
+
+    #[test]
+    fn merge_block_incoming_dominated_returns_local() {
+        let mut a = pt([5; 16]);
+        a.block_name = "ours".to_string();
+        let b = pt([5; 16]);
+        let local_clock = vec![entry(1, 5)];
+        let remote_clock = vec![entry(1, 3)];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, [9; 16]).expect("ok");
+        assert_eq!(m.relation, ClockRelation::IncomingDominated);
+        assert_eq!(m.merged, a, "local is the dominant side");
+        assert_eq!(m.vector_clock, local_clock);
+    }
+
+    #[test]
+    fn merge_block_concurrent_unions_disjoint_records() {
+        let mut a = pt([5; 16]);
+        let mut record_a = rec([10; 16]);
+        record_a
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("alice".into()), 50, 1));
+        a.records.push(record_a);
+
+        let mut b = pt([5; 16]);
+        let mut record_b = rec([20; 16]);
+        record_b
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("bob".into()), 60, 2));
+        b.records.push(record_b);
+
+        let local_clock = vec![entry(1, 1)];
+        let remote_clock = vec![entry(2, 1)];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, [9; 16]).expect("ok");
+        assert_eq!(m.relation, ClockRelation::Concurrent);
+        assert_eq!(m.merged.records.len(), 2);
+        // Records sorted ascending by record_uuid: [10;16] before [20;16].
+        assert_eq!(m.merged.records[0].record_uuid, [10; 16]);
+        assert_eq!(m.merged.records[1].record_uuid, [20; 16]);
+        assert!(m.collisions.is_empty(), "disjoint records do not collide");
+        // vector_clock = max(local, remote) + 1 for merging device [9; 16].
+        assert_eq!(m.vector_clock.len(), 3);
+    }
+
+    #[test]
+    fn merge_block_concurrent_collision_surfaces_record_uuid() {
+        // Same record_uuid in both sides with conflicting values.
+        let mut a = pt([5; 16]);
+        let mut record_a = rec([10; 16]);
+        record_a
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("v1".into()), 100, 1));
+        a.records.push(record_a);
+
+        let mut b = pt([5; 16]);
+        let mut record_b = rec([10; 16]);
+        record_b
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("v2".into()), 200, 2));
+        b.records.push(record_b);
+
+        let local_clock = vec![entry(1, 1)];
+        let remote_clock = vec![entry(2, 1)];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, [9; 16]).expect("ok");
+        assert_eq!(m.relation, ClockRelation::Concurrent);
+        assert_eq!(m.merged.records.len(), 1);
+        assert_eq!(
+            m.merged.records[0].fields["u"].value,
+            RecordFieldValue::Text("v2".into())
+        );
+        assert_eq!(m.collisions.len(), 1);
+        assert_eq!(m.collisions[0].record_uuid, [10; 16]);
+        assert_eq!(m.collisions[0].field_collisions.len(), 1);
+        assert_eq!(m.collisions[0].field_collisions[0].field_name, "u");
+    }
+
+    #[test]
+    fn merge_block_concurrent_ticks_merging_device() {
+        let a = pt([5; 16]);
+        let b = pt([5; 16]);
+        let local_clock = vec![entry(1, 3)];
+        let remote_clock = vec![entry(2, 4)];
+        let merging_device = [9; 16];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, merging_device).expect("ok");
+        assert_eq!(m.relation, ClockRelation::Concurrent);
+        // Merged clock has entries for devices 1, 2, and 9 — and
+        // device 9's counter is 1 (fresh entry).
+        let merging_entry = m
+            .vector_clock
+            .iter()
+            .find(|e| e.device_uuid == merging_device)
+            .expect("merging device is present");
+        assert_eq!(merging_entry.counter, 1);
+    }
+
+    #[test]
+    fn merge_block_concurrent_block_metadata_takes_max_and_lex_larger() {
+        let mut a = pt([5; 16]);
+        a.block_version = 1;
+        a.schema_version = 2;
+        a.block_name = "abc".into();
+        let mut b = pt([5; 16]);
+        b.block_version = 2;
+        b.schema_version = 1;
+        b.block_name = "abd".into();
+
+        let local_clock = vec![entry(1, 1)];
+        let remote_clock = vec![entry(2, 1)];
+        let m = merge_block(&a, &local_clock, &b, &remote_clock, [9; 16]).expect("ok");
+        assert_eq!(m.merged.block_version, 2, "max of versions");
+        assert_eq!(m.merged.schema_version, 2, "max of schema versions");
+        assert_eq!(m.merged.block_name, "abd", "lex-larger block_name");
+    }
+
+    #[test]
+    fn merge_block_concurrent_commutative_basic() {
+        // Hand-crafted: two records, one collision, two block-metadata
+        // ties broken by deterministic rules → merge(a, b) == merge(b, a).
+        let mut a = pt([5; 16]);
+        a.block_name = "abc".into();
+        let mut record_a1 = rec([10; 16]);
+        record_a1
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("v1".into()), 100, 1));
+        a.records.push(record_a1);
+
+        let mut b = pt([5; 16]);
+        b.block_name = "abd".into();
+        let mut record_b1 = rec([10; 16]);
+        record_b1
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("v2".into()), 200, 2));
+        b.records.push(record_b1);
+        let mut record_b2 = rec([20; 16]);
+        record_b2
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("only-b".into()), 50, 2));
+        b.records.push(record_b2);
+
+        let local_clock = vec![entry(1, 1)];
+        let remote_clock = vec![entry(2, 1)];
+        let merging_device = [9; 16];
+        let ab = merge_block(&a, &local_clock, &b, &remote_clock, merging_device).expect("ok");
+        let ba = merge_block(&b, &remote_clock, &a, &local_clock, merging_device).expect("ok");
+        assert_eq!(ab, ba, "merge_block is commutative for Concurrent relation");
+    }
+
+    #[test]
+    fn merge_block_concurrent_idempotent_basic() {
+        let mut a = pt([5; 16]);
+        let mut record_a = rec([10; 16]);
+        record_a
+            .fields
+            .insert("u".into(), rfield(RecordFieldValue::Text("v".into()), 100, 1));
+        a.records.push(record_a);
+        let clock = vec![entry(1, 1)];
+        let m = merge_block(&a, &clock, &a, &clock, [9; 16]).expect("ok");
+        // Equal relation, no clock tick, no collisions.
+        assert_eq!(m.relation, ClockRelation::Equal);
+        assert_eq!(m.merged, a);
+        assert_eq!(m.vector_clock, clock);
+        assert!(m.collisions.is_empty());
     }
 }
