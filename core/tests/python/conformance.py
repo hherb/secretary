@@ -1909,6 +1909,42 @@ def _value_lex_bytes(field: dict) -> bytes:
     raise ValueError(f"unknown value_type: {field['value_type']}")
 
 
+def py_merge_unknown_map(local_unk: dict, remote_unk: dict) -> dict:
+    """Per-key forward-compat unknown merge per §11.1 (record-level)
+    and §11.2 (block-level — same rule).
+
+    A key present in only one side is kept verbatim. A key present in
+    both with identical values is kept once. A key present in both
+    with differing values takes the lex-larger canonical-CBOR-encoded
+    value bytes.
+
+    The KAT carries each value as a hex string of canonical-CBOR
+    bytes (`unknown_hex: {key: "0a"}`). Lowercase-hex lex compare
+    matches lex compare on the underlying bytes for any byte length:
+    hex chars `0`-`9` < `a`-`f` align with the byte values they
+    represent, and 2 hex chars per byte keeps length comparisons
+    consistent. So we can compare hex strings directly without
+    decoding.
+    """
+    out: dict[str, str] = {}
+    all_keys = set(local_unk.keys()) | set(remote_unk.keys())
+    for key in sorted(all_keys):
+        l_val = local_unk.get(key)
+        r_val = remote_unk.get(key)
+        if l_val is not None and r_val is not None:
+            if l_val == r_val:
+                out[key] = l_val
+            elif l_val >= r_val:
+                out[key] = l_val
+            else:
+                out[key] = r_val
+        elif l_val is not None:
+            out[key] = l_val
+        else:
+            out[key] = r_val  # type: ignore[assignment]
+    return out
+
+
 def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     """Merge two records with the same record_uuid per §11. Returns the
     merged record dict and the list of field collisions (in sorted
@@ -2051,6 +2087,19 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     # Canonicalise: sort + dedup.
     tags = sorted(set(source))
 
+    # Record-level `unknown` merge per §11.1 / §11.3 override:
+    # tombstoning-wins outcomes take the tombstoning side's whole
+    # `unknown` map wholesale; every other outcome runs per-key
+    # lex-larger canonical-CBOR-bytes via py_merge_unknown_map.
+    local_unknown = local.get("unknown_hex", {})
+    remote_unknown = remote.get("unknown_hex", {})
+    if outcome == "LocalTombstoneWins":
+        unknown = dict(local_unknown)
+    elif outcome == "RemoteTombstoneWins":
+        unknown = dict(remote_unknown)
+    else:
+        unknown = py_merge_unknown_map(local_unknown, remote_unknown)
+
     merged = {
         "record_uuid_hex": local["record_uuid_hex"],
         "record_type": record_type,
@@ -2060,6 +2109,7 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
         "last_mod_ms": max(local["last_mod_ms"], remote["last_mod_ms"]),
         "tombstone": tombstone,
         "tombstoned_at_ms": death,
+        "unknown_hex": unknown,
     }
     return merged, collisions
 
@@ -2134,6 +2184,13 @@ def py_merge_block(
         else remote_block["block_name"],
         "schema_version": max(local_block["schema_version"], remote_block["schema_version"]),
         "records": merged_records,
+        # §11.2 forward-compat: same per-key lex-larger rule as
+        # record-level (§11.1). No tombstone semantics at block level,
+        # so no override.
+        "unknown_hex": py_merge_unknown_map(
+            local_block.get("unknown_hex", {}),
+            remote_block.get("unknown_hex", {}),
+        ),
     }
     return {
         "relation": "Concurrent",
@@ -2169,6 +2226,9 @@ def _normalise_record(r: dict) -> dict:
         "last_mod_ms": r["last_mod_ms"],
         "tombstone": r["tombstone"],
         "tombstoned_at_ms": r.get("tombstoned_at_ms", 0),
+        # Record-level forward-compat unknown keys (canonical-CBOR
+        # bytes encoded as hex). Absent in the JSON → empty dict.
+        "unknown_hex": dict(r.get("unknown_hex", {})),
     }
 
 
@@ -2179,6 +2239,8 @@ def _normalise_block(b: dict) -> dict:
         "block_name": b["block_name"],
         "schema_version": b["schema_version"],
         "records": [_normalise_record(r) for r in b["records"]],
+        # Block-level forward-compat unknown keys.
+        "unknown_hex": dict(b.get("unknown_hex", {})),
     }
 
 
