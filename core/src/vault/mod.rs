@@ -786,6 +786,33 @@ pub fn open_vault(
         });
     }
 
+    // §4.3 step 6 cross-check: the manifest body carries a duplicate
+    // copy of vault.toml's [kdf] block precisely so the manifest
+    // signature attests to the parameters used to derive master_kek
+    // (§4.2 line 205). Without this comparison a malicious cloud host
+    // could swap memory_kib (DoS), iterations, parallelism, or salt in
+    // vault.toml and the user would derive a different — but
+    // signature-valid — manifest with no warning. Re-parse vault.toml
+    // here rather than threading the parsed form through unlock to
+    // keep the check local and unambiguous.
+    let vt_str = std::str::from_utf8(&vault_toml_bytes).map_err(|_| VaultError::Unlock(
+        crate::unlock::UnlockError::MalformedVaultToml(
+            crate::unlock::vault_toml::VaultTomlError::MalformedToml(
+                "vault.toml is not valid UTF-8".to_string(),
+            ),
+        ),
+    ))?;
+    let vt = vault_toml::decode(vt_str).map_err(|e| {
+        VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(e))
+    })?;
+    if manifest_body.kdf_params.memory_kib != vt.kdf.memory_kib
+        || manifest_body.kdf_params.iterations != vt.kdf.iterations
+        || manifest_body.kdf_params.parallelism != vt.kdf.parallelism
+        || manifest_body.kdf_params.salt != vt.kdf.salt
+    {
+        return Err(VaultError::KdfParamsMismatch);
+    }
+
     // Step 8: §10 rollback resistance. The OS-keystore layer holds the
     // per-vault highest-seen clock; this function is agnostic about
     // where it comes from. Pass `None` to skip the check (no clock
