@@ -6,7 +6,7 @@
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
 
-> **Status: pre-alpha, Sub-project A nearing completion.** Architecture and cryptographic design are complete and frozen for v1. The Rust core is well underway: cryptographic primitives, identity, vault unlock, and the v1 block file format are implemented and test-covered (230+ tests, including NIST KATs and a stdlib-only Python wire-format conformance script). The manifest layer and high-level orchestrators (PR-B) are next; FFI bindings and platform UIs come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
+> **Status: pre-alpha, Sub-project A feature-complete; hardening + audit next.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers the full v1 vault surface: cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, and the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`). 340+ tests pass, including NIST KATs, vector-clock CRDT proptests, and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture. What remains for Sub-project A is hardening + an external audit; FFI bindings and platform UIs come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
 
 ---
 
@@ -119,7 +119,7 @@ The user-facing application and the source code are *both* free of charge. Only 
 
 ## Project status
 
-Repository initialized April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust core — is in active implementation:
+Repository initialized April 2026. Sub-project A — the cryptographic foundation, vault format spec, and Rust core — is feature-complete; hardening and external audit are next:
 
 | Component | Status |
 |---|---|
@@ -127,14 +127,16 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | Cryptographic primitives (AEAD, KDF, KEM, sig, hash, identity) | ✅ Complete, NIST KAT-pinned |
 | Vault unlock (BIP-39, identity bundle, vault.toml, recovery key) | ✅ Complete (PR #1) |
 | Block file format (record CBOR, header, recipients, AEAD, hybrid sig) | ✅ Complete (PR #3) |
-| Manifest layer + atomic writes + high-level orchestrators | 🚧 Next (PR-B) |
-| `golden_vault_001/` end-to-end §15 conformance fixture | 🚧 Next (PR-B) |
+| Manifest layer + atomic writes + high-level orchestrators | ✅ Complete (PR #5) |
+| `golden_vault_001/` end-to-end §15 conformance fixture (full crypto) | ✅ Complete (PR #5) |
+| Hardening: fuzz, side-channel review, memory hygiene audit | 🚧 Next (Phase A.6) |
+| External cryptographic audit | 🚧 Next (Phase A.6) |
 | FFI bindings (PyO3, uniffi for Swift/Kotlin) | ⏳ Sub-project B |
 | Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project C |
 
-230+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors).
+340+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors).
 
-A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that parses the §15 block KAT directly from spec constants. Full crypto verification in Python comes with the manifest layer.
+A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that parses the §15 block KAT directly from spec constants and performs full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault, with no dependencies on the Rust source.
 
 The project is intentionally being built slowly and carefully. Cryptographic systems that handle multi-decade-lifetime secrets are not the right place to optimize for time-to-MVP. See [ROADMAP.md](ROADMAP.md) for the phased plan.
 

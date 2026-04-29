@@ -10,17 +10,17 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ---
 
-## Where we are: 2026-04-28
+## Where we are: 2026-04-29
 
-Sub-project A is roughly 70% complete. The vault block file format just landed in PR #3; what remains for Sub-project A is the manifest layer plus the high-level orchestrator API.
+Sub-project A is feature-complete for v1. The manifest layer, atomic I/O, the four high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the `golden_vault_001/` end-to-end §15 fixture all landed in PR #5. PR #6 cleaned up follow-ups from review (orchestrator-module split, exact-pin of `tempfile` as a security-critical dependency, plus a regression test for an ML-DSA silent-accept bug surfaced in the Python conformance script). What remains for Sub-project A is hardening — fuzz harness, side-channel review, memory-hygiene audit — and an independent external cryptographic audit.
 
 ```
-[========================================================        ] Sub-project A — Rust core
-[                                                                 ] Sub-project B — FFI bindings
-[                                                                 ] Sub-project C — Platform UIs
+[==============================================================  ] Sub-project A — Rust core
+[                                                                ] Sub-project B — FFI bindings
+[                                                                ] Sub-project C — Platform UIs
 ```
 
-230+ tests pass. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs.
+340+ tests pass. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs, and the `golden_vault_001/` fixture is verified end-to-end by both the Rust suite and the stdlib-only Python conformance script.
 
 ---
 
@@ -62,18 +62,18 @@ Hybrid constructions are implemented and KAT-pinned: X25519 ⊕ ML-KEM-768 KEM, 
 - `encrypt_block` / `decrypt_block` orchestrators as free `fn`s. Verify-before-decap structurally enforced: a forged file never triggers a private-key operation.
 - §15 cross-language conformance: [core/tests/data/block_kat.json](core/tests/data/block_kat.json) parsed wire-format-only by [core/tests/python/conformance.py](core/tests/python/conformance.py) (stdlib-only, `uv run`-compatible).
 
-### Phase A.5 — Vault manifest layer + orchestrators 🚧 (next, PR-B)
+### Phase A.5 — Vault manifest layer + orchestrators ✅ (complete, PR #5, PR #6)
 
-The remaining piece of Sub-project A:
+`secretary_core::vault::{manifest, io, orchestrators, canonical}`:
 
-- **Manifest format** (`docs/vault-format.md` §4): `manifest.cbor.enc` top-level index, recipient table at the manifest level, vector clocks for CRDT merge.
-- **Atomic writes** ([core/src/vault/io.rs](core/src/vault/) — to be created): write-temp + fsync + rename + parent-dir fsync, per ADR-0003.
-- **CRDT merge**: vector-clock-driven merge with commutativity / associativity / idempotence proptests.
-- **High-level orchestrators**: `create_vault`, `save_block`, `share_block`, `open_vault` — the API surface FFI will wrap.
-- **§15 closure**: `core/tests/data/golden_vault_001/` end-to-end fixture and full crypto verification in Python conformance.
-- **Shared canonical-CBOR helpers**: `canonical_sort_entries`, `encode_canonical_map`, the float/tag walker — extract to `core/src/vault/canonical.rs` before the third copy lands.
+- **Manifest format** (`docs/vault-format.md` §4): [core/src/vault/manifest.rs](core/src/vault/manifest.rs) — `manifest.cbor.enc` top-level index, recipient table at the manifest level, vector clocks for CRDT merge, canonical CBOR with `UnknownValue` opaque round-tripping.
+- **Atomic writes**: [core/src/vault/io.rs](core/src/vault/io.rs) — write-temp + fsync + rename + parent-dir fsync, per ADR-0003. `tempfile` exact-pinned (`=3.27.0`) as a security-critical path dependency.
+- **Vector-clock invariants**: tick-on-overflow rejected as a typed error rather than saturating; proptests for vector-clock merge and associativity.
+- **High-level orchestrators**: [core/src/vault/orchestrators.rs](core/src/vault/orchestrators.rs) — `create_vault` (atomic four-file initial layout), `open_vault` (verify-then-decrypt with `vault_uuid` and `kdf_params` cross-checks per §4.3), `save_block` (atomic write ordering per §9), `share_block` (author-only re-sign with author-equals-identity precondition; share-as-fork TODO markers pinned for the v2 follow-up).
+- **§15 closure**: [core/tests/data/golden_vault_001/](core/tests/data/golden_vault_001/) — deterministic end-to-end fixture (`vault.toml`, `manifest.cbor.enc`, `identity.bundle.enc`, one block, one Contact Card) verified end-to-end by [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify, stdlib-only, `uv run`-compatible). A regression test pins the silent-accept bug found and fixed in the Python ML-DSA-65 verifier during this phase.
+- **Shared canonical-CBOR helpers**: [core/src/vault/canonical.rs](core/src/vault/canonical.rs) — `canonical_sort_entries`, `encode_canonical_map`, the float/tag walker, extracted before the third copy could land.
 
-### Phase A.6 — Hardening + audit prep ⏳ (after A.5)
+### Phase A.6 — Hardening + audit prep 🚧 (next)
 
 - Independent cryptographic review (paid, external).
 - Fuzz harness for the wire-format decoders (`cargo fuzz`).
@@ -136,7 +136,7 @@ These are explicit non-goals for the first release. Some may move into v2; some 
 The project is currently a solo effort and intentionally gated on cryptographic correctness — most work happens behind specifications and audited PRs rather than through ad-hoc contributions. That said, helpful avenues right now:
 
 - **Review the design docs.** [docs/threat-model.md](docs/threat-model.md), [docs/crypto-design.md](docs/crypto-design.md), [docs/vault-format.md](docs/vault-format.md), and [docs/adr/](docs/adr/) are the source of truth. Ambiguities or errors there have outsized impact. Open issues against the docs.
-- **Build a clean-room implementation.** Use only `docs/` and verify against [core/tests/python/conformance.py](core/tests/python/conformance.py) (parse-only today; full crypto in PR-B). If your implementation works without reading the Rust source, the spec is doing its job. If it doesn't, please open an issue.
+- **Build a clean-room implementation.** Use only `docs/` and verify against [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify against `golden_vault_001/`, stdlib-only). If your implementation works without reading the Rust source, the spec is doing its job. If it doesn't, please open an issue.
 - **Cryptographic review.** Independent scrutiny of the hybrid constructions, KAT coverage, and AAD/signed-range definitions is welcome. Especially valuable: someone with FIPS 203 / FIPS 204 implementer experience.
 - **Wait for Sub-project B / C.** If your interest is the UI layer or platform integration, those phases haven't started. Star the repo and check back.
 
