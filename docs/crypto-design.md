@@ -449,23 +449,24 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | Field | Merge rule |
 |---|---|
 | `record_uuid` | Equal by precondition (records merge only when their UUIDs match). |
-| `record_type` | Take the value from the side with greater record-level `last_mod_ms`; **local wins on tie**. v1 writers SHOULD NOT change `record_type` after creation. |
+| `record_type` | Greater record-level `last_mod_ms` wins; on tie, the **lex-larger byte string** wins (compared as UTF-8 bytes). v1 writers SHOULD NOT change `record_type` after creation; the lex-larger tie-break only matters for adversarial / malformed inputs. |
 | `fields` | Per-field LWW per the pseudocode (`last_mod` greater wins; ties broken by `device_uuid` lexicographically). |
-| `tags` | Take the side with greater record-level `last_mod_ms`; **local wins on tie**. |
+| `tags` | Greater record-level `last_mod_ms` wins; on tie, the **set union** of both sides' tags is taken (canonical-CBOR sort applied on encode). Set union is itself commutative, associative, and idempotent, so it preserves the global merge invariant when ties occur. |
 | `created_at_ms` | `min(l.created_at_ms, r.created_at_ms)` — the earliest creation observed across all replicas. |
 | `last_mod_ms` | `max(l.last_mod_ms, r.last_mod_ms)`. |
 | `tombstone` | Tombstone tie-break — see §11.3. |
-| `unknown` (forward-compat) | Local-wins on every key. v2 writers that need CRDT-correct merging of new top-level record keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. |
+| `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. v2 writers that need value-aware merging of new top-level keys MUST attach per-key CRDT metadata in the same shape as `RecordField` and bump the suite version. |
 
 ### 11.2 Per-block metadata merge
 
 | Field | Merge rule |
 |---|---|
-| `block_version`, `block_name`, `schema_version` | Local-wins. v1 does not version these per-edit; cross-device divergence is rare and resolves on the next manifest update. |
 | `block_uuid` | Equal by precondition. A `block_uuid` mismatch is a programmer error, not a mergeable conflict, and implementations MUST surface it as a typed error rather than attempting to merge. |
+| `block_version`, `schema_version` | `max` of the two values. Both are monotonic version numbers that only increase across releases. |
+| `block_name` | The **lex-larger byte string** wins (compared as UTF-8 bytes). v1 writers do not version `block_name`, so divergence here is rare; the deterministic rule keeps the merge commutative. |
 | `records` | Per-record union + per-field LWW per the pseudocode. |
 | `vector_clock` | Component-wise max of the two clocks, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). |
-| `unknown` (forward-compat) | Local-wins. |
+| `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. |
 
 ### 11.3 Tombstone tie-break
 
