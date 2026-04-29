@@ -247,11 +247,24 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
         TombstoneOutcome::BothTombstoned | TombstoneOutcome::LocalTombstoneWins | TombstoneOutcome::RemoteTombstoneWins
     );
 
-    let (merged_fields, collisions) = if tombstone {
-        // §11.3: tombstoned records carry empty `fields` per §6.3.
-        (BTreeMap::new(), Vec::new())
-    } else {
-        merge_fields_lww(&local.fields, &remote.fields)
+    let (merged_fields, collisions) = match tombstone_outcome {
+        TombstoneOutcome::BothTombstoned
+        | TombstoneOutcome::LocalTombstoneWins
+        | TombstoneOutcome::RemoteTombstoneWins => {
+            // §11.3: tombstoned merged record carries empty `fields`
+            // per §6.3 regardless of either side's `fields`.
+            (BTreeMap::new(), Vec::new())
+        }
+        TombstoneOutcome::BothLive => merge_fields_lww(&local.fields, &remote.fields),
+        TombstoneOutcome::LocalTombstoneLost => {
+            // Live wins (remote). The tombstoning side (local) may have
+            // "kept-for-undelete" fields per §6.3, but they are stale
+            // pre-deletion data — the live side is the new authoritative
+            // record. Take only live-side fields; no field-level
+            // collisions arise.
+            (remote.fields.clone(), Vec::new())
+        }
+        TombstoneOutcome::RemoteTombstoneLost => (local.fields.clone(), Vec::new()),
     };
 
     let merged_record_type = merge_record_type(local, remote);

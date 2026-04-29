@@ -511,6 +511,7 @@ mod vault {
         encode_recipient_table, encrypt_block, BlockError, BlockHeader, BlockPlaintext,
         RecipientPublicKeys, RecipientWrap, FILE_KIND_BLOCK,
     };
+    use secretary_core::vault::conflict::merge_record;
     use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue};
     use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
@@ -985,6 +986,119 @@ mod vault {
                 // to a single-byte tamper inside the signed range.
                 Err(_) => {}
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR-C properties I, J, K — CRDT merge invariants on `merge_record`.
+    //
+    // The §11 spec claims commutativity, associativity, and idempotence
+    // of the per-record merge. These three properties pin those claims
+    // against the entire `MergedRecord` (i.e. bit-identical equality on
+    // both `.merged` and `.collisions` for I and K; `.merged` only for J
+    // — `.collisions` is per-step informational and does not survive
+    // through an intermediate persisted record).
+    //
+    // Inputs share `record_uuid` (otherwise the merge precondition would
+    // not hold) but everything else is drawn from the existing
+    // `record_strategy()`. Default proptest case count (256) — these are
+    // pure CBOR / map operations; no crypto keygen on the hot path.
+    // -----------------------------------------------------------------------
+
+    /// Canonicalize a Record into the form the CRDT proptests need to
+    /// hold their invariants. `record_strategy()` generates raw data
+    /// that may violate them, and merging trivially canonicalises,
+    /// so the proptest canonicalises inputs first.
+    ///
+    /// Invariants applied:
+    ///
+    /// - `tags` sorted lex and deduped (§11.1 — the merge always emits
+    ///   tags in this canonical form on tie via set union).
+    /// - `last_mod_ms ≥ max(field.last_mod for field in fields)` —
+    ///   real clients bump the record-level `last_mod_ms` whenever
+    ///   they touch any field, so per-field edits never out-pace the
+    ///   record clock.
+    /// - `tombstone = false`. **v1 limitation**: tombstone-on-tie
+    ///   semantics (§11.3 / Q2 design choice) make merge strictly
+    ///   associative *only when* every replica observes any prior
+    ///   tombstone — in CRDT terms, when a record-level
+    ///   `tombstoned_at_ms` propagates across merges. v1 does not yet
+    ///   carry that field; without it, a live-vs-live merge of two
+    ///   replicas, one with prior knowledge of a tombstone and one
+    ///   without, can resurrect a field whose `last_mod` predates the
+    ///   tombstone. Tombstone interaction tests live in the inline
+    ///   unit tests + integration tests in `core/tests/conflict.rs`,
+    ///   which exercise tombstone semantics directly without claiming
+    ///   the strict associativity property. Phase A.7 hardening (per
+    ///   secretary_next_session.md) will introduce
+    ///   `tombstoned_at_ms` and tighten this proptest to cover the
+    ///   tombstone domain.
+    fn canonicalize_record(r: &mut Record) {
+        r.tags.sort();
+        r.tags.dedup();
+        r.tombstone = false;
+        let max_field_lm = r.fields.values().map(|f| f.last_mod).max().unwrap_or(0);
+        r.last_mod_ms = r.last_mod_ms.max(max_field_lm);
+    }
+
+    proptest! {
+        /// Property I — `merge_record(a, b) == merge_record(b, a)` on
+        /// the entire MergedRecord (merged + collisions).
+        #[test]
+        fn crdt_merge_record_commutativity(
+            uuid in any::<[u8; 16]>(),
+            a in record_strategy(),
+            b in record_strategy(),
+        ) {
+            let mut a = a;
+            let mut b = b;
+            a.record_uuid = uuid;
+            b.record_uuid = uuid;
+            canonicalize_record(&mut a);
+            canonicalize_record(&mut b);
+            let ab = merge_record(&a, &b);
+            let ba = merge_record(&b, &a);
+            prop_assert_eq!(ab, ba);
+        }
+
+        /// Property J — associativity on the persisted record only:
+        /// `merge_record(merge_record(a, b).merged, c).merged ==
+        ///  merge_record(a, merge_record(b, c).merged).merged`.
+        ///
+        /// Per-step `collisions` lists are not preserved through an
+        /// intermediate persisted record (the LWW winner replaces the
+        /// loser in the intermediate `.merged`), so associativity is
+        /// claimed on `.merged` alone — matching the spec's claim.
+        #[test]
+        fn crdt_merge_record_associativity(
+            uuid in any::<[u8; 16]>(),
+            a in record_strategy(),
+            b in record_strategy(),
+            c in record_strategy(),
+        ) {
+            let mut a = a;
+            let mut b = b;
+            let mut c = c;
+            a.record_uuid = uuid;
+            b.record_uuid = uuid;
+            c.record_uuid = uuid;
+            canonicalize_record(&mut a);
+            canonicalize_record(&mut b);
+            canonicalize_record(&mut c);
+            let left = merge_record(&merge_record(&a, &b).merged, &c).merged;
+            let right = merge_record(&a, &merge_record(&b, &c).merged).merged;
+            prop_assert_eq!(left, right);
+        }
+
+        /// Property K — `merge_record(a, a) == MergedRecord { merged: a,
+        /// collisions: [] }`. Idempotence on the full structure.
+        #[test]
+        fn crdt_merge_record_idempotence(a in record_strategy()) {
+            let mut a = a;
+            canonicalize_record(&mut a);
+            let m = merge_record(&a, &a);
+            prop_assert_eq!(&m.merged, &a);
+            prop_assert!(m.collisions.is_empty());
         }
     }
 }

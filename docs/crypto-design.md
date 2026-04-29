@@ -486,6 +486,19 @@ When the per-field LWW resolves a field where both sides held differing values, 
 
 The merge function must be **commutative**, **associative**, and **idempotent**. These properties are enforced by property-based tests in `core/tests/`.
 
+### 11.5 Input invariants and the v1 associativity domain
+
+Well-formed records satisfy two invariants that the §11 merge relies on. Implementations SHOULD enforce them on the write path; the merge primitives canonicalise opportunistically but do not validate.
+
+| Invariant | Justification |
+|---|---|
+| `tags` sorted lex and deduped before encode | §11.1's set-union output is always canonical; bit-identical commutativity (`merge(a, b) == merge(b, a)` over the entire `MergedRecord`) requires inputs in the same canonical form. |
+| `last_mod_ms ≥ max(field.last_mod across fields)` | Real clients bump `last_mod_ms` on every field edit. The merge's tombstone-vs-live interaction reasons about record-level vs field-level timestamps and assumes the record clock at least as recent as any field clock. |
+
+**v1 associativity is restricted to the non-tombstoned domain.** Tombstone-on-tie semantics (§11.3) provide deterministic outcomes for any individual merge, but full associativity across mixed-tombstone replicas requires a record-level `tombstoned_at_ms` field that propagates "this record was tombstoned at time T" across merges. v1 does not carry that field; without it, two live replicas can disagree on whether a field surviving from before a tombstone should be dropped, and a three-way merge `merge(a, merge(b, c))` vs `merge(merge(a, b), c)` can produce different field sets when `b` is tombstoned and `c` is a later live edit that "lost" tombstone history. Phase A.7 hardening introduces `tombstoned_at_ms` to close this gap.
+
+Property-based tests in `core/tests/proptest.rs` therefore certify commutativity, associativity, and idempotence on the live-only sub-domain (records with `tombstone = false`). Tombstone interactions are exercised by the inline unit tests in `core/src/vault/conflict.rs` and the integration tests in `core/tests/conflict.rs`, which pin the per-pair behaviour without claiming the strict associativity property.
+
 ---
 
 ## 12. Cipher-suite migration
