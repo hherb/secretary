@@ -567,6 +567,28 @@ fn merge_tags(l: &Record, r: &Record, outcome: TombstoneOutcome) -> Vec<String> 
 /// §11.2 (block-level — same rule). A key present in only one side is
 /// kept verbatim. A key present in both with differing values takes
 /// the lex-larger canonical-CBOR-encoded value bytes.
+///
+/// The `to_canonical_cbor()` calls on the collision branch use
+/// [`Result::expect`] because the chain is structurally infallible:
+///
+/// 1. Every [`UnknownValue`] is constructed via
+///    [`UnknownValue::from_canonical_cbor`], which calls
+///    `reject_floats_and_tags` — so `UnknownValue.0` is a
+///    [`ciborium::Value`] drawn from the `{Bytes, Bool, Text, Null,
+///    Integer, Array, Map}` subset, recursively float-and-tag-free.
+/// 2. ciborium 0.2's `Serialize` impl on `Value` only synthesises an
+///    `Error::Value("expected tag")` while encoding `Value::Tag`,
+///    which (1) excludes by construction. The other variants delegate
+///    to typed `serialize_*` methods that propagate writer errors only.
+/// 3. The writer is `&mut Vec<u8>`. With ciborium-io's std-feature
+///    blanket impl, its `write_all` is `<Vec<u8> as
+///    std::io::Write>::write_all`, which calls `extend_from_slice` and
+///    always returns `Ok(())` (Vec growth panics on OOM, never
+///    `Err`s).
+///
+/// Combined: serialising a v1-canonical [`UnknownValue`] to a `Vec<u8>`
+/// has no reachable error path, so `.expect()` here cannot fire on any
+/// value [`merge_unknown_map`] is called with.
 fn merge_unknown_map(
     l: &BTreeMap<String, UnknownValue>,
     r: &BTreeMap<String, UnknownValue>,
@@ -579,12 +601,16 @@ fn merge_unknown_map(
                 if lv == rv {
                     out.insert(key.clone(), lv.clone());
                 } else {
+                    // See module-level rationale above: serialising a
+                    // v1-canonical UnknownValue to Vec<u8> has no
+                    // reachable error path (Value subset is float/tag-
+                    // free; Vec<u8> writer never errs).
                     let l_bytes = lv
                         .to_canonical_cbor()
-                        .expect("ciborium serialize to Vec<u8> is structurally infallible");
+                        .expect("UnknownValue is float/tag-free; Vec<u8> writer is infallible");
                     let r_bytes = rv
                         .to_canonical_cbor()
-                        .expect("ciborium serialize to Vec<u8> is structurally infallible");
+                        .expect("UnknownValue is float/tag-free; Vec<u8> writer is infallible");
                     if l_bytes >= r_bytes {
                         out.insert(key.clone(), lv.clone());
                     } else {
