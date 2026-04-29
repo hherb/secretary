@@ -221,3 +221,13 @@ __marimo__/
 /target/
 **/*.rs.bk
 
+# proptest auto-saves a regression file next to a failing test; we
+# don't pin past failures into version control.
+**/*.proptest-regressions
+
+# Claude Code per-user state (settings, generated skills). Project-level
+# Claude config (.claude/CLAUDE.md, .claude/agents/, etc.) may be
+# committed selectively if introduced later.
+.claude/settings.local.json
+.claude/skills/
+
