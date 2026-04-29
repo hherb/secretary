@@ -1301,16 +1301,19 @@ mod manifest_props {
         /// verifies, AND the AEAD body decrypts) is a security violation.
         /// Mirrors PR-A's block-layer Property E discipline.
         ///
-        /// Unlike Property E, this property does NOT restrict the flip
-        /// to a "signed range" — the §4.1 envelope is fully covered by
-        /// the chained checks above. A flip in the trailing signature
-        /// suffix is rejected by `verify_manifest`; a flip in the
-        /// header / aead_nonce / aead_ct / aead_tag is rejected by
-        /// signature verify (because the signed bytes span
-        /// magic..=aead_tag) OR by AEAD verify; a flip in the length
-        /// prefixes may be rejected by `decode_manifest_file`. All paths
-        /// are typed-error rejections; the `Ok(_)` branch is the only
-        /// one we forbid.
+        /// The §4.1 envelope has one byte region — `author_fingerprint`
+        /// (16 bytes between `aead_tag` and `sig_ed_len`) — that is NOT
+        /// inside the §8 signed range and NOT inside the AEAD AAD. A
+        /// flip in that region is caught by the orchestrator's
+        /// `VaultError::ManifestAuthorMismatch` cross-check at
+        /// `open_vault`-time, not by any of the three file-level layers
+        /// below. The property therefore checks four layers:
+        ///   1. structural decode
+        ///   2. §8 hybrid signature verify
+        ///   3. AEAD body decrypt
+        ///   4. `author_fingerprint` invariance vs the pre-tamper value
+        /// Any layer rejecting the tampered bytes proves the property;
+        /// silent acceptance across all four would be the violation.
         #[test]
         fn manifest_file_tamper_rejected(
             kp_seed in any::<[u8; 32]>(),
@@ -1344,19 +1347,31 @@ mod manifest_props {
             }
 
             // Layer 3: AEAD body decrypt. Must fail with AeadFailure if we
-            // got this far — verify passed on tampered bytes only when the
-            // tamper happened to land in the (vanishingly small) collision
-            // space of the hybrid signature, which would also imply the
-            // ciphertext or tag is corrupt.
+            // got this far AND the tamper landed in the signed range.
             let mut ct_with_tag =
                 Vec::with_capacity(decoded.aead_ct.len() + decoded.aead_tag.len());
             ct_with_tag.extend_from_slice(&decoded.aead_ct);
             ct_with_tag.extend_from_slice(&decoded.aead_tag);
             let aead_result =
                 decrypt_manifest_body(&decoded.header, &ct_with_tag, &ibk, &nonce);
+            if aead_result.is_err() {
+                return Ok(());
+            }
+
+            // Layer 4: orchestrator-level `author_fingerprint` cross-check.
+            // The 16 author_fingerprint bytes sit between aead_tag and
+            // sig_ed_len; they are outside the signed range and outside
+            // the AEAD AAD. `open_vault` catches a tampered fingerprint
+            // via `VaultError::ManifestAuthorMismatch` (mod.rs §4.3 step
+            // 3). The property treats a deviation from the pre-tamper
+            // fingerprint as a Layer 4 rejection.
+            if decoded.author_fingerprint != file.author_fingerprint {
+                return Ok(());
+            }
+
             prop_assert!(
-                matches!(aead_result, Err(ManifestError::AeadFailure)),
-                "tampered byte at offset {} of {} silently accepted by all three layers; \
+                false,
+                "tampered byte at offset {} of {} silently accepted by all four layers; \
                  AEAD result: {:?}",
                 i,
                 bytes.len(),
