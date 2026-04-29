@@ -234,12 +234,32 @@ pub struct MergedRecord {
 ///
 /// **Precondition** (caller responsibility, not asserted at runtime):
 /// `local.record_uuid == remote.record_uuid`. Calling with mismatched
-/// UUIDs produces a nonsensical result; [`merge_block`](
-/// super::merge_block) (added in a subsequent commit) iterates by UUID
-/// and so never violates this.
+/// UUIDs produces a nonsensical result; [`merge_block`] iterates by
+/// UUID and so never violates this.
 ///
-/// Pure function. Total over well-formed inputs: returns a complete
-/// [`MergedRecord`] with no error path.
+/// **Idempotence precondition.** `merge(a, a) == a` holds bit-
+/// identically only when `a` satisfies the §11.5 well-formedness
+/// invariants: tags sorted+deduped; `last_mod_ms ≥ max(field.last_mod)`;
+/// `tombstoned_at_ms ≤ last_mod_ms`; equality between
+/// `tombstoned_at_ms` and `last_mod_ms` when `tombstone == true`;
+/// `fields` empty when `tombstone == true`. Inputs that violate any
+/// of these are still merged to a deterministic well-formed result
+/// (the merge canonicalises opportunistically — see the defensive
+/// clamp below for the death-clock invariant), but `merge(a, a)` may
+/// produce a strictly *more* canonical record than `a` itself.
+///
+/// **Defense against malformed inputs.** A hostile sync peer could
+/// in principle hand us a record with `tombstone == true` and
+/// `tombstoned_at_ms < last_mod_ms`, which would let them skirt the
+/// §11.3 staleness filter (the death clock would not advance to the
+/// tombstone time). To prevent this, [`merge_record`] clamps
+/// `tombstoned_at_ms` upward to `last_mod_ms` for any tombstoned
+/// input before computing the lattice join. On well-formed inputs
+/// (where the invariant already holds) the clamp is a no-op.
+///
+/// Pure function. Total over all `Record` pairs that share a
+/// `record_uuid`: returns a complete [`MergedRecord`] with no error
+/// path.
 pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
     let tombstone_outcome = decide_tombstone(local, remote);
     let tombstone = matches!(
@@ -248,11 +268,28 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
             | TombstoneOutcome::LocalTombstoneWins
             | TombstoneOutcome::RemoteTombstoneWins
     );
+
+    // Defensive clamp: enforce the §11.5 invariant
+    // `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms` on each
+    // input before the lattice join. Without this clamp, a malformed
+    // peer that ships `tombstone = true, tombstoned_at_ms = 0` could
+    // suppress the death clock's advance and let stale fields slip
+    // through the §11.3 staleness filter.
+    let local_tombstoned_at_ms = if local.tombstone {
+        local.tombstoned_at_ms.max(local.last_mod_ms)
+    } else {
+        local.tombstoned_at_ms
+    };
+    let remote_tombstoned_at_ms = if remote.tombstone {
+        remote.tombstoned_at_ms.max(remote.last_mod_ms)
+    } else {
+        remote.tombstoned_at_ms
+    };
     // The death clock — `merged.tombstoned_at_ms` per §11.3. Lattice
     // join on `max`: itself a CRDT (commutative, associative,
     // idempotent), so propagation is correct independent of the
     // staleness filter below.
-    let merged_tombstoned_at_ms = local.tombstoned_at_ms.max(remote.tombstoned_at_ms);
+    let merged_tombstoned_at_ms = local_tombstoned_at_ms.max(remote_tombstoned_at_ms);
 
     let (merged_fields, collisions) = if tombstone {
         // §11.3: a tombstoned merged record carries empty `fields`
@@ -1284,6 +1321,81 @@ mod tests {
         assert!(
             m.merged.unknown.contains_key("v2_local_only"),
             "tombstoning side's unknown survives wholesale"
+        );
+    }
+
+    #[test]
+    fn merge_record_clamps_malformed_tombstone_dc_upward() {
+        // A malformed input has `tombstone=true` but `tombstoned_at_ms=0`
+        // (violating the §11.5 invariant that tombstoned_at_ms ==
+        // last_mod_ms when tombstoned). Without the defensive clamp,
+        // the death clock would not advance to local.last_mod_ms=200,
+        // and remote's "u" field at last_mod=10 would survive the
+        // staleness filter despite being below the (correct) death
+        // clock of 200.
+        let mut local = rec([1; 16]);
+        local.tombstone = true;
+        local.last_mod_ms = 200;
+        local.tombstoned_at_ms = 0; // malformed: should equal last_mod_ms
+
+        let mut remote = rec([1; 16]);
+        remote.last_mod_ms = 200;
+        remote.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("stale".into()), 10, 2),
+        );
+
+        let m = merge_record(&local, &remote);
+        // Tombstone wins on tie. fields cleared regardless.
+        assert!(m.merged.tombstone);
+        assert!(m.merged.fields.is_empty());
+        // Defensive clamp: merged.tombstoned_at_ms reflects the
+        // tombstoning side's true death-clock (last_mod_ms=200), not
+        // the malformed 0. This propagates to downstream merges.
+        assert_eq!(
+            m.merged.tombstoned_at_ms, 200,
+            "death clock clamped upward from malformed 0"
+        );
+    }
+
+    #[test]
+    fn merge_record_clamp_subsequent_merge_drops_stale_field_correctly() {
+        // Stronger version: confirm the clamp's effect propagates.
+        // After merging a malformed tombstone with a live record,
+        // the merged record's death clock should be high enough that
+        // a subsequent merge with a third (live, tombstoned_at_ms=0)
+        // replica drops stale pre-tombstone fields.
+        let mut malformed_tomb = rec([1; 16]);
+        malformed_tomb.tombstone = true;
+        malformed_tomb.last_mod_ms = 200;
+        malformed_tomb.tombstoned_at_ms = 0; // hostile: should be 200
+
+        let mut second_replica = rec([1; 16]);
+        second_replica.last_mod_ms = 300;
+        // (No fields here — just establishes a live replica.)
+
+        let mut third_replica = rec([1; 16]);
+        third_replica.last_mod_ms = 200;
+        third_replica.fields.insert(
+            "stale".to_string(),
+            rfield(RecordFieldValue::Text("pre-tombstone".into()), 50, 3),
+        );
+
+        // Merge tombstone with second_replica → should clamp DC to 200
+        // and result in live(300) with tombstoned_at_ms=200.
+        let step1 = merge_record(&malformed_tomb, &second_replica).merged;
+        assert!(!step1.tombstone);
+        assert_eq!(
+            step1.tombstoned_at_ms, 200,
+            "clamp propagates the corrected DC"
+        );
+
+        // Now merge with third_replica's stale field. The DC=200 must
+        // drop the field (last_mod=50 ≤ 200).
+        let step2 = merge_record(&step1, &third_replica).merged;
+        assert!(
+            step2.fields.is_empty(),
+            "stale field correctly dropped because clamp ensured DC=200 propagated"
         );
     }
 

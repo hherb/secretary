@@ -1939,8 +1939,20 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
 
+    # Defensive clamp: enforce the §11.5 invariant
+    # `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms` on each
+    # input before the lattice join. Without this, a malformed input
+    # with `tombstone=true, tombstoned_at_ms=0` would suppress the
+    # death clock's advance and let stale fields slip through the
+    # §11.3 staleness filter.
+    local_dc = local.get("tombstoned_at_ms", 0)
+    if local["tombstone"]:
+        local_dc = max(local_dc, local["last_mod_ms"])
+    remote_dc = remote.get("tombstoned_at_ms", 0)
+    if remote["tombstone"]:
+        remote_dc = max(remote_dc, remote["last_mod_ms"])
     # §11.3 death clock: lattice join via max.
-    death = max(local.get("tombstoned_at_ms", 0), remote.get("tombstoned_at_ms", 0))
+    death = max(local_dc, remote_dc)
 
     # §11.3 staleness predicate: a field is alive iff there's no death
     # observation (death_clock == 0) or its last_mod is strictly later.
