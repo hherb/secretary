@@ -825,6 +825,83 @@ fn share_block_atomic_no_torn() {
     let _ = alice_id;
 }
 
+// ---------------------------------------------------------------------------
+// 9. MissingRecipientCard: share with an `existing_recipient_cards` list
+//    that does not include a card whose fingerprint is in the on-wire
+//    recipient table. Catches a regression where `share_block`
+//    silently drops the missing recipient (or, worse, picks an
+//    unrelated card whose fingerprint happens to collide) instead of
+//    failing loudly with `VaultError::MissingRecipientCard`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn share_block_missing_recipient_card_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa9; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+    let alice_fp = fingerprint(&alice_card.to_canonical_cbor().unwrap());
+
+    let mut bob_rng = ChaCha20Rng::from_seed([0xb2; 32]);
+    let bob_id = unlock::bundle::generate("Bob", 1_714_060_800_000, &mut bob_rng);
+    let bob_card = make_signed_card(&bob_id);
+
+    // Save block with [owner, alice] — the on-wire recipient table
+    // has two wraps: owner and alice.
+    let block_uuid = [0x99u8; 16];
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "missing-card"),
+        &[owner_card.clone(), alice_card.clone()],
+        [0xd1u8; 16],
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Share to bob, but DELIBERATELY OMIT alice from
+    // `existing_recipient_cards`. The orchestrator must walk the
+    // on-wire wrap list in step 6, fail to resolve alice's
+    // fingerprint, and surface MissingRecipientCard.
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    let err = share_block(
+        dir.path(),
+        &mut open,
+        block_uuid,
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        &[owner_card.clone()], // alice intentionally omitted
+        &bob_card,
+        [0xd1u8; 16],
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err(
+        "share_block must reject when an on-wire recipient is missing from existing_recipient_cards",
+    );
+
+    match err {
+        VaultError::MissingRecipientCard { fingerprint: fp } => {
+            assert_eq!(
+                fp, alice_fp,
+                "the missing fingerprint must be the omitted recipient's"
+            );
+        }
+        other => panic!("expected MissingRecipientCard, got {other:?}"),
+    }
+
+    // Suppress unused-warning on bob_id.
+    let _ = bob_id;
+}
+
 // Suppress unused-import warnings for items only consumed by some tests.
 #[allow(dead_code)]
 fn _unused() {
