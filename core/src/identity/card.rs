@@ -199,6 +199,55 @@ impl ContactCard {
         encode_map(&entries)
     }
 
+    /// Canonical-CBOR encoding of just the four-pk tuple
+    /// `(x25519_pk, ml_kem_768_pk, ed25519_pk, ml_dsa_65_pk)` —
+    /// `docs/crypto-design.md` §7's `sender_pk_bundle` /
+    /// `recipient_pk_bundle` HKDF input.
+    ///
+    /// ## Encoding shape
+    ///
+    /// A CBOR **map** with the four §6 pk-field text keys (`"x25519_pk"`,
+    /// `"ml_kem_768_pk"`, `"ed25519_pk"`, `"ml_dsa_65_pk"`), encoded under
+    /// the same RFC 8949 §4.2.1 deterministic profile that the rest of the
+    /// card uses. §6.2 lists `sender_pk_bundle` / `recipient_pk_bundle`
+    /// among the byte strings produced by `canonical_cbor(...)`, so a
+    /// CBOR map (not raw concat or array) is the only spec-correct shape.
+    /// Sharing the four key names with [`Self::to_canonical_cbor`] also
+    /// means a cross-impl re-decode of those four fields produces
+    /// byte-identical output — see the `pk_bundle_matches_card_subset`
+    /// test.
+    ///
+    /// Existing call sites under `core/src/vault/block.rs` smoke tests,
+    /// `core/tests/vault.rs::pk_bundle_for`, and `core/tests/proptest.rs`
+    /// currently form `pk_bundle` by raw byte-concat in the same field
+    /// order. Migrating those to this method is a follow-up commit; the
+    /// raw-concat output is **not** byte-equal to this method's output
+    /// (raw concat omits the CBOR framing), so the migration is a
+    /// behaviour change that has to be coordinated with the encrypt /
+    /// decrypt sides at once.
+    pub fn pk_bundle_bytes(&self) -> Result<Vec<u8>, CardError> {
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_X25519_PK.into()),
+                Value::Bytes(self.x25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_PK.into()),
+                Value::Bytes(self.ml_kem_768_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_ED25519_PK.into()),
+                Value::Bytes(self.ed25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_PK.into()),
+                Value::Bytes(self.ml_dsa_65_pk.clone()),
+            ),
+        ];
+        crate::vault::canonical::encode_canonical_map(&entries)
+            .map_err(|e| CardError::CborEncode(e.to_string()))
+    }
+
     /// Inverse of [`to_canonical_cbor`]. Validates that `card_version == 1`
     /// and that every fixed-size field has the correct byte length.
     /// Tolerates inputs whose map keys arrive in non-§6 order; canonical
@@ -472,4 +521,155 @@ fn take_sized_bytes(v: Value, expected: usize) -> Result<Vec<u8>, CardError> {
         return Err(CardError::InvalidFieldLength);
     }
     Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a card with a fully deterministic, hand-pinned shape: every pk
+    /// field is filled with a single repeating byte (the pattern below) so
+    /// the canonical-CBOR output has no dependence on RNG state. The
+    /// `display_name` / `created_at_ms` / signature fields are intentionally
+    /// chosen to be ignorable from `pk_bundle_bytes`'s perspective — the
+    /// determinism test mutates them.
+    fn fixture_card(
+        display_name: &str,
+        created_at_ms: u64,
+        sig_ed_fill: u8,
+        sig_pq_fill: u8,
+    ) -> ContactCard {
+        ContactCard {
+            card_version: CARD_VERSION_V1,
+            contact_uuid: [0xaa; CONTACT_UUID_LEN],
+            display_name: display_name.to_string(),
+            x25519_pk: [0x11; X25519_PK_LEN],
+            ml_kem_768_pk: vec![0x22; ML_KEM_768_PK_LEN],
+            ed25519_pk: [0x33; ED25519_PK_LEN],
+            ml_dsa_65_pk: vec![0x44; ML_DSA_65_PK_LEN],
+            created_at_ms,
+            self_sig_ed: [sig_ed_fill; ED25519_SIG_LEN],
+            self_sig_pq: vec![sig_pq_fill; ML_DSA_65_SIG_LEN],
+        }
+    }
+
+    /// Stability test: hex-pinned expected prefix and total length for a
+    /// hand-pinned card. The expected prefix was generated once via the
+    /// bootstrap pattern (run the test, paste the printed hex back here) —
+    /// see `pk_bundle_bytes` doc comment for the encoding shape.
+    ///
+    /// Pinning the full byte string would burn ~3.2 KiB of inline hex on
+    /// the ml_kem and ml_dsa pk fields (each is 1184 + 1952 bytes of
+    /// repeating filler); pinning the *header* (map prefix + first key +
+    /// first pk's CBOR length tag and first 8 fill bytes) catches the two
+    /// failure modes that matter — wrong key order, wrong CBOR framing —
+    /// without exploding the test source. The total-length check pins the
+    /// rest.
+    #[test]
+    fn pk_bundle_bytes_is_byte_pinned() {
+        let card = fixture_card("Alice", 1_714_060_800_000, 0x55, 0x66);
+        let bytes = card.pk_bundle_bytes().expect("encode");
+        // Canonical key order is length-then-bytewise on the encoded keys.
+        // All four keys are text strings; text-CBOR-len byte is 0x60 + len
+        // for len < 24. Lengths: "x25519_pk"=9, "ed25519_pk"=10,
+        // "ml_dsa_65_pk"=12, "ml_kem_768_pk"=13. So canonical order is:
+        //   x25519_pk (9) -> ed25519_pk (10) -> ml_dsa_65_pk (12) -> ml_kem_768_pk (13).
+        // Map header: 0xa4 (definite-length map, 4 entries).
+        // First key: 0x69 'x' '2' '5' '5' '1' '9' '_' 'p' 'k'
+        // First value: byte-string len 32: 0x58 0x20, then 0x11 * 32.
+        let expected_prefix = "a469783235353139\
+                               5f706b582011111111\
+                               11111111";
+        let prefix_bytes = hex_decode(expected_prefix);
+        assert_eq!(
+            &bytes[..prefix_bytes.len()],
+            prefix_bytes.as_slice(),
+            "pk_bundle prefix drifted: got {}",
+            hex_encode(&bytes[..prefix_bytes.len()])
+        );
+        // Sanity: total length = 1B map header
+        //   + (1B key-len + 9B "x25519_pk")    + (2B byte-str len + 32B   pk) = 44
+        //   + (1B key-len + 10B "ed25519_pk")  + (2B byte-str len + 32B   pk) = 45
+        //   + (1B key-len + 12B "ml_dsa_65_pk")  + (3B byte-str len + 1952B pk) = 1968
+        //   + (1B key-len + 13B "ml_kem_768_pk") + (3B byte-str len + 1184B pk) = 1201
+        // = 1 + 44 + 45 + 1968 + 1201 = 3259.
+        assert_eq!(bytes.len(), 3259, "unexpected total pk_bundle length");
+    }
+
+    /// Determinism: two cards with identical pk material but different
+    /// metadata + signatures produce the same `pk_bundle_bytes`. Pins the
+    /// "pk_bundle is purely a function of the four pk fields" contract so
+    /// §7's HKDF input does not silently depend on display_name etc.
+    #[test]
+    fn pk_bundle_bytes_is_deterministic_across_metadata() {
+        let a = fixture_card("Alice", 1_714_060_800_000, 0x01, 0x02);
+        let b = fixture_card("Bob", 9_999_999_999_999, 0xff, 0xee);
+        assert_eq!(
+            a.pk_bundle_bytes().unwrap(),
+            b.pk_bundle_bytes().unwrap(),
+            "pk_bundle_bytes must depend only on the four pk fields"
+        );
+    }
+
+    /// Cross-check: the four pk fields parsed back out of
+    /// `to_canonical_cbor()` and re-encoded via `pk_bundle_bytes` on a
+    /// freshly-built card with the same pk values yields byte-identical
+    /// output. Pins the "same key names, same canonical profile" contract
+    /// against drift in either direction.
+    #[test]
+    fn pk_bundle_matches_card_subset() {
+        let card = fixture_card("Carol", 1_714_060_800_000, 0x77, 0x88);
+        let full = card.to_canonical_cbor().expect("encode card");
+        let parsed: Value = ciborium::de::from_reader(full.as_slice()).expect("decode");
+        let Value::Map(entries) = parsed else {
+            panic!("expected top-level map");
+        };
+        let mut x25519 = None;
+        let mut ml_kem = None;
+        let mut ed25519 = None;
+        let mut ml_dsa = None;
+        for (k, v) in entries {
+            let Value::Text(key) = k else { continue };
+            let Value::Bytes(b) = v else { continue };
+            match key.as_str() {
+                "x25519_pk" => x25519 = Some(b),
+                "ml_kem_768_pk" => ml_kem = Some(b),
+                "ed25519_pk" => ed25519 = Some(b),
+                "ml_dsa_65_pk" => ml_dsa = Some(b),
+                _ => {}
+            }
+        }
+        let rebuilt = ContactCard {
+            x25519_pk: x25519.unwrap().try_into().unwrap(),
+            ml_kem_768_pk: ml_kem.unwrap(),
+            ed25519_pk: ed25519.unwrap().try_into().unwrap(),
+            ml_dsa_65_pk: ml_dsa.unwrap(),
+            ..fixture_card("Other", 0, 0, 0)
+        };
+        assert_eq!(
+            card.pk_bundle_bytes().unwrap(),
+            rebuilt.pk_bundle_bytes().unwrap(),
+            "pk_bundle_bytes must round-trip through to_canonical_cbor's pk subset"
+        );
+    }
+
+    fn hex_decode(s: &str) -> Vec<u8> {
+        let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+            .collect()
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            out.push_str(&format!("{b:02x}"));
+        }
+        out
+    }
 }

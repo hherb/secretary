@@ -988,3 +988,445 @@ mod vault {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// PR-B properties F, G, H — manifest round-trip, tamper detection,
+// verify-before-decrypt. Mirror block-layer properties (PR-A) for
+// the §4.1 manifest envelope.
+// ---------------------------------------------------------------------------
+//
+// Strategy budgeting mirrors `mod vault`: pure CBOR round-trip (Property F)
+// runs at the proptest default of 256 cases; the crypto-heavy tamper +
+// verify-before-decrypt properties (G, H) trigger ML-DSA-65 keygen and run
+// at `cases = 8`. The hybrid keypair is generated once per test case from
+// a proptest-supplied seed via `ChaCha20Rng::from_seed` — same pattern as
+// the block-layer `build_vault_handles` helper above.
+//
+// `unknown` BTreeMaps on `Manifest` / `BlockEntry` / `TrashEntry` are left
+// empty for the same reason they are left empty in `record_strategy` and
+// `record_field_strategy`: modelling forward-compat unknowns adds
+// significant strategy complexity and is the deferred enhancement noted in
+// secretary_next_session.md Item 7. The fixed KATs in `core/src/vault/manifest.rs`
+// `mod tests` and the integration tests in `core/tests/vault.rs` cover the
+// unknown-key round-trip path.
+
+mod manifest_props {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+    use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    use secretary_core::crypto::aead::{AeadKey, AeadNonce};
+    use secretary_core::crypto::secret::Sensitive;
+    use secretary_core::crypto::sig::{
+        self, Ed25519Public, Ed25519Secret, MlDsa65Public, MlDsa65Secret,
+    };
+    use secretary_core::vault::manifest::{
+        decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
+        encode_manifest_file, sign_manifest, verify_manifest, BlockEntry, KdfParamsRef, Manifest,
+        ManifestError, ManifestHeader, TrashEntry, VectorClockEntry,
+    };
+    use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
+
+    const UUID_LEN: usize = 16;
+    const FINGERPRINT_LEN: usize = 32;
+    const SALT_LEN: usize = 32;
+    const MANIFEST_VERSION_V1: u8 = 1;
+
+    // -----------------------------------------------------------------------
+    // Strategies — manifest body
+    // -----------------------------------------------------------------------
+
+    fn arr16() -> impl Strategy<Value = [u8; UUID_LEN]> {
+        any::<[u8; UUID_LEN]>()
+    }
+
+    fn arr32_fp() -> impl Strategy<Value = [u8; FINGERPRINT_LEN]> {
+        any::<[u8; FINGERPRINT_LEN]>()
+    }
+
+    fn arr32_salt() -> impl Strategy<Value = [u8; SALT_LEN]> {
+        any::<[u8; SALT_LEN]>()
+    }
+
+    /// Strategy for `VectorClockEntry`. `counter` is bounded to `0..=1000`
+    /// rather than `any::<u64>()` because shrinking large u64s nicely is
+    /// expensive and the shape we care about (per-device monotonic, sort
+    /// invariant) is exercised at any range.
+    fn vector_clock_entry_strategy() -> impl Strategy<Value = VectorClockEntry> {
+        (arr16(), 0u64..=1000).prop_map(|(device_uuid, counter)| VectorClockEntry {
+            device_uuid,
+            counter,
+        })
+    }
+
+    fn vector_clock_strategy() -> impl Strategy<Value = Vec<VectorClockEntry>> {
+        prop::collection::vec(vector_clock_entry_strategy(), 0..=4)
+            .prop_filter("duplicate device_uuid in vector clock", |vc| {
+                let mut ids: Vec<[u8; UUID_LEN]> =
+                    vc.iter().map(|e| e.device_uuid).collect();
+                ids.sort();
+                ids.windows(2).all(|p| p[0] != p[1])
+            })
+    }
+
+    /// Strategy for `BlockEntry`. `block_name` is bounded ASCII; nested
+    /// `vector_clock_summary` and `recipients` use the same dedup discipline
+    /// as the top-level vector clock and the per-block recipients sort
+    /// invariant.
+    fn block_entry_strategy() -> impl Strategy<Value = BlockEntry> {
+        (
+            arr16(),                                                     // block_uuid
+            "[a-zA-Z0-9_-]{0,20}",                                       // block_name
+            arr32_fp(),                                                  // fingerprint
+            prop::collection::vec(arr16(), 0..=3),                       // recipients
+            vector_clock_strategy(),                                     // vector_clock_summary
+            any::<u64>(),                                                // created_at_ms
+            any::<u64>(),                                                // last_mod_ms
+        )
+            .prop_filter("duplicate recipient uuid", |(_, _, _, recip, _, _, _)| {
+                let mut sorted = recip.clone();
+                sorted.sort();
+                sorted.windows(2).all(|p| p[0] != p[1])
+            })
+            .prop_map(
+                |(
+                    block_uuid,
+                    block_name,
+                    fingerprint,
+                    recipients,
+                    vector_clock_summary,
+                    created_at_ms,
+                    last_mod_ms,
+                )| BlockEntry {
+                    block_uuid,
+                    block_name,
+                    fingerprint,
+                    recipients,
+                    vector_clock_summary,
+                    suite_id: SUITE_ID,
+                    created_at_ms,
+                    last_mod_ms,
+                    unknown: BTreeMap::new(),
+                },
+            )
+    }
+
+    fn blocks_strategy() -> impl Strategy<Value = Vec<BlockEntry>> {
+        prop::collection::vec(block_entry_strategy(), 0..=3).prop_filter(
+            "duplicate block_uuid in blocks array",
+            |bs| {
+                let mut ids: Vec<[u8; UUID_LEN]> = bs.iter().map(|b| b.block_uuid).collect();
+                ids.sort();
+                ids.windows(2).all(|p| p[0] != p[1])
+            },
+        )
+    }
+
+    fn trash_entry_strategy() -> impl Strategy<Value = TrashEntry> {
+        (arr16(), any::<u64>(), arr16()).prop_map(
+            |(block_uuid, tombstoned_at_ms, tombstoned_by)| TrashEntry {
+                block_uuid,
+                tombstoned_at_ms,
+                tombstoned_by,
+                unknown: BTreeMap::new(),
+            },
+        )
+    }
+
+    fn trash_strategy() -> impl Strategy<Value = Vec<TrashEntry>> {
+        prop::collection::vec(trash_entry_strategy(), 0..=2).prop_filter(
+            "duplicate block_uuid in trash array",
+            |ts| {
+                let mut ids: Vec<[u8; UUID_LEN]> = ts.iter().map(|t| t.block_uuid).collect();
+                ids.sort();
+                ids.windows(2).all(|p| p[0] != p[1])
+            },
+        )
+    }
+
+    fn kdf_params_strategy() -> impl Strategy<Value = KdfParamsRef> {
+        (any::<u32>(), any::<u32>(), any::<u32>(), arr32_salt()).prop_map(
+            |(memory_kib, iterations, parallelism, salt)| KdfParamsRef {
+                memory_kib,
+                iterations,
+                parallelism,
+                salt,
+            },
+        )
+    }
+
+    fn manifest_strategy() -> impl Strategy<Value = Manifest> {
+        (
+            arr16(),                  // vault_uuid
+            arr16(),                  // owner_user_uuid
+            vector_clock_strategy(),  // vector_clock
+            blocks_strategy(),        // blocks
+            trash_strategy(),         // trash
+            kdf_params_strategy(),    // kdf_params
+        )
+            .prop_map(
+                |(vault_uuid, owner_user_uuid, vector_clock, blocks, trash, kdf_params)| {
+                    Manifest {
+                        manifest_version: MANIFEST_VERSION_V1,
+                        vault_uuid,
+                        format_version: FORMAT_VERSION,
+                        suite_id: SUITE_ID,
+                        owner_user_uuid,
+                        vector_clock,
+                        blocks,
+                        trash,
+                        kdf_params,
+                        unknown: BTreeMap::new(),
+                    }
+                },
+            )
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers — keypair / IBK / nonce / header
+    // -----------------------------------------------------------------------
+
+    struct Keypair {
+        sk_ed: Ed25519Secret,
+        pk_ed: Ed25519Public,
+        sk_pq: MlDsa65Secret,
+        pk_pq: MlDsa65Public,
+    }
+
+    fn build_keypair(seed: [u8; 32]) -> Keypair {
+        let mut ed_rng = ChaCha20Rng::from_seed(seed);
+        // Derive the PQ-rng seed deterministically from the same input so a
+        // single proptest seed parameter drives both halves; the offset
+        // mirrors the manifest unit tests' fixture pattern (seed vs
+        // seed+1).
+        let mut pq_seed = seed;
+        pq_seed[0] = pq_seed[0].wrapping_add(1);
+        let mut pq_rng = ChaCha20Rng::from_seed(pq_seed);
+        let (sk_ed, pk_ed) = sig::generate_ed25519(&mut ed_rng);
+        let (sk_pq, pk_pq) = sig::generate_ml_dsa_65(&mut pq_rng);
+        Keypair {
+            sk_ed,
+            pk_ed,
+            sk_pq,
+            pk_pq,
+        }
+    }
+
+    fn build_ibk(byte: u8) -> AeadKey {
+        Sensitive::new([byte; 32])
+    }
+
+    fn build_nonce(seed: u8) -> AeadNonce {
+        let mut n = [0u8; 24];
+        for (i, b) in n.iter_mut().enumerate() {
+            *b = seed.wrapping_add(i as u8);
+        }
+        n
+    }
+
+    fn build_header(m: &Manifest) -> ManifestHeader {
+        ManifestHeader {
+            vault_uuid: m.vault_uuid,
+            created_at_ms: 1_714_060_800_000,
+            last_mod_ms: 1_714_060_900_000,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Property F — manifest body round-trip (pure CBOR, default cases)
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        /// Property F. `decode_manifest(encode_manifest(m)) == m` for any
+        /// well-formed [`Manifest`]. Catches encoder/decoder asymmetry that
+        /// the fixed KATs in `core/src/vault/manifest.rs::tests` cannot
+        /// catch by construction (they only pin pre-chosen inputs).
+        ///
+        /// All sort-discipline arrays (`vector_clock`, per-block
+        /// `vector_clock_summary`, `blocks`, `trash`, per-block
+        /// `recipients`) are generated *already sorted* by construction
+        /// here — we use `prop_filter` to reject duplicates rather than
+        /// shuffling — so `decode(encode(m)) == m` holds without the
+        /// canonical-sort-then-compare dance the unit tests use for the
+        /// hand-rolled non-canonical fixture.
+        ///
+        /// Strategies generate sorted-on-the-wire arrays as follows:
+        /// every `Vec<VectorClockEntry>` enforces `device_uuid` uniqueness
+        /// but DOES NOT pre-sort; `encode_manifest` sorts on output and
+        /// `decode_manifest` returns the sorted form. So we sort `m`'s
+        /// arrays before comparing — same trick as
+        /// `roundtrip_populated_manifest`.
+        #[test]
+        fn manifest_roundtrip(m in manifest_strategy()) {
+            let bytes = encode_manifest(&m).expect("encode_manifest");
+            let parsed = decode_manifest(&bytes).expect("decode_manifest");
+
+            // Sort `m`'s arrays in canonical order to match the decoded form.
+            let mut m_sorted = m.clone();
+            m_sorted
+                .vector_clock
+                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+            m_sorted.blocks.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+            for blk in &mut m_sorted.blocks {
+                blk.recipients.sort();
+                blk.vector_clock_summary
+                    .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+            }
+            m_sorted.trash.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+
+            prop_assert_eq!(&parsed, &m_sorted);
+
+            // Re-encode is bit-identical (canonical CBOR).
+            let bytes_again = encode_manifest(&parsed).expect("re-encode");
+            prop_assert_eq!(bytes, bytes_again, "encode→decode→encode not bit-identical");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Properties G, H — crypto-heavy (ML-DSA-65 keygen, reduced cases)
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+
+        /// Property G. Single-byte XOR-tamper anywhere in the encoded
+        /// `ManifestFile` must be rejected by at least one of:
+        ///
+        /// 1. `decode_manifest_file` — structural / length validation.
+        /// 2. `verify_manifest` — §8 hybrid signature verify.
+        /// 3. `decrypt_manifest_body` — AEAD tag verify.
+        ///
+        /// Silent acceptance (the file decodes cleanly, the signature
+        /// verifies, AND the AEAD body decrypts) is a security violation.
+        /// Mirrors PR-A's block-layer Property E discipline.
+        ///
+        /// The §4.1 envelope has one byte region — `author_fingerprint`
+        /// (16 bytes between `aead_tag` and `sig_ed_len`) — that is NOT
+        /// inside the §8 signed range and NOT inside the AEAD AAD. A
+        /// flip in that region is caught by the orchestrator's
+        /// `VaultError::ManifestAuthorMismatch` cross-check at
+        /// `open_vault`-time, not by any of the three file-level layers
+        /// below. The property therefore checks four layers:
+        ///   1. structural decode
+        ///   2. §8 hybrid signature verify
+        ///   3. AEAD body decrypt
+        ///   4. `author_fingerprint` invariance vs the pre-tamper value
+        /// Any layer rejecting the tampered bytes proves the property;
+        /// silent acceptance across all four would be the violation.
+        #[test]
+        fn manifest_file_tamper_rejected(
+            kp_seed in any::<[u8; 32]>(),
+            m in manifest_strategy(),
+            byte_idx_seed in any::<u32>(),
+            xor_mask in 1u8..=255,
+        ) {
+            let kp = build_keypair(kp_seed);
+            let ibk = build_ibk(0x00);
+            let nonce = build_nonce(0x10);
+            let author = [0xa5; 16];
+            let header = build_header(&m);
+
+            let file = sign_manifest(header, &m, &ibk, &nonce, author, &kp.sk_ed, &kp.sk_pq)
+                .expect("sign_manifest");
+            let mut bytes = encode_manifest_file(&file).expect("encode_manifest_file");
+            prop_assert!(!bytes.is_empty(), "encoded manifest file empty");
+
+            let i = (byte_idx_seed as usize) % bytes.len();
+            bytes[i] ^= xor_mask;
+
+            // Layer 1: structural decode. May fail; if so, property holds.
+            let decoded = match decode_manifest_file(&bytes) {
+                Ok(d) => d,
+                Err(_) => return Ok(()),
+            };
+
+            // Layer 2: hybrid signature verify. May fail; if so, property holds.
+            if verify_manifest(&decoded, &kp.pk_ed, &kp.pk_pq).is_err() {
+                return Ok(());
+            }
+
+            // Layer 3: AEAD body decrypt. Must fail with AeadFailure if we
+            // got this far AND the tamper landed in the signed range.
+            let mut ct_with_tag =
+                Vec::with_capacity(decoded.aead_ct.len() + decoded.aead_tag.len());
+            ct_with_tag.extend_from_slice(&decoded.aead_ct);
+            ct_with_tag.extend_from_slice(&decoded.aead_tag);
+            let aead_result =
+                decrypt_manifest_body(&decoded.header, &ct_with_tag, &ibk, &nonce);
+            if aead_result.is_err() {
+                return Ok(());
+            }
+
+            // Layer 4: orchestrator-level `author_fingerprint` cross-check.
+            // The 16 author_fingerprint bytes sit between aead_tag and
+            // sig_ed_len; they are outside the signed range and outside
+            // the AEAD AAD. `open_vault` catches a tampered fingerprint
+            // via `VaultError::ManifestAuthorMismatch` (mod.rs §4.3 step
+            // 3). The property treats a deviation from the pre-tamper
+            // fingerprint as a Layer 4 rejection.
+            if decoded.author_fingerprint != file.author_fingerprint {
+                return Ok(());
+            }
+
+            prop_assert!(
+                false,
+                "tampered byte at offset {} of {} silently accepted by all four layers; \
+                 AEAD result: {:?}",
+                i,
+                bytes.len(),
+                aead_result,
+            );
+        }
+
+        /// Property H. Verify-before-decrypt: a `ManifestFile` with valid
+        /// AEAD body but invalid §8 hybrid signature must be rejected by
+        /// `verify_manifest` regardless of the body's decryptability.
+        ///
+        /// Construction: sign the body honestly (so AEAD is valid under
+        /// the chosen IBK / nonce / header), then flip a byte in `sig_ed`
+        /// to break the Ed25519 half. `verify_manifest` MUST return an
+        /// error — the orchestrator pattern (Task 11 `open_vault`)
+        /// enforces verify-then-decrypt; this property pins the verify
+        /// half rejects independently.
+        ///
+        /// Mirrors PR-A's block-layer Property E. The orchestrator
+        /// ordering itself is enforced separately (orchestrator unit
+        /// tests, not proptest-tractable here).
+        #[test]
+        fn manifest_verify_rejects_invalid_signature(
+            kp_seed in any::<[u8; 32]>(),
+            m in manifest_strategy(),
+            sig_byte_idx in 0usize..64,
+            xor_mask in 1u8..=255,
+        ) {
+            let kp = build_keypair(kp_seed);
+            let ibk = build_ibk(0x00);
+            let nonce = build_nonce(0x20);
+            let author = [0xa5; 16];
+            let header = build_header(&m);
+
+            let mut file = sign_manifest(
+                header, &m, &ibk, &nonce, author, &kp.sk_ed, &kp.sk_pq,
+            ).expect("sign_manifest");
+
+            // Sanity: confirm the original verify passes — the AEAD body
+            // is genuinely valid before we corrupt the signature.
+            verify_manifest(&file, &kp.pk_ed, &kp.pk_pq).expect("baseline verify_manifest");
+
+            // Corrupt the Ed25519 half of the hybrid signature.
+            file.sig_ed[sig_byte_idx] ^= xor_mask;
+
+            let r = verify_manifest(&file, &kp.pk_ed, &kp.pk_pq);
+            prop_assert!(
+                matches!(
+                    r,
+                    Err(ManifestError::Ed25519SignatureInvalid)
+                        | Err(ManifestError::MlDsa65SignatureInvalid)
+                ),
+                "expected hybrid verify failure on sig_ed byte-flip at offset {}, got {:?}",
+                sig_byte_idx, r,
+            );
+        }
+    }
+}

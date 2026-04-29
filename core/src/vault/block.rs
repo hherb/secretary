@@ -63,7 +63,7 @@
 //! the header shape requires a `format_version` bump, which v1 readers
 //! reject (see [`BlockError::UnsupportedFormatVersion`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
@@ -78,6 +78,7 @@ use crate::crypto::sig::{
 use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
+use super::canonical::{encode_canonical_map, reject_floats_and_tags, CanonicalError};
 use super::record::{
     self, Record, RecordError, UnknownValue, RECORD_UUID_LEN,
 };
@@ -397,6 +398,27 @@ pub enum BlockError {
     /// reject — the v1 spec defines no forward-compat trailing fields.
     #[error("trailing bytes after signature suffix: {count}")]
     TrailingBytes { count: usize },
+}
+
+/// Lift a [`CanonicalError`] from the shared
+/// [`crate::vault::canonical`] helpers into the block-layer error
+/// surface, preserving the pre-extraction variant shape verbatim. The
+/// public [`BlockError`] surface stays bit-identical to its
+/// pre-refactor shape so existing pattern-matches on
+/// [`BlockError::FloatRejected`] / [`BlockError::TagRejected`] /
+/// [`BlockError::CborEncode`] keep matching after the helpers were
+/// pulled out into the shared module. The `field` hint on
+/// `CanonicalError::TagRejected` is intentionally discarded here because
+/// the original `BlockError::TagRejected` did not carry one — the
+/// `From` is a behaviour-preserving bridge, not a surface enrichment.
+impl From<CanonicalError> for BlockError {
+    fn from(e: CanonicalError) -> Self {
+        match e {
+            CanonicalError::CborEncode(s) => BlockError::CborEncode(s),
+            CanonicalError::FloatRejected { field } => BlockError::FloatRejected { field },
+            CanonicalError::TagRejected { .. } => BlockError::TagRejected,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +860,7 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
 /// tree, so we materialise each record's canonical bytes and re-read them.
 pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<Vec<u8>, BlockError> {
     let entries = plaintext_to_entries(plaintext)?;
-    encode_canonical_map(&entries)
+    Ok(encode_canonical_map(&entries)?)
 }
 
 fn plaintext_to_entries(
@@ -916,43 +938,12 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
     Ok(val)
 }
 
-/// Encode an entry list as a top-level canonical-CBOR map. Mirror of
-/// [`super::record`]'s `encode_canonical_map`; the duplication is a
-/// deliberate trade-off — sharing the helper would require parameterising
-/// over the error type or moving the helper to a third module, both of
-/// which add more code than two ~10-line copies. The two implementations
-/// must stay in lockstep on the canonical-sort algorithm; if one is
-/// updated, update the other.
-fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BlockError> {
-    // We sort first because `ciborium` emits a `Value::Map`'s `Vec<(Value, Value)>`
-    // in iteration order, NOT in CBOR canonical order. `canonical_sort_entries`
-    // re-orders against materialised CBOR-encoded key bytes (length-then-bytewise
-    // per RFC 8949 §4.2.1) so the wire output is canonical.
-    let sorted = canonical_sort_entries(entries)?;
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
-        .map_err(|e| BlockError::CborEncode(e.to_string()))?;
-    Ok(buf)
-}
-
-/// Sort entries by canonical CBOR encoding of their keys. Mirror of
-/// [`super::record`]'s `canonical_sort_entries`; see notes there for the
-/// algorithmic detail.
-fn canonical_sort_entries(
-    entries: &[(Value, Value)],
-) -> Result<Vec<(Value, Value)>, BlockError> {
-    let mut materialised: Vec<(Vec<u8>, (Value, Value))> = entries
-        .iter()
-        .map(|pair| {
-            let mut key_bytes = Vec::new();
-            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| BlockError::CborEncode(e.to_string()))?;
-            Ok((key_bytes, pair.clone()))
-        })
-        .collect::<Result<_, BlockError>>()?;
-    materialised.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(materialised.into_iter().map(|(_, pair)| pair).collect())
-}
+// `encode_canonical_map` and `canonical_sort_entries` live in
+// [`crate::vault::canonical`] so block / record / manifest share one
+// implementation. The shared helpers return a [`CanonicalError`]; the
+// `From<CanonicalError> for BlockError` impl above lifts those errors
+// to the existing block-layer variants so the public surface stays
+// unchanged.
 
 // ---------------------------------------------------------------------------
 // Plaintext decode
@@ -1003,35 +994,10 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     Ok(plaintext)
 }
 
-/// Walk a `Value` tree and reject floats and tags. Mirror of
-/// [`super::record`]'s walker; kept separate so the error type is
-/// `BlockError` without plumbing a generic. The walkers must stay in
-/// lockstep — if one gains a new permitted variant, the other must too.
-///
-/// Termination relies on `ciborium`'s default `from_reader` recursion
-/// limit (256), same as record's walker. See record.rs's walker doc for
-/// the dependency note.
-fn reject_floats_and_tags(v: &Value, field_hint: &'static str) -> Result<(), BlockError> {
-    match v {
-        Value::Float(_) => Err(BlockError::FloatRejected { field: field_hint }),
-        Value::Tag(_, _) => Err(BlockError::TagRejected),
-        Value::Array(items) => {
-            for item in items {
-                reject_floats_and_tags(item, field_hint)?;
-            }
-            Ok(())
-        }
-        Value::Map(entries) => {
-            for (k, val) in entries {
-                reject_floats_and_tags(k, field_hint)?;
-                reject_floats_and_tags(val, field_hint)?;
-            }
-            Ok(())
-        }
-        // Integer / Bytes / Text / Bool / Null are all permitted in v1.
-        _ => Ok(()),
-    }
-}
+// `reject_floats_and_tags` lives in [`crate::vault::canonical`]; see the
+// `From<CanonicalError> for BlockError` impl above for how its
+// `FloatRejected` / `TagRejected` errors map back to the block-layer
+// variants without changing the public surface.
 
 fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, BlockError> {
     let mut block_version: Option<u32> = None;
@@ -1040,14 +1006,14 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     let mut schema_version: Option<u32> = None;
     let mut records: Option<Vec<Record>> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
-    let mut seen_keys: BTreeMap<String, ()> = BTreeMap::new();
+    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
     for (k, v) in map {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(BlockError::NonTextKey),
         };
-        if seen_keys.insert(key.clone(), ()).is_some() {
+        if !seen_keys.insert(key.clone()) {
             return Err(BlockError::DuplicateKey { key });
         }
         match key.as_str() {

@@ -142,7 +142,7 @@ The manifest is the top-level vault index. It enumerates all blocks, records the
 │ author_fingerprint (16 bytes) = short fingerprint of the author's card │
 │ sig_ed_len         (2 bytes)  = u16, must be 64              │
 │ sig_ed             (64 bytes) = Ed25519 signature            │
-│ sig_pq_len         (2 bytes)  = u16                          │
+│ sig_pq_len         (2 bytes)  = u16, 3309 (suite v1)         │
 │ sig_pq             (var)      = ML-DSA-65 signature          │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -283,7 +283,7 @@ A single block per file. The block is the unit of both encryption and sharing.
 │ author_fingerprint (16 bytes)                                │
 │ sig_ed_len         (2 bytes)  = u16, 64                      │
 │ sig_ed             (64 bytes)                                │
-│ sig_pq_len         (2 bytes)                                 │
+│ sig_pq_len         (2 bytes)  = u16, 3309 (suite v1)         │
 │ sig_pq             (var)                                     │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -309,6 +309,8 @@ wrap_nonce            (24)         ; XChaCha20 nonce for the wrap AEAD
 wrap_ct               (32)         ; AEAD ciphertext of block_content_key (32-byte key)
 wrap_tag              (16)         ; Poly1305 tag
 ```
+
+`wrap_ct` and `wrap_tag` are concatenated on disk with no separator or length prefix; the row split above is purely presentational. A clean-room parser must read 48 contiguous bytes and treat the first 32 as ciphertext and the last 16 as the Poly1305 tag.
 
 Recipients are listed in a stable order: ascending lexicographic by `recipient_fingerprint`. The owner's own entry is always first if their fingerprint sorts first; otherwise it is included in its sorted position. The owner is *always* a recipient — a block with no owner-recipient is rejected as malformed.
 
