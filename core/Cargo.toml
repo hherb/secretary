@@ -28,6 +28,13 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["std", 
 ml-dsa = { version = "0.1.0-rc.8", default-features = false, features = ["alloc", "zeroize"] }
 ciborium = "0.2"
 rand_core = "0.6"
+# `tempfile` is on the security-critical path: `vault::io::write_atomic`
+# (docs/vault-format.md §9) uses `NamedTempFile::persist` to perform
+# atomic rename(2) / MoveFileExW under the manifest and block writes.
+# A regression in `tempfile`'s persist semantics (e.g. fallback to a
+# non-atomic copy) would silently weaken the §9 atomicity guarantee
+# that orchestrator crash-recovery relies on. Pin major version and
+# review changelogs before bumping.
 tempfile = "3"
 
 [dev-dependencies]
