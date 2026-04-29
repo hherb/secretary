@@ -676,17 +676,24 @@ def ed25519_verify(pk: bytes, sig: bytes, message: bytes) -> bool:
 def ml_dsa_65_verify(pk: bytes, sig: bytes, message: bytes) -> bool:
     """ML-DSA-65 verify. Returns True iff the signature is valid.
 
-    `pqcrypto.sign.ml_dsa_65.verify` takes (message, signature,
-    public_key) in that order and returns the message on success or
-    raises on failure. We treat any exception as 'invalid' to match
-    the Rust side's `verify` returning a typed error.
+    `pqcrypto.sign.ml_dsa_65.verify(public_key, message, signature)`
+    returns True/False on a well-formed input pair (a tampered or
+    invalid signature returns False — it does NOT raise), and raises
+    `TypeError` / `ValueError` only when the inputs are mis-typed or
+    wrong-length. The previous implementation discarded the return
+    value and reported "no exception" as success, which silently
+    accepted invalid signatures; the Ed25519 path is unaffected
+    because `cryptography` raises `InvalidSignature` on bad sigs.
+
+    We propagate the boolean and narrow the except to the two
+    documented input-format exceptions, matching the Rust side's
+    typed-error → bool collapse.
     """
     from pqcrypto.sign import ml_dsa_65
 
     try:
-        ml_dsa_65.verify(pk, message, sig)
-        return True
-    except Exception:
+        return ml_dsa_65.verify(pk, message, sig)
+    except (TypeError, ValueError):
         return False
 
 
@@ -1745,6 +1752,64 @@ def _bytes_flip(buf: bytes, idx: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Section 3: ml_dsa_65_verify helper — direct tamper-rejection regression
+# ---------------------------------------------------------------------------
+#
+# `pqcrypto.sign.ml_dsa_65.verify` returns True/False on a well-formed
+# input pair (it does NOT raise on a tampered or invalid signature),
+# whereas `cryptography`'s Ed25519.verify raises `InvalidSignature`.
+# A previous version of `ml_dsa_65_verify` discarded the boolean return
+# and reported "no exception" as success, silently accepting tampered
+# ML-DSA signatures. The Section 2 tamper cases happen to fail at AEAD
+# or Ed25519 verify before reaching ML-DSA verify, so they did not
+# detect the bug. This section exercises the helper directly so any
+# future regression of the same shape (re-broaden the except, drop the
+# `return`, etc.) trips an in-CI failure.
+
+
+def section3_ml_dsa_65_verify_regression() -> tuple[bool, list[str]]:
+    """Direct round-trip + tamper checks against `ml_dsa_65_verify`.
+
+    Locks in the post-fix contract: verify returns True on a clean sig,
+    False on a sig whose bytes have been flipped, and False when the
+    message has been tampered. No golden fixtures needed -- the
+    keypair / signature are generated fresh inside the test so the
+    suite stays deterministic against `pqcrypto`'s own keygen.
+    """
+    from pqcrypto.sign import ml_dsa_65
+
+    lines: list[str] = []
+    pk, sk = ml_dsa_65.generate_keypair()
+    message = b"secretary-conformance ml_dsa_65 verify regression"
+    sig = ml_dsa_65.sign(sk, message)
+
+    if not ml_dsa_65_verify(pk, sig, message):
+        lines.append("FAIL  ml_dsa_65_verify rejected a valid signature")
+        return False, lines
+    lines.append("PASS  ml_dsa_65_verify accepts a valid signature")
+
+    tampered_sig = _bytes_flip(sig, len(sig) // 2)
+    if ml_dsa_65_verify(pk, tampered_sig, message):
+        lines.append(
+            "FAIL  ml_dsa_65_verify accepted a tampered signature "
+            "(silent-accept regression)"
+        )
+        return False, lines
+    lines.append("PASS  ml_dsa_65_verify rejects a tampered signature")
+
+    tampered_message = _bytes_flip(message, 0)
+    if ml_dsa_65_verify(pk, sig, tampered_message):
+        lines.append(
+            "FAIL  ml_dsa_65_verify accepted a tampered message "
+            "(silent-accept regression)"
+        )
+        return False, lines
+    lines.append("PASS  ml_dsa_65_verify rejects a tampered message")
+
+    return True, lines
+
+
+# ---------------------------------------------------------------------------
 # Combined entry point
 # ---------------------------------------------------------------------------
 
@@ -1761,13 +1826,21 @@ def main() -> int:
         print(ln)
 
     print()
-    if section1_ok and section2_ok:
+    print("--- Section 3: ml_dsa_65_verify tamper-rejection regression ---")
+    section3_ok, section3_lines = section3_ml_dsa_65_verify_regression()
+    for ln in section3_lines:
+        print(ln)
+
+    print()
+    if section1_ok and section2_ok and section3_ok:
         print("PASS")
         return 0
     if not section1_ok:
         print("FAIL: block_kat.json structural conformance", file=sys.stderr)
     if not section2_ok:
         print("FAIL: golden_vault_001 full crypto verify", file=sys.stderr)
+    if not section3_ok:
+        print("FAIL: ml_dsa_65_verify tamper-rejection regression", file=sys.stderr)
     return 1
 
 
