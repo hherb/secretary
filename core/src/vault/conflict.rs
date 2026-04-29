@@ -244,27 +244,30 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
     let tombstone_outcome = decide_tombstone(local, remote);
     let tombstone = matches!(
         tombstone_outcome,
-        TombstoneOutcome::BothTombstoned | TombstoneOutcome::LocalTombstoneWins | TombstoneOutcome::RemoteTombstoneWins
-    );
-
-    let (merged_fields, collisions) = match tombstone_outcome {
         TombstoneOutcome::BothTombstoned
-        | TombstoneOutcome::LocalTombstoneWins
-        | TombstoneOutcome::RemoteTombstoneWins => {
-            // §11.3: tombstoned merged record carries empty `fields`
-            // per §6.3 regardless of either side's `fields`.
-            (BTreeMap::new(), Vec::new())
-        }
-        TombstoneOutcome::BothLive => merge_fields_lww(&local.fields, &remote.fields),
-        TombstoneOutcome::LocalTombstoneLost => {
-            // Live wins (remote). The tombstoning side (local) may have
-            // "kept-for-undelete" fields per §6.3, but they are stale
-            // pre-deletion data — the live side is the new authoritative
-            // record. Take only live-side fields; no field-level
-            // collisions arise.
-            (remote.fields.clone(), Vec::new())
-        }
-        TombstoneOutcome::RemoteTombstoneLost => (local.fields.clone(), Vec::new()),
+            | TombstoneOutcome::LocalTombstoneWins
+            | TombstoneOutcome::RemoteTombstoneWins
+    );
+    // The death clock — `merged.tombstoned_at_ms` per §11.3. Lattice
+    // join on `max`: itself a CRDT (commutative, associative,
+    // idempotent), so propagation is correct independent of the
+    // staleness filter below.
+    let merged_tombstoned_at_ms = local.tombstoned_at_ms.max(remote.tombstoned_at_ms);
+
+    let (merged_fields, collisions) = if tombstone {
+        // §11.3: a tombstoned merged record carries empty `fields`
+        // regardless of either input's `fields` (which may be
+        // non-empty per §6.3's "kept-for-undelete" allowance — the
+        // staleness filter would clear them anyway, so we short-circuit
+        // here for clarity).
+        (BTreeMap::new(), Vec::new())
+    } else {
+        // §11.3 staleness filter, applied uniformly to the field
+        // union: a field with `last_mod ≤ merged_tombstoned_at_ms`
+        // was edited at or before an observed tombstone and is dead.
+        // This is what makes the merge associative under arbitrary
+        // tombstone histories.
+        merge_fields_with_staleness(&local.fields, &remote.fields, merged_tombstoned_at_ms)
     };
 
     let merged_record_type = merge_record_type(local, remote);
@@ -280,7 +283,7 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
             created_at_ms: local.created_at_ms.min(remote.created_at_ms),
             last_mod_ms: local.last_mod_ms.max(remote.last_mod_ms),
             tombstone,
-            tombstoned_at_ms: local.tombstoned_at_ms.max(remote.tombstoned_at_ms),
+            tombstoned_at_ms: merged_tombstoned_at_ms,
             unknown: merged_unknown,
         },
         collisions,
@@ -332,26 +335,47 @@ fn decide_tombstone(local: &Record, remote: &Record) -> TombstoneOutcome {
     }
 }
 
-/// Per-field LWW with the §11 pseudocode rule: greater `last_mod` wins;
-/// on `last_mod` tie, **smaller** `device_uuid` wins (matches the
-/// pseudocode `lf.device_uuid < rf.device_uuid` predicate).
+/// Per-field LWW with §11.3 staleness filter applied uniformly.
 ///
-/// On a full tie (`last_mod` AND `device_uuid` both equal but `value`
-/// differs) the merge picks the side with the lex-larger byte
-/// representation of `(value-variant-tag, value-bytes)`. This is a
-/// pathological corner case (a single device wrote two different values
-/// at the same millisecond) and the rule's role is purely to keep the
-/// merge total and deterministic. Well-formed inputs do not trigger it.
-fn merge_fields_lww(
+/// Per-field LWW per the §11 pseudocode: greater `last_mod` wins; on
+/// `last_mod` tie, **smaller** `device_uuid` wins (matches the
+/// pseudocode `lf.device_uuid < rf.device_uuid` predicate). On a full
+/// tie (`last_mod` AND `device_uuid` both equal but `value` differs)
+/// the merge picks the side with the lex-larger byte representation
+/// of `(value-variant-tag, value-bytes)` — a pathological corner-case
+/// rule purely to keep the merge total and deterministic.
+///
+/// **Staleness filter (§11.3).** Any field with
+/// `field.last_mod ≤ death_clock` was edited at or before an observed
+/// tombstone and is dropped from the merged record. The filter
+/// applies uniformly, before LWW evaluation: a side's field that is
+/// stale on its own does not participate in collision detection. The
+/// filter is what makes the merge associative under arbitrary
+/// tombstone histories — a field that survives a tombstone in one
+/// merge ordering survives it in every other ordering, because the
+/// death clock propagates across merges via `max`.
+fn merge_fields_with_staleness(
     l: &BTreeMap<String, RecordField>,
     r: &BTreeMap<String, RecordField>,
+    death_clock: u64,
 ) -> (BTreeMap<String, RecordField>, Vec<FieldCollision>) {
     let mut out: BTreeMap<String, RecordField> = BTreeMap::new();
     let mut collisions: Vec<FieldCollision> = Vec::new();
 
     let all_keys: BTreeSet<&String> = l.keys().chain(r.keys()).collect();
     for key in all_keys {
-        match (l.get(key), r.get(key)) {
+        let lf = l.get(key).filter(|f| f.last_mod > death_clock);
+        let rf = r.get(key).filter(|f| f.last_mod > death_clock);
+        match (lf, rf) {
+            (None, None) => {
+                // Both absent or both stale. Nothing alive to keep.
+            }
+            (Some(lf), None) => {
+                out.insert(key.clone(), lf.clone());
+            }
+            (None, Some(rf)) => {
+                out.insert(key.clone(), rf.clone());
+            }
             (Some(lf), Some(rf)) => {
                 if lww_picks_local(lf, rf) {
                     if lf.value != rf.value {
@@ -373,13 +397,6 @@ fn merge_fields_lww(
                     out.insert(key.clone(), rf.clone());
                 }
             }
-            (Some(lf), None) => {
-                out.insert(key.clone(), lf.clone());
-            }
-            (None, Some(rf)) => {
-                out.insert(key.clone(), rf.clone());
-            }
-            (None, None) => unreachable!("BTreeSet union excludes the absent-from-both case"),
         }
     }
 
@@ -1225,6 +1242,165 @@ mod tests {
         let m = merge_record(&a, &a);
         assert_eq!(m.merged, a);
         assert!(m.collisions.is_empty(), "merge(a, a) yields no collisions");
+    }
+
+    // --- §11.3 staleness filter (death clock) ------------------------
+
+    #[test]
+    fn merge_record_propagates_death_clock_via_max() {
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 100;
+        a.tombstoned_at_ms = 50;
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 200;
+        b.tombstoned_at_ms = 80;
+        let m = merge_record(&a, &b);
+        assert_eq!(
+            m.merged.tombstoned_at_ms, 80,
+            "max(50, 80) = 80; the death clock advances monotonically"
+        );
+    }
+
+    #[test]
+    fn merge_record_drops_stale_field_below_death_clock() {
+        // local: live, last_mod_ms=200, fields={"u" with last_mod=10},
+        // tombstoned_at_ms=0 (this device never observed a tombstone).
+        // remote: live, last_mod_ms=200, fields={}, tombstoned_at_ms=100
+        // (this device observed a tombstone at T=100).
+        // After merge, the death clock advances to 100 and the local
+        // "u" field (last_mod=10 ≤ 100) is dropped — it predates the
+        // observed tombstone.
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 200;
+        a.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("stale".into()), 10, 1),
+        );
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 200;
+        b.tombstoned_at_ms = 100;
+        let m = merge_record(&a, &b);
+        assert!(!m.merged.tombstone, "merged record is live");
+        assert_eq!(m.merged.tombstoned_at_ms, 100, "death clock = 100");
+        assert!(
+            m.merged.fields.is_empty(),
+            "field with last_mod=10 ≤ 100 dropped by staleness filter"
+        );
+    }
+
+    #[test]
+    fn merge_record_keeps_field_above_death_clock() {
+        // Same setup as above, but the field's last_mod is *strictly
+        // above* the merged death clock — it is a post-resurrection
+        // edit that survives.
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 200;
+        a.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("survives".into()), 150, 1),
+        );
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 200;
+        b.tombstoned_at_ms = 100;
+        let m = merge_record(&a, &b);
+        assert_eq!(
+            m.merged.fields["u"].value,
+            RecordFieldValue::Text("survives".into()),
+            "field with last_mod=150 > 100 (death clock) survives"
+        );
+    }
+
+    #[test]
+    fn merge_record_field_at_death_clock_exactly_is_dropped() {
+        // The boundary: `field.last_mod ≤ death_clock` drops the
+        // field. A field with last_mod exactly equal to the death
+        // clock is therefore stale (the tombstone observation
+        // happened "at" this timestamp).
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 200;
+        a.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("v".into()), 100, 1),
+        );
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 200;
+        b.tombstoned_at_ms = 100;
+        let m = merge_record(&a, &b);
+        assert!(
+            m.merged.fields.is_empty(),
+            "field.last_mod == death_clock is stale (≤ rule)"
+        );
+    }
+
+    #[test]
+    fn merge_record_resurrection_preserves_death_clock() {
+        // Resurrection scenario: a tombstoned record meets a live
+        // record edited *strictly after* the tombstone. The merged
+        // record is live; its death clock equals the original
+        // tombstone time (preserved across resurrection).
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 50;
+        a.tombstone = true;
+        a.tombstoned_at_ms = 50;
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 100;
+        b.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("resurrected".into()), 100, 2),
+        );
+        let m = merge_record(&a, &b);
+        assert!(!m.merged.tombstone);
+        assert_eq!(m.merged.last_mod_ms, 100);
+        assert_eq!(m.merged.tombstoned_at_ms, 50, "death clock preserved");
+        assert_eq!(
+            m.merged.fields["u"].value,
+            RecordFieldValue::Text("resurrected".into()),
+            "post-tombstone field survives the staleness filter"
+        );
+    }
+
+    #[test]
+    fn merge_record_three_way_associative_under_tombstone_history() {
+        // The associativity gap that motivated the death-clock fix.
+        // a: live with field "u" at last_mod=5.
+        // b: tombstone at last_mod_ms=7, tombstoned_at_ms=7.
+        // c: live at last_mod_ms=9, never observed b's tombstone
+        //    (tombstoned_at_ms=0).
+        // Path 1 — merge(merge(a, b), c): tombstone wins first,
+        // collapsing "u". Then live wins over tombstone, but the
+        // death clock advances to 7 in the intermediate state and
+        // the staleness filter keeps "u" gone.
+        // Path 2 — merge(a, merge(b, c)): live wins first, but the
+        // intermediate state carries tombstoned_at_ms=7. Merging
+        // with `a` then drops "u" (last_mod=5 ≤ 7).
+        // Both paths converge on the same persisted record.
+        let mut a = rec([3; 16]);
+        a.last_mod_ms = 5;
+        a.fields.insert(
+            "u".to_string(),
+            rfield(RecordFieldValue::Text("pre".into()), 5, 1),
+        );
+
+        let mut b = rec([3; 16]);
+        b.last_mod_ms = 7;
+        b.tombstone = true;
+        b.tombstoned_at_ms = 7;
+
+        let mut c = rec([3; 16]);
+        c.last_mod_ms = 9;
+        // c is live; never observed b → tombstoned_at_ms = 0.
+
+        let path_1 = merge_record(&merge_record(&a, &b).merged, &c).merged;
+        let path_2 = merge_record(&a, &merge_record(&b, &c).merged).merged;
+
+        assert_eq!(path_1, path_2, "associative under mixed tombstone history");
+        assert!(!path_1.tombstone);
+        assert!(
+            path_1.fields.is_empty(),
+            "field 'u' (last_mod=5) is dropped by death clock = 7"
+        );
+        assert_eq!(path_1.tombstoned_at_ms, 7);
+        assert_eq!(path_1.last_mod_ms, 9);
     }
 
     // --- merge_block helpers ------------------------------------------
