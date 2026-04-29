@@ -33,9 +33,13 @@ rand_core = "0.6"
 # atomic rename(2) / MoveFileExW under the manifest and block writes.
 # A regression in `tempfile`'s persist semantics (e.g. fallback to a
 # non-atomic copy) would silently weaken the §9 atomicity guarantee
-# that orchestrator crash-recovery relies on. Pin major version and
-# review changelogs before bumping.
-tempfile = "3"
+# that orchestrator crash-recovery relies on. Pinned to an EXACT
+# version (not a caret range) so that any patch / minor / major bump
+# requires editing this line — and therefore a deliberate changelog
+# review. Cargo's default `"3"` is shorthand for `^3` and would let
+# `cargo update` silently move the resolved version within the 3.x
+# range; that auto-bump is exactly what we don't want here.
+tempfile = "=3.27.0"
 
 [dev-dependencies]
 proptest = "1"
