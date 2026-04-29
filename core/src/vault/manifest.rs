@@ -1383,26 +1383,37 @@ pub struct ManifestFile {
 /// [`SigRole::Manifest`] — DO NOT prepend it here, or both halves of
 /// the hybrid signature would double-tag and round-trip verify would
 /// break. Same discipline as [`super::block::signed_message_bytes`].
-fn signed_message_bytes(file: &ManifestFile) -> Result<Vec<u8>, ManifestError> {
-    let header_bytes = file.header.encode();
-    let ct_len_u32 = u32::try_from(file.aead_ct.len()).map_err(|_| {
+///
+/// Takes the four signed-range fields directly (rather than a
+/// `&ManifestFile`) so `sign_manifest` doesn't need to fabricate a
+/// zero-filled placeholder `ManifestFile` to compute the pre-image. A
+/// future refactor adding new fields to `ManifestFile` cannot
+/// accidentally extend the signed range without updating this
+/// function's signature — the compiler enforces the invariant.
+fn signed_message_bytes(
+    header: &ManifestHeader,
+    aead_nonce: &[u8; 24],
+    aead_ct: &[u8],
+    aead_tag: &[u8; AEAD_TAG_LEN],
+) -> Result<Vec<u8>, ManifestError> {
+    let header_bytes = header.encode();
+    let ct_len_u32 = u32::try_from(aead_ct.len()).map_err(|_| {
         // u32 overflow on aead_ct.len() is a degenerate case: a single
         // manifest body would have to exceed 4 GiB. Surface it as the
         // declared/remaining mismatch rather than inventing a fresh
         // variant — the resulting envelope would be unparseable anyway.
         ManifestError::AeadCtLenMismatch {
             declared: u32::MAX,
-            remaining: file.aead_ct.len(),
+            remaining: aead_ct.len(),
         }
     })?;
-    let mut out = Vec::with_capacity(
-        MANIFEST_HEADER_LEN + 24 + 4 + file.aead_ct.len() + AEAD_TAG_LEN,
-    );
+    let mut out =
+        Vec::with_capacity(MANIFEST_HEADER_LEN + 24 + 4 + aead_ct.len() + AEAD_TAG_LEN);
     out.extend_from_slice(&header_bytes);
-    out.extend_from_slice(&file.aead_nonce);
+    out.extend_from_slice(aead_nonce);
     out.extend_from_slice(&ct_len_u32.to_be_bytes());
-    out.extend_from_slice(&file.aead_ct);
-    out.extend_from_slice(&file.aead_tag);
+    out.extend_from_slice(aead_ct);
+    out.extend_from_slice(aead_tag);
     Ok(out)
 }
 
@@ -1679,26 +1690,21 @@ pub fn sign_manifest(
     let mut aead_tag = [0u8; AEAD_TAG_LEN];
     aead_tag.copy_from_slice(&ct_with_tag[split_at..]);
 
-    // Step 3: build a partial ManifestFile for the signed-bytes view,
-    // sign it, and fill in the signatures. The struct is partial in
-    // that the sig fields are placeholders until step 3's outputs land.
-    let placeholder_sig_pq = MlDsa65Sig::from_bytes(&vec![0u8; ML_DSA_65_SIG_LEN])
-        .expect("placeholder ML-DSA-65 sig length");
-    let mut file = ManifestFile {
+    // Step 3: compute the signed-range bytes from raw parts (no
+    // placeholder ManifestFile dance), sign, and assemble the final
+    // ManifestFile in one shot.
+    let m = signed_message_bytes(&header, nonce, &aead_ct, &aead_tag)?;
+    let hybrid =
+        sig::sign(SigRole::Manifest, &m, sk_ed, sk_pq).map_err(ManifestError::SignInternal)?;
+    Ok(ManifestFile {
         header,
         aead_nonce: *nonce,
         aead_ct,
         aead_tag,
         author_fingerprint: author,
-        sig_ed: [0u8; ED25519_SIG_LEN],
-        sig_pq: placeholder_sig_pq,
-    };
-
-    let m = signed_message_bytes(&file)?;
-    let hybrid = sig::sign(SigRole::Manifest, &m, sk_ed, sk_pq).map_err(ManifestError::SignInternal)?;
-    file.sig_ed = hybrid.sig_ed;
-    file.sig_pq = hybrid.sig_pq;
-    Ok(file)
+        sig_ed: hybrid.sig_ed,
+        sig_pq: hybrid.sig_pq,
+    })
 }
 
 /// Verify the §8 hybrid signature on a complete [`ManifestFile`].
@@ -1716,7 +1722,7 @@ pub fn verify_manifest(
     pk_ed: &Ed25519Public,
     pk_pq: &MlDsa65Public,
 ) -> Result<(), ManifestError> {
-    let m = signed_message_bytes(file)?;
+    let m = signed_message_bytes(&file.header, &file.aead_nonce, &file.aead_ct, &file.aead_tag)?;
     let hybrid = HybridSig {
         sig_ed: file.sig_ed,
         sig_pq: file.sig_pq.clone(),
