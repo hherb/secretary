@@ -364,8 +364,15 @@ fn merge_fields_with_staleness(
 
     let all_keys: BTreeSet<&String> = l.keys().chain(r.keys()).collect();
     for key in all_keys {
-        let lf = l.get(key).filter(|f| f.last_mod > death_clock);
-        let rf = r.get(key).filter(|f| f.last_mod > death_clock);
+        // `tombstoned_at_ms = 0` is the sentinel for "this record has
+        // never been part of a tombstone observation" — there is no
+        // before-tombstone era to filter against. With no death-clock
+        // event, every present field is alive regardless of `last_mod`
+        // (including `last_mod = 0`, which keeps `merge(a, a) == a`
+        // idempotent on records carrying epoch-0 timestamps).
+        let alive = |f: &&RecordField| death_clock == 0 || f.last_mod > death_clock;
+        let lf = l.get(key).filter(alive);
+        let rf = r.get(key).filter(alive);
         match (lf, rf) {
             (None, None) => {
                 // Both absent or both stale. Nothing alive to keep.

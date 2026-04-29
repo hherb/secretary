@@ -582,20 +582,23 @@ mod vault {
             any::<u64>(),         // created_at_ms
             any::<u64>(),         // last_mod_ms
             any::<bool>(),        // tombstone
+            any::<u64>(),         // tombstoned_at_ms (raw — canonicalised at use sites)
         )
-            .prop_map(|(record_uuid, record_type, fields, tags, created, last, tombstone)| {
-                Record {
-                    record_uuid,
-                    record_type,
-                    fields,
-                    tags,
-                    created_at_ms: created,
-                    last_mod_ms: last,
-                    tombstone,
-                    tombstoned_at_ms: 0,
-                    unknown: BTreeMap::new(),
-                }
-            })
+            .prop_map(
+                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned)| {
+                    Record {
+                        record_uuid,
+                        record_type,
+                        fields,
+                        tags,
+                        created_at_ms: created,
+                        last_mod_ms: last,
+                        tombstone,
+                        tombstoned_at_ms: tombstoned,
+                        unknown: BTreeMap::new(),
+                    }
+                },
+            )
     }
 
     /// Strategy for an ad-hoc `RecipientWrap`. The four `HybridWrap`
@@ -1006,10 +1009,11 @@ mod vault {
     // pure CBOR / map operations; no crypto keygen on the hot path.
     // -----------------------------------------------------------------------
 
-    /// Canonicalize a Record into the form the CRDT proptests need to
-    /// hold their invariants. `record_strategy()` generates raw data
-    /// that may violate them, and merging trivially canonicalises,
-    /// so the proptest canonicalises inputs first.
+    /// Canonicalize a Record into the form well-formed clients emit
+    /// (the §11.5 invariants). `record_strategy()` generates raw data
+    /// that may violate them; merging trivially canonicalises, so the
+    /// CRDT proptests canonicalise inputs first to make commutativity
+    /// / associativity / idempotence hold bit-identically.
     ///
     /// Invariants applied:
     ///
@@ -1019,27 +1023,34 @@ mod vault {
     ///   real clients bump the record-level `last_mod_ms` whenever
     ///   they touch any field, so per-field edits never out-pace the
     ///   record clock.
-    /// - `tombstone = false`. **v1 limitation**: tombstone-on-tie
-    ///   semantics (§11.3 / Q2 design choice) make merge strictly
-    ///   associative *only when* every replica observes any prior
-    ///   tombstone — in CRDT terms, when a record-level
-    ///   `tombstoned_at_ms` propagates across merges. v1 does not yet
-    ///   carry that field; without it, a live-vs-live merge of two
-    ///   replicas, one with prior knowledge of a tombstone and one
-    ///   without, can resurrect a field whose `last_mod` predates the
-    ///   tombstone. Tombstone interaction tests live in the inline
-    ///   unit tests + integration tests in `core/tests/conflict.rs`,
-    ///   which exercise tombstone semantics directly without claiming
-    ///   the strict associativity property. Phase A.7 hardening (per
-    ///   secretary_next_session.md) will introduce
-    ///   `tombstoned_at_ms` and tighten this proptest to cover the
-    ///   tombstone domain.
+    /// - `tombstoned_at_ms ≤ last_mod_ms`; equality when
+    ///   `tombstone == true` (§11.3 / §11.5). A currently-tombstoned
+    ///   record was tombstoned at its most recent edit; a previously-
+    ///   tombstoned-then-resurrected record carries a death clock
+    ///   somewhere in `[0, last_mod_ms]`.
+    /// - When `tombstone == true`: `fields` is cleared (§6.3 / §11.3).
     fn canonicalize_record(r: &mut Record) {
         r.tags.sort();
         r.tags.dedup();
-        r.tombstone = false;
         let max_field_lm = r.fields.values().map(|f| f.last_mod).max().unwrap_or(0);
         r.last_mod_ms = r.last_mod_ms.max(max_field_lm);
+        if r.tombstone {
+            r.fields.clear();
+            r.tombstoned_at_ms = r.last_mod_ms;
+        } else {
+            r.tombstoned_at_ms = r.tombstoned_at_ms.min(r.last_mod_ms);
+            // Drop fields that the §11.3 staleness filter would
+            // remove on the next merge. Keeping them would violate
+            // idempotence: `merge(a, a)` would canonicalise the
+            // record by dropping them, producing `a' != a`. The
+            // canonical form is "the record after one round of
+            // self-merge" — tags sorted+deduped, fields above the
+            // death clock, etc.
+            if r.tombstoned_at_ms > 0 {
+                let death = r.tombstoned_at_ms;
+                r.fields.retain(|_, f| f.last_mod > death);
+            }
+        }
     }
 
     proptest! {
