@@ -227,6 +227,18 @@ pub struct MergedRecord {
     /// Informational list of collisions detected during this merge.
     /// Sorted ascending by `field_name`. Empty when no fields held
     /// differing values across the two sides.
+    ///
+    /// **Interaction with the §11.3 staleness filter.** A field is
+    /// reported only when both sides held the field with differing
+    /// values *and* the LWW winner survived the staleness filter
+    /// (i.e., its `last_mod > merged.tombstoned_at_ms`, or the
+    /// merged record's death clock is zero). A field whose LWW
+    /// winner would have been dropped by the filter is omitted from
+    /// `collisions` rather than reported as a "phantom collision":
+    /// the merged record carries no value for that field, so a UI
+    /// has nothing to surface to the user. This is intentional —
+    /// stale collisions belong to a deleted prior life of the
+    /// record and are not a live conflict.
     pub collisions: Vec<FieldCollision>,
 }
 

@@ -945,7 +945,12 @@ mod tests {
             created_at_ms: 1_714_060_800_000,
             last_mod_ms: 1_714_060_800_010,
             tombstone: true,
-            tombstoned_at_ms: 0,
+            // §11.5 invariant: tombstone == true ⇒ tombstoned_at_ms ==
+            // last_mod_ms. The wire-form round-trip exercises the
+            // explicit-u64 encode path for tombstoned_at_ms; the
+            // absent-when-zero path is covered by the dedicated
+            // round-trip tests on `dummy_record`.
+            tombstoned_at_ms: 1_714_060_800_010,
             unknown: BTreeMap::new(),
         };
 
