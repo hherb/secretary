@@ -1990,8 +1990,14 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
             merged_field["name"] = name
             fields.append(merged_field)
 
-    # §11.1 record-level metadata.
-    if local["last_mod_ms"] > remote["last_mod_ms"]:
+    # §11.3 identity-metadata override on tombstoning-wins outcomes:
+    # record_type comes wholesale from the tombstoning side. Otherwise
+    # §11.1 LWW: greater last_mod_ms wins; lex-larger UTF-8 on tie.
+    if outcome == "LocalTombstoneWins":
+        record_type = local["record_type"]
+    elif outcome == "RemoteTombstoneWins":
+        record_type = remote["record_type"]
+    elif local["last_mod_ms"] > remote["last_mod_ms"]:
         record_type = local["record_type"]
     elif remote["last_mod_ms"] > local["last_mod_ms"]:
         record_type = remote["record_type"]

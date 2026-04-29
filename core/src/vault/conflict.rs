@@ -270,9 +270,26 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
         merge_fields_with_staleness(&local.fields, &remote.fields, merged_tombstoned_at_ms)
     };
 
-    let merged_record_type = merge_record_type(local, remote);
+    // §11.3 identity-metadata override: on the tombstoning-wins
+    // outcomes, the merged record's record_type / tags / record-level
+    // `unknown` come wholesale from the tombstoning side. The override
+    // exists so a UI surfacing a tombstoned record (trash bin,
+    // undelete prompt, audit log) reflects the deleter's view of the
+    // record — not a concurrent edit they never saw, and not an
+    // adversarial sync peer's same-millisecond identity flip. For
+    // every other outcome (BothLive, BothTombstoned, both `*Lost`
+    // outcomes), §11.1's per-field rules apply via the helpers below.
+    let merged_record_type = match tombstone_outcome {
+        TombstoneOutcome::LocalTombstoneWins => local.record_type.clone(),
+        TombstoneOutcome::RemoteTombstoneWins => remote.record_type.clone(),
+        _ => merge_record_type(local, remote),
+    };
     let merged_tags = merge_tags(local, remote, tombstone_outcome);
-    let merged_unknown = merge_unknown_map(&local.unknown, &remote.unknown);
+    let merged_unknown = match tombstone_outcome {
+        TombstoneOutcome::LocalTombstoneWins => local.unknown.clone(),
+        TombstoneOutcome::RemoteTombstoneWins => remote.unknown.clone(),
+        _ => merge_unknown_map(&local.unknown, &remote.unknown),
+    };
 
     MergedRecord {
         merged: Record {
@@ -1189,6 +1206,8 @@ mod tests {
 
     #[test]
     fn merge_record_record_type_lex_larger_on_tie() {
+        // §11.1 normal rule (no tombstone): lex-larger UTF-8 wins on
+        // last_mod_ms tie.
         let mut a = rec([1; 16]);
         a.record_type = "abc".into();
         a.last_mod_ms = 100;
@@ -1197,6 +1216,100 @@ mod tests {
         b.last_mod_ms = 100;
         let m = merge_record(&a, &b);
         assert_eq!(m.merged.record_type, "abd", "abd > abc, abd wins on tie");
+    }
+
+    #[test]
+    fn merge_record_type_tombstone_override_picks_tombstoning_side() {
+        // §11.3 identity-metadata override: when one side tombstones
+        // and last_mod_ms ties, the tombstoning side's record_type
+        // wins regardless of lex order. Without the override, §11.1
+        // would pick "secure_note" (lex-larger). With the override,
+        // the local tombstoning side's "login" wins because the
+        // merged record reflects the deleter's view of the record.
+        let mut local = rec([1; 16]);
+        local.record_type = "login".into();
+        local.last_mod_ms = 100;
+        local.tombstone = true;
+        local.tombstoned_at_ms = 100;
+        local.fields.clear();
+
+        let mut remote = rec([1; 16]);
+        remote.record_type = "secure_note".into();
+        remote.last_mod_ms = 100;
+
+        let m = merge_record(&local, &remote);
+        assert!(m.merged.tombstone, "tombstone-on-tie wins");
+        assert_eq!(
+            m.merged.record_type, "login",
+            "tombstoning side's record_type wins per §11.3 override, \
+             even though §11.1 lex-larger would have picked 'secure_note'"
+        );
+    }
+
+    #[test]
+    fn merge_record_unknown_tombstone_override_picks_tombstoning_side() {
+        use ciborium::Value;
+        // §11.3 override extends to record-level `unknown`. The
+        // tombstoning side's full unknown map is taken wholesale;
+        // the live side's forward-compat keys do not survive into
+        // the merged tombstoned record.
+        let mut local = rec([1; 16]);
+        local.last_mod_ms = 100;
+        local.tombstone = true;
+        local.tombstoned_at_ms = 100;
+        local.fields.clear();
+        let mut local_bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Integer(7u64.into()), &mut local_bytes).unwrap();
+        local.unknown.insert(
+            "v2_local_only".to_string(),
+            UnknownValue::from_canonical_cbor(&local_bytes).unwrap(),
+        );
+
+        let mut remote = rec([1; 16]);
+        remote.last_mod_ms = 100;
+        let mut remote_bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Integer(99u64.into()), &mut remote_bytes).unwrap();
+        remote.unknown.insert(
+            "v2_remote_only".to_string(),
+            UnknownValue::from_canonical_cbor(&remote_bytes).unwrap(),
+        );
+
+        let m = merge_record(&local, &remote);
+        assert!(m.merged.tombstone);
+        assert_eq!(
+            m.merged.unknown.len(),
+            1,
+            "remote's unknown key dropped under §11.3 override"
+        );
+        assert!(
+            m.merged.unknown.contains_key("v2_local_only"),
+            "tombstoning side's unknown survives wholesale"
+        );
+    }
+
+    #[test]
+    fn merge_record_type_tombstone_lost_falls_back_to_lww() {
+        // Override applies only to *Wins* outcomes. In a Lost outcome
+        // (live wins, T_l > T_d strictly) the §11.1 normal rule
+        // applies, which picks the side with greater last_mod_ms —
+        // happens to coincide with "live side" in the Lost case but
+        // the routing is via §11.1, not the override.
+        let mut local = rec([1; 16]);
+        local.record_type = "login".into();
+        local.last_mod_ms = 50;
+        local.tombstone = true;
+        local.tombstoned_at_ms = 50;
+
+        let mut remote = rec([1; 16]);
+        remote.record_type = "secure_note".into();
+        remote.last_mod_ms = 100;
+
+        let m = merge_record(&local, &remote);
+        assert!(!m.merged.tombstone, "live wins, T_l > T_d");
+        assert_eq!(
+            m.merged.record_type, "secure_note",
+            "live side wins via §11.1 (greater last_mod_ms), not via override"
+        );
     }
 
     // --- merge_record: commutativity sanity --------------------------
