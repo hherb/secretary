@@ -409,6 +409,307 @@
         ],
         "collisions": []
       }
+    },
+    {
+      "name": "incoming_dominated_returns_local",
+      "description": "Local clock strictly dominates incoming → ClockRelation::IncomingDominated. The remote replica is behind in the partial order; merge returns local plaintext and local clock unchanged. This is the rollback signal in §10's manifest-load context — every device's counter in incoming is ≤ local's, with at least one strictly less.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "current",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 5 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "stale",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 3 }
+        ]
+      },
+      "expected": {
+        "relation": "IncomingDominated",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "current",
+          "schema_version": 1,
+          "records": []
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 5 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_both_tombstoned",
+      "description": "Both replicas tombstoned the same record at different timestamps. Concurrent merge produces a tombstoned merged record with empty fields, last_mod_ms = max(local, remote), and tombstoned_at_ms = max — the lattice join propagates the latest tombstone observation. The §11.3 identity-metadata override does NOT apply (it only fires on mixed-tombstone-wins outcomes); §11.1 LWW picks remote's tags by greater last_mod_ms.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived-local"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": true,
+              "tombstoned_at_ms": 100
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived-remote"],
+              "created_at_ms": 5,
+              "last_mod_ms": 200,
+              "tombstone": true,
+              "tombstoned_at_ms": 200
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived-remote"],
+              "created_at_ms": 5,
+              "last_mod_ms": 200,
+              "tombstone": true,
+              "tombstoned_at_ms": 200
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_tombstone_wins_identity_override",
+      "description": "Mixed-tombstone scenario at last_mod_ms tie: tombstone-on-tie wins (§11.3) and the identity-metadata override picks tombstoning side's tags AND record_type wholesale. Without the override, §11.1 LWW would pick lex-larger 'secure_note' over 'login' on the tied last_mod_ms. With the override, the merged tombstoned record reflects the deleter's view — record_type='login', tags=['archived'].",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": true,
+              "tombstoned_at_ms": 100
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "secure_note",
+              "fields": [
+                {
+                  "name": "body",
+                  "value_type": "text",
+                  "value_text": "wrote-during-deletion",
+                  "last_mod": 100,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": ["work"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": true,
+              "tombstoned_at_ms": 100
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_resurrection_preserves_death_clock",
+      "description": "Resurrection scenario: local tombstoned at T=50, remote made a live edit at T=100 (strictly after the tombstone, with a new field). The merge produces a live record because T_l=100 > T_d=50, but the death clock is preserved (max(50, 0) = 50). Future merges of this record carry the tombstone history forward — a third replica with a stale field at last_mod ≤ 50 would have its field dropped by the §11.3 staleness filter.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 50,
+              "tombstone": true,
+              "tombstoned_at_ms": 50
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "u",
+                  "value_type": "text",
+                  "value_text": "post-resurrection",
+                  "last_mod": 100,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "u",
+                  "value_type": "text",
+                  "value_text": "post-resurrection",
+                  "last_mod": 100,
+                  "device_uuid_hex": "02020202020202020202020202020202"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 50
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
     }
   ]
 }
