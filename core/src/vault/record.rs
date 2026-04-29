@@ -84,6 +84,7 @@ const KEY_TAGS: &str = "tags";
 const KEY_CREATED_AT_MS: &str = "created_at_ms";
 const KEY_LAST_MOD_MS: &str = "last_mod_ms";
 const KEY_TOMBSTONE: &str = "tombstone";
+const KEY_TOMBSTONED_AT_MS: &str = "tombstoned_at_ms";
 
 // ---------------------------------------------------------------------------
 // Constants — field-level CBOR keys (§6.3)
@@ -350,6 +351,24 @@ pub struct Record {
     /// cleared but the record's presence prevents resurrection on merge,
     /// per §7).
     pub tombstone: bool,
+    /// Death clock — the high-water mark of every tombstone observation
+    /// on this record (`docs/crypto-design.md` §11.3). Encoded as
+    /// absent on the wire when zero (the never-tombstoned default).
+    ///
+    /// Invariants on well-formed records:
+    /// - `tombstoned_at_ms ≤ last_mod_ms` always.
+    /// - `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms`
+    ///   (a currently-tombstoned record was tombstoned at its most
+    ///   recent edit).
+    /// - On resurrection (live edit at `T_r > tombstoned_at_ms`):
+    ///   `tombstone = false`, `last_mod_ms = T_r`,
+    ///   `tombstoned_at_ms` is preserved unchanged.
+    ///
+    /// On merge: `merged.tombstoned_at_ms = max(local, remote)`. Drives
+    /// the staleness filter that drops fields with
+    /// `field.last_mod ≤ merged.tombstoned_at_ms`, making the merge
+    /// associative across arbitrary tombstone histories (§11.3).
+    pub tombstoned_at_ms: u64,
     /// Unknown record-level keys preserved verbatim per §6.3.2 forward
     /// compatibility. See [`RecordField::unknown`] for the storage
     /// rationale.
@@ -407,6 +426,12 @@ fn record_to_entries(record: &Record) -> Result<Vec<(Value, Value)>, RecordError
     ));
     if record.tombstone {
         entries.push((Value::Text(KEY_TOMBSTONE.into()), Value::Bool(true)));
+    }
+    if record.tombstoned_at_ms != 0 {
+        entries.push((
+            Value::Text(KEY_TOMBSTONED_AT_MS.into()),
+            Value::Integer(record.tombstoned_at_ms.into()),
+        ));
     }
 
     // Forward-compat: splice unknowns alongside known keys. The canonical
@@ -541,6 +566,7 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     let mut created_at_ms: Option<u64> = None;
     let mut last_mod_ms: Option<u64> = None;
     let mut tombstone: Option<bool> = None;
+    let mut tombstoned_at_ms: Option<u64> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     // `seen_keys` tracks every textual key we have observed at this map
     // level so duplicates (RFC 8949 §5.4) are caught even when both
@@ -577,6 +603,9 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
             KEY_TOMBSTONE => {
                 tombstone = Some(take_bool(v, KEY_TOMBSTONE)?);
             }
+            KEY_TOMBSTONED_AT_MS => {
+                tombstoned_at_ms = Some(take_u64(v, KEY_TOMBSTONED_AT_MS)?);
+            }
             _ => {
                 // Forward-compat: any other key is preserved verbatim.
                 // The float/tag walker at the top of decode() has
@@ -602,6 +631,7 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
             field: KEY_LAST_MOD_MS,
         })?,
         tombstone: tombstone.unwrap_or(false),
+        tombstoned_at_ms: tombstoned_at_ms.unwrap_or(0),
         unknown,
     })
 }
@@ -802,6 +832,7 @@ mod tests {
             created_at_ms: 1_714_060_800_000,
             last_mod_ms: 1_714_060_800_001,
             tombstone: false,
+            tombstoned_at_ms: 0,
             unknown: BTreeMap::new(),
         }
     }
@@ -837,6 +868,7 @@ mod tests {
             created_at_ms: 1_714_060_800_000,
             last_mod_ms: 1_714_060_800_002,
             tombstone: false,
+            tombstoned_at_ms: 0,
             unknown: BTreeMap::new(),
         }
     }
@@ -913,6 +945,7 @@ mod tests {
             created_at_ms: 1_714_060_800_000,
             last_mod_ms: 1_714_060_800_010,
             tombstone: true,
+            tombstoned_at_ms: 0,
             unknown: BTreeMap::new(),
         };
 
@@ -1043,6 +1076,60 @@ mod tests {
             !has_tombstone_key,
             "tombstone=false MUST be wire-absent (one canonical form)"
         );
+    }
+
+    #[test]
+    fn decode_omits_tombstoned_at_ms_treated_as_zero() {
+        // Encode a Record (with tombstoned_at_ms=0 → wire-absent), decode,
+        // verify the in-memory representation has tombstoned_at_ms == 0.
+        let r = dummy_record();
+        assert_eq!(r.tombstoned_at_ms, 0);
+        let bytes = encode(&r).expect("encode");
+        let parsed = decode(&bytes).expect("decode");
+        assert_eq!(
+            parsed.tombstoned_at_ms, 0,
+            "absent tombstoned_at_ms key on the wire decodes to 0"
+        );
+    }
+
+    #[test]
+    fn decode_explicit_tombstoned_at_ms_zero_round_trips_as_absent() {
+        // Encoding `tombstoned_at_ms = 0` MUST omit the "tombstoned_at_ms"
+        // key from the wire (canonical absence-equals-default per §6.3).
+        let r = dummy_record();
+        assert_eq!(r.tombstoned_at_ms, 0);
+        let bytes = encode(&r).expect("encode");
+        let value: Value = ciborium::de::from_reader(&bytes[..])
+            .expect("ciborium parse of canonical record");
+        let entries = match value {
+            Value::Map(e) => e,
+            _ => panic!("encoded record is not a CBOR map"),
+        };
+        let has_key = entries.iter().any(|(k, _)| match k {
+            Value::Text(s) => s == "tombstoned_at_ms",
+            _ => false,
+        });
+        assert!(
+            !has_key,
+            "tombstoned_at_ms=0 MUST be wire-absent (one canonical form)"
+        );
+    }
+
+    #[test]
+    fn roundtrip_preserves_nonzero_tombstoned_at_ms() {
+        // A non-zero tombstoned_at_ms is encoded as an explicit u64 key
+        // and decodes back to the same value.
+        let mut r = dummy_record();
+        r.tombstone = true;
+        r.last_mod_ms = 1_714_060_800_500;
+        r.tombstoned_at_ms = 1_714_060_800_500;
+        let bytes = encode(&r).expect("encode");
+        let parsed = decode(&bytes).expect("decode");
+        assert!(parsed.tombstone);
+        assert_eq!(parsed.tombstoned_at_ms, 1_714_060_800_500);
+        // Re-encode is bit-identical (canonical-CBOR round-trip invariant).
+        let bytes2 = encode(&parsed).expect("encode parsed");
+        assert_eq!(bytes, bytes2);
     }
 
     #[test]

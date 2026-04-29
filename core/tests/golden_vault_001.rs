@@ -147,6 +147,8 @@ struct InputsRecord {
     record_type: String,
     tags: Vec<String>,
     tombstone: bool,
+    #[serde(default)]
+    tombstoned_at_ms: u64,
     created_at_ms: u64,
     last_mod_ms: u64,
     fields: BTreeMap<String, InputsField>,
@@ -371,6 +373,7 @@ fn build_block_plaintext(inputs: &InputsBlockPlaintext, block_uuid: [u8; 16]) ->
             created_at_ms: r.created_at_ms,
             last_mod_ms: r.last_mod_ms,
             tombstone: r.tombstone,
+            tombstoned_at_ms: r.tombstoned_at_ms,
             unknown: BTreeMap::new(),
         });
     }

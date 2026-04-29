@@ -603,6 +603,7 @@ fn save_block_atomic_write_no_torn() {
         created_at_ms: 1_714_060_900_000,
         last_mod_ms: 1_714_060_900_000,
         tombstone: false,
+        tombstoned_at_ms: 0,
         unknown: BTreeMap::new(),
     };
 

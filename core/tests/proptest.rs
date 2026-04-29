@@ -592,6 +592,7 @@ mod vault {
                     created_at_ms: created,
                     last_mod_ms: last,
                     tombstone,
+                    tombstoned_at_ms: 0,
                     unknown: BTreeMap::new(),
                 }
             })

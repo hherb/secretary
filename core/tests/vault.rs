@@ -378,6 +378,7 @@ fn block_file_round_trips_with_records() {
                 created_at_ms: 1_714_060_800_000,
                 last_mod_ms: 1_714_060_800_001,
                 tombstone: false,
+                tombstoned_at_ms: 0,
                 unknown: BTreeMap::new(),
             },
             Record {
@@ -388,6 +389,7 @@ fn block_file_round_trips_with_records() {
                 created_at_ms: 1_714_060_800_100,
                 last_mod_ms: 1_714_060_800_101,
                 tombstone: false,
+                tombstoned_at_ms: 0,
                 unknown: BTreeMap::new(),
             },
             Record {
@@ -398,6 +400,7 @@ fn block_file_round_trips_with_records() {
                 created_at_ms: 1_714_060_800_200,
                 last_mod_ms: 1_714_060_800_300,
                 tombstone: true,
+                tombstoned_at_ms: 0,
                 unknown: BTreeMap::new(),
             },
         ],
@@ -1212,6 +1215,7 @@ fn build_block_from_kat(v: &common::BlockKatVector) -> (BlockFile, IdentityBundl
             created_at_ms: r.created_at_ms,
             last_mod_ms: r.last_mod_ms,
             tombstone: r.tombstone,
+            tombstoned_at_ms: r.tombstoned_at_ms,
             unknown: BTreeMap::new(),
         });
     }
@@ -1410,6 +1414,7 @@ fn bootstrap_inputs() -> common::BlockKatVector {
                 created_at_ms: 1_714_060_800_000,
                 last_mod_ms: 1_714_060_800_000,
                 tombstone: false,
+                tombstoned_at_ms: 0,
             }],
         },
         // expected.* is filled in by the dumper; placeholders here.

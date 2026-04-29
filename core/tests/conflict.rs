@@ -59,6 +59,7 @@ fn record(record_uuid: u8, fields: &[(&str, RecordField)], last_mod_ms: u64) -> 
         created_at_ms: 1_000,
         last_mod_ms,
         tombstone: false,
+        tombstoned_at_ms: 0,
         unknown: BTreeMap::new(),
     }
 }
@@ -497,6 +498,10 @@ fn parse_record(spec: &serde_json::Value) -> Record {
         created_at_ms: spec["created_at_ms"].as_u64().expect("created_at_ms"),
         last_mod_ms: spec["last_mod_ms"].as_u64().expect("last_mod_ms"),
         tombstone: spec["tombstone"].as_bool().expect("tombstone"),
+        tombstoned_at_ms: spec
+            .get("tombstoned_at_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         unknown: BTreeMap::new(),
     }
 }

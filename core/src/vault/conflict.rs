@@ -280,6 +280,7 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
             created_at_ms: local.created_at_ms.min(remote.created_at_ms),
             last_mod_ms: local.last_mod_ms.max(remote.last_mod_ms),
             tombstone,
+            tombstoned_at_ms: local.tombstoned_at_ms.max(remote.tombstoned_at_ms),
             unknown: merged_unknown,
         },
         collisions,
@@ -955,6 +956,7 @@ mod tests {
             created_at_ms: 1_000,
             last_mod_ms: 1_000,
             tombstone: false,
+            tombstoned_at_ms: 0,
             unknown: BTreeMap::new(),
         }
     }
