@@ -12,16 +12,16 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ## Where we are: 2026-04-29
 
-The manifest layer, atomic I/O, the four high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the `golden_vault_001/` end-to-end §15 fixture all landed in PR #5. PR #6 cleaned up follow-ups from review (orchestrator-module split, exact-pin of `tempfile` as a security-critical dependency, plus a regression test for an ML-DSA silent-accept bug surfaced in the Python conformance script). What remains in Sub-project A is the CRDT merge primitives (`core/src/vault/conflict.rs`, plus commutativity / associativity / idempotence proptests and a `conflict_kat.json` cross-language vector — Definition-of-Done item #3 in the design anchor) and then the hardening + external-audit phase.
+Sub-project A is feature-complete for v1. Phase A.6 / PR-C landed the CRDT merge primitives (`core/src/vault/conflict.rs`: `clock_relation`, `merge_vector_clocks`, `merge_record`, `merge_block`) plus a record-level `tombstoned_at_ms` "death-clock" that closes the three-way-merge associativity gap that naive tombstone-on-tie semantics leave open. Definition-of-Done item #3 in the design anchor (commutativity + associativity + idempotence under random sequences of edits) is now satisfied across the *full* record domain — arbitrary tombstones, arbitrary resurrection sequences — proven by three `proptest` properties at default 256 cases each in `core/tests/proptest.rs`. A nine-vector §15 KAT (`core/tests/data/conflict_kat.json`) witnesses each `ClockRelation` branch and the death-clock's staleness filter cross-language: replayed by both the Rust integration tests and `core/tests/python/conformance.py` Section 4. The §11.3 identity-metadata override on tombstone-wins outcomes (where the merged record's `tags` / `record_type` / record-level `unknown` come wholesale from the tombstoning side) is the small spec extension that completes the design — readers of the spec can implement an interoperable client from `docs/crypto-design.md` §11 + `docs/vault-format.md` §6.3 alone, and Python's clean-room `py_merge_record` proves that contract every CI run. What remains in Sub-project A is the hardening + external-audit phase.
 
 ```
-[========================================================        ] Sub-project A — Rust core
+[==============================================================  ] Sub-project A — Rust core
 [                                                                ] Sub-project B — FFI bindings
 [                                                                ] Sub-project C — Sync orchestration
 [                                                                ] Sub-project D — Platform UIs
 ```
 
-340+ tests pass. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs, and the `golden_vault_001/` fixture is verified end-to-end by both the Rust suite and the stdlib-only Python conformance script.
+399+ tests pass under `cargo test --release --workspace`. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs; the CRDT merge layer is additionally proven on the full record domain by `proptest`. Both `golden_vault_001/` (full crypto) and `conflict_kat.json` (merge semantics) are verified end-to-end by the Rust suite and by the stdlib-only Python conformance script.
 
 ---
 
@@ -74,20 +74,23 @@ Hybrid constructions are implemented and KAT-pinned: X25519 ⊕ ML-KEM-768 KEM, 
 - **§15 closure**: [core/tests/data/golden_vault_001/](core/tests/data/golden_vault_001/) — deterministic end-to-end fixture (`vault.toml`, `manifest.cbor.enc`, `identity.bundle.enc`, one block, one Contact Card) verified end-to-end by [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify, stdlib-only, `uv run`-compatible). A regression test pins the silent-accept bug found and fixed in the Python ML-DSA-65 verifier during this phase.
 - **Shared canonical-CBOR helpers**: [core/src/vault/canonical.rs](core/src/vault/canonical.rs) — `canonical_sort_entries`, `encode_canonical_map`, the float/tag walker, extracted before the third copy could land.
 
-### Phase A.6 — Vector-clock CRDT merge primitives 🚧 (next, PR-C)
+### Phase A.6 — Vector-clock CRDT merge primitives ✅ (complete, PR-C)
 
-The remaining v1 functional piece of Sub-project A. Per the design anchor's Definition-of-Done #3, the merge function must be commutative, associative, and idempotent under random sequences of edits. Per `docs/crypto-design.md` §10–§11 and the design anchor's "Conflict resolution" section, the merge is field-level last-writer-wins with `device_uuid` lexicographic tiebreak, with unresolvable conflicts surfaced via a `_conflicts` shadow rather than silently dropped. Orchestration of when/where to invoke the merge belongs to Sub-project C; the pure primitives belong here.
+`secretary_core::vault::conflict`:
 
-- **`core/src/vault/conflict.rs`** — pure functions, no state:
-  - `merge_vector_clocks(a, b) -> VectorClock` — component-wise max over `{device_uuid → counter}`.
-  - `clock_relation(a, b) -> ClockRelation` — `Equal | IncomingDominates | IncomingDominated | Concurrent`.
-  - `merge_record(local, remote) -> MergedRecord` — field-level LWW; ties broken by `device_uuid` lex order; tombstones win when strictly newer.
-  - `merge_block(local, remote) -> MergedBlock` — record-level union, then per-record merge.
-- **CRDT proptests** in `core/tests/proptest.rs`: `merge_commutativity`, `merge_associativity`, `merge_idempotence` at proptest defaults (~256 cases).
-- **§15 cross-language vector**: `core/tests/data/conflict_kat.json` — golden conflict-resolution inputs and expected merged outputs, replayable from the Python conformance script.
-- **Conformance extension**: `core/tests/python/conformance.py` decodes `conflict_kat.json` and replays through a Python translation of `merge_block`, asserting bit-identical merged output.
+- **Pure-function vector-clock primitives** ([core/src/vault/conflict.rs](core/src/vault/conflict.rs)):
+  - `clock_relation(local, incoming) -> ClockRelation` — `Equal | IncomingDominates | IncomingDominated | Concurrent`. Anti-symmetric on argument swap, missing-device-as-zero. Used by manifest §10's rollback check (an `IncomingDominated` relation is the rollback signal) and by `merge_block`'s dispatch.
+  - `merge_vector_clocks(a, b) -> Vec<VectorClockEntry>` — lattice join (component-wise max), sorted ascending by `device_uuid` per §6.1.
+  - `merge_record(local, remote) -> MergedRecord` — field-level LWW with `device_uuid` lex tiebreak; tombstone-on-tie (`T_d ≥ T_l`); `tombstoned_at_ms` death-clock propagation via `max`; staleness filter dropping fields with `last_mod ≤ death_clock`. Concurrent value collisions surfaced as `Vec<FieldCollision>` informational metadata for UIs without serialising a `_conflicts` shadow on disk (`docs/crypto-design.md` §11.4 — Rust API affordance only).
+  - `merge_block(local, local_clock, remote, remote_clock, merging_device) -> Result<MergedBlock, ConflictError>` — dispatches on `clock_relation`: returns the dominant side unchanged for `Equal` / `IncomingDominates` / `IncomingDominated`, runs the per-record merge for `Concurrent` and ticks the merging device's component into the merged clock. `block_uuid` mismatch surfaced as a typed error.
+- **Death-clock for full-domain associativity** (`docs/crypto-design.md` §11.3): `tombstoned_at_ms` is the high-water mark of every tombstone observation on a record. Itself a CRDT (lattice join via `max`), preserved across resurrection (a live edit at `T_r > tombstoned_at_ms` keeps the prior death clock), and drives the staleness filter that closes the three-way-merge associativity gap that naive tombstone-on-tie semantics leave open. Wire format is backward-compatible (omitted on the wire when zero).
+- **§11.3 identity-metadata override**: on `LocalTombstoneWins` / `RemoteTombstoneWins`, the merged record's `tags`, `record_type`, and record-level `unknown` come wholesale from the tombstoning side — so a UI surfacing a tombstoned record (trash bin, undelete prompt) reflects the deleter's view, not a concurrent edit they never saw and not an adversarial sync peer's same-millisecond identity flip.
+- **Defensive canonicalisation in `merge_record`**: clamps `tombstoned_at_ms` upward to `last_mod_ms` for any input where `tombstone == true` *before* the lattice join, so a malformed peer (`tombstone = true, tombstoned_at_ms = 0`) cannot suppress the death-clock's advance and let stale fields slip through the staleness filter.
+- **CRDT proptests** ([core/tests/proptest.rs](core/tests/proptest.rs) — `mod vault`'s PR-C section): `crdt_merge_record_commutativity`, `_associativity`, `_idempotence` at proptest defaults (~256 cases). Inputs canonicalised to the §11.5 well-formedness invariants, then merged; the three properties hold bit-identically over the *full* record domain — arbitrary `tombstone`, arbitrary `tombstoned_at_ms`, arbitrary fields predating or surviving any tombstone.
+- **§15 cross-language KAT** ([core/tests/data/conflict_kat.json](core/tests/data/conflict_kat.json)): nine vectors witnessing each `ClockRelation` branch (`Equal`, `IncomingDominates`, `IncomingDominated`, `Concurrent`), the death-clock staleness filter, the §11.3 identity-metadata override, both-tombstoned merges, resurrection-preserves-death-clock, and field-level collision reporting. Replayed by both [core/tests/conflict.rs](core/tests/conflict.rs)::`kat_replays_match_rust_merge` and [core/tests/python/conformance.py](core/tests/python/conformance.py) Section 4 — the Python implementation is a clean-room `py_merge_record` written from §11 spec docs only, satisfying the §15 / AGPL clean-room contract for the merge layer.
+- **VaultError integration**: `ConflictError::{BlockUuidMismatch, ClockOverflow}` propagates through `VaultError::Conflict(#[from] ConflictError)` so orchestrators in Sub-project C can `?` through the umbrella surface.
 
-### Phase A.7 — Hardening + audit prep ⏳ (after A.6)
+### Phase A.7 — Hardening + audit prep 🚧 (next)
 
 - Independent cryptographic review (paid, external).
 - Fuzz harness for the wire-format decoders (`cargo fuzz`).
