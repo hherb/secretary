@@ -22,6 +22,7 @@
 
 pub mod block;
 pub(crate) mod canonical;
+pub mod conflict;
 pub(crate) mod io;
 pub mod manifest;
 mod orchestrators;
@@ -32,6 +33,7 @@ pub use block::{
     BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
     FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
+pub use conflict::{clock_relation, merge_vector_clocks, ClockRelation};
 pub use manifest::{
     decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
     encode_manifest_file, encrypt_manifest_body, sign_manifest, verify_manifest, BlockEntry,
