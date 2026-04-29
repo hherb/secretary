@@ -1112,6 +1112,98 @@ mod vault {
             prop_assert_eq!(&m.merged, &a);
             prop_assert!(m.collisions.is_empty());
         }
+
+        /// Property L — `merge_record` produces a §11.5 well-formed
+        /// output for **arbitrary** (non-canonicalised, possibly
+        /// hostile) inputs, AND that output is a fixed point under
+        /// self-merge.
+        ///
+        /// Properties I, J, K above pre-canonicalise inputs via
+        /// `canonicalize_record`, so they certify CRDT correctness on
+        /// the canonical sub-domain only. The defensive clamp in
+        /// `merge_record` is supposed to canonicalise opportunistically
+        /// — i.e., merging arbitrary inputs (including the malformed
+        /// shapes a hostile sync peer might ship) must still produce a
+        /// well-formed merged record. Pre-PR review #2 flagged that
+        /// the proptest harness did not exercise this claim.
+        ///
+        /// Three invariants are asserted on the merged output, which
+        /// the merge code is responsible for enforcing regardless of
+        /// input well-formedness:
+        ///
+        /// * §11.5 / death-clock: `tombstoned_at_ms ≤ last_mod_ms`
+        ///   always (the clamp + lattice join cannot exceed the
+        ///   merged `last_mod_ms`, which is `max` of both sides').
+        /// * §11.5 / tombstone equality: `tombstone == true ⇒
+        ///   tombstoned_at_ms == last_mod_ms`.
+        /// * §6.3 / §11.3: `tombstone == true ⇒ fields.is_empty()`.
+        ///
+        /// Plus the canonicalisation-fixed-point claim:
+        ///
+        /// * `merge_record(m, m) == MergedRecord { merged: m,
+        ///   collisions: [] }` for `m = merge_record(a, b).merged` —
+        ///   the merge output is its own self-merge.
+        ///
+        /// This last property is the strongest of the four: it
+        /// implies the output is in canonical form (otherwise
+        /// self-merge would canonicalise further), which transitively
+        /// implies the §11.5 invariants the merge is responsible for.
+        /// The first three are kept as separate assertions so a
+        /// regression in any single invariant is reported precisely
+        /// rather than as a generic equality mismatch. Other §11.5
+        /// invariants (`tags` sorted+deduped, `last_mod_ms ≥
+        /// max(field.last_mod)`) are write-path responsibilities and
+        /// not enforced by the merge alone, so they are not asserted
+        /// here.
+        ///
+        /// `record_uuid` is unified as in the other properties; no
+        /// other input canonicalisation is applied.
+        #[test]
+        fn crdt_merge_record_well_formed_under_arbitrary_inputs(
+            uuid in any::<[u8; 16]>(),
+            a in record_strategy(),
+            b in record_strategy(),
+        ) {
+            let mut a = a;
+            let mut b = b;
+            a.record_uuid = uuid;
+            b.record_uuid = uuid;
+            // Intentionally NO canonicalize_record() — feed raw inputs.
+
+            let merged = merge_record(&a, &b).merged;
+
+            // §11.5 invariant 1: tombstoned_at_ms ≤ last_mod_ms.
+            prop_assert!(
+                merged.tombstoned_at_ms <= merged.last_mod_ms,
+                "§11.5 violated: merged.tombstoned_at_ms={} > last_mod_ms={}",
+                merged.tombstoned_at_ms,
+                merged.last_mod_ms
+            );
+
+            // §11.5 invariant 2: tombstone == true ⇒ tombstoned_at_ms == last_mod_ms.
+            if merged.tombstone {
+                prop_assert_eq!(
+                    merged.tombstoned_at_ms, merged.last_mod_ms,
+                    "§11.5 violated: tombstoned merged record has tombstoned_at_ms != last_mod_ms"
+                );
+                // §6.3 / §11.3: tombstoned merged record has empty fields.
+                prop_assert!(
+                    merged.fields.is_empty(),
+                    "§11.3 violated: tombstoned merged record has {} fields",
+                    merged.fields.len()
+                );
+            }
+
+            // Canonicalisation-fixed-point: self-merge of the merged
+            // output is a no-op. This implies the output is canonical;
+            // a regression here would mean the merge's first round of
+            // canonicalisation was incomplete (e.g., the clamp missed
+            // a malformation, or a tombstone-tie outcome left
+            // identity metadata in a non-canonical form).
+            let self_merged = merge_record(&merged, &merged);
+            prop_assert_eq!(&self_merged.merged, &merged);
+            prop_assert!(self_merged.collisions.is_empty());
+        }
     }
 }
 

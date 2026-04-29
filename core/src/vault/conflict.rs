@@ -589,27 +589,36 @@ fn merge_record_type(l: &Record, r: &Record) -> String {
 /// greater `last_mod_ms` wins; on tie, the **set union** of both sides
 /// is taken EXCEPT when one side is tombstoned and the other live, in
 /// which case the tombstoning side's tags win (§11.3 override).
+///
+/// Output is always sorted+deduped (§11.5 well-formedness invariant).
+/// Even on the LWW-clone branches, the merge canonicalises the chosen
+/// side's tags on output so that `merge_record(merged, merged)` is a
+/// fixed point — independent of whether the chosen side's tags were
+/// already canonical. Without this canonicalisation, a record carrying
+/// non-canonical tags through an LWW-clone branch would re-order under
+/// self-merge (the tie path's `BTreeSet` would canonicalise then),
+/// breaking idempotence on the merge output and the
+/// "canonicalises opportunistically" claim of §11.5.
 fn merge_tags(l: &Record, r: &Record, outcome: TombstoneOutcome) -> Vec<String> {
-    match outcome {
-        TombstoneOutcome::LocalTombstoneWins => l.tags.clone(),
-        TombstoneOutcome::RemoteTombstoneWins => r.tags.clone(),
-        TombstoneOutcome::LocalTombstoneLost => r.tags.clone(),
-        TombstoneOutcome::RemoteTombstoneLost => l.tags.clone(),
+    let source: &[String] = match outcome {
+        TombstoneOutcome::LocalTombstoneWins | TombstoneOutcome::RemoteTombstoneLost => &l.tags,
+        TombstoneOutcome::RemoteTombstoneWins | TombstoneOutcome::LocalTombstoneLost => &r.tags,
         TombstoneOutcome::BothLive | TombstoneOutcome::BothTombstoned => {
             match l.last_mod_ms.cmp(&r.last_mod_ms) {
-                Ordering::Greater => l.tags.clone(),
-                Ordering::Less => r.tags.clone(),
+                Ordering::Greater => &l.tags,
+                Ordering::Less => &r.tags,
                 Ordering::Equal => {
-                    // §11.1 set union, sorted lex.
-                    let mut set: BTreeSet<String> = l.tags.iter().cloned().collect();
-                    for tag in &r.tags {
-                        set.insert(tag.clone());
-                    }
-                    set.into_iter().collect()
+                    // §11.1 set union of both sides on tie.
+                    let set: BTreeSet<String> =
+                        l.tags.iter().chain(r.tags.iter()).cloned().collect();
+                    return set.into_iter().collect();
                 }
             }
         }
-    }
+    };
+    // Canonicalise the chosen side's tags (sort + dedup) on output.
+    let set: BTreeSet<String> = source.iter().cloned().collect();
+    set.into_iter().collect()
 }
 
 /// Per-key forward-compat unknown merge per §11.1 (record-level) and

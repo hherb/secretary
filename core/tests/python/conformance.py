@@ -2032,21 +2032,24 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     # tags: §11.3 mixed-tombstone override → tombstoning side wins; else
     # §11.1 (greater last_mod_ms; set union on tie).
-    if outcome == "LocalTombstoneWins":
-        tags = list(local["tags"])
-    elif outcome == "RemoteTombstoneWins":
-        tags = list(remote["tags"])
-    elif outcome == "LocalTombstoneLost":
-        tags = list(remote["tags"])
-    elif outcome == "RemoteTombstoneLost":
-        tags = list(local["tags"])
+    #
+    # Output is always sorted+deduped per §11.5: even on the LWW-clone
+    # branches, the merge canonicalises the chosen side's tags so that
+    # self-merging the merged record is a fixed point (mirrors Rust
+    # merge_tags).
+    if outcome == "LocalTombstoneWins" or outcome == "RemoteTombstoneLost":
+        source = local["tags"]
+    elif outcome == "RemoteTombstoneWins" or outcome == "LocalTombstoneLost":
+        source = remote["tags"]
+    elif local["last_mod_ms"] > remote["last_mod_ms"]:
+        source = local["tags"]
+    elif remote["last_mod_ms"] > local["last_mod_ms"]:
+        source = remote["tags"]
     else:
-        if local["last_mod_ms"] > remote["last_mod_ms"]:
-            tags = list(local["tags"])
-        elif remote["last_mod_ms"] > local["last_mod_ms"]:
-            tags = list(remote["tags"])
-        else:
-            tags = sorted(set(local["tags"]) | set(remote["tags"]))
+        # §11.1 set union of both sides on tie.
+        source = list(set(local["tags"]) | set(remote["tags"]))
+    # Canonicalise: sort + dedup.
+    tags = sorted(set(source))
 
     merged = {
         "record_uuid_hex": local["record_uuid_hex"],
