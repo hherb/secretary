@@ -815,11 +815,13 @@ pub fn open_vault(
     let vt = vault_toml::decode(vt_str).map_err(|e| {
         VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(e))
     })?;
-    if manifest_body.kdf_params.memory_kib != vt.kdf.memory_kib
-        || manifest_body.kdf_params.iterations != vt.kdf.iterations
-        || manifest_body.kdf_params.parallelism != vt.kdf.parallelism
-        || manifest_body.kdf_params.salt != vt.kdf.salt
-    {
+    let expected_kdf = manifest::KdfParamsRef {
+        memory_kib: vt.kdf.memory_kib,
+        iterations: vt.kdf.iterations,
+        parallelism: vt.kdf.parallelism,
+        salt: vt.kdf.salt,
+    };
+    if manifest_body.kdf_params != expected_kdf {
         return Err(VaultError::KdfParamsMismatch);
     }
 

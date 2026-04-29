@@ -110,7 +110,7 @@ const KEY_SALT: &str = "salt";
 
 // Byte lengths for the §4.2 `bstr N` fields.
 const UUID_LEN: usize = 16;
-const FINGERPRINT_LEN: usize = 32;
+const BLOCK_FINGERPRINT_LEN: usize = 32;
 const SALT_LEN: usize = 32;
 
 // v1 sentinels.
@@ -332,7 +332,7 @@ pub struct BlockEntry {
     /// User-visible block name, plaintext within the encrypted manifest.
     pub block_name: String,
     /// BLAKE3-256 of the complete block file bytes.
-    pub fingerprint: [u8; FINGERPRINT_LEN],
+    pub fingerprint: [u8; BLOCK_FINGERPRINT_LEN],
     /// Contact UUIDs of each recipient (always includes owner). Encoded
     /// in ascending lex order.
     pub recipients: Vec<[u8; UUID_LEN]>,
@@ -835,7 +835,7 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
     };
     let mut block_uuid: Option<[u8; UUID_LEN]> = None;
     let mut block_name: Option<String> = None;
-    let mut fingerprint: Option<[u8; FINGERPRINT_LEN]> = None;
+    let mut fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]> = None;
     let mut recipients: Option<Vec<[u8; UUID_LEN]>> = None;
     let mut vector_clock_summary: Option<Vec<VectorClockEntry>> = None;
     let mut suite_id: Option<u16> = None;
@@ -853,7 +853,7 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
                 block_name = Some(take_text(val, KEY_BLOCK_NAME)?);
             }
             KEY_FINGERPRINT => {
-                fingerprint = Some(take_fixed_bytes::<FINGERPRINT_LEN>(val, KEY_FINGERPRINT)?);
+                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)?);
             }
             KEY_RECIPIENTS => {
                 recipients = Some(parse_recipients(val)?);
@@ -1337,7 +1337,7 @@ const _: () = {
 /// 16-byte fingerprint length: matches [`Fingerprint`]'s underlying
 /// type alias. Pinned here so the §4.1 envelope size arithmetic is
 /// self-evident at the call site.
-const FINGERPRINT_LEN_BYTES: usize = 16;
+const IDENTITY_FINGERPRINT_LEN: usize = 16;
 
 /// The complete manifest file as it sits on disk: header (§4.1, 42
 /// bytes) + AEAD section (24-byte nonce + 4-byte ct-len + variable ct
@@ -1465,7 +1465,7 @@ pub fn encode_manifest_file(file: &ManifestFile) -> Result<Vec<u8>, ManifestErro
         + 4
         + file.aead_ct.len()
         + AEAD_TAG_LEN
-        + FINGERPRINT_LEN_BYTES
+        + IDENTITY_FINGERPRINT_LEN
         + 2
         + ED25519_SIG_LEN
         + 2
@@ -1554,7 +1554,7 @@ pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError>
     // (after subtracting the fixed-size suffix), surface the typed
     // mismatch rather than waiting for a downstream truncation.
     let fixed_suffix_after_ct = AEAD_TAG_LEN
-        + FINGERPRINT_LEN_BYTES
+        + IDENTITY_FINGERPRINT_LEN
         + 2
         + ED25519_SIG_LEN
         + 2
@@ -1588,9 +1588,9 @@ pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError>
     pos += AEAD_TAG_LEN;
 
     // Step 7: author_fingerprint (16).
-    let mut author_fingerprint = [0u8; FINGERPRINT_LEN_BYTES];
-    author_fingerprint.copy_from_slice(&rest[pos..pos + FINGERPRINT_LEN_BYTES]);
-    pos += FINGERPRINT_LEN_BYTES;
+    let mut author_fingerprint = [0u8; IDENTITY_FINGERPRINT_LEN];
+    author_fingerprint.copy_from_slice(&rest[pos..pos + IDENTITY_FINGERPRINT_LEN]);
+    pos += IDENTITY_FINGERPRINT_LEN;
 
     // Step 8: sig_ed_len (u16 BE).
     let mut sig_ed_len_buf = [0u8; 2];
@@ -1848,7 +1848,7 @@ mod tests {
         let block_a = BlockEntry {
             block_uuid: [0xb1; UUID_LEN],
             block_name: "logins".to_string(),
-            fingerprint: [0xff; FINGERPRINT_LEN],
+            fingerprint: [0xff; BLOCK_FINGERPRINT_LEN],
             recipients: vec![[0xc1; UUID_LEN], [0xc2; UUID_LEN]],
             vector_clock_summary: vec![
                 VectorClockEntry {
@@ -1868,7 +1868,7 @@ mod tests {
         let block_b = BlockEntry {
             block_uuid: [0xa2; UUID_LEN],
             block_name: "notes".to_string(),
-            fingerprint: [0xee; FINGERPRINT_LEN],
+            fingerprint: [0xee; BLOCK_FINGERPRINT_LEN],
             recipients: vec![[0xc1; UUID_LEN], [0xc3; UUID_LEN]],
             vector_clock_summary: vec![
                 VectorClockEntry {
@@ -2176,7 +2176,7 @@ mod tests {
         let make_block = |suffix: u8| BlockEntry {
             block_uuid: dupe,
             block_name: format!("blk-{suffix}"),
-            fingerprint: [suffix; FINGERPRINT_LEN],
+            fingerprint: [suffix; BLOCK_FINGERPRINT_LEN],
             recipients: vec![[0xc1; UUID_LEN]],
             vector_clock_summary: Vec::new(),
             suite_id: SUITE_ID_V1,
