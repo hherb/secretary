@@ -65,7 +65,7 @@
 //! functions in reusable modules: I/O lives at the edges, structs hold
 //! state but do not own their own serialisation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
@@ -545,14 +545,14 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     // `seen_keys` tracks every textual key we have observed at this map
     // level so duplicates (RFC 8949 §5.4) are caught even when both
     // copies fall into the unknown bucket.
-    let mut seen_keys: BTreeMap<String, ()> = BTreeMap::new();
+    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
     for (k, v) in map {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(RecordError::NonTextKey),
         };
-        if seen_keys.insert(key.clone(), ()).is_some() {
+        if !seen_keys.insert(key.clone()) {
             return Err(RecordError::DuplicateKey { key });
         }
         match key.as_str() {
@@ -646,14 +646,14 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     let mut last_mod: Option<u64> = None;
     let mut device_uuid: Option<[u8; RECORD_UUID_LEN]> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
-    let mut seen_keys: BTreeMap<String, ()> = BTreeMap::new();
+    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
     for (k, val) in entries {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(RecordError::NonTextKey),
         };
-        if seen_keys.insert(key.clone(), ()).is_some() {
+        if !seen_keys.insert(key.clone()) {
             return Err(RecordError::DuplicateKey { key });
         }
         match key.as_str() {

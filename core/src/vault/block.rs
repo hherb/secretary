@@ -63,7 +63,7 @@
 //! the header shape requires a `format_version` bump, which v1 readers
 //! reject (see [`BlockError::UnsupportedFormatVersion`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
@@ -1006,14 +1006,14 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     let mut schema_version: Option<u32> = None;
     let mut records: Option<Vec<Record>> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
-    let mut seen_keys: BTreeMap<String, ()> = BTreeMap::new();
+    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
     for (k, v) in map {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(BlockError::NonTextKey),
         };
-        if seen_keys.insert(key.clone(), ()).is_some() {
+        if !seen_keys.insert(key.clone()) {
             return Err(BlockError::DuplicateKey { key });
         }
         match key.as_str() {
