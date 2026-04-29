@@ -323,6 +323,92 @@
           }
         ]
       }
+    },
+    {
+      "name": "concurrent_death_clock_drops_stale_field",
+      "description": "Concurrent merge between a replica that never observed a tombstone (`tombstoned_at_ms=0`) and a replica that observed a tombstone at T=50 and then resurrected the record at T=100. The local field 'u' was edited at last_mod=10 — strictly before the observed tombstone — and is dropped by the §11.3 staleness filter. The merged record carries `tombstoned_at_ms=50` (the death clock propagates as max), `tombstone=false`, `last_mod_ms=100`, and empty fields.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "u",
+                  "value_type": "text",
+                  "value_text": "stale-value",
+                  "last_mod": 10,
+                  "device_uuid_hex": "01010101010101010101010101010101"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 10,
+              "tombstone": false,
+              "tombstoned_at_ms": 0
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 50
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 50
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
     }
   ]
 }

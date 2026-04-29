@@ -1912,7 +1912,14 @@ def _value_lex_bytes(field: dict) -> bytes:
 def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     """Merge two records with the same record_uuid per §11. Returns the
     merged record dict and the list of field collisions (in sorted
-    field_name order). Tombstone interactions follow §11.3."""
+    field_name order). Tombstone interactions follow §11.3.
+
+    Per §11.3 the merge propagates a death clock
+    (`tombstoned_at_ms = max(local, remote)`) and applies a staleness
+    filter that drops fields with `last_mod ≤ death_clock`. The filter
+    is the bit that makes the merge associative under arbitrary
+    tombstone histories. `tombstoned_at_ms == 0` is the sentinel for
+    "no tombstone observation"; in that case no filter applies."""
     # §11.3 tombstone tie-break.
     l_t, r_t = local["tombstone"], remote["tombstone"]
     if l_t and r_t:
@@ -1932,44 +1939,56 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
 
-    # Field merge per outcome.
+    # §11.3 death clock: lattice join via max.
+    death = max(local.get("tombstoned_at_ms", 0), remote.get("tombstoned_at_ms", 0))
+
+    # §11.3 staleness predicate: a field is alive iff there's no death
+    # observation (death_clock == 0) or its last_mod is strictly later.
+    def alive(f: dict) -> bool:
+        return death == 0 or f["last_mod"] > death
+
+    # Field merge: tombstoned outcomes have empty fields per §6.3 / §11.3.
     fields: list[dict] = []
     collisions: list[dict] = []
-    if outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins"):
-        # §11.3: tombstoned merged record carries empty fields.
-        pass
-    elif outcome == "BothLive":
+    if not tombstone:
+        # Apply LWW with the staleness filter uniformly across the
+        # field union. The filter subsumes the previous
+        # LocalTombstoneLost / RemoteTombstoneLost special cases:
+        # a tombstoned side's "kept-for-undelete" fields all have
+        # `last_mod ≤ tombstoned_at_ms = last_mod_ms ≤ death`, so
+        # they are filtered out naturally.
         l_fields = {f["name"]: f for f in local["fields"]}
         r_fields = {f["name"]: f for f in remote["fields"]}
         for name in sorted(set(l_fields) | set(r_fields)):
             l = l_fields.get(name)
             r = r_fields.get(name)
-            if l is not None and r is not None:
-                pick_local = py_lww_picks_local_field(l, r)
-                winner = l if pick_local else r
-                loser = r if pick_local else l
-                if l.get("value_type") != r.get("value_type") or l.get(
-                    "value_text", l.get("value_hex")
-                ) != r.get("value_text", r.get("value_hex")):
-                    collisions.append(
-                        {"field_name": name, "winner": winner, "loser": loser}
-                    )
-                merged_field = dict(winner)
-                merged_field["name"] = name
-                fields.append(merged_field)
-            elif l is not None:
+            l_alive = l is not None and alive(l)
+            r_alive = r is not None and alive(r)
+            if not l_alive and not r_alive:
+                continue
+            if l_alive and not r_alive:
                 merged_field = dict(l)
                 merged_field["name"] = name
                 fields.append(merged_field)
-            else:
+                continue
+            if not l_alive and r_alive:
                 merged_field = dict(r)
                 merged_field["name"] = name
                 fields.append(merged_field)
-    elif outcome == "LocalTombstoneLost":
-        # Live wins (remote). Take only remote's fields.
-        fields = [dict(f) for f in remote["fields"]]
-    elif outcome == "RemoteTombstoneLost":
-        fields = [dict(f) for f in local["fields"]]
+                continue
+            # Both alive: per-field LWW + collision detection.
+            pick_local = py_lww_picks_local_field(l, r)
+            winner = l if pick_local else r
+            loser = r if pick_local else l
+            if l.get("value_type") != r.get("value_type") or l.get(
+                "value_text", l.get("value_hex")
+            ) != r.get("value_text", r.get("value_hex")):
+                collisions.append(
+                    {"field_name": name, "winner": winner, "loser": loser}
+                )
+            merged_field = dict(winner)
+            merged_field["name"] = name
+            fields.append(merged_field)
 
     # §11.1 record-level metadata.
     if local["last_mod_ms"] > remote["last_mod_ms"]:
@@ -2007,6 +2026,7 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
         "created_at_ms": min(local["created_at_ms"], remote["created_at_ms"]),
         "last_mod_ms": max(local["last_mod_ms"], remote["last_mod_ms"]),
         "tombstone": tombstone,
+        "tombstoned_at_ms": death,
     }
     return merged, collisions
 
@@ -2115,6 +2135,7 @@ def _normalise_record(r: dict) -> dict:
         "created_at_ms": r["created_at_ms"],
         "last_mod_ms": r["last_mod_ms"],
         "tombstone": r["tombstone"],
+        "tombstoned_at_ms": r.get("tombstoned_at_ms", 0),
     }
 
 
