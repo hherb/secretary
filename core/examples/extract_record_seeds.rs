@@ -114,7 +114,10 @@ fn build_api_key_record() -> Record {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir: PathBuf = ["core", "fuzz", "seeds", "record"].iter().collect();
+    // Anchor on CARGO_MANIFEST_DIR (set by Cargo at compile time to the
+    // package root, i.e. `core/`) so the example produces correct output
+    // regardless of the working directory it was invoked from.
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/record");
     fs::create_dir_all(&out_dir)?;
 
     let login = build_login_record();
