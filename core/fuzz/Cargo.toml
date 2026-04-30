@@ -47,3 +47,10 @@ path = "fuzz_targets/contact_card.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bundle_file"
+path = "fuzz_targets/bundle_file.rs"
+test = false
+doc = false
+bench = false
