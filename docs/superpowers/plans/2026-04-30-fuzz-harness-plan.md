@@ -704,7 +704,7 @@ cp core/tests/data/golden_vault_001/manifest.cbor.enc core/fuzz/seeds/manifest_f
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/manifest_file.rs`**
 
-`decode_manifest_file` is a binary header + canonical CBOR body. The file-level decoder does not perform a strict re-encode-and-compare gate (that pattern lives only in `record::decode` and `ContactCard::from_canonical_cbor`); the manifest's CBOR body is walked permissively, with floats and tags rejected but key ordering / length encoding not strictly checked. The roundtrip oracle is therefore a strong canonicality contract: any input that decodes but doesn't re-encode bit-identically is either an encoder/decoder asymmetry or a non-canonical input the decoder accepted silently. Both classes are fuzz findings worth surfacing.
+`decode_manifest_file` parses the §4.1 binary frame only: fixed-width header, AEAD nonce, ciphertext length, AEAD ciphertext bytes, AEAD tag, owner fingerprint, and a hybrid signature suffix. The CBOR-encoded manifest payload lives inside `aead_ct` and is **encrypted** — `decode_manifest_file` never sees it as CBOR. The roundtrip oracle therefore checks the binary frame's encode/decode symmetry, not CBOR canonicality.
 
 ```rust
 #![no_main]
@@ -714,12 +714,13 @@ use secretary_core::vault::manifest;
 fuzz_target!(|data: &[u8]| {
     // External roundtrip oracle: decode_manifest_file must equal
     // encode_manifest_file(decode_manifest_file(input)) for any input the
-    // decoder accepts. The manifest file is binary-framed CBOR; the
-    // file-level decoder does not perform a strict re-encode gate, so this
-    // assertion catches both encoder/decoder asymmetries AND inputs that
-    // decode silently despite being non-canonical (e.g. CBOR with map keys
-    // out of canonical order, indefinite-length items, or non-shortest-form
-    // length prefixes).
+    // decoder accepts. The manifest file is binary-framed (§4.1): a fixed
+    // header, AEAD nonce + length-prefixed ciphertext + tag, owner
+    // fingerprint, and trailing hybrid signature. The CBOR manifest payload
+    // is encrypted inside aead_ct and never visited by this decoder, so
+    // this assertion catches encoder/decoder asymmetries in the binary
+    // frame fields (length-prefix width, signature byte ordering,
+    // fingerprint encoding) — not CBOR canonicality, which is opaque here.
     if let Ok(parsed) = manifest::decode_manifest_file(data) {
         let reencoded = manifest::encode_manifest_file(&parsed)
             .expect("encode after successful decode must not fail");
@@ -781,7 +782,7 @@ cp core/tests/data/golden_vault_001/blocks/11223344-5566-7788-99aa-bbccddeeff00.
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/block_file.rs`**
 
-`decode_block_file` is binary-framed (header + recipient table + body + signature suffix). The inner CBOR plaintext decoder (`decode_plaintext`) DOES have a strict re-encode-and-compare gate, but the file-level `decode_block_file` and the recipient-table parser do not. The roundtrip oracle therefore asserts canonicality across the full file shape, surfacing both encoder/decoder asymmetries and any non-canonical inputs the file-level decoder accepts silently.
+`decode_block_file` parses §6.1's binary frame: header, §6.2 recipient table (1208 B per entry, sorted by fingerprint), AEAD body (nonce + length-prefixed ciphertext + tag), and a trailing hybrid signature suffix. The §6.3 CBOR plaintext is **encrypted** inside `aead_ct` — the inner `decode_plaintext` path has its own strict canonical-input gate, but `decode_block_file` itself never sees the CBOR. The roundtrip oracle checks the binary frame and recipient table — both of which are structurally encoded but not gated by re-encode-and-compare at the file layer.
 
 ```rust
 #![no_main]
@@ -791,13 +792,13 @@ use secretary_core::vault::block;
 fuzz_target!(|data: &[u8]| {
     // External roundtrip oracle: decode_block_file must equal
     // encode_block_file(decode_block_file(input)) for any input the decoder
-    // accepts. The block file is binary-framed (header + recipient table +
-    // AEAD body + hybrid signature suffix). The inner CBOR plaintext path
-    // has its own strict canonical-input gate, but the outer file-format
-    // decoder does not — so this assertion catches encoder/decoder
-    // asymmetries and any non-canonical wire shapes the file-level decoder
-    // accepts silently (e.g. recipient-table ordering drift, length prefix
-    // miscount).
+    // accepts. The block file is binary-framed (§6.1 header, §6.2 recipient
+    // table, AEAD body, trailing hybrid signature suffix). The §6.3 CBOR
+    // plaintext is encrypted inside aead_ct and never visited by this
+    // decoder, so this assertion catches encoder/decoder asymmetries in the
+    // binary frame and recipient table — recipient-entry length, sort
+    // order, length-prefix width, signature suffix layout — not CBOR
+    // canonicality, which is opaque here.
     if let Ok(parsed) = block::decode_block_file(data) {
         let reencoded = block::encode_block_file(&parsed)
             .expect("encode after successful decode must not fail");
