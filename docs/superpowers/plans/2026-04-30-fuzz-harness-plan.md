@@ -535,8 +535,8 @@ Roundtrip oracle. Seeds copied directly from existing committed CBOR.
 **Files:**
 - Modify: `core/fuzz/Cargo.toml`
 - Create: `core/fuzz/fuzz_targets/contact_card.rs`
-- Create: `core/fuzz/seeds/contact_card/unsigned.cbor`
-- Create: `core/fuzz/seeds/contact_card/signed.cbor`
+- Create: `core/fuzz/seeds/contact_card/with_sigs.cbor` (full ContactCard, signature fields populated; decodes successfully and exercises the roundtrip oracle)
+- Create: `core/fuzz/seeds/contact_card/pre_sig.cbor` (pre-signature form, missing `self_sig_ed`/`self_sig_pq`; decodes as `Err(missing-field)` and exercises the error path)
 
 - [ ] **Step 1: Add `[[bin]]` entry**
 
@@ -553,8 +553,12 @@ bench = false
 
 ```bash
 mkdir -p core/fuzz/seeds/contact_card
-cp core/tests/data/card_kat.cbor        core/fuzz/seeds/contact_card/unsigned.cbor
-cp core/tests/data/card_kat_signed.cbor core/fuzz/seeds/contact_card/signed.cbor
+# Naming gotcha: card_kat.cbor is the FULL signed card; card_kat_signed.cbor
+# is the PRE-SIGNATURE form (the bytes that get signed). The "_signed" suffix
+# means "the signed-bytes payload" not "a card with signatures". See
+# core/tests/identity.rs:65-74 for the canonical constants and their role.
+cp core/tests/data/card_kat.cbor        core/fuzz/seeds/contact_card/with_sigs.cbor
+cp core/tests/data/card_kat_signed.cbor core/fuzz/seeds/contact_card/pre_sig.cbor
 ```
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/contact_card.rs`**
