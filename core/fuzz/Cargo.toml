@@ -40,3 +40,10 @@ path = "fuzz_targets/record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "contact_card"
+path = "fuzz_targets/contact_card.rs"
+test = false
+doc = false
+bench = false
