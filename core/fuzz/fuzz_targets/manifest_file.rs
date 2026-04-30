@@ -5,12 +5,13 @@ use secretary_core::vault::manifest;
 fuzz_target!(|data: &[u8]| {
     // External roundtrip oracle: decode_manifest_file must equal
     // encode_manifest_file(decode_manifest_file(input)) for any input the
-    // decoder accepts. The manifest file is binary-framed CBOR; the
-    // file-level decoder does not perform a strict re-encode gate, so this
-    // assertion catches both encoder/decoder asymmetries AND inputs that
-    // decode silently despite being non-canonical (e.g. CBOR with map keys
-    // out of canonical order, indefinite-length items, or non-shortest-form
-    // length prefixes).
+    // decoder accepts. The manifest file is binary-framed (§4.1): a fixed
+    // header, AEAD nonce + length-prefixed ciphertext + tag, owner
+    // fingerprint, and trailing hybrid signature. The CBOR manifest payload
+    // is encrypted inside aead_ct and never visited by this decoder, so
+    // this assertion catches encoder/decoder asymmetries in the binary
+    // frame fields (length-prefix width, signature byte ordering,
+    // fingerprint encoding) — not CBOR canonicality, which is opaque here.
     if let Ok(parsed) = manifest::decode_manifest_file(data) {
         let reencoded = manifest::encode_manifest_file(&parsed)
             .expect("encode after successful decode must not fail");
