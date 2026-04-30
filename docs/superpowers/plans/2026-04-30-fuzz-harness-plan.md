@@ -630,12 +630,21 @@ cp core/tests/data/golden_vault_001/identity.bundle.enc core/fuzz/seeds/bundle_f
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/bundle_file.rs`**
 
+Use the auditor-friendly comment style established in earlier targets, but **adapt the rationale** — `bundle_file::decode` is structurally canonical (fixed-width big-endian binary format with explicit trailing-byte rejection at decode end), NOT gated by an internal re-encode-and-compare check. The roundtrip oracle is still useful as a regression guard, but the comment must say so accurately.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::unlock::bundle_file;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: bundle_file::decode must equal
+    // bundle_file::encode(bundle_file::decode(input)) for any input the
+    // decoder accepts. The bundle file is a fixed-width big-endian binary
+    // format with explicit trailing-byte rejection, so any successfully-
+    // decoded input round-trips by construction. This external check is
+    // defense-in-depth — it catches future regressions in the encode/decode
+    // pair (e.g. a new variable-length field added on one side only).
     if let Ok(parsed) = bundle_file::decode(data) {
         let reencoded = bundle_file::encode(&parsed);
         assert_eq!(
@@ -647,7 +656,7 @@ fuzz_target!(|data: &[u8]| {
 });
 ```
 
-(Note: `bundle_file::encode` returns `Vec<u8>` directly per its signature — no `Result`.)
+(Note: `bundle_file::encode` returns `Vec<u8>` directly per its signature — no `Result`, so no `.expect(...)` between decode and assert.)
 
 - [ ] **Step 4: Build, seed-run, smoke run**
 
