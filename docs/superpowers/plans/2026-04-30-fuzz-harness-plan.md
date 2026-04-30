@@ -704,12 +704,22 @@ cp core/tests/data/golden_vault_001/manifest.cbor.enc core/fuzz/seeds/manifest_f
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/manifest_file.rs`**
 
+`decode_manifest_file` is a binary header + canonical CBOR body. The file-level decoder does not perform a strict re-encode-and-compare gate (that pattern lives only in `record::decode` and `ContactCard::from_canonical_cbor`); the manifest's CBOR body is walked permissively, with floats and tags rejected but key ordering / length encoding not strictly checked. The roundtrip oracle is therefore a strong canonicality contract: any input that decodes but doesn't re-encode bit-identically is either an encoder/decoder asymmetry or a non-canonical input the decoder accepted silently. Both classes are fuzz findings worth surfacing.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::vault::manifest;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: decode_manifest_file must equal
+    // encode_manifest_file(decode_manifest_file(input)) for any input the
+    // decoder accepts. The manifest file is binary-framed CBOR; the
+    // file-level decoder does not perform a strict re-encode gate, so this
+    // assertion catches both encoder/decoder asymmetries AND inputs that
+    // decode silently despite being non-canonical (e.g. CBOR with map keys
+    // out of canonical order, indefinite-length items, or non-shortest-form
+    // length prefixes).
     if let Ok(parsed) = manifest::decode_manifest_file(data) {
         let reencoded = manifest::encode_manifest_file(&parsed)
             .expect("encode after successful decode must not fail");
@@ -771,12 +781,23 @@ cp core/tests/data/golden_vault_001/blocks/11223344-5566-7788-99aa-bbccddeeff00.
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/block_file.rs`**
 
+`decode_block_file` is binary-framed (header + recipient table + body + signature suffix). The inner CBOR plaintext decoder (`decode_plaintext`) DOES have a strict re-encode-and-compare gate, but the file-level `decode_block_file` and the recipient-table parser do not. The roundtrip oracle therefore asserts canonicality across the full file shape, surfacing both encoder/decoder asymmetries and any non-canonical inputs the file-level decoder accepts silently.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::vault::block;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: decode_block_file must equal
+    // encode_block_file(decode_block_file(input)) for any input the decoder
+    // accepts. The block file is binary-framed (header + recipient table +
+    // AEAD body + hybrid signature suffix). The inner CBOR plaintext path
+    // has its own strict canonical-input gate, but the outer file-format
+    // decoder does not — so this assertion catches encoder/decoder
+    // asymmetries and any non-canonical wire shapes the file-level decoder
+    // accepts silently (e.g. recipient-table ordering drift, length prefix
+    // miscount).
     if let Ok(parsed) = block::decode_block_file(data) {
         let reencoded = block::encode_block_file(&parsed)
             .expect("encode after successful decode must not fail");
