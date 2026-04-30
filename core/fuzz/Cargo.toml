@@ -12,6 +12,12 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 secretary-core = { path = ".." }
 
+# Mirror the workspace's `unsafe_code = "forbid"` lint. `core/fuzz/` is
+# excluded from `[workspace.members]` so it does not inherit
+# `[workspace.lints]` automatically; this block restores parity.
+[lints.rust]
+unsafe_code = "forbid"
+
 # Profile flags: see docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
 # "Profile flags and sanitizers".
 [profile.release]
