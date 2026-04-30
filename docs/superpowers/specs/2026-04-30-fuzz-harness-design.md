@@ -181,7 +181,26 @@ Run once after the harness lands. Per target, in this order (cheapest-blast-radi
 5. `manifest_file` — full binary file format.
 6. `block_file` — largest binary file format.
 
-Per target: ~30 min ASan + ~10 min UBSan = 40 min. Six targets ≈ 4 hours total. Findings get the regression-mechanics treatment immediately — fix-then-continue, not collect-then-fix, so each subsequent target runs against fixed code.
+**Stop signal — hardware-independent.** Wall-clock time is the wrong contract for an audit deliverable: 40 min on a fast workstation does an order of magnitude more work than 40 min on a CI runner. The contract is **execution count + coverage plateau**:
+
+- libFuzzer's `-runs=N` caps executions; its live telemetry (`stat: cov: X corp: Y exec/s: Z`) reports new edges and corpus entries.
+- A target is "done" for the bug-bash when **both** hold: (a) the run has hit a per-target exec-count floor, and (b) the last `cov` and `corp` deltas are zero across the most recent ≥10% of executions (no new coverage, no new corpus entries) — the standard plateau signal.
+- A wall-clock **stop-loss cap** (e.g. 4× the reference wall-clock estimate) terminates a session that genuinely never plateaus on the available hardware; that target is flagged in the bug-bash report rather than blocking the deliverable.
+
+**Reference numbers** for planning, not for the contract — measured on the operator's reference workstation:
+
+| Target | Reference wall-clock (ASan + UBSan) | Reference exec floor (ASan / UBSan) |
+|---|---|---|
+| `vault_toml` | ~30 min + ~10 min | TBD — calibrated empirically (see below) |
+| `record` | ~30 min + ~10 min | TBD |
+| `contact_card` | ~30 min + ~10 min | TBD |
+| `bundle_file` | ~30 min + ~10 min | TBD |
+| `manifest_file` | ~30 min + ~10 min | TBD |
+| `block_file` | ~30 min + ~10 min | TBD |
+
+**Calibration step.** Before the main bug-bash, one of the smaller targets (`vault_toml` or `record`) is run to plateau on the operator's reference workstation. The exec count at plateau gives the per-target floor (rounded up to a power-of-ten round number for each target). Larger/slower targets get scaled floors. The chosen floors are committed to `core/fuzz/README.md` so any future operator (auditor, CI) can reproduce the same coverage bar regardless of hardware. This is part of the implementation plan, not the spec.
+
+Findings get the regression-mechanics treatment immediately — fix-then-continue, not collect-then-fix, so each subsequent target runs against fixed code.
 
 ## Exit criteria
 
@@ -189,9 +208,9 @@ The Phase A.7 fuzz sub-deliverable is done when **all** hold:
 
 1. Six fuzz targets compile and run from `cd core/fuzz && cargo fuzz run <target>`.
 2. Seed corpora committed; `cargo fuzz run <target> seeds/<target>/` is green for every target (seeds don't crash).
-3. Each target has run for 40 min (30 ASan + 10 UBSan) with the most recent code, no unfixed findings, no new crashes since the last 5 minutes of the run.
+3. Each target has run with the most recent code under both ASan and UBSan, has hit its per-target exec-count floor (calibrated per the bug-bash plan, recorded in `core/fuzz/README.md`), and `libFuzzer` has reported zero new coverage and zero new corpus entries across the last ≥10% of executions in each profile (the plateau signal). Targets that hit the wall-clock stop-loss cap without plateauing are flagged in the bug-bash report. No unfixed findings.
 4. Any findings fixed; their inputs committed to `core/tests/data/fuzz_regressions/<target>/`; the `fuzz_regressions` integration test green in plain `cargo test --release --workspace`.
-5. `core/fuzz/README.md` documents: how to install nightly, how to run a single target, how to run with UBSan, how to promote a finding, how to run the differential replay.
+5. `core/fuzz/README.md` documents: how to install nightly, how to run a single target, how to run with UBSan, how to promote a finding, how to run the differential replay, **and the calibrated per-target exec-count floors** (from the calibration step in the bug-bash plan).
 6. Differential replay runs cleanly: `cargo test --release --workspace --features differential-replay` is green against the corpus (no disagreements, or all known disagreements pinned as KATs after triage).
 7. `cargo test --release --workspace` (default features) stays green throughout.
 
