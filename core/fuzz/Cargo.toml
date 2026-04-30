@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "secretary-core-fuzz"
 version = "0.0.0"
@@ -24,3 +26,10 @@ unsafe_code = "forbid"
 debug = true            # symbols for crash backtraces
 overflow-checks = true  # arithmetic overflow → panic → fuzzer finding
 debug-assertions = true # internal assert!() → panic → fuzzer finding
+
+[[bin]]
+name = "vault_toml"
+path = "fuzz_targets/vault_toml.rs"
+test = false
+doc = false
+bench = false
