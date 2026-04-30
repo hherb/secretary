@@ -78,11 +78,11 @@ Path-scoped nightly pin so the rest of the workspace stays on stable.
 
 ```toml
 [toolchain]
-channel = "nightly-2026-04-30"
+channel = "nightly-2026-04-29"
 components = ["rustfmt", "clippy", "rust-src"]
 ```
 
-(`rust-src` is needed by some sanitizer builds. The pinned date can be moved by a future maintainer; keeping it specific gives reproducibility.)
+(`rust-src` is needed by some sanitizer builds. **Pin convention:** Rust nightly always lags the calendar by one day — the nightly published on day N is built from the previous day's commits. The pin therefore uses `<plan_date - 1>` so it resolves on the day the plan is executed. The pinned date can be moved by a future maintainer; keeping it specific gives reproducibility.)
 
 - [ ] **Step 4: Create `core/fuzz/.gitignore`**
 
