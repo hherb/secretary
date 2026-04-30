@@ -1,0 +1,20 @@
+[package]
+name = "secretary-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+secretary-core = { path = ".." }
+
+# Profile flags: see docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
+# "Profile flags and sanitizers".
+[profile.release]
+debug = true            # symbols for crash backtraces
+overflow-checks = true  # arithmetic overflow → panic → fuzzer finding
+debug-assertions = true # internal assert!() → panic → fuzzer finding
