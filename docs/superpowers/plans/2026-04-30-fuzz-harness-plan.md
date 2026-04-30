@@ -178,15 +178,26 @@ cp core/tests/data/golden_vault_001/vault.toml core/fuzz/seeds/vault_toml/golden
 
 - [ ] **Step 4: Create a minimal valid seed**
 
-`core/fuzz/seeds/vault_toml/minimal.toml` — the smallest TOML that `vault_toml::decode` accepts. Read the `VaultToml` struct definition at [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs) and copy the field names. Concretely (verify by re-reading the struct before writing):
+`core/fuzz/seeds/vault_toml/minimal.toml` — the smallest TOML that `vault_toml::decode` accepts. Per the `VaultToml` struct at [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs), the required fields are: `format_version` (u16, must = `FORMAT_VERSION` = 1), `suite_id` (u16, must = `SUITE_ID` = 1), `vault_uuid` (16-byte UUID in 8-4-4-4-12 hex form), `created_at_ms` (u64), and a `[kdf]` section with `algorithm = "argon2id"`, `version = "1.3"`, `memory_kib`, `iterations`, `parallelism`, `salt_b64` (base64 of 32 bytes).
 
 ```toml
-schema_version = 1
+format_version = 1
+suite_id = 1
 vault_uuid = "00000000-0000-0000-0000-000000000000"
-suite = "v1"
+created_at_ms = 1714060800000
+
+[kdf]
+algorithm = "argon2id"
+version = "1.3"
+memory_kib = 65536
+iterations = 3
+parallelism = 1
+salt_b64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 ```
 
-(If the struct has more required fields, add them. The point is: smallest accepted input.)
+(`AAAA...AAAA=` is the base64 of 32 zero bytes. Verify by `python -c 'import base64; print(len(base64.b64decode("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")))'` — should print `32`.)
+
+If the struct gains required fields after the plan was written, the implementer should re-read [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs) and adjust accordingly. The point is: smallest accepted input.
 
 - [ ] **Step 5: Create an empty seed**
 
