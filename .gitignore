@@ -231,3 +231,8 @@ __marimo__/
 .claude/settings.local.json
 .claude/skills/
 
+# Git worktrees — isolated per-feature branches live under .worktrees/
+# (skill: superpowers:using-git-worktrees). Each worktree is its own
+# branch checkout; the directory should not appear in main's tree.
+.worktrees/
+
