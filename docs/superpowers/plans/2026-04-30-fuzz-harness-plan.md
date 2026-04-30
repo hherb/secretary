@@ -275,7 +275,10 @@ use std::path::PathBuf;
 use secretary_core::vault::record::{self, Record /*, plus exact item types from the module */};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir: PathBuf = ["core", "fuzz", "seeds", "record"].iter().collect();
+    // Anchor on CARGO_MANIFEST_DIR (set by Cargo at compile time to the
+    // package root, i.e. `core/`) so the example produces correct output
+    // regardless of the working directory it was invoked from.
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/record");
     fs::create_dir_all(&out_dir)?;
 
     // ──────────────────────────────────────────────────────────────────────
@@ -826,7 +829,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn replay_dir<F: Fn(&[u8])>(target: &str, decoder: F) {
-    let dir: PathBuf = ["tests", "data", "fuzz_regressions", target].iter().collect();
+    // CARGO_MANIFEST_DIR resolves to `core/` at compile time. Anchoring on it
+    // makes the test cwd-independent (cargo test sets cwd to the package root
+    // by default, but explicit anchoring removes that as a hidden requirement).
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/fuzz_regressions")
+        .join(target);
     for entry in fs::read_dir(&dir).expect("regression dir exists") {
         let entry = entry.expect("readable dir entry");
         let path = entry.path();
@@ -989,19 +997,23 @@ const TARGETS: &[&str] = &[
 ];
 
 fn corpus_dirs(target: &str) -> Vec<PathBuf> {
+    // CARGO_MANIFEST_DIR resolves to `core/` at compile time, so all paths
+    // below are anchored on the secretary-core package root regardless of
+    // the working directory the test was invoked from.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut dirs = vec![];
     // Runtime corpus (gitignored, may not exist locally).
-    let runtime: PathBuf = ["..", "core", "fuzz", "corpus", target].iter().collect();
+    let runtime = manifest.join("fuzz/corpus").join(target);
     if runtime.is_dir() {
         dirs.push(runtime);
     }
     // Committed seeds (always present).
-    let seeds: PathBuf = ["..", "core", "fuzz", "seeds", target].iter().collect();
+    let seeds = manifest.join("fuzz/seeds").join(target);
     if seeds.is_dir() {
         dirs.push(seeds);
     }
     // Committed diff regressions.
-    let diffs: PathBuf = ["tests", "data", "diff_regressions", target].iter().collect();
+    let diffs = manifest.join("tests/data/diff_regressions").join(target);
     if diffs.is_dir() {
         dirs.push(diffs);
     }
