@@ -91,3 +91,45 @@ test = false
     def test_malformed_toml_raises(self):
         with pytest.raises(Exception):  # tomllib.TOMLDecodeError
             parse_targets("[[bin\nname = 'unclosed")
+
+
+from monitor import check_plateau
+
+
+class TestCheckPlateau:
+    @staticmethod
+    def _pulse(cov: int, corp: int, exec_count: int = 1000) -> Pulse:
+        return Pulse(exec_count=exec_count, cov=cov, ft=cov * 2, corp=corp, exec_s=50000, rss=128)
+
+    def test_empty_window_returns_false(self):
+        assert check_plateau([], k=10) is False
+
+    def test_window_shorter_than_k_returns_false(self):
+        window = [self._pulse(100, 5) for _ in range(5)]
+        assert check_plateau(window, k=10) is False
+
+    def test_full_window_all_equal_returns_true(self):
+        window = [self._pulse(100, 5) for _ in range(10)]
+        assert check_plateau(window, k=10) is True
+
+    def test_full_window_cov_changed_at_end_returns_false(self):
+        window = [self._pulse(100, 5) for _ in range(9)] + [self._pulse(101, 5)]
+        assert check_plateau(window, k=10) is False
+
+    def test_full_window_corp_changed_in_middle_returns_false(self):
+        window = (
+            [self._pulse(100, 5) for _ in range(4)]
+            + [self._pulse(100, 6)]
+            + [self._pulse(100, 6) for _ in range(5)]
+        )
+        assert check_plateau(window, k=10) is False
+
+    def test_window_longer_than_k_uses_last_k(self):
+        # First entry has different cov; last K=5 are all equal
+        window = [self._pulse(99, 5)] + [self._pulse(100, 5) for _ in range(5)]
+        assert check_plateau(window, k=5) is True
+
+    def test_k_one_always_true_with_one_pulse(self):
+        # Trivial case: K=1 means "no growth in last 1 pulse" — always trivially true.
+        window = [self._pulse(100, 5)]
+        assert check_plateau(window, k=1) is True

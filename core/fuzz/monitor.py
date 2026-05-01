@@ -81,6 +81,21 @@ def parse_targets(cargo_toml_text: str) -> list[str]:
     return [b["name"] for b in bins if "name" in b]
 
 
+def check_plateau(window: list[Pulse], k: int) -> bool:
+    """True when the last `k` pulses all share the same cov AND corp.
+
+    Returns False when len(window) < k. The plateau definition is
+    "no growth in cov AND no growth in corp across the last k pulses",
+    matching the spec's hardware-independent stop signal.
+    """
+    if len(window) < k:
+        return False
+    last_k = window[-k:]
+    cov0 = last_k[0].cov
+    corp0 = last_k[0].corp
+    return all(p.cov == cov0 and p.corp == corp0 for p in last_k)
+
+
 def main() -> None:
     """Entry point. Real implementation arrives in Task 9."""
     print("monitor scaffold OK")
