@@ -74,10 +74,12 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import hmac
 import json
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -2440,11 +2442,733 @@ def section5_unknown_map_case_insensitivity() -> tuple[bool, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Differential-replay helpers (--diff-replay mode)
+# ---------------------------------------------------------------------------
+# Each py_decode_<target> / py_encode_<target> pair implements a strict
+# clean-room decoder/encoder that mirrors the Rust side's accept/reject
+# behaviour and byte-identical canonical re-encoding output.  They are
+# called by run_diff_replay() when the script is invoked as:
+#
+#   uv run conformance.py --diff-replay <target> <input-path>
+#
+# and also available as library helpers for future test sections.
+
+
+def _validate_uuid_canonical(s: str) -> bytes:
+    """Parse and validate a canonical RFC 4122 UUID string.
+
+    Requires exactly 36 bytes, hyphens at indices 8/13/18/23, and every
+    other character must be a lowercase hex digit (0-9 or a-f).
+    Mirrors vault_toml.rs::parse_uuid_canonical.
+
+    Raises ValueError on any violation.
+    """
+    if len(s) != 36:
+        raise ValueError(f"uuid string length {len(s)}, expected 36")
+    for i in (8, 13, 18, 23):
+        if s[i] != '-':
+            raise ValueError(f"uuid missing hyphen at position {i}: {s!r}")
+    pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    if not pattern.match(s):
+        raise ValueError(f"uuid contains non-lowercase-hex chars: {s!r}")
+    return bytes.fromhex(s.replace('-', ''))
+
+
+def py_decode_vault_toml(text: str) -> dict:
+    """Strict §2 vault.toml decoder matching vault_toml.rs::decode.
+
+    Validates:
+    - format_version == 1
+    - suite_id == 1
+    - vault_uuid: canonical lowercase hyphenated RFC 4122 form (rejects
+      uppercase and non-standard separators)
+    - created_at_ms: non-negative integer
+    - [kdf]: algorithm == "argon2id", version == "1.3", no unknown keys,
+      salt_b64 decodes to exactly 32 bytes.
+
+    Returns the parsed fields as a dict. Raises on any violation.
+    """
+    data = tomllib.loads(text)
+
+    # format_version
+    fv = data.get("format_version")
+    if not isinstance(fv, int) or fv != 1:
+        raise ValueError(f"vault.toml format_version {fv!r}")
+
+    # suite_id
+    si = data.get("suite_id")
+    if not isinstance(si, int) or si != 1:
+        raise ValueError(f"vault.toml suite_id {si!r}")
+
+    # vault_uuid — strict canonical form (lowercase hex, exact hyphens)
+    vault_uuid_str = data.get("vault_uuid")
+    if not isinstance(vault_uuid_str, str):
+        raise ValueError("vault.toml vault_uuid missing or wrong type")
+    vault_uuid = _validate_uuid_canonical(vault_uuid_str)
+
+    # created_at_ms — must be a non-negative integer
+    cat = data.get("created_at_ms")
+    if not isinstance(cat, int) or cat < 0:
+        raise ValueError(f"vault.toml created_at_ms {cat!r}")
+
+    # [kdf] section — strict: no unknown keys
+    kdf = data.get("kdf")
+    if not isinstance(kdf, dict):
+        raise ValueError("vault.toml missing [kdf] section")
+
+    KNOWN_KDF_KEYS = {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
+    for k in kdf:
+        if k not in KNOWN_KDF_KEYS:
+            raise ValueError(f"vault.toml unknown kdf key: {k!r}")
+
+    alg = kdf.get("algorithm")
+    if alg != "argon2id":
+        raise ValueError(f"vault.toml kdf.algorithm {alg!r}")
+
+    ver = kdf.get("version")
+    if ver != "1.3":
+        raise ValueError(f"vault.toml kdf.version {ver!r}")
+
+    mem_kib = kdf.get("memory_kib")
+    if not isinstance(mem_kib, int) or mem_kib < 0 or mem_kib > 0xFFFFFFFF:
+        raise ValueError(f"vault.toml kdf.memory_kib {mem_kib!r}")
+
+    iters = kdf.get("iterations")
+    if not isinstance(iters, int) or iters < 0 or iters > 0xFFFFFFFF:
+        raise ValueError(f"vault.toml kdf.iterations {iters!r}")
+
+    par = kdf.get("parallelism")
+    if not isinstance(par, int) or par < 0 or par > 0xFFFFFFFF:
+        raise ValueError(f"vault.toml kdf.parallelism {par!r}")
+
+    salt_b64_str = kdf.get("salt_b64")
+    if not isinstance(salt_b64_str, str):
+        raise ValueError("vault.toml kdf.salt_b64 missing")
+    salt = base64.b64decode(salt_b64_str)
+    if len(salt) != 32:
+        raise ValueError(f"vault.toml kdf salt length {len(salt)} (expected 32)")
+
+    return {
+        "format_version": fv,
+        "suite_id": si,
+        "vault_uuid": vault_uuid,
+        "created_at_ms": cat,
+        "kdf": {
+            "algorithm": alg,
+            "version": ver,
+            "memory_kib": mem_kib,
+            "iterations": iters,
+            "parallelism": par,
+            "salt": salt,
+        },
+    }
+
+
+def py_decode_record(data: bytes) -> dict:
+    """Strict §6.3 canonical-CBOR record decoder matching record.rs::decode.
+
+    Validates:
+    - Top-level item is a CBOR map with text-string keys.
+    - No floats, no CBOR tags anywhere in the tree.
+    - No duplicate keys at any level.
+    - Required fields: record_uuid (16-byte bstr), record_type (tstr),
+      fields (map), created_at_ms (uint), last_mod_ms (uint).
+    - Optional: tags (array of tstr), tombstone (bool), tombstoned_at_ms (uint).
+    - Input is already canonical (re-encode == input).
+
+    Returns a dict of parsed fields. Raises on any violation.
+    """
+    import cbor2
+
+    # cbor2's decoder does not reject floats/tags by default; we check manually.
+    try:
+        decoded = cbor2.loads(data)
+    except cbor2.CBORDecodeError as e:
+        raise ValueError(f"record CBOR decode: {e}") from e
+
+    _reject_floats_and_tags_py(decoded)
+
+    if not isinstance(decoded, dict):
+        raise ValueError("record top-level CBOR is not a map")
+
+    # Check for duplicate keys: cbor2 silently overwrites on duplicate,
+    # so we need the raw map. Re-parse with object_pairs_hook to detect dups.
+    _check_no_duplicate_keys(data)
+
+    # Required fields
+    REQUIRED = {"record_uuid", "record_type", "fields", "created_at_ms", "last_mod_ms"}
+    for f in REQUIRED:
+        if f not in decoded:
+            raise KeyError(f"record missing required field: {f!r}")
+
+    rec_uuid = decoded["record_uuid"]
+    if not isinstance(rec_uuid, bytes) or len(rec_uuid) != 16:
+        raise ValueError(f"record_uuid must be 16-byte bstr, got {type(rec_uuid).__name__}")
+
+    rec_type = decoded["record_type"]
+    if not isinstance(rec_type, str):
+        raise ValueError("record_type must be tstr")
+
+    fields_val = decoded["fields"]
+    if not isinstance(fields_val, dict):
+        raise ValueError("record fields must be a map")
+    # Validate each field sub-map
+    for fname, fval in fields_val.items():
+        if not isinstance(fname, str):
+            raise ValueError(f"record fields key must be tstr, got {type(fname).__name__}")
+        if not isinstance(fval, dict):
+            raise ValueError(f"record field {fname!r} must be a map")
+        _validate_record_field(fname, fval)
+
+    cat = decoded["created_at_ms"]
+    if not isinstance(cat, int) or cat < 0:
+        raise ValueError(f"created_at_ms must be uint, got {cat!r}")
+
+    lmm = decoded["last_mod_ms"]
+    if not isinstance(lmm, int) or lmm < 0:
+        raise ValueError(f"last_mod_ms must be uint, got {lmm!r}")
+
+    # Optional: tags
+    if "tags" in decoded:
+        tags_val = decoded["tags"]
+        if not isinstance(tags_val, list):
+            raise ValueError("record tags must be array")
+        for t in tags_val:
+            if not isinstance(t, str):
+                raise ValueError("record tags entries must be tstr")
+
+    # Optional: tombstone
+    if "tombstone" in decoded:
+        if not isinstance(decoded["tombstone"], bool):
+            raise ValueError("record tombstone must be bool")
+
+    # Optional: tombstoned_at_ms
+    if "tombstoned_at_ms" in decoded:
+        tam = decoded["tombstoned_at_ms"]
+        if not isinstance(tam, int) or tam < 0:
+            raise ValueError(f"tombstoned_at_ms must be uint, got {tam!r}")
+
+    # Canonical-input check: re-encode and compare
+    reencoded = py_encode_record(decoded)
+    if reencoded != data:
+        raise ValueError("record is not in canonical CBOR form")
+
+    return decoded
+
+
+def _validate_record_field(fname: str, fval: dict) -> None:
+    """Validate a single §6.3 RecordField sub-map."""
+    REQUIRED_FIELD_KEYS = {"value", "last_mod", "device_uuid"}
+    for k in REQUIRED_FIELD_KEYS:
+        if k not in fval:
+            raise KeyError(f"record field {fname!r} missing {k!r}")
+    v = fval["value"]
+    if not isinstance(v, (str, bytes)):
+        raise ValueError(f"field {fname!r} value must be tstr or bstr")
+    lm = fval["last_mod"]
+    if not isinstance(lm, int) or lm < 0:
+        raise ValueError(f"field {fname!r} last_mod must be uint")
+    du = fval["device_uuid"]
+    if not isinstance(du, bytes) or len(du) != 16:
+        raise ValueError(f"field {fname!r} device_uuid must be 16-byte bstr")
+
+
+def _reject_floats_and_tags_py(v: Any) -> None:
+    """Walk a cbor2-decoded value tree and raise on float or CBOR tag.
+
+    Mirrors vault::canonical::reject_floats_and_tags.
+    """
+    import cbor2
+    if isinstance(v, float):
+        raise ValueError("float values are not permitted")
+    if isinstance(v, cbor2.CBORTag):
+        raise ValueError("CBOR tags are not permitted")
+    if isinstance(v, dict):
+        for k, val in v.items():
+            _reject_floats_and_tags_py(k)
+            _reject_floats_and_tags_py(val)
+    elif isinstance(v, list):
+        for item in v:
+            _reject_floats_and_tags_py(item)
+
+
+def _check_no_duplicate_keys(data: bytes) -> None:
+    """Detect duplicate CBOR map keys at any level.
+
+    cbor2 does not expose an object_pairs_hook; we use its object_hook
+    callback which fires after each map is decoded but receives the final
+    dict (already de-duplicated).  Instead we rely on the canonical
+    re-encode check at the end of each decoder: if the input had duplicate
+    keys cbor2 would collapse them, producing a shorter map on re-encode,
+    which fails the bytes-equal comparison.  So this function is a no-op
+    and the canonical-input invariant provides the protection.
+    """
+    pass
+
+
+def py_encode_record(record: dict) -> bytes:
+    """Re-encode a parsed record dict to canonical CBOR.
+
+    The encoder must produce byte-identical output to record.rs::encode.
+    Encoding rules:
+    - Top-level map: canonical key sort.
+    - Empty tags list: omit from encoding.
+    - tombstone == False: omit from encoding.
+    - tombstoned_at_ms == 0: omit from encoding.
+    - Each field sub-map also encoded canonically.
+    """
+    entries: list[tuple[Any, Any]] = []
+
+    entries.append(("record_uuid", record["record_uuid"]))
+    entries.append(("record_type", record["record_type"]))
+
+    # Encode fields map: each field is a canonical sub-map
+    fields_entries: list[tuple[Any, Any]] = []
+    for fname, fval in record["fields"].items():
+        field_entries: list[tuple[Any, Any]] = [
+            ("value", fval["value"]),
+            ("last_mod", fval["last_mod"]),
+            ("device_uuid", fval["device_uuid"]),
+        ]
+        # Forward-compat unknown field-level keys
+        for k, v in fval.items():
+            if k not in ("value", "last_mod", "device_uuid"):
+                field_entries.append((k, v))
+        fields_entries.append((fname, _encode_canonical_map_cbor(field_entries)))
+
+    # fields outer map: each value is already an encoded bytes blob, but we
+    # need a CBOR map-of-maps, not map-of-bytestrings. We build the entries
+    # as (fname, decoded-sub-dict) so encode_canonical_map recurses correctly.
+    # Actually: encode_canonical_map expects python objects. We need to keep
+    # the sub-maps as dicts. Rebuild:
+    fields_dict_entries: list[tuple[Any, Any]] = []
+    for fname, fval in record["fields"].items():
+        field_sub: dict = {"value": fval["value"], "last_mod": fval["last_mod"],
+                           "device_uuid": fval["device_uuid"]}
+        for k, v in fval.items():
+            if k not in ("value", "last_mod", "device_uuid"):
+                field_sub[k] = v
+        fields_dict_entries.append((fname, field_sub))
+
+    # Sort field names canonically, then build sorted sub-dicts
+    import cbor2
+    sorted_fields = sorted(fields_dict_entries, key=lambda kv: cbor2.dumps(kv[0], canonical=True))
+    # Build fields value: a sorted dict of sorted dicts
+    outer_fields: dict = {}
+    for fname, fval in sorted_fields:
+        sub_sorted = sorted(fval.items(), key=lambda kv: cbor2.dumps(kv[0], canonical=True))
+        outer_fields[fname] = dict(sub_sorted)
+
+    entries.append(("fields", outer_fields))
+
+    # Optional: tags (omit if empty)
+    tags = record.get("tags", [])
+    if tags:
+        entries.append(("tags", tags))
+
+    entries.append(("created_at_ms", record["created_at_ms"]))
+    entries.append(("last_mod_ms", record["last_mod_ms"]))
+
+    # Optional: tombstone (omit if False)
+    if record.get("tombstone", False):
+        entries.append(("tombstone", True))
+
+    # Optional: tombstoned_at_ms (omit if 0)
+    if record.get("tombstoned_at_ms", 0) != 0:
+        entries.append(("tombstoned_at_ms", record["tombstoned_at_ms"]))
+
+    # Forward-compat unknown top-level keys
+    KNOWN_KEYS = {"record_uuid", "record_type", "fields", "tags", "created_at_ms",
+                  "last_mod_ms", "tombstone", "tombstoned_at_ms"}
+    for k, v in record.items():
+        if k not in KNOWN_KEYS:
+            entries.append((k, v))
+
+    return encode_canonical_map(entries)
+
+
+def _encode_canonical_map_cbor(entries: list[tuple[Any, Any]]) -> bytes:
+    """Helper: encode entries as a canonical CBOR map (bytes output)."""
+    return encode_canonical_map(entries)
+
+
+def py_decode_contact_card(data: bytes) -> dict:
+    """Strict §6 contact card decoder matching card.rs::from_canonical_cbor.
+
+    Validates:
+    - Top-level item is a CBOR map with text-string keys.
+    - No unknown keys (card.rs returns CborDecode error on unknown fields).
+    - Required fields: card_version (uint == 1), contact_uuid (16-byte bstr),
+      display_name (tstr), x25519_pk (32-byte bstr), ml_kem_768_pk (1184-byte bstr),
+      ed25519_pk (32-byte bstr), ml_dsa_65_pk (1952-byte bstr), created_at (uint),
+      self_sig_ed (64-byte bstr), self_sig_pq (3309-byte bstr).
+    - Input is already canonical (re-encode == input).
+
+    Does NOT verify self-signatures (matching from_canonical_cbor which
+    separates parsing from signature verification).
+    Returns the decoded dict. Raises on any violation.
+    """
+    import cbor2
+
+    try:
+        decoded = cbor2.loads(data)
+    except cbor2.CBORDecodeError as e:
+        raise ValueError(f"contact_card CBOR decode: {e}") from e
+
+    if not isinstance(decoded, dict):
+        raise ValueError("contact_card top-level CBOR is not a map")
+
+    # Detect duplicate keys
+    _check_no_duplicate_keys(data)
+
+    KNOWN_CARD_KEYS = {
+        "card_version", "contact_uuid", "display_name", "x25519_pk",
+        "ml_kem_768_pk", "ed25519_pk", "ml_dsa_65_pk", "created_at",
+        "self_sig_ed", "self_sig_pq",
+    }
+    for k in decoded:
+        if k not in KNOWN_CARD_KEYS:
+            raise ValueError(f"contact_card unknown field: {k!r}")
+
+    REQUIRED_CARD_FIELDS = KNOWN_CARD_KEYS  # all 10 are required
+    for f in REQUIRED_CARD_FIELDS:
+        if f not in decoded:
+            raise KeyError(f"contact_card missing required field: {f!r}")
+
+    cv = decoded["card_version"]
+    if not isinstance(cv, int) or cv != 1:
+        raise ValueError(f"card_version must be 1, got {cv!r}")
+
+    cu = decoded["contact_uuid"]
+    if not isinstance(cu, bytes) or len(cu) != 16:
+        raise ValueError("contact_uuid must be 16-byte bstr")
+
+    dn = decoded["display_name"]
+    if not isinstance(dn, str):
+        raise ValueError("display_name must be tstr")
+
+    x25519 = decoded["x25519_pk"]
+    if not isinstance(x25519, bytes) or len(x25519) != 32:
+        raise ValueError("x25519_pk must be 32-byte bstr")
+
+    mlkem = decoded["ml_kem_768_pk"]
+    if not isinstance(mlkem, bytes) or len(mlkem) != 1184:
+        raise ValueError(f"ml_kem_768_pk must be 1184-byte bstr, got {len(mlkem) if isinstance(mlkem, bytes) else type(mlkem).__name__}")
+
+    ed = decoded["ed25519_pk"]
+    if not isinstance(ed, bytes) or len(ed) != 32:
+        raise ValueError("ed25519_pk must be 32-byte bstr")
+
+    mldsa = decoded["ml_dsa_65_pk"]
+    if not isinstance(mldsa, bytes) or len(mldsa) != 1952:
+        raise ValueError(f"ml_dsa_65_pk must be 1952-byte bstr, got {len(mldsa) if isinstance(mldsa, bytes) else type(mldsa).__name__}")
+
+    cat = decoded["created_at"]
+    if not isinstance(cat, int) or cat < 0:
+        raise ValueError(f"created_at must be uint, got {cat!r}")
+
+    sig_ed = decoded["self_sig_ed"]
+    if not isinstance(sig_ed, bytes) or len(sig_ed) != 64:
+        raise ValueError("self_sig_ed must be 64-byte bstr")
+
+    sig_pq = decoded["self_sig_pq"]
+    if not isinstance(sig_pq, bytes) or len(sig_pq) != 3309:
+        raise ValueError(f"self_sig_pq must be 3309-byte bstr, got {len(sig_pq) if isinstance(sig_pq, bytes) else type(sig_pq).__name__}")
+
+    # Canonical-input check
+    reencoded = py_encode_contact_card(decoded)
+    if reencoded != data:
+        raise ValueError("contact_card is not in canonical CBOR form")
+
+    return decoded
+
+
+def py_encode_contact_card(card: dict) -> bytes:
+    """Re-encode a parsed contact card dict to canonical CBOR.
+
+    Mirrors card.rs::to_canonical_cbor: all 10 fields in a canonical map.
+    Field order in the entry list doesn't matter; encode_canonical_map
+    sorts by encoded key bytes.
+    """
+    entries: list[tuple[Any, Any]] = [
+        ("card_version", card["card_version"]),
+        ("contact_uuid", card["contact_uuid"]),
+        ("display_name", card["display_name"]),
+        ("x25519_pk", card["x25519_pk"]),
+        ("ml_kem_768_pk", card["ml_kem_768_pk"]),
+        ("ed25519_pk", card["ed25519_pk"]),
+        ("ml_dsa_65_pk", card["ml_dsa_65_pk"]),
+        ("created_at", card["created_at"]),
+        ("self_sig_ed", card["self_sig_ed"]),
+        ("self_sig_pq", card["self_sig_pq"]),
+    ]
+    return encode_canonical_map(entries)
+
+
+def py_decode_bundle_file(data: bytes) -> dict:
+    """Strict §3 bundle file decoder matching bundle_file.rs::decode.
+
+    Returns a dict with the parsed fields. Raises on any violation.
+    """
+    return vars(parse_identity_bundle_envelope(data))
+
+
+def py_encode_bundle_file(parsed: dict) -> bytes:
+    """Re-encode a parsed bundle file dict to its §3 binary form.
+
+    Mirrors bundle_file.rs::encode exactly (big-endian throughout).
+    """
+    vault_uuid = parsed["vault_uuid"]
+    created_at_ms = parsed["created_at_ms"]
+    wrap_pw_nonce = parsed["wrap_pw_nonce"]
+    wrap_pw_ct_with_tag = parsed["wrap_pw_ct_with_tag"]
+    wrap_rec_nonce = parsed["wrap_rec_nonce"]
+    wrap_rec_ct_with_tag = parsed["wrap_rec_ct_with_tag"]
+    bundle_nonce = parsed["bundle_nonce"]
+    bundle_ct_with_tag = parsed["bundle_ct_with_tag"]
+
+    out = bytearray()
+    out += MAGIC.to_bytes(4, "big")
+    out += FORMAT_VERSION.to_bytes(2, "big")
+    out += FILE_KIND_IDENTITY_BUNDLE.to_bytes(2, "big")
+    out += vault_uuid
+    out += created_at_ms.to_bytes(8, "big")
+
+    out += wrap_pw_nonce
+    out += (32).to_bytes(4, "big")           # wrap_pw_ct_len == 32 always
+    out += wrap_pw_ct_with_tag
+
+    out += wrap_rec_nonce
+    out += (32).to_bytes(4, "big")           # wrap_rec_ct_len == 32 always
+    out += wrap_rec_ct_with_tag
+
+    out += bundle_nonce
+    bundle_ct_len = len(bundle_ct_with_tag) - 16   # exclude the 16-byte tag
+    out += bundle_ct_len.to_bytes(4, "big")
+    out += bundle_ct_with_tag
+
+    return bytes(out)
+
+
+def py_decode_manifest_file(data: bytes) -> dict:
+    """Strict §4.1 manifest file decoder matching manifest.rs::decode_manifest_file.
+
+    Returns a dict with the parsed fields. Raises on any violation.
+    """
+    mf = parse_manifest_file(data)
+    return {
+        "vault_uuid": mf.vault_uuid,
+        "created_at_ms": mf.created_at_ms,
+        "last_mod_ms": mf.last_mod_ms,
+        "aead_nonce": mf.aead_nonce,
+        "aead_ct": mf.aead_ct,
+        "aead_tag": mf.aead_tag,
+        "author_fingerprint": mf.author_fingerprint,
+        "sig_ed": mf.sig_ed,
+        "sig_pq": mf.sig_pq,
+        "raw_bytes": mf.raw_bytes,
+    }
+
+
+def py_encode_manifest_file(parsed: dict) -> bytes:
+    """Re-encode a parsed manifest file dict to its §4.1 binary form.
+
+    Mirrors manifest.rs::encode_manifest_file exactly.
+    """
+    vault_uuid = parsed["vault_uuid"]
+    created_at_ms = parsed["created_at_ms"]
+    last_mod_ms = parsed["last_mod_ms"]
+    aead_nonce = parsed["aead_nonce"]
+    aead_ct = parsed["aead_ct"]
+    aead_tag = parsed["aead_tag"]
+    author_fingerprint = parsed["author_fingerprint"]
+    sig_ed = parsed["sig_ed"]
+    sig_pq = parsed["sig_pq"]
+
+    out = bytearray()
+    # Header (MANIFEST_HEADER_LEN = 42 bytes):
+    # magic(4) + format_version(2) + suite_id(2) + file_kind(2) +
+    # vault_uuid(16) + created_at_ms(8) + last_mod_ms(8)
+    out += MAGIC.to_bytes(4, "big")
+    out += FORMAT_VERSION.to_bytes(2, "big")
+    out += SUITE_ID.to_bytes(2, "big")
+    out += FILE_KIND_MANIFEST.to_bytes(2, "big")
+    out += vault_uuid
+    out += created_at_ms.to_bytes(8, "big")
+    out += last_mod_ms.to_bytes(8, "big")
+
+    out += aead_nonce
+    out += len(aead_ct).to_bytes(4, "big")
+    out += aead_ct
+    out += aead_tag
+    out += author_fingerprint
+    out += ED25519_SIG_LEN.to_bytes(2, "big")
+    out += sig_ed
+    out += ML_DSA_65_SIG_LEN.to_bytes(2, "big")
+    out += sig_pq
+
+    return bytes(out)
+
+
+def py_decode_block_file(data: bytes) -> dict:
+    """Strict §6.1 block file decoder matching block.rs::decode_block_file.
+
+    Returns a dict with the parsed fields. Raises on any violation.
+    """
+    pf = parse_block_file(data)
+    return {
+        "header": pf.header,
+        "recipients": pf.recipients,
+        "aead": pf.aead,
+        "signature": pf.signature,
+    }
+
+
+def py_encode_block_file(parsed: dict) -> bytes:
+    """Re-encode a parsed block file dict to its §6.1 binary form.
+
+    Mirrors block.rs::encode_block_file exactly.
+    """
+    header: BlockHeader = parsed["header"]
+    recipients: list[RecipientEntry] = parsed["recipients"]
+    aead: AeadSection = parsed["aead"]
+    sig: SignatureSuffix = parsed["signature"]
+
+    out = bytearray()
+
+    # Header
+    out += header.magic.to_bytes(4, "big")
+    out += header.format_version.to_bytes(2, "big")
+    out += header.suite_id.to_bytes(2, "big")
+    out += header.file_kind.to_bytes(2, "big")
+    out += header.vault_uuid
+    out += header.block_uuid
+    out += header.created_at_ms.to_bytes(8, "big")
+    out += header.last_mod_ms.to_bytes(8, "big")
+    out += len(header.vector_clock).to_bytes(2, "big")
+    for vc in header.vector_clock:
+        out += vc.device_uuid
+        out += vc.counter.to_bytes(8, "big")
+
+    # Recipient table
+    out += len(recipients).to_bytes(2, "big")
+    for r in recipients:
+        out += r.fingerprint
+        out += r.ct_x
+        out += r.ct_pq
+        out += r.nonce_w
+        out += r.ct_w
+
+    # AEAD section
+    out += aead.nonce
+    out += len(aead.ct).to_bytes(4, "big")
+    out += aead.ct
+    out += aead.tag
+
+    # Signature suffix
+    out += sig.author_fingerprint
+    out += ED25519_SIG_LEN.to_bytes(2, "big")
+    out += sig.sig_ed
+    out += ML_DSA_65_SIG_LEN.to_bytes(2, "big")
+    out += sig.sig_pq
+
+    return bytes(out)
+
+
+def run_diff_replay(target: str, input_path: str) -> int:
+    """Differential replay one input through the Python decoder for `target`.
+
+    Output (always to stdout, single line of JSON):
+      {"status": "accept", "reencoded_b64": "..."}    # for non-TOML targets
+      {"status": "accept", "reencoded_b64": ""}       # for vault_toml (no roundtrip)
+      {"status": "reject", "error_class": "..."}
+
+    Exit code: always 0 for accept|reject; nonzero only for unrecoverable
+    script errors (e.g. unknown target).
+    """
+    try:
+        with open(input_path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        print(json.dumps({"status": "reject", "error_class": f"io: {type(e).__name__}"}))
+        return 0
+
+    try:
+        if target == "vault_toml":
+            # Crash-only target. Try to UTF-8 decode and parse.
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise e
+            py_decode_vault_toml(text)
+            print(json.dumps({"status": "accept", "reencoded_b64": ""}))
+            return 0
+        elif target == "record":
+            parsed = py_decode_record(data)
+            reencoded = py_encode_record(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
+        elif target == "contact_card":
+            parsed = py_decode_contact_card(data)
+            reencoded = py_encode_contact_card(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
+        elif target == "bundle_file":
+            parsed = py_decode_bundle_file(data)
+            reencoded = py_encode_bundle_file(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
+        elif target == "manifest_file":
+            parsed = py_decode_manifest_file(data)
+            reencoded = py_encode_manifest_file(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
+        elif target == "block_file":
+            parsed = py_decode_block_file(data)
+            reencoded = py_encode_block_file(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
+        else:
+            print(json.dumps({"status": "reject", "error_class": f"unknown target {target}"}))
+            return 0
+    except Exception as e:
+        print(json.dumps({"status": "reject", "error_class": type(e).__name__}))
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Combined entry point
 # ---------------------------------------------------------------------------
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument(
+        "--diff-replay",
+        nargs=2,
+        metavar=("TARGET", "INPUT_PATH"),
+        help="differential replay mode: decode one input file for one target, emit JSON",
+    )
+    args, _ = parser.parse_known_args()
+    if args.diff_replay:
+        target, input_path = args.diff_replay
+        return run_diff_replay(target, input_path)
+
     section1_ok, section1_lines = section1_block_kat()
     for ln in section1_lines:
         print(ln)

@@ -1,0 +1,5 @@
+# Runtime corpus and artifacts — gitignored. Seeds (committed) live in seeds/.
+corpus/
+artifacts/
+target/
+.monitor-state.json
