@@ -238,3 +238,28 @@ class TestParseRunsCap:
             parse_runs_cap("abc")
         with pytest.raises(ValueError):
             parse_runs_cap("1.5")
+
+
+from monitor import RunState, Status
+
+
+class TestRunState:
+    def test_default_state(self):
+        rs = RunState(target="vault_toml", sanitizer="asan")
+        assert rs.status == Status.IDLE
+        assert rs.runs_cap is None
+        assert rs.crash_path is None
+        assert len(rs.pulses) == 0
+        assert len(rs.log_tail) == 0
+
+    def test_pulses_bounded(self):
+        rs = RunState(target="vault_toml", sanitizer="asan")
+        for i in range(100):
+            rs.pulses.append(Pulse(exec_count=i, cov=0, ft=0, corp=0, exec_s=0, rss=0))
+        assert len(rs.pulses) == 64  # maxlen=64
+
+    def test_log_tail_bounded(self):
+        rs = RunState(target="vault_toml", sanitizer="asan")
+        for i in range(50):
+            rs.log_tail.append(f"line {i}")
+        assert len(rs.log_tail) == 20  # maxlen=20

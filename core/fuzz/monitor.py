@@ -12,7 +12,9 @@ See docs/superpowers/specs/2026-05-01-fuzz-monitor-design.md.
 
 from __future__ import annotations
 
+import enum
 import re
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -146,6 +148,47 @@ def parse_runs_cap(text: str) -> int | None:
     if n <= 0:
         raise ValueError(f"runs cap must be positive, got {n}")
     return n
+
+
+import enum
+from collections import deque
+
+
+class Status(enum.IntEnum):
+    """RunState lifecycle status — drives card badge color."""
+
+    IDLE = 0      # never run, or stopped cleanly with no telemetry
+    RUNNING = 1   # subprocess alive
+    PLATEAU = 2   # auto-stopped after plateau detection
+    CAP_REACHED = 3  # stopped because -runs cap fired before plateau
+    CRASHED = 4   # non-zero exit AND/OR new artifact in artifacts/<target>/
+    STOPPED = 5   # user-clicked Stop
+
+
+@dataclass
+class RunState:
+    """Per-(target, sanitizer) lifecycle state.
+
+    Mutated by start_run / stop_run / async stderr reader. Read by NiceGUI
+    rendering code via reactive bindings.
+    """
+
+    target: str
+    sanitizer: str  # 'asan' | 'ubsan'
+    status: Status = Status.IDLE
+    pulses: deque[Pulse] = None  # type: ignore[assignment]
+    log_tail: deque[str] = None  # type: ignore[assignment]
+    runs_cap: int | None = None
+    started_at: float = 0.0  # monotonic clock at subprocess spawn (for elapsed time)
+    started_at_wall: float = 0.0  # wall clock (for comparing against artifact file mtimes)
+    stop_reason: str | None = None
+    crash_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.pulses is None:
+            self.pulses = deque(maxlen=64)  # generous; actual K used by check_plateau is smaller
+        if self.log_tail is None:
+            self.log_tail = deque(maxlen=20)
 
 
 def main() -> None:
