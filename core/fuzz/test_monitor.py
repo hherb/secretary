@@ -317,3 +317,30 @@ class TestStatusBadgeClass:
             assert cls.startswith("text-"), (
                 f"{status.name} maps to {cls!r}, expected Quasar text-* class"
             )
+
+
+from monitor import format_pulse_readout
+
+
+class TestFormatPulseReadout:
+    """`pulses[-1]` rendered as a single readable line for the card body.
+    `None` (no pulses yet) renders as an em-dash so the user can tell
+    'no telemetry yet' apart from 'telemetry says zero'."""
+
+    def test_none_renders_em_dash(self):
+        # Distinguishes idle / pre-INITED from "telemetry says zero".
+        assert format_pulse_readout(None) == "—"
+
+    def test_typical_pulse(self):
+        p = Pulse(exec_count=1048576, cov=1247, ft=2891, corp=142, exec_s=58000, rss=124)
+        assert (
+            format_pulse_readout(p)
+            == "cov 1247 / ft 2891 / corp 142 / 58000 exec/s / 124 MB"
+        )
+
+    def test_zero_pulse_renders_zeros_not_dash(self):
+        # A real Pulse with all-zero counters (early INITED before first
+        # iteration) must render explicit zeros, not the em-dash. The em-dash
+        # is reserved for 'no Pulse at all'.
+        p = Pulse(exec_count=0, cov=0, ft=0, corp=0, exec_s=0, rss=0)
+        assert format_pulse_readout(p) == "cov 0 / ft 0 / corp 0 / 0 exec/s / 0 MB"

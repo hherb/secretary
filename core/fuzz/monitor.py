@@ -193,6 +193,21 @@ def status_badge_class(status: Status) -> str:
     return _STATUS_BADGE_CLASS[status]
 
 
+def format_pulse_readout(pulse: Pulse | None) -> str:
+    """Render the most recent libFuzzer pulse as a single readable line.
+
+    `None` (no pulses yet — idle, or the subprocess has spawned but
+    hasn't emitted INITED) renders as an em-dash so the user can tell
+    "no telemetry yet" apart from "telemetry says zero".
+    """
+    if pulse is None:
+        return "—"
+    return (
+        f"cov {pulse.cov} / ft {pulse.ft} / corp {pulse.corp} "
+        f"/ {pulse.exec_s} exec/s / {pulse.rss} MB"
+    )
+
+
 @dataclass
 class RunState:
     """Per-(target, sanitizer) lifecycle state.
@@ -415,6 +430,7 @@ class MonitorApp:
                 value=str(prefill) if prefill else "",
             ).props("dense")
             status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
+            pulse_label = ui.label(format_pulse_readout(None)).classes("text-mono text-sm")
             crash_label = ui.label("")  # filled in by reactive update
 
             # Single per-card 1 Hz tick that owns every reactive label on the
@@ -429,6 +445,9 @@ class MonitorApp:
                 # Replace, don't append — repeated appends would accumulate
                 # stale classes across status transitions.
                 status_label.classes(replace=status_badge_class(rs.status))
+                pulse_label.text = format_pulse_readout(
+                    rs.pulses[-1] if rs.pulses else None
+                )
                 if rs.status == Status.CRASHED and rs.crash_path:
                     crash_label.text = f"CRASH: {rs.crash_path}"
                     crash_label.classes("text-red-600")
