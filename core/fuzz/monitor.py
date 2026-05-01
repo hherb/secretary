@@ -67,6 +67,20 @@ def parse_pulse_line(line: str) -> Pulse | None:
     )
 
 
+import tomllib
+
+
+def parse_targets(cargo_toml_text: str) -> list[str]:
+    """Extract [[bin]] target names from a Cargo.toml string.
+
+    Returns the names in document order. Raises tomllib.TOMLDecodeError
+    on malformed input.
+    """
+    parsed = tomllib.loads(cargo_toml_text)
+    bins = parsed.get("bin", [])
+    return [b["name"] for b in bins if "name" in b]
+
+
 def main() -> None:
     """Entry point. Real implementation arrives in Task 9."""
     print("monitor scaffold OK")

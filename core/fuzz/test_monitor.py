@@ -48,3 +48,46 @@ class TestParsePulseLine:
     def test_malformed_line_returns_none(self):
         assert parse_pulse_line("#abc\tpulse cov: bad") is None
         assert parse_pulse_line("#100\tpulse cov: 5 corp: badformat") is None
+
+
+from monitor import parse_targets
+
+
+class TestParseTargets:
+    SAMPLE_CARGO_TOML = """\
+[workspace]
+
+[package]
+name = "secretary-core-fuzz"
+
+[[bin]]
+name = "vault_toml"
+path = "fuzz_targets/vault_toml.rs"
+test = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+"""
+
+    def test_extracts_two_targets(self):
+        names = parse_targets(self.SAMPLE_CARGO_TOML)
+        assert names == ["vault_toml", "record"]
+
+    def test_empty_cargo_toml(self):
+        assert parse_targets("[package]\nname = 'foo'\n") == []
+
+    def test_six_targets_in_order(self):
+        toml_text = "\n".join(
+            f'[[bin]]\nname = "{n}"\npath = "fuzz_targets/{n}.rs"\n'
+            for n in ["vault_toml", "record", "contact_card", "bundle_file", "manifest_file", "block_file"]
+        )
+        assert parse_targets(toml_text) == [
+            "vault_toml", "record", "contact_card",
+            "bundle_file", "manifest_file", "block_file",
+        ]
+
+    def test_malformed_toml_raises(self):
+        with pytest.raises(Exception):  # tomllib.TOMLDecodeError
+            parse_targets("[[bin\nname = 'unclosed")
