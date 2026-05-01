@@ -131,9 +131,12 @@ campaigns. Cross-language differential replay through the Python
 conformance script (`conformance.py --diff-replay`) is documented in
 [docs/manual/contributors/differential-replay-protocol.md](docs/manual/contributors/differential-replay-protocol.md).
 See the [`core/fuzz/README.md`](core/fuzz/README.md) for how to run
-it and how to promote findings into durable regression KATs; current
-findings under triage are tracked in
-[docs/TODO_FUZZ_FOLLOWUP.md](docs/TODO_FUZZ_FOLLOWUP.md).
+it and how to promote findings into durable regression KATs.
+Promoted regression inputs live under
+[`core/tests/data/fuzz_regressions/`](core/tests/data/fuzz_regressions/)
+and replay through
+[`core/tests/fuzz_regressions.rs`](core/tests/fuzz_regressions.rs)
+under the "must not panic" contract.
 
 ## License
 
