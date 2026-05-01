@@ -440,7 +440,13 @@ def main() -> None:
         targets = ["vault_toml", "record", "contact_card",
                    "bundle_file", "manifest_file", "block_file"]
     app = MonitorApp(targets)
-    app.render()
+
+    # Build UI per-session so ui.timer's lifecycle is bound to the page slot;
+    # on the auto-index page timers outlive client disconnect and crash.
+    @ui.page("/")
+    def index() -> None:
+        app.render()
+
     ui.run(port=8080, show=False, reload=False, title="Fuzz monitor")
 
 
