@@ -129,6 +129,25 @@ def build_subprocess_env(nightly_dir: Path, base_env: dict[str, str]) -> dict[st
     return env
 
 
+def parse_runs_cap(text: str) -> int | None:
+    """Parse the UI runs-cap input.
+
+    - Empty string (or whitespace) -> None (open-ended run).
+    - Underscore-separated digits ('5_000_000') -> int.
+    - Plain digits -> int.
+    - Anything else -> ValueError.
+    - Zero or negative -> ValueError.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    # int() accepts both '5000000' and '5_000_000' (PEP 515).
+    n = int(stripped)
+    if n <= 0:
+        raise ValueError(f"runs cap must be positive, got {n}")
+    return n
+
+
 def main() -> None:
     """Entry point. Real implementation arrives in Task 9."""
     print("monitor scaffold OK")

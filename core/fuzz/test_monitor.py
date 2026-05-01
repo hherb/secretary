@@ -205,3 +205,36 @@ class TestBuildSubprocessEnv:
         original = dict(base_env)
         build_subprocess_env(nightly_dir, base_env)
         assert base_env == original
+
+
+from monitor import parse_runs_cap
+
+
+class TestParseRunsCap:
+    def test_empty_returns_none(self):
+        assert parse_runs_cap("") is None
+        assert parse_runs_cap("   ") is None
+
+    def test_plain_integer(self):
+        assert parse_runs_cap("5000000") == 5_000_000
+
+    def test_underscore_separated(self):
+        assert parse_runs_cap("5_000_000") == 5_000_000
+        assert parse_runs_cap("1_000") == 1_000
+
+    def test_with_surrounding_whitespace(self):
+        assert parse_runs_cap("  5000000  ") == 5_000_000
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError):
+            parse_runs_cap("-1")
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError):
+            parse_runs_cap("0")
+
+    def test_non_numeric_raises(self):
+        with pytest.raises(ValueError):
+            parse_runs_cap("abc")
+        with pytest.raises(ValueError):
+            parse_runs_cap("1.5")
