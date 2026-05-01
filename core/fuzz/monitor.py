@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import os
 import re
 import signal
-import subprocess
 import time
+import tomllib
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from nicegui import ui
 
 
 @dataclass(frozen=True)
@@ -80,9 +83,6 @@ def parse_pulse_line(line: str) -> Pulse | None:
         exec_s=int(m["exec_s"]),
         rss=int(m["rss"]),
     )
-
-
-import tomllib
 
 
 def parse_targets(cargo_toml_text: str) -> list[str]:
@@ -162,10 +162,6 @@ def parse_runs_cap(text: str) -> int | None:
     return n
 
 
-import enum
-from collections import deque
-
-
 class Status(enum.IntEnum):
     """RunState lifecycle status — drives card badge color."""
 
@@ -197,10 +193,6 @@ class RunState:
     stop_reason: str | None = None
     crash_path: Path | None = None
 
-
-import json
-
-from nicegui import ui
 
 # Path constants (resolved at module import time so tests don't break).
 _FUZZ_DIR = Path(__file__).parent  # core/fuzz/
