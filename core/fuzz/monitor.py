@@ -173,6 +173,190 @@ class Status(enum.IntEnum):
     STOPPED = 5   # user-clicked Stop
 
 
+# Status -> Quasar text-color class. RUNNING is positive (green) so a healthy
+# campaign reads as "go"; PLATEAU is warning (amber) because the auto-stop
+# is informative but not an error; CAP_REACHED is info (blue) — the user
+# requested the cap; CRASHED is negative (red); IDLE/STOPPED are grey-7
+# (idle and "user stopped" are not states that warrant attention).
+_STATUS_BADGE_CLASS: dict[Status, str] = {
+    Status.IDLE: "text-grey-7",
+    Status.RUNNING: "text-positive",
+    Status.PLATEAU: "text-warning",
+    Status.CAP_REACHED: "text-info",
+    Status.CRASHED: "text-negative",
+    Status.STOPPED: "text-grey-7",
+}
+
+
+def status_badge_class(status: Status) -> str:
+    """Return the Quasar text-color class for a given Status."""
+    return _STATUS_BADGE_CLASS[status]
+
+
+def format_pulse_readout(pulse: Pulse | None) -> str:
+    """Render the most recent libFuzzer pulse as a single readable line.
+
+    `None` (no pulses yet — idle, or the subprocess has spawned but
+    hasn't emitted INITED) renders as an em-dash so the user can tell
+    "no telemetry yet" apart from "telemetry says zero".
+    """
+    if pulse is None:
+        return "—"
+    return (
+        f"cov {pulse.cov} / ft {pulse.ft} / corp {pulse.corp} "
+        f"/ {pulse.exec_s} exec/s / {pulse.rss} MB"
+    )
+
+
+def format_elapsed(seconds: float) -> str:
+    """Render `time.monotonic()` differences as `mm:ss` or `h:mm:ss`.
+
+    Truncates fractional seconds (sub-second monotonic noise should not
+    show as flicker between `00:07` and `00:08`). Negative input is
+    clamped to zero so a defensive `max(0, ...)` is unnecessary at the
+    call site.
+    """
+    s = max(0, int(seconds))
+    h, rest = divmod(s, 3600)
+    m, sec = divmod(rest, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
+
+
+def format_human_count(n: int) -> str:
+    """SI-suffix decimal counter formatting (k = 1000, M = 1_000_000).
+
+    Used for both `exec_count` and `runs_cap`. Trailing `.0` is stripped
+    so round numbers read as `1k` not `1.0k`. Decimal SI is correct here
+    (these are counts, not bytes); libFuzzer's `corp:` byte-formatter
+    uses a different convention (k = 1024, Mb = 1024*1024) that we
+    deliberately don't share.
+    """
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return _trim_decimal(n / 1000) + "k"
+    if n < 1_000_000_000:
+        return _trim_decimal(n / 1_000_000) + "M"
+    return _trim_decimal(n / 1_000_000_000) + "G"
+
+
+def _trim_decimal(v: float) -> str:
+    """Render `v` with one decimal (truncated, not rounded), then strip
+    a trailing `.0`.
+
+    Truncation rather than `:.1f`'s round-half-to-even avoids the
+    boundary surprise where `format_human_count(999_999)` would render
+    as `"1000k"`: `999_999/1000 = 999.999`, which `:.1f` rounds up to
+    `"1000.0"`. The caller already chose the magnitude (kilo, mega,
+    giga) based on the integer's actual range; the decimal part should
+    not visually push the value into the next magnitude.
+    """
+    truncated = int(v * 10) / 10
+    s = f"{truncated:.1f}"
+    return s.removesuffix(".0")
+
+
+def format_runs_progress(exec_count: int, runs_cap: int | None) -> str:
+    """`exec_count / runs_cap` (e.g. '1.2M / 5M') when the campaign has
+    a cap; just `exec_count` (open-ended) otherwise."""
+    if runs_cap is None:
+        return format_human_count(exec_count)
+    return f"{format_human_count(exec_count)} / {format_human_count(runs_cap)}"
+
+
+def format_card_elapsed(
+    started_at: float,
+    stopped_at: float,
+    is_running: bool,
+    now: float,
+) -> str:
+    """Render the per-card `elapsed: ...` label.
+
+    Three regimes:
+
+    * `started_at == 0.0` — card has never been started; `elapsed: —`.
+    * `is_running == True` — live tick, `now - started_at`.
+    * Terminal status with `stopped_at > 0.0` — frozen at the wall-clock
+      moment the subprocess actually exited (or was SIGTERM'd), not the
+      next 1 Hz tick after that. Closes the ~1 s lag the
+      "skip-update-on-terminal" approach left, so the frozen value
+      matches the actual run duration.
+
+    Defensive fallback: terminal status with `stopped_at == 0.0`
+    shouldn't happen with the current call sites, but the helper falls
+    back to `now - started_at` rather than blowing up.
+    """
+    if started_at == 0.0:
+        return "elapsed: —"
+    if is_running:
+        return f"elapsed: {format_elapsed(now - started_at)}"
+    end = stopped_at if stopped_at > 0.0 else now
+    return f"elapsed: {format_elapsed(end - started_at)}"
+
+
+# libFuzzer artifact-prefix -> (singular, plural) display label. Order
+# of iteration in summary output follows _KIND_ORDER below.
+_ARTIFACT_KIND_LABELS: dict[str, tuple[str, str]] = {
+    "oom": ("OOM", "OOMs"),
+    "slow-unit": ("slow-unit", "slow-units"),
+    "crash": ("crash", "crashes"),
+}
+_KIND_ORDER: tuple[str, ...] = ("oom", "slow-unit", "crash")
+
+
+def categorize_artifact(filename: str) -> str | None:
+    """Return the libFuzzer artifact kind for `filename`, or None.
+
+    Recognises the three prefixes libFuzzer writes for findings —
+    `oom-`, `slow-unit-`, `crash-` — and returns the prefix without
+    the trailing dash. Anything else (`.gitkeep`, repo READMEs, leftover
+    binaries) returns None and is ignored by the counter.
+    """
+    if not filename:
+        return None
+    for kind in _KIND_ORDER:
+        if filename.startswith(f"{kind}-"):
+            return kind
+    return None
+
+
+def aggregate_artifact_counts(filenames) -> dict[str, int]:
+    """Fold a sequence of filenames into per-kind counts. Names that
+    don't categorise (e.g. `.gitkeep`) are dropped silently."""
+    counts: dict[str, int] = {}
+    for name in filenames:
+        kind = categorize_artifact(name)
+        if kind is not None:
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def format_findings_summary(counts: dict[str, int], target_count: int) -> str:
+    """Render the global findings tally as a single line.
+
+    Output shape (matching the spec):
+      `Findings: 2 OOMs, 2 slow-units across 4 targets`
+
+    Iteration order over kinds is fixed at `oom -> slow-unit -> crash`
+    so the line doesn't shuffle as findings accumulate. Singular vs
+    plural is per-kind (`1 OOM` / `2 OOMs`, `1 crash` / `2 crashes`).
+    `target` itself is also pluralised so a single-target setup reads
+    naturally.
+    """
+    parts: list[str] = []
+    for kind in _KIND_ORDER:
+        n = counts.get(kind, 0)
+        if n == 0:
+            continue
+        singular, plural = _ARTIFACT_KIND_LABELS[kind]
+        parts.append(f"{n} {singular if n == 1 else plural}")
+    head = ", ".join(parts) if parts else "none"
+    target_word = "target" if target_count == 1 else "targets"
+    return f"Findings: {head} across {target_count} {target_word}"
+
+
 @dataclass
 class RunState:
     """Per-(target, sanitizer) lifecycle state.
@@ -190,6 +374,11 @@ class RunState:
     runs_cap: int | None = None
     started_at: float = 0.0  # monotonic clock at subprocess spawn (for elapsed time)
     started_at_wall: float = 0.0  # wall clock (for comparing against artifact file mtimes)
+    # monotonic clock at the instant the subprocess exits or is SIGTERM'd.
+    # Captured so the per-card `elapsed:` label can freeze at the actual
+    # stop time rather than at the next 1 Hz tick after that. 0.0 means
+    # "still running, or never started".
+    stopped_at: float = 0.0
     stop_reason: str | None = None
     crash_path: Path | None = None
 
@@ -241,9 +430,37 @@ class MonitorApp:
     def render(self) -> None:
         """Build the full page UI."""
         ui.label("Secretary fuzz monitor").classes("text-h4")
+        findings_label = ui.label(self._findings_summary()).classes("text-mono text-sm")
+
+        def update_findings() -> None:
+            findings_label.text = self._findings_summary()
+
+        ui.timer(1.0, update_findings)
         with ui.grid(columns=3).classes("gap-4"):
             for target in self.targets:
                 self._render_card(target)
+
+    def _findings_summary(self) -> str:
+        """Scan `artifacts/<target>/` for each target and render the
+        aggregated tally.
+
+        Failures (missing dir, transient OS error during a scan) are
+        treated as 'no findings for that target' rather than propagated
+        — the dashboard's findings line is informational, not a contract.
+        """
+        artifacts_root = _FUZZ_DIR / "artifacts"
+        totals: dict[str, int] = {}
+        for target in self.targets:
+            target_dir = artifacts_root / target
+            if not target_dir.is_dir():
+                continue
+            try:
+                names = [p.name for p in target_dir.iterdir() if p.is_file()]
+            except OSError:
+                continue
+            for kind, n in aggregate_artifact_counts(names).items():
+                totals[kind] = totals.get(kind, 0) + n
+        return format_findings_summary(totals, len(self.targets))
 
     async def start_run(self, target: str, sanitizer: str, runs_cap: int | None) -> None:
         """Spawn cargo fuzz run for (target, sanitizer). Idempotent: refuses
@@ -283,6 +500,7 @@ class MonitorApp:
         rs.stop_reason = None
         rs.started_at = time.monotonic()
         rs.started_at_wall = time.time()
+        rs.stopped_at = 0.0  # cleared so a re-run isn't frozen at the prior stop
         rs.status = Status.RUNNING
         rs.log_tail.append(f"$ {' '.join(argv)}")
 
@@ -331,6 +549,11 @@ class MonitorApp:
                     proc.send_signal(signal.SIGTERM)
         rc = await proc.wait()
         if rs.status == Status.RUNNING:
+            # Capture the stop time before flipping status, so the moment
+            # the next tick observes the new (terminal) status, stopped_at
+            # is already set — keeps the frozen `elapsed:` label accurate
+            # to the actual exit moment instead of ~1 s late.
+            rs.stopped_at = time.monotonic()
             if rs.stop_reason and rs.stop_reason.startswith("plateau"):
                 rs.status = Status.PLATEAU
             elif rc == 0:
@@ -372,6 +595,10 @@ class MonitorApp:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+        # Same ordering as _read_stderr: set stopped_at before status so
+        # the per-card timer's first observation of STOPPED has a valid
+        # frozen value to render.
+        rs.stopped_at = time.monotonic()
         rs.status = Status.STOPPED
         rs.stop_reason = "user stopped"
 
@@ -390,22 +617,63 @@ class MonitorApp:
             ui.label(target).classes("text-h6")
             sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
             prefill = self.state.get("runs_caps", {}).get(target, "")
+            # Label shortened from "runs cap (blank = open-ended)" so it
+            # fits the w-96 card column width without being clipped to
+            # `runs cap (blank = open…`.
             runs_cap_input = ui.input(
-                "runs cap (blank = open-ended)",
+                "runs cap (blank = ∞)",
                 value=str(prefill) if prefill else "",
             ).props("dense")
-            status_label = ui.label("status: idle")
+            status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
+            pulse_label = ui.label(format_pulse_readout(None)).classes("text-mono text-sm")
+            elapsed_label = ui.label("elapsed: —").classes("text-mono text-sm")
+            progress_label = ui.label("runs: —").classes("text-mono text-sm")
             crash_label = ui.label("")  # filled in by reactive update
 
-            def update_crash_label():
+            # Single per-card 1 Hz tick that owns every reactive label on the
+            # card. status_label was previously imperative in on_start /
+            # on_stop and never reflected the lifecycle transitions
+            # (PLATEAU / CAP_REACHED / CRASHED) the stderr reader drives on
+            # RunState.status; folding it into the timer plus the reset of
+            # the badge class on each tick fixes that.
+            def update_card():
                 rs = self.runs[(target, sanitizer.value)]
+                status_label.text = f"status: {rs.status.name}"
+                # Replace, don't append — repeated appends would accumulate
+                # stale classes across status transitions.
+                status_label.classes(replace=status_badge_class(rs.status))
+                pulse_label.text = format_pulse_readout(
+                    rs.pulses[-1] if rs.pulses else None
+                )
+                # Elapsed: tick live while RUNNING, freeze at the
+                # subprocess's actual stop time (rs.stopped_at, captured
+                # in _read_stderr / stop_run before the status flip), or
+                # show '—' when the card has never been started.
+                elapsed_label.text = format_card_elapsed(
+                    rs.started_at,
+                    rs.stopped_at,
+                    rs.status == Status.RUNNING,
+                    time.monotonic(),
+                )
+                progress_label.text = "runs: " + (
+                    format_runs_progress(rs.pulses[-1].exec_count, rs.runs_cap)
+                    if rs.pulses
+                    else "—"
+                )
+                # Mirror the status_label pattern: replace, not append. The
+                # crash_label is now reached every tick (not only on Stop),
+                # so an append-only `.classes("text-red-600")` would stack
+                # `text-red-600 text-red-600 ...` across consecutive CRASHED
+                # ticks. Idempotent for CSS, but it makes the rendered
+                # element ugly to inspect and obscures real class drift.
                 if rs.status == Status.CRASHED and rs.crash_path:
                     crash_label.text = f"CRASH: {rs.crash_path}"
-                    crash_label.classes("text-red-600")
+                    crash_label.classes(replace="text-red-600")
                 else:
                     crash_label.text = ""
+                    crash_label.classes(replace="")
 
-            ui.timer(1.0, update_crash_label)
+            ui.timer(1.0, update_card)
 
             async def on_start():
                 try:
@@ -420,11 +688,9 @@ class MonitorApp:
                     asyncio.create_task(self._chain_ubsan(target, cap))
                 else:
                     await self.start_run(target, sanitizer.value, cap)
-                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
 
             async def on_stop():
                 await self.stop_run(target, sanitizer.value)
-                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
 
             with ui.row():
                 ui.button("Start", on_click=on_start).props("color=primary")

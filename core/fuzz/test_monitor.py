@@ -6,11 +6,28 @@ Run from the repo root:
 
 from __future__ import annotations
 
-# Imports populate as functions are added in later tasks.
-
 import pytest
 
-from monitor import Pulse, parse_pulse_line
+from monitor import (
+    Pulse,
+    RunState,
+    Status,
+    aggregate_artifact_counts,
+    build_subprocess_env,
+    categorize_artifact,
+    check_plateau,
+    find_nightly_toolchain,
+    format_card_elapsed,
+    format_elapsed,
+    format_findings_summary,
+    format_human_count,
+    format_pulse_readout,
+    format_runs_progress,
+    parse_pulse_line,
+    parse_runs_cap,
+    parse_targets,
+    status_badge_class,
+)
 
 
 class TestParsePulseLine:
@@ -67,8 +84,6 @@ class TestParsePulseLine:
         assert parse_pulse_line(line) is None
 
 
-from monitor import parse_targets
-
 
 class TestParseTargets:
     SAMPLE_CARGO_TOML = """\
@@ -109,8 +124,6 @@ test = false
         with pytest.raises(Exception):  # tomllib.TOMLDecodeError
             parse_targets("[[bin\nname = 'unclosed")
 
-
-from monitor import check_plateau
 
 
 class TestCheckPlateau:
@@ -154,8 +167,6 @@ class TestCheckPlateau:
 
 from pathlib import Path
 
-from monitor import find_nightly_toolchain
-
 
 class TestFindNightlyToolchain:
     def test_returns_most_recent_nightly(self, tmp_path: Path):
@@ -191,8 +202,6 @@ class TestFindNightlyToolchain:
         assert find_nightly_toolchain(rustup_home) is None
 
 
-from monitor import build_subprocess_env
-
 
 class TestBuildSubprocessEnv:
     def test_prepends_nightly_bin_to_path(self):
@@ -223,8 +232,6 @@ class TestBuildSubprocessEnv:
         build_subprocess_env(nightly_dir, base_env)
         assert base_env == original
 
-
-from monitor import parse_runs_cap
 
 
 class TestParseRunsCap:
@@ -257,8 +264,6 @@ class TestParseRunsCap:
             parse_runs_cap("1.5")
 
 
-from monitor import RunState, Status
-
 
 class TestRunState:
     def test_default_state(self):
@@ -280,3 +285,344 @@ class TestRunState:
         for i in range(50):
             rs.log_tail.append(f"line {i}")
         assert len(rs.log_tail) == 20  # maxlen=20
+
+
+
+class TestStatusBadgeClass:
+    """Each Status enum value maps to a Quasar text-color class. The mapping
+    is exhaustive so a future variant added to Status without a matching
+    class entry surfaces as a missing-key error rather than a silent fallback
+    to default text colour."""
+
+    def test_idle_is_grey(self):
+        assert status_badge_class(Status.IDLE) == "text-grey-7"
+
+    def test_running_is_positive(self):
+        assert status_badge_class(Status.RUNNING) == "text-positive"
+
+    def test_plateau_is_warning(self):
+        assert status_badge_class(Status.PLATEAU) == "text-warning"
+
+    def test_cap_reached_is_info(self):
+        assert status_badge_class(Status.CAP_REACHED) == "text-info"
+
+    def test_crashed_is_negative(self):
+        assert status_badge_class(Status.CRASHED) == "text-negative"
+
+    def test_stopped_is_grey(self):
+        assert status_badge_class(Status.STOPPED) == "text-grey-7"
+
+    def test_exhaustive_over_status_enum(self):
+        # If a new Status variant lands without a matching class entry, this
+        # test fails with the missing variant name in the assertion.
+        for status in Status:
+            cls = status_badge_class(status)
+            assert cls.startswith("text-"), (
+                f"{status.name} maps to {cls!r}, expected Quasar text-* class"
+            )
+
+
+
+class TestFormatPulseReadout:
+    """`pulses[-1]` rendered as a single readable line for the card body.
+    `None` (no pulses yet) renders as an em-dash so the user can tell
+    'no telemetry yet' apart from 'telemetry says zero'."""
+
+    def test_none_renders_em_dash(self):
+        # Distinguishes idle / pre-INITED from "telemetry says zero".
+        assert format_pulse_readout(None) == "—"
+
+    def test_typical_pulse(self):
+        p = Pulse(exec_count=1048576, cov=1247, ft=2891, corp=142, exec_s=58000, rss=124)
+        assert (
+            format_pulse_readout(p)
+            == "cov 1247 / ft 2891 / corp 142 / 58000 exec/s / 124 MB"
+        )
+
+    def test_zero_pulse_renders_zeros_not_dash(self):
+        # A real Pulse with all-zero counters (early INITED before first
+        # iteration) must render explicit zeros, not the em-dash. The em-dash
+        # is reserved for 'no Pulse at all'.
+        p = Pulse(exec_count=0, cov=0, ft=0, corp=0, exec_s=0, rss=0)
+        assert format_pulse_readout(p) == "cov 0 / ft 0 / corp 0 / 0 exec/s / 0 MB"
+
+
+
+class TestFormatElapsed:
+    """Elapsed-since-spawn rendered in `mm:ss` for short runs and
+    `h:mm:ss` once the campaign crosses an hour."""
+
+    def test_zero(self):
+        assert format_elapsed(0) == "00:00"
+
+    def test_under_a_minute(self):
+        assert format_elapsed(7) == "00:07"
+
+    def test_full_minute(self):
+        assert format_elapsed(60) == "01:00"
+
+    def test_typical_minutes_seconds(self):
+        assert format_elapsed(65) == "01:05"
+        assert format_elapsed(305) == "05:05"
+
+    def test_just_under_an_hour(self):
+        # Stays in mm:ss until exactly 1 hour.
+        assert format_elapsed(3599) == "59:59"
+
+    def test_one_hour_switches_to_h_mm_ss(self):
+        assert format_elapsed(3600) == "1:00:00"
+
+    def test_hours_minutes_seconds(self):
+        assert format_elapsed(3661) == "1:01:01"
+
+    def test_fractional_seconds_truncated(self):
+        # Sub-second time.monotonic() differences shouldn't show as 00:00.5;
+        # truncate to whole seconds.
+        assert format_elapsed(7.9) == "00:07"
+
+    def test_negative_clamped_to_zero(self):
+        # Defensive against clock skew between time.monotonic() reads.
+        assert format_elapsed(-1) == "00:00"
+
+
+class TestFormatHumanCount:
+    """SI-suffix counter formatting (decimal: 1k = 1,000, 1M = 1,000,000)
+    used for both exec_count and runs_cap. Trailing `.0` is stripped so
+    round numbers read as `1k` not `1.0k`."""
+
+    def test_below_thousand(self):
+        assert format_human_count(0) == "0"
+        assert format_human_count(999) == "999"
+
+    def test_round_thousand(self):
+        assert format_human_count(1_000) == "1k"
+
+    def test_kilo_with_decimal(self):
+        assert format_human_count(1_234) == "1.2k"
+
+    def test_kilo_double_digit(self):
+        assert format_human_count(12_345) == "12.3k"
+
+    def test_kilo_triple_digit(self):
+        # Truncated, not rounded: 123_456 / 1000 = 123.456 -> "123.4k".
+        # Was "123.5k" pre-truncation switch; see docstring on
+        # `_trim_decimal` for why truncation matches the magnitude
+        # branch's intent (caller already chose kilo, the decimal must
+        # not push into mega).
+        assert format_human_count(123_456) == "123.4k"
+
+    def test_round_million(self):
+        assert format_human_count(1_000_000) == "1M"
+        assert format_human_count(5_000_000) == "5M"
+
+    def test_million_with_decimal(self):
+        assert format_human_count(1_200_000) == "1.2M"
+
+    def test_giga(self):
+        assert format_human_count(1_234_567_890) == "1.2G"
+
+    # ---- Boundary behaviour, pinned per review ----
+
+    def test_one_above_thousand_collapses_to_round(self):
+        # 1001 / 1000 = 1.001, truncated to 1.0, trailing .0 stripped.
+        # Documents the small precision loss right above each magnitude.
+        assert format_human_count(1_001) == "1k"
+
+    def test_just_below_million_stays_in_kilo_magnitude(self):
+        # Regression pin: `:.1f` would round 999.999 -> "1000.0", which
+        # made the function render `999_999` as "1000k". Truncation
+        # keeps the magnitude consistent with the branch the caller
+        # took: kilo branch -> kilo string.
+        assert format_human_count(999_999) == "999.9k"
+
+    def test_one_above_million_collapses_to_round(self):
+        # Mirror of the kilo case, in mega.
+        assert format_human_count(1_000_001) == "1M"
+
+    def test_just_below_giga_stays_in_mega_magnitude(self):
+        # Mirror of the 999_999 -> "999.9k" pin, one magnitude up.
+        assert format_human_count(999_999_999) == "999.9M"
+
+    def test_one_above_giga_collapses_to_round(self):
+        assert format_human_count(1_000_000_001) == "1G"
+
+
+class TestFormatRunsProgress:
+    """`exec_count / runs_cap` (e.g. '1.2M / 5M') when capped, just
+    `exec_count` when open-ended."""
+
+    def test_open_ended(self):
+        assert format_runs_progress(1_234, None) == "1.2k"
+
+    def test_open_ended_zero(self):
+        assert format_runs_progress(0, None) == "0"
+
+    def test_capped(self):
+        assert format_runs_progress(1_200_000, 5_000_000) == "1.2M / 5M"
+
+    def test_capped_at_zero(self):
+        assert format_runs_progress(0, 1_000_000) == "0 / 1M"
+
+
+
+class TestCategorizeArtifact:
+    """libFuzzer artifact filenames carry their kind as the prefix; the
+    rest of the name is a SHA-1 of the input. `.gitkeep` is the
+    placeholder file each empty regression dir ships with."""
+
+    def test_oom(self):
+        assert categorize_artifact("oom-031e9f63c25e22eef.bin") == "oom"
+
+    def test_slow_unit(self):
+        assert categorize_artifact("slow-unit-bca8ee9d63ee08277.bin") == "slow-unit"
+
+    def test_crash(self):
+        assert categorize_artifact("crash-abcd1234.bin") == "crash"
+
+    def test_unknown_returns_none(self):
+        assert categorize_artifact("not-an-artifact.bin") is None
+
+    def test_gitkeep_returns_none(self):
+        assert categorize_artifact(".gitkeep") is None
+
+    def test_empty_returns_none(self):
+        assert categorize_artifact("") is None
+
+
+class TestAggregateArtifactCounts:
+    """Folds a sequence of filenames into per-kind counts; ignores names
+    that don't categorise."""
+
+    def test_empty(self):
+        assert aggregate_artifact_counts([]) == {}
+
+    def test_mixed(self):
+        names = [
+            "oom-1.bin",
+            "oom-2.bin",
+            "slow-unit-1.bin",
+            "crash-1.bin",
+            ".gitkeep",
+            "junk.txt",
+        ]
+        assert aggregate_artifact_counts(names) == {
+            "oom": 2,
+            "slow-unit": 1,
+            "crash": 1,
+        }
+
+    def test_only_unrecognised(self):
+        assert aggregate_artifact_counts([".gitkeep", "junk", "README.md"]) == {}
+
+
+class TestFormatFindingsSummary:
+    """Single-line tally rendered above the card grid. Order is stable
+    (oom, slow-unit, crash) so the line doesn't shuffle as findings
+    accumulate. Singular vs plural is per-kind."""
+
+    def test_none(self):
+        assert (
+            format_findings_summary({}, target_count=4)
+            == "Findings: none across 4 targets"
+        )
+
+    def test_one_oom_singular(self):
+        assert (
+            format_findings_summary({"oom": 1}, target_count=4)
+            == "Findings: 1 OOM across 4 targets"
+        )
+
+    def test_two_oom_plural(self):
+        assert (
+            format_findings_summary({"oom": 2}, target_count=4)
+            == "Findings: 2 OOMs across 4 targets"
+        )
+
+    def test_doc_example(self):
+        # The exact format the spec calls out.
+        counts = {"oom": 2, "slow-unit": 2}
+        assert (
+            format_findings_summary(counts, target_count=4)
+            == "Findings: 2 OOMs, 2 slow-units across 4 targets"
+        )
+
+    def test_stable_kind_order(self):
+        # All three kinds present at once: oom -> slow-unit -> crash.
+        counts = {"crash": 1, "slow-unit": 2, "oom": 3}
+        assert (
+            format_findings_summary(counts, target_count=6)
+            == "Findings: 3 OOMs, 2 slow-units, 1 crash across 6 targets"
+        )
+
+    def test_three_crashes_pluralised(self):
+        assert (
+            format_findings_summary({"crash": 3}, target_count=4)
+            == "Findings: 3 crashes across 4 targets"
+        )
+
+    def test_one_target_singular(self):
+        assert (
+            format_findings_summary({}, target_count=1)
+            == "Findings: none across 1 target"
+        )
+
+
+
+class TestFormatCardElapsed:
+    """Per-card `elapsed: ...` label. Three regimes: never started,
+    running (live tick), terminal (frozen at the captured stop time).
+    The frozen value is captured the moment the subprocess actually
+    exits — review caught that the previous "skip-update on terminal
+    status" approach left the displayed value ~1 s late."""
+
+    def test_never_started_renders_em_dash(self):
+        # started_at == 0.0 means the card has never been started.
+        assert (
+            format_card_elapsed(
+                started_at=0.0, stopped_at=0.0, is_running=False, now=100.0
+            )
+            == "elapsed: —"
+        )
+
+    def test_running_uses_live_now(self):
+        # 7-second tick: now - started_at = 7.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=0.0, is_running=True, now=107.0
+            )
+            == "elapsed: 00:07"
+        )
+
+    def test_terminal_uses_frozen_stopped_at(self):
+        # Subprocess exited at started_at + 65; later ticks at much
+        # higher `now` must NOT keep advancing the elapsed value.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=165.0, is_running=False, now=999.0
+            )
+            == "elapsed: 01:05"
+        )
+
+    def test_terminal_frozen_value_stable_across_repeated_ticks(self):
+        # Pin the regression directly: two ticks at different `now`
+        # values both produce the same elapsed string in the frozen
+        # regime. This is what "skip-update" used to fake; we now
+        # produce the same answer deterministically.
+        first = format_card_elapsed(
+            started_at=10.0, stopped_at=70.0, is_running=False, now=100.0
+        )
+        later = format_card_elapsed(
+            started_at=10.0, stopped_at=70.0, is_running=False, now=10_000.0
+        )
+        assert first == later == "elapsed: 01:00"
+
+    def test_terminal_without_stopped_at_falls_back_to_now(self):
+        # Defensive: terminal status with stopped_at == 0.0 shouldn't
+        # arise from the current call sites, but the helper should not
+        # crash. Falls back to `now - started_at`.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=0.0, is_running=False, now=130.0
+            )
+            == "elapsed: 00:30"
+        )

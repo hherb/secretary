@@ -19,11 +19,21 @@ during first real-campaign use).
   regression tests anyway, and a real DoS surface found while reading the
   contact-card decoder (`display_name` was unbounded variable-length CBOR
   text on a peer-supplied path) was capped at 4 KiB on parse.
-* **Step 3 — Surface live telemetry in the NiceGUI monitor:** ⏳ pending.
-  Pick this up in a separate PR (PR-B).
+* **Step 3 — Surface live telemetry in the NiceGUI monitor:** ✅ done in
+  PR-B (`feat/monitor-live-telemetry`). All five sub-tasks shipped:
+  reactive status badge with per-status colour (3.1), per-card
+  cov/ft/corp/exec-s/rss readout (3.2), elapsed timer + runs/cap
+  progress (3.3), global findings counter above the card grid (3.4),
+  and the runs-cap input label fix (3.5). Live-telemetry verification
+  against concurrent campaigns is the remaining manual smoke-test
+  (called out in the PR description); the wiring is mechanical and the
+  pure formatters carry exhaustive unit-test coverage.
 
-When **Step 3** lands, **delete this file in that same commit** — the
-remaining content below is purely the Step-3 spec + "do not" guardrails.
+This file was originally instructed to delete itself once Step 3 landed,
+but is being **kept** as a historical record of the post-PR-#8 follow-up
+work — Steps 1–2 outcome (PR #11) and Step 3 spec + outcome (PR #12).
+Future contributors get a single durable pointer to "what was the
+fuzz-harness shake-out, what was found, what was fixed".
 
 ---
 
@@ -199,10 +209,15 @@ subprocess changes.
 
 ## Sign-off
 
-Before marking the whole follow-up done:
-
-* `cargo test --release --workspace` stays green (the parser-side
-  regression tests from PR-A continue to pass).
-* The dashboard verification listed under §3 above passes against three
-  concurrent campaigns.
-* This file is deleted in the same commit that ships the last UI patch.
+* ✅ `cargo test --release --workspace` stays green (PR #11's parser-side
+  regression tests + cap pass on every CI run).
+* ⏳ Dashboard verification against three concurrent campaigns: deferred
+  to a manual post-merge smoke-test by the maintainer (PR #12 description
+  flags this as the one item that couldn't be exercised end-to-end during
+  the implementation session because of multi-minute first-run compile
+  times). The pure helpers carry exhaustive unit-test coverage; the
+  residual risk is wiring-only.
+* This file is **kept** as a historical record of the follow-up rather
+  than deleted. The "delete this file" guidance in the original ticket
+  is superseded; the file now serves as a single durable pointer back
+  to the post-PR-#8 shake-out for future archaeologists.

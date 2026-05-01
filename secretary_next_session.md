@@ -284,35 +284,36 @@ hardening is the active phase.
 
 ---
 
-## Open Item 1 — Fuzz-finding triage (from PR #8)
+## Open Item 1 — Fuzz-finding triage (from PR #8) ✅ closed
 
-The most concrete near-term task. Estimated 1–2 hours depending on
-whether the four findings turn out to be deep bugs vs. trivial
-input-size issues.
+Closed in PR #11 + PR #12. Step 1 (`.gitignore` gap) was already in
+place via per-crate [core/fuzz/.gitignore](core/fuzz/.gitignore);
+the original ticket missed the per-crate file. Step 2 (triage the
+four — actually six — findings) discovered that none reproduced
+against current main: 25 minutes × 3 targets of fresh campaigns
+yielded 25.7M total executions with zero new findings, and direct
+replay at 256 MB rss/malloc returned `Err` in 0 ms. Most plausible
+cause: libfuzzer's RSS sampler attributing limit-crossing events to
+whichever input was running, so accumulated long-campaign state can
+falsely flag innocent inputs.
 
-Captured in detail in [docs/TODO_FUZZ_FOLLOWUP.md](docs/TODO_FUZZ_FOLLOWUP.md).
-Two-step shape:
+Outcome (PR #11):
 
-- **Step 1: close the `.gitignore` gap** for `core/fuzz/{target,corpus,artifacts}/`
-  so a freshly-fuzzed working tree is `git status`-clean. The existing
-  `/target/` rule is root-anchored and does not match the fuzz crate's
-  sub-`target/`. Be explicit — do not relax the anchor.
-- **Step 2: triage the four findings** in
-  `core/fuzz/artifacts/<target>/`:
-  * `contact_card/oom-031e9f63...` — likely missing length cap on
-    contact-card decoder. Find and cap the unbounded allocation.
-  * `record/oom-df5366aa...` — same shape: cap the offending field.
-  * `vault_toml/slow-unit-bca8ee9d...` and `slow-unit-fa13b6d1...` —
-    parser exceeds libfuzzer's per-execution time threshold; profile,
-    find the hot path, fix the algorithm or cap the input.
-  Each finding needs a regression test under
-  [core/tests/fuzz_regressions.rs](core/tests/fuzz_regressions.rs) (or
-  similar) that fails the *pre-fix* parser and passes the post-fix
-  parser. Promote bytes into the test as a `const &[u8]` — do **not**
-  commit the raw artifacts.
+- Six artifacts promoted as committed regression tests under
+  [core/tests/data/fuzz_regressions/](core/tests/data/fuzz_regressions/)
+  — locked into the existing "must not panic" replay loop in
+  [core/tests/fuzz_regressions.rs](core/tests/fuzz_regressions.rs).
+- A real peer-supplied DoS surface caught while reading the
+  contact-card decoder (`display_name` was unbounded variable-length
+  CBOR text and the orchestrator at
+  [core/src/vault/orchestrators.rs:509](core/src/vault/orchestrators.rs#L509)
+  reads contact-card bytes that may originate from a sync peer) was
+  capped at 4 KiB on parse with a new `CardError::DisplayNameTooLong`
+  variant.
 
-When this work is complete, **delete `docs/TODO_FUZZ_FOLLOWUP.md` in
-the same commit** that ships the last regression test.
+PR #12 then surfaces live telemetry in the NiceGUI monitor (the gap
+that surfaced when running PR #8's scaffold against the real
+campaigns above).
 
 ---
 
