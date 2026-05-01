@@ -76,6 +76,15 @@ pub const ML_KEM_768_PK_LEN: usize = 1184;
 /// Contact UUID length, in bytes (§14).
 pub const CONTACT_UUID_LEN: usize = 16;
 
+/// Parse-layer cap on `display_name` byte length. The card arrives via
+/// `contacts/{uuid}.card` files that may originate from an untrusted peer
+/// over sync; capping here closes the DoS surface where a peer ships a
+/// card with a multi-GB `display_name` and the recipient OOMs before any
+/// signature check runs. The cap is generous (4 KiB of UTF-8 fits any
+/// realistic personal or organisation name in any script); UI / vault-
+/// config callers may apply tighter caps for display purposes.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 4096;
+
 // CBOR map keys (§6). String literals only used here; centralised so a typo
 // becomes a compile-time fix rather than a silent encoding drift.
 const KEY_CARD_VERSION: &str = "card_version";
@@ -126,6 +135,14 @@ pub enum CardError {
     #[error("invalid field length")]
     InvalidFieldLength,
 
+    /// `display_name` exceeded the parse-layer cap [`MAX_DISPLAY_NAME_BYTES`].
+    /// Distinct from [`Self::InvalidFieldLength`] because the latter is for
+    /// fixed-size fields; `display_name` is variable-length, and signalling
+    /// "too long" specifically lets a future UI layer surface the diagnostic
+    /// (e.g. "this card's display name is too long to import").
+    #[error("display_name exceeds the {MAX_DISPLAY_NAME_BYTES}-byte parse-layer cap")]
+    DisplayNameTooLong,
+
     /// A signature on the card did not verify. Variants of [`SigError`] —
     /// [`SigError::Ed25519VerifyFailed`] and [`SigError::MlDsa65VerifyFailed`]
     /// — distinguish which half rejected.
@@ -150,8 +167,9 @@ pub struct ContactCard {
     /// 128-bit owner UUID, the same bytes as `user_uuid` in the Identity
     /// Bundle (§5).
     pub contact_uuid: [u8; CONTACT_UUID_LEN],
-    /// User-facing label. UTF-8; no length cap enforced here (the cap, if
-    /// any, is a UI / vault-config concern).
+    /// User-facing label. UTF-8. Bounded at parse by
+    /// [`MAX_DISPLAY_NAME_BYTES`] to close a peer-supplied DoS surface;
+    /// callers may apply tighter UI-layer caps.
     pub display_name: String,
     /// X25519 public key, 32 bytes.
     pub x25519_pk: [u8; X25519_PK_LEN],
@@ -285,7 +303,13 @@ impl ContactCard {
                     take_fixed_bytes::<CONTACT_UUID_LEN>(v)?,
                     &key,
                 )?,
-                KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
+                KEY_DISPLAY_NAME => {
+                    let s = take_text(v)?;
+                    if s.len() > MAX_DISPLAY_NAME_BYTES {
+                        return Err(CardError::DisplayNameTooLong);
+                    }
+                    set_once(&mut display_name, s, &key)?;
+                }
                 KEY_X25519_PK => {
                     set_once(&mut x25519_pk, take_fixed_bytes::<X25519_PK_LEN>(v)?, &key)?
                 }
@@ -655,6 +679,38 @@ mod tests {
             rebuilt.pk_bundle_bytes().unwrap(),
             "pk_bundle_bytes must round-trip through to_canonical_cbor's pk subset"
         );
+    }
+
+    /// `display_name` is variable-length CBOR text and arrives from
+    /// untrusted peers (sync). A peer that ships a card whose
+    /// `display_name` claims, say, 4 GB of text exhausts the recipient's
+    /// memory before any signature check can run. The parse-layer cap
+    /// closes that DoS surface.
+    #[test]
+    fn from_canonical_cbor_rejects_oversize_display_name() {
+        let mut card = fixture_card("Alice", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "x".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+        let bytes = card
+            .to_canonical_cbor()
+            .expect("encoder does not enforce the parse-layer cap");
+        let err = ContactCard::from_canonical_cbor(&bytes)
+            .expect_err("oversize display_name must be rejected on parse");
+        assert!(
+            matches!(err, CardError::DisplayNameTooLong),
+            "expected DisplayNameTooLong, got {err:?}"
+        );
+    }
+
+    /// Boundary: a `display_name` exactly at the cap must still decode.
+    /// Pins the off-by-one behaviour of the comparison.
+    #[test]
+    fn from_canonical_cbor_accepts_display_name_at_cap() {
+        let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "y".repeat(MAX_DISPLAY_NAME_BYTES);
+        let bytes = card.to_canonical_cbor().expect("encode");
+        let parsed = ContactCard::from_canonical_cbor(&bytes)
+            .expect("display_name at the cap must decode");
+        assert_eq!(parsed.display_name.len(), MAX_DISPLAY_NAME_BYTES);
     }
 
     fn hex_decode(s: &str) -> Vec<u8> {
