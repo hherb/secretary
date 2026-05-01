@@ -20,7 +20,7 @@ import signal
 import subprocess
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -188,19 +188,14 @@ class RunState:
     target: str
     sanitizer: str  # 'asan' | 'ubsan'
     status: Status = Status.IDLE
-    pulses: deque[Pulse] = None  # type: ignore[assignment]
-    log_tail: deque[str] = None  # type: ignore[assignment]
+    # maxlen=64 is generous; actual K used by check_plateau is smaller.
+    pulses: deque[Pulse] = field(default_factory=lambda: deque(maxlen=64))
+    log_tail: deque[str] = field(default_factory=lambda: deque(maxlen=20))
     runs_cap: int | None = None
     started_at: float = 0.0  # monotonic clock at subprocess spawn (for elapsed time)
     started_at_wall: float = 0.0  # wall clock (for comparing against artifact file mtimes)
     stop_reason: str | None = None
     crash_path: Path | None = None
-
-    def __post_init__(self) -> None:
-        if self.pulses is None:
-            self.pulses = deque(maxlen=64)  # generous; actual K used by check_plateau is smaller
-        if self.log_tail is None:
-            self.log_tail = deque(maxlen=20)
 
 
 import json
