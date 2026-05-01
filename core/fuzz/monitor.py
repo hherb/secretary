@@ -256,6 +256,36 @@ def format_runs_progress(exec_count: int, runs_cap: int | None) -> str:
     return f"{format_human_count(exec_count)} / {format_human_count(runs_cap)}"
 
 
+def format_card_elapsed(
+    started_at: float,
+    stopped_at: float,
+    is_running: bool,
+    now: float,
+) -> str:
+    """Render the per-card `elapsed: ...` label.
+
+    Three regimes:
+
+    * `started_at == 0.0` — card has never been started; `elapsed: —`.
+    * `is_running == True` — live tick, `now - started_at`.
+    * Terminal status with `stopped_at > 0.0` — frozen at the wall-clock
+      moment the subprocess actually exited (or was SIGTERM'd), not the
+      next 1 Hz tick after that. Closes the ~1 s lag the
+      "skip-update-on-terminal" approach left, so the frozen value
+      matches the actual run duration.
+
+    Defensive fallback: terminal status with `stopped_at == 0.0`
+    shouldn't happen with the current call sites, but the helper falls
+    back to `now - started_at` rather than blowing up.
+    """
+    if started_at == 0.0:
+        return "elapsed: —"
+    if is_running:
+        return f"elapsed: {format_elapsed(now - started_at)}"
+    end = stopped_at if stopped_at > 0.0 else now
+    return f"elapsed: {format_elapsed(end - started_at)}"
+
+
 # libFuzzer artifact-prefix -> (singular, plural) display label. Order
 # of iteration in summary output follows _KIND_ORDER below.
 _ARTIFACT_KIND_LABELS: dict[str, tuple[str, str]] = {
@@ -334,6 +364,11 @@ class RunState:
     runs_cap: int | None = None
     started_at: float = 0.0  # monotonic clock at subprocess spawn (for elapsed time)
     started_at_wall: float = 0.0  # wall clock (for comparing against artifact file mtimes)
+    # monotonic clock at the instant the subprocess exits or is SIGTERM'd.
+    # Captured so the per-card `elapsed:` label can freeze at the actual
+    # stop time rather than at the next 1 Hz tick after that. 0.0 means
+    # "still running, or never started".
+    stopped_at: float = 0.0
     stop_reason: str | None = None
     crash_path: Path | None = None
 
@@ -455,6 +490,7 @@ class MonitorApp:
         rs.stop_reason = None
         rs.started_at = time.monotonic()
         rs.started_at_wall = time.time()
+        rs.stopped_at = 0.0  # cleared so a re-run isn't frozen at the prior stop
         rs.status = Status.RUNNING
         rs.log_tail.append(f"$ {' '.join(argv)}")
 
@@ -503,6 +539,11 @@ class MonitorApp:
                     proc.send_signal(signal.SIGTERM)
         rc = await proc.wait()
         if rs.status == Status.RUNNING:
+            # Capture the stop time before flipping status, so the moment
+            # the next tick observes the new (terminal) status, stopped_at
+            # is already set — keeps the frozen `elapsed:` label accurate
+            # to the actual exit moment instead of ~1 s late.
+            rs.stopped_at = time.monotonic()
             if rs.stop_reason and rs.stop_reason.startswith("plateau"):
                 rs.status = Status.PLATEAU
             elif rc == 0:
@@ -544,6 +585,10 @@ class MonitorApp:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+        # Same ordering as _read_stderr: set stopped_at before status so
+        # the per-card timer's first observation of STOPPED has a valid
+        # frozen value to render.
+        rs.stopped_at = time.monotonic()
         rs.status = Status.STOPPED
         rs.stop_reason = "user stopped"
 
@@ -590,15 +635,16 @@ class MonitorApp:
                 pulse_label.text = format_pulse_readout(
                     rs.pulses[-1] if rs.pulses else None
                 )
-                # Elapsed: tick live while RUNNING, freeze at terminal status
-                # (no update -> last value sticks). Show '—' when the card
-                # has never been started.
-                if rs.status == Status.RUNNING:
-                    elapsed_label.text = (
-                        f"elapsed: {format_elapsed(time.monotonic() - rs.started_at)}"
-                    )
-                elif rs.started_at == 0.0:
-                    elapsed_label.text = "elapsed: —"
+                # Elapsed: tick live while RUNNING, freeze at the
+                # subprocess's actual stop time (rs.stopped_at, captured
+                # in _read_stderr / stop_run before the status flip), or
+                # show '—' when the card has never been started.
+                elapsed_label.text = format_card_elapsed(
+                    rs.started_at,
+                    rs.stopped_at,
+                    rs.status == Status.RUNNING,
+                    time.monotonic(),
+                )
                 progress_label.text = "runs: " + (
                     format_runs_progress(rs.pulses[-1].exec_count, rs.runs_cap)
                     if rs.pulses

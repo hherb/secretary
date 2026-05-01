@@ -542,3 +542,66 @@ class TestFormatFindingsSummary:
             format_findings_summary({}, target_count=1)
             == "Findings: none across 1 target"
         )
+
+
+from monitor import format_card_elapsed
+
+
+class TestFormatCardElapsed:
+    """Per-card `elapsed: ...` label. Three regimes: never started,
+    running (live tick), terminal (frozen at the captured stop time).
+    The frozen value is captured the moment the subprocess actually
+    exits — review caught that the previous "skip-update on terminal
+    status" approach left the displayed value ~1 s late."""
+
+    def test_never_started_renders_em_dash(self):
+        # started_at == 0.0 means the card has never been started.
+        assert (
+            format_card_elapsed(
+                started_at=0.0, stopped_at=0.0, is_running=False, now=100.0
+            )
+            == "elapsed: —"
+        )
+
+    def test_running_uses_live_now(self):
+        # 7-second tick: now - started_at = 7.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=0.0, is_running=True, now=107.0
+            )
+            == "elapsed: 00:07"
+        )
+
+    def test_terminal_uses_frozen_stopped_at(self):
+        # Subprocess exited at started_at + 65; later ticks at much
+        # higher `now` must NOT keep advancing the elapsed value.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=165.0, is_running=False, now=999.0
+            )
+            == "elapsed: 01:05"
+        )
+
+    def test_terminal_frozen_value_stable_across_repeated_ticks(self):
+        # Pin the regression directly: two ticks at different `now`
+        # values both produce the same elapsed string in the frozen
+        # regime. This is what "skip-update" used to fake; we now
+        # produce the same answer deterministically.
+        first = format_card_elapsed(
+            started_at=10.0, stopped_at=70.0, is_running=False, now=100.0
+        )
+        later = format_card_elapsed(
+            started_at=10.0, stopped_at=70.0, is_running=False, now=10_000.0
+        )
+        assert first == later == "elapsed: 01:00"
+
+    def test_terminal_without_stopped_at_falls_back_to_now(self):
+        # Defensive: terminal status with stopped_at == 0.0 shouldn't
+        # arise from the current call sites, but the helper should not
+        # crash. Falls back to `now - started_at`.
+        assert (
+            format_card_elapsed(
+                started_at=100.0, stopped_at=0.0, is_running=False, now=130.0
+            )
+            == "elapsed: 00:30"
+        )
