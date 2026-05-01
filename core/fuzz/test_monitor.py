@@ -16,6 +16,7 @@ from monitor import (
     build_subprocess_env,
     categorize_artifact,
     check_plateau,
+    effective_sanitizer_key,
     find_nightly_toolchain,
     format_card_elapsed,
     format_elapsed,
@@ -321,6 +322,31 @@ class TestStatusBadgeClass:
                 f"{status.name} maps to {cls!r}, expected Quasar text-* class"
             )
 
+
+
+class TestEffectiveSanitizerKey:
+    """Regression: the radio offers an 'asan'/'ubsan'/'both' meta-option, but
+    self.runs is only keyed by 'asan'/'ubsan'. Without remap, every per-card
+    timer tick raised KeyError once the user picked 'both'."""
+
+    def test_asan_passthrough(self):
+        assert effective_sanitizer_key("asan", Status.IDLE) == "asan"
+        assert effective_sanitizer_key("asan", Status.RUNNING) == "asan"
+
+    def test_ubsan_passthrough(self):
+        assert effective_sanitizer_key("ubsan", Status.IDLE) == "ubsan"
+        assert effective_sanitizer_key("ubsan", Status.CRASHED) == "ubsan"
+
+    def test_both_resolves_to_asan_when_ubsan_idle(self):
+        # Before chain has reached UBSan (or chain abandoned because ASan
+        # crashed/user-stopped), the live state lives on the ASan slot.
+        assert effective_sanitizer_key("both", Status.IDLE) == "asan"
+
+    def test_both_resolves_to_ubsan_once_started(self):
+        # Once _chain_ubsan flips UBSan to RUNNING, that's the live state.
+        for s in (Status.RUNNING, Status.PLATEAU, Status.CAP_REACHED,
+                  Status.CRASHED, Status.STOPPED):
+            assert effective_sanitizer_key("both", s) == "ubsan", s.name
 
 
 class TestFormatPulseReadout:

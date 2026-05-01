@@ -188,6 +188,17 @@ _STATUS_BADGE_CLASS: dict[Status, str] = {
 }
 
 
+def effective_sanitizer_key(selected: str, ubsan_status: Status) -> str:
+    """Resolve the radio selection ('asan'/'ubsan'/'both') to the actual
+    self.runs key. 'both' is a UI-only meta-option meaning 'run ASan, chain
+    UBSan'; once UBSan has been started it becomes the live key, otherwise
+    ASan does. Without this remap, 'both' would index a non-existent
+    (target, 'both') slot and raise KeyError on every per-card tick."""
+    if selected != "both":
+        return selected
+    return "ubsan" if ubsan_status != Status.IDLE else "asan"
+
+
 def status_badge_class(status: Status) -> str:
     """Return the Quasar text-color class for a given Status."""
     return _STATUS_BADGE_CLASS[status]
@@ -637,7 +648,10 @@ class MonitorApp:
             # RunState.status; folding it into the timer plus the reset of
             # the badge class on each tick fixes that.
             def update_card():
-                rs = self.runs[(target, sanitizer.value)]
+                key = effective_sanitizer_key(
+                    sanitizer.value, self.runs[(target, "ubsan")].status
+                )
+                rs = self.runs[(target, key)]
                 status_label.text = f"status: {rs.status.name}"
                 # Replace, don't append — repeated appends would accumulate
                 # stale classes across status transitions.
@@ -690,7 +704,10 @@ class MonitorApp:
                     await self.start_run(target, sanitizer.value, cap)
 
             async def on_stop():
-                await self.stop_run(target, sanitizer.value)
+                key = effective_sanitizer_key(
+                    sanitizer.value, self.runs[(target, "ubsan")].status
+                )
+                await self.stop_run(target, key)
 
             with ui.row():
                 ui.button("Start", on_click=on_start).props("color=primary")
