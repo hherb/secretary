@@ -154,3 +154,10 @@ cargo test --release --workspace --features differential-replay
 A disagreement is one of: Rust bug -> fix Rust; Python bug -> fix Python;
 spec ambiguity -> docs PR alongside the fix. Sticky disagreements get
 committed as inputs in `core/tests/data/diff_regressions/<target>/`.
+
+For the contract between `differential_replay.rs` and the Python
+side (output JSON shapes, accept/reject semantics, how to add a new
+target), see
+[docs/manual/contributors/differential-replay-protocol.md](../../docs/manual/contributors/differential-replay-protocol.md).
+**Read it before changing `core/tests/python/conformance.py`'s
+`--diff-replay` mode.**
