@@ -292,11 +292,14 @@ class MonitorApp:
         rs.status = Status.RUNNING
         rs.log_tail.append(f"$ {' '.join(argv)}")
 
+        # cargo-fuzz emits its telemetry on stderr; stdout is unused. Pipe it
+        # to /dev/null rather than PIPE so the OS pipe buffer (~64 KB) cannot
+        # fill and block the subprocess write — we never spawn a stdout reader.
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(_FUZZ_DIR),
             env=env,
-            stdout=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         rs._popen = proc  # type: ignore[attr-defined]
