@@ -604,11 +604,18 @@ class MonitorApp:
                     if rs.pulses
                     else "—"
                 )
+                # Mirror the status_label pattern: replace, not append. The
+                # crash_label is now reached every tick (not only on Stop),
+                # so an append-only `.classes("text-red-600")` would stack
+                # `text-red-600 text-red-600 ...` across consecutive CRASHED
+                # ticks. Idempotent for CSS, but it makes the rendered
+                # element ugly to inspect and obscures real class drift.
                 if rs.status == Status.CRASHED and rs.crash_path:
                     crash_label.text = f"CRASH: {rs.crash_path}"
-                    crash_label.classes("text-red-600")
+                    crash_label.classes(replace="text-red-600")
                 else:
                     crash_label.text = ""
+                    crash_label.classes(replace="")
 
             ui.timer(1.0, update_card)
 
