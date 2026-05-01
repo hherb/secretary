@@ -256,6 +256,67 @@ def format_runs_progress(exec_count: int, runs_cap: int | None) -> str:
     return f"{format_human_count(exec_count)} / {format_human_count(runs_cap)}"
 
 
+# libFuzzer artifact-prefix -> (singular, plural) display label. Order
+# of iteration in summary output follows _KIND_ORDER below.
+_ARTIFACT_KIND_LABELS: dict[str, tuple[str, str]] = {
+    "oom": ("OOM", "OOMs"),
+    "slow-unit": ("slow-unit", "slow-units"),
+    "crash": ("crash", "crashes"),
+}
+_KIND_ORDER: tuple[str, ...] = ("oom", "slow-unit", "crash")
+
+
+def categorize_artifact(filename: str) -> str | None:
+    """Return the libFuzzer artifact kind for `filename`, or None.
+
+    Recognises the three prefixes libFuzzer writes for findings —
+    `oom-`, `slow-unit-`, `crash-` — and returns the prefix without
+    the trailing dash. Anything else (`.gitkeep`, repo READMEs, leftover
+    binaries) returns None and is ignored by the counter.
+    """
+    if not filename:
+        return None
+    for kind in _KIND_ORDER:
+        if filename.startswith(f"{kind}-"):
+            return kind
+    return None
+
+
+def aggregate_artifact_counts(filenames) -> dict[str, int]:
+    """Fold a sequence of filenames into per-kind counts. Names that
+    don't categorise (e.g. `.gitkeep`) are dropped silently."""
+    counts: dict[str, int] = {}
+    for name in filenames:
+        kind = categorize_artifact(name)
+        if kind is not None:
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def format_findings_summary(counts: dict[str, int], target_count: int) -> str:
+    """Render the global findings tally as a single line.
+
+    Output shape (matching the spec):
+      `Findings: 2 OOMs, 2 slow-units across 4 targets`
+
+    Iteration order over kinds is fixed at `oom -> slow-unit -> crash`
+    so the line doesn't shuffle as findings accumulate. Singular vs
+    plural is per-kind (`1 OOM` / `2 OOMs`, `1 crash` / `2 crashes`).
+    `target` itself is also pluralised so a single-target setup reads
+    naturally.
+    """
+    parts: list[str] = []
+    for kind in _KIND_ORDER:
+        n = counts.get(kind, 0)
+        if n == 0:
+            continue
+        singular, plural = _ARTIFACT_KIND_LABELS[kind]
+        parts.append(f"{n} {singular if n == 1 else plural}")
+    head = ", ".join(parts) if parts else "none"
+    target_word = "target" if target_count == 1 else "targets"
+    return f"Findings: {head} across {target_count} {target_word}"
+
+
 @dataclass
 class RunState:
     """Per-(target, sanitizer) lifecycle state.
@@ -324,9 +385,37 @@ class MonitorApp:
     def render(self) -> None:
         """Build the full page UI."""
         ui.label("Secretary fuzz monitor").classes("text-h4")
+        findings_label = ui.label(self._findings_summary()).classes("text-mono text-sm")
+
+        def update_findings() -> None:
+            findings_label.text = self._findings_summary()
+
+        ui.timer(1.0, update_findings)
         with ui.grid(columns=3).classes("gap-4"):
             for target in self.targets:
                 self._render_card(target)
+
+    def _findings_summary(self) -> str:
+        """Scan `artifacts/<target>/` for each target and render the
+        aggregated tally.
+
+        Failures (missing dir, transient OS error during a scan) are
+        treated as 'no findings for that target' rather than propagated
+        — the dashboard's findings line is informational, not a contract.
+        """
+        artifacts_root = _FUZZ_DIR / "artifacts"
+        totals: dict[str, int] = {}
+        for target in self.targets:
+            target_dir = artifacts_root / target
+            if not target_dir.is_dir():
+                continue
+            try:
+                names = [p.name for p in target_dir.iterdir() if p.is_file()]
+            except OSError:
+                continue
+            for kind, n in aggregate_artifact_counts(names).items():
+                totals[kind] = totals.get(kind, 0) + n
+        return format_findings_summary(totals, len(self.targets))
 
     async def start_run(self, target: str, sanitizer: str, runs_cap: int | None) -> None:
         """Spawn cargo fuzz run for (target, sanitizer). Idempotent: refuses

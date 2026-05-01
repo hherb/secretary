@@ -433,3 +433,112 @@ class TestFormatRunsProgress:
 
     def test_capped_at_zero(self):
         assert format_runs_progress(0, 1_000_000) == "0 / 1M"
+
+
+from monitor import (
+    aggregate_artifact_counts,
+    categorize_artifact,
+    format_findings_summary,
+)
+
+
+class TestCategorizeArtifact:
+    """libFuzzer artifact filenames carry their kind as the prefix; the
+    rest of the name is a SHA-1 of the input. `.gitkeep` is the
+    placeholder file each empty regression dir ships with."""
+
+    def test_oom(self):
+        assert categorize_artifact("oom-031e9f63c25e22eef.bin") == "oom"
+
+    def test_slow_unit(self):
+        assert categorize_artifact("slow-unit-bca8ee9d63ee08277.bin") == "slow-unit"
+
+    def test_crash(self):
+        assert categorize_artifact("crash-abcd1234.bin") == "crash"
+
+    def test_unknown_returns_none(self):
+        assert categorize_artifact("not-an-artifact.bin") is None
+
+    def test_gitkeep_returns_none(self):
+        assert categorize_artifact(".gitkeep") is None
+
+    def test_empty_returns_none(self):
+        assert categorize_artifact("") is None
+
+
+class TestAggregateArtifactCounts:
+    """Folds a sequence of filenames into per-kind counts; ignores names
+    that don't categorise."""
+
+    def test_empty(self):
+        assert aggregate_artifact_counts([]) == {}
+
+    def test_mixed(self):
+        names = [
+            "oom-1.bin",
+            "oom-2.bin",
+            "slow-unit-1.bin",
+            "crash-1.bin",
+            ".gitkeep",
+            "junk.txt",
+        ]
+        assert aggregate_artifact_counts(names) == {
+            "oom": 2,
+            "slow-unit": 1,
+            "crash": 1,
+        }
+
+    def test_only_unrecognised(self):
+        assert aggregate_artifact_counts([".gitkeep", "junk", "README.md"]) == {}
+
+
+class TestFormatFindingsSummary:
+    """Single-line tally rendered above the card grid. Order is stable
+    (oom, slow-unit, crash) so the line doesn't shuffle as findings
+    accumulate. Singular vs plural is per-kind."""
+
+    def test_none(self):
+        assert (
+            format_findings_summary({}, target_count=4)
+            == "Findings: none across 4 targets"
+        )
+
+    def test_one_oom_singular(self):
+        assert (
+            format_findings_summary({"oom": 1}, target_count=4)
+            == "Findings: 1 OOM across 4 targets"
+        )
+
+    def test_two_oom_plural(self):
+        assert (
+            format_findings_summary({"oom": 2}, target_count=4)
+            == "Findings: 2 OOMs across 4 targets"
+        )
+
+    def test_doc_example(self):
+        # The exact format the spec calls out.
+        counts = {"oom": 2, "slow-unit": 2}
+        assert (
+            format_findings_summary(counts, target_count=4)
+            == "Findings: 2 OOMs, 2 slow-units across 4 targets"
+        )
+
+    def test_stable_kind_order(self):
+        # All three kinds present at once: oom -> slow-unit -> crash.
+        counts = {"crash": 1, "slow-unit": 2, "oom": 3}
+        assert (
+            format_findings_summary(counts, target_count=6)
+            == "Findings: 3 OOMs, 2 slow-units, 1 crash across 6 targets"
+        )
+
+    def test_three_crashes_pluralised(self):
+        assert (
+            format_findings_summary({"crash": 3}, target_count=4)
+            == "Findings: 3 crashes across 4 targets"
+        )
+
+    def test_one_target_singular(self):
+        assert (
+            format_findings_summary({}, target_count=1)
+            == "Findings: none across 1 target"
+        )
