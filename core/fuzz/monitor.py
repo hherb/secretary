@@ -243,8 +243,18 @@ def format_human_count(n: int) -> str:
 
 
 def _trim_decimal(v: float) -> str:
-    """Render `v` with one decimal, then strip a trailing `.0`."""
-    s = f"{v:.1f}"
+    """Render `v` with one decimal (truncated, not rounded), then strip
+    a trailing `.0`.
+
+    Truncation rather than `:.1f`'s round-half-to-even avoids the
+    boundary surprise where `format_human_count(999_999)` would render
+    as `"1000k"`: `999_999/1000 = 999.999`, which `:.1f` rounds up to
+    `"1000.0"`. The caller already chose the magnitude (kilo, mega,
+    giga) based on the integer's actual range; the decimal part should
+    not visually push the value into the next magnitude.
+    """
+    truncated = int(v * 10) / 10
+    s = f"{truncated:.1f}"
     return s.removesuffix(".0")
 
 

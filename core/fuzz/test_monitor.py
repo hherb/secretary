@@ -404,7 +404,12 @@ class TestFormatHumanCount:
         assert format_human_count(12_345) == "12.3k"
 
     def test_kilo_triple_digit(self):
-        assert format_human_count(123_456) == "123.5k"
+        # Truncated, not rounded: 123_456 / 1000 = 123.456 -> "123.4k".
+        # Was "123.5k" pre-truncation switch; see docstring on
+        # `_trim_decimal` for why truncation matches the magnitude
+        # branch's intent (caller already chose kilo, the decimal must
+        # not push into mega).
+        assert format_human_count(123_456) == "123.4k"
 
     def test_round_million(self):
         assert format_human_count(1_000_000) == "1M"
@@ -415,6 +420,31 @@ class TestFormatHumanCount:
 
     def test_giga(self):
         assert format_human_count(1_234_567_890) == "1.2G"
+
+    # ---- Boundary behaviour, pinned per review ----
+
+    def test_one_above_thousand_collapses_to_round(self):
+        # 1001 / 1000 = 1.001, truncated to 1.0, trailing .0 stripped.
+        # Documents the small precision loss right above each magnitude.
+        assert format_human_count(1_001) == "1k"
+
+    def test_just_below_million_stays_in_kilo_magnitude(self):
+        # Regression pin: `:.1f` would round 999.999 -> "1000.0", which
+        # made the function render `999_999` as "1000k". Truncation
+        # keeps the magnitude consistent with the branch the caller
+        # took: kilo branch -> kilo string.
+        assert format_human_count(999_999) == "999.9k"
+
+    def test_one_above_million_collapses_to_round(self):
+        # Mirror of the kilo case, in mega.
+        assert format_human_count(1_000_001) == "1M"
+
+    def test_just_below_giga_stays_in_mega_magnitude(self):
+        # Mirror of the 999_999 -> "999.9k" pin, one magnitude up.
+        assert format_human_count(999_999_999) == "999.9M"
+
+    def test_one_above_giga_collapses_to_round(self):
+        assert format_human_count(1_000_000_001) == "1G"
 
 
 class TestFormatRunsProgress:
