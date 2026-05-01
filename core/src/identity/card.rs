@@ -708,8 +708,8 @@ mod tests {
         let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
         card.display_name = "y".repeat(MAX_DISPLAY_NAME_BYTES);
         let bytes = card.to_canonical_cbor().expect("encode");
-        let parsed = ContactCard::from_canonical_cbor(&bytes)
-            .expect("display_name at the cap must decode");
+        let parsed =
+            ContactCard::from_canonical_cbor(&bytes).expect("display_name at the cap must decode");
         assert_eq!(parsed.display_name.len(), MAX_DISPLAY_NAME_BYTES);
     }
 
