@@ -6,11 +6,28 @@ Run from the repo root:
 
 from __future__ import annotations
 
-# Imports populate as functions are added in later tasks.
-
 import pytest
 
-from monitor import Pulse, parse_pulse_line
+from monitor import (
+    Pulse,
+    RunState,
+    Status,
+    aggregate_artifact_counts,
+    build_subprocess_env,
+    categorize_artifact,
+    check_plateau,
+    find_nightly_toolchain,
+    format_card_elapsed,
+    format_elapsed,
+    format_findings_summary,
+    format_human_count,
+    format_pulse_readout,
+    format_runs_progress,
+    parse_pulse_line,
+    parse_runs_cap,
+    parse_targets,
+    status_badge_class,
+)
 
 
 class TestParsePulseLine:
@@ -67,8 +84,6 @@ class TestParsePulseLine:
         assert parse_pulse_line(line) is None
 
 
-from monitor import parse_targets
-
 
 class TestParseTargets:
     SAMPLE_CARGO_TOML = """\
@@ -109,8 +124,6 @@ test = false
         with pytest.raises(Exception):  # tomllib.TOMLDecodeError
             parse_targets("[[bin\nname = 'unclosed")
 
-
-from monitor import check_plateau
 
 
 class TestCheckPlateau:
@@ -154,8 +167,6 @@ class TestCheckPlateau:
 
 from pathlib import Path
 
-from monitor import find_nightly_toolchain
-
 
 class TestFindNightlyToolchain:
     def test_returns_most_recent_nightly(self, tmp_path: Path):
@@ -191,8 +202,6 @@ class TestFindNightlyToolchain:
         assert find_nightly_toolchain(rustup_home) is None
 
 
-from monitor import build_subprocess_env
-
 
 class TestBuildSubprocessEnv:
     def test_prepends_nightly_bin_to_path(self):
@@ -223,8 +232,6 @@ class TestBuildSubprocessEnv:
         build_subprocess_env(nightly_dir, base_env)
         assert base_env == original
 
-
-from monitor import parse_runs_cap
 
 
 class TestParseRunsCap:
@@ -257,8 +264,6 @@ class TestParseRunsCap:
             parse_runs_cap("1.5")
 
 
-from monitor import RunState, Status
-
 
 class TestRunState:
     def test_default_state(self):
@@ -281,8 +286,6 @@ class TestRunState:
             rs.log_tail.append(f"line {i}")
         assert len(rs.log_tail) == 20  # maxlen=20
 
-
-from monitor import status_badge_class
 
 
 class TestStatusBadgeClass:
@@ -319,8 +322,6 @@ class TestStatusBadgeClass:
             )
 
 
-from monitor import format_pulse_readout
-
 
 class TestFormatPulseReadout:
     """`pulses[-1]` rendered as a single readable line for the card body.
@@ -345,8 +346,6 @@ class TestFormatPulseReadout:
         p = Pulse(exec_count=0, cov=0, ft=0, corp=0, exec_s=0, rss=0)
         assert format_pulse_readout(p) == "cov 0 / ft 0 / corp 0 / 0 exec/s / 0 MB"
 
-
-from monitor import format_elapsed, format_human_count, format_runs_progress
 
 
 class TestFormatElapsed:
@@ -434,12 +433,6 @@ class TestFormatRunsProgress:
     def test_capped_at_zero(self):
         assert format_runs_progress(0, 1_000_000) == "0 / 1M"
 
-
-from monitor import (
-    aggregate_artifact_counts,
-    categorize_artifact,
-    format_findings_summary,
-)
 
 
 class TestCategorizeArtifact:
@@ -543,8 +536,6 @@ class TestFormatFindingsSummary:
             == "Findings: none across 1 target"
         )
 
-
-from monitor import format_card_elapsed
 
 
 class TestFormatCardElapsed:
