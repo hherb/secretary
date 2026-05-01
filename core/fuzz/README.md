@@ -109,6 +109,34 @@ cargo test --release --workspace --test fuzz_regressions
 The regression test runs as part of `cargo test --release --workspace`
 unconditionally — it does not depend on the fuzz harness or nightly.
 
+## Monitor (NiceGUI dashboard)
+
+A single-file NiceGUI dashboard at `core/fuzz/monitor.py` provides a
+browser UI for kicking off fuzz campaigns and watching them auto-stop
+on coverage plateau. Runs at `http://localhost:8080`.
+
+```bash
+uv run core/fuzz/monitor.py
+```
+
+Per-target card has:
+- Sanitizer radio: `asan`, `ubsan`, or `both` (sequential).
+- Runs cap input (last value persisted per target in `.monitor-state.json`).
+- Start/Stop buttons.
+- Live status, coverage, corpus, exec rate, RSS.
+- Log tail (last 20 stderr lines).
+- On crash: red badge with the crash file path.
+
+Plateau detection: auto-SIGTERM after K=10 consecutive libFuzzer pulse
+lines with no growth in `cov` or `corp`. Adjustable in the source if
+needed; default works for the six fuzz targets in this repo.
+
+The monitor is operator quality-of-life — the harness it drives stays
+fully usable from the CLI (`cargo fuzz run <target>`) for any future
+maintainer or auditor. See
+[docs/superpowers/specs/2026-05-01-fuzz-monitor-design.md](../../docs/superpowers/specs/2026-05-01-fuzz-monitor-design.md)
+for the design rationale.
+
 ## Differential replay (out-of-loop)
 
 Runs the accumulated runtime corpus + committed seeds + diff_regressions
