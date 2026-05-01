@@ -2102,18 +2102,14 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     # Canonicalise: sort + dedup.
     tags = sorted(set(source))
 
-    # Record-level `unknown` merge per §11.1 / §11.3 override:
-    # tombstoning-wins outcomes take the tombstoning side's whole
-    # `unknown` map wholesale; every other outcome runs per-key
-    # lex-larger canonical-CBOR-bytes via py_merge_unknown_map.
+    # Record-level `unknown` merge per §11.1: per-key lattice join
+    # (lex-larger canonical-CBOR bytes on collisions, single-side
+    # preservation) on every outcome. Not subject to the §11.3
+    # identity-metadata override — see the §11.3 carve-out and the
+    # rationale at the override site in `core/src/vault/conflict.rs`.
     local_unknown = local.get("unknown_hex", {})
     remote_unknown = remote.get("unknown_hex", {})
-    if outcome == "LocalTombstoneWins":
-        unknown = dict(local_unknown)
-    elif outcome == "RemoteTombstoneWins":
-        unknown = dict(remote_unknown)
-    else:
-        unknown = py_merge_unknown_map(local_unknown, remote_unknown)
+    unknown = py_merge_unknown_map(local_unknown, remote_unknown)
 
     merged = {
         "record_uuid_hex": local["record_uuid_hex"],

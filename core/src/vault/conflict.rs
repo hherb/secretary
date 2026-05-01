@@ -340,25 +340,34 @@ pub fn merge_record(local: &Record, remote: &Record) -> MergedRecord {
     };
 
     // §11.3 identity-metadata override: on the tombstoning-wins
-    // outcomes, the merged record's record_type / tags / record-level
-    // `unknown` come wholesale from the tombstoning side. The override
-    // exists so a UI surfacing a tombstoned record (trash bin,
-    // undelete prompt, audit log) reflects the deleter's view of the
-    // record — not a concurrent edit they never saw, and not an
-    // adversarial sync peer's same-millisecond identity flip. For
-    // every other outcome (BothLive, BothTombstoned, both `*Lost`
-    // outcomes), §11.1's per-field rules apply via the helpers below.
+    // outcomes, the merged record's `record_type` / `tags` come
+    // wholesale from the tombstoning side. The override exists so a UI
+    // surfacing a tombstoned record (trash bin, undelete prompt, audit
+    // log) reflects the deleter's view of the record — not a concurrent
+    // edit they never saw, and not an adversarial sync peer's
+    // same-millisecond identity flip. For every other outcome
+    // (BothLive, BothTombstoned, both `*Lost` outcomes), §11.1's
+    // per-field rules apply via the helpers below.
+    //
+    // Record-level `unknown` is NOT in the override (§11.3 carve-out).
+    // §11.1 specifies a per-key lattice join (lex-larger canonical-CBOR
+    // bytes, no `last_mod_ms` involvement), and a wholesale-take cannot
+    // reproduce it: the override would discard the live side's keys
+    // even when no collision exists, which breaks CRDT associativity
+    // (a tombstone in one merge order swallows keys that a different
+    // merge order — (live, live) first, then tombstone — preserves).
+    // `unknown` is forward-compat metadata that v1 clients do not
+    // render, so the "deleter's view" rationale is weaker than for
+    // `tags`/`record_type`; v2 clients that need to capture identity
+    // metadata at deletion time MUST add an explicit v2 field with
+    // proper CRDT semantics, not rely on `unknown`.
     let merged_record_type = match tombstone_outcome {
         TombstoneOutcome::LocalTombstoneWins => local.record_type.clone(),
         TombstoneOutcome::RemoteTombstoneWins => remote.record_type.clone(),
         _ => merge_record_type(local, remote),
     };
     let merged_tags = merge_tags(local, remote, tombstone_outcome);
-    let merged_unknown = match tombstone_outcome {
-        TombstoneOutcome::LocalTombstoneWins => local.unknown.clone(),
-        TombstoneOutcome::RemoteTombstoneWins => remote.unknown.clone(),
-        _ => merge_unknown_map(&local.unknown, &remote.unknown),
-    };
+    let merged_unknown = merge_unknown_map(&local.unknown, &remote.unknown);
 
     MergedRecord {
         merged: Record {
@@ -1394,12 +1403,14 @@ mod tests {
     }
 
     #[test]
-    fn merge_record_unknown_tombstone_override_picks_tombstoning_side() {
+    fn merge_record_unknown_excluded_from_tombstone_override() {
         use ciborium::Value;
-        // §11.3 override extends to record-level `unknown`. The
-        // tombstoning side's full unknown map is taken wholesale;
-        // the live side's forward-compat keys do not survive into
-        // the merged tombstoned record.
+        // §11.3 carve-out: record-level `unknown` is NOT subject to the
+        // identity-metadata override. Even on a `*Wins` outcome, the
+        // per-key §11.1 lattice join applies — disjoint keys from both
+        // sides survive. Wholesale-take would have broken CRDT
+        // associativity for non-empty `unknown` (a tombstone in one
+        // merge order swallowing keys that another order preserves).
         let mut local = rec([1; 16]);
         local.last_mod_ms = 100;
         local.tombstone = true;
@@ -1425,12 +1436,16 @@ mod tests {
         assert!(m.merged.tombstone);
         assert_eq!(
             m.merged.unknown.len(),
-            1,
-            "remote's unknown key dropped under §11.3 override"
+            2,
+            "both sides' unknown keys survive the per-key lattice join"
         );
         assert!(
             m.merged.unknown.contains_key("v2_local_only"),
-            "tombstoning side's unknown survives wholesale"
+            "tombstoning side's unknown key preserved"
+        );
+        assert!(
+            m.merged.unknown.contains_key("v2_remote_only"),
+            "live side's unknown key preserved (not dropped by override)"
         );
     }
 
