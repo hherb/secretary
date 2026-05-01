@@ -512,7 +512,7 @@ mod vault {
         RecipientPublicKeys, RecipientWrap, FILE_KIND_BLOCK,
     };
     use secretary_core::vault::conflict::merge_record;
-    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue};
+    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue, UnknownValue};
     use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
     /// Fixed-size signature suffix per §6.1: author_fp(16) + sig_ed_len(2) +
@@ -553,11 +553,55 @@ mod vault {
         )
     }
 
+    /// Hand-encode a small unsigned integer as canonical CBOR (major
+    /// type 0). 0..=23 is a single info byte; 24..=255 is `0x18` + one
+    /// trailing byte. Both are v1-canonical (shortest encoding) and
+    /// pass `reject_floats_and_tags`. Picked over an arbitrary CBOR
+    /// strategy so the test stays focused on the merge semantics; the
+    /// canonical-encode/decode round-trip itself is covered by the
+    /// fixed KATs and `vault::canonical` tests.
+    fn cbor_uint_bytes(n: u8) -> Vec<u8> {
+        if n <= 23 {
+            vec![n]
+        } else {
+            vec![0x18, n]
+        }
+    }
+
+    /// Strategy for the record-level `unknown` map. Keys are short
+    /// distinct ASCII tokens; values are v1-canonical CBOR encodings of
+    /// small unsigned integers. Two mostly-empty distributions plus a
+    /// populated one keep the proptest tractable while still
+    /// exercising the `merge_unknown_map` LWW path (collisions on
+    /// shared keys, single-side keys preserved verbatim) under
+    /// arbitrary inputs.
+    fn unknown_map_strategy() -> impl Strategy<Value = BTreeMap<String, UnknownValue>> {
+        let key = prop_oneof![
+            Just("v2_a".to_string()),
+            Just("v2_b".to_string()),
+            Just("v2_c".to_string()),
+        ];
+        prop::collection::btree_map(key, any::<u8>(), 0..=3).prop_map(|raw| {
+            raw.into_iter()
+                .map(|(k, n)| {
+                    let bytes = cbor_uint_bytes(n);
+                    let v = UnknownValue::from_canonical_cbor(&bytes)
+                        .expect("hand-encoded canonical CBOR uint");
+                    (k, v)
+                })
+                .collect()
+        })
+    }
+
     /// Strategy for `Record`. `record_type` is drawn from a small fixed set
     /// plus a "future_unknown" string so the property exercises both the
     /// §6.3.1 standard types and the open-ended-string contract. Field
     /// names are short ASCII to keep the strategy tractable. Record-level
-    /// `unknown` left empty — same rationale as `record_field_strategy`.
+    /// `unknown` left empty — same rationale as `record_field_strategy`,
+    /// and Properties I/J/K assert CRDT laws that the §11.3 identity-
+    /// metadata override breaks for non-empty `unknown` (see
+    /// `record_with_unknown_strategy` for Property L's stronger
+    /// strategy).
     fn record_strategy() -> impl Strategy<Value = Record> {
         let record_type = prop_oneof![
             Just("login".to_string()),
@@ -599,6 +643,20 @@ mod vault {
                     }
                 },
             )
+    }
+
+    /// Strategy for `Record` with a populated record-level `unknown`
+    /// map — used only by Property L. Property L asserts §11.5
+    /// well-formedness + the self-merge fixed point, neither of which
+    /// is violated by the §11.3 identity-metadata override. The CRDT
+    /// laws (commutativity / associativity / idempotence) asserted by
+    /// Properties I/J/K *are* broken by the override on non-empty
+    /// `unknown`, so I/J/K continue to use the empty-`unknown` strategy.
+    fn record_with_unknown_strategy() -> impl Strategy<Value = Record> {
+        (record_strategy(), unknown_map_strategy()).prop_map(|(mut r, unknown)| {
+            r.unknown = unknown;
+            r
+        })
     }
 
     /// Strategy for an ad-hoc `RecipientWrap`. The four `HybridWrap`
@@ -1158,11 +1216,25 @@ mod vault {
         ///
         /// `record_uuid` is unified as in the other properties; no
         /// other input canonicalisation is applied.
+        ///
+        /// Property L uses `record_with_unknown_strategy` (rather than
+        /// `record_strategy`), so the fixed-point check also exercises
+        /// `merge_unknown_map`'s LWW path: any future regression in
+        /// unknown-map canonicalisation (mirror of the `merge_tags`
+        /// LWW-clone bug fixed in this PR) would surface as a
+        /// self-merge inequality. The §11.5 well-formedness and
+        /// fixed-point invariants Property L asserts are preserved by
+        /// the §11.3 identity-metadata override on `unknown`. The
+        /// stronger CRDT laws (commutativity / associativity /
+        /// idempotence) asserted by Properties I/J/K are *not*
+        /// preserved under the override on non-empty `unknown`, which
+        /// is why those properties continue to use the empty-`unknown`
+        /// strategy.
         #[test]
         fn crdt_merge_record_well_formed_under_arbitrary_inputs(
             uuid in any::<[u8; 16]>(),
-            a in record_strategy(),
-            b in record_strategy(),
+            a in record_with_unknown_strategy(),
+            b in record_with_unknown_strategy(),
         ) {
             let mut a = a;
             let mut b = b;
