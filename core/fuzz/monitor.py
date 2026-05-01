@@ -562,8 +562,11 @@ class MonitorApp:
             ui.label(target).classes("text-h6")
             sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
             prefill = self.state.get("runs_caps", {}).get(target, "")
+            # Label shortened from "runs cap (blank = open-ended)" so it
+            # fits the w-96 card column width without being clipped to
+            # `runs cap (blank = open…`.
             runs_cap_input = ui.input(
-                "runs cap (blank = open-ended)",
+                "runs cap (blank = ∞)",
                 value=str(prefill) if prefill else "",
             ).props("dense")
             status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
