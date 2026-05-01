@@ -111,6 +111,16 @@ A *block* is the unit of both encryption and sharing. A block contains 1 or more
 
 The docs are normative: a clean-room implementation in any language can be built from them alone, without reading the Rust source. This is verified during implementation by a Python conformance script that decrypts a published reference vault using only the spec.
 
+## Testing and hardening
+
+### Fuzzing
+
+A coverage-guided fuzz harness for the wire-format decoders lives in
+[`core/fuzz/`](core/fuzz/README.md). It uses `cargo-fuzz` on a
+path-scoped nightly toolchain. See the README in that directory for
+how to run it and how to promote findings into durable regression
+KATs.
+
 ## License
 
 AGPL 3.0. A commercial license is available for entities wanting to ship closed-source derivatives. See [LICENSE](LICENSE).
