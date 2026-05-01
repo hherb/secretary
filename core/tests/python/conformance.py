@@ -1947,6 +1947,38 @@ def py_merge_unknown_map(local_unk: dict, remote_unk: dict) -> dict:
     return out
 
 
+def py_clamp_death_clock(rec: dict) -> int:
+    """Canonicalise a record's `tombstoned_at_ms` to the §11.5 invariant
+    before the lattice join in `py_merge_record`. Mirrors Rust's
+    `clamp_death_clock` in `core/src/vault/conflict.rs`.
+
+    Returns `tombstoned_at_ms` clamped to `[0, last_mod_ms]`. For
+    tombstoned inputs (`tombstone == true`), additionally enforces
+    equality with `last_mod_ms` per §11.5: a currently-tombstoned
+    record was tombstoned at its most recent edit. The two clamps
+    collapse to the same `last_mod_ms` value on tombstoned inputs.
+
+    Two malformations are defended against:
+
+    * Tombstoned input with `tombstoned_at_ms != last_mod_ms`:
+      violates `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms`.
+      Inflated DC propagates through merge; lowered DC suppresses
+      the death clock's advance and lets pre-tombstone stale fields
+      slip through the §11.3 staleness filter.
+    * Live input with `tombstoned_at_ms > last_mod_ms`: violates
+      `tombstoned_at_ms ≤ last_mod_ms`. With `tombstoned_at_ms =
+      2**64 - 1` the merged DC would clamp every field with
+      `last_mod < 2**64 - 1`, wiping the merged record's fields
+      while keeping it live — a deniable data-loss attack from a
+      hostile sync peer.
+
+    No-op on well-formed inputs. Pure function of one record.
+    """
+    if rec["tombstone"]:
+        return rec["last_mod_ms"]
+    return min(rec.get("tombstoned_at_ms", 0), rec["last_mod_ms"])
+
+
 def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     """Merge two records with the same record_uuid per §11. Returns the
     merged record dict and the list of field collisions (in sorted
@@ -1978,29 +2010,10 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
 
     # Defensive clamp: enforce the §11.5 invariants on each input
-    # before the lattice join. Two malformations to defend against:
-    #
-    #  * Tombstoned input with `tombstoned_at_ms != last_mod_ms`:
-    #    violates `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms`.
-    #    Inflated DC propagates through merge; lowered DC suppresses
-    #    the death clock's advance and lets pre-tombstone stale fields
-    #    slip through the §11.3 staleness filter.
-    #  * Live input with `tombstoned_at_ms > last_mod_ms`: violates
-    #    `tombstoned_at_ms ≤ last_mod_ms`. With `tombstoned_at_ms =
-    #    2**64 - 1` the merged DC would clamp every field with
-    #    `last_mod < 2**64 - 1`, wiping the merged record's fields
-    #    while keeping it live — a deniable data-loss attack.
-    #
-    # Bidirectional clamp: tombstoned inputs forced to
-    # `last_mod_ms` exactly; live inputs clamped to `min(DC,
-    # last_mod_ms)`. No-op on well-formed inputs.
-    def _clamp_death_clock(rec: dict) -> int:
-        if rec["tombstone"]:
-            return rec["last_mod_ms"]
-        return min(rec.get("tombstoned_at_ms", 0), rec["last_mod_ms"])
-
-    local_dc = _clamp_death_clock(local)
-    remote_dc = _clamp_death_clock(remote)
+    # before the lattice join. See `py_clamp_death_clock` (module
+    # scope) for the rationale and the threat model.
+    local_dc = py_clamp_death_clock(local)
+    remote_dc = py_clamp_death_clock(remote)
     # §11.3 death clock: lattice join via max.
     death = max(local_dc, remote_dc)
 
