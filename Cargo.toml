@@ -5,6 +5,7 @@ members = [
     "ffi/secretary-ffi-py",
     "ffi/secretary-ffi-uniffi",
 ]
+exclude = ["core/fuzz"]
 
 [workspace.package]
 version = "0.1.0"

@@ -41,6 +41,9 @@ rand_core = "0.6"
 # range; that auto-bump is exactly what we don't want here.
 tempfile = "=3.27.0"
 
+[features]
+differential-replay = []
+
 [dev-dependencies]
 proptest = "1"
 rand_chacha = "0.3"

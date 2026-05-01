@@ -1,0 +1,70 @@
+[workspace]
+
+[package]
+name = "secretary-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+secretary-core = { path = ".." }
+
+# Mirror the workspace's `unsafe_code = "forbid"` lint. `core/fuzz/` is
+# excluded from `[workspace.members]` so it does not inherit
+# `[workspace.lints]` automatically; this block restores parity.
+[lints.rust]
+unsafe_code = "forbid"
+
+# Profile flags: see docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
+# "Profile flags and sanitizers".
+[profile.release]
+debug = true            # symbols for crash backtraces
+overflow-checks = true  # arithmetic overflow → panic → fuzzer finding
+debug-assertions = true # internal assert!() → panic → fuzzer finding
+
+[[bin]]
+name = "vault_toml"
+path = "fuzz_targets/vault_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "contact_card"
+path = "fuzz_targets/contact_card.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_file"
+path = "fuzz_targets/bundle_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_file"
+path = "fuzz_targets/manifest_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_file"
+path = "fuzz_targets/block_file.rs"
+test = false
+doc = false
+bench = false

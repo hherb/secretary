@@ -78,11 +78,11 @@ Path-scoped nightly pin so the rest of the workspace stays on stable.
 
 ```toml
 [toolchain]
-channel = "nightly-2026-04-30"
+channel = "nightly-2026-04-29"
 components = ["rustfmt", "clippy", "rust-src"]
 ```
 
-(`rust-src` is needed by some sanitizer builds. The pinned date can be moved by a future maintainer; keeping it specific gives reproducibility.)
+(`rust-src` is needed by some sanitizer builds. **Pin convention:** Rust nightly always lags the calendar by one day — the nightly published on day N is built from the previous day's commits. The pin therefore uses `<plan_date - 1>` so it resolves on the day the plan is executed. The pinned date can be moved by a future maintainer; keeping it specific gives reproducibility.)
 
 - [ ] **Step 4: Create `core/fuzz/.gitignore`**
 
@@ -178,15 +178,26 @@ cp core/tests/data/golden_vault_001/vault.toml core/fuzz/seeds/vault_toml/golden
 
 - [ ] **Step 4: Create a minimal valid seed**
 
-`core/fuzz/seeds/vault_toml/minimal.toml` — the smallest TOML that `vault_toml::decode` accepts. Read the `VaultToml` struct definition at [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs) and copy the field names. Concretely (verify by re-reading the struct before writing):
+`core/fuzz/seeds/vault_toml/minimal.toml` — the smallest TOML that `vault_toml::decode` accepts. Per the `VaultToml` struct at [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs), the required fields are: `format_version` (u16, must = `FORMAT_VERSION` = 1), `suite_id` (u16, must = `SUITE_ID` = 1), `vault_uuid` (16-byte UUID in 8-4-4-4-12 hex form), `created_at_ms` (u64), and a `[kdf]` section with `algorithm = "argon2id"`, `version = "1.3"`, `memory_kib`, `iterations`, `parallelism`, `salt_b64` (base64 of 32 bytes).
 
 ```toml
-schema_version = 1
+format_version = 1
+suite_id = 1
 vault_uuid = "00000000-0000-0000-0000-000000000000"
-suite = "v1"
+created_at_ms = 1714060800000
+
+[kdf]
+algorithm = "argon2id"
+version = "1.3"
+memory_kib = 65536
+iterations = 3
+parallelism = 1
+salt_b64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 ```
 
-(If the struct has more required fields, add them. The point is: smallest accepted input.)
+(`AAAA...AAAA=` is the base64 of 32 zero bytes. Verify by `python -c 'import base64; print(len(base64.b64decode("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")))'` — should print `32`.)
+
+If the struct gains required fields after the plan was written, the implementer should re-read [core/src/unlock/vault_toml.rs](../../../core/src/unlock/vault_toml.rs) and adjust accordingly. The point is: smallest accepted input.
 
 - [ ] **Step 5: Create an empty seed**
 
@@ -264,7 +275,10 @@ use std::path::PathBuf;
 use secretary_core::vault::record::{self, Record /*, plus exact item types from the module */};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir: PathBuf = ["core", "fuzz", "seeds", "record"].iter().collect();
+    // Anchor on CARGO_MANIFEST_DIR (set by Cargo at compile time to the
+    // package root, i.e. `core/`) so the example produces correct output
+    // regardless of the working directory it was invoked from.
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/record");
     fs::create_dir_all(&out_dir)?;
 
     // ──────────────────────────────────────────────────────────────────────
@@ -521,8 +535,8 @@ Roundtrip oracle. Seeds copied directly from existing committed CBOR.
 **Files:**
 - Modify: `core/fuzz/Cargo.toml`
 - Create: `core/fuzz/fuzz_targets/contact_card.rs`
-- Create: `core/fuzz/seeds/contact_card/unsigned.cbor`
-- Create: `core/fuzz/seeds/contact_card/signed.cbor`
+- Create: `core/fuzz/seeds/contact_card/with_sigs.cbor` (full ContactCard, signature fields populated; decodes successfully and exercises the roundtrip oracle)
+- Create: `core/fuzz/seeds/contact_card/pre_sig.cbor` (pre-signature form, missing `self_sig_ed`/`self_sig_pq`; decodes as `Err(missing-field)` and exercises the error path)
 
 - [ ] **Step 1: Add `[[bin]]` entry**
 
@@ -539,8 +553,12 @@ bench = false
 
 ```bash
 mkdir -p core/fuzz/seeds/contact_card
-cp core/tests/data/card_kat.cbor        core/fuzz/seeds/contact_card/unsigned.cbor
-cp core/tests/data/card_kat_signed.cbor core/fuzz/seeds/contact_card/signed.cbor
+# Naming gotcha: card_kat.cbor is the FULL signed card; card_kat_signed.cbor
+# is the PRE-SIGNATURE form (the bytes that get signed). The "_signed" suffix
+# means "the signed-bytes payload" not "a card with signatures". See
+# core/tests/identity.rs:65-74 for the canonical constants and their role.
+cp core/tests/data/card_kat.cbor        core/fuzz/seeds/contact_card/with_sigs.cbor
+cp core/tests/data/card_kat_signed.cbor core/fuzz/seeds/contact_card/pre_sig.cbor
 ```
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/contact_card.rs`**
@@ -612,12 +630,21 @@ cp core/tests/data/golden_vault_001/identity.bundle.enc core/fuzz/seeds/bundle_f
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/bundle_file.rs`**
 
+Use the auditor-friendly comment style established in earlier targets, but **adapt the rationale** — `bundle_file::decode` is structurally canonical (fixed-width big-endian binary format with explicit trailing-byte rejection at decode end), NOT gated by an internal re-encode-and-compare check. The roundtrip oracle is still useful as a regression guard, but the comment must say so accurately.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::unlock::bundle_file;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: bundle_file::decode must equal
+    // bundle_file::encode(bundle_file::decode(input)) for any input the
+    // decoder accepts. The bundle file is a fixed-width big-endian binary
+    // format with explicit trailing-byte rejection, so any successfully-
+    // decoded input round-trips by construction. This external check is
+    // defense-in-depth — it catches future regressions in the encode/decode
+    // pair (e.g. a new variable-length field added on one side only).
     if let Ok(parsed) = bundle_file::decode(data) {
         let reencoded = bundle_file::encode(&parsed);
         assert_eq!(
@@ -629,7 +656,7 @@ fuzz_target!(|data: &[u8]| {
 });
 ```
 
-(Note: `bundle_file::encode` returns `Vec<u8>` directly per its signature — no `Result`.)
+(Note: `bundle_file::encode` returns `Vec<u8>` directly per its signature — no `Result`, so no `.expect(...)` between decode and assert.)
 
 - [ ] **Step 4: Build, seed-run, smoke run**
 
@@ -677,12 +704,23 @@ cp core/tests/data/golden_vault_001/manifest.cbor.enc core/fuzz/seeds/manifest_f
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/manifest_file.rs`**
 
+`decode_manifest_file` parses the §4.1 binary frame only: fixed-width header, AEAD nonce, ciphertext length, AEAD ciphertext bytes, AEAD tag, owner fingerprint, and a hybrid signature suffix. The CBOR-encoded manifest payload lives inside `aead_ct` and is **encrypted** — `decode_manifest_file` never sees it as CBOR. The roundtrip oracle therefore checks the binary frame's encode/decode symmetry, not CBOR canonicality.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::vault::manifest;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: decode_manifest_file must equal
+    // encode_manifest_file(decode_manifest_file(input)) for any input the
+    // decoder accepts. The manifest file is binary-framed (§4.1): a fixed
+    // header, AEAD nonce + length-prefixed ciphertext + tag, owner
+    // fingerprint, and trailing hybrid signature. The CBOR manifest payload
+    // is encrypted inside aead_ct and never visited by this decoder, so
+    // this assertion catches encoder/decoder asymmetries in the binary
+    // frame fields (length-prefix width, signature byte ordering,
+    // fingerprint encoding) — not CBOR canonicality, which is opaque here.
     if let Ok(parsed) = manifest::decode_manifest_file(data) {
         let reencoded = manifest::encode_manifest_file(&parsed)
             .expect("encode after successful decode must not fail");
@@ -744,12 +782,23 @@ cp core/tests/data/golden_vault_001/blocks/11223344-5566-7788-99aa-bbccddeeff00.
 
 - [ ] **Step 3: Create `core/fuzz/fuzz_targets/block_file.rs`**
 
+`decode_block_file` parses §6.1's binary frame: header, §6.2 recipient table (1208 B per entry, sorted by fingerprint), AEAD body (nonce + length-prefixed ciphertext + tag), and a trailing hybrid signature suffix. The §6.3 CBOR plaintext is **encrypted** inside `aead_ct` — the inner `decode_plaintext` path has its own strict canonical-input gate, but `decode_block_file` itself never sees the CBOR. The roundtrip oracle checks the binary frame and recipient table — both of which are structurally encoded but not gated by re-encode-and-compare at the file layer.
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use secretary_core::vault::block;
 
 fuzz_target!(|data: &[u8]| {
+    // External roundtrip oracle: decode_block_file must equal
+    // encode_block_file(decode_block_file(input)) for any input the decoder
+    // accepts. The block file is binary-framed (§6.1 header, §6.2 recipient
+    // table, AEAD body, trailing hybrid signature suffix). The §6.3 CBOR
+    // plaintext is encrypted inside aead_ct and never visited by this
+    // decoder, so this assertion catches encoder/decoder asymmetries in the
+    // binary frame and recipient table — recipient-entry length, sort
+    // order, length-prefix width, signature suffix layout — not CBOR
+    // canonicality, which is opaque here.
     if let Ok(parsed) = block::decode_block_file(data) {
         let reencoded = block::encode_block_file(&parsed)
             .expect("encode after successful decode must not fail");
@@ -815,7 +864,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn replay_dir<F: Fn(&[u8])>(target: &str, decoder: F) {
-    let dir: PathBuf = ["tests", "data", "fuzz_regressions", target].iter().collect();
+    // CARGO_MANIFEST_DIR resolves to `core/` at compile time. Anchoring on it
+    // makes the test cwd-independent (cargo test sets cwd to the package root
+    // by default, but explicit anchoring removes that as a hidden requirement).
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/fuzz_regressions")
+        .join(target);
     for entry in fs::read_dir(&dir).expect("regression dir exists") {
         let entry = entry.expect("readable dir entry");
         let path = entry.path();
@@ -978,19 +1032,23 @@ const TARGETS: &[&str] = &[
 ];
 
 fn corpus_dirs(target: &str) -> Vec<PathBuf> {
+    // CARGO_MANIFEST_DIR resolves to `core/` at compile time, so all paths
+    // below are anchored on the secretary-core package root regardless of
+    // the working directory the test was invoked from.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut dirs = vec![];
     // Runtime corpus (gitignored, may not exist locally).
-    let runtime: PathBuf = ["..", "core", "fuzz", "corpus", target].iter().collect();
+    let runtime = manifest.join("fuzz/corpus").join(target);
     if runtime.is_dir() {
         dirs.push(runtime);
     }
     // Committed seeds (always present).
-    let seeds: PathBuf = ["..", "core", "fuzz", "seeds", target].iter().collect();
+    let seeds = manifest.join("fuzz/seeds").join(target);
     if seeds.is_dir() {
         dirs.push(seeds);
     }
     // Committed diff regressions.
-    let diffs: PathBuf = ["tests", "data", "diff_regressions", target].iter().collect();
+    let diffs = manifest.join("tests/data/diff_regressions").join(target);
     if diffs.is_dir() {
         dirs.push(diffs);
     }
