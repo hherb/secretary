@@ -196,11 +196,37 @@ class RunState:
             self.log_tail = deque(maxlen=20)
 
 
+import json
+
 from nicegui import ui
 
 # Path constants (resolved at module import time so tests don't break).
 _FUZZ_DIR = Path(__file__).parent  # core/fuzz/
 _CARGO_TOML = _FUZZ_DIR / "Cargo.toml"
+_STATE_FILE = _FUZZ_DIR / ".monitor-state.json"
+
+
+def load_state() -> dict:
+    """Load .monitor-state.json with defaults for missing keys."""
+    defaults = {
+        "runs_caps": {},
+        "plateau_k": 10,
+    }
+    if not _STATE_FILE.is_file():
+        return defaults
+    try:
+        loaded = json.loads(_STATE_FILE.read_text())
+        return {**defaults, **loaded}
+    except (json.JSONDecodeError, OSError):
+        return defaults
+
+
+def save_state(state: dict) -> None:
+    """Write .monitor-state.json. Ignored failures (cosmetic feature)."""
+    try:
+        _STATE_FILE.write_text(json.dumps(state, indent=2))
+    except OSError:
+        pass
 
 
 class MonitorApp:
@@ -215,7 +241,8 @@ class MonitorApp:
             for t in targets
             for s in ("asan", "ubsan")
         }
-        self.plateau_k = 10  # default; could be configurable later
+        self.state = load_state()
+        self.plateau_k = self.state.get("plateau_k", 10)
 
     def render(self) -> None:
         """Build the full page UI."""
@@ -255,6 +282,9 @@ class MonitorApp:
         rs.pulses.clear()
         rs.log_tail.clear()
         rs.runs_cap = runs_cap
+        if runs_cap is not None:
+            self.state["runs_caps"][target] = runs_cap
+            save_state(self.state)
         rs.crash_path = None
         rs.stop_reason = None
         rs.started_at = time.monotonic()
@@ -355,7 +385,11 @@ class MonitorApp:
         with ui.card().classes("w-96"):
             ui.label(target).classes("text-h6")
             sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
-            runs_cap_input = ui.input("runs cap (blank = open-ended)", value="").props("dense")
+            prefill = self.state.get("runs_caps", {}).get(target, "")
+            runs_cap_input = ui.input(
+                "runs cap (blank = open-ended)",
+                value=str(prefill) if prefill else "",
+            ).props("dense")
             status_label = ui.label("status: idle")
             crash_label = ui.label("")  # filled in by reactive update
 
