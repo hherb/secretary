@@ -172,3 +172,36 @@ class TestFindNightlyToolchain:
     def test_returns_none_when_rustup_home_missing(self, tmp_path: Path):
         rustup_home = tmp_path / "does-not-exist"
         assert find_nightly_toolchain(rustup_home) is None
+
+
+from monitor import build_subprocess_env
+
+
+class TestBuildSubprocessEnv:
+    def test_prepends_nightly_bin_to_path(self):
+        nightly_dir = Path("/Users/me/.rustup/toolchains/nightly-2026-04-29-x")
+        base_env = {"PATH": "/usr/local/bin:/usr/bin", "HOME": "/Users/me"}
+        env = build_subprocess_env(nightly_dir, base_env)
+        assert env["PATH"].startswith("/Users/me/.rustup/toolchains/nightly-2026-04-29-x/bin:")
+        assert env["PATH"].endswith(":/usr/local/bin:/usr/bin")
+        assert env["HOME"] == "/Users/me"
+
+    def test_preserves_other_env_vars(self):
+        nightly_dir = Path("/n")
+        base_env = {"PATH": "/usr/bin", "RUSTFLAGS": "-Dwarnings", "FOO": "bar"}
+        env = build_subprocess_env(nightly_dir, base_env)
+        assert env["RUSTFLAGS"] == "-Dwarnings"
+        assert env["FOO"] == "bar"
+
+    def test_handles_missing_path(self):
+        nightly_dir = Path("/n")
+        base_env: dict[str, str] = {}  # no PATH key
+        env = build_subprocess_env(nightly_dir, base_env)
+        assert env["PATH"] == "/n/bin"
+
+    def test_does_not_mutate_input(self):
+        nightly_dir = Path("/n")
+        base_env = {"PATH": "/usr/bin"}
+        original = dict(base_env)
+        build_subprocess_env(nightly_dir, base_env)
+        assert base_env == original

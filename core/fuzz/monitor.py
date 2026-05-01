@@ -113,6 +113,22 @@ def find_nightly_toolchain(rustup_home: Path) -> Path | None:
     return max(nightlies, key=lambda p: p.stat().st_mtime)
 
 
+def build_subprocess_env(nightly_dir: Path, base_env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of base_env with `nightly_dir/bin` prepended to PATH.
+
+    PATH may be absent from base_env (returns just `nightly_dir/bin`).
+    The input dict is not mutated.
+    """
+    env = dict(base_env)
+    nightly_bin = str(nightly_dir / "bin")
+    existing_path = env.get("PATH")
+    if existing_path:
+        env["PATH"] = f"{nightly_bin}:{existing_path}"
+    else:
+        env["PATH"] = nightly_bin
+    return env
+
+
 def main() -> None:
     """Entry point. Real implementation arrives in Task 9."""
     print("monitor scaffold OK")
