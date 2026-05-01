@@ -208,6 +208,54 @@ def format_pulse_readout(pulse: Pulse | None) -> str:
     )
 
 
+def format_elapsed(seconds: float) -> str:
+    """Render `time.monotonic()` differences as `mm:ss` or `h:mm:ss`.
+
+    Truncates fractional seconds (sub-second monotonic noise should not
+    show as flicker between `00:07` and `00:08`). Negative input is
+    clamped to zero so a defensive `max(0, ...)` is unnecessary at the
+    call site.
+    """
+    s = max(0, int(seconds))
+    h, rest = divmod(s, 3600)
+    m, sec = divmod(rest, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
+
+
+def format_human_count(n: int) -> str:
+    """SI-suffix decimal counter formatting (k = 1000, M = 1_000_000).
+
+    Used for both `exec_count` and `runs_cap`. Trailing `.0` is stripped
+    so round numbers read as `1k` not `1.0k`. Decimal SI is correct here
+    (these are counts, not bytes); libFuzzer's `corp:` byte-formatter
+    uses a different convention (k = 1024, Mb = 1024*1024) that we
+    deliberately don't share.
+    """
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return _trim_decimal(n / 1000) + "k"
+    if n < 1_000_000_000:
+        return _trim_decimal(n / 1_000_000) + "M"
+    return _trim_decimal(n / 1_000_000_000) + "G"
+
+
+def _trim_decimal(v: float) -> str:
+    """Render `v` with one decimal, then strip a trailing `.0`."""
+    s = f"{v:.1f}"
+    return s.removesuffix(".0")
+
+
+def format_runs_progress(exec_count: int, runs_cap: int | None) -> str:
+    """`exec_count / runs_cap` (e.g. '1.2M / 5M') when the campaign has
+    a cap; just `exec_count` (open-ended) otherwise."""
+    if runs_cap is None:
+        return format_human_count(exec_count)
+    return f"{format_human_count(exec_count)} / {format_human_count(runs_cap)}"
+
+
 @dataclass
 class RunState:
     """Per-(target, sanitizer) lifecycle state.
@@ -431,6 +479,8 @@ class MonitorApp:
             ).props("dense")
             status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
             pulse_label = ui.label(format_pulse_readout(None)).classes("text-mono text-sm")
+            elapsed_label = ui.label("elapsed: —").classes("text-mono text-sm")
+            progress_label = ui.label("runs: —").classes("text-mono text-sm")
             crash_label = ui.label("")  # filled in by reactive update
 
             # Single per-card 1 Hz tick that owns every reactive label on the
@@ -447,6 +497,20 @@ class MonitorApp:
                 status_label.classes(replace=status_badge_class(rs.status))
                 pulse_label.text = format_pulse_readout(
                     rs.pulses[-1] if rs.pulses else None
+                )
+                # Elapsed: tick live while RUNNING, freeze at terminal status
+                # (no update -> last value sticks). Show '—' when the card
+                # has never been started.
+                if rs.status == Status.RUNNING:
+                    elapsed_label.text = (
+                        f"elapsed: {format_elapsed(time.monotonic() - rs.started_at)}"
+                    )
+                elif rs.started_at == 0.0:
+                    elapsed_label.text = "elapsed: —"
+                progress_label.text = "runs: " + (
+                    format_runs_progress(rs.pulses[-1].exec_count, rs.runs_cap)
+                    if rs.pulses
+                    else "—"
                 )
                 if rs.status == Status.CRASHED and rs.crash_path:
                     crash_label.text = f"CRASH: {rs.crash_path}"

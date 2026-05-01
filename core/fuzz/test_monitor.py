@@ -344,3 +344,92 @@ class TestFormatPulseReadout:
         # is reserved for 'no Pulse at all'.
         p = Pulse(exec_count=0, cov=0, ft=0, corp=0, exec_s=0, rss=0)
         assert format_pulse_readout(p) == "cov 0 / ft 0 / corp 0 / 0 exec/s / 0 MB"
+
+
+from monitor import format_elapsed, format_human_count, format_runs_progress
+
+
+class TestFormatElapsed:
+    """Elapsed-since-spawn rendered in `mm:ss` for short runs and
+    `h:mm:ss` once the campaign crosses an hour."""
+
+    def test_zero(self):
+        assert format_elapsed(0) == "00:00"
+
+    def test_under_a_minute(self):
+        assert format_elapsed(7) == "00:07"
+
+    def test_full_minute(self):
+        assert format_elapsed(60) == "01:00"
+
+    def test_typical_minutes_seconds(self):
+        assert format_elapsed(65) == "01:05"
+        assert format_elapsed(305) == "05:05"
+
+    def test_just_under_an_hour(self):
+        # Stays in mm:ss until exactly 1 hour.
+        assert format_elapsed(3599) == "59:59"
+
+    def test_one_hour_switches_to_h_mm_ss(self):
+        assert format_elapsed(3600) == "1:00:00"
+
+    def test_hours_minutes_seconds(self):
+        assert format_elapsed(3661) == "1:01:01"
+
+    def test_fractional_seconds_truncated(self):
+        # Sub-second time.monotonic() differences shouldn't show as 00:00.5;
+        # truncate to whole seconds.
+        assert format_elapsed(7.9) == "00:07"
+
+    def test_negative_clamped_to_zero(self):
+        # Defensive against clock skew between time.monotonic() reads.
+        assert format_elapsed(-1) == "00:00"
+
+
+class TestFormatHumanCount:
+    """SI-suffix counter formatting (decimal: 1k = 1,000, 1M = 1,000,000)
+    used for both exec_count and runs_cap. Trailing `.0` is stripped so
+    round numbers read as `1k` not `1.0k`."""
+
+    def test_below_thousand(self):
+        assert format_human_count(0) == "0"
+        assert format_human_count(999) == "999"
+
+    def test_round_thousand(self):
+        assert format_human_count(1_000) == "1k"
+
+    def test_kilo_with_decimal(self):
+        assert format_human_count(1_234) == "1.2k"
+
+    def test_kilo_double_digit(self):
+        assert format_human_count(12_345) == "12.3k"
+
+    def test_kilo_triple_digit(self):
+        assert format_human_count(123_456) == "123.5k"
+
+    def test_round_million(self):
+        assert format_human_count(1_000_000) == "1M"
+        assert format_human_count(5_000_000) == "5M"
+
+    def test_million_with_decimal(self):
+        assert format_human_count(1_200_000) == "1.2M"
+
+    def test_giga(self):
+        assert format_human_count(1_234_567_890) == "1.2G"
+
+
+class TestFormatRunsProgress:
+    """`exec_count / runs_cap` (e.g. '1.2M / 5M') when capped, just
+    `exec_count` when open-ended."""
+
+    def test_open_ended(self):
+        assert format_runs_progress(1_234, None) == "1.2k"
+
+    def test_open_ended_zero(self):
+        assert format_runs_progress(0, None) == "0"
+
+    def test_capped(self):
+        assert format_runs_progress(1_200_000, 5_000_000) == "1.2M / 5M"
+
+    def test_capped_at_zero(self):
+        assert format_runs_progress(0, 1_000_000) == "0 / 1M"
