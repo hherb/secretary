@@ -710,6 +710,188 @@
         ],
         "collisions": []
       }
+    },
+    {
+      "name": "concurrent_record_unknown_collision_lex_larger_wins",
+      "description": "Concurrent merge with same record_uuid carrying record-level `unknown` (forward-compat) keys with differing canonical-CBOR-encoded values. Per §11.1: a key present in only one side is kept verbatim; a key present in both with differing canonical-CBOR bytes takes the lex-larger bytes. The values here are CBOR-encoded integers (0-23 → single-byte encoding `0x00 + value`): local has v2_collide=5 (`0x05`) and v2_local_only=1 (`0x01`); remote has v2_collide=10 (`0x0a`) and v2_remote_only=2 (`0x02`). On v2_collide, lex compare `0x05` < `0x0a` → remote wins. v2_local_only and v2_remote_only are kept verbatim. The vector also exercises the cross-language hex-vs-bytes lex-compare equivalence in py_merge_unknown_map. No tombstones, so the §11.3 identity-metadata override does not apply.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {
+                "v2_collide": "05",
+                "v2_local_only": "01"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {
+                "v2_collide": "0a",
+                "v2_remote_only": "02"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {
+                "v2_collide": "0a",
+                "v2_local_only": "01",
+                "v2_remote_only": "02"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
+    },
+    {
+      "name": "concurrent_tombstone_wins_preserves_live_unknown",
+      "description": "§11.3 carve-out for record-level `unknown`: even on a tombstone-wins outcome, the per-key §11.1 lattice join applies — disjoint keys from the live side survive and shared keys take lex-larger canonical-CBOR bytes. The §11.3 identity-metadata override still applies to `tags` and `record_type` (tombstoning side wholesale). Local (live) at T_l=50 has unknown={v2_collide=05, v2_live_only=01}; remote (tombstoned) at T_d=100 has unknown={v2_collide=0a, v2_tomb_only=02}. Outcome: RemoteTombstoneWins. Expected merged: tombstoned at last_mod=100, tombstoned_at_ms=100; record_type='login' (remote/tombstoning, override); tags=['archived'] (remote/tombstoning, override); fields=[] (§6.3 tombstoned has no fields); unknown={v2_collide=0a (lex-larger on collision), v2_live_only=01 (live preserved!), v2_tomb_only=02 (tomb preserved)}. Pre-carve-out Rust would have dropped 'v2_live_only' under the wholesale-take and failed this vector — that drop is the associativity violation the carve-out fixes.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "totp",
+              "fields": [],
+              "tags": ["live_tag"],
+              "created_at_ms": 5,
+              "last_mod_ms": 50,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {
+                "v2_collide": "05",
+                "v2_live_only": "01"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": true,
+              "tombstoned_at_ms": 100,
+              "unknown_hex": {
+                "v2_collide": "0a",
+                "v2_tomb_only": "02"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "10101010101010101010101010101010",
+              "record_type": "login",
+              "fields": [],
+              "tags": ["archived"],
+              "created_at_ms": 5,
+              "last_mod_ms": 100,
+              "tombstone": true,
+              "tombstoned_at_ms": 100,
+              "unknown_hex": {
+                "v2_collide": "0a",
+                "v2_live_only": "01",
+                "v2_tomb_only": "02"
+              }
+            }
+          ]
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
     }
   ]
 }

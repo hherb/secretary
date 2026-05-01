@@ -476,6 +476,34 @@ fn parse_record_field(spec: &serde_json::Value) -> RecordField {
     }
 }
 
+/// Parse an `unknown_hex` JSON object — `{key: hex-encoded canonical
+/// CBOR bytes}` — into the in-memory `BTreeMap<String, UnknownValue>`
+/// shape. Absent key → empty map.
+fn parse_unknown_map(spec: &serde_json::Value) -> BTreeMap<String, UnknownValue> {
+    let mut out = BTreeMap::new();
+    if let Some(map) = spec.get("unknown_hex").and_then(|v| v.as_object()) {
+        for (key, val) in map {
+            let hex = val.as_str().expect("unknown_hex value is a hex string");
+            assert!(
+                hex.len() % 2 == 0,
+                "unknown_hex value for key {key:?} has odd length {} \
+                 (hex must encode whole bytes)",
+                hex.len()
+            );
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+                .collect();
+            out.insert(
+                key.clone(),
+                UnknownValue::from_canonical_cbor(&bytes)
+                    .expect("KAT carries v1-canonical CBOR bytes"),
+            );
+        }
+    }
+    out
+}
+
 fn parse_record(spec: &serde_json::Value) -> Record {
     let mut fields = BTreeMap::new();
     for f in spec["fields"].as_array().expect("fields[]") {
@@ -502,7 +530,7 @@ fn parse_record(spec: &serde_json::Value) -> Record {
             .get("tombstoned_at_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
-        unknown: BTreeMap::new(),
+        unknown: parse_unknown_map(spec),
     }
 }
 
@@ -519,7 +547,7 @@ fn parse_block(spec: &serde_json::Value) -> BlockPlaintext {
         block_name: spec["block_name"].as_str().expect("block_name").to_string(),
         schema_version: spec["schema_version"].as_u64().expect("schema_version") as u32,
         records,
-        unknown: BTreeMap::new(),
+        unknown: parse_unknown_map(spec),
     }
 }
 

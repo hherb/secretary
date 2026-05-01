@@ -512,7 +512,7 @@ mod vault {
         RecipientPublicKeys, RecipientWrap, FILE_KIND_BLOCK,
     };
     use secretary_core::vault::conflict::merge_record;
-    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue};
+    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue, UnknownValue};
     use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
     /// Fixed-size signature suffix per §6.1: author_fp(16) + sig_ed_len(2) +
@@ -553,11 +553,56 @@ mod vault {
         )
     }
 
+    /// Hand-encode a small unsigned integer as canonical CBOR (major
+    /// type 0). 0..=23 is a single info byte; 24..=255 is `0x18` + one
+    /// trailing byte. Both are v1-canonical (shortest encoding) and
+    /// pass `reject_floats_and_tags`. Picked over an arbitrary CBOR
+    /// strategy so the test stays focused on the merge semantics; the
+    /// canonical-encode/decode round-trip itself is covered by the
+    /// fixed KATs and `vault::canonical` tests.
+    fn cbor_uint_bytes(n: u8) -> Vec<u8> {
+        if n <= 23 {
+            vec![n]
+        } else {
+            vec![0x18, n]
+        }
+    }
+
+    /// Strategy for the record-level `unknown` map. Keys are short
+    /// distinct ASCII tokens; values are v1-canonical CBOR encodings of
+    /// small unsigned integers. Two mostly-empty distributions plus a
+    /// populated one keep the proptest tractable while still
+    /// exercising the `merge_unknown_map` LWW path (collisions on
+    /// shared keys, single-side keys preserved verbatim) under
+    /// arbitrary inputs.
+    fn unknown_map_strategy() -> impl Strategy<Value = BTreeMap<String, UnknownValue>> {
+        let key = prop_oneof![
+            Just("v2_a".to_string()),
+            Just("v2_b".to_string()),
+            Just("v2_c".to_string()),
+        ];
+        prop::collection::btree_map(key, any::<u8>(), 0..=3).prop_map(|raw| {
+            raw.into_iter()
+                .map(|(k, n)| {
+                    let bytes = cbor_uint_bytes(n);
+                    let v = UnknownValue::from_canonical_cbor(&bytes)
+                        .expect("hand-encoded canonical CBOR uint");
+                    (k, v)
+                })
+                .collect()
+        })
+    }
+
     /// Strategy for `Record`. `record_type` is drawn from a small fixed set
     /// plus a "future_unknown" string so the property exercises both the
     /// §6.3.1 standard types and the open-ended-string contract. Field
     /// names are short ASCII to keep the strategy tractable. Record-level
-    /// `unknown` left empty — same rationale as `record_field_strategy`.
+    /// `unknown` is populated via `unknown_map_strategy` so every
+    /// CRDT-law property (commutativity / associativity / idempotence /
+    /// well-formedness) covers non-empty `unknown` maps. Per the §11.3
+    /// carve-out (no override on `unknown`), the per-key lattice join
+    /// in §11.1 holds globally — so populating `unknown` no longer
+    /// breaks Property J/K.
     fn record_strategy() -> impl Strategy<Value = Record> {
         let record_type = prop_oneof![
             Just("login".to_string()),
@@ -575,17 +620,18 @@ mod vault {
         let tags_strategy = prop::collection::vec("[a-z]{1,8}", 0..=3);
 
         (
-            any::<[u8; 16]>(),    // record_uuid
-            record_type,          // record_type
-            fields_strategy,      // fields
-            tags_strategy,        // tags
-            any::<u64>(),         // created_at_ms
-            any::<u64>(),         // last_mod_ms
-            any::<bool>(),        // tombstone
-            any::<u64>(),         // tombstoned_at_ms (raw — canonicalised at use sites)
+            any::<[u8; 16]>(),       // record_uuid
+            record_type,             // record_type
+            fields_strategy,         // fields
+            tags_strategy,           // tags
+            any::<u64>(),            // created_at_ms
+            any::<u64>(),            // last_mod_ms
+            any::<bool>(),           // tombstone
+            any::<u64>(),            // tombstoned_at_ms (raw — canonicalised at use sites)
+            unknown_map_strategy(),  // unknown
         )
             .prop_map(
-                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned)| {
+                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned, unknown)| {
                     Record {
                         record_uuid,
                         record_type,
@@ -595,7 +641,7 @@ mod vault {
                         last_mod_ms: last,
                         tombstone,
                         tombstoned_at_ms: tombstoned,
-                        unknown: BTreeMap::new(),
+                        unknown,
                     }
                 },
             )
@@ -1111,6 +1157,107 @@ mod vault {
             let m = merge_record(&a, &a);
             prop_assert_eq!(&m.merged, &a);
             prop_assert!(m.collisions.is_empty());
+        }
+
+        /// Property L — `merge_record` produces a §11.5 well-formed
+        /// output for **arbitrary** (non-canonicalised, possibly
+        /// hostile) inputs, AND that output is a fixed point under
+        /// self-merge.
+        ///
+        /// Properties I, J, K above pre-canonicalise inputs via
+        /// `canonicalize_record`, so they certify CRDT correctness on
+        /// the canonical sub-domain only. The defensive clamp in
+        /// `merge_record` is supposed to canonicalise opportunistically
+        /// — i.e., merging arbitrary inputs (including the malformed
+        /// shapes a hostile sync peer might ship) must still produce a
+        /// well-formed merged record. Pre-PR review #2 flagged that
+        /// the proptest harness did not exercise this claim.
+        ///
+        /// Three invariants are asserted on the merged output, which
+        /// the merge code is responsible for enforcing regardless of
+        /// input well-formedness:
+        ///
+        /// * §11.5 / death-clock: `tombstoned_at_ms ≤ last_mod_ms`
+        ///   always (the clamp + lattice join cannot exceed the
+        ///   merged `last_mod_ms`, which is `max` of both sides').
+        /// * §11.5 / tombstone equality: `tombstone == true ⇒
+        ///   tombstoned_at_ms == last_mod_ms`.
+        /// * §6.3 / §11.3: `tombstone == true ⇒ fields.is_empty()`.
+        ///
+        /// Plus the canonicalisation-fixed-point claim:
+        ///
+        /// * `merge_record(m, m) == MergedRecord { merged: m,
+        ///   collisions: [] }` for `m = merge_record(a, b).merged` —
+        ///   the merge output is its own self-merge.
+        ///
+        /// This last property is the strongest of the four: it
+        /// implies the output is in canonical form (otherwise
+        /// self-merge would canonicalise further), which transitively
+        /// implies the §11.5 invariants the merge is responsible for.
+        /// The first three are kept as separate assertions so a
+        /// regression in any single invariant is reported precisely
+        /// rather than as a generic equality mismatch. Other §11.5
+        /// invariants (`tags` sorted+deduped, `last_mod_ms ≥
+        /// max(field.last_mod)`) are write-path responsibilities and
+        /// not enforced by the merge alone, so they are not asserted
+        /// here.
+        ///
+        /// `record_uuid` is unified as in the other properties; no
+        /// other input canonicalisation is applied.
+        ///
+        /// `record_strategy` populates record-level `unknown`, so the
+        /// fixed-point check also exercises `merge_unknown_map`'s LWW
+        /// path: any future regression in unknown-map canonicalisation
+        /// (mirror of the `merge_tags` LWW-clone bug fixed in this PR)
+        /// would surface as a self-merge inequality. Properties I/J/K
+        /// share the same strategy and likewise cover non-empty
+        /// `unknown` — the §11.3 carve-out (no override on `unknown`)
+        /// makes those CRDT laws hold on the full record domain.
+        #[test]
+        fn crdt_merge_record_well_formed_under_arbitrary_inputs(
+            uuid in any::<[u8; 16]>(),
+            a in record_strategy(),
+            b in record_strategy(),
+        ) {
+            let mut a = a;
+            let mut b = b;
+            a.record_uuid = uuid;
+            b.record_uuid = uuid;
+            // Intentionally NO canonicalize_record() — feed raw inputs.
+
+            let merged = merge_record(&a, &b).merged;
+
+            // §11.5 invariant 1: tombstoned_at_ms ≤ last_mod_ms.
+            prop_assert!(
+                merged.tombstoned_at_ms <= merged.last_mod_ms,
+                "§11.5 violated: merged.tombstoned_at_ms={} > last_mod_ms={}",
+                merged.tombstoned_at_ms,
+                merged.last_mod_ms
+            );
+
+            // §11.5 invariant 2: tombstone == true ⇒ tombstoned_at_ms == last_mod_ms.
+            if merged.tombstone {
+                prop_assert_eq!(
+                    merged.tombstoned_at_ms, merged.last_mod_ms,
+                    "§11.5 violated: tombstoned merged record has tombstoned_at_ms != last_mod_ms"
+                );
+                // §6.3 / §11.3: tombstoned merged record has empty fields.
+                prop_assert!(
+                    merged.fields.is_empty(),
+                    "§11.3 violated: tombstoned merged record has {} fields",
+                    merged.fields.len()
+                );
+            }
+
+            // Canonicalisation-fixed-point: self-merge of the merged
+            // output is a no-op. This implies the output is canonical;
+            // a regression here would mean the merge's first round of
+            // canonicalisation was incomplete (e.g., the clamp missed
+            // a malformation, or a tombstone-tie outcome left
+            // identity metadata in a non-canonical form).
+            let self_merged = merge_record(&merged, &merged);
+            prop_assert_eq!(&self_merged.merged, &merged);
+            prop_assert!(self_merged.collisions.is_empty());
         }
     }
 }

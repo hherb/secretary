@@ -1911,6 +1911,76 @@ def _value_lex_bytes(field: dict) -> bytes:
     raise ValueError(f"unknown value_type: {field['value_type']}")
 
 
+def py_merge_unknown_map(local_unk: dict, remote_unk: dict) -> dict:
+    """Per-key forward-compat unknown merge per §11.1 (record-level)
+    and §11.2 (block-level — same rule).
+
+    A key present in only one side is kept verbatim. A key present in
+    both with identical values is kept once. A key present in both
+    with differing values takes the lex-larger canonical-CBOR-encoded
+    value bytes.
+
+    The KAT carries each value as a hex string of canonical-CBOR
+    bytes (`unknown_hex: {key: "0a"}`). Rust's KAT loader decodes
+    hex via `u8::from_str_radix(_, 16)` which is case-insensitive,
+    so `"0A"` and `"0a"` both decode to byte `0x0a`. Raw lex compare
+    on hex strings does NOT match byte compare across mixed case
+    (e.g. `"a5"` vs `"B5"`: `'a' (0x61) > 'B' (0x42)` says L wins,
+    but byte `0xb5 > 0xa5` says R wins). We decode each side to
+    bytes for comparison and re-emit lowercase hex on output, so
+    Python and Rust agree on every (case-permuted) input.
+    """
+    out: dict[str, str] = {}
+    all_keys = set(local_unk.keys()) | set(remote_unk.keys())
+    for key in sorted(all_keys):
+        l_hex = local_unk.get(key)
+        r_hex = remote_unk.get(key)
+        if l_hex is not None and r_hex is not None:
+            l_bytes = bytes.fromhex(l_hex)
+            r_bytes = bytes.fromhex(r_hex)
+            if l_bytes >= r_bytes:
+                out[key] = l_bytes.hex()
+            else:
+                out[key] = r_bytes.hex()
+        elif l_hex is not None:
+            out[key] = bytes.fromhex(l_hex).hex()
+        else:
+            out[key] = bytes.fromhex(r_hex).hex()  # type: ignore[arg-type]
+    return out
+
+
+def py_clamp_death_clock(rec: dict) -> int:
+    """Canonicalise a record's `tombstoned_at_ms` to the §11.5 invariant
+    before the lattice join in `py_merge_record`. Mirrors Rust's
+    `clamp_death_clock` in `core/src/vault/conflict.rs`.
+
+    Returns `tombstoned_at_ms` clamped to `[0, last_mod_ms]`. For
+    tombstoned inputs (`tombstone == true`), additionally enforces
+    equality with `last_mod_ms` per §11.5: a currently-tombstoned
+    record was tombstoned at its most recent edit. The two clamps
+    collapse to the same `last_mod_ms` value on tombstoned inputs.
+
+    Two malformations are defended against:
+
+    * Tombstoned input with `tombstoned_at_ms != last_mod_ms`:
+      violates `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms`.
+      Inflated DC propagates through merge; lowered DC suppresses
+      the death clock's advance and lets pre-tombstone stale fields
+      slip through the §11.3 staleness filter.
+    * Live input with `tombstoned_at_ms > last_mod_ms`: violates
+      `tombstoned_at_ms ≤ last_mod_ms`. With `tombstoned_at_ms =
+      2**64 - 1` the merged DC would clamp every field with
+      `last_mod < 2**64 - 1`, wiping the merged record's fields
+      while keeping it live — a deniable data-loss attack from a
+      hostile sync peer.
+
+    No-op on well-formed inputs. Pure function of one record.
+    """
+    if rec["tombstone"]:
+        return rec["last_mod_ms"]
+    return min(rec.get("tombstoned_at_ms", 0), rec["last_mod_ms"])
+
+
 def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
     """Merge two records with the same record_uuid per §11. Returns the
     merged record dict and the list of field collisions (in sorted
@@ -1941,18 +2011,11 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     tombstone = outcome in ("BothTombstoned", "LocalTombstoneWins", "RemoteTombstoneWins")
 
-    # Defensive clamp: enforce the §11.5 invariant
-    # `tombstone == true ⇒ tombstoned_at_ms == last_mod_ms` on each
-    # input before the lattice join. Without this, a malformed input
-    # with `tombstone=true, tombstoned_at_ms=0` would suppress the
-    # death clock's advance and let stale fields slip through the
-    # §11.3 staleness filter.
-    local_dc = local.get("tombstoned_at_ms", 0)
-    if local["tombstone"]:
-        local_dc = max(local_dc, local["last_mod_ms"])
-    remote_dc = remote.get("tombstoned_at_ms", 0)
-    if remote["tombstone"]:
-        remote_dc = max(remote_dc, remote["last_mod_ms"])
+    # Defensive clamp: enforce the §11.5 invariants on each input
+    # before the lattice join. See `py_clamp_death_clock` (module
+    # scope) for the rationale and the threat model.
+    local_dc = py_clamp_death_clock(local)
+    remote_dc = py_clamp_death_clock(remote)
     # §11.3 death clock: lattice join via max.
     death = max(local_dc, remote_dc)
 
@@ -2022,21 +2085,33 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
 
     # tags: §11.3 mixed-tombstone override → tombstoning side wins; else
     # §11.1 (greater last_mod_ms; set union on tie).
-    if outcome == "LocalTombstoneWins":
-        tags = list(local["tags"])
-    elif outcome == "RemoteTombstoneWins":
-        tags = list(remote["tags"])
-    elif outcome == "LocalTombstoneLost":
-        tags = list(remote["tags"])
-    elif outcome == "RemoteTombstoneLost":
-        tags = list(local["tags"])
+    #
+    # Output is always sorted+deduped per §11.5: even on the LWW-clone
+    # branches, the merge canonicalises the chosen side's tags so that
+    # self-merging the merged record is a fixed point (mirrors Rust
+    # merge_tags).
+    if outcome == "LocalTombstoneWins" or outcome == "RemoteTombstoneLost":
+        source = local["tags"]
+    elif outcome == "RemoteTombstoneWins" or outcome == "LocalTombstoneLost":
+        source = remote["tags"]
+    elif local["last_mod_ms"] > remote["last_mod_ms"]:
+        source = local["tags"]
+    elif remote["last_mod_ms"] > local["last_mod_ms"]:
+        source = remote["tags"]
     else:
-        if local["last_mod_ms"] > remote["last_mod_ms"]:
-            tags = list(local["tags"])
-        elif remote["last_mod_ms"] > local["last_mod_ms"]:
-            tags = list(remote["tags"])
-        else:
-            tags = sorted(set(local["tags"]) | set(remote["tags"]))
+        # §11.1 set union of both sides on tie.
+        source = list(set(local["tags"]) | set(remote["tags"]))
+    # Canonicalise: sort + dedup.
+    tags = sorted(set(source))
+
+    # Record-level `unknown` merge per §11.1: per-key lattice join
+    # (lex-larger canonical-CBOR bytes on collisions, single-side
+    # preservation) on every outcome. Not subject to the §11.3
+    # identity-metadata override — see the §11.3 carve-out and the
+    # rationale at the override site in `core/src/vault/conflict.rs`.
+    local_unknown = local.get("unknown_hex", {})
+    remote_unknown = remote.get("unknown_hex", {})
+    unknown = py_merge_unknown_map(local_unknown, remote_unknown)
 
     merged = {
         "record_uuid_hex": local["record_uuid_hex"],
@@ -2047,6 +2122,7 @@ def py_merge_record(local: dict, remote: dict) -> tuple[dict, list[dict]]:
         "last_mod_ms": max(local["last_mod_ms"], remote["last_mod_ms"]),
         "tombstone": tombstone,
         "tombstoned_at_ms": death,
+        "unknown_hex": unknown,
     }
     return merged, collisions
 
@@ -2121,6 +2197,13 @@ def py_merge_block(
         else remote_block["block_name"],
         "schema_version": max(local_block["schema_version"], remote_block["schema_version"]),
         "records": merged_records,
+        # §11.2 forward-compat: same per-key lex-larger rule as
+        # record-level (§11.1). No tombstone semantics at block level,
+        # so no override.
+        "unknown_hex": py_merge_unknown_map(
+            local_block.get("unknown_hex", {}),
+            remote_block.get("unknown_hex", {}),
+        ),
     }
     return {
         "relation": "Concurrent",
@@ -2156,6 +2239,9 @@ def _normalise_record(r: dict) -> dict:
         "last_mod_ms": r["last_mod_ms"],
         "tombstone": r["tombstone"],
         "tombstoned_at_ms": r.get("tombstoned_at_ms", 0),
+        # Record-level forward-compat unknown keys (canonical-CBOR
+        # bytes encoded as hex). Absent in the JSON → empty dict.
+        "unknown_hex": dict(r.get("unknown_hex", {})),
     }
 
 
@@ -2166,6 +2252,8 @@ def _normalise_block(b: dict) -> dict:
         "block_name": b["block_name"],
         "schema_version": b["schema_version"],
         "records": [_normalise_record(r) for r in b["records"]],
+        # Block-level forward-compat unknown keys.
+        "unknown_hex": dict(b.get("unknown_hex", {})),
     }
 
 
@@ -2286,7 +2374,75 @@ def section4_conflict_kat() -> tuple[bool, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# §5 Differential-replay helpers (--diff-replay mode)
+# Section 5 — py_merge_unknown_map case-insensitivity self-tests
+# ---------------------------------------------------------------------------
+
+
+def section5_unknown_map_case_insensitivity() -> tuple[bool, list[str]]:
+    """Cross-language drift guard for `py_merge_unknown_map`.
+
+    The KAT carries each unknown-map value as a hex string of canonical-CBOR
+    bytes (`"unknown_hex": {key: "0a"}`). Rust's KAT loader decodes hex via
+    `u8::from_str_radix(_, 16)`, which is case-insensitive — so `"0A"` and
+    `"0a"` both decode to byte `0x0a`. Python's `py_merge_unknown_map` must
+    agree; otherwise a future KAT vector authored with uppercase or mixed
+    hex would silently disagree across the two clean-room implementations.
+
+    The cross-case adversarial pairing is `0xa5` (lowercase `"a5"`) vs
+    `0xb5` (uppercase `"B5"`):
+      * byte compare: `0xb5 > 0xa5` → R wins.
+      * raw string compare: `'a' (0x61) > 'B' (0x42)` → would pick L,
+        contradicting the byte order. The merge must not be raw-string
+        compare.
+
+    The same-bytes-different-case pair `("ff", "FF")` exercises the
+    equality path: byte-equal inputs must be treated as equal, not as
+    differing → collision branch.
+    """
+    lines: list[str] = []
+    all_ok = True
+
+    # 1. Cross-case adversarial: 0xa5 (lowercase) vs 0xb5 (uppercase).
+    #    Byte-correct winner is R (0xb5 > 0xa5). Raw-string compare picks L.
+    got = py_merge_unknown_map({"k": "a5"}, {"k": "B5"})
+    # Either uppercase or lowercase representation of 0xb5 is acceptable —
+    # what matters is that the *byte value* equals 0xb5, not 0xa5.
+    if got["k"].lower() != "b5":
+        lines.append(
+            f"FAIL  cross-case adversarial: got {got['k']!r}, expected byte 0xb5 "
+            "(byte-larger). Raw-string compare misordered."
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  cross-case adversarial picks byte-larger value")
+
+    # 2. Same byte, different case: 0xff (`"ff"` vs `"FF"`). Must treat as
+    #    equal (no spurious collision; output is one of the inputs).
+    got = py_merge_unknown_map({"k": "ff"}, {"k": "FF"})
+    if got["k"].lower() != "ff":
+        lines.append(
+            f"FAIL  same-byte different-case: got {got['k']!r}, expected byte 0xff "
+            "(should canonicalise to a single value, not corrupt to a different byte)."
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  same-byte different-case canonicalises consistently")
+
+    # 3. Single-side mixed case is kept verbatim by byte value.
+    got = py_merge_unknown_map({"k": "AB"}, {})
+    if got["k"].lower() != "ab":
+        lines.append(
+            f"FAIL  single-side uppercase: got {got['k']!r}, expected byte 0xab"
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  single-side uppercase preserved as byte 0xab")
+
+    return all_ok, lines
+
+
+# ---------------------------------------------------------------------------
+# Differential-replay helpers (--diff-replay mode)
 # ---------------------------------------------------------------------------
 # Each py_decode_<target> / py_encode_<target> pair implements a strict
 # clean-room decoder/encoder that mirrors the Rust side's accept/reject
@@ -3036,7 +3192,13 @@ def main() -> int:
         print(ln)
 
     print()
-    if section1_ok and section2_ok and section3_ok and section4_ok:
+    print("--- Section 5: py_merge_unknown_map case-insensitivity guard ---")
+    section5_ok, section5_lines = section5_unknown_map_case_insensitivity()
+    for ln in section5_lines:
+        print(ln)
+
+    print()
+    if section1_ok and section2_ok and section3_ok and section4_ok and section5_ok:
         print("PASS")
         return 0
     if not section1_ok:
@@ -3047,6 +3209,8 @@ def main() -> int:
         print("FAIL: ml_dsa_65_verify tamper-rejection regression", file=sys.stderr)
     if not section4_ok:
         print("FAIL: conflict_kat.json CRDT merge cross-language replay", file=sys.stderr)
+    if not section5_ok:
+        print("FAIL: py_merge_unknown_map case-insensitivity guard", file=sys.stderr)
     return 1
 
 
