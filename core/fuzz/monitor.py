@@ -258,6 +258,7 @@ class MonitorApp:
         rs.crash_path = None
         rs.stop_reason = None
         rs.started_at = time.monotonic()
+        rs.started_at_wall = time.time()
         rs.status = Status.RUNNING
         rs.log_tail.append(f"$ {' '.join(argv)}")
 
@@ -302,8 +303,28 @@ class MonitorApp:
                 rs.status = Status.CAP_REACHED
                 rs.stop_reason = "exit 0 (cap reached)"
             else:
-                rs.status = Status.STOPPED
-                rs.stop_reason = f"exit code {rc}"
+                # Non-zero exit. Check for a fresh crash artifact.
+                crash = self._find_new_crash(target, since=rs.started_at_wall)
+                if crash is not None:
+                    rs.status = Status.CRASHED
+                    rs.stop_reason = f"crash at exec {rs.pulses[-1].exec_count if rs.pulses else '?'}"
+                    rs.crash_path = crash
+                else:
+                    rs.status = Status.STOPPED
+                    rs.stop_reason = f"exit code {rc} (no crash artifact)"
+
+    def _find_new_crash(self, target: str, since: float) -> Path | None:
+        """Look for crash-* files in artifacts/<target>/ modified after `since`."""
+        artifacts_dir = _FUZZ_DIR / "artifacts" / target
+        if not artifacts_dir.is_dir():
+            return None
+        crashes = [
+            p for p in artifacts_dir.iterdir()
+            if p.is_file() and p.name.startswith("crash-") and p.stat().st_mtime > since
+        ]
+        if not crashes:
+            return None
+        return max(crashes, key=lambda p: p.stat().st_mtime)
 
     async def stop_run(self, target: str, sanitizer: str) -> None:
         """SIGTERM the subprocess; SIGKILL fallback after grace period."""
@@ -336,6 +357,17 @@ class MonitorApp:
             sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
             runs_cap_input = ui.input("runs cap (blank = open-ended)", value="").props("dense")
             status_label = ui.label("status: idle")
+            crash_label = ui.label("")  # filled in by reactive update
+
+            def update_crash_label():
+                rs = self.runs[(target, sanitizer.value)]
+                if rs.status == Status.CRASHED and rs.crash_path:
+                    crash_label.text = f"CRASH: {rs.crash_path}"
+                    crash_label.classes("text-red-600")
+                else:
+                    crash_label.text = ""
+
+            ui.timer(1.0, update_crash_label)
 
             async def on_start():
                 try:
