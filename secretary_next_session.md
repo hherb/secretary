@@ -1,16 +1,20 @@
 # secretary — next session entry point
 
 This file is the entry point for the **next** session, in the same role
-the previous `secretary_next_session.md` played until 2026-04-29 (closed
-on the merge of PR-C — the CRDT merge primitives, record-level
-`tombstoned_at_ms` death-clock, full-domain CRDT proptests, and
-nine-vector cross-language KAT). With PR-C, **Sub-project A is feature-
-complete for v1**; what remains is the hardening + external-audit phase
-(below) before FFI bindings (Sub-project B) can begin.
+the previous `secretary_next_session.md` played until 2026-05-01 (closed
+on the merge of PR #8 — the cargo-fuzz harness, NiceGUI monitor, and
+cross-language differential-replay protocol — followed by PR #10's
+thirteen-chapter cryptography primer and PR #9's vault-conflict polish:
+the bidirectional defensive death-clock clamp, tag-canonicalisation on
+the LWW-clone path, and the clean-room Python `py_merge_unknown_map`
+covering record-level `unknown` cross-language).
 
-It captures: phases now closed (kept for context, with PR refs), the
-single remaining open item in Sub-project A's build sequence, and a
-small set of carry-over dribbles.
+**Sub-project A is feature-complete for v1**; Phase A.7 (hardening +
+external audit) is in progress. The most concrete near-term work is
+fuzz-finding triage — see [Open Item 1](#open-item-1--fuzz-finding-triage-from-pr-8)
+below — followed by a small set of polishing dribbles
+([Open Item 2](#open-item-2--polishing-dribbles-from-pr-9-review)) and
+the standing Phase A.7 hardening track.
 
 When the items below are done, delete this file and create the next one.
 
@@ -106,7 +110,7 @@ as a typed error. BIP-39 recovery KAT in
 After PR #6: 340+ tests pass (`cargo test --release --workspace`),
 clippy clean with `-D warnings`, `#![forbid(unsafe_code)]` crate-wide.
 
-### Phase A.6 — Vector-clock CRDT merge primitives ✅ — PR-C, 2026-04-29
+### Phase A.6 — Vector-clock CRDT merge primitives ✅ — PR #7 (PR-C), 2026-04-29
 
 [core/src/vault/conflict.rs](core/src/vault/conflict.rs) — pure
 functions, no I/O, no scheduling:
@@ -144,11 +148,6 @@ functions, no I/O, no scheduling:
   the tombstoning side — so a UI surfacing a tombstoned record
   reflects the deleter's view, not a concurrent edit they never
   saw.
-- **Defensive canonicalisation** in `merge_record`: clamps
-  `tombstoned_at_ms` upward to `last_mod_ms` for any input where
-  `tombstone == true`, so a malformed peer
-  (`tombstone = true, tombstoned_at_ms = 0`) cannot suppress the
-  death-clock's advance.
 - **CRDT proptests** in [core/tests/proptest.rs](core/tests/proptest.rs)'s
   `mod vault` PR-C section: `crdt_merge_record_commutativity`,
   `_associativity`, `_idempotence` at proptest defaults (~256 cases).
@@ -157,8 +156,8 @@ functions, no I/O, no scheduling:
   predating or surviving any tombstone.
 - **§15 cross-language KAT**:
   [core/tests/data/conflict_kat.json](core/tests/data/conflict_kat.json) —
-  nine vectors covering each `ClockRelation` branch, the death-
-  clock staleness filter, the §11.3 identity-metadata override,
+  initially nine vectors covering each `ClockRelation` branch, the
+  death-clock staleness filter, the §11.3 identity-metadata override,
   both-tombstoned merges, and resurrection-preserves-death-clock.
   Replayed by both Rust ([core/tests/conflict.rs](core/tests/conflict.rs)
   `kat_replays_match_rust_merge`) and a clean-room Python
@@ -166,45 +165,208 @@ functions, no I/O, no scheduling:
   ([core/tests/python/conformance.py](core/tests/python/conformance.py)
   Section 4).
 
-After PR-C: 399+ tests pass; clippy clean; `#![forbid(unsafe_code)]`
-crate-wide. Sub-project A is feature-complete for v1; Phase A.7
-(hardening + external audit) is next.
+After PR #7: 399+ tests pass; clippy clean; `#![forbid(unsafe_code)]`
+crate-wide.
+
+### Fuzz harness + NiceGUI monitor + differential-replay protocol ✅ — PR #8, 2026-05-01
+
+[core/fuzz/](core/fuzz/) — coverage-guided `cargo-fuzz` harness on a
+path-scoped nightly toolchain. The first concrete output of Phase A.7.
+
+- **Six fuzz targets** ([core/fuzz/fuzz_targets/](core/fuzz/fuzz_targets/)):
+  `block_file`, `bundle_file`, `contact_card`, `manifest_file`,
+  `record`, `vault_toml`. Each runs the production decoder and asserts
+  `Result` rather than panic. Seeded from the §15 KAT fixtures and
+  hand-built golden inputs in [core/fuzz/seeds/](core/fuzz/seeds/).
+- **NiceGUI monitor** ([core/fuzz/monitor.py](core/fuzz/monitor.py)):
+  single-file dashboard (PEP 723 inline deps, `uv run`-compatible) —
+  spawns `cargo +<nightly> fuzz run` per target, parses libFuzzer pulse
+  lines, detects exec/coverage plateaus and SIGTERMs the run, surfaces
+  fresh `crash-*` artifacts. Both-sequential sanitiser mode (ASan, then
+  chain UBSan if the ASan run terminated cleanly). Persists last-used
+  runs cap per target. Written as pure functions where possible (parse,
+  plateau check, env build, runs-cap parse) with the subprocess and UI
+  side held at the edges.
+- **Differential-replay protocol**: cross-language decoder agreement
+  contract documented at
+  [docs/manual/contributors/differential-replay-protocol.md](docs/manual/contributors/differential-replay-protocol.md).
+  Implemented by
+  [core/tests/python/conformance.py](core/tests/python/conformance.py)'s
+  `--diff-replay <target> <input-path>` mode (decode + canonical
+  re-encode in Python; compare bytes against the Rust side) and the
+  Rust harness in
+  [core/tests/differential_replay.rs](core/tests/differential_replay.rs).
+  Per-input timeout bounds the Python subprocess so a single
+  pathological input cannot stall a campaign.
+- **Findings carried over** (under triage, see [Open Item 1](#open-item-1--fuzz-finding-triage-from-pr-8)):
+  two OOMs (in `contact_card`, `record`), two slow-units (in
+  `vault_toml`).
+- **Operator docs**: [core/fuzz/README.md](core/fuzz/README.md) — how
+  to run targets, how to promote findings into durable regression
+  KATs.
+
+### User and contributor manual ✅ — PR #10, 2026-05-01
+
+[docs/manual/](docs/manual/) — informal companion material to the
+normative specs.
+
+- **Cryptography primer** ([docs/manual/primer/cryptography/](docs/manual/primer/cryptography/index.md)):
+  thirteen chapters in plain language for curious users — symmetric vs
+  asymmetric, hashing, KDFs, AEAD, KEM, signatures, the quantum threat,
+  the trust problem, randomness, rollback resistance, limits of
+  cryptography, glossary. No prior background assumed; analogies used
+  pedagogically with their breakdown points called out.
+- **Hardening guide** ([docs/manual/hardening-security.md](docs/manual/hardening-security.md)):
+  user-facing operational-security advice for pushing beyond Secretary's
+  (already strong) defaults.
+
+Bonus material: not strictly Phase A.7, but valuable contributor
+onboarding now that the spec has stabilised.
+
+### Vault-conflict polish: bidirectional clamp + tag canonicalisation + record-level `unknown` cross-language ✅ — PR #9, 2026-05-01
+
+Follow-up polish on the PR #7 / PR-C merge layer surfaced during
+review. Same module ([core/src/vault/conflict.rs](core/src/vault/conflict.rs)),
+same module ownership; closes the two carry-over dribbles from the
+previous next-session file.
+
+- **Bidirectional defensive death-clock clamp** ([conflict.rs](core/src/vault/conflict.rs)):
+  PR-C clamped `tombstoned_at_ms` upward to `last_mod_ms` on the local
+  side only. PR #9 makes it bidirectional — applied to *both* `local`
+  and `remote` before the lattice join — so a malformed peer
+  (`tombstone = true, tombstoned_at_ms = 0`) cannot suppress the
+  death-clock's advance from either side. Plus integration test
+  `bidirectional_clamp_handles_malformed_remote` proving the previously
+  asymmetric case.
+- **Tag canonicalisation on the LWW-clone path** ([conflict.rs](core/src/vault/conflict.rs)):
+  `merge_tags` already canonicalised tag multiplicity on the Concurrent
+  branch. PR #9 extends this to the LWW-clone path (`IncomingDominates`
+  and `IncomingDominated` outcomes), so the `well-formedness` invariant
+  holds *bit-identically* on every output, not just on the Concurrent
+  branch. Plus a new
+  `well_formedness_property_under_arbitrary_inputs` proptest
+  (Property L) that exercises the invariant across the entire merge
+  surface.
+- **§11.3 record-level `unknown` carve-out** removed: PR-C's spec text
+  for the §11.3 identity-metadata override on tombstone-wins outcomes
+  carved record-level `unknown` out of the wholesale-from-tombstoner
+  rule. PR #9 drops that carve-out for symmetry — `unknown` now
+  follows the same wholesale rule as `tags` and `record_type` on
+  tombstone-wins outcomes. Spec change in
+  [docs/crypto-design.md](docs/crypto-design.md) §11.3; implementation
+  follows.
+- **Clean-room Python `py_merge_unknown_map`** ([core/tests/python/conformance.py](core/tests/python/conformance.py)):
+  records the v1 merge rule for record-level `unknown` (per-key
+  lex-larger CBOR bytes; tombstone-wins override per §11.3) in a
+  Python clean-room implementation written from §11 spec docs only.
+  Includes a Section 5 case-insensitivity self-test guarding against
+  raw-string-compare drift on hex-encoded blobs (the bug pattern that
+  surfaced during review).
+- **§15 KAT extended to eleven vectors**: two new vectors added —
+  `concurrent_record_unknown_collision_lex_larger_wins` (tests
+  per-key lex resolution) and
+  `concurrent_tombstone_wins_preserves_live_unknown` (tests the
+  §11.3 wholesale override on `unknown`). Replayed bit-identically
+  by both Rust and Python.
+- **Python proptest record_strategy unified**: a single
+  `record_strategy` now generates populated `unknown` for *every*
+  CRDT property (commutativity, associativity, idempotence, plus
+  the new well-formedness Property L), closing the
+  `BTreeMap::new()` forward-compat gap noted in the previous
+  next-session file.
+- **Conformance-script refactor**: `py_clamp_death_clock` hoisted to
+  module scope (was a closure inside `py_merge_record`) so all eleven
+  KAT vectors replay through the same clamp logic.
+
+After PR #9: 425+ tests pass; clippy clean; `#![forbid(unsafe_code)]`
+crate-wide. **Sub-project A is feature-complete for v1**; Phase A.7
+hardening is the active phase.
 
 ---
 
-## Open Item 1 — Phase A.7: hardening + external audit prep
+## Open Item 1 — Fuzz-finding triage (from PR #8)
 
-With Phase A.6 / PR-C landed, Sub-project A is feature-complete for v1.
-Phase A.7 is the gate before any Sub-project B (FFI) work and the
-phase that turns "the Rust core implements the v1 design" into "the
-Rust core has been independently scrutinised against the v1 design."
+The most concrete near-term task. Estimated 1–2 hours depending on
+whether the four findings turn out to be deep bugs vs. trivial
+input-size issues.
 
-- **Independent cryptographic review** (paid, external). Engage early —
-  the design has been frozen since the PR #1 / PR #3 / PR #5 cadence,
+Captured in detail in [docs/TODO_FUZZ_FOLLOWUP.md](docs/TODO_FUZZ_FOLLOWUP.md).
+Two-step shape:
+
+- **Step 1: close the `.gitignore` gap** for `core/fuzz/{target,corpus,artifacts}/`
+  so a freshly-fuzzed working tree is `git status`-clean. The existing
+  `/target/` rule is root-anchored and does not match the fuzz crate's
+  sub-`target/`. Be explicit — do not relax the anchor.
+- **Step 2: triage the four findings** in
+  `core/fuzz/artifacts/<target>/`:
+  * `contact_card/oom-031e9f63...` — likely missing length cap on
+    contact-card decoder. Find and cap the unbounded allocation.
+  * `record/oom-df5366aa...` — same shape: cap the offending field.
+  * `vault_toml/slow-unit-bca8ee9d...` and `slow-unit-fa13b6d1...` —
+    parser exceeds libfuzzer's per-execution time threshold; profile,
+    find the hot path, fix the algorithm or cap the input.
+  Each finding needs a regression test under
+  [core/tests/fuzz_regressions.rs](core/tests/fuzz_regressions.rs) (or
+  similar) that fails the *pre-fix* parser and passes the post-fix
+  parser. Promote bytes into the test as a `const &[u8]` — do **not**
+  commit the raw artifacts.
+
+When this work is complete, **delete `docs/TODO_FUZZ_FOLLOWUP.md` in
+the same commit** that ships the last regression test.
+
+---
+
+## Open Item 2 — Polishing dribbles (from PR #9 review)
+
+Captured in [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md).
+None are regressions or correctness issues — deferred polish to be
+picked up when adjacent code is next touched:
+
+1. Replace `# type: ignore[arg-type]` in `py_merge_unknown_map` with an
+   explicit `assert r_hex is not None`
+   ([conformance.py:955](core/tests/python/conformance.py#L955)).
+2. Lift the cross-language hex compare pattern into a
+   `hex_lex_compare` / `hex_canonicalise` helper *if* a second
+   hex-bearing KAT field appears.
+3. Extract a `_record_pass_fail()` helper *if* a Section 6 with five+
+   sub-tests lands.
+4. Confirm at least one `conflict_kat.json` vector exercises
+   block-level `unknown_hex` (not just record-level); add one if
+   none does.
+
+When the file becomes empty, **delete it** in the same commit.
+
+---
+
+## Open Item 3 — Phase A.7 standing track
+
+The hardening + external-audit gate before Sub-project B (FFI) work
+can begin. Items 1 and 2 above are subsets; this is the rest:
+
+- **Independent cryptographic review** (paid, external). Engage early
+  — the design has been frozen since the PR #1 / PR #3 / PR #5
+  cadence and PR #7 / PR #9 polishing has stabilised the merge layer,
   so the spec docs are stable enough to send out. Especially valuable:
   reviewer with FIPS 203 / FIPS 204 implementer experience and
   AAD/signed-range eyes.
-- **Fuzz harness for the wire-format decoders** (`cargo fuzz`). Targets:
-  `decode_block_file`, `decode_manifest`, `decode_identity_bundle`,
-  `decode_record`, `decode_contact_card`. Coverage-guided; corpus
-  seeded from the §15 KAT fixtures.
 - **Side-channel review**. Constant-time critical paths:
   - All AEAD verify-then-decap flows (already structurally verified
-    per PR-A; needs constant-time primitive review).
+    per PR #3; needs constant-time primitive review).
   - `Fingerprint` comparison and recipient-table lookup.
-  - Argon2id comparison sites if any (unlock paths).
+  - Argon2id comparison sites in unlock paths.
 - **Memory hygiene audit**. `zeroize` coverage on every secret type;
   `secrecy::Secret` typestate where it's load-bearing; drop ordering
   in `IdentityBundle`, `BlockPlaintext`, `Identity`. Especially the
   paths that hold a secret across an `?` propagation site.
 - **Documentation pass**.
-  `docs/threat-model.md` updated to reference the as-implemented surface
-  (currently written from spec, not from code — small gaps will have
-  surfaced).
-  `docs/vault-format.md` clarifications surfaced during PR-A / PR-B / PR-C.
-  Two known docs tickets carried forward: §6.2 wire-form
-  clarification (`wrap_ct (32)` and `wrap_tag (16)` adjacent on wire),
-  and §6.1 `sig_pq_len = u16, 3309 (suite v1)` annotation.
+  `docs/threat-model.md` updated to reference the as-implemented
+  surface (currently written from spec, not from code — small gaps
+  will have surfaced during PR #3 / PR #5 / PR #7 / PR #9).
+  `docs/vault-format.md` clarifications surfaced during PR #3 / PR #5
+  / PR #7 / PR #9. Two known docs tickets carried forward: §6.2
+  wire-form clarification (`wrap_ct (32)` and `wrap_tag (16)`
+  adjacent on wire), and §6.1 `sig_pq_len = u16, 3309 (suite v1)`
+  annotation.
 
 End of Sub-project A: Rust core is feature-complete for v1, audited,
 and ready to be wrapped by FFI in Sub-project B (which then unblocks
@@ -217,33 +379,22 @@ Sub-project C — sync orchestration — and Sub-project D — platform UIs).
 Small open items not big enough to merit their own phase. Bundle into
 the next PR they touch.
 
-- **`unknown` BTreeMap forward-compat in proptests.** PR-A's
-  record-level proptest A uses `BTreeMap::new()` for the unknown bag,
-  with the tradeoff documented inline. PR-C did NOT close this — the
-  `crdt_merge_record_*` proptests inherit the same gap (record-level
-  unknown is empty in the strategy). Adding a strategy generating
-  bounded `ciborium::Value` trees would tighten coverage. Not urgent;
-  the integration tests in `core/tests/conflict.rs` exercise non-empty
-  record-level `unknown` directly, and the §15 KAT pins the
-  tombstone-wins override behavior cross-language.
-- **Python `py_merge_record` does not model record-level `unknown`.**
-  The Python clean-room merge in `core/tests/python/conformance.py`
-  Section 4 currently doesn't carry `unknown` keys through the merged
-  record dict (the existing 9 KAT vectors don't exercise it). If a
-  future KAT vector adds record-level `unknown`, extend `py_merge_record`
-  to handle it (mirror Rust: §11.1 per-key lex-larger CBOR bytes; §11.3
-  override on tombstone-wins outcomes).
 - **`share-as-fork` v2 follow-up.** PR #5 / PR #6 pinned two TODO
-  markers for share-as-fork at the encrypt/decrypt call sites. This is
-  a v2 vault-format change (out of scope for Sub-project A); PR-C did
-  not touch them. Re-validate when Sub-project C orchestration brings
-  the share path back into focus.
+  markers for share-as-fork at the encrypt/decrypt call sites. This
+  is a v2 vault-format change (out of scope for Sub-project A); PR #7
+  / PR #9 did not touch them. Re-validate when Sub-project C
+  orchestration brings the share path back into focus.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
-  profiling shows it on a hot path. Phase A.6 did not add any new hot
-  paths (the merge primitives operate on already-decoded `Record`s).
+  profiling shows it on a hot path. PR #7 / PR #9 did not add any new
+  hot paths (the merge primitives operate on already-decoded
+  `Record`s).
 - **`§6.2 wrap_ct + wrap_tag` and `§6.1 sig_pq_len` annotations** —
-  bundled into Phase A.7's documentation pass above; flag here so they
-  don't slip if Phase A.7 gets reorganised.
+  bundled into Open Item 3's documentation pass above; flagged here so
+  they don't slip if A.7 gets reorganised.
+
+(Two earlier dribbles — record-level `unknown` in proptests, and
+Python `py_merge_record` modelling record-level `unknown` — were
+both closed by PR #9.)
 
 ---
 
@@ -269,16 +420,14 @@ orchestrators + golden-vault scope:
   `signed_message_bytes` takes loose fields and drops the sign
   placeholder; `FINGERPRINT_LEN` renamed to disambiguate, `kdf_params`
   check simplified.
-- **`test(vault)` commits** (`a66cc5a`, `b7d598b`, `464d6dc`,
-  `81935b1`, `815c329`, `b043e9f`, `ccdc11c`, `6e3a64b`, `2b733a4`):
-  `golden_vault_001/` deterministic fixture and pin; full
-  hybrid-decap + AEAD-decrypt + hybrid-verify in `conformance.py`;
-  proptest properties F/G/H for manifest; dedicated negatives for
-  `VaultError` and `ManifestError` variants reachable from `open_vault`
-  and `share_block`; unit-level tampers for `aead_nonce` / `aead_tag`
-  inside the signed range; proptest property G closes the
-  `author_fingerprint` hole; tightened broad `except` in
-  `conformance.py` CBOR decode sites.
+- **`test(vault)` commits**: `golden_vault_001/` deterministic fixture
+  and pin; full hybrid-decap + AEAD-decrypt + hybrid-verify in
+  `conformance.py`; proptest properties F/G/H for manifest; dedicated
+  negatives for `VaultError` and `ManifestError` variants reachable
+  from `open_vault` and `share_block`; unit-level tampers for
+  `aead_nonce` / `aead_tag` inside the signed range; proptest
+  property G closes the `author_fingerprint` hole; tightened broad
+  `except` in `conformance.py` CBOR decode sites.
 
 After merge: 345 tests pass + 6 ignored.
 
@@ -301,12 +450,11 @@ PR-B review follow-ups, all small but worth pinning:
 - `68cf44e` — tempfile documented as a security-critical path
   dependency.
 - `19604b6` — caller-side nonce generation idiom documented in the
-  AEAD module (orientation for future contributors; no API change).
+  AEAD module.
 
-After merge: 345 tests pass + 6 ignored, tree state matches the
-"Phases now closed" inventory above.
+After merge: 345 tests pass + 6 ignored.
 
-### PR-C, `feature/vault-conflict` — 2026-04-29
+### PR #7 (PR-C), `feature/vault-conflict` — 2026-04-29
 
 Phase A.6 in one PR, plus the death-clock follow-up after the
 review surfaced a three-way-merge associativity gap. ~19 commits
@@ -329,24 +477,106 @@ along three axes:
   staleness filter that closes the three-way associativity gap),
   `65def86` (extended §11.3 override implementation),
   `d058fc9` (defensive clamp against malformed
-  `tombstone=true, tombstoned_at_ms=0` inputs).
-- **Tests at every layer** (`fbbc307` integration tests via the
-  public API, `2348c9d` initial CRDT proptests, `f408ba8` 5-vector
-  cross-language KAT + Rust + Python replay, `6463259` proptest
-  domain expanded to the full tombstone domain, `82a9375` KAT vector
-  for the death-clock staleness filter, `94906c1` test data §11.5
-  invariant fixes + collisions × staleness doc, `64f975a` 4
-  additional KAT vectors covering IncomingDominated, both-tombstoned,
-  identity-metadata override, and resurrection-preserves-death-clock).
+  `tombstone=true, tombstoned_at_ms=0` inputs — local side only;
+  bidirectional in PR #9).
+- **Tests at every layer** (`fbbc307` integration tests, `2348c9d`
+  initial CRDT proptests, `f408ba8` 5-vector cross-language KAT,
+  `6463259` proptest domain expanded to the full tombstone domain,
+  `82a9375` death-clock staleness KAT vector, `94906c1` test data
+  §11.5 invariant fixes, `64f975a` 4 additional KAT vectors).
 
-Misc: `876e587` untracked `.claude/` user state and
-`proptest.proptest-regressions` accidentally swept in by `git add -A`.
+After merge: 399+ tests pass + 6 ignored.
 
-After merge: 399+ tests pass + 6 ignored. Three CRDT proptests pass
-on the full record domain (arbitrary tombstone histories, arbitrary
-`tombstoned_at_ms`) at proptest defaults. Nine-vector
+### PR #8, `feature/fuzz-harness` — 2026-04-30 → 2026-05-01
+
+Phase A.7's first concrete output. ~30+ commits along three axes:
+
+- **Fuzz crate scaffold + targets**: cargo-fuzz crate at
+  `core/fuzz/`, path-scoped nightly toolchain, six fuzz targets
+  (`block_file`, `bundle_file`, `contact_card`, `manifest_file`,
+  `record`, `vault_toml`) seeded from §15 KAT fixtures plus
+  hand-built golden inputs. Operator README at
+  [core/fuzz/README.md](core/fuzz/README.md).
+- **NiceGUI monitor**: `a237274` scaffold; `f1da5f3`/`b61bdca`/
+  `83aed0a`/`f1058cf`/`8040446`/`ec3c3f9` pure-function building
+  blocks (parse pulse, parse targets from Cargo.toml, plateau check,
+  nightly toolchain locator, env builder, runs-cap parse);
+  `82ec1c4` Status enum + RunState dataclass; `fbef11b` static UI
+  scaffold; `3aa137b`/`8a3d149`/`d2a00e3`/`0e86b8e`/`6738b20`
+  subprocess management, async stderr reader, plateau-triggered
+  SIGTERM, sequential ASan→UBSan chain, crash detection,
+  per-target runs-cap persistence; `07fb0a3`/`a23f91f`/
+  `f046c68`/`f48451c`/`8f5e624` bug fixes for stdout-pipe drain,
+  pulse regex tightness, `default_factory` for `RunState` deques,
+  import consolidation, plateau-trigger duplicate-SIGTERM guard.
+  Followed by post-merge `9f56b07` page-scoped UI fix on `main`
+  (timers were on the auto-index page and outlived client
+  disconnects).
+- **Differential-replay protocol**: `53bca61` documented the
+  cross-language contract at
+  [docs/manual/contributors/differential-replay-protocol.md](docs/manual/contributors/differential-replay-protocol.md);
+  `--diff-replay` mode added to
+  [conformance.py](core/tests/python/conformance.py); Rust harness
+  in [core/tests/differential_replay.rs](core/tests/differential_replay.rs)
+  with per-input timeout (`6ba1b48`) bounding the Python subprocess.
+
+Findings: 4 (2 OOMs, 2 slow-units) — see
+[Open Item 1](#open-item-1--fuzz-finding-triage-from-pr-8).
+Also a `.gitignore` gap on the fuzz crate's sub-`target/` and on
+`corpus/` / `artifacts/`, captured at `6924404`.
+
+### PR #10, `docs/cryptography-primer` — 2026-05-01
+
+Thirteen-chapter cryptography primer at
+[docs/manual/primer/cryptography/](docs/manual/primer/cryptography/index.md)
+plus user-facing operational hardening guide at
+[docs/manual/hardening-security.md](docs/manual/hardening-security.md).
+14 files, +1556 lines, no source changes. Bonus material for
+contributor onboarding.
+
+### PR #9, `feature/vault-conflict` (re-used) — 2026-05-01
+
+PR-C polish surfaced during review. Squash-merged into main as
+`e8a8d92`; 7 files, +959/-104. Scope along four axes:
+
+- **Spec changes**: drop the §11.3 record-level `unknown` carve-out
+  in [docs/crypto-design.md](docs/crypto-design.md), so `unknown`
+  follows `tags` / `record_type` in the wholesale-from-tombstoner
+  rule.
+- **Implementation**: bidirectional defensive clamp on
+  `tombstoned_at_ms` in
+  [core/src/vault/conflict.rs](core/src/vault/conflict.rs) so a
+  malformed peer (`tombstone = true, tombstoned_at_ms = 0`) cannot
+  suppress death-clock advance from either side; tag-canonicalisation
+  extended to the LWW-clone path.
+- **Cross-language closure**: clean-room Python `py_merge_unknown_map`
+  in [core/tests/python/conformance.py](core/tests/python/conformance.py)
+  for record-level `unknown`; Section 5 case-insensitivity self-test
+  guarding raw-string-compare drift on hex blobs; `py_clamp_death_clock`
+  hoisted to module scope.
+- **Test-domain expansion**: well-formedness proptest Property L on
+  arbitrary inputs; `record_strategy` unified with populated
+  `unknown` for *every* CRDT property; tenth and eleventh KAT
+  vectors in [core/tests/data/conflict_kat.json](core/tests/data/conflict_kat.json)
+  (`concurrent_record_unknown_collision_lex_larger_wins`,
+  `concurrent_tombstone_wins_preserves_live_unknown`).
+
+Adjacent work on main, not part of the squash:
+[docs/TODO_FUZZ_FOLLOWUP.md](docs/TODO_FUZZ_FOLLOWUP.md) at `6924404`
+(post-PR-#8 follow-up captured separately); a page-scoped fix to
+[core/fuzz/monitor.py](core/fuzz/monitor.py) at `9f56b07` (the
+auto-index-page `ui.timer` lifecycle crash that surfaced when running
+the monitor against PR #8's harness).
+[docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md) ships
+inside the PR #9 squash itself.
+
+After merge: 425+ tests pass + 6 ignored. Three pre-existing CRDT
+proptests plus the new Property L all pass on the full record domain
+(arbitrary tombstone histories, arbitrary `tombstoned_at_ms`,
+arbitrary `unknown` keys) at proptest defaults. Eleven-vector
 `conflict_kat.json` replayed bit-identically by both Rust and a
-clean-room Python `py_merge_record`. clippy clean with `-D warnings`;
-`#![forbid(unsafe_code)]` crate-wide. **Sub-project A is feature-
-complete for v1**; Phase A.7 (hardening + external audit) is the
-next gate.
+clean-room Python `py_merge_record` + `py_merge_unknown_map`.
+clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide.
+**Sub-project A is feature-complete for v1**; Phase A.7 hardening is
+the active phase, with fuzz-finding triage as the next concrete unit
+of work.

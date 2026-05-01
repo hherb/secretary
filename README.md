@@ -6,7 +6,7 @@
 
 A multi-platform secrets manager for passwords, API keys, secret notes, and similar credentials, designed for personal and family use without depending on any operated service.
 
-> **Status: pre-alpha, Sub-project A is feature-complete for v1; hardening + external audit next.** Architecture and cryptographic design are complete and frozen for v1. The Rust core now covers cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the vector-clock CRDT merge primitives (`merge_record` and `merge_block` with a record-level death-clock that makes the merge associative across arbitrary tombstone histories). 399+ tests pass, including NIST KATs, three property-based CRDT proofs (commutativity, associativity, idempotence) on the full record domain at proptest defaults, and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture and replays nine merge KATs cross-language. What remains in Sub-project A is the hardening + external-audit phase; FFI bindings (Sub-project B), the headless sync-orchestration layer (Sub-project C), and platform UIs (Sub-project D) come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
+> **Status: pre-alpha, Sub-project A is feature-complete for v1; Phase A.7 hardening + external audit in progress.** Architecture and cryptographic design are complete and frozen for v1. The Rust core covers cryptographic primitives, identity, vault unlock, the block file format, the manifest layer with atomic I/O, the high-level orchestrators (`create_vault`, `open_vault`, `save_block`, `share_block`), and the vector-clock CRDT merge primitives (`merge_record` and `merge_block` with a record-level death-clock that makes the merge associative across arbitrary tombstone histories, plus PR #9's bidirectional defensive clamp, tag canonicalisation, and clean-room Python `py_merge_unknown_map` for record-level `unknown` cross-language). 425+ tests pass, including NIST KATs, four property-based CRDT proofs (commutativity, associativity, idempotence, well-formedness under arbitrary inputs) on the full record domain at proptest defaults, and a stdlib-only Python conformance script that does full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001` fixture and replays eleven merge KATs cross-language. Phase A.7 is underway: a coverage-guided `cargo-fuzz` harness over all six wire-format decoders has landed (PR #8) with four findings under triage, and a thirteen-chapter [cryptography primer](docs/manual/primer/cryptography/index.md) (PR #10) was added for users and contributors. What remains in Sub-project A is independent cryptographic review, side-channel and memory-hygiene audits, and the fuzz-finding triage; FFI bindings (Sub-project B), the headless sync-orchestration layer (Sub-project C), and platform UIs (Sub-project D) come after that. There is no usable application yet. See [docs/](docs/) for the design and [ROADMAP.md](ROADMAP.md) for the phase plan.
 
 ---
 
@@ -101,6 +101,8 @@ A *block* is the unit of both encryption and sharing. A block contains 1 or more
 
 ## Documentation
 
+**Normative specifications** — the source of truth. A clean-room implementation in any language can be built from these alone, without reading the Rust source. This is verified during implementation by a Python conformance script that decrypts a published reference vault using only the spec.
+
 | File | Purpose |
 |---|---|
 | [docs/glossary.md](docs/glossary.md) | Definitions of all terms used in the specs |
@@ -109,7 +111,13 @@ A *block* is the unit of both encryption and sharing. A block contains 1 or more
 | [docs/vault-format.md](docs/vault-format.md) | Byte-level on-disk format (v1) |
 | [docs/adr/](docs/adr/) | Architecture decision records — six in total |
 
-The docs are normative: a clean-room implementation in any language can be built from them alone, without reading the Rust source. This is verified during implementation by a Python conformance script that decrypts a published reference vault using only the spec.
+**User and contributor manual** — informal companions to the specs.
+
+| File | Purpose |
+|---|---|
+| [docs/manual/primer/cryptography/](docs/manual/primer/cryptography/index.md) | A thirteen-chapter cryptography primer in plain language for curious users — what symmetric vs. asymmetric encryption is, why post-quantum hybrids matter, and how Secretary uses each idea. No prior background assumed. |
+| [docs/manual/hardening-security.md](docs/manual/hardening-security.md) | User-facing guidance for pushing operational security beyond the (already strong) defaults. |
+| [docs/manual/contributors/differential-replay-protocol.md](docs/manual/contributors/differential-replay-protocol.md) | The cross-language differential-replay contract used by `core/tests/python/conformance.py --diff-replay` and the fuzz harness. |
 
 ## Testing and hardening
 
@@ -117,9 +125,15 @@ The docs are normative: a clean-room implementation in any language can be built
 
 A coverage-guided fuzz harness for the wire-format decoders lives in
 [`core/fuzz/`](core/fuzz/README.md). It uses `cargo-fuzz` on a
-path-scoped nightly toolchain. See the README in that directory for
-how to run it and how to promote findings into durable regression
-KATs.
+path-scoped nightly toolchain and ships with a single-file NiceGUI
+dashboard (`core/fuzz/monitor.py`) for running and watching
+campaigns. Cross-language differential replay through the Python
+conformance script (`conformance.py --diff-replay`) is documented in
+[docs/manual/contributors/differential-replay-protocol.md](docs/manual/contributors/differential-replay-protocol.md).
+See the [`core/fuzz/README.md`](core/fuzz/README.md) for how to run
+it and how to promote findings into durable regression KATs; current
+findings under triage are tracked in
+[docs/TODO_FUZZ_FOLLOWUP.md](docs/TODO_FUZZ_FOLLOWUP.md).
 
 ## License
 
@@ -139,16 +153,19 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | Block file format (record CBOR, header, recipients, AEAD, hybrid sig) | ✅ Complete (PR #3) |
 | Manifest layer + atomic writes + high-level orchestrators | ✅ Complete (PR #5) |
 | `golden_vault_001/` end-to-end §15 conformance fixture (full crypto) | ✅ Complete (PR #5) |
-| CRDT merge primitives (`conflict.rs`: `merge_record`, `merge_block`, `clock_relation`, `merge_vector_clocks`) + record-level `tombstoned_at_ms` death-clock for full-domain associativity + commutativity / associativity / idempotence proptests on the full record domain (incl. arbitrary tombstone histories) + 9-vector `conflict_kat.json` cross-language replay | ✅ Complete (PR-C) |
-| Hardening: fuzz, side-channel review, memory hygiene audit | 🚧 Next (Phase A.7) |
+| CRDT merge primitives (`conflict.rs`: `merge_record`, `merge_block`, `clock_relation`, `merge_vector_clocks`) + record-level `tombstoned_at_ms` death-clock for full-domain associativity + commutativity / associativity / idempotence proptests | ✅ Complete (PR-C) |
+| CRDT polish: bidirectional defensive death-clock clamp + tag-canonicalisation on LWW-clone path + clean-room Python `py_merge_unknown_map` for record-level `unknown` + 11-vector `conflict_kat.json` cross-language replay + well-formedness Property L proptest | ✅ Complete (PR #9) |
+| Coverage-guided fuzz harness (`cargo-fuzz` over six wire-format decoders, NiceGUI dashboard, cross-language differential-replay protocol) | ✅ Complete (PR #8); 4 findings under triage |
+| Cryptography primer for users / contributors (13 chapters) | ✅ Complete (PR #10) |
+| Hardening: fuzz-finding triage, side-channel review, memory hygiene audit, threat-model & format-spec doc pass | 🚧 Phase A.7, in progress |
 | External cryptographic audit | 🚧 Phase A.7 |
 | FFI bindings (PyO3, uniffi for Swift/Kotlin) | ⏳ Sub-project B |
 | Sync orchestration (file watching, cloud-folder integration, conflict-detection scheduling — headless, exposed via FFI) | ⏳ Sub-project C |
 | Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project D |
 
-399+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors). The CRDT merge layer is additionally proven commutative, associative, and idempotent over the full record domain — including arbitrary tombstone-and-resurrection histories — by `proptest` properties at default (~256 cases each) under `core/tests/proptest.rs`'s PR-C section.
+425+ tests pass under `cargo test --release --workspace`; clippy clean with `-D warnings`; `#![forbid(unsafe_code)]` crate-wide. The repository tracks every cryptographic decision in `docs/adr/` and pins every primitive against published KATs (NIST FIPS 203 / FIPS 204, RFC 8032 / 7748, RFC 5869, RFC 9106, BIP-39 Trezor canonical vectors). The CRDT merge layer is additionally proven commutative, associative, idempotent, and well-formed over the full record domain — including arbitrary tombstone-and-resurrection histories and arbitrary record-level `unknown` keys — by four `proptest` properties at default (~256 cases each) under `core/tests/proptest.rs`'s PR-C / PR #9 section.
 
-A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that performs (1) full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault using only the spec, and (2) a cross-language replay of nine `conflict_kat.json` merge vectors covering each `ClockRelation` branch and the `tombstoned_at_ms` death-clock semantics. Both halves run from spec docs alone, with no dependencies on the Rust source.
+A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that performs (1) full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault using only the spec, (2) a cross-language replay of eleven `conflict_kat.json` merge vectors covering each `ClockRelation` branch, the `tombstoned_at_ms` death-clock semantics, the §11.3 identity-metadata override, and record-level `unknown`-map collisions; (3) a case-insensitivity self-test guarding hex-comparison drift in `py_merge_unknown_map`; and (4) a `--diff-replay` mode used by the fuzz harness for cross-language decoder agreement. All halves run from spec docs alone, with no dependencies on the Rust source.
 
 The project is intentionally being built slowly and carefully. Cryptographic systems that handle multi-decade-lifetime secrets are not the right place to optimize for time-to-MVP. See [ROADMAP.md](ROADMAP.md) for the phased plan.
 
