@@ -320,10 +320,20 @@ class MonitorApp:
         rs.status = Status.STOPPED
         rs.stop_reason = "user stopped"
 
+    async def _chain_ubsan(self, target: str, runs_cap: int | None) -> None:
+        """After ASan finishes (any reason except CRASHED or user-STOPPED),
+        kick off UBSan automatically. Treat user-stop as 'abandon the chain'."""
+        asan = self.runs[(target, "asan")]
+        # Poll until ASan is no longer RUNNING.
+        while asan.status == Status.RUNNING:
+            await asyncio.sleep(1.0)
+        if asan.status in (Status.PLATEAU, Status.CAP_REACHED):
+            await self.start_run(target, "ubsan", runs_cap)
+
     def _render_card(self, target: str) -> None:
         with ui.card().classes("w-96"):
             ui.label(target).classes("text-h6")
-            sanitizer = ui.radio(["asan", "ubsan"], value="asan").props("inline")
+            sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
             runs_cap_input = ui.input("runs cap (blank = open-ended)", value="").props("dense")
             status_label = ui.label("status: idle")
 
@@ -333,7 +343,13 @@ class MonitorApp:
                 except ValueError as e:
                     ui.notify(f"invalid runs cap: {e}", type="negative")
                     return
-                await self.start_run(target, sanitizer.value, cap)
+                if sanitizer.value == "both":
+                    # Run ASan first; chain UBSan if ASan stops cleanly.
+                    await self.start_run(target, "asan", cap)
+                    # Wait for ASan to finish, then optionally launch UBSan.
+                    asyncio.create_task(self._chain_ubsan(target, cap))
+                else:
+                    await self.start_run(target, sanitizer.value, cap)
                 status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
 
             async def on_stop():
