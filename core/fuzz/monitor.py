@@ -46,14 +46,21 @@ class Pulse:
 
 
 # Matches libFuzzer pulse-style stderr lines. Event types: pulse, NEW,
-# REDUCE, INITED, DONE, RELOAD. The `lim: N` field is optional; corp's
-# size component (after the slash) may be plain digits, a decimal, or
-# carry a `b`/`kb`/`Mb` unit suffix — we ignore that part.
+# REDUCE, INITED, DONE, RELOAD. The `lim: N` field is optional.
+#
+# libFuzzer's ScaleBytes() emits the corp size as exactly one of:
+#   - "<int>b"      for sizes < 1 KiB                (e.g. "147b")
+#   - "<float>k"    for sizes < 1 MiB, no trailing b (e.g. "8.2k")
+#   - "<float>Mb"   for sizes >= 1 MiB               (e.g. "1.2Mb")
+# We tolerate either an integer or a single-decimal float in the k/Mb
+# variants for forward-compatibility with libFuzzer formatting changes,
+# but reject ill-formed sizes (e.g. "1..5", "1234" with no unit, "Gb")
+# so a corrupted log line can't silently masquerade as a valid pulse.
 _PULSE_RE = re.compile(
     r"^#(?P<exec_count>\d+)\s+(?:pulse|NEW|REDUCE|INITED|DONE|RELOAD)\s+"
     r"cov:\s+(?P<cov>\d+)\s+"
     r"ft:\s+(?P<ft>\d+)\s+"
-    r"corp:\s+(?P<corp>\d+)/[\d.]+(?:[KMGkmg])?b?\s+"
+    r"corp:\s+(?P<corp>\d+)/(?:\d+b|\d+(?:\.\d+)?(?:k|Mb))\s+"
     r"(?:lim:\s+\d+\s+)?"
     r"exec/s:\s+(?P<exec_s>\d+)\s+"
     r"rss:\s+(?P<rss>\d+)Mb"

@@ -49,6 +49,23 @@ class TestParsePulseLine:
         assert parse_pulse_line("#abc\tpulse cov: bad") is None
         assert parse_pulse_line("#100\tpulse cov: 5 corp: badformat") is None
 
+    def test_corp_size_double_dot_rejected(self):
+        # libFuzzer's ScaleBytes() emits exactly one of: <int>b, <float>k, <float>Mb.
+        # Inputs like '1..5' or '..k' are not valid libFuzzer output and must be
+        # rejected so a corrupted/spoofed log line cannot silently parse as a Pulse.
+        line = "#100\tpulse cov: 5 ft: 5 corp: 4/1..5Mb exec/s: 100 rss: 64Mb"
+        assert parse_pulse_line(line) is None
+
+    def test_corp_size_missing_unit_rejected(self):
+        # Just digits with no b/k/Mb suffix is not a libFuzzer-emitted size.
+        line = "#100\tpulse cov: 5 ft: 5 corp: 4/1234 exec/s: 100 rss: 64Mb"
+        assert parse_pulse_line(line) is None
+
+    def test_corp_size_unknown_unit_rejected(self):
+        # libFuzzer never emits 'Gb', 'Tb', or trailing letters outside b/k/Mb.
+        line = "#100\tpulse cov: 5 ft: 5 corp: 4/1.5Gb exec/s: 100 rss: 64Mb"
+        assert parse_pulse_line(line) is None
+
 
 from monitor import parse_targets
 
