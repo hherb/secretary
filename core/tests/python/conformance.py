@@ -1919,29 +1919,31 @@ def py_merge_unknown_map(local_unk: dict, remote_unk: dict) -> dict:
     value bytes.
 
     The KAT carries each value as a hex string of canonical-CBOR
-    bytes (`unknown_hex: {key: "0a"}`). Lowercase-hex lex compare
-    matches lex compare on the underlying bytes for any byte length:
-    hex chars `0`-`9` < `a`-`f` align with the byte values they
-    represent, and 2 hex chars per byte keeps length comparisons
-    consistent. So we can compare hex strings directly without
-    decoding.
+    bytes (`unknown_hex: {key: "0a"}`). Rust's KAT loader decodes
+    hex via `u8::from_str_radix(_, 16)` which is case-insensitive,
+    so `"0A"` and `"0a"` both decode to byte `0x0a`. Raw lex compare
+    on hex strings does NOT match byte compare across mixed case
+    (e.g. `"a5"` vs `"B5"`: `'a' (0x61) > 'B' (0x42)` says L wins,
+    but byte `0xb5 > 0xa5` says R wins). We decode each side to
+    bytes for comparison and re-emit lowercase hex on output, so
+    Python and Rust agree on every (case-permuted) input.
     """
     out: dict[str, str] = {}
     all_keys = set(local_unk.keys()) | set(remote_unk.keys())
     for key in sorted(all_keys):
-        l_val = local_unk.get(key)
-        r_val = remote_unk.get(key)
-        if l_val is not None and r_val is not None:
-            if l_val == r_val:
-                out[key] = l_val
-            elif l_val >= r_val:
-                out[key] = l_val
+        l_hex = local_unk.get(key)
+        r_hex = remote_unk.get(key)
+        if l_hex is not None and r_hex is not None:
+            l_bytes = bytes.fromhex(l_hex)
+            r_bytes = bytes.fromhex(r_hex)
+            if l_bytes >= r_bytes:
+                out[key] = l_bytes.hex()
             else:
-                out[key] = r_val
-        elif l_val is not None:
-            out[key] = l_val
+                out[key] = r_bytes.hex()
+        elif l_hex is not None:
+            out[key] = bytes.fromhex(l_hex).hex()
         else:
-            out[key] = r_val  # type: ignore[assignment]
+            out[key] = bytes.fromhex(r_hex).hex()  # type: ignore[arg-type]
     return out
 
 
@@ -2361,6 +2363,74 @@ def section4_conflict_kat() -> tuple[bool, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Section 5 — py_merge_unknown_map case-insensitivity self-tests
+# ---------------------------------------------------------------------------
+
+
+def section5_unknown_map_case_insensitivity() -> tuple[bool, list[str]]:
+    """Cross-language drift guard for `py_merge_unknown_map`.
+
+    The KAT carries each unknown-map value as a hex string of canonical-CBOR
+    bytes (`"unknown_hex": {key: "0a"}`). Rust's KAT loader decodes hex via
+    `u8::from_str_radix(_, 16)`, which is case-insensitive — so `"0A"` and
+    `"0a"` both decode to byte `0x0a`. Python's `py_merge_unknown_map` must
+    agree; otherwise a future KAT vector authored with uppercase or mixed
+    hex would silently disagree across the two clean-room implementations.
+
+    The cross-case adversarial pairing is `0xa5` (lowercase `"a5"`) vs
+    `0xb5` (uppercase `"B5"`):
+      * byte compare: `0xb5 > 0xa5` → R wins.
+      * raw string compare: `'a' (0x61) > 'B' (0x42)` → would pick L,
+        contradicting the byte order. The merge must not be raw-string
+        compare.
+
+    The same-bytes-different-case pair `("ff", "FF")` exercises the
+    equality path: byte-equal inputs must be treated as equal, not as
+    differing → collision branch.
+    """
+    lines: list[str] = []
+    all_ok = True
+
+    # 1. Cross-case adversarial: 0xa5 (lowercase) vs 0xb5 (uppercase).
+    #    Byte-correct winner is R (0xb5 > 0xa5). Raw-string compare picks L.
+    got = py_merge_unknown_map({"k": "a5"}, {"k": "B5"})
+    # Either uppercase or lowercase representation of 0xb5 is acceptable —
+    # what matters is that the *byte value* equals 0xb5, not 0xa5.
+    if got["k"].lower() != "b5":
+        lines.append(
+            f"FAIL  cross-case adversarial: got {got['k']!r}, expected byte 0xb5 "
+            "(byte-larger). Raw-string compare misordered."
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  cross-case adversarial picks byte-larger value")
+
+    # 2. Same byte, different case: 0xff (`"ff"` vs `"FF"`). Must treat as
+    #    equal (no spurious collision; output is one of the inputs).
+    got = py_merge_unknown_map({"k": "ff"}, {"k": "FF"})
+    if got["k"].lower() != "ff":
+        lines.append(
+            f"FAIL  same-byte different-case: got {got['k']!r}, expected byte 0xff "
+            "(should canonicalise to a single value, not corrupt to a different byte)."
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  same-byte different-case canonicalises consistently")
+
+    # 3. Single-side mixed case is kept verbatim by byte value.
+    got = py_merge_unknown_map({"k": "AB"}, {})
+    if got["k"].lower() != "ab":
+        lines.append(
+            f"FAIL  single-side uppercase: got {got['k']!r}, expected byte 0xab"
+        )
+        all_ok = False
+    else:
+        lines.append("PASS  single-side uppercase preserved as byte 0xab")
+
+    return all_ok, lines
+
+
+# ---------------------------------------------------------------------------
 # Combined entry point
 # ---------------------------------------------------------------------------
 
@@ -2389,7 +2459,13 @@ def main() -> int:
         print(ln)
 
     print()
-    if section1_ok and section2_ok and section3_ok and section4_ok:
+    print("--- Section 5: py_merge_unknown_map case-insensitivity guard ---")
+    section5_ok, section5_lines = section5_unknown_map_case_insensitivity()
+    for ln in section5_lines:
+        print(ln)
+
+    print()
+    if section1_ok and section2_ok and section3_ok and section4_ok and section5_ok:
         print("PASS")
         return 0
     if not section1_ok:
@@ -2400,6 +2476,8 @@ def main() -> int:
         print("FAIL: ml_dsa_65_verify tamper-rejection regression", file=sys.stderr)
     if not section4_ok:
         print("FAIL: conflict_kat.json CRDT merge cross-language replay", file=sys.stderr)
+    if not section5_ok:
+        print("FAIL: py_merge_unknown_map case-insensitivity guard", file=sys.stderr)
     return 1
 
 
