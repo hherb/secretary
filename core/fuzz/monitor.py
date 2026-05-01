@@ -215,6 +215,7 @@ class MonitorApp:
             for t in targets
             for s in ("asan", "ubsan")
         }
+        self.plateau_k = 10  # default; could be configurable later
 
     def render(self) -> None:
         """Build the full page UI."""
@@ -286,15 +287,21 @@ class MonitorApp:
             pulse = parse_pulse_line(line)
             if pulse is not None:
                 rs.pulses.append(pulse)
-        # stderr EOF → process is exiting. Wait for exit code.
+                # Plateau check: when fired, SIGTERM the subprocess. The
+                # subsequent EOF on stderr will fall through to the wait()
+                # logic below; mark stop_reason here so the post-exit
+                # handler knows this was a plateau (not a cap-reached).
+                if check_plateau(list(rs.pulses), self.plateau_k):
+                    rs.stop_reason = f"plateau at exec {pulse.exec_count}"
+                    proc.send_signal(signal.SIGTERM)
         rc = await proc.wait()
         if rs.status == Status.RUNNING:
-            # Not user-stopped; categorize by exit code.
-            if rc == 0:
-                rs.status = Status.CAP_REACHED  # natural exit on -runs
+            if rs.stop_reason and rs.stop_reason.startswith("plateau"):
+                rs.status = Status.PLATEAU
+            elif rc == 0:
+                rs.status = Status.CAP_REACHED
                 rs.stop_reason = "exit 0 (cap reached)"
             else:
-                # Crash detection in Task 13. For now: STOPPED with reason.
                 rs.status = Status.STOPPED
                 rs.stop_reason = f"exit code {rc}"
 
