@@ -599,6 +599,20 @@ fn merge_record_type(l: &Record, r: &Record) -> String {
 /// self-merge (the tie path's `BTreeSet` would canonicalise then),
 /// breaking idempotence on the merge output and the
 /// "canonicalises opportunistically" claim of §11.5.
+///
+/// Routing the chosen side through `BTreeSet` canonicalises **both
+/// order and multiplicity** — duplicate tags on the source side are
+/// dropped, not just reordered. This is correct per §11.5
+/// (`tags` is a set, not a multiset), but is a stronger output
+/// guarantee than the pre-fix wholesale clone, and is required for the
+/// fixed-point check: a duplicate tag would survive self-merge under a
+/// raw clone and break idempotence even with order canonicalisation.
+///
+/// Property L (`crdt_merge_record_well_formed_under_arbitrary_inputs`
+/// in `core/tests/proptest.rs`) is the regression guard: it asserts
+/// `merge_record(merged, merged) == merged` over arbitrary
+/// (non-canonicalised) inputs and would fail if a future refactor
+/// dropped either canonicalisation step on the LWW-clone branches.
 fn merge_tags(l: &Record, r: &Record, outcome: TombstoneOutcome) -> Vec<String> {
     let source: &[String] = match outcome {
         TombstoneOutcome::LocalTombstoneWins | TombstoneOutcome::RemoteTombstoneLost => &l.tags,
