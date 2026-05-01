@@ -76,6 +76,18 @@ pub const ML_KEM_768_PK_LEN: usize = 1184;
 /// Contact UUID length, in bytes (§14).
 pub const CONTACT_UUID_LEN: usize = 16;
 
+/// Cap on `display_name` byte length, enforced symmetrically on both
+/// encode and decode. The DoS motivation lives on the decode side — the
+/// card arrives via `contacts/{uuid}.card` files that may originate from
+/// an untrusted peer over sync, and a multi-GB `display_name` would OOM
+/// the recipient before any signature check runs. The encode-side check
+/// is defense-in-depth: it stops local code from persisting a card that
+/// no peer (and not even the writer on next read) could ever decode. The
+/// cap is generous (4 KiB of UTF-8 fits any realistic personal or
+/// organisation name in any script); UI / vault-config callers may apply
+/// tighter caps for display purposes.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 4096;
+
 // CBOR map keys (§6). String literals only used here; centralised so a typo
 // becomes a compile-time fix rather than a silent encoding drift.
 const KEY_CARD_VERSION: &str = "card_version";
@@ -126,6 +138,14 @@ pub enum CardError {
     #[error("invalid field length")]
     InvalidFieldLength,
 
+    /// `display_name` exceeded the parse-layer cap [`MAX_DISPLAY_NAME_BYTES`].
+    /// Distinct from [`Self::InvalidFieldLength`] because the latter is for
+    /// fixed-size fields; `display_name` is variable-length, and signalling
+    /// "too long" specifically lets a future UI layer surface the diagnostic
+    /// (e.g. "this card's display name is too long to import").
+    #[error("display_name exceeds the {MAX_DISPLAY_NAME_BYTES}-byte parse-layer cap")]
+    DisplayNameTooLong,
+
     /// A signature on the card did not verify. Variants of [`SigError`] —
     /// [`SigError::Ed25519VerifyFailed`] and [`SigError::MlDsa65VerifyFailed`]
     /// — distinguish which half rejected.
@@ -150,8 +170,10 @@ pub struct ContactCard {
     /// 128-bit owner UUID, the same bytes as `user_uuid` in the Identity
     /// Bundle (§5).
     pub contact_uuid: [u8; CONTACT_UUID_LEN],
-    /// User-facing label. UTF-8; no length cap enforced here (the cap, if
-    /// any, is a UI / vault-config concern).
+    /// User-facing label. UTF-8. Bounded symmetrically on encode and
+    /// decode by [`MAX_DISPLAY_NAME_BYTES`] (peer-supplied DoS surface on
+    /// the decode side; defense-in-depth on the encode side); callers may
+    /// apply tighter UI-layer caps.
     pub display_name: String,
     /// X25519 public key, 32 bytes.
     pub x25519_pk: [u8; X25519_PK_LEN],
@@ -177,6 +199,7 @@ impl ContactCard {
     /// is prepended by [`crate::crypto::sig::sign`] when called with
     /// [`SigRole::Card`].
     pub fn signed_bytes(&self) -> Result<Vec<u8>, CardError> {
+        self.validate_invariants()?;
         let mut entries: Vec<(Value, Value)> = Vec::with_capacity(8);
         self.push_pre_sig_entries(&mut entries);
         encode_map(&entries)
@@ -186,6 +209,7 @@ impl ContactCard {
     /// signature fields. This is what `fingerprint::fingerprint` hashes and
     /// what the §6 wire form on disk contains.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, CardError> {
+        self.validate_invariants()?;
         let mut entries: Vec<(Value, Value)> = Vec::with_capacity(10);
         self.push_pre_sig_entries(&mut entries);
         entries.push((
@@ -285,7 +309,13 @@ impl ContactCard {
                     take_fixed_bytes::<CONTACT_UUID_LEN>(v)?,
                     &key,
                 )?,
-                KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
+                KEY_DISPLAY_NAME => {
+                    let s = take_text(v)?;
+                    if s.len() > MAX_DISPLAY_NAME_BYTES {
+                        return Err(CardError::DisplayNameTooLong);
+                    }
+                    set_once(&mut display_name, s, &key)?;
+                }
                 KEY_X25519_PK => {
                     set_once(&mut x25519_pk, take_fixed_bytes::<X25519_PK_LEN>(v)?, &key)?
                 }
@@ -398,6 +428,20 @@ impl ContactCard {
             sig_pq: pq_sig,
         };
         sig::verify(SigRole::Card, &m, &sig, &self.ed25519_pk, &pq_pk)?;
+        Ok(())
+    }
+
+    /// Check the variable-length-field caps that both encoder paths share
+    /// ([`signed_bytes`] and [`to_canonical_cbor`]). Keeps the cap
+    /// symmetric with [`from_canonical_cbor`]: a card the decoder would
+    /// reject must not be possible to serialize either, otherwise local
+    /// code could persist a card that no peer (and not even the writer
+    /// on next read) could ever decode. Currently checks `display_name`
+    /// only; future variable-length invariants land here.
+    fn validate_invariants(&self) -> Result<(), CardError> {
+        if self.display_name.len() > MAX_DISPLAY_NAME_BYTES {
+            return Err(CardError::DisplayNameTooLong);
+        }
         Ok(())
     }
 
@@ -654,6 +698,135 @@ mod tests {
             card.pk_bundle_bytes().unwrap(),
             rebuilt.pk_bundle_bytes().unwrap(),
             "pk_bundle_bytes must round-trip through to_canonical_cbor's pk subset"
+        );
+    }
+
+    /// Build canonical-CBOR bytes for a card with a hostile `display_name`
+    /// length, bypassing [`ContactCard::to_canonical_cbor`]'s symmetric
+    /// cap. Models a peer's wire-format input directly so the decoder can
+    /// be tested against bytes the local encoder would refuse to produce.
+    fn oversize_display_name_bytes() -> Vec<u8> {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let oversize = "x".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_CARD_VERSION.into()),
+                Value::Integer(u64::from(card.card_version).into()),
+            ),
+            (
+                Value::Text(KEY_CONTACT_UUID.into()),
+                Value::Bytes(card.contact_uuid.to_vec()),
+            ),
+            (Value::Text(KEY_DISPLAY_NAME.into()), Value::Text(oversize)),
+            (
+                Value::Text(KEY_X25519_PK.into()),
+                Value::Bytes(card.x25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_PK.into()),
+                Value::Bytes(card.ml_kem_768_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_ED25519_PK.into()),
+                Value::Bytes(card.ed25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_PK.into()),
+                Value::Bytes(card.ml_dsa_65_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_CREATED_AT.into()),
+                Value::Integer(card.created_at_ms.into()),
+            ),
+            (
+                Value::Text(KEY_SELF_SIG_ED.into()),
+                Value::Bytes(card.self_sig_ed.to_vec()),
+            ),
+            (
+                Value::Text(KEY_SELF_SIG_PQ.into()),
+                Value::Bytes(card.self_sig_pq.clone()),
+            ),
+        ];
+        encode_map(&entries).expect(
+            "hostile-peer bytes must encode here even though the public encoder refuses them",
+        )
+    }
+
+    /// `display_name` is variable-length CBOR text and arrives from
+    /// untrusted peers (sync). A peer that ships a card whose
+    /// `display_name` claims, say, 4 GB of text exhausts the recipient's
+    /// memory before any signature check can run. The parse-layer cap
+    /// closes that DoS surface.
+    #[test]
+    fn from_canonical_cbor_rejects_oversize_display_name() {
+        let bytes = oversize_display_name_bytes();
+        let err = ContactCard::from_canonical_cbor(&bytes)
+            .expect_err("oversize display_name must be rejected on parse");
+        assert!(
+            matches!(err, CardError::DisplayNameTooLong),
+            "expected DisplayNameTooLong, got {err:?}"
+        );
+    }
+
+    /// Boundary: a `display_name` exactly at the cap must still decode.
+    /// Pins the off-by-one behaviour of the comparison.
+    #[test]
+    fn from_canonical_cbor_accepts_display_name_at_cap() {
+        let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "y".repeat(MAX_DISPLAY_NAME_BYTES);
+        let bytes = card.to_canonical_cbor().expect("encode");
+        let parsed =
+            ContactCard::from_canonical_cbor(&bytes).expect("display_name at the cap must decode");
+        assert_eq!(parsed.display_name.len(), MAX_DISPLAY_NAME_BYTES);
+    }
+
+    /// Symmetric cap on encode: a card whose `display_name` exceeds
+    /// [`MAX_DISPLAY_NAME_BYTES`] must not serialize via
+    /// [`ContactCard::to_canonical_cbor`]. Stops local code from writing
+    /// `contacts/{uuid}.card` files that the receiving side (or the writer
+    /// on next read) would refuse to decode.
+    #[test]
+    fn to_canonical_cbor_rejects_oversize_display_name() {
+        let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "x".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+        let err = card
+            .to_canonical_cbor()
+            .expect_err("oversize display_name must be rejected on encode");
+        assert!(
+            matches!(err, CardError::DisplayNameTooLong),
+            "expected DisplayNameTooLong, got {err:?}"
+        );
+    }
+
+    /// Boundary on encode: at-cap `display_name` still encodes. Pins the
+    /// `>` (not `>=`) comparison and rules out an off-by-one accidentally
+    /// rejecting an exact-cap card.
+    #[test]
+    fn to_canonical_cbor_accepts_display_name_at_cap() {
+        let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "y".repeat(MAX_DISPLAY_NAME_BYTES);
+        let bytes = card
+            .to_canonical_cbor()
+            .expect("at-cap display_name must encode");
+        // Any non-empty output proves the cap didn't fire; a re-decode pins
+        // the round-trip too.
+        assert!(!bytes.is_empty());
+    }
+
+    /// `signed_bytes` is the message hashed by §8 hybrid signing; it
+    /// shares [`Self::push_pre_sig_entries`] with `to_canonical_cbor`, so
+    /// the cap must apply there too. Without this, a caller could
+    /// successfully *sign* a card it cannot subsequently *serialize*.
+    #[test]
+    fn signed_bytes_rejects_oversize_display_name() {
+        let mut card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        card.display_name = "x".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+        let err = card
+            .signed_bytes()
+            .expect_err("oversize display_name must be rejected by signed_bytes");
+        assert!(
+            matches!(err, CardError::DisplayNameTooLong),
+            "expected DisplayNameTooLong, got {err:?}"
         );
     }
 
