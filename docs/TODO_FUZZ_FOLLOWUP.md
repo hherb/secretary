@@ -5,120 +5,77 @@ clamp + tag canonicalisation + Python unknown-merge KAT) for Steps 1–2,
 extended 2026-05-01 with Step 3 (PR #8 monitor scaffold gaps surfaced
 during first real-campaign use).
 
-Three independent tracks, all post-PR-#8/9:
+## Status
 
-1. **`.gitignore` gap** — small, mechanical (Step 1).
-2. **Triage four real fuzz findings** — 1–2 hours depending on whether
-   the findings are deep bugs vs. trivial input-size issues (Step 2).
-3. **Surface live telemetry in the NiceGUI monitor** — PR #8 shipped
-   the dashboard as a deliberate static scaffold; running it against
-   real campaigns immediately exposes that a healthy and a wedged
-   campaign look identical because the existing pulse stream isn't
-   plumbed to the UI (Step 3).
+* **Step 1 — `.gitignore` gap:** ✅ already in place. `core/fuzz/.gitignore`
+  ignores `target/`, `corpus/`, `artifacts/`, and `.monitor-state.json`
+  via per-crate scoping; the doc author missed the per-crate file.
+  Verified by `git check-ignore` against a freshly-fuzzed tree.
+* **Step 2 — Triage the four fuzz findings:** ✅ done in PR-A
+  (`fix/fuzz-findings-triage`). Six artifacts (the four named below plus
+  two more that appeared after the doc was written) were investigated and
+  found to be libfuzzer false positives — see "Step 2 (done): triage outcome"
+  below for the full investigation. Inputs were promoted as committed
+  regression tests anyway, and a real DoS surface found while reading the
+  contact-card decoder (`display_name` was unbounded variable-length CBOR
+  text on a peer-supplied path) was capped at 4 KiB on parse.
+* **Step 3 — Surface live telemetry in the NiceGUI monitor:** ⏳ pending.
+  Pick this up in a separate PR (PR-B).
 
-When **all three tracks** are done, **delete this file in the same
-commit** that ships the last regression test (or the last UI patch,
-whichever lands later).
-
----
-
-## Context
-
-`core/fuzz/` was running locally during PR #9 work and accumulated:
-
-* Build artifacts in `core/fuzz/target/` — not gitignored, polluting
-  `git status`.
-* Auto-grown corpus directories in `core/fuzz/corpus/<target>/` — not
-  gitignored.
-* Real fuzz findings in `core/fuzz/artifacts/<target>/` — `oom-*` and
-  `slow-unit-*` files. These are bugs the fuzzer caught that have not been
-  triaged.
-
-PR #9 deliberately did not bundle any of this — it was scope creep for a
-merge-logic PR. This doc captures what to do next.
+When **Step 3** lands, **delete this file in that same commit** — the
+remaining content below is purely the Step-3 spec + "do not" guardrails.
 
 ---
 
-## Step 1: Close the `.gitignore` gap
+## Step 2 (done): triage outcome
 
-Current state: the existing `.gitignore` has `/target/` (root-anchored), so
-`core/fuzz/target/` is NOT matched. The fuzz `corpus/` and `artifacts/`
-directories are also not matched by anything.
+Six artifacts were on disk at start of work:
 
-Add to `.gitignore`:
+* `contact_card/oom-031e9f63…` and `oom-db48128d…`
+* `record/oom-df5366aa…` and `oom-e4c2aff5…`
+* `vault_toml/slow-unit-bca8ee9d…` and `slow-unit-fa13b6d1…`
 
-```gitignore
-# cargo-fuzz outputs (build artifacts, auto-grown corpus, crash findings).
-# Real fuzz findings worth keeping should be promoted to regression tests
-# under core/tests/, not committed as raw artifacts.
-core/fuzz/target/
-core/fuzz/corpus/
-core/fuzz/artifacts/
-```
+(The doc originally listed four. The other two appeared during the same
+PR #8 monitor session that produced the first batch and were caught
+implicitly by the same triage.)
 
-(Do **not** change the existing `/target/` rule — it correctly anchors the
-top-level Rust workspace `target/`. The fuzz crate is a sub-Cargo project
-with its own `target/`, and being explicit is clearer than relaxing the
-anchor.)
+**None of the six reproduce against current main.** Direct replay of each
+artifact at 256 MB rss/malloc limits returned `Err` in 0 ms; 10,000
+iterations of `contact_card oom-031e9f63` finished in 1.25 s with no
+allocation spike. Fresh 5-minute campaigns × 3 targets (≈25.7 M total
+executions, peak RSS 994–1457 MB — well under the 2 GB libfuzzer default)
+produced zero new findings.
 
-After landing, `git status` should be clean on a freshly-fuzzed working tree.
+Most plausible cause: libfuzzer samples RSS periodically and attributes
+the limit-crossing event to whichever input was running at that instant,
+so long-running campaigns whose accumulated corpus and instrumentation
+state push the process over the threshold can save innocent inputs as
+"OOM artifacts". Same noise pattern explains the slow-units under CPU
+contention.
 
----
+Outcome:
 
-## Step 2: Triage the four fuzz findings
+1. The six inputs were dropped into `core/tests/data/fuzz_regressions/`
+   so the existing `must not panic` replay loop in
+   [core/tests/fuzz_regressions.rs](../core/tests/fuzz_regressions.rs)
+   locks in their current safe behaviour as a regression guard. Cheap
+   defense-in-depth.
+2. While reading the `contact_card` decoder during triage, a real
+   peer-supplied DoS surface was found: `display_name` was unbounded
+   variable-length CBOR text, and the orchestrator at
+   [core/src/vault/orchestrators.rs:509](../core/src/vault/orchestrators.rs#L509)
+   reads contact-card bytes off disk where any of those files could
+   have been written by a sync peer. A hostile peer's card with a
+   multi-GB `display_name` would OOM the recipient before any
+   signature check could run. Capped at 4 KiB on parse with a new
+   `CardError::DisplayNameTooLong` variant; tests pin both the
+   boundary and the over-cap rejection.
 
-Each finding lives at the path shown. The `oom-*` and `slow-unit-*` filenames
-are libfuzzer's convention: the suffix is the SHA-1 of the input. Reproduce
-each by feeding the file back into the fuzz target:
-
-```bash
-cd core/fuzz
-cargo +nightly fuzz run <target_name> artifacts/<target_name>/<filename>
-```
-
-(Or `cargo fuzz run` if the project has migrated off nightly — check the
-fuzz crate's `rust-toolchain.toml` first.)
-
-### Finding 1 — `contact_card` OOM
-
-* **Path:** `core/fuzz/artifacts/contact_card/oom-031e9f63c25e22eeff434c0ffb290bbbcffae7d0`
-* **Symptom:** parser exhausts memory on this input.
-* **Fix shape:** likely a missing length cap in the contact-card decoder.
-  Find the parser entry point, locate the unbounded `Vec` / `String` /
-  `BTreeMap` allocation, and add a hard cap consistent with the rest of the
-  vault format's bounded fields.
-* **Regression test:** copy the input bytes into
-  `core/tests/contact_card_regression.rs` (or similar) as a `const &[u8]` and
-  assert the parser returns a typed error rather than panicking or OOMing.
-
-### Finding 2 — `record` OOM
-
-* **Path:** `core/fuzz/artifacts/record/oom-df5366aa6da002c3176f3f8fa4aa157fa58d0424`
-* **Symptom:** record decoder exhausts memory.
-* **Fix shape:** same as Finding 1 — find and cap the unbounded allocation.
-  The likely culprits are `fields` map size, individual field value sizes,
-  `tags` vec length, or `unknown` map size.
-* **Regression test:** as above, in the appropriate test file under
-  `core/tests/`.
-
-### Findings 3 & 4 — `vault_toml` slow-unit (×2)
-
-* **Paths:**
-  * `core/fuzz/artifacts/vault_toml/slow-unit-bca8ee9d63ee08277327777d4849aa0b1f4db8f7`
-  * `core/fuzz/artifacts/vault_toml/slow-unit-fa13b6d1cac31081c62d8eda5f5d68f48542dc1f`
-* **Symptom:** parser exceeds libfuzzer's per-execution time threshold
-  (default 1 second). May indicate quadratic or worse complexity on a
-  particular input shape.
-* **Triage:**
-  1. Reproduce both inputs against the current parser. They may be the same
-     pathology shrunk to two minimal cases.
-  2. Profile with `cargo flamegraph` or `perf` to identify the hot path.
-  3. If the pathology is in the upstream `toml` crate, file an upstream
-     issue and add an input-size cap as a workaround. If it's in our parser,
-     fix the algorithm.
-* **Regression test:** time-bound assertion (`Duration::from_millis(...)`)
-  on each minimised input. Don't pin a wall-clock value — assert "completes
-  within 100ms" with a margin.
+Skipped on purpose: speculative parser-bound additions to `record`/
+`vault_toml`. Without a reproducible bug they would be gold-plating;
+record's variable-length fields (notably `unknown` map values) are a
+plausible future hardening target but were not load-bearing for any
+artifact found here.
 
 ---
 
@@ -220,36 +177,32 @@ state-machine, or subprocess changes.
   and the badge flips to STOPPED.
 * Eyeball the runs-cap input — no ellipsis truncation.
 
-These items are presentation-layer only. They do not block Steps 1 and 2
-(gitignore + finding triage); pick them up in either order.
+These items are presentation-layer only — no parser, state-machine, or
+subprocess changes.
 
 ---
 
 ## What NOT to do
 
-* **Do not commit the raw `artifacts/` or `corpus/` directories.** The
-  `.gitignore` change in Step 1 prevents this. Promoting findings into
+* **Do not commit the raw `artifacts/` or `corpus/` directories.**
+  `core/fuzz/.gitignore` already prevents this. Promoting findings into
   named regression tests under `core/tests/` is the right pattern; the raw
   fuzzer outputs are noisy and not human-meaningful filenames.
 * **Do not delete the `core/fuzz/` directory itself.** It contains the fuzz
-  crate's `Cargo.toml` and `fuzz_targets/` (which ARE tracked, or should be
-  — verify before this work starts). Only the three subdirectories listed
-  in Step 1 should be ignored.
-* **Do not paper over OOM findings with `#[cfg(fuzzing)]` size limits.** The
-  cap should apply to the production decoder too — a hostile sync peer can
-  ship the same malformed input to a real client. Fuzz-only caps would
-  leave the production parser exposed.
+  crate's `Cargo.toml` and `fuzz_targets/`, both tracked.
+* **Do not paper over future OOM findings with `#[cfg(fuzzing)]` size
+  limits.** Caps must apply to the production decoder too — a hostile sync
+  peer can ship the same malformed input to a real client (the
+  `display_name` cap added in PR-A is the pattern to follow).
 
 ---
 
-## Verification
+## Sign-off
 
-Before marking this done:
+Before marking the whole follow-up done:
 
-* `git status` is clean after a `cargo fuzz run` cycle on each target.
-* `cargo test --release --workspace` passes the new regression tests.
-* For each finding, the regression test input fails the *pre-fix* parser
-  (verify by stashing the fix, running the test, observing the failure,
-  un-stashing) — proving the test actually exercises the bug.
-* This file is deleted in the same commit that ships the last regression
-  test.
+* `cargo test --release --workspace` stays green (the parser-side
+  regression tests from PR-A continue to pass).
+* The dashboard verification listed under §3 above passes against three
+  concurrent campaigns.
+* This file is deleted in the same commit that ships the last UI patch.
