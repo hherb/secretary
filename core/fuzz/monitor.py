@@ -12,8 +12,13 @@ See docs/superpowers/specs/2026-05-01-fuzz-monitor-design.md.
 
 from __future__ import annotations
 
+import asyncio
 import enum
+import os
 import re
+import signal
+import subprocess
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,12 +223,119 @@ class MonitorApp:
             for target in self.targets:
                 self._render_card(target)
 
+    async def start_run(self, target: str, sanitizer: str, runs_cap: int | None) -> None:
+        """Spawn cargo fuzz run for (target, sanitizer). Idempotent: refuses
+        to start a second subprocess for the same key while one is alive."""
+        rs = self.runs[(target, sanitizer)]
+        if rs.status == Status.RUNNING:
+            return  # already running
+
+        # Locate nightly toolchain; bail if not found.
+        rustup_home = Path.home() / ".rustup"
+        nightly_dir = find_nightly_toolchain(rustup_home)
+        if nightly_dir is None:
+            rs.log_tail.append("ERROR: rustup nightly toolchain not found")
+            rs.status = Status.STOPPED
+            rs.stop_reason = "no nightly toolchain"
+            return
+
+        # Build argv. ASan is the default; UBSan needs --sanitizer=undefined.
+        argv = ["cargo", "fuzz", "run"]
+        if sanitizer == "ubsan":
+            argv.append("--sanitizer=undefined")
+        argv.append(target)
+        argv.append("--")
+        if runs_cap is not None:
+            argv.append(f"-runs={runs_cap}")
+
+        env = build_subprocess_env(nightly_dir, dict(os.environ))
+
+        # Reset state for this run.
+        rs.pulses.clear()
+        rs.log_tail.clear()
+        rs.runs_cap = runs_cap
+        rs.crash_path = None
+        rs.stop_reason = None
+        rs.started_at = time.monotonic()
+        rs.status = Status.RUNNING
+        rs.log_tail.append(f"$ {' '.join(argv)}")
+
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(_FUZZ_DIR),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        rs._popen = proc  # type: ignore[attr-defined]
+
+        # Spawn async stderr reader.
+        asyncio.create_task(self._read_stderr(target, sanitizer, proc))
+
+    async def _read_stderr(
+        self,
+        target: str,
+        sanitizer: str,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        rs = self.runs[(target, sanitizer)]
+        assert proc.stderr is not None
+        async for raw_line in proc.stderr:
+            line = raw_line.decode("utf-8", errors="replace").rstrip()
+            rs.log_tail.append(line)
+            pulse = parse_pulse_line(line)
+            if pulse is not None:
+                rs.pulses.append(pulse)
+        # stderr EOF → process is exiting. Wait for exit code.
+        rc = await proc.wait()
+        if rs.status == Status.RUNNING:
+            # Not user-stopped; categorize by exit code.
+            if rc == 0:
+                rs.status = Status.CAP_REACHED  # natural exit on -runs
+                rs.stop_reason = "exit 0 (cap reached)"
+            else:
+                # Crash detection in Task 13. For now: STOPPED with reason.
+                rs.status = Status.STOPPED
+                rs.stop_reason = f"exit code {rc}"
+
+    async def stop_run(self, target: str, sanitizer: str) -> None:
+        """SIGTERM the subprocess; SIGKILL fallback after grace period."""
+        rs = self.runs[(target, sanitizer)]
+        proc = getattr(rs, "_popen", None)
+        if proc is None or proc.returncode is not None:
+            return  # nothing to stop
+        proc.send_signal(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        rs.status = Status.STOPPED
+        rs.stop_reason = "user stopped"
+
     def _render_card(self, target: str) -> None:
         with ui.card().classes("w-96"):
             ui.label(target).classes("text-h6")
-            ui.label("Sanitizer toggle, runs-cap, status — added in Task 10")
-            ui.label(f"asan: {self.runs[(target, 'asan')].status.name}")
-            ui.label(f"ubsan: {self.runs[(target, 'ubsan')].status.name}")
+            sanitizer = ui.radio(["asan", "ubsan"], value="asan").props("inline")
+            runs_cap_input = ui.input("runs cap (blank = open-ended)", value="").props("dense")
+            status_label = ui.label("status: idle")
+
+            async def on_start():
+                try:
+                    cap = parse_runs_cap(runs_cap_input.value)
+                except ValueError as e:
+                    ui.notify(f"invalid runs cap: {e}", type="negative")
+                    return
+                await self.start_run(target, sanitizer.value, cap)
+                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
+
+            async def on_stop():
+                await self.stop_run(target, sanitizer.value)
+                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
+
+            with ui.row():
+                ui.button("Start", on_click=on_start).props("color=primary")
+                ui.button("Stop", on_click=on_stop).props("color=negative")
 
 
 def main() -> None:
