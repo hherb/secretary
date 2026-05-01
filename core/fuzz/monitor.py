@@ -191,10 +191,53 @@ class RunState:
             self.log_tail = deque(maxlen=20)
 
 
+from nicegui import ui
+
+# Path constants (resolved at module import time so tests don't break).
+_FUZZ_DIR = Path(__file__).parent  # core/fuzz/
+_CARGO_TOML = _FUZZ_DIR / "Cargo.toml"
+
+
+class MonitorApp:
+    """Holds per-(target, sanitizer) RunState and orchestrates UI updates."""
+
+    def __init__(self, targets: list[str]) -> None:
+        self.targets = targets
+        # Two RunStates per target (asan + ubsan). Even if the user only
+        # runs one sanitizer at a time, the slots exist for both.
+        self.runs: dict[tuple[str, str], RunState] = {
+            (t, s): RunState(target=t, sanitizer=s)
+            for t in targets
+            for s in ("asan", "ubsan")
+        }
+
+    def render(self) -> None:
+        """Build the full page UI."""
+        ui.label("Secretary fuzz monitor").classes("text-h4")
+        with ui.grid(columns=3).classes("gap-4"):
+            for target in self.targets:
+                self._render_card(target)
+
+    def _render_card(self, target: str) -> None:
+        with ui.card().classes("w-96"):
+            ui.label(target).classes("text-h6")
+            ui.label("Sanitizer toggle, runs-cap, status — added in Task 10")
+            ui.label(f"asan: {self.runs[(target, 'asan')].status.name}")
+            ui.label(f"ubsan: {self.runs[(target, 'ubsan')].status.name}")
+
+
 def main() -> None:
-    """Entry point. Real implementation arrives in Task 9."""
-    print("monitor scaffold OK")
+    """Entry point — launch the NiceGUI app."""
+    cargo_toml_text = _CARGO_TOML.read_text()
+    targets = parse_targets(cargo_toml_text)
+    if not targets:
+        # Fallback per spec § "Cargo.toml fallback".
+        targets = ["vault_toml", "record", "contact_card",
+                   "bundle_file", "manifest_file", "block_file"]
+    app = MonitorApp(targets)
+    app.render()
+    ui.run(port=8080, show=False, reload=False, title="Fuzz monitor")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" or __name__ == "__mp_main__":
     main()
