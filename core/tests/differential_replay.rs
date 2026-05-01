@@ -13,8 +13,17 @@
 #![cfg(feature = "differential-replay")]
 
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+// Per-input wall-clock budget for the Python clean-room decoder. Generous
+// enough to absorb `uv`'s cold-cache wheel compilation on the first call
+// (cryptography in particular can take ~10–15s); tight enough that an
+// adversarial infinite-loop input is caught instead of hanging the whole
+// `cargo test --features differential-replay` run.
+const PER_INPUT_TIMEOUT: Duration = Duration::from_secs(60);
 
 const TARGETS: &[&str] = &[
     "vault_toml",
@@ -81,7 +90,7 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let conformance = manifest.join("tests/python/conformance.py");
 
-    let output = Command::new("uv")
+    let mut child = Command::new("uv")
         .arg("run")
         .arg("--with").arg("cryptography")
         .arg("--with").arg("pynacl")
@@ -93,18 +102,58 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
         .arg("--diff-replay")
         .arg(target)
         .arg(input_path)
-        .output()
-        .expect("uv run conformance.py");
-    if !output.status.success() {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn uv run conformance.py");
+
+    // Bounded wait. Poll try_wait on a 50ms cadence; if the deadline
+    // elapses, kill the child and report a timeout — this prevents one
+    // pathological corpus input from hanging the whole test run.
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if start.elapsed() > PER_INPUT_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "python timeout after {}s on {}",
+                    PER_INPUT_TIMEOUT.as_secs(),
+                    input_path.display()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("wait: {}", e)),
+        }
+    };
+
+    // Conformance.py emits a single short JSON line, so the pipe buffers
+    // cannot fill before the child exits — reading after wait is safe here.
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_string(&mut stdout_buf)
+        .map_err(|e| format!("read stdout: {}", e))?;
+    child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr_buf)
+        .map_err(|e| format!("read stderr: {}", e))?;
+
+    if !status.success() {
         return Err(format!(
             "python exit={:?} stderr={}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
+            status.code(),
+            stderr_buf
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let json: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("python output not JSON: {} ({:?})", stdout, e));
+    let json: serde_json::Value = serde_json::from_str(stdout_buf.trim())
+        .unwrap_or_else(|e| panic!("python output not JSON: {} ({:?})", stdout_buf, e));
     match json["status"].as_str() {
         Some("accept") => {
             let b64 = json["reencoded_b64"].as_str().unwrap_or("");
@@ -114,7 +163,7 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
                 .map_err(|e| format!("base64: {}", e))
         }
         Some("reject") => Err(json["error_class"].as_str().unwrap_or("unknown").to_string()),
-        _ => panic!("python output missing status: {}", stdout),
+        _ => panic!("python output missing status: {}", stdout_buf),
     }
 }
 
