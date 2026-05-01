@@ -1,6 +1,6 @@
 # 6. Key encapsulation: sharing a key with someone
 
-This is the most layered chapter so far. We need to combine three things you've already met — symmetric encryption, public-key cryptography, and hashing — to solve the central design problem: *how does Alice get the symmetric key for a block into Bob's hands using nothing but his public key?* The construction Secretary uses is called a **hybrid Key Encapsulation Mechanism** (KEM), and unpacking it is what most of this chapter is about.
+This is the most layered chapter so far. We need to combine three things you've already met — symmetric encryption, public-key cryptography, and hashing — to solve the central design problem: *how does Alice get the symmetric key for a block into Bob's hands using nothing but his public key?* The construction Secretary uses is called a **[hybrid](13-glossary.md#hybrid) [Key Encapsulation Mechanism](13-glossary.md#kem)** (KEM), and unpacking it is what most of this chapter is about.
 
 ## The shape of the problem
 
@@ -18,7 +18,7 @@ A KEM has two operations:
 
 - **Decapsulate** (run by the recipient, using their own secret key and the received ciphertext): recovers the same shared secret. Now both sides know the shared secret.
 
-Once both sides have the shared secret, they can use it as a symmetric key — or, more typically, derive a symmetric key from it using HKDF, with appropriate domain separation. That symmetric key is then used to wrap (encrypt) the actual content key Alice cares about.
+Once both sides have the shared secret, they can use it as a symmetric key — or, more typically, derive a symmetric key from it using [HKDF](13-glossary.md#hkdf), with appropriate [domain separation](13-glossary.md#domain-separation). That symmetric key is then used to [wrap](13-glossary.md#wrap) (encrypt) the actual content key Alice cares about.
 
 Note the indirection: the KEM doesn't directly encrypt Alice's chosen Block Content Key. Instead it produces a *fresh* shared secret — call it the *wrap key* — and Alice uses the wrap key to AEAD-encrypt the Block Content Key. Two reasons for the extra step:
 
@@ -29,8 +29,8 @@ Note the indirection: the KEM doesn't directly encrypt Alice's chosen Block Cont
 
 Now the second word: hybrid. Secretary's KEM is not one KEM, but two run in parallel and combined.
 
-- The *classical* KEM is **X25519**, an elliptic-curve construction. X25519 has been deployed for over a decade, has been thoroughly studied, and is the workhorse of nearly every modern secure protocol (TLS, SSH, Signal, WireGuard).
-- The *post-quantum* KEM is **ML-KEM-768** (formerly known as Kyber, standardised by NIST in 2024 as FIPS 203). It's based on a different mathematical problem entirely — module-lattice problems — and is designed to resist attack by sufficiently large quantum computers (which we'll cover properly in [chapter 8](08-quantum-threat.md)).
+- The *[classical](13-glossary.md#classical)* KEM is **[X25519](13-glossary.md#x25519)**, an [elliptic-curve](13-glossary.md#elliptic-curve-cryptography) construction. X25519 has been deployed for over a decade, has been thoroughly studied, and is the workhorse of nearly every modern secure protocol (TLS, SSH, Signal, WireGuard).
+- The *[post-quantum](13-glossary.md#post-quantum-cryptography)* KEM is **[ML-KEM-768](13-glossary.md#ml-kem-768)** (formerly known as Kyber, standardised by NIST in 2024 as [FIPS](13-glossary.md#fips) 203). It's based on a different mathematical problem entirely — module-lattice problems — and is designed to resist attack by sufficiently large [quantum computers](13-glossary.md#quantum-computer) (which we'll cover properly in [chapter 8](08-quantum-threat.md)).
 
 Why both? Because each has a different failure mode, and we don't want to bet everything on one of them being correct.
 
@@ -49,9 +49,9 @@ The sketch of what Secretary does (full details in [crypto-design.md §7](../../
 
 1. Encapsulate with X25519, producing classical ciphertext `ct_x` and shared secret `ss_x`.
 2. Encapsulate with ML-KEM-768, producing post-quantum ciphertext `ct_pq` and shared secret `ss_pq`.
-3. Compute a *transcript hash* — a BLAKE3 hash of both ciphertexts together with the sender's and recipient's identity fingerprints. This binds the wrap key to who-sent-it-to-whom.
+3. Compute a *[transcript hash](13-glossary.md#transcript-hash)* — a [BLAKE3](13-glossary.md#blake3) hash of both ciphertexts together with the sender's and recipient's identity [fingerprints](13-glossary.md#fingerprint). This binds the wrap key to who-sent-it-to-whom.
 4. Run HKDF over `ss_x ‖ ss_pq ‖ ct_x ‖ ct_pq ‖ sender_pubkey_bundle ‖ recipient_pubkey_bundle`, with domain-separation tags, producing a 32-byte wrap key.
-5. AEAD-encrypt the Block Content Key under the wrap key, with the block UUID and the transcript hash in the AAD.
+5. [AEAD](13-glossary.md#aead)-encrypt the Block Content Key under the wrap key, with the block UUID and the transcript hash in the [AAD](13-glossary.md#aad).
 6. Store on disk: `ct_x`, `ct_pq`, the AEAD nonce and ciphertext+tag, and a fingerprint of the recipient. That bundle is the *per-recipient wrap*; the block file contains one such wrap for each recipient.
 
 When the recipient opens the block, they run the dual operations: ML-KEM-decap with their secret key to recover `ss_pq`, X25519-decap to recover `ss_x`, recompute the transcript and the wrap key, and AEAD-decrypt the wrapped Block Content Key. From there, the block contents themselves can be decrypted with the AEAD primitive of [chapter 5](05-aead-encryption.md).

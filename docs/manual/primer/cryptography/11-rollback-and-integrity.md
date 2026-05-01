@@ -21,11 +21,11 @@ A useful analogy: imagine your important documents are in a filing cabinet at a 
 - Quietly remove a document and pretend it never existed.
 - Hand your business partner a different version of the same contract than they hand you.
 
-The cryptographic equivalents are: rollback, substitution, deletion, and equivocation. Each needs its own defense.
+The cryptographic equivalents are: [rollback](13-glossary.md#rollback), substitution, deletion, and [equivocation](13-glossary.md#equivocation). Each needs its own defense.
 
 ## Defense 1: Authenticated state through the manifest
 
-Secretary's first line of defense is the *Manifest*. The manifest is the encrypted, signed top-level index of the vault. It says, in effect:
+Secretary's first line of defense is the *[Manifest](13-glossary.md#manifest)*. The manifest is the encrypted, signed top-level index of the vault. It says, in effect:
 
 > The current vault contains exactly these blocks: block A with fingerprint X, block B with fingerprint Y, block C with fingerprint Z. It was last written by device D at time T. The vault-level vector clock is V.
 
@@ -48,7 +48,7 @@ The manifest itself can be rolled back: the attacker substitutes an older valid 
 
 Defending against this requires *something the attacker cannot produce*: a notion of "newer" that the attacker can't fake.
 
-Secretary's mechanism is a **vault-level vector clock**. The manifest carries a map of `device_uuid → counter`, with one entry per device that has ever modified the vault. Each device increments its own counter when it writes a manifest update. So the vector clock evolves like:
+Secretary's mechanism is a **vault-level [vector clock](13-glossary.md#vector-clock)**. The manifest carries a map of `device_uuid → counter`, with one entry per device that has ever modified the vault. Each device increments its own counter when it writes a manifest update. So the vector clock evolves like:
 
 - Day 1: Alice writes a manifest from her laptop. Vector clock: `{laptop: 1}`.
 - Day 2: Alice writes from her phone. Vector clock: `{laptop: 1, phone: 1}`.
@@ -82,11 +82,11 @@ Prevention would require a synchronisation server with a global ordering — exa
 
 ## Why this is a CRDT problem
 
-The data structure that makes all this work is called a **CRDT** — Conflict-free Replicated Data Type. The key property is that any two devices, given any two states of the vault, can deterministically merge them into a single agreed-on state, without any coordination. The merge is *commutative* (`merge(A, B) == merge(B, A)`), *associative* (`merge(A, merge(B, C)) == merge(merge(A, B), C)`), and *idempotent* (`merge(A, A) == A`).
+The data structure that makes all this work is called a **[CRDT](13-glossary.md#crdt)** — Conflict-free Replicated Data Type. The key property is that any two devices, given any two states of the vault, can deterministically merge them into a single agreed-on state, without any coordination. The merge is *commutative* (`merge(A, B) == merge(B, A)`), *associative* (`merge(A, merge(B, C)) == merge(merge(A, B), C)`), and *[idempotent](13-glossary.md#idempotent)* (`merge(A, A) == A`).
 
 These three properties together mean that no matter what order devices observe each other's changes, they all converge on the same final state. There's no "primary" device, no conflict-resolution server, no last-write-wins-and-hope-for-the-best. Just deterministic merge logic that always agrees.
 
-The price is some on-disk overhead: vector clocks, per-field timestamps, *tombstones* (markers that record deletions), and a mechanism Secretary calls the *death clock* that propagates tombstone information across replicas to ensure deletions cannot be silently undone. The full mechanism is in [crypto-design.md §11](../../../crypto-design.md); the user-visible result is "edits and deletes from any of your devices show up correctly on all of them, even when you've been editing offline on multiple devices simultaneously, and even when one of those devices was offline for a while."
+The price is some on-disk overhead: vector clocks, per-field timestamps, *[tombstones](13-glossary.md#tombstone)* (markers that record deletions), and a mechanism Secretary calls the *[death clock](13-glossary.md#death-clock)* that propagates tombstone information across replicas to ensure deletions cannot be silently undone. The full mechanism is in [crypto-design.md §11](../../../crypto-design.md); the user-visible result is "edits and deletes from any of your devices show up correctly on all of them, even when you've been editing offline on multiple devices simultaneously, and even when one of those devices was offline for a while."
 
 ## A worked example
 
@@ -96,7 +96,7 @@ What happens:
 
 1. Each device writes its updated block to the cloud folder. Both blocks have the same UUID; the vector clocks are now concurrent (laptop's is `{laptop: 5}`, phone's is `{phone: 3}`, neither dominates).
 2. The first device to load the other's update detects the concurrency and runs the merge.
-3. The merge looks at the deleted record on one side and the edited record on the other. The death-clock mechanism (chapter 11 of [crypto-design.md](../../../crypto-design.md)) ensures that if the deletion and edit are at the *same* logical time, deletion wins — the "tombstone-on-tie" rule. If the edit happens *after* the deletion (the edit's timestamp is higher than the deletion's), the edit is treated as a deliberate undelete and the record is resurrected.
+3. The merge looks at the deleted record on one side and the edited record on the other. The death-clock mechanism (chapter 11 of [crypto-design.md](../../../crypto-design.md)) ensures that if the deletion and edit are at the *same* logical time, deletion wins — the "tombstone-on-tie" rule. If the edit happens *after* the deletion (the edit's timestamp is higher than the deletion's), the edit is treated as a deliberate undelete and the record is resurrected. (See also [last-writer-wins](13-glossary.md#last-writer-wins).)
 4. The resulting merged block has a new vector clock that dominates both inputs, and the manifest is updated to point to the merged block.
 
 All without a server, all deterministically, and all such that any two devices doing the merge in any order produce identical bytes.

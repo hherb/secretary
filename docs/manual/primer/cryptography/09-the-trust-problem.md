@@ -12,7 +12,7 @@ Now consider an attacker — call them Eve — who controls the cloud folder, or
 
 Bob never knew anything happened. Alice never knew anything happened. The cryptography did its job perfectly: the block was encrypted to whoever owned the keys in the card. The problem is that Alice trusted the wrong card.
 
-The cryptographic name for this is a *Man-in-the-Middle* (MITM) attack on key exchange. It's not specific to Secretary — every system that relies on public keys faces it. The interesting question is how each system answers it.
+The cryptographic name for this is a *[Man-in-the-Middle](13-glossary.md#mitm)* (MITM) attack on key exchange. It's not specific to Secretary — every system that relies on public keys faces it. The interesting question is how each system answers it.
 
 ## How other systems answer the trust problem
 
@@ -20,7 +20,7 @@ There are three broad answers, and each has well-known downsides.
 
 ### Public Key Infrastructure (PKI)
 
-The HTTPS-style answer. A small set of trusted parties — the Certificate Authorities — sign statements like "this public key really belongs to amazon.com." Your operating system or browser ships with a list of trusted CAs (a few hundred of them), and any signature from any one of them is accepted as proof.
+The HTTPS-style answer. A small set of trusted parties — the Certificate Authorities — sign statements like "this public key really belongs to amazon.com." Your operating system or browser ships with a list of trusted CAs (a few hundred of them), and any signature from any one of them is accepted as proof. (See [PKI](13-glossary.md#pki).)
 
 This works at scale, but it puts an enormous amount of trust in the CAs. Any one of them can sign a bogus certificate for any domain, and historically several CAs have been caught doing exactly that — sometimes for state actors, sometimes through carelessness, sometimes through compromise. The Web has added complications (HSTS, certificate transparency logs, key pinning) to mitigate this, but the underlying model still trusts CAs by default.
 
@@ -34,7 +34,7 @@ Web of trust is decentralised, which fits Secretary's design philosophy. But in 
 
 ### Trust on First Use (TOFU)
 
-The SSH-style answer. The first time you connect to a server, you accept its public key without verification. You record the key, and on subsequent connections you compare against the recorded key. If it changes, you're warned.
+The SSH-style answer. The first time you connect to a server, you accept its public key without verification. You record the key, and on subsequent connections you compare against the recorded key. If it changes, you're warned. (See [TOFU](13-glossary.md#tofu).)
 
 TOFU works well when the relationship has many repeat interactions and the first interaction is unlikely to be attacked (because the attacker would have to be ready and waiting at exactly the right moment). It works less well when the first interaction is *the* sensitive one — which is typically the case when you're sharing a password vault. By the time you'd notice a TOFU warning, the attacker may already have what they wanted.
 
@@ -42,7 +42,7 @@ Secretary deliberately does **not** support TOFU for contact cards. There is no 
 
 ## How Secretary answers it: out-of-band verification
 
-Secretary's answer borrows from Signal, WhatsApp's secure mode, and other modern secure-messaging apps. It's called **out-of-band verification** (OOB), and it works like this:
+Secretary's answer borrows from Signal, WhatsApp's secure mode, and other modern secure-messaging apps. It's called **[out-of-band verification](13-glossary.md#oob-verification)** (OOB), and it works like this:
 
 1. You and Bob exchange Contact Cards through some channel — email, file transfer, a shared cloud folder, a USB stick. We do *not* assume this channel is secure. Eve could be on it.
 2. Each card has a *fingerprint* — a short, human-readable summary of the card's full contents, computed via the BLAKE3 hash function (chapter 3) and presented as either a 12-word mnemonic or a 24-character hex string.
@@ -64,13 +64,14 @@ For most personal and family use, a phone call is more than enough. Eve cannot s
 
 ## Verification states in Secretary
 
-Each Contact Card in Secretary has one of three states:
+Each Contact Card in Secretary carries one of two verification states:
 
 - **`unverified`** — the card has been imported but the fingerprint hasn't been checked. Sharing blocks with this contact is allowed but produces a prominent warning. The card *might* be authentic; you just haven't proved it yet.
 - **`fingerprint-verified`** — the fingerprint was confirmed via OOB. Sharing is allowed without warnings.
-- **`revoked`** — you've explicitly removed your trust in this card. (Used when a contact's identity is suspected of compromise.)
 
 The state is local to your installation and never leaves your device. Bob doesn't know whether you've marked his card as verified; he just knows that you can decrypt the blocks he shares with you.
+
+If a contact's identity is later suspected of compromise, you remove the card entirely. There is no "revoked" state; removed-and-not-re-imported is the same as "I have no card for this person." Future shares with that person require importing a new card and re-verifying its fingerprint.
 
 ## Why TOFU is excluded by design
 

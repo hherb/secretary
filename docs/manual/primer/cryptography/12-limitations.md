@@ -10,7 +10,7 @@ This chapter is the second list, written plainly. Some items are limits of crypt
 
 Cryptography protects data while it is in encrypted form. Once Secretary unwraps a Block Content Key and decrypts a record into RAM, the plaintext exists in your computer's memory. A program with sufficient privileges to read your memory — malware, a debugger, an OS-level rootkit — can read the plaintext. The decryption boundary is where cryptographic protection ends; after that, the data is at the mercy of the operating system and everything else running on it.
 
-Secretary tries to minimise this window: keys and plaintext are *zeroized* (overwritten with zeros) as soon as they aren't needed, so even a process that briefly gains access to memory has only a short snapshot to work from. This is good practice but not a complete defense. A keylogger that captures your master password as you type it bypasses every other protection.
+Secretary tries to minimise this window: keys and plaintext are *[zeroized](13-glossary.md#zeroize)* (overwritten with zeros) as soon as they aren't needed, so even a process that briefly gains access to memory has only a short snapshot to work from. This is good practice but not a complete defense. A keylogger that captures your master password as you type it bypasses every other protection.
 
 ### It cannot detect compromised inputs
 
@@ -38,7 +38,7 @@ Take this seriously when setting up Secretary. The recovery mnemonic exists prec
 
 ### Forward secrecy at the record level
 
-*Forward secrecy* is the property that if your long-term key is compromised today, the attacker cannot retroactively decrypt data they captured yesterday. Modern secure-messaging apps (Signal, Wire) achieve this by using ephemeral keys that are deleted after each message; even if the device is compromised next week, the keys for last week's messages are gone.
+*[Forward secrecy](13-glossary.md#forward-secrecy)* is the property that if your long-term key is compromised today, the attacker cannot retroactively decrypt data they captured yesterday. Modern secure-messaging apps (Signal, Wire) achieve this by using ephemeral keys that are deleted after each message; even if the device is compromised next week, the keys for last week's messages are gone.
 
 Secretary's v1 does not have forward secrecy at the record level. If your Identity Block Key is compromised, all current and past block contents (within reach of your current key wraps) are decryptable to the attacker. The reason is structural: a password manager that needs to remain readable to its recipient indefinitely, *without* the recipient periodically re-deriving keys, is at odds with the per-message ephemerality that forward secrecy requires.
 
@@ -72,7 +72,7 @@ If your threat model includes an adversary who cares about traffic analysis, Sec
 
 ### Side-channel attacks
 
-A *side channel* is information leakage through a path the algorithm wasn't designed to use: timing variation, power consumption, electromagnetic emissions, acoustic noise from CPUs, even the heat signature of the device. Sophisticated attackers have extracted cryptographic keys from all of these.
+A *[side channel](13-glossary.md#side-channel)* is information leakage through a path the algorithm wasn't designed to use: timing variation, power consumption, electromagnetic emissions, acoustic noise from CPUs, even the heat signature of the device. Sophisticated attackers have extracted cryptographic keys from all of these.
 
 Secretary uses constant-time implementations where the underlying cryptographic crates provide them (X25519, Ed25519, AEAD operations are all designed to run in fixed time regardless of input). But measuring side-channels of an arbitrary running program on arbitrary hardware is beyond what a cross-platform application can defend against. If your threat model includes adversaries with physical access and side-channel capabilities, you need air-gapped specialised hardware, not a general-purpose computer.
 
@@ -80,7 +80,7 @@ Secretary uses constant-time implementations where the underlying cryptographic 
 
 If the CPU has a backdoor, if the firmware has been tampered with, if the disk controller is exfiltrating data — Secretary cannot detect or defend against any of this. The hardware is part of the trusted computing base, and trust is not divisible. You either trust your hardware or you don't.
 
-For most users this is not a concern; the realistic adversaries are not nation-states with hardware-modification capabilities. For users for whom it is a concern, no consumer software is the right answer.
+For most users this is not a concern; the realistic adversaries are not nation-states with hardware-modification capabilities. For users for whom it is a concern, no consumer software is the right answer. (See [trusted computing base](13-glossary.md#trusted-computing-base).)
 
 ### Supply-chain compromise
 

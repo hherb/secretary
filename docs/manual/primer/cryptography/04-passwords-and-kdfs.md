@@ -4,7 +4,7 @@ A cryptographic key is, ideally, 256 bits of pure randomness — a number a huma
 
 ## How much "secret" is in a password?
 
-The technical term is *entropy*, and it's a measure of how unpredictable a value is. A truly random 256-bit number has 256 bits of entropy: an attacker has to try, on average, 2^255 values to guess it. That's the gold standard.
+The technical term is *[entropy](13-glossary.md#entropy)*, and it's a measure of how unpredictable a value is. A truly random 256-bit number has 256 bits of entropy: an attacker has to try, on average, 2^255 values to guess it. That's the gold standard.
 
 A password chosen by a human is much worse. Consider a few realistic estimates:
 
@@ -20,7 +20,7 @@ Each bit of entropy doubles the work an attacker has to do. The gap between 28 b
 
 So we cannot just take the user's password, hash it once, and call it a 256-bit key. The hash output has 256 bits of *length*, but only the entropy of the input — maybe 30 or 40 bits, if the user is reasonably careful. An attacker brute-forcing the password tries those 2^40 candidates one by one; the hash function does not help.
 
-What we need is a way to *make each guess expensive enough that the attacker can't try very many of them*. That's the job of a Key Derivation Function tuned for passwords, and Secretary's choice is **Argon2id**.
+What we need is a way to *make each guess expensive enough that the attacker can't try very many of them*. That's the job of a [Key Derivation Function](13-glossary.md#kdf) tuned for passwords, and Secretary's choice is **[Argon2id](13-glossary.md#argon2id)**.
 
 ## Why a slow function is exactly what we want
 
@@ -34,29 +34,29 @@ A useful analogy: imagine a turnstile at the entrance to a hotel. If the slow tu
 
 There's a second trick. Older password-stretching functions (like PBKDF2 and bcrypt) are slow in CPU time, which is good but not enough. Modern attackers don't use ordinary CPUs; they use specialised hardware — GPUs, FPGAs, or ASICs — that can compute many CPU-style operations in parallel for a small fraction of the cost.
 
-Argon2id is *memory-hard*, which means each computation requires not just time but also a substantial amount of working RAM. Secretary configures Argon2id to use **256 MiB of memory per attempt**. A modern GPU has, say, 24 GB of RAM, so it can run perhaps 80 attempts in parallel — which sounds like a lot, but compare it to the millions of parallel attempts the same GPU could do against a CPU-only function. Memory is the dominant cost on parallel hardware, and Argon2id picks that fight deliberately.
+Argon2id is *[memory-hard](13-glossary.md#memory-hard)*, which means each computation requires not just time but also a substantial amount of working RAM. Secretary configures Argon2id to use **256 MiB of memory per attempt**. A modern GPU has, say, 24 GB of RAM, so it can run perhaps 80 attempts in parallel — which sounds like a lot, but compare it to the millions of parallel attempts the same GPU could do against a CPU-only function. Memory is the dominant cost on parallel hardware, and Argon2id picks that fight deliberately.
 
 The full Argon2id parameters Secretary uses by default:
 
-- Algorithm variant: Argon2id (a hybrid of Argon2i and Argon2d, balancing side-channel resistance with brute-force resistance)
+- Algorithm variant: Argon2id (a hybrid of Argon2i and Argon2d, balancing [side-channel](13-glossary.md#side-channel) resistance with brute-force resistance)
 - Memory: 256 MiB
 - Iterations: 3
 - Parallelism: 1 (single-threaded, intentionally — parallelism reduces the attacker's per-guess memory cost relative to the user's)
-- Output: 32 bytes (this becomes the *Master KEK*)
+- Output: 32 bytes (this becomes the *[Master KEK](13-glossary.md#master-kek)*)
 
 These parameters are stored in `vault.toml` in cleartext. They're not secret; they need to be readable so the same vault can be opened on a phone (which would have struggled to *create* the vault with these parameters, but can decrypt with them once the vault exists). Secretary's policy is that parameters can be raised on rotation, never lowered.
 
 ## The salt
 
-There is one more ingredient: a *salt*, which is a random 32-byte value generated when the vault is created and stored alongside the parameters in `vault.toml`. The salt isn't secret; its job is to ensure that two different vaults with the same password produce two different KEKs.
+There is one more ingredient: a *[salt](13-glossary.md#salt)*, which is a random 32-byte value generated when the vault is created and stored alongside the parameters in `vault.toml`. The salt isn't secret; its job is to ensure that two different vaults with the same password produce two different [KEKs](13-glossary.md#kek).
 
 Why does that matter? Without a salt, an attacker could pre-compute a table of (common-password → KEK) pairs once, and then attack any number of vaults using lookups instead of fresh computation. Two users with the same weak password would have the same KEK, and breaking either of them would break both. With a per-vault salt, the attacker must redo all the work for every vault. (This is also why salts must be long enough that two random salts effectively never collide — 32 bytes is far more than enough.)
 
 ## Recovery mnemonic — a different problem
 
-Secretary also gives you a 24-word *recovery mnemonic* at vault creation. This is generated by the program from 256 bits of OS-provided randomness; it has the full 256 bits of entropy by construction. Because the mnemonic is itself already a high-entropy random secret, Secretary does *not* run Argon2id on it. Argon2id is the right tool for stretching a low-entropy password; running it on already-strong material is just slower and gains nothing.
+Secretary also gives you a 24-word *[recovery mnemonic](13-glossary.md#recovery-mnemonic)* at vault creation. This is generated by the program from 256 bits of OS-provided randomness; it has the full 256 bits of entropy by construction. Because the mnemonic is itself already a high-entropy random secret, Secretary does *not* run Argon2id on it. Argon2id is the right tool for stretching a low-entropy password; running it on already-strong material is just slower and gains nothing.
 
-Instead, the mnemonic is processed through HKDF — a much faster key-derivation function that performs key shaping but no stretching. The result is the *Recovery KEK*, which can independently unlock the vault if the master password is forgotten.
+Instead, the mnemonic is processed through [HKDF](13-glossary.md#hkdf) — a much faster key-derivation function that performs key shaping but no stretching. The result is the *[Recovery KEK](13-glossary.md#recovery-kek)*, which can independently unlock the vault if the [master password](13-glossary.md#master-password) is forgotten.
 
 A useful framing: Argon2id is for *human-chosen* secrets that need to be made resilient against brute force. HKDF is for *already-random* secrets that just need to be reshaped or contextualised. Using each one for its proper job is a small but consequential design choice.
 
@@ -66,8 +66,8 @@ Secretary never stores your master password anywhere — not on disk, not in the
 
 1. You type the password.
 2. Argon2id runs (a fraction of a second), turning password + salt + parameters into the Master KEK.
-3. The Master KEK is used immediately to unwrap the *Identity Block Key*.
-4. Both the password and the Master KEK are scrubbed from memory.
+3. The Master KEK is used immediately to unwrap the *[Identity Block Key](13-glossary.md#identity-block-key)*.
+4. Both the password and the Master KEK are scrubbed from memory (see [zeroize](13-glossary.md#zeroize)).
 5. Only the Identity Block Key remains, and only for as long as the vault is unlocked.
 
 If the cloud-folder host or a thief obtains your vault folder, they get the salt and the parameters, but they don't get the password or the KEK. Their only path forward is to *guess* the password and re-do the Argon2id computation per guess. That's the whole point of the construction.

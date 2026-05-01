@@ -14,9 +14,9 @@ That last requirement turns out to be the hard one, and it's why this primer is 
 
 When we say cryptography protects something, we usually mean one or more of the following four things:
 
-- **Confidentiality** — only the intended people can read it. A stranger looking at the encrypted file sees gibberish.
-- **Integrity** — nobody can change it without being detected. If someone flips a single bit anywhere in the file, the change is noticed and the file is rejected.
-- **Authenticity** — you can prove who wrote it. A block your sister shared with you was actually shared by her, not by someone pretending to be her.
+- **[Confidentiality](13-glossary.md#confidentiality)** — only the intended people can read it. A stranger looking at the encrypted file sees gibberish.
+- **[Integrity](13-glossary.md#integrity)** — nobody can change it without being detected. If someone flips a single bit anywhere in the file, the change is noticed and the file is rejected.
+- **[Authenticity](13-glossary.md#authenticity)** — you can prove who wrote it. A [block](13-glossary.md#block) your sister shared with you was actually shared by her, not by someone pretending to be her.
 - **Availability** — the data is still there when you need it. (Cryptography helps with this less than people think; mostly availability is a backup problem.)
 
 Secretary aims at the first three. Availability is up to you and your choice of cloud-folder service or backup discipline.
@@ -27,11 +27,11 @@ The realistic adversaries we worry about are:
 
 1. **The cloud-folder host you're using.** Dropbox, Google Drive, iCloud Drive, OneDrive, a WebDAV mount on a NAS — whichever folder you point Secretary at, the operator of that service can see every byte. Secretary's design assumes that operator is hostile or compromised; the encrypted vault should reveal nothing useful even with full read/write access to the folder.
 
-2. **A stolen laptop or phone.** Locked, taken at an airport, lost in a taxi. The thief can copy your entire vault folder. Without your master password, they should be unable to make sense of it. Without an enormous amount of computing time *and* your master password's worth of guessing, brute-forcing it should be infeasible.
+2. **A stolen laptop or phone.** Locked, taken at an airport, lost in a taxi. The thief can copy your entire [vault](13-glossary.md#vault) folder. Without your [master password](13-glossary.md#master-password), they should be unable to make sense of it. Without an enormous amount of computing time *and* your master password's worth of guessing, [brute-forcing](13-glossary.md#brute-force) it should be infeasible.
 
-3. **A future quantum computer.** This is the strange one. Quantum computers don't exist at any useful scale today, but research is steady, and a sufficiently capable quantum computer would break some of the cryptographic algorithms used by every system on the internet. An adversary today can record your encrypted ciphertext from your cloud folder and store it indefinitely, hoping to decrypt it later when quantum computing matures. This is called a *harvest-now-decrypt-later* attack. It is the dominant reason your password manager from 2010 isn't quite good enough anymore for credentials that need to last 30 years.
+3. **A future [quantum computer](13-glossary.md#quantum-computer).** This is the strange one. Quantum computers don't exist at any useful scale today, but research is steady, and a sufficiently capable quantum computer would break some of the cryptographic algorithms used by every system on the internet. An adversary today can record your encrypted [ciphertext](13-glossary.md#ciphertext) from your cloud folder and store it indefinitely, hoping to decrypt it later when quantum computing matures. This is called a *[harvest-now-decrypt-later](13-glossary.md#harvest-now-decrypt-later)* attack. It is the dominant reason your password manager from 2010 isn't quite good enough anymore for credentials that need to last 30 years.
 
-4. **A person impersonating someone you trust.** When you share a vault block with your sister, you need to be sure that the public key you're encrypting *to* really belongs to her, not to someone in the middle pretending to be her. This is the *authenticity* problem, and it's where cryptography hands the problem back to you and asks you to do a small bit of work yourself (chapter 9).
+4. **A person impersonating someone you trust.** When you share a vault block with your sister, you need to be sure that the [public key](13-glossary.md#public-key) you're encrypting *to* really belongs to her, not to someone in the middle pretending to be her. This is the *authenticity* problem, and it's where cryptography hands the problem back to you and asks you to do a small bit of work yourself (chapter 9).
 
 ## What you are *not* protecting against
 

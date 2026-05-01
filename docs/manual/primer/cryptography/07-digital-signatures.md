@@ -1,6 +1,6 @@
 # 7. Digital signatures
 
-A digital signature is the cryptographic equivalent of a wax seal on an old letter. The seal proves two things: this letter was sealed by the person whose seal-stamp was used, and the letter has not been opened or altered since the seal was applied. Anyone with a copy of the seal-stamp's *imprint* can verify; only the holder of the *stamp itself* can produce new seals.
+A [digital signature](13-glossary.md#digital-signature) is the cryptographic equivalent of a wax seal on an old letter. The seal proves two things: this letter was sealed by the person whose seal-stamp was used, and the letter has not been opened or altered since the seal was applied. Anyone with a copy of the seal-stamp's *imprint* can verify; only the holder of the *stamp itself* can produce new seals.
 
 This is the same basic shape as public-key encryption (chapter 2), with the roles reversed. In encryption, the public key encrypts and the secret key decrypts. In signing, the secret key signs and the public key verifies. Same key pair; opposite directions.
 
@@ -30,16 +30,16 @@ In Secretary, signatures appear in three places:
 
 2. **The Manifest.** Every manifest update is signed. The manifest enumerates all the blocks in the vault and includes a fingerprint of each one; signing the manifest binds your view of the vault to a specific consistent state. An attacker who tampers with any block, or substitutes blocks, breaks the manifest signature on the next read.
 
-3. **Contact Cards.** A contact card carries the user's public keys and is *self-signed* by the user — that is, the card is signed using the same secret keys whose public counterparts are listed in the card. The self-signature proves the card is internally consistent: someone who holds the secret keys vouched for this exact set of public keys. (It does not, on its own, prove the card belongs to who it claims to belong to. That's the *trust problem* of [chapter 9](09-the-trust-problem.md).)
+3. **[Contact Cards](13-glossary.md#contact-card).** A contact card carries the user's public keys and is *self-signed* by the user — that is, the card is signed using the same secret keys whose public counterparts are listed in the card. The self-signature proves the card is internally consistent: someone who holds the secret keys vouched for this exact set of public keys. (It does not, on its own, prove the card belongs to who it claims to belong to. That's the *trust problem* of [chapter 9](09-the-trust-problem.md).)
 
 ## Hybrid signatures: same idea as the hybrid KEM
 
 The same logic that drives the hybrid KEM applies to signatures: classical algorithms are mature but quantum-vulnerable; post-quantum algorithms are quantum-secure but newer and less battle-tested. Combine both.
 
-Secretary's hybrid signature is the conjunction of:
+Secretary's [hybrid signature](13-glossary.md#hybrid-signature) is the conjunction of:
 
-- **Ed25519** — an elliptic-curve signature scheme (specified in RFC 8032), widely deployed in SSH, TLS, the Tor protocol, the Cosmos blockchain, and many others. About 64-byte signatures, fast.
-- **ML-DSA-65** — Module-Lattice Digital Signature Algorithm at security level 3, standardised by NIST in 2024 as FIPS 204 (formerly known as Dilithium). About 3309-byte signatures, slower but post-quantum-secure.
+- **[Ed25519](13-glossary.md#ed25519)** — an elliptic-curve signature scheme (specified in RFC 8032), widely deployed in SSH, TLS, the Tor protocol, the Cosmos blockchain, and many others. About 64-byte signatures, fast.
+- **[ML-DSA-65](13-glossary.md#ml-dsa-65)** — Module-Lattice Digital Signature Algorithm at security level 3, standardised by NIST in 2024 as FIPS 204 (formerly known as Dilithium). About 3309-byte signatures, slower but post-quantum-secure.
 
 To sign, the signer produces *both* an Ed25519 signature and an ML-DSA-65 signature over the exact same message. To verify, the verifier checks *both*. The signature is treated as valid if and only if both halves verify (logical AND, not OR). If either half fails, the signature is rejected.
 
@@ -51,7 +51,7 @@ There is a cost: signing is slower (you do both signatures), verifying is slower
 
 A signature is computed over a specific sequence of bytes. If the bytes change in any way — even for reasons that are semantically harmless, like reordering map keys or using a longer length encoding — the signature stops verifying.
 
-This matters for any structured-data format that gets signed. Secretary uses CBOR (Concise Binary Object Representation) for its structured data, and specifically the *deterministic encoding profile* of CBOR: map keys sorted, integers in their shortest form, no floats, no tags. Any compliant CBOR encoder produces the same bytes for the same data, so the signature verifies regardless of which language or library wrote the file.
+This matters for any structured-data format that gets signed. Secretary uses [CBOR](13-glossary.md#cbor) (Concise Binary Object Representation) for its structured data, and specifically the *[deterministic](13-glossary.md#determinism) encoding profile* of CBOR: map keys sorted, integers in their shortest form, no floats, no tags. Any compliant CBOR encoder produces the same bytes for the same data, so the signature verifies regardless of which language or library wrote the file.
 
 This is invisible to users, but it's the kind of detail that makes the difference between "implementations that interoperate" and "implementations that work fine with each other today and start failing mysteriously in three years when one is updated." Determinism is non-negotiable for signed data.
 

@@ -1,6 +1,6 @@
 # 10. Randomness
 
-Every cryptographic key in Secretary — every Block Content Key, every nonce, every signing keypair, every fresh symmetric secret — is a number drawn from a pool of randomness. If that pool is good, the keys are unguessable. If it's bad, *every* key derived from it inherits the badness, and the whole tower of cryptography sitting on top is hollow.
+Every cryptographic [key](13-glossary.md#key) in Secretary — every [Block Content Key](13-glossary.md#block-content-key), every [nonce](13-glossary.md#nonce), every signing keypair, every fresh symmetric secret — is a number drawn from a pool of randomness. If that pool is good, the keys are unguessable. If it's bad, *every* key derived from it inherits the badness, and the whole tower of cryptography sitting on top is hollow.
 
 Randomness is the unglamorous foundation of practical cryptography. It's also the layer at which several spectacular real-world failures have happened. This chapter is about why.
 
@@ -12,10 +12,10 @@ For cryptographic purposes we need exactly this: a sequence of values such that 
 
 A stream of values that satisfies this is called *cryptographically secure*. There are two distinctions worth keeping in mind:
 
-- **True randomness** comes from physical processes that are believed to be fundamentally non-deterministic — radioactive decay, thermal noise, quantum measurement. These are sources of *entropy*.
-- **Pseudo-random number generators (PRNGs)** are deterministic algorithms that take a small *seed* and stretch it into a long stream of apparently-random values. The output is only as good as the seed; a PRNG given a predictable seed produces a predictable stream.
+- **True randomness** comes from physical processes that are believed to be fundamentally non-deterministic — radioactive decay, thermal noise, quantum measurement. These are sources of *[entropy](13-glossary.md#entropy)*.
+- **[Pseudo-random](13-glossary.md#pseudo-random) number generators ([PRNGs](13-glossary.md#prng))** are deterministic algorithms that take a small *seed* and stretch it into a long stream of apparently-random values. The output is only as good as the seed; a PRNG given a predictable seed produces a predictable stream.
 
-A *cryptographically secure* PRNG (CSPRNG) is one designed so that, given a sufficiently random seed, no computational shortcut lets an attacker predict outputs better than brute-forcing the seed. Modern operating systems combine entropy harvesting (from hardware sources, timing jitter, interrupt patterns) with a CSPRNG on top to give every program a near-infinite supply of high-quality randomness.
+A *cryptographically secure* PRNG ([CSPRNG](13-glossary.md#csprng)) is one designed so that, given a sufficiently random seed, no computational shortcut lets an attacker predict outputs better than [brute-forcing](13-glossary.md#brute-force) the seed. Modern operating systems combine entropy harvesting (from hardware sources, timing jitter, interrupt patterns) with a CSPRNG on top to give every program a near-infinite supply of high-quality randomness.
 
 ## How randomness is generated in practice
 

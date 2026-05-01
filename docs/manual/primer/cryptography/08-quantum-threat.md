@@ -4,7 +4,7 @@ This is the chapter people usually skim and then have strong opinions about. It'
 
 ## What a quantum computer is — barely
 
-A *quantum computer* is a machine that uses quantum-mechanical phenomena (superposition, entanglement) to perform certain kinds of computation that classical computers cannot do efficiently. We don't need to understand the physics to discuss what it would do to cryptography. The relevant facts are:
+A *[quantum computer](13-glossary.md#quantum-computer)* is a machine that uses quantum-mechanical phenomena (superposition, entanglement) to perform certain kinds of computation that classical computers cannot do efficiently. We don't need to understand the physics to discuss what it would do to cryptography. The relevant facts are:
 
 - Quantum computers are not "faster classical computers." They don't speed up everyday computation; an Excel spreadsheet would not run faster on one. They are dramatically faster at very specific kinds of problems and unhelpful for almost everything else.
 - They exist today only in small experimental form. The largest publicly-disclosed quantum computers as of the mid-2020s have on the order of hundreds to thousands of "qubits," but most of those qubits are noisy, error-prone, and only partially usable. Breaking real cryptography requires *millions* of high-quality qubits operating coherently for hours. Nobody is close.
@@ -16,10 +16,10 @@ For cryptography, two specific quantum algorithms matter:
 
 ### Shor's algorithm (1994)
 
-Shor's algorithm efficiently solves two related mathematical problems: integer factorisation, and the discrete logarithm in finite groups. These two problems are the foundation of essentially all classical public-key cryptography deployed today:
+[Shor's algorithm](13-glossary.md#shors-algorithm) efficiently solves two related mathematical problems: integer factorisation, and the discrete logarithm in finite groups. These two problems are the foundation of essentially all classical public-key cryptography deployed today:
 
-- **RSA** relies on the hardness of factoring. Shor's algorithm factors RSA keys efficiently.
-- **Elliptic-curve cryptography** (X25519, Ed25519, ECDSA, etc.) relies on the elliptic-curve discrete logarithm. Shor's algorithm solves it efficiently too.
+- **[RSA](13-glossary.md#rsa)** relies on the hardness of factoring. Shor's algorithm factors RSA keys efficiently.
+- **Elliptic-curve cryptography** (X25519, Ed25519, [ECDSA](13-glossary.md#ecdsa), etc.) relies on the elliptic-curve discrete logarithm. Shor's algorithm solves it efficiently too.
 
 So a sufficiently large quantum computer running Shor's algorithm would break:
 
@@ -34,7 +34,7 @@ This is the thing people mean when they say "quantum computers will break crypto
 
 ### Grover's algorithm (1996)
 
-Grover's algorithm provides a quadratic speedup for unstructured search. In practice, this means that a brute-force search through a key space of size 2^N takes about 2^(N/2) operations on a quantum computer instead of 2^N on a classical one.
+[Grover's algorithm](13-glossary.md#grovers-algorithm) provides a quadratic speedup for unstructured search. In practice, this means that a brute-force search through a key space of size 2^N takes about 2^(N/2) operations on a quantum computer instead of 2^N on a classical one.
 
 For symmetric encryption, this halves the *effective* key strength. A 128-bit symmetric key under Grover's attack provides only 64 bits of security, which is inadequate. A 256-bit symmetric key provides 128 bits of security, which is comfortable.
 
@@ -68,7 +68,7 @@ The pattern is clear: all the deployed *asymmetric* primitives are broken by Sho
 
 There is a stock objection to caring about quantum computers now: they don't exist at scale, they may never exist at scale, building cryptography for them is premature, etc.
 
-This objection is wrong for one specific reason: **harvest-now, decrypt-later**.
+This objection is wrong for one specific reason: **[harvest-now, decrypt-later](13-glossary.md#harvest-now-decrypt-later)**.
 
 A motivated adversary today — a nation-state intelligence agency, say, or any other entity with substantial storage capacity — can simply *record* encrypted traffic and stored ciphertext now, and decrypt it whenever a sufficiently large quantum computer becomes available. The data is stored at rest, costing them only disk space. If a quantum computer arrives in 2040, all the X25519-protected data ever recorded becomes legible at that moment.
 
