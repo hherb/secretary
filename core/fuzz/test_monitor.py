@@ -133,3 +133,42 @@ class TestCheckPlateau:
         # Trivial case: K=1 means "no growth in last 1 pulse" — always trivially true.
         window = [self._pulse(100, 5)]
         assert check_plateau(window, k=1) is True
+
+
+from pathlib import Path
+
+from monitor import find_nightly_toolchain
+
+
+class TestFindNightlyToolchain:
+    def test_returns_most_recent_nightly(self, tmp_path: Path):
+        rustup_home = tmp_path / "rustup"
+        toolchains = rustup_home / "toolchains"
+        toolchains.mkdir(parents=True)
+        (toolchains / "stable-aarch64-apple-darwin").mkdir()
+        older = toolchains / "nightly-2026-04-28-aarch64-apple-darwin"
+        newer = toolchains / "nightly-2026-04-29-aarch64-apple-darwin"
+        older.mkdir()
+        newer.mkdir()
+        # Set newer's mtime explicitly to a later moment.
+        import os, time
+        os.utime(older, (time.time() - 100, time.time() - 100))
+        os.utime(newer, (time.time(), time.time()))
+
+        result = find_nightly_toolchain(rustup_home)
+        assert result is not None
+        assert result.name == "nightly-2026-04-29-aarch64-apple-darwin"
+
+    def test_returns_none_when_no_nightly(self, tmp_path: Path):
+        rustup_home = tmp_path / "rustup"
+        (rustup_home / "toolchains" / "stable-x").mkdir(parents=True)
+        assert find_nightly_toolchain(rustup_home) is None
+
+    def test_returns_none_when_toolchains_dir_missing(self, tmp_path: Path):
+        rustup_home = tmp_path / "rustup"
+        rustup_home.mkdir()  # no toolchains subdir
+        assert find_nightly_toolchain(rustup_home) is None
+
+    def test_returns_none_when_rustup_home_missing(self, tmp_path: Path):
+        rustup_home = tmp_path / "does-not-exist"
+        assert find_nightly_toolchain(rustup_home) is None

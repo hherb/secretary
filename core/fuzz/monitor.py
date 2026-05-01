@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,22 @@ def check_plateau(window: list[Pulse], k: int) -> bool:
     cov0 = last_k[0].cov
     corp0 = last_k[0].corp
     return all(p.cov == cov0 and p.corp == corp0 for p in last_k)
+
+
+def find_nightly_toolchain(rustup_home: Path) -> Path | None:
+    """Locate the most-recently-modified rustup nightly toolchain.
+
+    Searches `rustup_home/toolchains/` for entries starting with
+    `nightly-`. Returns the Path to the most recent one (by mtime),
+    or None if no nightly is installed.
+    """
+    toolchains = rustup_home / "toolchains"
+    if not toolchains.is_dir():
+        return None
+    nightlies = [p for p in toolchains.iterdir() if p.is_dir() and p.name.startswith("nightly-")]
+    if not nightlies:
+        return None
+    return max(nightlies, key=lambda p: p.stat().st_mtime)
 
 
 def main() -> None:
