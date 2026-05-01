@@ -315,11 +315,18 @@ class MonitorApp:
             pulse = parse_pulse_line(line)
             if pulse is not None:
                 rs.pulses.append(pulse)
-                # Plateau check: when fired, SIGTERM the subprocess. The
-                # subsequent EOF on stderr will fall through to the wait()
-                # logic below; mark stop_reason here so the post-exit
-                # handler knows this was a plateau (not a cap-reached).
-                if check_plateau(list(rs.pulses), self.plateau_k):
+                # Plateau check: when fired, SIGTERM the subprocess once.
+                # libFuzzer may emit additional pulses between SIGTERM and
+                # actual exit, and they may also satisfy check_plateau —
+                # guarding on `returncode is None` (process still alive)
+                # AND on stop_reason being unset (not already SIGTERM'd
+                # this run) avoids redundant signals and overwriting the
+                # original "plateau at exec N" reason.
+                if (
+                    proc.returncode is None
+                    and rs.stop_reason is None
+                    and check_plateau(list(rs.pulses), self.plateau_k)
+                ):
                     rs.stop_reason = f"plateau at exec {pulse.exec_count}"
                     proc.send_signal(signal.SIGTERM)
         rc = await proc.wait()
