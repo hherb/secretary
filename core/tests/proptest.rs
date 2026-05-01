@@ -597,11 +597,12 @@ mod vault {
     /// plus a "future_unknown" string so the property exercises both the
     /// §6.3.1 standard types and the open-ended-string contract. Field
     /// names are short ASCII to keep the strategy tractable. Record-level
-    /// `unknown` left empty — same rationale as `record_field_strategy`,
-    /// and Properties I/J/K assert CRDT laws that the §11.3 identity-
-    /// metadata override breaks for non-empty `unknown` (see
-    /// `record_with_unknown_strategy` for Property L's stronger
-    /// strategy).
+    /// `unknown` is populated via `unknown_map_strategy` so every
+    /// CRDT-law property (commutativity / associativity / idempotence /
+    /// well-formedness) covers non-empty `unknown` maps. Per the §11.3
+    /// carve-out (no override on `unknown`), the per-key lattice join
+    /// in §11.1 holds globally — so populating `unknown` no longer
+    /// breaks Property J/K.
     fn record_strategy() -> impl Strategy<Value = Record> {
         let record_type = prop_oneof![
             Just("login".to_string()),
@@ -619,17 +620,18 @@ mod vault {
         let tags_strategy = prop::collection::vec("[a-z]{1,8}", 0..=3);
 
         (
-            any::<[u8; 16]>(),    // record_uuid
-            record_type,          // record_type
-            fields_strategy,      // fields
-            tags_strategy,        // tags
-            any::<u64>(),         // created_at_ms
-            any::<u64>(),         // last_mod_ms
-            any::<bool>(),        // tombstone
-            any::<u64>(),         // tombstoned_at_ms (raw — canonicalised at use sites)
+            any::<[u8; 16]>(),       // record_uuid
+            record_type,             // record_type
+            fields_strategy,         // fields
+            tags_strategy,           // tags
+            any::<u64>(),            // created_at_ms
+            any::<u64>(),            // last_mod_ms
+            any::<bool>(),           // tombstone
+            any::<u64>(),            // tombstoned_at_ms (raw — canonicalised at use sites)
+            unknown_map_strategy(),  // unknown
         )
             .prop_map(
-                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned)| {
+                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned, unknown)| {
                     Record {
                         record_uuid,
                         record_type,
@@ -639,24 +641,10 @@ mod vault {
                         last_mod_ms: last,
                         tombstone,
                         tombstoned_at_ms: tombstoned,
-                        unknown: BTreeMap::new(),
+                        unknown,
                     }
                 },
             )
-    }
-
-    /// Strategy for `Record` with a populated record-level `unknown`
-    /// map — used only by Property L. Property L asserts §11.5
-    /// well-formedness + the self-merge fixed point, neither of which
-    /// is violated by the §11.3 identity-metadata override. The CRDT
-    /// laws (commutativity / associativity / idempotence) asserted by
-    /// Properties I/J/K *are* broken by the override on non-empty
-    /// `unknown`, so I/J/K continue to use the empty-`unknown` strategy.
-    fn record_with_unknown_strategy() -> impl Strategy<Value = Record> {
-        (record_strategy(), unknown_map_strategy()).prop_map(|(mut r, unknown)| {
-            r.unknown = unknown;
-            r
-        })
     }
 
     /// Strategy for an ad-hoc `RecipientWrap`. The four `HybridWrap`
@@ -1217,24 +1205,19 @@ mod vault {
         /// `record_uuid` is unified as in the other properties; no
         /// other input canonicalisation is applied.
         ///
-        /// Property L uses `record_with_unknown_strategy` (rather than
-        /// `record_strategy`), so the fixed-point check also exercises
-        /// `merge_unknown_map`'s LWW path: any future regression in
-        /// unknown-map canonicalisation (mirror of the `merge_tags`
-        /// LWW-clone bug fixed in this PR) would surface as a
-        /// self-merge inequality. The §11.5 well-formedness and
-        /// fixed-point invariants Property L asserts are preserved by
-        /// the §11.3 identity-metadata override on `unknown`. The
-        /// stronger CRDT laws (commutativity / associativity /
-        /// idempotence) asserted by Properties I/J/K are *not*
-        /// preserved under the override on non-empty `unknown`, which
-        /// is why those properties continue to use the empty-`unknown`
-        /// strategy.
+        /// `record_strategy` populates record-level `unknown`, so the
+        /// fixed-point check also exercises `merge_unknown_map`'s LWW
+        /// path: any future regression in unknown-map canonicalisation
+        /// (mirror of the `merge_tags` LWW-clone bug fixed in this PR)
+        /// would surface as a self-merge inequality. Properties I/J/K
+        /// share the same strategy and likewise cover non-empty
+        /// `unknown` — the §11.3 carve-out (no override on `unknown`)
+        /// makes those CRDT laws hold on the full record domain.
         #[test]
         fn crdt_merge_record_well_formed_under_arbitrary_inputs(
             uuid in any::<[u8; 16]>(),
-            a in record_with_unknown_strategy(),
-            b in record_with_unknown_strategy(),
+            a in record_strategy(),
+            b in record_strategy(),
         ) {
             let mut a = a;
             let mut b = b;
