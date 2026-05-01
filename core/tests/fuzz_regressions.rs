@@ -5,6 +5,20 @@
 //! regression is that an attacker-supplied byte sequence must never
 //! crash a process.
 //!
+//! ## Scope: panic-bounds only
+//!
+//! The contract is *panic-bounds*, not *time-bounds* or *memory-bounds*.
+//! That distinction matters for the `slow-unit-*` artifacts pinned under
+//! `vault_toml/`: libFuzzer flagged those for taking longer than its
+//! per-execution time threshold, but reproducing them against current
+//! main shows the parser returning in milliseconds (see PR #11 commit
+//! `499da04`'s message for the empirical replay measurements). They are
+//! pinned here as defense-in-depth against a future regression that
+//! turns the same input into a *panic* — if the slow-down resurfaces,
+//! this loop won't catch it. A `Duration::from_millis(...)` assertion
+//! could be added later, but pinning a wall-clock value without a
+//! reproducible underlying bug is gold-plating, so we deliberately don't.
+//!
 //! See docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
 //! "Regression mechanics".
 
