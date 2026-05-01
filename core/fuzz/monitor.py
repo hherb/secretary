@@ -173,6 +173,26 @@ class Status(enum.IntEnum):
     STOPPED = 5   # user-clicked Stop
 
 
+# Status -> Quasar text-color class. RUNNING is positive (green) so a healthy
+# campaign reads as "go"; PLATEAU is warning (amber) because the auto-stop
+# is informative but not an error; CAP_REACHED is info (blue) — the user
+# requested the cap; CRASHED is negative (red); IDLE/STOPPED are grey-7
+# (idle and "user stopped" are not states that warrant attention).
+_STATUS_BADGE_CLASS: dict[Status, str] = {
+    Status.IDLE: "text-grey-7",
+    Status.RUNNING: "text-positive",
+    Status.PLATEAU: "text-warning",
+    Status.CAP_REACHED: "text-info",
+    Status.CRASHED: "text-negative",
+    Status.STOPPED: "text-grey-7",
+}
+
+
+def status_badge_class(status: Status) -> str:
+    """Return the Quasar text-color class for a given Status."""
+    return _STATUS_BADGE_CLASS[status]
+
+
 @dataclass
 class RunState:
     """Per-(target, sanitizer) lifecycle state.
@@ -394,18 +414,28 @@ class MonitorApp:
                 "runs cap (blank = open-ended)",
                 value=str(prefill) if prefill else "",
             ).props("dense")
-            status_label = ui.label("status: idle")
+            status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
             crash_label = ui.label("")  # filled in by reactive update
 
-            def update_crash_label():
+            # Single per-card 1 Hz tick that owns every reactive label on the
+            # card. status_label was previously imperative in on_start /
+            # on_stop and never reflected the lifecycle transitions
+            # (PLATEAU / CAP_REACHED / CRASHED) the stderr reader drives on
+            # RunState.status; folding it into the timer plus the reset of
+            # the badge class on each tick fixes that.
+            def update_card():
                 rs = self.runs[(target, sanitizer.value)]
+                status_label.text = f"status: {rs.status.name}"
+                # Replace, don't append — repeated appends would accumulate
+                # stale classes across status transitions.
+                status_label.classes(replace=status_badge_class(rs.status))
                 if rs.status == Status.CRASHED and rs.crash_path:
                     crash_label.text = f"CRASH: {rs.crash_path}"
                     crash_label.classes("text-red-600")
                 else:
                     crash_label.text = ""
 
-            ui.timer(1.0, update_crash_label)
+            ui.timer(1.0, update_card)
 
             async def on_start():
                 try:
@@ -420,11 +450,9 @@ class MonitorApp:
                     asyncio.create_task(self._chain_ubsan(target, cap))
                 else:
                     await self.start_run(target, sanitizer.value, cap)
-                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
 
             async def on_stop():
                 await self.stop_run(target, sanitizer.value)
-                status_label.text = f"status: {self.runs[(target, sanitizer.value)].status.name}"
 
             with ui.row():
                 ui.button("Start", on_click=on_start).props("color=primary")

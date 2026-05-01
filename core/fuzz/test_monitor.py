@@ -280,3 +280,40 @@ class TestRunState:
         for i in range(50):
             rs.log_tail.append(f"line {i}")
         assert len(rs.log_tail) == 20  # maxlen=20
+
+
+from monitor import status_badge_class
+
+
+class TestStatusBadgeClass:
+    """Each Status enum value maps to a Quasar text-color class. The mapping
+    is exhaustive so a future variant added to Status without a matching
+    class entry surfaces as a missing-key error rather than a silent fallback
+    to default text colour."""
+
+    def test_idle_is_grey(self):
+        assert status_badge_class(Status.IDLE) == "text-grey-7"
+
+    def test_running_is_positive(self):
+        assert status_badge_class(Status.RUNNING) == "text-positive"
+
+    def test_plateau_is_warning(self):
+        assert status_badge_class(Status.PLATEAU) == "text-warning"
+
+    def test_cap_reached_is_info(self):
+        assert status_badge_class(Status.CAP_REACHED) == "text-info"
+
+    def test_crashed_is_negative(self):
+        assert status_badge_class(Status.CRASHED) == "text-negative"
+
+    def test_stopped_is_grey(self):
+        assert status_badge_class(Status.STOPPED) == "text-grey-7"
+
+    def test_exhaustive_over_status_enum(self):
+        # If a new Status variant lands without a matching class entry, this
+        # test fails with the missing variant name in the assertion.
+        for status in Status:
+            cls = status_badge_class(status)
+            assert cls.startswith("text-"), (
+                f"{status.name} maps to {cls!r}, expected Quasar text-* class"
+            )
