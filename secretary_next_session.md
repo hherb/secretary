@@ -353,16 +353,25 @@ can begin. Open Items 1 and 2 are subsets; this is the rest.
   value by design (commit `e921e99`). Detail in
   [What previous sessions delivered](#docs-side-channel-audit-internal--2026-05-02)
   below.
-- **Memory hygiene audit**. `zeroize` coverage on every secret type;
-  `secrecy::Secret` typestate where it's load-bearing; drop ordering
-  in `IdentityBundle`, `BlockPlaintext`, `Identity`. Especially the
-  paths that hold a secret across an `?` propagation site. Suggested
-  approach: read each `core/src/{crypto,identity,unlock,vault}` module,
-  produce a coverage table (`Type → has_zeroize / drop_order_safe /
-  notes`), then commit small fixes per module. **This is now the
-  smallest remaining in-session entry point** — also the largest
-  concrete deliverable left in Open Item 3 before the paid external
-  reviews kick in.
+- **Memory hygiene audit** ✅ closed 2026-05-02. Audit memo at
+  [docs/manual/contributors/memory-hygiene-audit-internal.md](docs/manual/contributors/memory-hygiene-audit-internal.md).
+  Wrapper discipline + composite-type drop ordering verified clean.
+  Twelve stack-residue gaps fixed in commit `6054185` (one-line
+  pattern: `var.zeroize()` after `Sensitive::new(var)` — sister sites
+  to existing well-disciplined ones). Detail in
+  [What previous sessions delivered](#docs-memory-hygiene-audit-internal--2026-05-02)
+  below. **Three deferred items** rolled forward as new follow-ups —
+  see "Carry-over dribbles" below.
+
+With all three in-session A.7 entry points closed (threat-model
+refresh, side-channel internal pass, memory-hygiene audit), Open Item
+3's remaining work is **external-reviewer-facing**: independent crypto
+review (paid) and side-channel review (paid). The internal pass
+memos at `docs/manual/contributors/side-channel-audit-internal.md`
+and `memory-hygiene-audit-internal.md` are the principal handoff
+documents — together they enumerate every upstream-crate assumption
+and every deferred design decision the external reviewer should know
+about.
 
 End of Sub-project A: Rust core is feature-complete for v1, audited,
 and ready to be wrapped by FFI in Sub-project B (which then unblocks
@@ -384,6 +393,28 @@ the next PR they touch.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
   profiling shows it on a hot path. The merge primitives operate on
   already-decoded `Record`s.
+- **Record-content zeroize-on-drop (v2).** Surfaced by the
+  memory-hygiene audit 2026-05-02. `RecordFieldValue::{Text(String),
+  Bytes(Vec<u8>)}` hold the user's actual passwords / secret notes /
+  API keys *without* zeroize-on-drop — the most-sensitive data in the
+  system, only secret-bearing data NOT zeroized. Fix is non-trivial:
+  `SecretString`-typing ripples through ~100 test sites + the Python
+  conformance verifier. Raise as a v2 design discussion alongside any
+  other v2 hardening (e.g. forward secrecy at the block level,
+  threat-model §4 limitation 1). Detail at
+  [docs/manual/contributors/memory-hygiene-audit-internal.md](docs/manual/contributors/memory-hygiene-audit-internal.md)
+  "Deferred items §1".
+- **`MlDsa65Secret` / `MlKem768Secret` newtype `Zeroize` derives.**
+  Both wrap `SecretBytes` (which IS Zeroize-on-drop) so the bytes
+  zeroize correctly on drop, but the newtypes don't expose
+  `.zeroize()` programmatically. Cosmetic — no current call site
+  needs explicit `.zeroize()`. Pick up alongside any other newtype
+  work.
+- **`hkdf` 0.12 internal HMAC state residue.** Already documented as
+  a SECURITY note in
+  [core/src/crypto/kdf.rs:216-223](core/src/crypto/kdf.rs#L216-L223).
+  Out of our control until upstream `hkdf` ships zeroize support.
+  Watch upstream and re-evaluate when a new release lands.
 - **Spec-doc test-name freshness.** Surfaced 2026-05-02: the §5
   verification trace in `docs/threat-model.md` had drifted (4 stale
   test names plus ~20 missing entries) because nothing prevented
@@ -641,3 +672,51 @@ After this commit: 430 tests pass + 6 ignored, clippy clean with
 `-D warnings`. Side-channel internal pass is now ✅ closed; the
 remaining in-session A.7 entry point is the **memory-hygiene
 audit**.
+
+### docs(memory-hygiene-audit-internal) — 2026-05-02
+
+`6054185 docs: memory-hygiene internal audit + 12 stack-residue
+zeroize fixes` — closes Open Item 3's **Memory hygiene audit**
+in-session entry, completing all three internal A.7 hardening passes
+(threat-model refresh, side-channel internal pass, memory-hygiene).
+
+**Wrapper discipline verified clean.** `Sensitive<T>` and
+`SecretBytes` ([core/src/crypto/secret.rs](core/src/crypto/secret.rs))
+both derive `Zeroize, ZeroizeOnDrop`, both have redacting `Debug`
+impls, both refuse to derive `Clone`. `Sensitive<T>` intentionally
+omits `PartialEq` so callers reaching for byte-equality on a secret
+must explicitly write `a.expose()[..].ct_eq(&b.expose()[..])`.
+
+**Composite types verified clean.** `IdentityBundle` drops fields in
+source order, each `Sensitive<T>` field zeroizes; `UnlockedIdentity`
+composes IBK + IdentityBundle in the right order; `Mnemonic` has a
+custom `Drop` that zeroizes the phrase `String` alongside the
+`Sensitive<[u8; 32]>` entropy.
+
+**Twelve stack-residue gaps fixed.** Each was a sister site to an
+already-disciplined site in the same module. The pattern: a secret
+value moved into `Sensitive::new(var)` while the stack slot `var`
+retained its bytes (Copy semantics on `[u8; N]`); the established
+fix `var.zeroize()` after the move was applied to the missing sites.
+Touched files: `crypto/kdf.rs`, `crypto/kem.rs`, `unlock/mnemonic.rs`,
+`unlock/mod.rs`, `vault/block.rs`, `vault/orchestrators.rs`. Three
+SECURITY notes in `unlock/mod.rs` that acknowledged the residue but
+hadn't applied the fix were rewritten to reflect the correction.
+
+**Three deferred items rolled forward as carry-overs:**
+- **Record-content zeroize-on-drop** (the largest deferred item):
+  `RecordFieldValue::{Text, Bytes}` holds the user's passwords +
+  secret notes without zeroize-on-drop. The only secret-bearing data
+  in the codebase NOT zeroized. Non-trivial fix; raise as v2.
+- **Newtype `Zeroize` derives** on `MlDsa65Secret` / `MlKem768Secret`:
+  cosmetic, the inner `SecretBytes` field zeroizes correctly on drop.
+- **`hkdf` 0.12 internal HMAC state residue**: upstream-managed,
+  watch for a future release with `ZeroizeOnDrop`.
+
+After this commit: 430 tests pass + 6 ignored, clippy clean with
+`-D warnings`. Memory-hygiene status: clean for v1's Sub-project A
+scope. With the threat-model refresh + side-channel internal pass +
+memory-hygiene audit all closed, Open Item 3's remaining work is
+external-reviewer-facing — the two contributor-doc memos at
+`docs/manual/contributors/{side-channel,memory-hygiene}-audit-internal.md`
+are the principal handoff documents for the paid external review.
