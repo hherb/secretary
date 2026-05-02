@@ -13,7 +13,18 @@ bip39 = { version = "2", features = ["zeroize"] }
 toml = "0.8"
 unicode-normalization = "0.1"
 thiserror = "2"
-zeroize = { version = "1", features = ["zeroize_derive"] }
+# `zeroize` is on the security-critical path: every secret-bearing type in
+# the crate (`SecretBytes`, `SecretString`, `Sensitive<T>`, plus the wrapper
+# types in `identity` / `unlock` / `vault::record`) relies on its
+# `Zeroize` impls for `Vec<u8>` and `String` zeroizing the heap allocation
+# up to `capacity`, not just `len`. A regression in that behaviour would
+# leave residue in freed allocations of records, mnemonics, and KDF
+# outputs without any test failure surfacing it. Pinned to an EXACT
+# version (not a caret range) so that any patch / minor / major bump
+# requires editing this line — and therefore a deliberate changelog
+# review of the relevant `Zeroize` impls. Same discipline as `tempfile`
+# below; same reason — the failure mode is silent.
+zeroize = { version = "=1.8.2", features = ["zeroize_derive"] }
 subtle = "2"
 blake3 = "1"
 sha3 = "0.10"

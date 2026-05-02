@@ -188,3 +188,126 @@ impl<T: Zeroize> fmt::Debug for Sensitive<T> {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SecretBytes, SecretString};
+
+    // --- SecretString -------------------------------------------------------
+
+    #[test]
+    fn secret_string_round_trips_via_from_str() {
+        let s: SecretString = "alice".into();
+        assert_eq!(s.expose(), "alice");
+        assert_eq!(s.len(), 5);
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn secret_string_round_trips_via_from_string() {
+        let s: SecretString = String::from("hunter2").into();
+        assert_eq!(s.expose(), "hunter2");
+    }
+
+    #[test]
+    fn secret_string_empty_is_empty() {
+        let s: SecretString = "".into();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn secret_string_debug_redacts_content() {
+        let s: SecretString = "very-secret-password".into();
+        let rendered = format!("{:?}", s);
+        assert!(
+            !rendered.contains("very-secret-password"),
+            "Debug output leaked plaintext: {rendered}"
+        );
+        assert!(
+            rendered.contains("len"),
+            "Debug output should include len: {rendered}"
+        );
+    }
+
+    #[test]
+    fn secret_string_eq_equal_inputs() {
+        let a: SecretString = "password".into();
+        let b: SecretString = "password".into();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn secret_string_eq_unequal_same_length() {
+        let a: SecretString = "passwordA".into();
+        let b: SecretString = "passwordB".into();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn secret_string_eq_unequal_different_lengths() {
+        let a: SecretString = "short".into();
+        let b: SecretString = "much-longer-string".into();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn secret_string_clone_is_independent() {
+        let original: SecretString = "shared-secret".into();
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+        // Clone returns the same logical value but a distinct heap allocation.
+        assert!(!core::ptr::eq(
+            original.expose().as_ptr(),
+            cloned.expose().as_ptr()
+        ));
+        // Dropping the original leaves the clone valid.
+        drop(original);
+        assert_eq!(cloned.expose(), "shared-secret");
+    }
+
+    // --- SecretBytes (sister coverage; previously untested) -----------------
+
+    #[test]
+    fn secret_bytes_round_trips_via_from_vec() {
+        let b: SecretBytes = vec![0xde, 0xad, 0xbe, 0xef].into();
+        assert_eq!(b.expose(), &[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(b.len(), 4);
+        assert!(!b.is_empty());
+    }
+
+    #[test]
+    fn secret_bytes_round_trips_via_from_slice() {
+        let b: SecretBytes = (&[0x11u8, 0x22, 0x33][..]).into();
+        assert_eq!(b.expose(), &[0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn secret_bytes_debug_redacts_content() {
+        let b: SecretBytes = vec![0xca, 0xfe, 0xba, 0xbe].into();
+        let rendered = format!("{:?}", b);
+        assert!(!rendered.contains("ca"), "Debug leaked hex: {rendered}");
+        assert!(!rendered.contains("0xca"), "Debug leaked hex: {rendered}");
+        assert!(rendered.contains("len"), "Debug should include len: {rendered}");
+    }
+
+    #[test]
+    fn secret_bytes_eq_unequal_different_lengths() {
+        let a: SecretBytes = vec![0x00; 4].into();
+        let b: SecretBytes = vec![0x00; 8].into();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn secret_bytes_clone_is_independent() {
+        let original: SecretBytes = vec![1, 2, 3, 4].into();
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+        assert!(!core::ptr::eq(
+            original.expose().as_ptr(),
+            cloned.expose().as_ptr()
+        ));
+        drop(original);
+        assert_eq!(cloned.expose(), &[1, 2, 3, 4]);
+    }
+}

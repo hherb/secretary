@@ -201,6 +201,32 @@ What changed for callers:
   `&str` / `&[u8]`.
 - Equality: `==` still works (constant-time).
 
+What is *not* covered (residual exposure on the codec boundary):
+
+The encode path in
+[core/src/vault/record.rs](../../../core/src/vault/record.rs) calls
+`s.expose().to_owned()` / `b.expose().to_vec()` to copy the secret
+bytes into a `ciborium::Value::{Text, Bytes}` before serialization.
+`ciborium::Value` is **not** zeroize-on-drop, and the plaintext CBOR
+buffer produced by `encode_canonical_map` is a plain `Vec<u8>`.
+Symmetrically, on the decode path the inner `String` / `Vec<u8>`
+inside the `ciborium::Value` is not zeroized before being moved
+into `SecretString::new` / `SecretBytes::new`. The encrypt/decrypt
+step downstream eventually drops these intermediate buffers, but
+between the codec call and the AEAD call, the secret material lives
+in heap allocations that will not be wiped on drop.
+
+This is unchanged from the pre-`SecretString` situation — the same
+exposure existed when the inner type was raw `String` / `Vec<u8>` —
+but the resolution above does NOT close it. Tightening the codec
+boundary would require either (a) a CBOR encoder that takes a
+borrowed `&[u8]` / `&str` and writes directly to a zeroize-typed
+output buffer, bypassing `ciborium::Value` for the secret-bearing
+fields, or (b) a wrapping pre-pass that zeroizes the
+`ciborium::Value` between encode and AEAD. Both are non-trivial
+follow-ups; flagged here so the next reviewer doesn't read
+"resolved" as stronger than it is.
+
 ## Deferred items (not addressed in this pass)
 
 ### 1. Newtype `Zeroize`/`ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
@@ -278,13 +304,19 @@ fix follows a one-line pattern that already had instances in the
 codebase — they were sister sites that hadn't yet been brought up to
 the established discipline.
 
-The follow-up pass also resolved record-content zeroize (see
-"Resolved" above): `RecordFieldValue::{Text, Bytes}` now wrap
-`SecretString` / `SecretBytes`, so the most-sensitive data in the
-system is zeroized on drop alongside the keys. The wire format and
-Python conformance are unchanged.
+The follow-up pass also resolved record-content zeroize at the
+in-memory-type level (see "Resolved" above): `RecordFieldValue::
+{Text, Bytes}` now wrap `SecretString` / `SecretBytes`, so the
+held representation of the most-sensitive data is zeroized on
+drop alongside the keys. The wire format and Python conformance
+are unchanged. The codec boundary itself still has residual
+plaintext lifetime in `ciborium::Value` and the canonical-CBOR
+output buffer (see "What is *not* covered" under Resolved); that
+narrower gap is flagged for follow-up rather than closed by this
+pass.
 
-Memory-hygiene status: **clean for v1's Sub-project A scope, plus the
-v2-track record-content zeroize question now closed**. The Sub-
-project D clipboard / mlock concerns and the upstream-managed crate
-items remain flagged for the appropriate later phases.
+Memory-hygiene status: **clean for v1's Sub-project A scope at the
+type level**, with the codec-boundary residue carved out as a
+known-narrow follow-up. The Sub-project D clipboard / mlock
+concerns and the upstream-managed crate items remain flagged for
+the appropriate later phases.
