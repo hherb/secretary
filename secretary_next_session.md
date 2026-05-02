@@ -268,10 +268,10 @@ giving the failure mode it addressed:
 
 After this wave: 430 tests pass + 6 ignored; the dashboard reports six
 healthy targets with live telemetry under multi-target concurrent
-campaigns. Issues #13 / #14 / #15 are still **open on GitHub** — the
-fix commits landed direct-to-main without `Closes #13` / etc. footers.
-Close them as a one-shot housekeeping pass next session
-([Housekeeping](#housekeeping) below).
+campaigns. Issues #13 / #14 / #15 closed 2026-05-02 with one-line
+`gh issue close N -c "Fixed in <sha>"` referring to `e717ab7` /
+`0b14bbe` / `f118b4e` respectively (the fix commits had landed
+direct-to-main without `Closes #13` / etc. footers).
 
 ---
 
@@ -342,22 +342,25 @@ can begin. Open Items 1 and 2 are subsets; this is the rest.
   approach: read each `core/src/{crypto,identity,unlock,vault}` module,
   produce a coverage table (`Type → has_zeroize / drop_order_safe /
   notes`), then commit small fixes per module.
-- **Documentation pass**.
-  `docs/threat-model.md` updated to reference the as-implemented
-  surface (currently written from spec, not from code — small gaps
-  will have surfaced during PRs #3 / #5 / #7 / #9). Two specific
-  carry-forward docs tickets:
-  - **§6.2 wire-form clarification**: `wrap_ct (32)` and `wrap_tag (16)`
-    adjacent on wire. Trivial annotation; fits in a single commit.
-  - **§6.1 `sig_pq_len = u16, 3309 (suite v1)` annotation**.
-    Also trivial. Bundle with §6.2 unless a reason emerges to split.
+- **Documentation pass**. `docs/threat-model.md` updated to reference
+  the as-implemented surface (currently written from spec, not from
+  code — small gaps will have surfaced during PRs #3 / #5 / #7 / #9).
+  The two §6.1 / §6.2 spec-doc annotations that earlier next-session
+  files carried forward as "trivial doc tickets" turned out to have
+  been shipped in `c47c17c docs(vault-format): clarify §6.2 wrap_ct/
+  wrap_tag concat and §6.1/§4.1 sig_pq_len` (2026-04-28); the TODO
+  propagated through several next-session generations after the work
+  was already done — surfaced and removed 2026-05-02.
 - **Side-channel internal pass** (precursor to the paid review):
   enumerate the constant-time paths above, document current state vs.
   requirements (e.g. `subtle::ConstantTimeEq` adoption), flag gaps for
   the external reviewer to verify.
 
-The two trivial doc annotations are the **smallest entry point** in
-this section. Memory hygiene is the next-biggest concrete deliverable.
+**Smallest entry point** in this section is the threat-model doc
+update (read `docs/threat-model.md` against current code; capture
+gaps; commit). Memory hygiene is the next-biggest concrete
+deliverable — concrete, scoped, and produces both a coverage report
+and the small per-module fixes that follow from it.
 
 End of Sub-project A: Rust core is feature-complete for v1, audited,
 and ready to be wrapped by FFI in Sub-project B (which then unblocks
@@ -379,10 +382,6 @@ the next PR they touch.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
   profiling shows it on a hot path. The merge primitives operate on
   already-decoded `Record`s.
-- **`§6.2 wrap_ct + wrap_tag` and `§6.1 sig_pq_len` annotations** —
-  bundled into [Open Item 3](#open-item-3--phase-a7-standing-track)'s
-  documentation pass; flagged here so they don't slip if A.7 gets
-  reorganised.
 
 ---
 
@@ -391,15 +390,12 @@ the next PR they touch.
 One-shot tasks, neither features nor polish — just things to clear
 from the queue. Pick up at the start of any session.
 
-- **Close issues #13 / #14 / #15** on GitHub. Each was fixed by a
-  direct-to-main commit in the post-PR-#12 stabilisation wave but the
-  commit messages did not include `Closes #N` footers, so the issues
-  stayed open. Map: #13 → `e717ab7`, #14 → `0b14bbe`, #15 → `f118b4e`.
-  Close with a one-line `gh issue close N -c "Fixed in <sha>"` each.
 - **Worktree hygiene**: `.worktrees/fuzz-triage` and
-  `.worktrees/monitor-telemetry` were both pruned at the start of this
-  session along with their squash-merged local branches. New worktrees
-  go under `.worktrees/<topic>/` per the standing preference.
+  `.worktrees/monitor-telemetry` were both pruned 2026-05-02 along
+  with their squash-merged local branches. New worktrees go under
+  `.worktrees/<topic>/` per the standing preference.
+- (No open housekeeping items at session start. Issues #13 / #14 /
+  #15 closed 2026-05-02 referencing the in-tree fix commits.)
 
 ---
 
@@ -498,11 +494,19 @@ plateau-check pulse-only filtering, sparkline + plateau dot strip,
 `--careful` instead of UBSan, `oom-*` / `slow-unit-*` finding
 detection, mypy stubs-missing silencing, KeyError regression fix.
 
-### Housekeeping commit — 2026-05-02
+### Housekeeping commits — 2026-05-02
 
-`c75e675 chore: gitignore .playwright-mcp/ cache and root monitor-*.png
-screenshots` — first commit of this session, before this file refresh.
-Also: pruned the two stale worktrees (`.worktrees/fuzz-triage`,
-`.worktrees/monitor-telemetry`) and their squash-merged local branches;
-added `CLAUDE.md` to `.git/info/exclude` so it stays local-only without
-surfacing as untracked.
+- `c75e675 chore: gitignore .playwright-mcp/ cache and root
+  monitor-*.png screenshots` — first commit of the session.
+- `8e5f41a docs: refresh next-session for post-PR-#12 monitor
+  stabilisation wave` — initial refresh of this file.
+- Issues #13 / #14 / #15 closed on GitHub referencing `e717ab7` /
+  `0b14bbe` / `f118b4e` respectively.
+- Pruned the two stale worktrees (`.worktrees/fuzz-triage`,
+  `.worktrees/monitor-telemetry`) and their squash-merged local
+  branches; added `CLAUDE.md` to `.git/info/exclude` so it stays
+  local-only without surfacing as untracked.
+- Discovered the §6.1 / §6.2 spec-doc annotation TODO that earlier
+  next-session files carried forward had already been shipped in
+  `c47c17c` (2026-04-28); removed the stale references from Open
+  Item 3 and Carry-overs in this file.
