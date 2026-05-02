@@ -136,6 +136,8 @@ These are deliberate scope decisions. Each is reasonable for v1 but worth eyes-o
 
 7. **No anti-CSPRNG-failure defense.** If the OS CSPRNG is broken on a device, randomly-generated keys (Block Content Keys, identity keypairs, nonces) lose their security properties. Detection of CSPRNG failure is an OS responsibility; Secretary trusts `getrandom`.
 
+8. **No user-facing UI in v1.** Sub-project A is a Rust cryptographic core only. Several defenses in §3 (the "vault has forked, please choose a side" alert in §3 row 4 of §3.1, the trust-state warning in §3.4, the contact-removal flow, the deprecated-suite vault warning that would have applied if v1 had multiple suites) describe workflows that surface decisions to users — those are Sub-project D (platform UIs) responsibilities. The Rust core provides the primitives (signature verification, vector-clock comparison, suite-id parse rejection, fingerprint mnemonic generation, `ContactCard::verify_self`) but does not implement the workflows themselves. A consumer of the Rust core that ignores the typed errors or fingerprint mnemonics — or that auto-imports cards without explicit user action — defeats the corresponding §3 defenses regardless of how well the core is implemented. This is acceptable for Sub-project A: the FFI boundary (Sub-project B) and platform UIs (Sub-project D) are downstream phases with their own audits.
+
 ---
 
 ## 5. Verification trace
