@@ -348,9 +348,13 @@ pub fn encap<R: RngCore + CryptoRng>(
     let eph_pk = XPublicKey::from(&eph_sk);
     let recipient_xpk = XPublicKey::from(*recipient_x_pk);
     // diffie_hellman consumes the static-secret-style key by reference and
-    // returns a Zeroize-on-drop SharedSecret.
+    // returns a Zeroize-on-drop SharedSecret. `to_bytes()` then copies the
+    // 32 secret bytes into a fresh stack buffer; bind it explicitly so we
+    // can zeroize it after the move into the Sensitive wrapper.
     let ss_x_raw = eph_sk.diffie_hellman(&recipient_xpk);
-    let ss_x = Sensitive::new(ss_x_raw.to_bytes());
+    let mut ss_x_bytes = ss_x_raw.to_bytes();
+    let ss_x = Sensitive::new(ss_x_bytes);
+    ss_x_bytes.zeroize();
     let ct_x = eph_pk.to_bytes();
 
     // --- ML-KEM-768 half: encap against recipient's pq pk. ---
@@ -416,10 +420,18 @@ pub fn decap(
     block_uuid: &[u8; 16],
 ) -> Result<Sensitive<[u8; BLOCK_CONTENT_KEY_LEN]>, KemError> {
     // --- X25519 half: recipient sk * sender's ephemeral pk. ---
-    let sk_x = XStaticSecret::from(*recipient_x_sk.expose());
+    // `*expose()` deref-copies 32 secret bytes to a stack temp; bind it so
+    // we can zeroize after `XStaticSecret::from` consumes the copy.
+    // `XStaticSecret` is itself Zeroize-on-drop. Then mirror the encap-side
+    // pattern for the shared-secret bytes.
+    let mut sk_x_bytes = *recipient_x_sk.expose();
+    let sk_x = XStaticSecret::from(sk_x_bytes);
+    sk_x_bytes.zeroize();
     let pk_x_eph = XPublicKey::from(wrap.ct_x);
     let ss_x_raw = sk_x.diffie_hellman(&pk_x_eph);
-    let ss_x = Sensitive::new(ss_x_raw.to_bytes());
+    let mut ss_x_bytes = ss_x_raw.to_bytes();
+    let ss_x = Sensitive::new(ss_x_bytes);
+    ss_x_bytes.zeroize();
 
     // --- ML-KEM-768 half: rehydrate the typed dk and decapsulate. ---
     type Dk = ml_kem::kem::DecapsulationKey<MlKem768Params>;

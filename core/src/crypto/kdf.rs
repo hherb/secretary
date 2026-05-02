@@ -203,7 +203,12 @@ pub fn derive_master_kek(
     argon
         .hash_password_into(password.expose(), salt, &mut out)
         .map_err(|_| KdfError::Argon2ParamsRejected)?;
-    Ok(Sensitive::new(out))
+    let kek = Sensitive::new(out);
+    // `Sensitive::new` copied `out` (which is `[u8; 32]: Copy`); zeroize the
+    // stack copy so the secret only lives inside `kek`. Mirrors the pattern
+    // in `derive_recovery_kek` and `crypto::kem::derive_wrap_key`.
+    out.zeroize();
+    Ok(kek)
 }
 
 /// Derive the 32-byte Recovery KEK from BIP-39 mnemonic entropy (§4).

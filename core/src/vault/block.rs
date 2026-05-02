@@ -71,6 +71,7 @@ use rand_core::{CryptoRng, RngCore};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::Sensitive;
+use zeroize::Zeroize as _;
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, HybridSig, MlDsa65Public, MlDsa65Secret, MlDsa65Sig,
     SigError, SigRole, ED25519_SIG_LEN,
@@ -1638,7 +1639,6 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // The original stack copy still holds the BCK; zero it before frame
     // reuse so the secret only lives inside `bck`. Same pattern as
     // `crypto::kem::derive_wrap_key`.
-    use zeroize::Zeroize as _;
     bck_bytes.zeroize();
 
     // Step 2: per-recipient encap.
@@ -1683,7 +1683,9 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
     let aad = build_body_aad(header, &wraps)?;
-    let bck_key: AeadKey = Sensitive::new(*bck.expose());
+    let mut bck_key_bytes = *bck.expose();
+    let bck_key: AeadKey = Sensitive::new(bck_key_bytes);
+    bck_key_bytes.zeroize();
     let ct_with_tag = aead::encrypt(&bck_key, &aead_nonce, &aad, &pt_bytes)?;
     debug_assert_eq!(ct_with_tag.len(), pt_bytes.len() + AEAD_TAG_LEN);
 
@@ -1798,7 +1800,9 @@ pub fn decrypt_block(
     let mut ct_with_tag = Vec::with_capacity(block.aead_ct.len() + AEAD_TAG_LEN);
     ct_with_tag.extend_from_slice(&block.aead_ct);
     ct_with_tag.extend_from_slice(&block.aead_tag);
-    let bck_key: AeadKey = Sensitive::new(*bck.expose());
+    let mut bck_key_bytes = *bck.expose();
+    let bck_key: AeadKey = Sensitive::new(bck_key_bytes);
+    bck_key_bytes.zeroize();
     let pt_secret = aead::decrypt(&bck_key, &block.aead_nonce, &aad, &ct_with_tag)?;
 
     // Step 7: parse the canonical-CBOR plaintext. SecretBytes derefs to

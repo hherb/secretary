@@ -95,17 +95,22 @@ pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
 
     // Re-extract the entropy from the parsed mnemonic so we can move it into
     // a `Sensitive` wrapper. `to_entropy_array` returns a `[u8; 33]` plus the
-    // valid byte length; for 24 words the length is always 32.
-    let (full, len) = bip.to_entropy_array();
+    // valid byte length; for 24 words the length is always 32. The 33-byte
+    // buffer is on our stack — bind it `mut` so we can zeroize the full
+    // 33-byte slot once the trimmed entropy has been copied out.
+    let (mut full, len) = bip.to_entropy_array();
     debug_assert_eq!(len, 32, "24-word BIP-39 must produce 32 bytes of entropy");
     let mut entropy = [0u8; 32];
     entropy.copy_from_slice(&full[..32]);
 
     // The bip39 crate's `zeroize` feature is enabled in our build, so the
     // local `bip` value's internal `[u16; 24]` words array is wiped when it
-    // goes out of scope. We still zeroize the local entropy buffer here as
-    // defense in depth (DRY-violating but harmless).
+    // goes out of scope. We zeroize the local input buffer (`entropy_buf`)
+    // and the 33-byte output buffer (`full`) returned by `to_entropy_array`
+    // — both held the entropy bytes briefly and are not under the bip39
+    // crate's automatic zeroize coverage once they leave its API.
     entropy_buf.zeroize();
+    full.zeroize();
 
     Mnemonic {
         phrase,
@@ -158,10 +163,14 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
         }
     })?;
 
-    let (full, len) = bip.to_entropy_array();
+    // Same 33-byte stack residue as `generate`: zeroize the full buffer
+    // after the trimmed 32-byte entropy has been copied out, since the
+    // bip39 crate's automatic zeroize coverage stops at its API boundary.
+    let (mut full, len) = bip.to_entropy_array();
     debug_assert_eq!(len, 32, "24-word BIP-39 must produce 32 bytes of entropy");
     let mut entropy = [0u8; 32];
     entropy.copy_from_slice(&full[..32]);
+    full.zeroize();
 
     Ok(Mnemonic {
         phrase: bip.to_string(),

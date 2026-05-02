@@ -1,0 +1,296 @@
+# Memory-hygiene internal audit
+
+This document is the **memory-hygiene internal pass** called out in
+[secretary_next_session.md](../../../secretary_next_session.md)'s Open
+Item 3 → Memory hygiene audit. Companion to the
+[side-channel internal audit](side-channel-audit-internal.md). Its
+purpose is to walk every type that holds secret material in the Rust
+core, verify its zeroize-on-drop discipline, and flag stack-residue
+patterns where a secret value sits in a named-but-unzeroized stack
+slot after being moved into a `Sensitive` wrapper.
+
+**Scope:** the Rust core (`core/src/{crypto,identity,unlock,vault}/`).
+Out of scope: cross-FFI memory hygiene (Sub-project B), platform-UI
+clipboard hygiene (Sub-project D), kernel/swap-page memory exposure
+(threat-model §2.7).
+
+**Methodology:** for each named struct or type alias that wraps secret
+bytes, verify (a) it derives `Zeroize, ZeroizeOnDrop` or composes them
+via a wrapped field, (b) its `Debug`/`Clone`/`PartialEq` derives don't
+defeat zeroize discipline, (c) the surrounding code zeroizes any
+stack-residue copies after the secret is moved into the wrapper.
+
+**Date:** 2026-05-02 (post-side-channel internal audit; 430 tests + 6
+ignored on `main`).
+
+---
+
+## Summary
+
+The wrapper discipline (`Sensitive<T>`, `SecretBytes`) is sound and
+well-documented:
+[core/src/crypto/secret.rs](../../../core/src/crypto/secret.rs)
+derives `Zeroize, ZeroizeOnDrop` on both wrappers and intentionally
+omits `PartialEq` on `Sensitive<T>` (forcing callers to use
+`subtle::ConstantTimeEq` explicitly when they need byte-equality).
+`IdentityBundle` wraps all four secret keys in `Sensitive`, has a
+custom redacting `Debug`, and does not derive `Clone`.
+
+The audit found **twelve stack-residue gaps** where a secret was
+copied into a `Sensitive` wrapper but the original stack slot was not
+explicitly zeroized after the move. All twelve are fixed in commits
+landing alongside this memo. The pattern was consistent: the
+established sites (`crypto::kem::derive_wrap_key`,
+`crypto::sig::generate_ed25519`,
+`crypto::kdf::derive_recovery_kek`, `vault::block::encrypt_block`'s
+BCK construction) had the post-move `.zeroize()` discipline; sister
+sites in the same modules had been missed.
+
+The audit also found one **larger design question** that is *not* a
+bug fix and is documented as a known limitation rather than addressed
+in this pass: `RecordFieldValue::{Text, Bytes}` (the user's actual
+passwords / secret notes / API keys) hold plain `String` / `Vec<u8>`
+that are not zeroized on drop. Fixing this requires non-trivial API
+changes that ripple through tests and the Python conformance verifier
+— deferred to a v2 design discussion. See "Deferred items" below.
+
+---
+
+## Wrapper discipline
+
+[core/src/crypto/secret.rs](../../../core/src/crypto/secret.rs)
+defines the two secret-bearing wrappers used throughout the crate:
+
+| Wrapper | Derive | Storage | Custom impls | Notes |
+|---|---|---|---|---|
+| `SecretBytes` | `Zeroize, ZeroizeOnDrop` | `Vec<u8>` (heap) | `Debug` (redacted, prints len only); `PartialEq, Eq` via `subtle::ConstantTimeEq` | No `Clone` derived; `Display` not implemented. |
+| `Sensitive<T: Zeroize>` | `Zeroize, ZeroizeOnDrop` | `T` (typically `[u8; 32]` or `Vec<u8>`) | `Debug` (redacted, prints `<redacted>`) | Intentionally **does not** implement `PartialEq` — see [secret.rs:75-85](../../../core/src/crypto/secret.rs#L75-L85): `subtle` only provides `ConstantTimeEq` for slices and integer primitives, and an `==` impl bounded on `T: ConstantTimeEq` would silently fail to apply to `[u8; N]`. Callers needing byte-equality compare slices via `a.expose()[..].ct_eq(&b.expose()[..])`. |
+
+**Both wrappers are sound.** No changes recommended.
+
+## Top-level secret types
+
+| Type | Module | Wrapping | Drop discipline | Status |
+|---|---|---|---|---|
+| `AeadKey` | `crypto::aead` | `Sensitive<[u8; 32]>` | inherits | ✓ |
+| `Ed25519Secret` | `crypto::sig` | `Sensitive<[u8; 32]>` | inherits | ✓ |
+| `MlDsa65Secret` | `crypto::sig` | tuple-struct wrapping `SecretBytes` | inner field drops + zeroizes | ✓ (see "deferred items" for newtype-`Zeroize` cosmetic gap) |
+| `X25519Secret` | `crypto::kem` | `Sensitive<[u8; 32]>` | inherits | ✓ |
+| `MlKem768Secret` | `crypto::kem` | tuple-struct wrapping `SecretBytes` | inner field drops + zeroizes | ✓ (same cosmetic gap as `MlDsa65Secret`) |
+| `Mnemonic` | `unlock::mnemonic` | `phrase: String` + `entropy: Sensitive<[u8; 32]>` | custom `Drop` zeroizes `phrase`; `entropy` inherits | ✓ |
+| `IdentityBundle` | `unlock::bundle` | four secret-key fields wrapped in `Sensitive` | implicit drop drops fields in source order; each `Sensitive` zeroizes | ✓ — custom redacting `Debug` at [bundle.rs:206-222](../../../core/src/unlock/bundle.rs#L206-L222); no `Clone`, no `PartialEq` |
+| `UnlockedIdentity` | `unlock::mod` | composes `Sensitive<[u8; 32]>` (IBK) + `IdentityBundle` | implicit drop | ✓ |
+| `Fingerprint` | `identity::fingerprint` | `[u8; 16]` (public value, *not* secret) | n/a (public) | ✓ — newly doc-commented in commit `e921e99` to make the public-value status obvious. |
+
+## Drop ordering — composite types holding multiple secrets
+
+`IdentityBundle` ([bundle.rs:167-198](../../../core/src/unlock/bundle.rs#L167-L198))
+declares fields in this order:
+
+```rust
+user_uuid, display_name,
+x25519_sk (Sensitive),     x25519_pk,
+ml_kem_768_sk (Sensitive), ml_kem_768_pk,
+ed25519_sk (Sensitive),    ed25519_pk,
+ml_dsa_65_sk (Sensitive),  ml_dsa_65_pk,
+created_at_ms,
+```
+
+Rust's drop glue runs each field's destructor in **source order**, so
+each `Sensitive` field zeroizes independently. There is no field that
+borrows from a sibling secret; no drop-ordering bug.
+
+`UnlockedIdentity` is `(identity_block_key: Sensitive<[u8; 32]>,
+identity: IdentityBundle)`. Drop order: IBK first (zeroizes), then
+IdentityBundle (which zeroizes its four secret-key fields in turn). ✓
+
+`BlockPlaintext` does *not* hold a key — it holds `Vec<Record>`,
+which in turn holds `RecordField`s with `RecordFieldValue::{Text, Bytes}`.
+**The `Record` contents are not zeroized.** See "Deferred items" §1.
+
+---
+
+## Stack-residue gaps fixed in this pass
+
+Twelve sites where a secret was moved into a `Sensitive` wrapper but
+the original stack slot was not zeroized. The fix is the same one-line
+pattern used elsewhere in the crate
+(`source_var.zeroize()` after `Sensitive::new(source_var)`).
+
+| # | File:line | Site | Fix |
+|---|---|---|---|
+| 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out: [u8; 32]` after `Sensitive::new(out)` | `out.zeroize()` |
+| 2 | `core/src/unlock/mod.rs::create_vault` | `ibk: [u8; 32]` after `Sensitive::new(ibk)` | `ibk.zeroize()` (replaces a SECURITY note that acknowledged but didn't apply the fix) |
+| 3 | `core/src/unlock/mod.rs::open_with_password` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
+| 4 | `core/src/unlock/mod.rs::open_with_recovery` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
+| 5 | `core/src/vault/orchestrators.rs::save_block` | author Ed25519 SK temp `*expose()` | bind to `ed_sk_bytes`, zeroize after move |
+| 6 | `core/src/vault/orchestrators.rs::open_block` | reader X25519 SK temp `*expose()` | bind to `x_sk_bytes`, zeroize after move |
+| 7 | `core/src/vault/block.rs::encrypt_block` | BCK key temp `*bck.expose()` | bind to `bck_key_bytes`, zeroize after move |
+| 8 | `core/src/vault/block.rs::decrypt_block` | BCK key temp `*bck.expose()` | bind to `bck_key_bytes`, zeroize after move |
+| 9 | `core/src/crypto/kem.rs::encap` | X25519 shared-secret bytes from `ss_x_raw.to_bytes()` | bind to `ss_x_bytes`, zeroize after move |
+| 10 | `core/src/crypto/kem.rs::decap` | X25519 shared-secret bytes + recipient SK deref-copy | bind both, zeroize each after move |
+| 11 | `core/src/unlock/mnemonic.rs::generate` | `full: [u8; 33]` from `bip.to_entropy_array()` | bind `mut`, `full.zeroize()` after copy |
+| 12 | `core/src/unlock/mnemonic.rs::parse` | `full: [u8; 33]` from `bip.to_entropy_array()` | bind `mut`, `full.zeroize()` after copy |
+
+**Note on three SECURITY comments** (in `unlock/mod.rs` at the IBK
+construction sites, fixes #2/#3/#4): the comments correctly
+identified the residue but suggested it was inherent to Rust ("known
+Rust limitation, no MaybeUninit-aware fill_bytes"). The
+`fill_bytes`-can't-be-MaybeUninit-aware part is true, but the
+*post-move* zeroize is independently doable — and it's the fix the
+rest of the crate already used. The new comments make this explicit.
+
+**Note on existing well-disciplined sites** (all already correct, no
+fix needed): `crypto::kem::derive_wrap_key`'s `key.zeroize()`,
+`crypto::kem::generate_x25519`'s `sk_bytes.zeroize()`,
+`crypto::kem::generate_ed25519`'s `sk_bytes.zeroize()`,
+`crypto::kdf::derive_recovery_kek`'s `out.zeroize()`,
+`crypto::kem::decap`'s `k.zeroize()`,
+`crypto::kem::encap+decap`'s `ss_pq_bytes.zeroize()`,
+`vault::block::encrypt_block`'s `bck_bytes.zeroize()`. The fixes
+above bring the sister sites in those same modules up to the same
+discipline.
+
+---
+
+## Deferred items (not addressed in this pass)
+
+### 1. Record contents are not zeroized
+
+[core/src/vault/record.rs:270-289](../../../core/src/vault/record.rs#L270-L289)
+defines:
+
+```rust
+pub enum RecordFieldValue {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+```
+
+These hold the user's actual passwords, secret notes, API keys, SSH
+keys, TOTP seeds — the **most sensitive data** in the entire system,
+yet the only secret-bearing data in the codebase that is *not*
+zeroize-on-drop. `Record` and `RecordField` derive `Debug, Clone,
+PartialEq`, none of which is zeroize-aware.
+
+The threat-model already acknowledges that "active malware on an
+unlocked device" is out of scope (§2.7) — but every other secret in
+the system *is* zeroized on drop, so the discipline is uneven. A
+malware-on-unlocked-device adversary can scrape record contents from
+freed heap memory long after the user thought a record was "closed"
+in the UI.
+
+**Why deferred:** introducing `SecretString` / `SecretBytes`-typed
+record values is a non-trivial API change. It ripples through:
+- Every test that compares record values via `==` or string slicing
+  (~100 sites);
+- The Python conformance verifier
+  ([core/tests/python/conformance.py](../../../core/tests/python/conformance.py))
+  doesn't need zeroize discipline (it doesn't claim to be a
+  hardened reference implementation), but its `py_merge_record`
+  must continue to compare record values bit-identically with the
+  Rust merge — that's checked, but a `SecretString` wrapper change
+  doesn't affect bytes;
+- The CRDT proptests' `record_strategy` (works on raw `String` /
+  `Vec<u8>`).
+
+**Recommendation:** raise as a v2 design discussion. The threat-model
+already documents the malware-on-unlocked-device scope decision; a v2
+hardening story would tighten record-content zeroize alongside any
+other v2 changes (e.g. forward secrecy at the block level — see
+threat-model §4 limitation 1 for context).
+
+**Threat-model wording check:** §3.1 / §2.7 currently say "the
+zeroize discipline reduces but does not eliminate the window". With
+records unzeroized, the discipline as it stands does NOT cover the
+record-content path. The threat-model wording is technically
+accurate (it doesn't claim record contents zeroize) but a reader
+might expect more from "zeroize discipline" than the codebase
+currently provides. Worth re-reading at the next external review.
+
+### 2. Newtype `Zeroize`/`ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
+
+Both newtype tuple-structs wrap `SecretBytes`, which IS
+`Zeroize, ZeroizeOnDrop`. The inner field's drop runs and zeroizes,
+so **the bytes are correctly zeroized on drop**. But neither newtype
+exposes `.zeroize()` programmatically — a caller who wants to
+explicitly zero the secret before drop (e.g. before a long compute
+that holds the secret across an `await` in a Sub-project C async
+context) cannot call `secret.zeroize()` on the newtype.
+
+**Why deferred:** cosmetic. No current call site needs explicit
+`.zeroize()` on the newtype. Adding `#[derive(Zeroize,
+ZeroizeOnDrop)]` to the newtypes would require either making them
+`#[derive(Zeroize)]`-eligible (which the inner `SecretBytes` already
+is) or annotating the field. Pick up alongside any other newtype
+work.
+
+### 3. HKDF internal state residue
+
+`hkdf = "0.12"` does not zeroize its internal HMAC state on drop.
+[core/src/crypto/kdf.rs:216-223](../../../core/src/crypto/kdf.rs#L216-L223)
+documents this as a SECURITY note on `derive_recovery_kek`, and the
+same applies to `hkdf_sha256_extract_and_expand`. Eliminating the
+residue requires either:
+- A future `hkdf` release with `ZeroizeOnDrop`-derived internal state
+  (upstream change);
+- Rolling HMAC-SHA-256 manually with hand-zeroized state (substantial
+  change, would deviate from the RFC 5869 KAT-pinned reference
+  implementation).
+
+**Why deferred:** out of our control until upstream `hkdf` ships
+zeroize support. Watch upstream and re-evaluate when a new release
+lands.
+
+### 4. ML-KEM-768 / ML-DSA-65 internal state
+
+`ml-kem = "0.2"` and `ml-dsa = "0.1.0-rc.8"` are RustCrypto crates
+that we feed seeds and ciphertexts to. We don't control their
+internal scratch memory. The side-channel audit
+([side-channel-audit-internal.md](side-channel-audit-internal.md))
+flagged `ml-dsa` 0.1.0-rc.8's pre-1.0 status for the paid external
+reviewer; the same caveat applies to memory hygiene.
+
+**Why deferred:** upstream-managed. The external reviewer should
+verify both crates' drop discipline at their pinned versions.
+
+---
+
+## Out of scope for this internal pass
+
+- **Cross-FFI memory hygiene** (Sub-project B): when the Rust core
+  crosses an FFI boundary into Python / Swift / Kotlin, the foreign
+  language's allocator and GC own a copy of any secret material
+  passed across. The discipline there is Sub-project B's concern; the
+  Rust core's job is to make sure its side of the boundary is clean.
+- **Clipboard hygiene** (Sub-project D): when a user copies a
+  password to the system clipboard, the clipboard daemon owns a copy
+  the Rust core has no visibility into. Mitigation is platform-UI
+  responsibility (clear-on-timeout, opt-in clipboard managers, etc.).
+- **Swap-page exposure**: a system that swaps process memory to disk
+  may persist secret bytes onto a non-encrypted swap partition.
+  Mitigation is `mlock`/`VirtualLock` at process start, which is a
+  platform-UI concern (and threat-model §2.7 puts kernel/OS issues
+  out of scope anyway).
+
+---
+
+## Conclusion
+
+The wrapper discipline is sound, the type-level invariants are right,
+and twelve concrete stack-residue gaps were fixed by this pass. Each
+fix follows a one-line pattern that already had instances in the
+codebase — they were sister sites that hadn't yet been brought up to
+the established discipline.
+
+The principal **deferred** item is record-content zeroize (§1
+"Deferred items"). This is the most-sensitive data in the system
+sitting outside the zeroize boundary, and tightening it is a non-
+trivial v2 design change. The codebase otherwise zeroizes every
+secret-bearing byte string on drop or before drop where a stack-copy
+remains.
+
+Memory-hygiene status after this pass: **clean for v1's Sub-project A
+scope.** The Sub-project D clipboard / mlock concerns and the v2
+record-content zeroize question are flagged for the appropriate later
+phases.

@@ -10,6 +10,8 @@ pub mod vault_toml;
 use core::fmt;
 use rand_core::{CryptoRng, RngCore};
 
+use zeroize::Zeroize as _;
+
 use crate::crypto::aead::{decrypt, encrypt};
 use crate::crypto::kdf::{
     derive_master_kek, derive_recovery_kek, Argon2idParams, KdfError, TAG_ID_BUNDLE,
@@ -169,16 +171,16 @@ pub fn create_vault_unchecked(
     let recovery_kek = derive_recovery_kek(recovery_mnemonic.entropy());
 
     // Step 4: Identity Block Key — fresh CSPRNG bytes wrapped in Sensitive.
-    // SECURITY: rng.fill_bytes writes into a stack array, then Sensitive::new
-    // MOVES that array into the Sensitive wrapper — the original stack slot
-    // is logically dead but its bytes are not zeroized. This is a known Rust
-    // limitation (no MaybeUninit-aware fill_bytes). The Sensitive wrapper's
-    // Drop impl handles zeroization for the wrapped copy; the residual stack
-    // bytes persist briefly until the next stack frame overwrites them.
-    // Same pattern as bundle::generate's Identity Bundle keys.
+    // `rng.fill_bytes` writes into the stack array `ibk`; `Sensitive::new`
+    // then copies it (`[u8; 32]: Copy`) into the wrapper. Zeroize the stack
+    // copy explicitly so the secret lives only inside `identity_block_key`.
+    // (`fill_bytes` itself cannot be MaybeUninit-aware; the post-move
+    // zeroize is the discipline we can apply.) Same pattern as
+    // `crypto::kem::derive_wrap_key` and `crypto::kdf::derive_recovery_kek`.
     let mut ibk = [0u8; 32];
     rng.fill_bytes(&mut ibk);
     let identity_block_key = Sensitive::new(ibk);
+    ibk.zeroize();
 
     // Step 5: generate identity + canonical CBOR
     let identity = bundle::generate(display_name, created_at_ms, rng);
@@ -343,12 +345,17 @@ pub fn open_with_password(
 
     // ibk_bytes is SecretBytes wrapping a Vec<u8>. The wrap_pw plaintext
     // is exactly 32 bytes (an IBK). Anything else is a corrupt vault.
-    // SECURITY: ibk_arr leaves a residual copy of the IBK on the stack after
-    // Sensitive::new moves it. Same limitation as create_vault's IBK
-    // construction — see the SECURITY note there for details.
-    let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
+    // `try_into` copies the bytes into the stack array `ibk_arr`;
+    // `Sensitive::new` then copies it again into the wrapper. Zeroize the
+    // stack copy after the move so the secret lives only inside
+    // `identity_block_key`. (Length validation runs before the copy, so the
+    // copy-then-zeroize is unconditional.)
+    let mut ibk_arr: [u8; 32] = ibk_bytes
+        .expose()
+        .try_into()
         .map_err(|_| UnlockError::CorruptVault)?;
     let identity_block_key = Sensitive::new(ibk_arr);
+    ibk_arr.zeroize();
 
     // Step 5: AEAD-decrypt the bundle plaintext under the IBK. AEAD failure
     // here is post-IBK-recovery: any failure is unequivocally corruption,
@@ -407,12 +414,15 @@ pub fn open_with_recovery(
     )
     .map_err(|_| UnlockError::WrongMnemonicOrCorrupt)?;
 
-    // SECURITY: ibk_arr leaves a residual copy of the IBK on the stack after
-    // Sensitive::new moves it. Same limitation as create_vault's IBK
-    // construction — see the SECURITY note there for details.
-    let ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
+    // `try_into` copies the IBK bytes into the stack array `ibk_arr`;
+    // `Sensitive::new` then copies it into the wrapper. Zeroize the stack
+    // copy after the move. Same pattern as `open_with_password`.
+    let mut ibk_arr: [u8; 32] = ibk_bytes
+        .expose()
+        .try_into()
         .map_err(|_| UnlockError::CorruptVault)?;
     let identity_block_key = Sensitive::new(ibk_arr);
+    ibk_arr.zeroize();
 
     // Step 6: AEAD-decrypt the bundle plaintext under IBK. Post-IBK-recovery
     // failure is unequivocally tampering, not user error.

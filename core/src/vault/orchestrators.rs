@@ -23,6 +23,8 @@ use std::path::Path;
 
 use rand_core::{CryptoRng, RngCore};
 
+use zeroize::Zeroize as _;
+
 use crate::crypto::aead::AEAD_TAG_LEN;
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kdf::Argon2idParams;
@@ -781,10 +783,14 @@ pub fn save_block(
     // Owner-side sender keys. Re-wrap the bundle's raw seed bytes into the
     // typed ML-DSA-65 / Ed25519 secret-key holders that encrypt_block
     // expects. Ed25519Secret is a Sensitive<[u8; 32]> alias — we allocate a
-    // fresh Sensitive to keep the bundle's owner copy intact.
+    // fresh Sensitive to keep the bundle's owner copy intact. The
+    // intermediate `ed_sk_bytes` is a stack copy of the owner's Ed25519 SK;
+    // bind it explicitly so we can zeroize it after the move.
     let owner_pk_bundle = open.owner_card.pk_bundle_bytes()?;
     let owner_fp = fingerprint(&open.owner_card.to_canonical_cbor()?);
-    let owner_ed_sk: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
+    ed_sk_bytes.zeroize();
     let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
 
     // Step 4: encrypt_block (signs internally, §6.5 step 7).
@@ -1149,8 +1155,9 @@ pub fn share_block(
     // arrangement only valid when caller == author. Grep for
     // `share-as-fork` to find the matching guard.
     let author_pk_bundle = author_card.pk_bundle_bytes()?;
-    let reader_x_sk: crate::crypto::kem::X25519Secret =
-        Sensitive::new(*open.identity.x25519_sk.expose());
+    let mut x_sk_bytes = *open.identity.x25519_sk.expose();
+    let reader_x_sk: crate::crypto::kem::X25519Secret = Sensitive::new(x_sk_bytes);
+    x_sk_bytes.zeroize();
     let reader_pq_sk =
         crate::crypto::kem::MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose())
             .map_err(block::BlockError::from)?;
