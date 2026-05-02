@@ -140,18 +140,62 @@ These are deliberate scope decisions. Each is reasonable for v1 but worth eyes-o
 
 ## 5. Verification trace
 
-Each defense in §3 must correspond to either a specific test or a specific design feature. The Definition-of-Done for Sub-project A includes a check that this trace is complete:
+Each defense in §3 must correspond to either a specific test or a specific design feature. The Definition-of-Done for Sub-project A includes a check that this trace is complete. Test names below are stable contracts — renaming requires a corresponding update here.
 
-- **Block AEAD confidentiality** → unit test `test_aead_decrypt_with_wrong_key_fails`; KAT against XChaCha20-Poly1305 published vectors.
-- **Block AEAD integrity** → unit test `test_aead_tag_failure_on_byte_flip`.
-- **Manifest signature integrity** → unit test `test_manifest_signature_fails_on_block_swap`.
-- **Hybrid KEM correctness and PQ component** → KAT against NIST FIPS 203 ML-KEM-768 vectors.
-- **Hybrid signature correctness and PQ component** → KAT against NIST FIPS 204 ML-DSA-65 vectors.
-- **Hybrid signature AND-verification** → unit test `test_hybrid_sig_fails_when_only_one_half_valid`.
-- **Vector-clock rollback rejection** → unit test `test_manifest_dominated_by_highest_seen_is_rejected`.
-- **Contact card OOB-only invariant** → not a runtime check; verified by code review and by absence of any "load card from path in shared folder" function in the public Rust API.
-- **Argon2id memory parameter** → set in `kdf.rs`, recorded in `vault.toml`, asserted by `test_kdf_params_minimum_memory_kib`.
-- **Format-version downgrade rejection** → unit test `test_load_manifest_with_higher_format_version_is_rejected_when_we_dont_understand_it`.
-- **Suite-ID per-block migration** → integration test `test_vault_with_mixed_suite_ids_loads_correctly`.
+### Primitive KATs (RFC / NIST / Trezor-pinned)
 
-Each test name listed above is a contract; the test must exist by Sub-project A's Definition-of-Done.
+- **XChaCha20-Poly1305** → `core/tests/data/xchacha20poly1305_kat.json` (draft-irtf-cfrg-xchacha-03 §A.3.1) replayed by `core/tests/aead.rs::xchacha20_poly1305_kat_draft_irtf_cfrg_xchacha_03`.
+- **Argon2id** → `core/tests/data/argon2id_kat.json` replayed by `core/tests/kdf.rs::argon2id_kat_small_memory`; v1 floor enforcement asserted by `core/tests/kdf.rs::test_kdf_params_minimum_memory_kib` plus `argon2id_params_try_new_v1_{accepts_floor,rejects_zero_iterations,rejects_zero_parallelism}`.
+- **HKDF-SHA-256** → `core/tests/data/hkdf_sha256_kat.json` (RFC 5869 appendix A) replayed by `core/tests/kdf.rs::hkdf_rfc5869_kats`.
+- **Ed25519** → `core/tests/data/ed25519_kat.json` (RFC 8032 §7.1 test 1).
+- **X25519** → `core/tests/data/x25519_kat.json` (RFC 7748 §5.2).
+- **ML-KEM-768 (FIPS 203)** → `core/tests/data/ml_kem_768_kat.json` (NIST ACVP) plus `core/tests/kem.rs::ml_kem_768_nist_keygen_kat` and `ml_kem_768_nist_encap_kat`.
+- **ML-DSA-65 (FIPS 204)** → `core/tests/data/ml_dsa_65_kat.json` (NIST ACVP) plus `core/tests/sig.rs::ml_dsa_65_nist_keygen_kat`, `_sigver_kat`, `_siggen_kat` (asserts byte-for-byte signature output through our signer).
+- **BIP-39 (recovery mnemonic)** → `core/tests/data/bip39_recovery_kat.json` (4 vectors: all-zero entropy, all-FF, two Trezor canonical 24-word) replayed by `core/tests/unlock.rs::bip39_recovery_kat_vectors`.
+- **BLAKE3 (Contact Card fingerprint, hex form, 12-word mnemonic form)** → `core/tests/data/card_fingerprint_kat.json` cross-verified against Python `blake3` + `mnemonic` package; replayed by `core/tests/identity.rs::fingerprint_kat`, `fingerprint_hex_form_kat`, `fingerprint_mnemonic_kat`.
+
+### Composite invariants (hybrid + AEAD + signature)
+
+- **Block AEAD confidentiality** → `core/tests/aead.rs::test_aead_decrypt_with_wrong_key_fails`.
+- **Block AEAD integrity** → `core/tests/aead.rs::test_aead_tag_failure_on_byte_flip` plus `tampered_ciphertext_fails`.
+- **Hybrid KEM correctness** → `core/tests/data/hybrid_kem_kat.json` (deterministic seed-driven vectors, §7 of crypto-design.md).
+- **Hybrid KEM tamper rejection (per-component)** → `core/tests/kem.rs::hybrid_kem_tampered_{ct_x,ct_pq,pk_bundle,sender_pk_bundle,sender_fingerprint,recipient_fingerprint}_fails`.
+- **Hybrid signature correctness** → `core/tests/data/hybrid_sig_kat.json` (deterministic seed-driven vectors, §8 of crypto-design.md).
+- **Hybrid signature AND-verification** → `core/tests/sig.rs::test_hybrid_sig_fails_when_only_one_half_valid` (closes the OR-instead-of-AND silent-accept hole).
+- **Hybrid signature per-half tamper** → `core/tests/sig.rs::hybrid_sig_tampered_{ed_sig,pq_sig,message}_fails`.
+
+### Vault file format invariants (§4 manifest, §6 block)
+
+- **Block-level §15 wire-form KAT** → `core/tests/data/block_kat.json` (parsed wire-format-only by [core/tests/python/conformance.py](../core/tests/python/conformance.py)).
+- **Manifest signature on block tampering** → `core/tests/open_vault.rs::open_vault_tampered_manifest_signature_rejected` (manifest tampering) plus `core/tests/save_block.rs::save_block_then_tampered_block_fails_open` (block-byte tampering after save).
+- **AEAD inside the signed range** → `core/tests/vault.rs::corruption_recipient_fingerprint_in_table_sig_fails_decrypt` plus `corruption_author_fingerprint_rejected_at_check`.
+- **format_version rejection (block + manifest)** → `core/tests/vault.rs::corruption_format_version_rejected` for the block path; manifest-level enforcement is at `core/src/vault/manifest.rs:701-702` and exercised by every full-vault-open test.
+- **suite_id rejection (v1-only)** → `core/tests/vault.rs::corruption_suite_id_rejected`. (Mixed-suite-IDs are explicitly *not* a v1 feature; see §3.5.)
+- **Display-name DoS cap on parse + encode + signed_bytes** → `core/src/identity/card.rs` tests `from_canonical_cbor_rejects_oversize_display_name`, `_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`, `_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name` (cap enforced symmetrically; PR #11).
+- **Argon2id v1 floor enforcement at open** → `core/src/unlock/mod.rs` `WeakKdfParams` typed error; `core/tests/unlock.rs` covers the open-side rejection path.
+- **Vector-clock rollback rejection** → `core/tests/open_vault.rs::open_vault_rollback_rejected` plus `_skipped_when_local_clock_none`.
+- **§4.3 step 5/6 cross-checks at open (`vault_uuid`, `kdf_params`)** → `core/tests/open_vault.rs::open_vault_*` integration tests for the full open path.
+
+### CRDT merge invariants (§11; PR #7 + #9)
+
+- **Per-record / per-block CRDT merge KAT (11 vectors)** → `core/tests/data/conflict_kat.json` replayed by `core/tests/conflict.rs::kat_replays_match_rust_merge` (Rust) and the clean-room Python `py_merge_record` + `py_merge_unknown_map` in [core/tests/python/conformance.py](../core/tests/python/conformance.py).
+- **Death-clock staleness invariant (§11.3)** → property baked into `core/src/vault/conflict.rs::merge_record`; integration tests in `core/tests/conflict.rs` (e.g. `mixed_tombstone_tie_takes_tombstone_side_tags`); KAT vectors include `concurrent_tombstone_wins_preserves_live_unknown` and the resurrection-preserves-death-clock case.
+- **CRDT properties (full record domain, arbitrary tombstone histories, arbitrary `unknown`)** → `core/tests/proptest.rs::crdt_merge_record_commutativity`, `_associativity`, `_idempotence`, `_well_formed_under_arbitrary_inputs` (Property L; well-formedness on every output, including LWW-clone path).
+
+### §15 cross-language conformance (Phase A.5 / PR #5)
+
+- **Golden-vault end-to-end** → `core/tests/data/golden_vault_001/` deterministic fixture (vault.toml + manifest.cbor.enc + identity.bundle.enc + one block + one Contact Card); replayed in Rust by `core/tests/golden_vault_001.rs::golden_vault_001_pinned` plus `_opens_with_password`, and in clean-room Python by [core/tests/python/conformance.py](../core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify, stdlib-only, `uv run`-compatible). A regression test pins the silent-accept bug found and fixed in the Python ML-DSA-65 verifier during PR #6 (`1c90852`).
+- **Differential-replay protocol** → contract documented at [docs/manual/contributors/differential-replay-protocol.md](manual/contributors/differential-replay-protocol.md); Rust harness `core/tests/differential_replay.rs::differential_replay_full_corpus` plus `--diff-replay <target> <input-path>` mode in `conformance.py`. Per-input timeout bounds the Python subprocess so a single pathological input cannot stall a campaign.
+
+### Coverage-guided fuzzing (Phase A.7 / PR #8 + #11)
+
+- **Six fuzz targets** at `core/fuzz/fuzz_targets/{block_file,bundle_file,contact_card,manifest_file,record,vault_toml}.rs` — production decoders asserting `Result` rather than panic; seeded from §15 KAT fixtures plus hand-built golden inputs.
+- **Promoted regression tests** → `core/tests/fuzz_regressions.rs` `must_not_panic` contract covering `vault_toml_regressions_no_panic`, `record_regressions_no_panic`, `contact_card_regressions_no_panic`, `bundle_file_regressions_no_panic`, `manifest_file_regressions_no_panic`, `block_file_regressions_no_panic` (six promoted artefacts; PR #11). Contract is panic-bounds, not time-bounds.
+
+### Structural / non-runtime invariants
+
+- **Contact card OOB-only invariant** → not a runtime check; verified by absence of any "load card from shared-folder path" function in the public Rust API. The public surface is `ContactCard::from_canonical_cbor` (parse from caller-supplied bytes) plus `verify_self`. Auto-discovery is structurally impossible without a Sub-project D code change. (See §3.4.)
+- **`#![forbid(unsafe_code)]` workspace-wide** → set at workspace lints; any FFI primitive must live in its own crate behind a reviewed boundary.
+- **`tempfile` exact-pinned (`=3.27.0`)** → atomic-write path dependency; pinned at `core/Cargo.toml` so a `cargo update` cannot move the resolved version inside the 3.x range without a deliberate edit.
+
+Each test name and KAT-file name above is a contract; renaming or removing requires a corresponding update here.
