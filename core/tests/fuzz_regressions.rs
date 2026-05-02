@@ -19,6 +19,20 @@
 //! could be added later, but pinning a wall-clock value without a
 //! reproducible underlying bug is gold-plating, so we deliberately don't.
 //!
+//! The same applies to the `oom-*` artifacts under `contact_card/`:
+//! libFuzzer flagged those when per-process RSS drifted across its
+//! default 2 GB threshold during multi-million-exec sessions, but
+//! single-input replay finishes in 0–1 ms with no allocation pressure
+//! (`from_canonical_cbor(&[])` returns `Err(EOF)` immediately, never
+//! reaching an allocation path). The drift is ASAN bookkeeping
+//! (quarantine zone, instrumentation tables) accumulating across
+//! executions, not the decoder — empirically logarithmic, not linear:
+//! a 5M-exec run from the existing corpus measured peak RSS 1190 MB
+//! with the per-Mexec slope falling ~50× between exec 1e4 and exec 5e6.
+//! Pinned on the same panic-bounds rationale as the slow-units:
+//! defense-in-depth against a future regression that turns these
+//! inputs into a real panic.
+//!
 //! See docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
 //! "Regression mechanics".
 
