@@ -112,8 +112,8 @@ For each adversary above, the table below lists the attack and the specific defe
 
 | Attack | Defense |
 |---|---|
-| Substitute an older format version's manifest | `format_version` and `suite_id` are inside the signed manifest. A v1 client refuses to load a manifest claiming `format_version = 0`. Future v2 clients reading a v1 vault upgrade explicitly. |
-| Mix-and-match suite IDs across blocks within a vault | Allowed by design (per-block suite IDs enable gradual migration). The risk is the "weakest link" effect: an attacker prefers to attack the weakest suite. Mitigation: suite versions are deprecated by Secretary releases, and a vault warning is shown if any block uses a deprecated suite. |
+| Substitute an older format version's manifest | `format_version` and `suite_id` are inside the signed manifest. A v1 client refuses to load a manifest claiming `format_version != 1` (errors as `ManifestError::UnsupportedFormatVersion`). Same applies at the block level: `BlockError::UnsupportedFormatVersion` rejects any non-v1 block on parse. Future v2 clients reading a v1 vault upgrade explicitly. |
+| Mix-and-match suite IDs across blocks within a vault | **Not supported in v1.** Both the manifest and block decoders reject any `suite_id != 0x0001` at parse time (`ManifestError::UnsupportedSuiteId` / `BlockError::UnsupportedSuiteId`); a vault file with a heterogeneous suite-ID set will fail to open before any cryptographic operation runs. The on-wire `suite_id` field exists to enable per-block migration in a future format-version transition; until v2 introduces a second suite, the "weakest link" attack surface is empty. |
 
 ---
 
