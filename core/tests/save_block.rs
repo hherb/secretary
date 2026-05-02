@@ -589,7 +589,7 @@ fn save_block_atomic_write_no_torn() {
     fields.insert(
         "blob".to_string(),
         RecordField {
-            value: RecordFieldValue::Bytes(payload),
+            value: RecordFieldValue::Bytes(payload.into()),
             last_mod: 1_714_060_900_000,
             device_uuid: [0xd1u8; 16],
             unknown: BTreeMap::new(),

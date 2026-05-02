@@ -346,13 +346,17 @@ fn build_block_plaintext(inputs: &InputsBlockPlaintext, block_uuid: [u8; 16]) ->
                 "text" => RecordFieldValue::Text(
                     f.value_text
                         .clone()
-                        .expect("value_type=text needs value_text"),
+                        .expect("value_type=text needs value_text")
+                        .into(),
                 ),
-                "bytes" => RecordFieldValue::Bytes(parse_hex(
-                    f.value_hex
-                        .as_ref()
-                        .expect("value_type=bytes needs value_hex"),
-                )),
+                "bytes" => RecordFieldValue::Bytes(
+                    parse_hex(
+                        f.value_hex
+                            .as_ref()
+                            .expect("value_type=bytes needs value_hex"),
+                    )
+                    .into(),
+                ),
                 other => panic!("unknown value_type {other:?}"),
             };
             fields.insert(

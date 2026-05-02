@@ -344,7 +344,7 @@ fn block_file_round_trips_with_records() {
     fields_login.insert(
         "username".to_string(),
         RecordField {
-            value: RecordFieldValue::Text("éloïse-日本語-✓".to_string()),
+            value: RecordFieldValue::Text("éloïse-日本語-✓".into()),
             last_mod: 1_714_060_800_000,
             device_uuid: [0x01; RECORD_UUID_LEN],
             unknown: BTreeMap::new(),
@@ -356,7 +356,7 @@ fn block_file_round_trips_with_records() {
     fields_totp.insert(
         "seed".to_string(),
         RecordField {
-            value: RecordFieldValue::Bytes(b"\x00\x01\x02\x03\xff\xfe\xfd".to_vec()),
+            value: RecordFieldValue::Bytes(b"\x00\x01\x02\x03\xff\xfe\xfd".to_vec().into()),
             last_mod: 1_714_060_800_100,
             device_uuid: [0x02; RECORD_UUID_LEN],
             unknown: BTreeMap::new(),
@@ -1191,14 +1191,17 @@ fn build_block_from_kat(v: &common::BlockKatVector) -> (BlockFile, IdentityBundl
                 "text" => RecValue::Text(
                     f.value_text
                         .clone()
-                        .expect("KAT: value_type=text requires value_text"),
+                        .expect("KAT: value_type=text requires value_text")
+                        .into(),
                 ),
                 "bytes" => {
                     let hex_str = f
                         .value_hex
                         .as_ref()
                         .expect("KAT: value_type=bytes requires value_hex");
-                    RecValue::Bytes(common::hex(hex_str).expect("KAT: value_hex must be hex"))
+                    RecValue::Bytes(
+                        common::hex(hex_str).expect("KAT: value_hex must be hex").into(),
+                    )
                 }
                 other => panic!("KAT: unknown value_type {other:?}"),
             };

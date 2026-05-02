@@ -21,7 +21,7 @@ fn build_login_record() -> Record {
     fields.insert(
         "username".to_string(),
         RecordField {
-            value: RecordFieldValue::Text("alice".to_string()),
+            value: RecordFieldValue::Text("alice".into()),
             last_mod: 1714060800000,
             device_uuid: DEVICE_UUID,
             unknown: BTreeMap::new(),
@@ -30,9 +30,9 @@ fn build_login_record() -> Record {
     fields.insert(
         "totp_seed".to_string(),
         RecordField {
-            value: RecordFieldValue::Bytes(vec![
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            ]),
+            value: RecordFieldValue::Bytes(
+                vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77].into(),
+            ),
             last_mod: 1714060800000,
             device_uuid: DEVICE_UUID,
             unknown: BTreeMap::new(),
@@ -58,7 +58,7 @@ fn build_secure_note_record() -> Record {
         "body".to_string(),
         RecordField {
             value: RecordFieldValue::Text(
-                "two-factor backup codes\n12345678\n23456789".to_string(),
+                "two-factor backup codes\n12345678\n23456789".into(),
             ),
             last_mod: 1714060801000,
             device_uuid: DEVICE_UUID,
@@ -84,7 +84,7 @@ fn build_api_key_record() -> Record {
     fields.insert(
         "key".to_string(),
         RecordField {
-            value: RecordFieldValue::Text("sk_test_DEADBEEFCAFEBABE".to_string()),
+            value: RecordFieldValue::Text("sk_test_DEADBEEFCAFEBABE".into()),
             last_mod: 1714060802000,
             device_uuid: DEVICE_UUID,
             unknown: BTreeMap::new(),
@@ -93,7 +93,7 @@ fn build_api_key_record() -> Record {
     fields.insert(
         "endpoint".to_string(),
         RecordField {
-            value: RecordFieldValue::Text("https://api.example.test".to_string()),
+            value: RecordFieldValue::Text("https://api.example.test".into()),
             last_mod: 1714060802000,
             device_uuid: DEVICE_UUID,
             unknown: BTreeMap::new(),

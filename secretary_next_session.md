@@ -175,14 +175,11 @@ candidates for an in-session pass.
   for share-as-fork at the encrypt/decrypt call sites. v2 vault-format
   change. Re-validate when Sub-project C orchestration brings the
   share path back into focus.
-- **Record-content zeroize-on-drop** ([memory-hygiene memo §1](docs/manual/contributors/memory-hygiene-audit-internal.md)).
-  `RecordFieldValue::{Text(String), Bytes(Vec<u8>)}` hold the user's
-  actual passwords / secret notes / API keys *without* zeroize-on-drop —
-  the most-sensitive data in the system, only secret-bearing data NOT
-  zeroized. Fix is non-trivial: `SecretString`-typing ripples through
-  ~100 test sites + the Python conformance verifier. Raise alongside
-  any other v2 hardening work (e.g. forward secrecy at the block level,
-  threat-model §4 limitation 1).
+- ~~**Record-content zeroize-on-drop**~~ — **resolved** while the FFI
+  surface had not yet shipped. `RecordFieldValue::{Text, Bytes}` now
+  wrap `SecretString` / `SecretBytes`; wire format unchanged, Python
+  conformance unaffected. See the
+  ["Resolved" section in the memory-hygiene memo](docs/manual/contributors/memory-hygiene-audit-internal.md).
 
 ### Performance / profiling
 

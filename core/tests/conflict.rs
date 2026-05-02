@@ -453,7 +453,7 @@ fn parse_field_value(spec: &serde_json::Value) -> RecordFieldValue {
             spec["value_text"]
                 .as_str()
                 .expect("value_text")
-                .to_string(),
+                .into(),
         ),
         "bytes" => {
             let hex = spec["value_hex"].as_str().expect("value_hex");
@@ -461,7 +461,7 @@ fn parse_field_value(spec: &serde_json::Value) -> RecordFieldValue {
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
                 .collect();
-            RecordFieldValue::Bytes(bytes)
+            RecordFieldValue::Bytes(bytes.into())
         }
         other => panic!("unknown value_type {other}"),
     }
