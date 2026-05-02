@@ -117,6 +117,47 @@ def check_plateau(window: list[Pulse], k: int) -> bool:
     return all(p.cov == cov0 and p.corp == corp0 for p in last_k)
 
 
+async def terminate_process_group(
+    proc: asyncio.subprocess.Process, grace: float = 5.0
+) -> None:
+    """SIGTERM the subprocess's session/group; escalate to SIGKILL after grace.
+
+    `cargo fuzz run` spawns the actual fuzz binary as a child and does
+    not install its own signal handler. SIGTERM to the cargo-fuzz parent
+    via `proc.send_signal()` exits the wrapper but leaves the child as
+    an orphan, which keeps writing to the inherited stderr pipe — the
+    `async for proc.stderr` loop in `_read_stderr` never reaches EOF,
+    status stays RUNNING for hours, and plateau auto-stop looks dead
+    (issue #14). Spawning cargo-fuzz with `start_new_session=True` puts
+    both wrapper and child in one process group; signaling the group
+    reaches both.
+
+    No-ops if the process has already exited. Errors from a race with
+    natural exit (PID gone before we signal) are swallowed for the same
+    reason — the goal state is "process is dead", which is satisfied.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+        return
+    except asyncio.TimeoutError:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    await proc.wait()
+
+
 def find_nightly_toolchain(rustup_home: Path) -> Path | None:
     """Locate the most-recently-modified rustup nightly toolchain.
 
@@ -567,12 +608,17 @@ class MonitorApp:
         # cargo-fuzz emits its telemetry on stderr; stdout is unused. Pipe it
         # to /dev/null rather than PIPE so the OS pipe buffer (~64 KB) cannot
         # fill and block the subprocess write — we never spawn a stdout reader.
+        # `start_new_session=True` puts cargo-fuzz and its child fuzz binary
+        # in their own session so `terminate_process_group()` can kill the
+        # whole tree (issue #14: plain SIGTERM kills cargo-fuzz but orphans
+        # the child, which keeps writing to the inherited stderr pipe).
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(_FUZZ_DIR),
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         rs._popen = proc  # type: ignore[attr-defined]
 
@@ -606,7 +652,11 @@ class MonitorApp:
                     and check_plateau(list(rs.pulses), self.plateau_k)
                 ):
                     rs.stop_reason = f"plateau at exec {pulse.exec_count}"
-                    proc.send_signal(signal.SIGTERM)
+                    # Fire-and-forget: terminate_process_group awaits the
+                    # SIGKILL fallback. Awaiting it here would block the
+                    # stderr drain loop that's required for proc.wait()
+                    # to ever resolve.
+                    asyncio.create_task(terminate_process_group(proc))
         rc = await proc.wait()
         if rs.status == Status.RUNNING:
             # Capture the stop time before flipping status, so the moment
@@ -641,17 +691,12 @@ class MonitorApp:
         return max(crashes, key=lambda p: p.stat().st_mtime)
 
     async def stop_run(self, target: str, sanitizer: str) -> None:
-        """SIGTERM the subprocess; SIGKILL fallback after grace period."""
+        """SIGTERM the subprocess group; SIGKILL fallback after grace period."""
         rs = self.runs[(target, sanitizer)]
         proc = getattr(rs, "_popen", None)
         if proc is None or proc.returncode is not None:
             return  # nothing to stop
-        proc.send_signal(signal.SIGTERM)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        await terminate_process_group(proc)
         # Same ordering as _read_stderr: set stopped_at before status so
         # the per-card timer's first observation of STOPPED has a valid
         # frozen value to render.

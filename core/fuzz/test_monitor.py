@@ -32,6 +32,7 @@ from monitor import (
     parse_runs_cap,
     parse_targets,
     status_badge_class,
+    terminate_process_group,
 )
 
 
@@ -979,3 +980,140 @@ class TestFormatCardElapsed:
             )
             == "elapsed: 00:30"
         )
+
+
+class TestTerminateProcessGroup:
+    """Issue #14: SIGTERM the subprocess's session/group so cargo-fuzz's
+    child fuzz binary dies along with the wrapper, with a SIGKILL
+    fallback for processes that ignore SIGTERM. Subprocess-driven tests
+    — slow but unavoidable; the bug is precisely about process-group
+    semantics that can't be mocked meaningfully."""
+
+    def test_kills_responsive_subprocess(self):
+        # A bare `sleep 30` exits immediately on SIGTERM — well within
+        # the grace window, no SIGKILL escalation needed.
+        import asyncio
+
+        async def run():
+            proc = await asyncio.create_subprocess_exec(
+                "sleep", "30",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            await terminate_process_group(proc, grace=2.0)
+            return proc.returncode
+
+        rc = asyncio.run(run())
+        assert rc is not None
+        # SIGTERM exit shows up as -SIGTERM in Python's returncode encoding.
+        assert rc < 0, f"expected signal-terminated rc<0, got {rc}"
+
+    def test_escalates_to_sigkill_when_sigterm_ignored(self):
+        # Pin the regression: a process that genuinely ignores SIGTERM
+        # (via signal.SIG_IGN) must still be killed by the SIGKILL
+        # fallback. A naive `sh -c "trap '' TERM; sleep 30"` doesn't
+        # exercise this — the trap only ignores TERM in *sh*, while the
+        # `sleep` child happily dies on SIGTERM and lets sh return early.
+        # Python with an explicit ignore handler is the simplest single-
+        # process construction that actually survives SIGTERM.
+        import asyncio
+        import sys
+        import time as _time
+
+        # The script writes "ready" once the SIG_IGN handler is installed;
+        # the test waits for that line before SIGTERM-ing, so the signal
+        # can't race Python's startup (without the readiness handshake the
+        # default SIGTERM handler kills the interpreter pre-installation
+        # and the test passes vacuously in microseconds).
+        ignore_term = (
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "sys.stdout.write('ready\\n'); sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+
+        async def run():
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", ignore_term,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            assert (await proc.stdout.readline()).strip() == b"ready"
+            t0 = _time.monotonic()
+            await terminate_process_group(proc, grace=0.3)
+            return proc.returncode, _time.monotonic() - t0
+
+        rc, elapsed = asyncio.run(run())
+        assert rc is not None
+        # SIGKILL fires after grace; total should be roughly grace plus
+        # a little overhead. Generous upper bound for slow CI hosts.
+        assert 0.2 < elapsed < 3.0, f"unexpected elapsed: {elapsed}"
+
+    def test_signal_reaches_child_in_session_group(self):
+        # The headline regression for #14: cargo-fuzz spawns the actual
+        # fuzz binary as a child. `proc.send_signal(SIGTERM)` only hits
+        # cargo-fuzz; the child is orphaned and keeps writing to the
+        # inherited stderr pipe. Reproduce with a Python parent that
+        # spawns a long-sleeping grandchild and prints its PID, then
+        # verify both PIDs are dead after `terminate_process_group`.
+        import asyncio
+        import os
+        import sys
+        import time as _time
+
+        spawner = (
+            "import os, subprocess, sys, time\n"
+            f"child = subprocess.Popen([{sys.executable!r}, '-c', "
+            "'import time; time.sleep(30)'])\n"
+            "sys.stdout.write(f'{child.pid}\\n'); sys.stdout.flush()\n"
+            "child.wait()\n"
+        )
+
+        async def run():
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", spawner,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            child_pid = int((await proc.stdout.readline()).decode().strip())
+            await terminate_process_group(proc, grace=2.0)
+            return proc.returncode, child_pid
+
+        parent_rc, child_pid = asyncio.run(run())
+        assert parent_rc is not None
+        # Give the kernel a beat to reap the child after group SIGTERM
+        # propagates through to it. Worst case: SIGKILL escalation has
+        # already fired since grace=2.0; the child is definitely dead by
+        # the time terminate_process_group returns.
+        for _ in range(20):
+            try:
+                os.kill(child_pid, 0)
+                _time.sleep(0.05)
+            except ProcessLookupError:
+                break
+        else:
+            raise AssertionError(
+                f"child pid {child_pid} survived terminate_process_group "
+                f"(parent rc={parent_rc}); without start_new_session=True the "
+                f"child would orphan exactly like cargo-fuzz's fuzz binary"
+            )
+
+    def test_no_op_on_already_exited_process(self):
+        import asyncio
+
+        async def run():
+            proc = await asyncio.create_subprocess_exec(
+                "true",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            await proc.wait()
+            # Must not raise even though the PID's pgid lookup might fail.
+            await terminate_process_group(proc, grace=0.1)
+            return proc.returncode
+
+        assert asyncio.run(run()) == 0
