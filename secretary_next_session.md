@@ -194,8 +194,20 @@ candidates for an in-session pass.
 
 - **`hkdf` 0.12 internal HMAC state residue.** Documented as a
   SECURITY note in [core/src/crypto/kdf.rs:216-223](core/src/crypto/kdf.rs#L216-L223).
-  Out of our control until upstream `hkdf` ships zeroize support. Watch
-  upstream and re-evaluate when a new release lands.
+  Watched weekly by the
+  [hkdf upstream watch](https://claude.ai/code/routines/trig_017n4sRiiNRg9jMhQpCfM8Y1)
+  routine (Mondays 09:00 Australia/Perth). **Latest finding
+  (2026-05-02):** `hkdf` 0.13.0 (released 2026-03-30) does **not**
+  add zeroize support to internal HMAC state and does introduce a
+  breaking type rename (`Hkdf` → `GenericHkdf` with source-compat
+  type aliases); the carry-over remains open and the watch's
+  effective baseline is now "0.13.x or older without zeroize."
+  Complementary watch target flagged by the agent: the upstream
+  `hmac` crate (separate from `hkdf` but in the same RustCrypto
+  family — `hkdf` 0.13 bumped to `hmac` 0.13). Zeroize support
+  could in principle land in `hmac` first and flow through; if a
+  weekly run starts reporting churn there, consider adding a
+  parallel `hmac upstream watch` routine.
 
 ---
 
