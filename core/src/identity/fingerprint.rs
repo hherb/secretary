@@ -73,7 +73,7 @@ pub fn hex_form(fp: &Fingerprint) -> String {
         // A space appears before every byte whose pair starts a fresh 4-hex-char
         // group, except the first. Pairs sit in bytes (i = 0,1) (2,3) (4,5) ...
         // so a fresh group starts whenever i is even and i != 0.
-        if i != 0 && i % 2 == 0 {
+        if i != 0 && i.is_multiple_of(2) {
             out.push(' ');
         }
         // Two hex digits per byte; lowercase per §6.1.

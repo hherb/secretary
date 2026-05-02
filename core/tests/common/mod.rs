@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer};
 /// Decode a hex string to `Vec<u8>`. Lowercase or uppercase; rejects
 /// odd-length or non-hex characters with a descriptive error.
 pub fn hex(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(format!("odd-length hex string ({} chars)", s.len()));
     }
     let mut out = Vec::with_capacity(s.len() / 2);

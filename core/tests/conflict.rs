@@ -485,7 +485,7 @@ fn parse_unknown_map(spec: &serde_json::Value) -> BTreeMap<String, UnknownValue>
         for (key, val) in map {
             let hex = val.as_str().expect("unknown_hex value is a hex string");
             assert!(
-                hex.len() % 2 == 0,
+                hex.len().is_multiple_of(2),
                 "unknown_hex value for key {key:?} has odd length {} \
                  (hex must encode whole bytes)",
                 hex.len()
