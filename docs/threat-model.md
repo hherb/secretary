@@ -80,13 +80,14 @@ For each adversary above, the table below lists the attack and the specific defe
 | Substitute an older valid block file (rollback at block level) | Per-block fingerprint in the signed manifest binds the manifest's view of the block to specific bytes. An older block's bytes have an older fingerprint; manifest signature fails. |
 | Substitute an older valid manifest (rollback at manifest level) | Each device maintains an OS-local "highest vector clock seen" per vault. A manifest whose vector clock is component-wise dominated by the highest-seen state is rejected. Concurrent (incomparable) manifests trigger merge rather than rejection. |
 | Replay an old shared block in a shared folder | Shared blocks carry a vector clock; recipient compares against the highest version of that block they have ever processed and rejects strict regressions. |
+| Resurrect a tombstoned record by replaying a *concurrent* block containing stale field values | Per-record death clock (`tombstoned_at_ms`, §11.3 of crypto-design.md) closes the staleness gap: the merge layer drops every field whose `last_mod_ms ≤ tombstoned_at_ms` from the merged record, regardless of which side of a concurrent merge it arrived on. A malicious peer cannot un-delete a record by shipping a concurrent block with field timestamps predating the deletion. The death-clock itself propagates via lattice join (`max`), so it survives further merges and resurrections. |
 
 ### 3.2 Possessor of a locked device
 
 | Attack | Defense |
 |---|---|
 | Read vault files directly | Files are encrypted at rest; the master password is required (or recovery mnemonic). |
-| Brute-force the master password | Argon2id with m=256 MiB, t=3, p=1 makes each guess expensive in both time and memory. The work factor is calibrated so a consumer-GPU brute force is far slower than online password reset would be. |
+| Brute-force the master password | Argon2id at the v1 default of m=256 MiB, t=3, p=1 (`Argon2idParams::V1_DEFAULT`) makes each guess expensive in both time and memory. The work factor is calibrated so a consumer-GPU brute force is far slower than online password reset would be. The v1 *floor* — `V1_MIN_MEMORY_KIB = 64 MiB`, iterations ≥ 1, parallelism ≥ 1 — is **enforced as a typed error** (`UnlockError::WeakKdfParams`) at `open_with_password` time, so a tampered `vault.toml` cannot silently downgrade the cost; opening errors before any KDF runs. The KDF parameters are recorded cleartext in `vault.toml` (intentional — the cross-language verifier needs them to reproduce the derivation, and the values do not leak useful information beyond the work factor). |
 | Extract a cached identity key from OS keystore | The OS keystore caches only the *Identity Block Key*, not the master password. The keystore entry is gated by biometric or hardware token (per platform). Defeating this requires OS-level compromise, which is out of scope. |
 | Swap files between two of the user's vaults | Each vault has a unique `vault_uuid` recorded in cleartext metadata (`vault.toml`) and reflected in the encrypted manifest. Mismatched UUIDs are rejected. |
 
