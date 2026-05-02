@@ -649,3 +649,32 @@ fn ml_kem_768_nist_encap_kat() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Newtype-level Zeroize discipline.
+//
+// `MlKem768Secret` wraps `SecretBytes`, which is itself `ZeroizeOnDrop`, so
+// the bytes are wiped on drop regardless. The newtype additionally derives
+// `Zeroize` / `ZeroizeOnDrop` so callers can wipe a still-live newtype value
+// programmatically (memory-hygiene-audit deferred-item #1). This test pins
+// that the derive reaches through to the inner bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ml_kem_768_secret_zeroize_clears_inner_bytes() {
+    use zeroize::Zeroize as _;
+
+    let mut sk = MlKem768Secret::from_bytes(&vec![0xAB; ML_KEM_768_SK_LEN])
+        .expect("2400-byte secret must construct");
+    assert!(
+        sk.expose().iter().any(|&b| b != 0),
+        "sanity: pre-zeroize bytes must not already be zero"
+    );
+
+    sk.zeroize();
+
+    assert!(
+        sk.expose().iter().all(|&b| b == 0),
+        "expected MlKem768Secret bytes to be zeroized after .zeroize()"
+    );
+}

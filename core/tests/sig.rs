@@ -487,3 +487,33 @@ fn ml_dsa_65_nist_siggen_kat() {
 /// `ml_dsa_65_nist_siggen_kat`. The crate stores sks as the 32-byte seed in
 /// production; this constant is the size the *NIST KAT* sks come in.
 const ML_DSA_65_EXPANDED_SK_LEN: usize = 4032;
+
+// ---------------------------------------------------------------------------
+// Newtype-level Zeroize discipline.
+//
+// `MlDsa65Secret` wraps `SecretBytes`, which is itself `ZeroizeOnDrop`, so the
+// bytes are wiped on drop regardless. The newtype additionally derives
+// `Zeroize` / `ZeroizeOnDrop` so callers can wipe a still-live newtype value
+// programmatically (memory-hygiene-audit deferred-item #1). This test pins
+// that the derive reaches through to the inner bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ml_dsa_65_secret_zeroize_clears_inner_bytes() {
+    use secretary_core::crypto::sig::MlDsa65Secret;
+    use zeroize::Zeroize as _;
+
+    let mut sk = MlDsa65Secret::from_bytes(&[0xAB; ML_DSA_65_SEED_LEN])
+        .expect("32-byte seed must construct");
+    assert!(
+        sk.expose().iter().any(|&b| b != 0),
+        "sanity: pre-zeroize bytes must not already be zero"
+    );
+
+    sk.zeroize();
+
+    assert!(
+        sk.expose().iter().all(|&b| b == 0),
+        "expected MlDsa65Secret bytes to be zeroized after .zeroize()"
+    );
+}

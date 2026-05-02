@@ -28,7 +28,7 @@ The "Verification" section (around line 375, especially the §15
 cross-language conformance contract) is the load-bearing part for
 Phase A.7.
 
-**Repo state at session start:** 430 tests pass + 6 ignored under
+**Repo state at session start:** 445 tests pass + 6 ignored under
 `cargo test --release --workspace`; clippy clean with `-D warnings`;
 `#![forbid(unsafe_code)]` crate-wide.
 
@@ -113,15 +113,7 @@ commits each:
    #10 / #11 but at the block level. Drop item #4 from the polishing
    doc in the same commit.
 
-3. **`MlDsa65Secret` / `MlKem768Secret` newtype `Zeroize`/`ZeroizeOnDrop`
-   derives.** Cosmetic gap from the memory-hygiene audit. Both
-   newtypes wrap `SecretBytes` (which IS zeroize-on-drop) so the
-   bytes correctly zeroize on drop, but `.zeroize()` isn't exposed
-   programmatically. Adding `#[derive(Zeroize, ZeroizeOnDrop)]` to
-   each (or annotating the inner field) would make the discipline
-   uniform across all secret-bearing newtypes.
-
-4. **Remaining Open Item 2 polishing** (3 items at
+3. **Remaining Open Item 2 polishing** (3 items at
    [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md)):
    - Replace `# type: ignore[arg-type]` in `py_merge_unknown_map`
      with an explicit `assert r_hex is not None`.
@@ -133,7 +125,7 @@ commits each:
 
    None are urgent; pick up when adjacent code is next touched.
 
-5. **A.7 doc consolidation.** The two internal-audit memos at
+4. **A.7 doc consolidation.** The two internal-audit memos at
    [docs/manual/contributors/](docs/manual/contributors/) read in
    isolation today. Worth a small `index.md` (or extending the
    existing primer index) that points at all three Phase A.7 outputs
@@ -210,7 +202,7 @@ candidates for an in-session pass.
 
 ## Current state at-a-glance
 
-- 430 tests pass + 6 ignored, clippy clean with `-D warnings`,
+- 445 tests pass + 6 ignored, clippy clean with `-D warnings`,
   `#![forbid(unsafe_code)]` crate-wide.
 - Phase A.7 internal track: ✅ all three passes closed
   (threat-model refresh, side-channel internal, memory-hygiene).
@@ -240,6 +232,15 @@ git log. The high-water marks:
 - **Phase A.7 user-facing primer + hardening guide**: PR #10
   (thirteen-chapter [cryptography primer](docs/manual/primer/cryptography/index.md)
   + [hardening guide](docs/manual/hardening-security.md)).
+- **Phase A.7 newtype-zeroize follow-up (2026-05-02)**: closed the
+  memory-hygiene audit's deferred-item #1 — `MlDsa65Secret` and
+  `MlKem768Secret` now `#[derive(Zeroize, ZeroizeOnDrop)]` so callers
+  can wipe a still-live newtype value programmatically. Inner
+  `SecretBytes` continues to zeroize on scope-end (idempotent with
+  the outer derive); change is purely additive on the public API. Two
+  integration tests added pinning `.zeroize()` clears the inner
+  bytes. Memory-hygiene memo updated; both originally-deferred items
+  at the type level are now closed.
 - **Phase A.7 internal audit track (2026-05-02)**:
   - Threat-model refresh: 4 divergences fixed (`c55ce3e`, `f65185d`,
     `10c4945`, `e4b3d9c`, `cb1a0b1`, `494b41a`) + §5 verification

@@ -76,9 +76,9 @@ defines the two secret-bearing wrappers used throughout the crate:
 |---|---|---|---|---|
 | `AeadKey` | `crypto::aead` | `Sensitive<[u8; 32]>` | inherits | ✓ |
 | `Ed25519Secret` | `crypto::sig` | `Sensitive<[u8; 32]>` | inherits | ✓ |
-| `MlDsa65Secret` | `crypto::sig` | tuple-struct wrapping `SecretBytes` | inner field drops + zeroizes | ✓ (see "deferred items" for newtype-`Zeroize` cosmetic gap) |
+| `MlDsa65Secret` | `crypto::sig` | tuple-struct wrapping `SecretBytes` | derives `Zeroize, ZeroizeOnDrop`; inner field drops + zeroizes (idempotent) | ✓ — derive added in follow-up pass; see "Resolved: newtype `Zeroize` / `ZeroizeOnDrop` derives" below. |
 | `X25519Secret` | `crypto::kem` | `Sensitive<[u8; 32]>` | inherits | ✓ |
-| `MlKem768Secret` | `crypto::kem` | tuple-struct wrapping `SecretBytes` | inner field drops + zeroizes | ✓ (same cosmetic gap as `MlDsa65Secret`) |
+| `MlKem768Secret` | `crypto::kem` | tuple-struct wrapping `SecretBytes` | derives `Zeroize, ZeroizeOnDrop`; inner field drops + zeroizes (idempotent) | ✓ — same follow-up as `MlDsa65Secret`. |
 | `Mnemonic` | `unlock::mnemonic` | `phrase: String` + `entropy: Sensitive<[u8; 32]>` | custom `Drop` zeroizes `phrase`; `entropy` inherits | ✓ |
 | `IdentityBundle` | `unlock::bundle` | four secret-key fields wrapped in `Sensitive` | implicit drop drops fields in source order; each `Sensitive` zeroizes | ✓ — custom redacting `Debug` at [bundle.rs:206-222](../../../core/src/unlock/bundle.rs#L206-L222); no `Clone`, no `PartialEq` |
 | `UnlockedIdentity` | `unlock::mod` | composes `Sensitive<[u8; 32]>` (IBK) + `IdentityBundle` | implicit drop | ✓ |
@@ -108,7 +108,9 @@ IdentityBundle (which zeroizes its four secret-key fields in turn). ✓
 
 `BlockPlaintext` does *not* hold a key — it holds `Vec<Record>`,
 which in turn holds `RecordField`s with `RecordFieldValue::{Text, Bytes}`.
-**The `Record` contents are not zeroized.** See "Deferred items" §1.
+The `Record` contents are now zeroized — `RecordFieldValue::{Text, Bytes}`
+wrap `SecretString` / `SecretBytes` since the follow-up pass. See
+"Resolved: record-content zeroize" below.
 
 ---
 
@@ -227,24 +229,28 @@ fields, or (b) a wrapping pre-pass that zeroizes the
 follow-ups; flagged here so the next reviewer doesn't read
 "resolved" as stronger than it is.
 
+## Resolved: newtype `Zeroize` / `ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
+
+The original audit deferred this as cosmetic: both newtypes wrap
+`SecretBytes` (which IS `Zeroize, ZeroizeOnDrop`), so the inner
+field's drop already zeroized the bytes. The gap was that neither
+newtype implemented `Zeroize` itself, so callers could not call
+`secret.zeroize()` on the outer type to wipe a still-live value
+before its scope ends.
+
+Resolved by adding `#[derive(Zeroize, ZeroizeOnDrop)]` to both
+newtype tuple-structs at
+[core/src/crypto/sig.rs](../../../core/src/crypto/sig.rs) and
+[core/src/crypto/kem.rs](../../../core/src/crypto/kem.rs). The inner
+`SecretBytes` field's drop continues to wipe the bytes on scope-end
+(idempotent with the outer derive); the new exposure is purely
+additive. Pinned by two integration tests at
+[core/tests/sig.rs](../../../core/tests/sig.rs) and
+[core/tests/kem.rs](../../../core/tests/kem.rs):
+`ml_dsa_65_secret_zeroize_clears_inner_bytes` and
+`ml_kem_768_secret_zeroize_clears_inner_bytes`.
+
 ## Deferred items (not addressed in this pass)
-
-### 1. Newtype `Zeroize`/`ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
-
-Both newtype tuple-structs wrap `SecretBytes`, which IS
-`Zeroize, ZeroizeOnDrop`. The inner field's drop runs and zeroizes,
-so **the bytes are correctly zeroized on drop**. But neither newtype
-exposes `.zeroize()` programmatically — a caller who wants to
-explicitly zero the secret before drop (e.g. before a long compute
-that holds the secret across an `await` in a Sub-project C async
-context) cannot call `secret.zeroize()` on the newtype.
-
-**Why deferred:** cosmetic. No current call site needs explicit
-`.zeroize()` on the newtype. Adding `#[derive(Zeroize,
-ZeroizeOnDrop)]` to the newtypes would require either making them
-`#[derive(Zeroize)]`-eligible (which the inner `SecretBytes` already
-is) or annotating the field. Pick up alongside any other newtype
-work.
 
 ### 3. HKDF internal state residue
 
