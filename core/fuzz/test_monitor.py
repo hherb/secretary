@@ -43,22 +43,48 @@ class TestParsePulseLine:
         # the prior fixture's "8.2k" wasn't a real libFuzzer-emitted form.
         line = "#1048576\tpulse  cov: 1247 ft: 2891 corp: 142/8Kb exec/s: 58000 rss: 124Mb"
         p = parse_pulse_line(line)
-        assert p == Pulse(exec_count=1048576, cov=1247, ft=2891, corp=142, exec_s=58000, rss=124)
+        assert p == Pulse(
+            exec_count=1048576, cov=1247, ft=2891, corp=142, exec_s=58000, rss=124,
+            event_type="pulse",
+        )
 
     def test_done_with_lim(self):
         line = "#1000\tDONE   cov: 714 ft: 978 corp: 61/147b lim: 4 exec/s: 0 rss: 46Mb"
         p = parse_pulse_line(line)
-        assert p == Pulse(exec_count=1000, cov=714, ft=978, corp=61, exec_s=0, rss=46)
+        assert p == Pulse(
+            exec_count=1000, cov=714, ft=978, corp=61, exec_s=0, rss=46,
+            event_type="DONE",
+        )
 
     def test_new_event(self):
         line = "#2000000\tNEW    cov: 80 ft: 80 corp: 4/15b exec/s: 60606 rss: 803Mb"
         p = parse_pulse_line(line)
-        assert p == Pulse(exec_count=2000000, cov=80, ft=80, corp=4, exec_s=60606, rss=803)
+        assert p == Pulse(
+            exec_count=2000000, cov=80, ft=80, corp=4, exec_s=60606, rss=803,
+            event_type="NEW",
+        )
 
     def test_inited(self):
         line = "#3\tINITED cov: 234 ft: 234 corp: 1/3989b exec/s: 0 rss: 41Mb"
         p = parse_pulse_line(line)
-        assert p == Pulse(exec_count=3, cov=234, ft=234, corp=1, exec_s=0, rss=41)
+        assert p == Pulse(
+            exec_count=3, cov=234, ft=234, corp=1, exec_s=0, rss=41,
+            event_type="INITED",
+        )
+
+    def test_event_type_distinguishes_pulse_from_change_events(self):
+        # Plateau detection consumes only pulse-type heartbeats; NEW /
+        # REDUCE / INITED / DONE / RELOAD must round-trip through the
+        # parser as their own event_type so the heartbeat filter at the
+        # call site sees the right discriminator.
+        events = {
+            "pulse": "#100\tpulse  cov: 1 ft: 1 corp: 1/1b exec/s: 1 rss: 1Mb",
+            "REDUCE": "#100\tREDUCE cov: 1 ft: 1 corp: 1/1b exec/s: 1 rss: 1Mb",
+            "RELOAD": "#100\tRELOAD cov: 1 ft: 1 corp: 1/1b exec/s: 1 rss: 1Mb",
+        }
+        for expected, line in events.items():
+            p = parse_pulse_line(line)
+            assert p is not None and p.event_type == expected, expected
 
     def test_corp_size_kilobyte_suffix(self):
         # Regression for #13: libFuzzer's PrintStats() emits the corp size as
@@ -186,6 +212,37 @@ class TestCheckPlateau:
         # Trivial case: K=1 means "no growth in last 1 pulse" — always trivially true.
         window = [self._pulse(100, 5)]
         assert check_plateau(window, k=1) is True
+
+    def test_heartbeat_filter_ignores_clustered_reduce_events(self):
+        # Regression for the "plateau fires too early" bug: during active
+        # corpus minimization libFuzzer emits a cluster of REDUCE lines
+        # at unchanged cov/corp within a few thousand execs, and a
+        # K=10 check that consumed every parsed event line would
+        # false-positive on that lull while the campaign was still
+        # finding new edges seconds later. The fix is to filter to
+        # `pulse`-type heartbeats at the call site (slow power-of-2
+        # cadence, designed by libFuzzer as a periodic monitoring signal)
+        # so the K-window can't be saturated by a coverage-stable burst.
+        same = dict(cov=100, ft=200, corp=5, exec_s=1000, rss=64)
+        reduces = [
+            Pulse(exec_count=65000 + i, event_type="REDUCE", **same)
+            for i in range(10)
+        ]
+        pulses = [
+            Pulse(exec_count=2 ** (14 + i), event_type="pulse", **same)
+            for i in range(10)
+        ]
+        # Pre-fix: a window of 10 REDUCEs satisfied check_plateau directly.
+        # check_plateau is unchanged (it's a pure cov/corp predicate);
+        # what changed is the *call site* filtering the input. Verify both
+        # sides of that contract.
+        assert check_plateau(reduces, k=10) is True
+        # Heartbeat filter applied — the REDUCE-only sequence has no
+        # heartbeats, so the filtered window is empty and plateau cannot fire.
+        heartbeats_from_reduces = [p for p in reduces if p.event_type == "pulse"]
+        assert check_plateau(heartbeats_from_reduces, k=10) is False
+        # 10 actual heartbeats with unchanged cov/corp -> plateau (legitimate).
+        assert check_plateau(pulses, k=10) is True
 
 
 from pathlib import Path

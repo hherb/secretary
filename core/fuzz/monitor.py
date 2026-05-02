@@ -35,6 +35,14 @@ class Pulse:
     """One libFuzzer telemetry record parsed from stderr.
 
     Captures only the fields the monitor needs:
+    - event_type: one of "pulse", "NEW", "REDUCE", "INITED", "DONE",
+      "RELOAD". Distinguishes libFuzzer's periodic heartbeat (`pulse`,
+      emitted at power-of-2 milestones independent of campaign progress)
+      from coverage-change notifications (`NEW`, `REDUCE`, ...). Plateau
+      detection consumes only `pulse` heartbeats — `REDUCE` events fire
+      in quick clusters during corpus minimization at unchanged cov/corp,
+      and 10 of them in a row would falsely satisfy a K=10 plateau check
+      while the campaign was still finding new edges.
     - exec_count: cumulative executions at this point.
     - cov: coverage edges hit.
     - ft: features hit (libFuzzer's coverage-with-cmp-args metric).
@@ -49,6 +57,7 @@ class Pulse:
     corp: int
     exec_s: int
     rss: int
+    event_type: str = "pulse"
 
 
 # Matches libFuzzer pulse-style stderr lines. Event types: pulse, NEW,
@@ -67,7 +76,7 @@ class Pulse:
 # until the user noticed). Reject anything else (e.g. "Gb", missing unit,
 # "1..5") so a corrupted log line can't masquerade as a valid pulse.
 _PULSE_RE = re.compile(
-    r"^#(?P<exec_count>\d+)\s+(?:pulse|NEW|REDUCE|INITED|DONE|RELOAD)\s+"
+    r"^#(?P<exec_count>\d+)\s+(?P<event_type>pulse|NEW|REDUCE|INITED|DONE|RELOAD)\s+"
     r"cov:\s+(?P<cov>\d+)\s+"
     r"ft:\s+(?P<ft>\d+)\s+"
     r"corp:\s+(?P<corp>\d+)/\d+(?:b|Kb|Mb)\s+"
@@ -89,6 +98,7 @@ def parse_pulse_line(line: str) -> Pulse | None:
         corp=int(m["corp"]),
         exec_s=int(m["exec_s"]),
         rss=int(m["rss"]),
+        event_type=m["event_type"],
     )
 
 
@@ -684,10 +694,22 @@ class MonitorApp:
                 # AND on stop_reason being unset (not already SIGTERM'd
                 # this run) avoids redundant signals and overwriting the
                 # original "plateau at exec N" reason.
+                #
+                # Filter to `pulse` event-type heartbeats only. libFuzzer
+                # also emits NEW / REDUCE / INITED / DONE / RELOAD events
+                # at every coverage delta or corpus minimization step;
+                # during active corpus minimization 10 REDUCE lines fire
+                # in quick succession at unchanged cov/corp, and a K=10
+                # plateau check that includes them would false-positive
+                # on a brief lull between coverage finds. The `pulse`
+                # event is the slow power-of-2 heartbeat libFuzzer emits
+                # specifically as a periodic monitoring signal — that's
+                # what the spec's "no growth across last K pulses" means.
+                heartbeats = [p for p in rs.pulses if p.event_type == "pulse"]
                 if (
                     proc.returncode is None
                     and rs.stop_reason is None
-                    and check_plateau(list(rs.pulses), self.plateau_k)
+                    and check_plateau(heartbeats, self.plateau_k)
                 ):
                     rs.stop_reason = f"plateau at exec {pulse.exec_count}"
                     # Fire-and-forget: terminate_process_group awaits the
@@ -810,12 +832,18 @@ class MonitorApp:
                 # sparkline wrapper's text-color class is replaced (not
                 # appended) for the same reason as status_label; the inline
                 # SVG inherits it via stroke="currentColor".
+                # Sparkline uses every parsed event for high-resolution cov
+                # trend (NEW deltas show up as visible steps). The dot
+                # strip uses pulse heartbeats only — same filter as the
+                # plateau check, so the K-1 dots reflect the same signal
+                # the auto-stop is watching.
                 cov_series = [p.cov for p in rs.pulses]
                 sparkline_html.set_content(render_sparkline_svg(cov_series, 280, 36))
                 sparkline_html.classes(replace=status_badge_class(rs.status))
+                heartbeats = [p for p in rs.pulses if p.event_type == "pulse"]
                 strip_html.set_content(
                     render_plateau_strip_svg(
-                        list(rs.pulses), self.plateau_k, frozen=rs.status != Status.RUNNING
+                        heartbeats, self.plateau_k, frozen=rs.status != Status.RUNNING
                     )
                 )
                 pulse_label.text = format_pulse_readout(
