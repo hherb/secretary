@@ -104,9 +104,9 @@ For each adversary above, the table below lists the attack and the specific defe
 
 | Attack | Defense |
 |---|---|
-| Cloud-folder host inserts a fake card | Cards are *not* auto-discovered from shared folders. The user must explicitly import each card via QR (in-person), file, or paste. The application offers no UI affordance for "import card found in shared folder." |
-| Email/messaging channel substitutes a card | The card is imported with verification state `unverified`. Sending a block to an `unverified` recipient produces a prominent UI warning. The user clears the warning by performing OOB verification: comparing the 12-word fingerprint mnemonic via a different channel (typically a phone call or in-person). |
-| Long-term key compromise of a contact | Cards are not auto-rotating in v1. If a contact's identity is compromised, the user removes the contact, and any future shares require a new (re-verified) card. Already-shared blocks remain readable to the compromised key — there is no v1 forward secrecy at the block level. (See §4.) |
+| Cloud-folder host inserts a fake card | Cards are *not* auto-discovered from shared folders. The Rust core exposes only `ContactCard::from_canonical_cbor` + `ContactCard::verify_self` — there is no "load card from shared-folder path" function in the public API. The platform UI (Sub-project D) is responsible for ensuring import is always an explicit user action via QR (in-person), file, or paste. |
+| Email/messaging channel substitutes a card | The Rust core verifies the card's hybrid self-signature (`ContactCard::verify_self` enforces both Ed25519 and ML-DSA-65) and exposes the 12-word BIP-39-style fingerprint mnemonic (`fingerprint::mnemonic_form`) for OOB comparison via a different channel (phone call, in-person). The "verification state `unverified`" / "prominent UI warning" workflow is a Sub-project D (platform UI) concern; v1 Rust core does not persist trust state. |
+| Long-term key compromise of a contact | Cards are not auto-rotating in v1. The Rust core's role is to verify self-signatures and produce fingerprint mnemonics; the contact-removal flow and "re-verified card required for future shares" policy are Sub-project D workflows. Already-shared blocks remain readable to the compromised key — no v1 forward secrecy at the block level (see §4). |
 
 ### 3.5 Format / protocol downgrade
 
