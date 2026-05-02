@@ -36,7 +36,9 @@ from monitor import (
 
 class TestParsePulseLine:
     def test_pulse_typical(self):
-        line = "#1048576\tpulse  cov: 1247 ft: 2891 corp: 142/8.2k exec/s: 58000 rss: 124Mb"
+        # libFuzzer emits the corp byte size as integer-only Kb (FuzzerLoop.cpp:341);
+        # the prior fixture's "8.2k" wasn't a real libFuzzer-emitted form.
+        line = "#1048576\tpulse  cov: 1247 ft: 2891 corp: 142/8Kb exec/s: 58000 rss: 124Mb"
         p = parse_pulse_line(line)
         assert p == Pulse(exec_count=1048576, cov=1247, ft=2891, corp=142, exec_s=58000, rss=124)
 
@@ -55,11 +57,25 @@ class TestParsePulseLine:
         p = parse_pulse_line(line)
         assert p == Pulse(exec_count=3, cov=234, ft=234, corp=1, exec_s=0, rss=41)
 
-    def test_corp_size_with_kilo_suffix(self):
-        line = "#16777216\tpulse  cov: 8500 ft: 14200 corp: 350/1.2Mb exec/s: 12500 rss: 256Mb"
+    def test_corp_size_kilobyte_suffix(self):
+        # Regression for #13: libFuzzer's PrintStats() emits the corp size as
+        # "<int>Kb" (FuzzerLoop.cpp:336-345) once corpus is between 16 KiB and
+        # 16 MiB. The original regex matched only "<float>k" (lowercase, no
+        # `b`), which libFuzzer never emits. The result was that 4 of 6 fuzz
+        # targets in this repo (corpus > 16 KiB but < 16 MiB) silently failed
+        # to parse — every pulse went to log_tail but never to rs.pulses, so
+        # both the live readout and plateau auto-stop got zero signal.
+        line = "#65536\tpulse  cov: 220 ft: 343 corp: 56/36Kb lim: 4096 exec/s: 174762 rss: 394Mb"
         p = parse_pulse_line(line)
-        assert p.corp == 350
-        assert p.exec_count == 16777216
+        assert p == Pulse(exec_count=65536, cov=220, ft=343, corp=56, exec_s=174762, rss=394)
+
+    def test_corp_size_megabyte_suffix(self):
+        # libFuzzer emits "<int>Mb" (integer mebibytes) once corpus >= 16 MiB;
+        # never a float as the previous test asserted. The integer-only form
+        # is documented at FuzzerLoop.cpp:343 (`Printf("/%zdMb", N >> 20)`).
+        line = "#16777216\tpulse  cov: 8500 ft: 14200 corp: 350/24Mb exec/s: 12500 rss: 256Mb"
+        p = parse_pulse_line(line)
+        assert p == Pulse(exec_count=16777216, cov=8500, ft=14200, corp=350, exec_s=12500, rss=256)
 
     def test_non_pulse_line_returns_none(self):
         assert parse_pulse_line("Done 100000 runs in 1 second(s)") is None

@@ -53,19 +53,23 @@ class Pulse:
 # Matches libFuzzer pulse-style stderr lines. Event types: pulse, NEW,
 # REDUCE, INITED, DONE, RELOAD. The `lim: N` field is optional.
 #
-# libFuzzer's ScaleBytes() emits the corp size as exactly one of:
-#   - "<int>b"      for sizes < 1 KiB                (e.g. "147b")
-#   - "<float>k"    for sizes < 1 MiB, no trailing b (e.g. "8.2k")
-#   - "<float>Mb"   for sizes >= 1 MiB               (e.g. "1.2Mb")
-# We tolerate either an integer or a single-decimal float in the k/Mb
-# variants for forward-compatibility with libFuzzer formatting changes,
-# but reject ill-formed sizes (e.g. "1..5", "1234" with no unit, "Gb")
-# so a corrupted log line can't silently masquerade as a valid pulse.
+# libFuzzer's PrintStats() (compiler-rt FuzzerLoop.cpp:336-345) emits the
+# corp byte size as exactly one of three integer-suffix forms:
+#   - "<int>b"     for sizes < 16 KiB              (e.g. "1914b")
+#   - "<int>Kb"    for sizes 16 KiB .. 16 MiB      (e.g. "36Kb", "521Kb")
+#   - "<int>Mb"    for sizes >= 16 MiB             (e.g. "24Mb")
+# All three are integer-only — libFuzzer never emits a float here. The
+# previous regex matched the fictional forms "<float>k" (no `b`) and
+# "<float>Mb", neither of which libFuzzer produces; the real "<int>Kb"
+# form was missing entirely. That dropped pulses for every target whose
+# corpus passed 16 KiB (issue #13: 4 of 6 targets silently observable-only
+# until the user noticed). Reject anything else (e.g. "Gb", missing unit,
+# "1..5") so a corrupted log line can't masquerade as a valid pulse.
 _PULSE_RE = re.compile(
     r"^#(?P<exec_count>\d+)\s+(?:pulse|NEW|REDUCE|INITED|DONE|RELOAD)\s+"
     r"cov:\s+(?P<cov>\d+)\s+"
     r"ft:\s+(?P<ft>\d+)\s+"
-    r"corp:\s+(?P<corp>\d+)/(?:\d+b|\d+(?:\.\d+)?(?:k|Mb))\s+"
+    r"corp:\s+(?P<corp>\d+)/\d+(?:b|Kb|Mb)\s+"
     r"(?:lim:\s+\d+\s+)?"
     r"exec/s:\s+(?P<exec_s>\d+)\s+"
     r"rss:\s+(?P<rss>\d+)Mb"
