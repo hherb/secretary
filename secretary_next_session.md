@@ -335,6 +335,16 @@ can begin. Open Items 1 and 2 are subsets; this is the rest.
 
 ### In-session (concrete entry points)
 
+- **Documentation pass — `docs/threat-model.md`** ✅ closed 2026-05-02.
+  Refreshed against the as-implemented surface; six commits
+  (`c55ce3e`, `f65185d`, `10c4945`, `e4b3d9c`, `cb1a0b1`, `494b41a`)
+  fixing four divergences and refreshing the §5 verification trace.
+  Detail in [What previous sessions delivered](#docs-threat-model-refresh--2026-05-02)
+  below. The two §6.1 / §6.2 spec-doc annotations that earlier
+  next-session files carried forward as "trivial doc tickets" turned
+  out to have been shipped in `c47c17c` (2026-04-28); the TODO
+  propagated through several next-session generations — surfaced and
+  removed 2026-05-02.
 - **Memory hygiene audit**. `zeroize` coverage on every secret type;
   `secrecy::Secret` typestate where it's load-bearing; drop ordering
   in `IdentityBundle`, `BlockPlaintext`, `Identity`. Especially the
@@ -342,25 +352,18 @@ can begin. Open Items 1 and 2 are subsets; this is the rest.
   approach: read each `core/src/{crypto,identity,unlock,vault}` module,
   produce a coverage table (`Type → has_zeroize / drop_order_safe /
   notes`), then commit small fixes per module.
-- **Documentation pass**. `docs/threat-model.md` updated to reference
-  the as-implemented surface (currently written from spec, not from
-  code — small gaps will have surfaced during PRs #3 / #5 / #7 / #9).
-  The two §6.1 / §6.2 spec-doc annotations that earlier next-session
-  files carried forward as "trivial doc tickets" turned out to have
-  been shipped in `c47c17c docs(vault-format): clarify §6.2 wrap_ct/
-  wrap_tag concat and §6.1/§4.1 sig_pq_len` (2026-04-28); the TODO
-  propagated through several next-session generations after the work
-  was already done — surfaced and removed 2026-05-02.
 - **Side-channel internal pass** (precursor to the paid review):
   enumerate the constant-time paths above, document current state vs.
   requirements (e.g. `subtle::ConstantTimeEq` adoption), flag gaps for
   the external reviewer to verify.
 
-**Smallest entry point** in this section is the threat-model doc
-update (read `docs/threat-model.md` against current code; capture
-gaps; commit). Memory hygiene is the next-biggest concrete
-deliverable — concrete, scoped, and produces both a coverage report
-and the small per-module fixes that follow from it.
+With the threat-model refresh closed, the **smallest remaining entry
+point** in this section is the side-channel internal pass — read the
+constant-time path list in §3.2/§3.3 of the threat model, walk the
+identified call sites in `core/src/{crypto,unlock,identity}`, and
+write a brief audit memo identifying gaps (e.g. `==` on a
+`Fingerprint` instead of `subtle::ConstantTimeEq`). Memory hygiene
+audit is the next-biggest in-session deliverable.
 
 End of Sub-project A: Rust core is feature-complete for v1, audited,
 and ready to be wrapped by FFI in Sub-project B (which then unblocks
@@ -382,6 +385,24 @@ the next PR they touch.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
   profiling shows it on a hot path. The merge primitives operate on
   already-decoded `Record`s.
+- **CLAUDE.md Argon2id wording.** Says "Argon2id at m=256 MiB, t=3,
+  p=1 — the v1 floor is enforced as a typed error." This conflates
+  the v1 *default* (`Argon2idParams::V1_DEFAULT = 256 MiB / 3 / 1`)
+  with the v1 *floor* (`V1_MIN_MEMORY_KIB = 64 MiB`); they are
+  different, and the threat-model now distinguishes them in §3.2.
+  Tighten the CLAUDE.md sentence next time CLAUDE.md is touched —
+  trivial wording fix, no code impact.
+- **Spec-doc test-name freshness.** Surfaced 2026-05-02: the §5
+  verification trace in `docs/threat-model.md` had drifted (4 stale
+  test names plus ~20 missing entries) because nothing prevented
+  rename-without-spec-update. A small mechanical CI check would catch
+  the drift early — extract every `` `<identifier>` `` mention from
+  `docs/*.md` whose pattern looks like a Rust function name, then
+  `grep -r` for it under `core/`. Anything that doesn't resolve is
+  either a stale spec citation or a test that was renamed without
+  thinking about the spec. Out of scope for Sub-project A unless the
+  next freshness check uncovers material drift; bundle into Sub-
+  project B's tooling once the Rust core is closed out.
 
 ---
 
@@ -510,3 +531,66 @@ detection, mypy stubs-missing silencing, KeyError regression fix.
   next-session files carried forward had already been shipped in
   `c47c17c` (2026-04-28); removed the stale references from Open
   Item 3 and Carry-overs in this file.
+
+### docs(threat-model): refresh — 2026-05-02
+
+Six commits closing the **Documentation pass** in-session entry of
+Open Item 3, surfaced four divergences between the threat-model
+document and the as-implemented surface, and refreshed the §5
+verification trace from 11 entries (with 4 stale test names) to ~30
+entries grouped by primitive KAT / composite invariant / vault
+format / CRDT / cross-language / fuzzing / structural.
+
+- `c55ce3e docs(threat-model): fix §3.5 mix-and-match suite ID claim
+  — v1 rejects, not allows`. The §3.5 row claimed mixed suite IDs
+  were "allowed by design (per-block suite IDs enable gradual
+  migration)". The implementation rejects any non-v1 suite_id at
+  parse time (`ManifestError::UnsupportedSuiteId` at
+  `core/src/vault/manifest.rs:705-706`; `BlockError::UnsupportedSuiteId`
+  block-side). The migration capability is real but reserved for
+  v2+; reframed the row to reflect v1's actual behaviour.
+- `f65185d docs(threat-model): scope §3.4 trust-state claims to
+  Sub-project D`. The §3.4 contact-card defenses referenced
+  "verification state `unverified`", "prominent UI warning", and
+  "user removes the contact" as if they were v1 invariants. They are
+  not — v1 Rust core exposes only `ContactCard::from_canonical_cbor`
+  + `verify_self` + 12-word fingerprint mnemonic; trust-state
+  persistence and the warning UI are Sub-project D responsibilities.
+  Reframed three rows to the actual core/UI boundary.
+- `10c4945 docs(threat-model): add §3.1 death-clock row + §3.2
+  Argon2id floor enforcement detail`. New §3.1 row crediting the
+  per-record `tombstoned_at_ms` death clock (PR #7 + #9, §11.3 of
+  crypto-design.md) as the defense against tombstone resurrection
+  via concurrent-stale-block replay; the existing rollback rows
+  cover block-level regressions but didn't enumerate this attack.
+  §3.2 Argon2id row now distinguishes the v1 *default* (256 MiB / 3
+  / 1, `V1_DEFAULT`) from the v1 *floor* (64 MiB,
+  `V1_MIN_MEMORY_KIB`); the floor is enforced as
+  `UnlockError::WeakKdfParams` at open time (was previously implicit
+  in the threat-model).
+- `e4b3d9c docs(threat-model): refresh §5 verification trace against
+  current code`. Four stale test names fixed; ~20 missing entries
+  added across 7 sections (Primitive KATs, Composite invariants,
+  Vault format invariants, CRDT merge invariants, §15 cross-language
+  conformance, Coverage-guided fuzzing, Structural invariants). All
+  cited names verified against `core/tests/` and `core/src/` before
+  commit. The display_name 4 KiB DoS cap (PR #11) is now traced;
+  conflict_kat (11 vectors), CRDT proptests (commutativity,
+  associativity, idempotence, well-formedness Property L),
+  golden_vault_001 + Python `conformance.py`, and the six fuzz
+  targets + their `must_not_panic` regression contract are all
+  newly traced. Each test name and KAT-file name in §5 is now a
+  contract; renaming requires a corresponding update to the trace.
+- `cb1a0b1 docs(threat-model): add §4.8 — v1 has no UI; workflow
+  defenses are Sub-project D` + `494b41a docs(threat-model): fix
+  §4.8 cross-references to §4.3 + §3.4 + §3.5`. Promoted the
+  Sub-project D scoping from inline §3.4 footnote to a top-level §4
+  known-limitation so a reader who stops at §4 sees the
+  core/UI-workflow boundary explicitly. The follow-up commit fixed
+  an awkward "row 4 of §3.1" cross-reference to point at the
+  correct §4 limitation 3 + §3.4 + §3.5.
+
+After this wave: 430 tests pass + 6 ignored. The threat-model now
+matches the as-implemented surface; subsequent material spec changes
+should re-run the §5 freshness check (see "Spec-doc test-name
+freshness" carry-over).
