@@ -362,7 +362,7 @@ class TestFinalizeTerminalStatus:
         status, reason, crash = finalize_terminal_status(
             rc=-15,  # SIGTERM
             stop_reason="plateau at exec 1048576",
-            crash_path=None,
+            finding=None,
             last_exec_count=1048576,
         )
         assert status == Status.PLATEAU
@@ -372,7 +372,7 @@ class TestFinalizeTerminalStatus:
     def test_clean_exit_is_cap_reached(self):
         # libFuzzer exits 0 only when its `-runs` cap fires.
         status, reason, crash = finalize_terminal_status(
-            rc=0, stop_reason=None, crash_path=None, last_exec_count=5_000_000
+            rc=0, stop_reason=None, finding=None, last_exec_count=5_000_000
         )
         assert status == Status.CAP_REACHED
         assert reason == "exit 0 (cap reached)"
@@ -382,11 +382,39 @@ class TestFinalizeTerminalStatus:
         from pathlib import Path
         artifact = Path("/tmp/crash-abc123.bin")
         status, reason, crash = finalize_terminal_status(
-            rc=77, stop_reason=None, crash_path=artifact, last_exec_count=42_000
+            rc=77, stop_reason=None, finding=(artifact, "crash"),
+            last_exec_count=42_000,
         )
         assert status == Status.CRASHED
         assert reason == "crash at exec 42000"
         assert crash == artifact
+
+    def test_oom_artifact_is_crashed_with_oom_reason(self):
+        # Regression for the "record/contact_card show DIED on empty-
+        # input OOM" symptom: libFuzzer writes OOM findings as `oom-*`
+        # artifacts, not `crash-*`. The previous _find_new_crash matched
+        # only crash-*, so OOMs fell through to the no-artifact branch
+        # and badged as DIED. _find_new_finding now reports the kind
+        # so the reason text says "oom" instead of "crash".
+        from pathlib import Path
+        artifact = Path("/tmp/oom-da39a3ee5e6b4b0d3255bfef95601890afd80709")
+        status, reason, crash = finalize_terminal_status(
+            rc=1, stop_reason=None, finding=(artifact, "oom"),
+            last_exec_count=18_500_000,
+        )
+        assert status == Status.CRASHED
+        assert reason == "oom at exec 18500000"
+        assert crash == artifact
+
+    def test_slow_unit_artifact_is_crashed_with_slow_unit_reason(self):
+        from pathlib import Path
+        artifact = Path("/tmp/slow-unit-abc.bin")
+        status, reason, crash = finalize_terminal_status(
+            rc=77, stop_reason=None, finding=(artifact, "slow-unit"),
+            last_exec_count=42_000,
+        )
+        assert status == Status.CRASHED
+        assert reason == "slow-unit at exec 42000"
 
     def test_crash_with_no_pulses_renders_question_mark(self):
         # If the subprocess crashed before emitting any pulse (e.g. instant
@@ -396,34 +424,34 @@ class TestFinalizeTerminalStatus:
         status, reason, _ = finalize_terminal_status(
             rc=77,
             stop_reason=None,
-            crash_path=Path("/tmp/crash-x.bin"),
+            finding=(Path("/tmp/crash-x.bin"), "crash"),
             last_exec_count=None,
         )
         assert status == Status.CRASHED
         assert reason == "crash at exec ?"
 
     def test_died_for_nonzero_exit_without_artifact(self):
-        # The headline regression for #15: an overnight subprocess that
-        # exited non-zero with no crash artifact previously became STOPPED
-        # ("user clicked Stop"), making auto-deaths read as user-initiated.
-        # finalize_terminal_status now returns DIED here so the badge can
-        # reflect "this fell over on its own and is worth investigating".
+        # An overnight subprocess that exited non-zero with no finding
+        # artifact previously became STOPPED ("user clicked Stop"),
+        # making auto-deaths read as user-initiated. finalize_terminal_status
+        # now returns DIED here so the badge can reflect "this fell over
+        # on its own and is worth investigating".
         status, reason, crash = finalize_terminal_status(
-            rc=1, stop_reason=None, crash_path=None, last_exec_count=999_999
+            rc=1, stop_reason=None, finding=None, last_exec_count=999_999
         )
         assert status == Status.DIED
-        assert reason == "exit code 1 (no crash artifact)"
+        assert reason == "exit code 1 (no finding artifact)"
         assert crash is None
 
     def test_died_negative_signal_exit(self):
         # `rc < 0` is Python's encoding of "killed by signal -rc"
-        # (e.g. -9 == SIGKILL by the OOM-killer). No crash artifact, no
+        # (e.g. -9 == SIGKILL by the OOM-killer). No finding artifact, no
         # plateau reason, no clean exit → DIED.
         status, reason, _ = finalize_terminal_status(
-            rc=-9, stop_reason=None, crash_path=None, last_exec_count=100
+            rc=-9, stop_reason=None, finding=None, last_exec_count=100
         )
         assert status == Status.DIED
-        assert reason == "exit code -9 (no crash artifact)"
+        assert reason == "exit code -9 (no finding artifact)"
 
 
 class TestRunState:

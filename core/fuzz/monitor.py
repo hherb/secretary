@@ -466,7 +466,7 @@ def render_log_tail_html(lines, max_height_rem: float = 8.0) -> str:
 def finalize_terminal_status(
     rc: int,
     stop_reason: str | None,
-    crash_path: Path | None,
+    finding: tuple[Path, str] | None,
     last_exec_count: int | None,
 ) -> tuple[Status, str, Path | None]:
     """Resolve the terminal Status when a non-user-stopped subprocess exits.
@@ -475,6 +475,11 @@ def finalize_terminal_status(
     `(status, stop_reason, crash_path)` so the caller can apply all three
     on the RunState atomically.
 
+    `finding` is `(path, kind)` where kind is one of "crash" / "oom" /
+    "slow-unit" — every libFuzzer finding (not only crashes) flips
+    status to CRASHED so an OOM or slow-unit doesn't get the DIED
+    "subprocess died unexpectedly" badge.
+
     Branches:
       - `stop_reason` already mentions plateau -> PLATEAU (the stderr reader
         sets this before SIGTERM-ing the subprocess; preserve the original
@@ -482,21 +487,21 @@ def finalize_terminal_status(
         exit-code line).
       - `rc == 0` -> CAP_REACHED (libFuzzer exits cleanly only when its
         `-runs` cap fires; spec § "auto-stop signals").
-      - `crash_path` is set -> CRASHED.
+      - `finding` is set -> CRASHED, with the kind in the reason text.
       - otherwise -> DIED. Distinct from STOPPED so an overnight run that
         died on its own (build corruption, OOM-killer, ENOSPC, an external
         SIGKILL from outside the monitor, etc.) doesn't badge as
-        "user stopped" — the user has no UI signal that the campaign
-        failed unexpectedly when both look identical (issue #15).
+        "user stopped".
     """
     if stop_reason and stop_reason.startswith("plateau"):
         return Status.PLATEAU, stop_reason, None
     if rc == 0:
         return Status.CAP_REACHED, "exit 0 (cap reached)", None
-    if crash_path is not None:
+    if finding is not None:
+        path, kind = finding
         last = last_exec_count if last_exec_count is not None else "?"
-        return Status.CRASHED, f"crash at exec {last}", crash_path
-    return Status.DIED, f"exit code {rc} (no crash artifact)", None
+        return Status.CRASHED, f"{kind} at exec {last}", path
+    return Status.DIED, f"exit code {rc} (no finding artifact)", None
 
 
 @dataclass
@@ -733,31 +738,48 @@ class MonitorApp:
             # is already set — keeps the frozen `elapsed:` label accurate
             # to the actual exit moment instead of ~1 s late.
             rs.stopped_at = time.monotonic()
-            crash = (
-                self._find_new_crash(target, since=rs.started_at_wall)
+            finding = (
+                self._find_new_finding(target, since=rs.started_at_wall)
                 if rc != 0
                 else None
             )
             last_exec = rs.pulses[-1].exec_count if rs.pulses else None
             status, reason, crash_path = finalize_terminal_status(
-                rc, rs.stop_reason, crash, last_exec
+                rc, rs.stop_reason, finding, last_exec
             )
             rs.status = status
             rs.stop_reason = reason
             rs.crash_path = crash_path
 
-    def _find_new_crash(self, target: str, since: float) -> Path | None:
-        """Look for crash-* files in artifacts/<target>/ modified after `since`."""
+    def _find_new_finding(
+        self, target: str, since: float
+    ) -> tuple[Path, str] | None:
+        """Look for any libFuzzer finding artifact (crash / oom / slow-unit)
+        in artifacts/<target>/ modified after `since`. Returns the newest
+        artifact's `(path, kind)` or None.
+
+        The previous version only matched `crash-*`, which classified
+        OOM-on-empty-input findings (libFuzzer writes them as `oom-*`)
+        as DIED — the "subprocess died unexpectedly" badge — instead of
+        as a real finding worth investigating. Slow-unit findings had
+        the same problem. `categorize_artifact` already knows the three
+        prefixes for the global findings tally; this reuses it so the
+        per-card and global counters agree on what counts as a finding.
+        """
         artifacts_dir = _FUZZ_DIR / "artifacts" / target
         if not artifacts_dir.is_dir():
             return None
-        crashes = [
-            p for p in artifacts_dir.iterdir()
-            if p.is_file() and p.name.startswith("crash-") and p.stat().st_mtime > since
-        ]
-        if not crashes:
+        candidates: list[tuple[Path, str]] = []
+        for p in artifacts_dir.iterdir():
+            if not p.is_file() or p.stat().st_mtime <= since:
+                continue
+            kind = categorize_artifact(p.name)
+            if kind is not None:
+                candidates.append((p, kind))
+        if not candidates:
             return None
-        return max(crashes, key=lambda p: p.stat().st_mtime)
+        newest = max(candidates, key=lambda item: item[0].stat().st_mtime)
+        return newest
 
     async def stop_run(self, target: str, sanitizer: str) -> None:
         """SIGTERM the subprocess group; SIGKILL fallback after grace period."""
@@ -879,7 +901,13 @@ class MonitorApp:
                 # ticks. Idempotent for CSS, but it makes the rendered
                 # element ugly to inspect and obscures real class drift.
                 if rs.status == Status.CRASHED and rs.crash_path:
-                    crash_label.text = f"CRASH: {rs.crash_path}"
+                    # Pull the artifact kind from the filename via the
+                    # same helper the global findings tally uses, so the
+                    # badge text reflects "OOM" / "slow-unit" / "crash"
+                    # rather than always saying CRASH for what might be
+                    # a benign OOM on the empty input.
+                    kind = categorize_artifact(rs.crash_path.name) or "finding"
+                    crash_label.text = f"{kind.upper()}: {rs.crash_path}"
                     crash_label.classes(replace="text-red-600")
                 else:
                     crash_label.text = ""
