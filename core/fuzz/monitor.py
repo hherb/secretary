@@ -26,6 +26,8 @@ from pathlib import Path
 
 from nicegui import ui
 
+from chart import render_plateau_strip_svg, render_sparkline_svg
+
 
 @dataclass(frozen=True)
 class Pulse:
@@ -636,6 +638,12 @@ class MonitorApp:
                 value=str(prefill) if prefill else "",
             ).props("dense")
             status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
+            # Sparkline wrapper: its `text-...` class drives the SVG's
+            # `currentColor` stroke, so the polyline picks up the same
+            # status palette as `status_label` (positive/grey-7/...) without
+            # reaching into chart.py with a per-status arg.
+            sparkline_html = ui.html("").classes(status_badge_class(Status.IDLE))
+            strip_html = ui.html("")
             pulse_label = ui.label(format_pulse_readout(None)).classes("text-mono text-sm")
             elapsed_label = ui.label("elapsed: —").classes("text-mono text-sm")
             progress_label = ui.label("runs: —").classes("text-mono text-sm")
@@ -656,6 +664,18 @@ class MonitorApp:
                 # Replace, don't append — repeated appends would accumulate
                 # stale classes across status transitions.
                 status_label.classes(replace=status_badge_class(rs.status))
+                # Sparkline + dot strip share the same per-card tick. The
+                # sparkline wrapper's text-color class is replaced (not
+                # appended) for the same reason as status_label; the inline
+                # SVG inherits it via stroke="currentColor".
+                cov_series = [p.cov for p in rs.pulses]
+                sparkline_html.set_content(render_sparkline_svg(cov_series, 280, 36))
+                sparkline_html.classes(replace=status_badge_class(rs.status))
+                strip_html.set_content(
+                    render_plateau_strip_svg(
+                        list(rs.pulses), self.plateau_k, frozen=rs.status != Status.RUNNING
+                    )
+                )
                 pulse_label.text = format_pulse_readout(
                     rs.pulses[-1] if rs.pulses else None
                 )

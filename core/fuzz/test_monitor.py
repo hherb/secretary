@@ -6,8 +6,11 @@ Run from the repo root:
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+
 import pytest
 
+from chart import render_plateau_strip_svg, render_sparkline_svg
 from monitor import (
     Pulse,
     RunState,
@@ -347,6 +350,226 @@ class TestEffectiveSanitizerKey:
         for s in (Status.RUNNING, Status.PLATEAU, Status.CAP_REACHED,
                   Status.CRASHED, Status.STOPPED):
             assert effective_sanitizer_key("both", s) == "ubsan", s.name
+
+
+def _svg_root(svg_text: str) -> ET.Element:
+    """Parse an SVG string. Strips XML namespace prefix from the tag so the
+    test assertions can use bare tag names like 'polyline' / 'circle' without
+    juggling '{http://www.w3.org/2000/svg}polyline'."""
+    root = ET.fromstring(svg_text)
+    for el in root.iter():
+        if "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
+    return root
+
+
+def _polyline_points(root: ET.Element) -> list[tuple[float, float]]:
+    pl = root.find("polyline")
+    assert pl is not None, "expected one <polyline>"
+    return [
+        (float(x), float(y))
+        for token in pl.attrib["points"].split()
+        for x, y in [token.split(",")]
+    ]
+
+
+class TestRenderSparklineSvg:
+    """Inline SVG cov sparkline. Pure function: deterministic SVG string from a
+    deque of cov values + width/height. No NiceGUI, no I/O — covers the visual
+    'is cov still climbing?' question for the per-card live view."""
+
+    W = 280
+    H = 36
+
+    def test_empty_returns_empty_svg(self):
+        svg = render_sparkline_svg([], self.W, self.H)
+        root = _svg_root(svg)
+        assert root.find("polyline") is None
+        assert root.find("circle") is None
+
+    def test_single_value_renders_dot(self):
+        svg = render_sparkline_svg([100], self.W, self.H)
+        root = _svg_root(svg)
+        circles = root.findall("circle")
+        assert len(circles) == 1
+        # Anchored to the right edge so the lone sample reads as "newest".
+        cx = float(circles[0].attrib["cx"])
+        assert cx > self.W - 5
+
+    def test_two_growing_values_polyline_rises(self):
+        # In SVG, y grows downward — a rising cov series produces *decreasing*
+        # y values. Verifying the orientation guards against an accidental sign
+        # flip in the y-mapping.
+        svg = render_sparkline_svg([100, 200], self.W, self.H)
+        pts = _polyline_points(_svg_root(svg))
+        assert len(pts) == 2
+        assert pts[0][1] > pts[1][1], (
+            f"rising cov should produce decreasing SVG y; got {pts}"
+        )
+
+    def test_flat_values_render_centered_line(self):
+        # All-equal series collapses pad math (range=0); the line is forced to
+        # the vertical centre rather than dividing by zero.
+        svg = render_sparkline_svg([100, 100, 100], self.W, self.H)
+        pts = _polyline_points(_svg_root(svg))
+        assert len(pts) == 3
+        for _, y in pts:
+            assert y == pytest.approx(self.H / 2, abs=0.5)
+
+    def test_y_axis_padded_so_extremes_not_flush(self):
+        # 10% padding on top and bottom: lowest data point is not at y=H-1,
+        # highest is not at y=0. Without padding a campaign that's plateauing
+        # would render a polyline glued to the canvas edge — visually
+        # indistinguishable from a flat-line render.
+        svg = render_sparkline_svg([100, 200], self.W, self.H)
+        pts = _polyline_points(_svg_root(svg))
+        ys = [y for _, y in pts]
+        assert min(ys) > 1, f"top point should not be flush against y=0: {ys}"
+        assert max(ys) < self.H - 2, (
+            f"bottom point should not be flush against y=H-1: {ys}"
+        )
+
+    def test_x_axis_evenly_spaced(self):
+        # Uniform x spacing reads cleaner than data-driven spacing for libFuzzer
+        # pulses (whose exec_count grows in powers of 2). The x axis is "pulse
+        # slot index", not exec count.
+        svg = render_sparkline_svg([10, 20, 30, 40, 50], self.W, self.H)
+        pts = _polyline_points(_svg_root(svg))
+        xs = [x for x, _ in pts]
+        gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+        for g in gaps:
+            assert g == pytest.approx(gaps[0], abs=0.5), f"uneven x spacing: {gaps}"
+
+
+def _classify_dot(circle: ET.Element) -> str:
+    """Map a dot-strip <circle> to its semantic state by inspecting style.
+    Decoupled from exact color hex strings so a future palette tweak doesn't
+    cascade across every test assertion."""
+    fill = circle.attrib.get("fill", "")
+    if fill == "none":
+        return "outline"
+    if "16a34a" in fill.lower():
+        return "growth"
+    if "9ca3af" in fill.lower():
+        return "flat"
+    raise AssertionError(f"unexpected dot styling: {circle.attrib}")
+
+
+def _strip_dots(svg_text: str) -> list[str]:
+    root = _svg_root(svg_text)
+    return [_classify_dot(c) for c in root.findall("circle")]
+
+
+def _make_pulse(exec_count: int, cov: int, corp: int) -> "Pulse":
+    """Pulse with sane non-plateau-relevant fields. ft and exec_s and rss
+    don't drive plateau detection — set to placeholders so the tests stay
+    focused on the cov/corp dimensions that the dot strip cares about."""
+    return Pulse(
+        exec_count=exec_count, cov=cov, ft=cov, corp=corp, exec_s=1000, rss=64
+    )
+
+
+class TestRenderPlateauStripSvg:
+    """Plateau dot strip. K-1 transition dots, newest right. Strip-all-grey
+    is exactly the plateau condition (last K pulses share same cov AND corp).
+    Empty/outline dots fill the leftmost slots when fewer than K pulses
+    exist yet, so the strip still occupies its full width."""
+
+    K = 10
+    W = 280
+
+    def test_empty_pulses_all_outline(self):
+        # No pulses yet → strip occupies its slot but communicates "nothing
+        # to compare". All K-1 dots render as outlines.
+        dots = _strip_dots(render_plateau_strip_svg([], self.K, frozen=False))
+        assert dots == ["outline"] * (self.K - 1)
+
+    def test_partial_history_remaining_outline(self):
+        # 3 pulses, K=10 → only the rightmost 2 transitions are paintable
+        # (pulses[-3]→[-2] and pulses[-2]→[-1]); the 7 leftward slots stay
+        # outline-only since their pulse pair doesn't exist yet.
+        pulses = [
+            _make_pulse(1, 10, 1),
+            _make_pulse(2, 20, 2),
+            _make_pulse(4, 30, 3),
+        ]
+        dots = _strip_dots(render_plateau_strip_svg(pulses, self.K, frozen=False))
+        assert dots == ["outline"] * 7 + ["growth", "growth"]
+
+    def test_full_growth_window_all_green(self):
+        # 10 strictly-increasing pulses → 9 green dots. This is the
+        # "campaign is healthy" baseline: nothing flat, plateau distant.
+        pulses = [_make_pulse(2 ** i, 10 + i, 1 + i) for i in range(10)]
+        dots = _strip_dots(render_plateau_strip_svg(pulses, self.K, frozen=False))
+        assert dots == ["growth"] * 9
+
+    def test_full_plateau_window_all_grey(self):
+        # 10 pulses with constant cov AND corp → 9 grey dots. This is
+        # *exactly* the plateau condition the detector uses; the strip
+        # going all-grey must coincide with `check_plateau` returning True.
+        pulses = [_make_pulse(2 ** i, 100, 5) for i in range(10)]
+        dots = _strip_dots(render_plateau_strip_svg(pulses, self.K, frozen=False))
+        assert dots == ["flat"] * 9
+
+    def test_one_increase_at_left_boundary(self):
+        # Leftmost transition grew, rest flat → leftmost dot green, 8 grey.
+        # Verifies dot ordering (leftmost = oldest transition, rightmost =
+        # newest) is the user-intuitive "history flows left to right".
+        pulses = [_make_pulse(1, 100, 5)]
+        pulses.append(_make_pulse(2, 110, 6))  # growth here
+        for i in range(2, 10):
+            pulses.append(_make_pulse(2 ** i, 110, 6))  # all flat after
+        dots = _strip_dots(render_plateau_strip_svg(pulses, self.K, frozen=False))
+        assert dots == ["growth"] + ["flat"] * 8
+
+    def test_corp_growth_alone_counts_as_growth(self):
+        # Plateau definition is "cov AND corp both flat", so corp growing
+        # alone breaks the plateau and should show as growth — not flat.
+        # Without this rule, a corpus minimization step could mask an
+        # otherwise-active campaign.
+        pulses = [_make_pulse(2 ** i, 100, 5 + i) for i in range(10)]
+        dots = _strip_dots(render_plateau_strip_svg(pulses, self.K, frozen=False))
+        assert dots == ["growth"] * 9
+
+    @pytest.mark.parametrize("k", [2, 5, 10, 20])
+    def test_dot_count_equals_k_minus_one(self, k):
+        dots = _strip_dots(render_plateau_strip_svg([], k, frozen=False))
+        assert len(dots) == k - 1
+
+
+class TestChartIntegrationWithMonitorApp:
+    """Smoke test that the same code path executed by `update_card` runs
+    end-to-end against a live `MonitorApp` instance — including the
+    'both' meta-option remap that previously KeyError'd. Doesn't render
+    NiceGUI elements; verifies the data plumbing (effective_sanitizer_key
+    → self.runs lookup → render_*_svg) works on a populated RunState."""
+
+    def test_both_radio_through_chart_renderers_no_keyerror(self):
+        from monitor import MonitorApp
+
+        app = MonitorApp(["t1"])
+        rs = app.runs[("t1", "asan")]
+        for i in range(5):
+            rs.pulses.append(_make_pulse(2 ** i, 100 + i, 1 + i))
+
+        # Mirror update_card: resolve "both" → effective key, look up rs,
+        # render. If the key remap regressed, this raises KeyError.
+        key = effective_sanitizer_key("both", app.runs[("t1", "ubsan")].status)
+        live = app.runs[("t1", key)]
+        cov_series = [p.cov for p in live.pulses]
+
+        sparkline_svg = render_sparkline_svg(cov_series, 280, 36)
+        strip_svg = render_plateau_strip_svg(
+            list(live.pulses), app.plateau_k, frozen=False
+        )
+
+        # Sanity-check both outputs parse and contain content matching the
+        # populated state (one polyline, partial-fill dot strip with 4
+        # right-aligned growth dots inside otherwise-outline slots).
+        assert _svg_root(sparkline_svg).find("polyline") is not None
+        dots = _strip_dots(strip_svg)
+        assert dots[-4:] == ["growth"] * 4
+        assert all(d == "outline" for d in dots[:-4])
 
 
 class TestFormatPulseReadout:
