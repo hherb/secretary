@@ -345,25 +345,24 @@ can begin. Open Items 1 and 2 are subsets; this is the rest.
   out to have been shipped in `c47c17c` (2026-04-28); the TODO
   propagated through several next-session generations — surfaced and
   removed 2026-05-02.
+- **Side-channel internal pass** ✅ closed 2026-05-02. Audit memo at
+  [docs/manual/contributors/side-channel-audit-internal.md](docs/manual/contributors/side-channel-audit-internal.md).
+  No bugs in our code; all CT-sensitive comparisons delegate to
+  upstream RustCrypto crates. One concrete hardening item applied:
+  doc-comment on `Fingerprint = [u8; 16]` explaining it's a public
+  value by design (commit `e921e99`). Detail in
+  [What previous sessions delivered](#docs-side-channel-audit-internal--2026-05-02)
+  below.
 - **Memory hygiene audit**. `zeroize` coverage on every secret type;
   `secrecy::Secret` typestate where it's load-bearing; drop ordering
   in `IdentityBundle`, `BlockPlaintext`, `Identity`. Especially the
   paths that hold a secret across an `?` propagation site. Suggested
   approach: read each `core/src/{crypto,identity,unlock,vault}` module,
   produce a coverage table (`Type → has_zeroize / drop_order_safe /
-  notes`), then commit small fixes per module.
-- **Side-channel internal pass** (precursor to the paid review):
-  enumerate the constant-time paths above, document current state vs.
-  requirements (e.g. `subtle::ConstantTimeEq` adoption), flag gaps for
-  the external reviewer to verify.
-
-With the threat-model refresh closed, the **smallest remaining entry
-point** in this section is the side-channel internal pass — read the
-constant-time path list in §3.2/§3.3 of the threat model, walk the
-identified call sites in `core/src/{crypto,unlock,identity}`, and
-write a brief audit memo identifying gaps (e.g. `==` on a
-`Fingerprint` instead of `subtle::ConstantTimeEq`). Memory hygiene
-audit is the next-biggest in-session deliverable.
+  notes`), then commit small fixes per module. **This is now the
+  smallest remaining in-session entry point** — also the largest
+  concrete deliverable left in Open Item 3 before the paid external
+  reviews kick in.
 
 End of Sub-project A: Rust core is feature-complete for v1, audited,
 and ready to be wrapped by FFI in Sub-project B (which then unblocks
@@ -587,3 +586,58 @@ After this wave: 430 tests pass + 6 ignored. The threat-model now
 matches the as-implemented surface; subsequent material spec changes
 should re-run the §5 freshness check (see "Spec-doc test-name
 freshness" carry-over).
+
+### docs(side-channel-audit-internal) — 2026-05-02
+
+`e921e99 docs: side-channel internal audit + Fingerprint type-alias
+doc-comment` — closes Open Item 3's **Side-channel internal pass**
+in-session entry. Walks every constant-time-sensitive call site
+flagged in threat-model §3.2/§3.3, identifies the upstream primitive
+providing CT discipline, and writes the findings to a contributor-
+facing memo at
+[docs/manual/contributors/side-channel-audit-internal.md](docs/manual/contributors/side-channel-audit-internal.md).
+
+Findings (all "no bug, but worth flagging"):
+
+- AEAD verify-then-decap → `chacha20poly1305 = "0.10"` (RustCrypto;
+  Poly1305 tag verify uses `subtle::ConstantTimeEq` internally).
+- Hybrid signature verify → `ed25519-dalek = "2.2"` then
+  `ml-dsa = "0.1.0-rc.8"` with `?` propagation between halves; early-
+  return-on-Ed25519-fail is intentional and documented at the module
+  level (signed messages, signatures, and verification keys are all
+  public values).
+- Hybrid KEM decap → X25519 + ML-KEM-768 both run unconditionally;
+  AEAD MAC verify is the implicit-rejection check; intermediate
+  buffers (`ikm`, `okm`, stack-copy `key`, `ss_pq_bytes`, `k`) are
+  explicitly zeroized.
+- Fingerprint `==` → intentional non-CT; fingerprints are public
+  values appearing cleartext in the recipient table and manifest
+  signed-headers. A timing leak reveals nothing the attacker cannot
+  read off the cloud-folder copy.
+- Argon2id unlock path → no equality comparison anywhere; the
+  "wrong password" check is AEAD MAC verify on `wrap_pw` (CT in
+  `chacha20poly1305`); v1 floor enforced as typed
+  `UnlockError::WeakKdfParams` *before* any KDF runs.
+- `subtle = "2"` is a direct dependency; the only API surface is
+  `Sensitive<T>::ct_eq`. Zero production call sites by design — the
+  verify-then-decap pattern means the codebase never has a "compare
+  two secret byte strings" moment outside of AEAD MAC verify.
+
+Principal output: a list of upstream-crate assumptions for the
+external reviewer to verify, particularly `ml-dsa = "0.1.0-rc.8"`
+where pre-1.0 hardening expectations are weaker than for an
+established crate.
+
+One concrete hardening item applied alongside the memo:
+doc-comment on `Fingerprint = [u8; 16]` at
+[core/src/identity/fingerprint.rs:35](core/src/identity/fingerprint.rs#L35)
+explaining it's a public value *by design* (in contrast to
+`Sensitive<[u8; 16]>` which would wrap a secret), with a pointer
+to the audit memo's §4 for the full reasoning. Future contributors
+who arrive at a `==` comparison on a `Fingerprint` see immediately
+why non-CT is intentional.
+
+After this commit: 430 tests pass + 6 ignored, clippy clean with
+`-D warnings`. Side-channel internal pass is now ✅ closed; the
+remaining in-session A.7 entry point is the **memory-hygiene
+audit**.
