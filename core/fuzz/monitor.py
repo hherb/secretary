@@ -25,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import ui  # type: ignore[import-not-found]  # third-party, resolved at `uv run` time
 
 from chart import render_plateau_strip_svg, render_sparkline_svg
 

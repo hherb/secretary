@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-import pytest
+import pytest  # type: ignore[import-not-found]  # test-only, resolved via `uv run --with pytest`
 
 from chart import render_plateau_strip_svg, render_sparkline_svg
 from monitor import (
