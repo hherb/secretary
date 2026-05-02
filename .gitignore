@@ -236,3 +236,11 @@ __marimo__/
 # branch checkout; the directory should not appear in main's tree.
 .worktrees/
 
+# Playwright MCP cache — local browser automation state, not source.
+.playwright-mcp/
+
+# Monitor smoke-test screenshots — eyeballed during NiceGUI dashboard
+# verification, not artefacts worth committing. Scoped to repo root so
+# committed asset PNGs (e.g. assets/secretary_logo.png) are unaffected.
+/monitor-*.png
+
