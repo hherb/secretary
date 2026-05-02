@@ -32,6 +32,20 @@ use crate::crypto::kdf::TAG_FINGERPRINT;
 use super::bip39_wordlist::BIP39_WORDS;
 
 /// 16-byte (128-bit) Contact Card fingerprint. §6.1.
+///
+/// **Public value by design.** Fingerprints appear cleartext in the
+/// recipient table of every block file (`docs/vault-format.md` §6.2),
+/// in manifest signed-headers as `author_fingerprint` (§4.1), and in
+/// any Contact Card the user shares for OOB verification. They are
+/// `[u8; 16]` rather than [`crate::crypto::secret::Sensitive<[u8; 16]>`]
+/// precisely because they are *not* secret — and `==` comparisons on
+/// fingerprints (e.g. recipient-table lookup, author cross-check) are
+/// intentionally non-constant-time. A side-channel timing leak on a
+/// fingerprint comparison reveals at most "which entry matched in a
+/// list whose contents are already visible to an observer reading the
+/// cloud-folder bytes". See
+/// `docs/manual/contributors/side-channel-audit-internal.md` §4 for
+/// the full audit.
 pub type Fingerprint = [u8; 16];
 
 /// Compute the 16-byte fingerprint from the canonical-CBOR bytes of a
