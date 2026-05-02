@@ -385,13 +385,6 @@ the next PR they touch.
 - **`records_to_value` / `take_records` byte round-trip.** Defer until
   profiling shows it on a hot path. The merge primitives operate on
   already-decoded `Record`s.
-- **CLAUDE.md Argon2id wording.** Says "Argon2id at m=256 MiB, t=3,
-  p=1 — the v1 floor is enforced as a typed error." This conflates
-  the v1 *default* (`Argon2idParams::V1_DEFAULT = 256 MiB / 3 / 1`)
-  with the v1 *floor* (`V1_MIN_MEMORY_KIB = 64 MiB`); they are
-  different, and the threat-model now distinguishes them in §3.2.
-  Tighten the CLAUDE.md sentence next time CLAUDE.md is touched —
-  trivial wording fix, no code impact.
 - **Spec-doc test-name freshness.** Surfaced 2026-05-02: the §5
   verification trace in `docs/threat-model.md` had drifted (4 stale
   test names plus ~20 missing entries) because nothing prevented
