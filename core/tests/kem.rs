@@ -653,11 +653,19 @@ fn ml_kem_768_nist_encap_kat() {
 // ---------------------------------------------------------------------------
 // Newtype-level Zeroize discipline.
 //
-// `MlKem768Secret` wraps `SecretBytes`, which is itself `ZeroizeOnDrop`, so
-// the bytes are wiped on drop regardless. The newtype additionally derives
-// `Zeroize` / `ZeroizeOnDrop` so callers can wipe a still-live newtype value
-// programmatically (memory-hygiene-audit deferred-item #1). This test pins
-// that the derive reaches through to the inner bytes.
+// `MlKem768Secret` wraps `SecretBytes` (a `Vec<u8>` newtype that is itself
+// `ZeroizeOnDrop`), so bytes are wiped on drop regardless. The outer newtype
+// additionally derives `Zeroize` / `ZeroizeOnDrop` so callers can wipe a
+// still-live value before scope-end. This test pins that the outer derive
+// reaches through to the inner field.
+//
+// Post-zeroize observable contract: `Vec<u8>::zeroize` overwrites the bytes
+// in place, then truncates `len` to 0 (capacity is preserved but inaccessible
+// safely). The only post-condition observable through the public API is
+// therefore `expose().is_empty()` — which we assert directly. The
+// byte-overwrite-before-truncation step is a guarantee of the `zeroize`
+// crate's `Vec<T>` impl, pinned here by the exact-version dependency on
+// `zeroize = "=1.8.2"` in `core/Cargo.toml`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -666,6 +674,11 @@ fn ml_kem_768_secret_zeroize_clears_inner_bytes() {
 
     let mut sk = MlKem768Secret::from_bytes(&vec![0xAB; ML_KEM_768_SK_LEN])
         .expect("2400-byte secret must construct");
+    assert_eq!(
+        sk.expose().len(),
+        ML_KEM_768_SK_LEN,
+        "sanity: pre-zeroize length must match the secret-key size"
+    );
     assert!(
         sk.expose().iter().any(|&b| b != 0),
         "sanity: pre-zeroize bytes must not already be zero"
@@ -674,7 +687,7 @@ fn ml_kem_768_secret_zeroize_clears_inner_bytes() {
     sk.zeroize();
 
     assert!(
-        sk.expose().iter().all(|&b| b == 0),
-        "expected MlKem768Secret bytes to be zeroized after .zeroize()"
+        sk.expose().is_empty(),
+        "expected MlKem768Secret buffer to be cleared (len == 0) after .zeroize()"
     );
 }

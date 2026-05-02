@@ -21,7 +21,7 @@ use common::{load_kat, Ed25519Kat, HybridSigKat, MlDsa65Kat};
 use secretary_core::crypto::kdf::{TAG_BLOCK_SIG, TAG_CARD_SIG, TAG_MANIFEST_SIG};
 use secretary_core::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, sign, signed_message, verify, HybridSig, MlDsa65Public,
-    MlDsa65Sig, SigError, SigRole, ED25519_PK_LEN, ED25519_SIG_LEN, ED25519_SK_LEN,
+    MlDsa65Secret, MlDsa65Sig, SigError, SigRole, ED25519_PK_LEN, ED25519_SIG_LEN, ED25519_SK_LEN,
     ML_DSA_65_PK_LEN, ML_DSA_65_SEED_LEN, ML_DSA_65_SIG_LEN,
 };
 
@@ -491,20 +491,32 @@ const ML_DSA_65_EXPANDED_SK_LEN: usize = 4032;
 // ---------------------------------------------------------------------------
 // Newtype-level Zeroize discipline.
 //
-// `MlDsa65Secret` wraps `SecretBytes`, which is itself `ZeroizeOnDrop`, so the
-// bytes are wiped on drop regardless. The newtype additionally derives
-// `Zeroize` / `ZeroizeOnDrop` so callers can wipe a still-live newtype value
-// programmatically (memory-hygiene-audit deferred-item #1). This test pins
-// that the derive reaches through to the inner bytes.
+// `MlDsa65Secret` wraps `SecretBytes` (a `Vec<u8>` newtype that is itself
+// `ZeroizeOnDrop`), so bytes are wiped on drop regardless. The outer newtype
+// additionally derives `Zeroize` / `ZeroizeOnDrop` so callers can wipe a
+// still-live value before scope-end. This test pins that the outer derive
+// reaches through to the inner field.
+//
+// Post-zeroize observable contract: `Vec<u8>::zeroize` overwrites the bytes
+// in place, then truncates `len` to 0 (capacity is preserved but inaccessible
+// safely). The only post-condition observable through the public API is
+// therefore `expose().is_empty()` — which we assert directly. The
+// byte-overwrite-before-truncation step is a guarantee of the `zeroize`
+// crate's `Vec<T>` impl, pinned here by the exact-version dependency on
+// `zeroize = "=1.8.2"` in `core/Cargo.toml`.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ml_dsa_65_secret_zeroize_clears_inner_bytes() {
-    use secretary_core::crypto::sig::MlDsa65Secret;
     use zeroize::Zeroize as _;
 
     let mut sk = MlDsa65Secret::from_bytes(&[0xAB; ML_DSA_65_SEED_LEN])
         .expect("32-byte seed must construct");
+    assert_eq!(
+        sk.expose().len(),
+        ML_DSA_65_SEED_LEN,
+        "sanity: pre-zeroize length must match the seed size"
+    );
     assert!(
         sk.expose().iter().any(|&b| b != 0),
         "sanity: pre-zeroize bytes must not already be zero"
@@ -513,7 +525,7 @@ fn ml_dsa_65_secret_zeroize_clears_inner_bytes() {
     sk.zeroize();
 
     assert!(
-        sk.expose().iter().all(|&b| b == 0),
-        "expected MlDsa65Secret bytes to be zeroized after .zeroize()"
+        sk.expose().is_empty(),
+        "expected MlDsa65Secret buffer to be cleared (len == 0) after .zeroize()"
     );
 }
