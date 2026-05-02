@@ -252,7 +252,13 @@ additive. Pinned by two integration tests at
 
 ## Deferred items (not addressed in this pass)
 
-### 3. HKDF internal state residue
+The two type-level deferred items from the original audit (record-content
+`SecretString` / `SecretBytes` rewrap, and the cosmetic newtype-`Zeroize`
+gap) have both been resolved by follow-up passes — see the two "Resolved"
+sections above. The remaining deferred items are upstream-managed and
+re-numbered §1 / §2 below.
+
+### 1. HKDF internal state residue
 
 `hkdf = "0.12"` does not zeroize its internal HMAC state on drop.
 [core/src/crypto/kdf.rs:216-223](../../../core/src/crypto/kdf.rs#L216-L223)
@@ -269,7 +275,7 @@ residue requires either:
 zeroize support. Watch upstream and re-evaluate when a new release
 lands.
 
-### 4. ML-KEM-768 / ML-DSA-65 internal state
+### 2. ML-KEM-768 / ML-DSA-65 internal state
 
 `ml-kem = "0.2"` and `ml-dsa = "0.1.0-rc.8"` are RustCrypto crates
 that we feed seeds and ciphertexts to. We don't control their
