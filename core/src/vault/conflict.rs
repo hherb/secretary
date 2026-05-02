@@ -566,13 +566,13 @@ fn value_lex_bytes(v: &RecordFieldValue) -> Vec<u8> {
         RecordFieldValue::Text(s) => {
             let mut out = Vec::with_capacity(1 + s.len());
             out.push(0x00);
-            out.extend_from_slice(s.as_bytes());
+            out.extend_from_slice(s.expose().as_bytes());
             out
         }
         RecordFieldValue::Bytes(b) => {
             let mut out = Vec::with_capacity(1 + b.len());
             out.push(0x01);
-            out.extend_from_slice(b);
+            out.extend_from_slice(b.expose());
             out
         }
     }

@@ -46,13 +46,15 @@ established sites (`crypto::kem::derive_wrap_key`,
 BCK construction) had the post-move `.zeroize()` discipline; sister
 sites in the same modules had been missed.
 
-The audit also found one **larger design question** that is *not* a
-bug fix and is documented as a known limitation rather than addressed
-in this pass: `RecordFieldValue::{Text, Bytes}` (the user's actual
-passwords / secret notes / API keys) hold plain `String` / `Vec<u8>`
-that are not zeroized on drop. Fixing this requires non-trivial API
-changes that ripple through tests and the Python conformance verifier
-— deferred to a v2 design discussion. See "Deferred items" below.
+The audit originally flagged one **larger design question** as
+deferred: `RecordFieldValue::{Text, Bytes}` (the user's actual
+passwords / secret notes / API keys) held plain `String` / `Vec<u8>`
+that were not zeroized on drop. **This has since been fixed** in a
+follow-up pass — both variants now wrap `SecretString` / `SecretBytes`
+and inherit `Zeroize, ZeroizeOnDrop`. The wire format is unchanged
+(the existing fuzz seeds re-encode bit-identically) and the Python
+conformance verifier is unaffected (it compares CBOR bytes, not
+in-memory types). See "Resolved: record-content zeroize" below.
 
 ---
 
@@ -153,62 +155,55 @@ discipline.
 
 ---
 
-## Deferred items (not addressed in this pass)
+## Resolved: record-content zeroize
 
-### 1. Record contents are not zeroized
+The original audit deferred record-content zeroize as a v2 design
+discussion. It was picked up in a follow-up pass while the FFI
+surface had not yet shipped, which kept the cost of the public-API
+change low.
 
 [core/src/vault/record.rs:270-289](../../../core/src/vault/record.rs#L270-L289)
-defines:
+now reads:
 
 ```rust
 pub enum RecordFieldValue {
-    Text(String),
-    Bytes(Vec<u8>),
+    Text(SecretString),
+    Bytes(SecretBytes),
 }
 ```
 
-These hold the user's actual passwords, secret notes, API keys, SSH
-keys, TOTP seeds — the **most sensitive data** in the entire system,
-yet the only secret-bearing data in the codebase that is *not*
-zeroize-on-drop. `Record` and `RecordField` derive `Debug, Clone,
-PartialEq`, none of which is zeroize-aware.
+Both wrappers derive `Zeroize, ZeroizeOnDrop`, redacted `Debug`, and
+constant-time `PartialEq`. `Clone` is derived on the wrappers (with
+a doc note) because conflict resolution legitimately duplicates field
+values for collision reporting and proptest shrinking requires it;
+the cloned allocation is itself zeroize-on-drop.
 
-The threat-model already acknowledges that "active malware on an
-unlocked device" is out of scope (§2.7) — but every other secret in
-the system *is* zeroized on drop, so the discipline is uneven. A
-malware-on-unlocked-device adversary can scrape record contents from
-freed heap memory long after the user thought a record was "closed"
-in the UI.
+What stayed the same:
 
-**Why deferred:** introducing `SecretString` / `SecretBytes`-typed
-record values is a non-trivial API change. It ripples through:
-- Every test that compares record values via `==` or string slicing
-  (~100 sites);
-- The Python conformance verifier
-  ([core/tests/python/conformance.py](../../../core/tests/python/conformance.py))
-  doesn't need zeroize discipline (it doesn't claim to be a
-  hardened reference implementation), but its `py_merge_record`
-  must continue to compare record values bit-identically with the
-  Rust merge — that's checked, but a `SecretString` wrapper change
-  doesn't affect bytes;
-- The CRDT proptests' `record_strategy` (works on raw `String` /
-  `Vec<u8>`).
+- **Wire format**: CBOR encode/decode go through `expose()` /
+  `SecretBytes::new` / `SecretString::new` at the codec boundary, so
+  the canonical byte representation is unchanged. The
+  `core/fuzz/seeds/record/*.cbor` files re-encode bit-identically.
+- **Python conformance verifier**
+  ([core/tests/python/conformance.py](../../../core/tests/python/conformance.py)):
+  unaffected. It compares encoded CBOR bytes, not in-memory Rust types.
+- **Public API shape**: `RecordFieldValue::Text(_)` and `Bytes(_)` are
+  still the two variants; only the inner type changed.
 
-**Recommendation:** raise as a v2 design discussion. The threat-model
-already documents the malware-on-unlocked-device scope decision; a v2
-hardening story would tighten record-content zeroize alongside any
-other v2 changes (e.g. forward secrecy at the block level — see
-threat-model §4 limitation 1 for context).
+What changed for callers:
 
-**Threat-model wording check:** §3.1 / §2.7 currently say "the
-zeroize discipline reduces but does not eliminate the window". With
-records unzeroized, the discipline as it stands does NOT cover the
-record-content path. The threat-model wording is technically
-accurate (it doesn't claim record contents zeroize) but a reader
-might expect more from "zeroize discipline" than the codebase
-currently provides. Worth re-reading at the next external review.
+- Construction: `RecordFieldValue::Text("alice".into())` /
+  `Bytes(payload.into())` continues to work via
+  `From<&str> / From<String> for SecretString` and
+  `From<Vec<u8>> / From<&[u8]> for SecretBytes`.
+- Reading: `match` on the variant yields a `&SecretString` /
+  `&SecretBytes`; readers must call `.expose()` to get the underlying
+  `&str` / `&[u8]`.
+- Equality: `==` still works (constant-time).
 
-### 2. Newtype `Zeroize`/`ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
+## Deferred items (not addressed in this pass)
+
+### 1. Newtype `Zeroize`/`ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
 
 Both newtype tuple-structs wrap `SecretBytes`, which IS
 `Zeroize, ZeroizeOnDrop`. The inner field's drop runs and zeroizes,
@@ -283,14 +278,13 @@ fix follows a one-line pattern that already had instances in the
 codebase — they were sister sites that hadn't yet been brought up to
 the established discipline.
 
-The principal **deferred** item is record-content zeroize (§1
-"Deferred items"). This is the most-sensitive data in the system
-sitting outside the zeroize boundary, and tightening it is a non-
-trivial v2 design change. The codebase otherwise zeroizes every
-secret-bearing byte string on drop or before drop where a stack-copy
-remains.
+The follow-up pass also resolved record-content zeroize (see
+"Resolved" above): `RecordFieldValue::{Text, Bytes}` now wrap
+`SecretString` / `SecretBytes`, so the most-sensitive data in the
+system is zeroized on drop alongside the keys. The wire format and
+Python conformance are unchanged.
 
-Memory-hygiene status after this pass: **clean for v1's Sub-project A
-scope.** The Sub-project D clipboard / mlock concerns and the v2
-record-content zeroize question are flagged for the appropriate later
-phases.
+Memory-hygiene status: **clean for v1's Sub-project A scope, plus the
+v2-track record-content zeroize question now closed**. The Sub-
+project D clipboard / mlock concerns and the upstream-managed crate
+items remain flagged for the appropriate later phases.

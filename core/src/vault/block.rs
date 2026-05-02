@@ -1885,7 +1885,7 @@ mod tests {
         fields.insert(
             "username".to_string(),
             RecordField {
-                value: RecordFieldValue::Text("alice".to_string()),
+                value: RecordFieldValue::Text("alice".into()),
                 last_mod: 1_714_060_800_000,
                 device_uuid: [0xaa; RECORD_UUID_LEN],
                 unknown: BTreeMap::new(),
@@ -2016,7 +2016,7 @@ mod tests {
         fields.insert(
             "username".to_string(),
             RecordField {
-                value: RecordFieldValue::Text("alice".to_string()),
+                value: RecordFieldValue::Text("alice".into()),
                 last_mod: 1_714_060_800_000,
                 device_uuid: [0xaa; RECORD_UUID_LEN],
                 unknown: BTreeMap::new(),

@@ -17,10 +17,11 @@ pub use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Heap-allocated secret byte buffer. Zeroizes on drop and exposes contents
 /// only through the explicit [`expose`](Self::expose) accessor.
 ///
-/// Cloning is intentionally not derived. If a copy is required, callers
-/// should write `SecretBytes::new(bytes.expose().to_vec())` so that the new
-/// allocation is visible in code review.
-#[derive(Zeroize, ZeroizeOnDrop)]
+/// `Clone` is derived to support record-content duplication during conflict
+/// resolution (see [`vault::conflict`](crate::vault::conflict)) and proptest
+/// shrinking; the resulting allocation is itself zeroize-on-drop. Callers
+/// that only need to *read* the bytes should still prefer `.expose()`.
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
 pub struct SecretBytes {
     inner: Vec<u8>,
 }
@@ -51,6 +52,18 @@ impl SecretBytes {
     }
 }
 
+impl From<Vec<u8>> for SecretBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl From<&[u8]> for SecretBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self::new(bytes.to_vec())
+    }
+}
+
 impl fmt::Debug for SecretBytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretBytes")
@@ -69,6 +82,72 @@ impl PartialEq for SecretBytes {
 }
 
 impl Eq for SecretBytes {}
+
+/// Heap-allocated secret UTF-8 string. Zeroizes on drop and exposes contents
+/// only through the explicit [`expose`](Self::expose) accessor.
+///
+/// Used for record field values that hold human-readable secrets (passwords,
+/// secret notes, recovery phrases stored in records). Equality is constant-
+/// time via the byte representation. Same `Clone` carve-out as
+/// [`SecretBytes`].
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
+pub struct SecretString {
+    inner: String,
+}
+
+impl SecretString {
+    /// Take ownership of `s`. The original `String` is moved in; its
+    /// allocation is zeroized when the resulting `SecretString` is dropped.
+    #[must_use]
+    pub fn new(s: String) -> Self {
+        Self { inner: s }
+    }
+
+    /// Borrow the secret string. Use sites should be visible in code review:
+    /// any line containing `.expose()` is reading secret material.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.inner
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl From<&str> for SecretString {
+    fn from(s: &str) -> Self {
+        Self::new(s.to_owned())
+    }
+}
+
+impl From<String> for SecretString {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretString")
+            .field("len", &self.inner.len())
+            .finish()
+    }
+}
+
+impl PartialEq for SecretString {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.as_bytes().ct_eq(other.inner.as_bytes()).into()
+    }
+}
+
+impl Eq for SecretString {}
 
 /// Generic secret wrapper for any `T: Zeroize`. Useful for fixed-size keys
 /// like `[u8; 32]` where heap allocation would be wasteful.

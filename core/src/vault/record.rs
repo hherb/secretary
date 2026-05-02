@@ -69,6 +69,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
+use crate::crypto::secret::{SecretBytes, SecretString};
+
 use super::canonical::{
     canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
 };
@@ -266,12 +268,18 @@ impl UnknownValue {
 ///
 /// §6.3 says: "A field's `value` is `tstr` for human-readable values and
 /// `bstr` for binary values (e.g., a parsed TOTP seed)."
+///
+/// Both variants wrap zeroize-on-drop secret types: this is the user's
+/// actual passwords, secret notes, API keys and TOTP seeds — the most
+/// sensitive data in the system. Equality is constant-time. Cloning is
+/// supported (conflict resolution and proptest shrinking need it) and
+/// produces an independently-zeroized allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordFieldValue {
     /// `tstr` value — UTF-8 string, e.g. a username or password.
-    Text(String),
+    Text(SecretString),
     /// `bstr` value — opaque bytes, e.g. a parsed TOTP seed.
-    Bytes(Vec<u8>),
+    Bytes(SecretBytes),
 }
 
 /// One field within a record (§6.3 — value of an entry in `fields`).
@@ -474,8 +482,8 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
     let mut entries: Vec<(Value, Value)> = Vec::new();
 
     let value = match &field.value {
-        RecordFieldValue::Text(s) => Value::Text(s.clone()),
-        RecordFieldValue::Bytes(b) => Value::Bytes(b.clone()),
+        RecordFieldValue::Text(s) => Value::Text(s.expose().to_owned()),
+        RecordFieldValue::Bytes(b) => Value::Bytes(b.expose().to_vec()),
     };
     entries.push((Value::Text(KEY_VALUE.into()), value));
     entries.push((
@@ -689,8 +697,8 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
         match key.as_str() {
             KEY_VALUE => {
                 value = Some(match val {
-                    Value::Text(s) => RecordFieldValue::Text(s),
-                    Value::Bytes(b) => RecordFieldValue::Bytes(b),
+                    Value::Text(s) => RecordFieldValue::Text(SecretString::new(s)),
+                    Value::Bytes(b) => RecordFieldValue::Bytes(SecretBytes::new(b)),
                     _ => {
                         return Err(RecordError::WrongType {
                             field: KEY_VALUE,
@@ -845,7 +853,7 @@ mod tests {
         fields.insert(
             "username".to_string(),
             RecordField {
-                value: RecordFieldValue::Text("alice".to_string()),
+                value: RecordFieldValue::Text("alice".into()),
                 last_mod: 1_714_060_800_000,
                 device_uuid: [1u8; RECORD_UUID_LEN],
                 unknown: BTreeMap::new(),
@@ -854,7 +862,7 @@ mod tests {
         fields.insert(
             "totp_seed".to_string(),
             RecordField {
-                value: RecordFieldValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+                value: RecordFieldValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef].into()),
                 last_mod: 1_714_060_800_001,
                 device_uuid: [1u8; RECORD_UUID_LEN],
                 unknown: BTreeMap::new(),
@@ -933,7 +941,7 @@ mod tests {
         fields.insert(
             "totp_seed".to_string(),
             dummy_field(
-                RecordFieldValue::Bytes(vec![0x11; 32]),
+                RecordFieldValue::Bytes(vec![0x11; 32].into()),
                 1_714_060_800_001,
             ),
         );
@@ -991,7 +999,7 @@ mod tests {
         let totp_seed: Vec<u8> = (0..32).collect();
         fields.insert(
             "totp_seed".to_string(),
-            dummy_field(RecordFieldValue::Bytes(totp_seed.clone()), 7),
+            dummy_field(RecordFieldValue::Bytes(totp_seed.clone().into()), 7),
         );
         r.fields = fields;
 
@@ -1005,7 +1013,7 @@ mod tests {
             .value
             .clone()
         {
-            RecordFieldValue::Bytes(b) => assert_eq!(b, totp_seed),
+            RecordFieldValue::Bytes(b) => assert_eq!(b.expose(), totp_seed.as_slice()),
             other => panic!("expected Bytes, got {other:?}"),
         }
         let bytes_again = encode(&parsed).expect("re-encode");
@@ -1034,7 +1042,7 @@ mod tests {
             .value
             .clone()
         {
-            RecordFieldValue::Text(s) => assert_eq!(s, payload),
+            RecordFieldValue::Text(s) => assert_eq!(s.expose(), payload),
             other => panic!("expected Text, got {other:?}"),
         }
         let bytes_again = encode(&parsed).expect("re-encode");

@@ -532,9 +532,11 @@ mod vault {
     /// Strategy for `RecordFieldValue` — half Text, half Bytes.
     fn field_value_strategy() -> impl Strategy<Value = RecordFieldValue> {
         prop_oneof![
-            prop::collection::vec(any::<char>(), 0..=64)
-                .prop_map(|cs| RecordFieldValue::Text(cs.into_iter().collect())),
-            prop::collection::vec(any::<u8>(), 0..=128).prop_map(RecordFieldValue::Bytes),
+            prop::collection::vec(any::<char>(), 0..=64).prop_map(|cs| {
+                RecordFieldValue::Text(cs.into_iter().collect::<String>().into())
+            }),
+            prop::collection::vec(any::<u8>(), 0..=128)
+                .prop_map(|b| RecordFieldValue::Bytes(b.into())),
         ]
     }
 
