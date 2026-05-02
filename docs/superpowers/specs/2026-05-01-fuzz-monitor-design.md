@@ -6,7 +6,7 @@
 
 ## Context
 
-The fuzz harness committed in Tasks 1–11 (commits `96a76db` through `90804d9` on `feature/fuzz-harness`) is fully usable from the CLI: `cd core/fuzz && cargo fuzz run <target>`. Tasks 12 (calibration) and 13 (bug-bash) require running each of the six targets to plateau under both ASan and UBSan, observing libFuzzer's stderr telemetry to decide when to stop, and triaging any findings. On a typical workstation that's 1–4 hours of wall-clock time during which the operator stares at six terminal windows.
+The fuzz harness committed in Tasks 1–11 (commits `96a76db` through `90804d9` on `feature/fuzz-harness`) is fully usable from the CLI: `cd core/fuzz && cargo fuzz run <target>`. Tasks 12 (calibration) and 13 (bug-bash) require running each of the six targets to plateau under both ASan and `--careful` (cargo-fuzz's "rebuild std with debug-assertions + extra const-UB / init checks" pass — the Rust analog of clang's UBSan, see [2026-04-30-fuzz-harness-design.md](2026-04-30-fuzz-harness-design.md) for the rationale), observing libFuzzer's stderr telemetry to decide when to stop, and triaging any findings. On a typical workstation that's 1–4 hours of wall-clock time during which the operator stares at six terminal windows.
 
 This monitor is a single-file NiceGUI dashboard that:
 - Discovers the six fuzz targets from `core/fuzz/Cargo.toml`.
@@ -21,12 +21,12 @@ The monitor is the durable **operator** artifact. The harness it drives is the d
 
 Single-file Python script that runs as `uv run core/fuzz/monitor.py`, opens a NiceGUI app on `http://localhost:8080`, and provides:
 - A grid of six target cards.
-- Per-card sanitizer toggle (ASan / UBSan / Both-sequential).
+- Per-card mode toggle (ASan / careful / Both-sequential).
 - Per-card runs-cap field (last value persisted per target).
 - Live stats from libFuzzer pulse lines, scrolling log tail.
 - Auto-stop on plateau detection (configurable K=10 default).
 - Crash detection with badge, artifact path, and stack trace tail.
-- Up to twelve concurrent runs (six targets × ASan + UBSan); operator manages resource use.
+- Up to twelve concurrent runs (six targets × ASan + careful); operator manages resource use.
 
 ## Non-goals
 
@@ -43,7 +43,7 @@ Single-file Python script that runs as `uv run core/fuzz/monitor.py`, opens a Ni
 
 ```
 ┌─ vault_toml ─────────────────────────────────────┐
-│ Sanitizer: (•) ASan ( ) UBSan ( ) Both           │
+│ Mode: (•) ASan ( ) careful ( ) Both              │
 │ -runs cap: [____1000000____]    [START]          │
 │                                                   │
 │ Status: ● Running (plateau in 7 / 10)            │
@@ -149,10 +149,10 @@ The file is organized as a flat set of pure functions plus one `RunState` datacl
 ### Data flow
 
 1. **Startup.** Parse `core/fuzz/Cargo.toml` to discover six target names. Find rustup nightly toolchain. Load persisted state (last-used runs caps, plateau K). Render UI with one card per target.
-2. **User clicks Start.** `MonitorApp.start(target, sanitizer, runs_cap)`:
+2. **User clicks Start.** `MonitorApp.start(target, mode, runs_cap)`:
    - Build env via `build_subprocess_env`.
-   - Translate sanitizer choice to flags: ASan → no flag; UBSan → `--sanitizer=undefined`; Both → ASan first, then UBSan after first stop.
-   - Spawn `cargo fuzz run <target> [--sanitizer=undefined] -- -runs=N` from `core/fuzz/`.
+   - Translate mode choice to flags: ASan → no flag; careful → `--careful`; Both → ASan first, then `--careful` after first stop.
+   - Spawn `cargo fuzz run [--careful] <target> -- -runs=N` from `core/fuzz/`.
    - Store Popen handle, mark status RUNNING, schedule async stderr reader.
    - Persist this `runs_cap` to `.monitor-state.json` for next time.
 3. **Async stderr reader.** Reads subprocess stderr line by line. For each line, updates `RunState.log_tail` and (if it's a pulse) `RunState.pulses`. After each pulse: `check_plateau`. If True: `stop(target, sanitizer)` with reason "plateau".
@@ -166,15 +166,17 @@ The file is organized as a flat set of pure functions plus one `RunState` datacl
    - Exit code non-zero → check `artifacts/<target>/` for new `crash-*` files; if found, status becomes CRASHED with `crash_path` set; else show generic error.
 6. **NiceGUI tick.** Every 0.5 s, NiceGUI re-renders cards from `RunState`. Reactive updates avoid full-page redraws.
 
-### Sanitizer translation
+### Mode translation
 
-| Sanitizer choice | cargo fuzz invocation                                          |
+| Mode choice      | cargo fuzz invocation                                          |
 |------------------|----------------------------------------------------------------|
 | ASan             | `cargo fuzz run <target> -- -runs=<N>`                         |
-| UBSan            | `cargo fuzz run --sanitizer=undefined <target> -- -runs=<N>`   |
-| Both-sequential  | ASan run; on stop (any reason except CRASHED), UBSan run automatically. |
+| careful          | `cargo fuzz run --careful <target> -- -runs=<N>`               |
+| Both-sequential  | ASan run; on stop (any reason except CRASHED), `--careful` run automatically. |
 
-For Both-sequential, two RunStates exist: `(target, "asan")` and `(target, "ubsan")`. The first runs to plateau/cap; on its `stop` callback, if reason was non-crash, schedule UBSan start. If user clicks Stop on the ASan run mid-flight, UBSan does NOT start automatically (treat user stop as "abandon the sequence").
+The `careful` mode replaces what this spec originally called UBSan. `cargo fuzz run --sanitizer=undefined` was specified but never actually worked — neither cargo-fuzz nor rustc accept `undefined` as a `-Zsanitizer` value (UBSan in clang's sense has no Rust analog because Rust enforces UB freedom at the type level). `cargo fuzz --careful` is the documented Rust-fuzz second-pass mode; it rebuilds `std` with debug-assertions and adds extra const-UB / init checks, which is the closest functional equivalent and catches a different bug class than ASan.
+
+For Both-sequential, two RunStates exist: `(target, "asan")` and `(target, "careful")`. The first runs to plateau/cap; on its `stop` callback, if reason was non-crash, schedule `--careful` start. If user clicks Stop on the ASan run mid-flight, `--careful` does NOT start automatically (treat user stop as "abandon the sequence").
 
 ### PATH handling
 
@@ -197,7 +199,7 @@ Two signals must agree:
 The monitor records the timestamp it started the subprocess and, on exit with non-zero, scans `artifacts/<target>/` for crash files newer than that timestamp. If found:
 - Status flips to CRASHED.
 - `crash_path` field set to the (newest) crash artifact.
-- Card shows: "CRASHED at exec N", clickable file path (copies to clipboard via NiceGUI's clipboard helper), last 20 stderr lines (which usually contain the ASan/UBSan stack trace).
+- Card shows: "CRASHED at exec N", clickable file path (copies to clipboard via NiceGUI's clipboard helper), last 20 stderr lines (which usually contain the ASan or `--careful` debug-assertion stack trace).
 
 If non-zero exit but no crash artifact: probably a build failure or environment error. Show last 20 stderr lines and status flips to STOPPED with `stop_reason="exit code N, no crash artifact"`.
 
@@ -266,7 +268,7 @@ Implementation order, each step independently testable:
 5. **`parse_runs_cap` + unit tests.**
 6. **Subprocess management (start/stop) + async stderr reader.** First version: ASan only, no plateau detection. Verify start/stop button works on one target end-to-end.
 7. **Plateau-triggered SIGTERM.** Wire `check_plateau` into the reader. Verify on a real target that finishes with plateau.
-8. **UBSan and Both-sequential modes.**
+8. **`careful` and Both-sequential modes.**
 9. **Crash detection.** Trigger by feeding a known crash input (a contrived seed) and verify status flips correctly.
 10. **Persistence (`.monitor-state.json`).** Save on Start click, load on startup. Add to `core/fuzz/.gitignore`.
 11. **Polish:** top-of-page settings panel, log tail formatting, click-to-copy crash path.

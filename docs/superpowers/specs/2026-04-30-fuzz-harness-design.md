@@ -99,7 +99,7 @@ debug-assertions = true # internal assert!() → panic → fuzzer finding
 | Sanitizer | Status | Rationale |
 |---|---|---|
 | AddressSanitizer (ASan) | ON, default | cargo-fuzz default; ~2× throughput cost; catches transitive-`unsafe` bugs in deps (`ciborium`, `blake3`, `chacha20poly1305`, `ml-kem`, `ml-dsa`, dalek family) and gives clean stacks for allocator pathology from attacker-controlled length fields. |
-| UndefinedBehaviorSanitizer (UBSan) | ON, separate run per bug-bash | `cargo fuzz run --sanitizer=undefined <target>` for ~10 min per target. Catches a different class than ASan; cheap to add. |
+| `cargo fuzz --careful` (Rust analog of UBSan) | ON, separate run per bug-bash | `cargo fuzz run --careful <target>` for ~10 min per target plus a one-time `--build-std` cost on first invocation. Rebuilds `std` with debug-assertions enabled and adds extra const-UB and init checks (per-callsite invariants in `core::ptr`, `MaybeUninit` slot tracking, etc.). Originally specified as `--sanitizer=undefined`, but neither cargo-fuzz nor rustc accept `undefined` as a `-Zsanitizer` value (rustc's set is `address, leak, memory, thread, ...`); UBSan in clang's sense has no Rust analog because Rust enforces UB freedom at the type level. `--careful` is the Rust-fuzz ecosystem's documented "extra UB pass" mode and catches a different class than ASan. |
 | MemorySanitizer (MSan) | DEFERRED — Phase A.7 follow-up | Requires rebuilding all deps with MSan instrumentation; fragile in practice; substantial overlap with ASan in pure-Rust contexts. Tracked as a known TODO; revisit after the audit. |
 | ThreadSanitizer (TSan) | SKIP | Decoders are single-threaded; no synchronization to race. |
 
@@ -189,7 +189,7 @@ Run once after the harness lands. Per target, in this order (cheapest-blast-radi
 
 **Reference numbers** for planning, not for the contract — measured on the operator's reference workstation:
 
-| Target | Reference wall-clock (ASan + UBSan) | Reference exec floor (ASan / UBSan) |
+| Target | Reference wall-clock (ASan + careful) | Reference exec floor (ASan / careful) |
 |---|---|---|
 | `vault_toml` | ~30 min + ~10 min | TBD — calibrated empirically (see below) |
 | `record` | ~30 min + ~10 min | TBD |
@@ -208,9 +208,9 @@ The Phase A.7 fuzz sub-deliverable is done when **all** hold:
 
 1. Six fuzz targets compile and run from `cd core/fuzz && cargo fuzz run <target>`.
 2. Seed corpora committed; `cargo fuzz run <target> seeds/<target>/` is green for every target (seeds don't crash).
-3. Each target has run with the most recent code under both ASan and UBSan, has hit its per-target exec-count floor (calibrated per the bug-bash plan, recorded in `core/fuzz/README.md`), and `libFuzzer` has reported zero new coverage and zero new corpus entries across the last ≥10% of executions in each profile (the plateau signal). Targets that hit the wall-clock stop-loss cap without plateauing are flagged in the bug-bash report. No unfixed findings.
+3. Each target has run with the most recent code under both ASan and `--careful`, has hit its per-target exec-count floor (calibrated per the bug-bash plan, recorded in `core/fuzz/README.md`), and `libFuzzer` has reported zero new coverage and zero new corpus entries across the last ≥10% of executions in each profile (the plateau signal). Targets that hit the wall-clock stop-loss cap without plateauing are flagged in the bug-bash report. No unfixed findings.
 4. Any findings fixed; their inputs committed to `core/tests/data/fuzz_regressions/<target>/`; the `fuzz_regressions` integration test green in plain `cargo test --release --workspace`.
-5. `core/fuzz/README.md` documents: how to install nightly, how to run a single target, how to run with UBSan, how to promote a finding, how to run the differential replay, **and the calibrated per-target exec-count floors** (from the calibration step in the bug-bash plan).
+5. `core/fuzz/README.md` documents: how to install nightly, how to run a single target, how to run the `--careful` second pass, how to promote a finding, how to run the differential replay, **and the calibrated per-target exec-count floors** (from the calibration step in the bug-bash plan).
 6. Differential replay runs cleanly: `cargo test --release --workspace --features differential-replay` is green against the corpus (no disagreements, or all known disagreements pinned as KATs after triage).
 7. `cargo test --release --workspace` (default features) stays green throughout.
 

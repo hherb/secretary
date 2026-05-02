@@ -243,15 +243,24 @@ _STATUS_BADGE_CLASS: dict[Status, str] = {
 }
 
 
-def effective_sanitizer_key(selected: str, ubsan_status: Status) -> str:
-    """Resolve the radio selection ('asan'/'ubsan'/'both') to the actual
+def effective_sanitizer_key(selected: str, careful_status: Status) -> str:
+    """Resolve the radio selection ('asan'/'careful'/'both') to the actual
     self.runs key. 'both' is a UI-only meta-option meaning 'run ASan, chain
-    UBSan'; once UBSan has been started it becomes the live key, otherwise
-    ASan does. Without this remap, 'both' would index a non-existent
-    (target, 'both') slot and raise KeyError on every per-card tick."""
+    --careful'; once careful has been started it becomes the live key,
+    otherwise ASan does. Without this remap, 'both' would index a
+    non-existent (target, 'both') slot and raise KeyError on every per-card
+    tick.
+
+    The 'careful' slot was originally named 'ubsan' and invoked
+    `cargo fuzz run --sanitizer=undefined`, but neither cargo-fuzz nor
+    rustc's `-Zsanitizer` accept `undefined` (rustc's sanitizer set is
+    `address, leak, memory, thread, ...`; UBSan in clang's sense has no
+    Rust analog). Replaced with cargo-fuzz's `--careful` flag, which is
+    the documented "extra UB / debug-assertions / std-rebuilt" pass — a
+    different bug class than ASan, same two-pass design intent."""
     if selected != "both":
         return selected
-    return "ubsan" if ubsan_status != Status.IDLE else "asan"
+    return "careful" if careful_status != Status.IDLE else "asan"
 
 
 def status_badge_class(status: Status) -> str:
@@ -489,7 +498,7 @@ class RunState:
     """
 
     target: str
-    sanitizer: str  # 'asan' | 'ubsan'
+    sanitizer: str  # 'asan' | 'careful'
     status: Status = Status.IDLE
     # maxlen=64 is generous; actual K used by check_plateau is smaller.
     pulses: deque[Pulse] = field(default_factory=lambda: deque(maxlen=64))
@@ -540,12 +549,12 @@ class MonitorApp:
 
     def __init__(self, targets: list[str]) -> None:
         self.targets = targets
-        # Two RunStates per target (asan + ubsan). Even if the user only
-        # runs one sanitizer at a time, the slots exist for both.
+        # Two RunStates per target (asan + careful). Even if the user only
+        # runs one mode at a time, the slots exist for both.
         self.runs: dict[tuple[str, str], RunState] = {
             (t, s): RunState(target=t, sanitizer=s)
             for t in targets
-            for s in ("asan", "ubsan")
+            for s in ("asan", "careful")
         }
         self.state = load_state()
         self.plateau_k = self.state.get("plateau_k", 10)
@@ -601,10 +610,17 @@ class MonitorApp:
             rs.stop_reason = "no nightly toolchain"
             return
 
-        # Build argv. ASan is the default; UBSan needs --sanitizer=undefined.
+        # Build argv. ASan is cargo-fuzz's default. `--careful` (cargo-fuzz's
+        # "rebuild std with debug-assertions + extra const UB / init checks"
+        # mode) is the second pass; it replaces what the spec originally
+        # called UBSan but neither rustc nor cargo-fuzz expose
+        # `-Zsanitizer=undefined`, so the literal UBSan invocation never
+        # worked. `--careful` is the idiomatic Rust analog (different bug
+        # class from ASan, same two-pass intent), at the cost of a full
+        # std rebuild on first invocation.
         argv = ["cargo", "fuzz", "run"]
-        if sanitizer == "ubsan":
-            argv.append("--sanitizer=undefined")
+        if sanitizer == "careful":
+            argv.append("--careful")
         argv.append(target)
         argv.append("--")
         if runs_cap is not None:
@@ -726,20 +742,21 @@ class MonitorApp:
         rs.status = Status.STOPPED
         rs.stop_reason = "user stopped"
 
-    async def _chain_ubsan(self, target: str, runs_cap: int | None) -> None:
+    async def _chain_careful(self, target: str, runs_cap: int | None) -> None:
         """After ASan finishes (any reason except CRASHED or user-STOPPED),
-        kick off UBSan automatically. Treat user-stop as 'abandon the chain'."""
+        kick off the `--careful` second pass automatically. Treat user-stop
+        as 'abandon the chain'."""
         asan = self.runs[(target, "asan")]
         # Poll until ASan is no longer RUNNING.
         while asan.status == Status.RUNNING:
             await asyncio.sleep(1.0)
         if asan.status in (Status.PLATEAU, Status.CAP_REACHED):
-            await self.start_run(target, "ubsan", runs_cap)
+            await self.start_run(target, "careful", runs_cap)
 
     def _render_card(self, target: str) -> None:
         with ui.card().classes("w-96"):
             ui.label(target).classes("text-h6")
-            sanitizer = ui.radio(["asan", "ubsan", "both"], value="asan").props("inline")
+            sanitizer = ui.radio(["asan", "careful", "both"], value="asan").props("inline")
             prefill = self.state.get("runs_caps", {}).get(target, "")
             # Label shortened from "runs cap (blank = open-ended)" so it
             # fits the w-96 card column width without being clipped to
@@ -782,7 +799,7 @@ class MonitorApp:
             # the badge class on each tick fixes that.
             def update_card():
                 key = effective_sanitizer_key(
-                    sanitizer.value, self.runs[(target, "ubsan")].status
+                    sanitizer.value, self.runs[(target, "careful")].status
                 )
                 rs = self.runs[(target, key)]
                 status_label.text = f"status: {rs.status.name}"
@@ -851,16 +868,16 @@ class MonitorApp:
                     ui.notify(f"invalid runs cap: {e}", type="negative")
                     return
                 if sanitizer.value == "both":
-                    # Run ASan first; chain UBSan if ASan stops cleanly.
+                    # Run ASan first; chain --careful if ASan stops cleanly.
                     await self.start_run(target, "asan", cap)
-                    # Wait for ASan to finish, then optionally launch UBSan.
-                    asyncio.create_task(self._chain_ubsan(target, cap))
+                    # Wait for ASan to finish, then optionally launch --careful.
+                    asyncio.create_task(self._chain_careful(target, cap))
                 else:
                     await self.start_run(target, sanitizer.value, cap)
 
             async def on_stop():
                 key = effective_sanitizer_key(
-                    sanitizer.value, self.runs[(target, "ubsan")].status
+                    sanitizer.value, self.runs[(target, "careful")].status
                 )
                 await self.stop_run(target, key)
 

@@ -67,7 +67,7 @@ Card order after the change (additions marked NEW):
 
 ```
 title                                 ← existing
-radio (asan / ubsan / both)           ← existing
+radio (asan / careful / both)         ← existing
 runs cap input                        ← existing
 status: RUNNING                       ← existing
 [━━━━━━━━━━━ sparkline ━━━━━━━━━]     ← NEW (~280×36 px)

@@ -42,12 +42,20 @@ cd core/fuzz
 cargo fuzz run <target>
 ```
 
-UBSan:
+`--careful` (cargo-fuzz's Rust analog of UBSan — rebuilds `std` with
+debug-assertions and adds extra const-UB / init checks; see
+[docs/superpowers/specs/2026-04-30-fuzz-harness-design.md](../../docs/superpowers/specs/2026-04-30-fuzz-harness-design.md)
+for why this replaces the originally-specified `--sanitizer=undefined`,
+which neither cargo-fuzz nor rustc accept):
 
 ```bash
 cd core/fuzz
-cargo fuzz run --sanitizer=undefined <target>
+cargo fuzz run --careful <target>
 ```
+
+The first `--careful` invocation is slow (rebuilds `std` from source
+because `--careful` implies `--build-std`); subsequent runs reuse the
+cache.
 
 Replay seeds only (no mutation):
 
@@ -64,7 +72,7 @@ have plateaued). These floors were calibrated on the operator's reference
 workstation; reproduce by running each target until libFuzzer reports zero
 new `cov` and `corp` for the last >=10% of executions.
 
-| Target          | ASan exec floor | UBSan exec floor | Reference wall-clock (combined) |
+| Target          | ASan exec floor | careful exec floor | Reference wall-clock (combined) |
 |-----------------|-----------------|------------------|---------------------------------|
 | `vault_toml`    | _TBD — fill in during Task 12_ | _TBD_ | _TBD_ |
 | `record`        | _TBD_           | _TBD_            | _TBD_                           |
@@ -120,7 +128,7 @@ uv run core/fuzz/monitor.py
 ```
 
 Per-target card has:
-- Sanitizer radio: `asan`, `ubsan`, or `both` (sequential).
+- Mode radio: `asan`, `careful`, or `both` (sequential).
 - Runs cap input (last value persisted per target in `.monitor-state.json`).
 - Start/Stop buttons.
 - Live status, coverage, corpus, exec rate, RSS.

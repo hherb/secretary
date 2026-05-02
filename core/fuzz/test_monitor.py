@@ -434,28 +434,33 @@ class TestStatusBadgeClass:
 
 
 class TestEffectiveSanitizerKey:
-    """Regression: the radio offers an 'asan'/'ubsan'/'both' meta-option, but
-    self.runs is only keyed by 'asan'/'ubsan'. Without remap, every per-card
-    timer tick raised KeyError once the user picked 'both'."""
+    """Regression: the radio offers an 'asan'/'careful'/'both' meta-option,
+    but self.runs is only keyed by 'asan'/'careful'. Without remap, every
+    per-card timer tick raised KeyError once the user picked 'both'.
+
+    The 'careful' slot is what cargo-fuzz's `--careful` flag drives — the
+    second-pass mode that the spec originally called UBSan, before it
+    turned out neither cargo-fuzz nor rustc accept `-Zsanitizer=undefined`."""
 
     def test_asan_passthrough(self):
         assert effective_sanitizer_key("asan", Status.IDLE) == "asan"
         assert effective_sanitizer_key("asan", Status.RUNNING) == "asan"
 
-    def test_ubsan_passthrough(self):
-        assert effective_sanitizer_key("ubsan", Status.IDLE) == "ubsan"
-        assert effective_sanitizer_key("ubsan", Status.CRASHED) == "ubsan"
+    def test_careful_passthrough(self):
+        assert effective_sanitizer_key("careful", Status.IDLE) == "careful"
+        assert effective_sanitizer_key("careful", Status.CRASHED) == "careful"
 
-    def test_both_resolves_to_asan_when_ubsan_idle(self):
-        # Before chain has reached UBSan (or chain abandoned because ASan
-        # crashed/user-stopped), the live state lives on the ASan slot.
+    def test_both_resolves_to_asan_when_careful_idle(self):
+        # Before chain has reached --careful (or chain abandoned because
+        # ASan crashed/user-stopped), the live state lives on the ASan slot.
         assert effective_sanitizer_key("both", Status.IDLE) == "asan"
 
-    def test_both_resolves_to_ubsan_once_started(self):
-        # Once _chain_ubsan flips UBSan to RUNNING, that's the live state.
+    def test_both_resolves_to_careful_once_started(self):
+        # Once _chain_careful flips the second pass to RUNNING, that's the
+        # live state.
         for s in (Status.RUNNING, Status.PLATEAU, Status.CAP_REACHED,
                   Status.CRASHED, Status.STOPPED):
-            assert effective_sanitizer_key("both", s) == "ubsan", s.name
+            assert effective_sanitizer_key("both", s) == "careful", s.name
 
 
 def _svg_root(svg_text: str) -> ET.Element:
@@ -660,7 +665,7 @@ class TestChartIntegrationWithMonitorApp:
 
         # Mirror update_card: resolve "both" → effective key, look up rs,
         # render. If the key remap regressed, this raises KeyError.
-        key = effective_sanitizer_key("both", app.runs[("t1", "ubsan")].status)
+        key = effective_sanitizer_key("both", app.runs[("t1", "careful")].status)
         live = app.runs[("t1", key)]
         cov_series = [p.cov for p in live.pulses]
 
