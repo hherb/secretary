@@ -20,6 +20,7 @@ from monitor import (
     categorize_artifact,
     check_plateau,
     effective_sanitizer_key,
+    finalize_terminal_status,
     find_nightly_toolchain,
     format_card_elapsed,
     format_elapsed,
@@ -285,6 +286,87 @@ class TestParseRunsCap:
 
 
 
+class TestFinalizeTerminalStatus:
+    """Pure resolver that maps subprocess exit info to a (Status, reason,
+    crash_path) terminal triple. Branches: plateau (auto-stop), cap_reached
+    (rc==0), crashed (artifact found), died (non-zero exit, no artifact).
+
+    Issue #15: the previous implementation conflated "user clicked Stop"
+    with "subprocess crash-exited without an artifact" under STOPPED;
+    DIED gives those overnight failures a distinct badge so a campaign
+    that quietly fell over no longer reads as "you stopped this"."""
+
+    def test_plateau_preserves_existing_reason(self):
+        # The stderr reader sets stop_reason = "plateau at exec N" before
+        # SIGTERM-ing the subprocess; the finalizer must preserve that
+        # text rather than overwriting with a generic exit-code message.
+        status, reason, crash = finalize_terminal_status(
+            rc=-15,  # SIGTERM
+            stop_reason="plateau at exec 1048576",
+            crash_path=None,
+            last_exec_count=1048576,
+        )
+        assert status == Status.PLATEAU
+        assert reason == "plateau at exec 1048576"
+        assert crash is None
+
+    def test_clean_exit_is_cap_reached(self):
+        # libFuzzer exits 0 only when its `-runs` cap fires.
+        status, reason, crash = finalize_terminal_status(
+            rc=0, stop_reason=None, crash_path=None, last_exec_count=5_000_000
+        )
+        assert status == Status.CAP_REACHED
+        assert reason == "exit 0 (cap reached)"
+        assert crash is None
+
+    def test_crash_artifact_present_is_crashed(self):
+        from pathlib import Path
+        artifact = Path("/tmp/crash-abc123.bin")
+        status, reason, crash = finalize_terminal_status(
+            rc=77, stop_reason=None, crash_path=artifact, last_exec_count=42_000
+        )
+        assert status == Status.CRASHED
+        assert reason == "crash at exec 42000"
+        assert crash == artifact
+
+    def test_crash_with_no_pulses_renders_question_mark(self):
+        # If the subprocess crashed before emitting any pulse (e.g. instant
+        # crash on the first input), last_exec_count is None — render as
+        # "crash at exec ?" rather than the literal None or a Python error.
+        from pathlib import Path
+        status, reason, _ = finalize_terminal_status(
+            rc=77,
+            stop_reason=None,
+            crash_path=Path("/tmp/crash-x.bin"),
+            last_exec_count=None,
+        )
+        assert status == Status.CRASHED
+        assert reason == "crash at exec ?"
+
+    def test_died_for_nonzero_exit_without_artifact(self):
+        # The headline regression for #15: an overnight subprocess that
+        # exited non-zero with no crash artifact previously became STOPPED
+        # ("user clicked Stop"), making auto-deaths read as user-initiated.
+        # finalize_terminal_status now returns DIED here so the badge can
+        # reflect "this fell over on its own and is worth investigating".
+        status, reason, crash = finalize_terminal_status(
+            rc=1, stop_reason=None, crash_path=None, last_exec_count=999_999
+        )
+        assert status == Status.DIED
+        assert reason == "exit code 1 (no crash artifact)"
+        assert crash is None
+
+    def test_died_negative_signal_exit(self):
+        # `rc < 0` is Python's encoding of "killed by signal -rc"
+        # (e.g. -9 == SIGKILL by the OOM-killer). No crash artifact, no
+        # plateau reason, no clean exit → DIED.
+        status, reason, _ = finalize_terminal_status(
+            rc=-9, stop_reason=None, crash_path=None, last_exec_count=100
+        )
+        assert status == Status.DIED
+        assert reason == "exit code -9 (no crash artifact)"
+
+
 class TestRunState:
     def test_default_state(self):
         rs = RunState(target="vault_toml", sanitizer="asan")
@@ -331,6 +413,12 @@ class TestStatusBadgeClass:
 
     def test_stopped_is_grey(self):
         assert status_badge_class(Status.STOPPED) == "text-grey-7"
+
+    def test_died_is_negative(self):
+        # DIED (subprocess crash-exited without an artifact) shares CRASHED's
+        # red badge: both indicate the campaign ended unexpectedly and is
+        # worth investigating, even though DIED is the milder of the two.
+        assert status_badge_class(Status.DIED) == "text-negative"
 
     def test_exhaustive_over_status_enum(self):
         # If a new Status variant lands without a matching class entry, this

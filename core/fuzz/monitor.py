@@ -177,13 +177,19 @@ class Status(enum.IntEnum):
     CAP_REACHED = 3  # stopped because -runs cap fired before plateau
     CRASHED = 4   # non-zero exit AND/OR new artifact in artifacts/<target>/
     STOPPED = 5   # user-clicked Stop
+    DIED = 6      # non-zero exit, no crash artifact, no user signal — the
+                  # subprocess died on its own (build corruption, OOM-killer,
+                  # ENOSPC, etc). Distinct from STOPPED so an overnight run
+                  # that quietly fell over doesn't read as "you stopped this".
 
 
 # Status -> Quasar text-color class. RUNNING is positive (green) so a healthy
 # campaign reads as "go"; PLATEAU is warning (amber) because the auto-stop
 # is informative but not an error; CAP_REACHED is info (blue) — the user
-# requested the cap; CRASHED is negative (red); IDLE/STOPPED are grey-7
-# (idle and "user stopped" are not states that warrant attention).
+# requested the cap; CRASHED and DIED are both negative (red) since both
+# warrant investigation, though DIED is milder (process death without an
+# artifact, vs. confirmed crash); IDLE/STOPPED are grey-7 (idle and "user
+# stopped" are not states that warrant attention).
 _STATUS_BADGE_CLASS: dict[Status, str] = {
     Status.IDLE: "text-grey-7",
     Status.RUNNING: "text-positive",
@@ -191,6 +197,7 @@ _STATUS_BADGE_CLASS: dict[Status, str] = {
     Status.CAP_REACHED: "text-info",
     Status.CRASHED: "text-negative",
     Status.STOPPED: "text-grey-7",
+    Status.DIED: "text-negative",
 }
 
 
@@ -372,6 +379,42 @@ def format_findings_summary(counts: dict[str, int], target_count: int) -> str:
     head = ", ".join(parts) if parts else "none"
     target_word = "target" if target_count == 1 else "targets"
     return f"Findings: {head} across {target_count} {target_word}"
+
+
+def finalize_terminal_status(
+    rc: int,
+    stop_reason: str | None,
+    crash_path: Path | None,
+    last_exec_count: int | None,
+) -> tuple[Status, str, Path | None]:
+    """Resolve the terminal Status when a non-user-stopped subprocess exits.
+
+    Pure function — no I/O, no time access. Returns
+    `(status, stop_reason, crash_path)` so the caller can apply all three
+    on the RunState atomically.
+
+    Branches:
+      - `stop_reason` already mentions plateau -> PLATEAU (the stderr reader
+        sets this before SIGTERM-ing the subprocess; preserve the original
+        "plateau at exec N" text rather than overwriting with a generic
+        exit-code line).
+      - `rc == 0` -> CAP_REACHED (libFuzzer exits cleanly only when its
+        `-runs` cap fires; spec § "auto-stop signals").
+      - `crash_path` is set -> CRASHED.
+      - otherwise -> DIED. Distinct from STOPPED so an overnight run that
+        died on its own (build corruption, OOM-killer, ENOSPC, an external
+        SIGKILL from outside the monitor, etc.) doesn't badge as
+        "user stopped" — the user has no UI signal that the campaign
+        failed unexpectedly when both look identical (issue #15).
+    """
+    if stop_reason and stop_reason.startswith("plateau"):
+        return Status.PLATEAU, stop_reason, None
+    if rc == 0:
+        return Status.CAP_REACHED, "exit 0 (cap reached)", None
+    if crash_path is not None:
+        last = last_exec_count if last_exec_count is not None else "?"
+        return Status.CRASHED, f"crash at exec {last}", crash_path
+    return Status.DIED, f"exit code {rc} (no crash artifact)", None
 
 
 @dataclass
@@ -571,21 +614,18 @@ class MonitorApp:
             # is already set — keeps the frozen `elapsed:` label accurate
             # to the actual exit moment instead of ~1 s late.
             rs.stopped_at = time.monotonic()
-            if rs.stop_reason and rs.stop_reason.startswith("plateau"):
-                rs.status = Status.PLATEAU
-            elif rc == 0:
-                rs.status = Status.CAP_REACHED
-                rs.stop_reason = "exit 0 (cap reached)"
-            else:
-                # Non-zero exit. Check for a fresh crash artifact.
-                crash = self._find_new_crash(target, since=rs.started_at_wall)
-                if crash is not None:
-                    rs.status = Status.CRASHED
-                    rs.stop_reason = f"crash at exec {rs.pulses[-1].exec_count if rs.pulses else '?'}"
-                    rs.crash_path = crash
-                else:
-                    rs.status = Status.STOPPED
-                    rs.stop_reason = f"exit code {rc} (no crash artifact)"
+            crash = (
+                self._find_new_crash(target, since=rs.started_at_wall)
+                if rc != 0
+                else None
+            )
+            last_exec = rs.pulses[-1].exec_count if rs.pulses else None
+            status, reason, crash_path = finalize_terminal_status(
+                rc, rs.stop_reason, crash, last_exec
+            )
+            rs.status = status
+            rs.stop_reason = reason
+            rs.crash_path = crash_path
 
     def _find_new_crash(self, target: str, since: float) -> Path | None:
         """Look for crash-* files in artifacts/<target>/ modified after `since`."""
