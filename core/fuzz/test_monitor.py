@@ -31,6 +31,7 @@ from monitor import (
     parse_pulse_line,
     parse_runs_cap,
     parse_targets,
+    render_log_tail_html,
     status_badge_class,
     terminate_process_group,
 )
@@ -980,6 +981,42 @@ class TestFormatCardElapsed:
             )
             == "elapsed: 00:30"
         )
+
+
+class TestRenderLogTailHtml:
+    """Per-card stderr-tail block. Always renders a non-empty `<pre>`
+    (even on empty input) so card layout is stable across status
+    transitions, and HTML-escapes line content so a stray `<` from
+    cargo-fuzz / libFuzzer / sanitizer output can't break rendering."""
+
+    def test_empty_renders_placeholder_block(self):
+        out = render_log_tail_html([])
+        # The styled <pre> shell is present so the card doesn't visually
+        # collapse on IDLE; the body between the open and close tags is
+        # empty since there are no lines yet.
+        assert out.startswith("<pre")
+        assert out.endswith("></pre>")
+
+    def test_lines_joined_with_newlines(self):
+        out = render_log_tail_html(["one", "two", "three"])
+        assert ">one\ntwo\nthree</pre>" in out
+
+    def test_escapes_html_metacharacters(self):
+        # cargo-fuzz / sanitizer output sometimes contains angle brackets
+        # (e.g. "<unknown module>") and ampersands (e.g. shell pipelines
+        # echoed in the command line). Without escaping these would either
+        # break the HTML or silently inject markup.
+        out = render_log_tail_html(["<script>x</script>", "a & b", "c > d"])
+        assert "&lt;script&gt;x&lt;/script&gt;" in out
+        assert "a &amp; b" in out
+        assert "c &gt; d" in out
+        # And the raw forms must NOT appear.
+        assert "<script>" not in out
+        assert " & b" not in out
+
+    def test_max_height_is_parametrised(self):
+        out = render_log_tail_html(["x"], max_height_rem=12.0)
+        assert "max-height:12.0rem" in out
 
 
 class TestTerminateProcessGroup:

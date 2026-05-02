@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import html
 import json
 import os
 import re
@@ -422,6 +423,27 @@ def format_findings_summary(counts: dict[str, int], target_count: int) -> str:
     return f"Findings: {head} across {target_count} {target_word}"
 
 
+def render_log_tail_html(lines, max_height_rem: float = 8.0) -> str:
+    """Render a deque/iterable of stderr lines as a scrollable, monospaced
+    HTML block.
+
+    HTML-escapes every line so a stray `<` or `&` from cargo-fuzz output
+    can't break rendering or smuggle markup. Empty input renders an empty
+    placeholder block (rather than collapsing to zero height) so the card
+    layout is stable across IDLE -> RUNNING -> terminal transitions.
+    """
+    body = html.escape("\n".join(lines)) if lines else ""
+    return (
+        f"<pre style='margin:0; padding:4px 6px; "
+        f"max-height:{max_height_rem}rem; overflow-y:auto; "
+        f"font-family:ui-monospace,SFMono-Regular,Menlo,monospace; "
+        f"font-size:0.7rem; line-height:1.25; "
+        f"background:#f5f5f5; border-radius:3px; "
+        f"white-space:pre-wrap; word-break:break-all;'>"
+        f"{body}</pre>"
+    )
+
+
 def finalize_terminal_status(
     rc: int,
     stop_reason: str | None,
@@ -727,6 +749,13 @@ class MonitorApp:
                 value=str(prefill) if prefill else "",
             ).props("dense")
             status_label = ui.label("status: IDLE").classes(status_badge_class(Status.IDLE))
+            # `reason_label` carries the human-readable cause behind any
+            # terminal status — "exit code 101 (no crash artifact)" for
+            # DIED, "plateau at exec N" for PLATEAU, "user stopped" for
+            # STOPPED, etc. Without this the card reports *that* something
+            # ended but not *why*, forcing the user to dig in the source
+            # to find rs.stop_reason.
+            reason_label = ui.label("").classes("text-mono text-xs text-grey-7")
             # Sparkline wrapper: its `text-...` class drives the SVG's
             # `currentColor` stroke, so the polyline picks up the same
             # status palette as `status_label` (positive/grey-7/...) without
@@ -737,6 +766,13 @@ class MonitorApp:
             elapsed_label = ui.label("elapsed: —").classes("text-mono text-sm")
             progress_label = ui.label("runs: —").classes("text-mono text-sm")
             crash_label = ui.label("")  # filled in by reactive update
+            # Last 20 stderr lines. Always present so the card layout
+            # doesn't shift when a campaign transitions; `render_log_tail_html`
+            # produces a stable placeholder block when empty. This is the
+            # primary diagnostic surface when status flips to DIED — the
+            # exit-code-only reason rarely tells the full story; the
+            # cargo-fuzz/libFuzzer/sanitizer stderr does.
+            log_tail_html = ui.html(render_log_tail_html([]))
 
             # Single per-card 1 Hz tick that owns every reactive label on the
             # card. status_label was previously imperative in on_start /
@@ -795,6 +831,16 @@ class MonitorApp:
                 else:
                     crash_label.text = ""
                     crash_label.classes(replace="")
+                # `reason` is `rs.stop_reason` once a terminal status set it;
+                # blank string while RUNNING (the IDLE/RUNNING badge speaks
+                # for itself). Don't prefix when empty to avoid a stray
+                # "reason:" with no value showing on a fresh card.
+                reason_label.text = (
+                    f"reason: {rs.stop_reason}" if rs.stop_reason else ""
+                )
+                # Always render the log-tail block (even if empty) — see
+                # the placeholder rationale on the widget itself.
+                log_tail_html.set_content(render_log_tail_html(rs.log_tail))
 
             ui.timer(1.0, update_card)
 
