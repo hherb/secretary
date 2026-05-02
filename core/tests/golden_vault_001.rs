@@ -173,7 +173,7 @@ struct InputsField {
 // ---------------------------------------------------------------------------
 
 fn parse_hex(s: &str) -> Vec<u8> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         panic!("odd-length hex: {s:?}");
     }
     let mut out = Vec::with_capacity(s.len() / 2);

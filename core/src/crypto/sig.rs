@@ -55,7 +55,7 @@ use ml_dsa::{
 use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::kdf::{TAG_BLOCK_SIG, TAG_CARD_SIG, TAG_MANIFEST_SIG};
-use crate::crypto::secret::{SecretBytes, Sensitive};
+use crate::crypto::secret::{SecretBytes, Sensitive, Zeroize, ZeroizeOnDrop};
 
 // ---------------------------------------------------------------------------
 // Sizes (§14)
@@ -116,6 +116,13 @@ impl MlDsa65Public {
 /// ML-DSA-65 signing-key seed, 32 bytes. Wraps [`SecretBytes`] for
 /// zeroize-on-drop and redacted `Debug`. See module docs for why this stores
 /// the 32-byte seed rather than the 4032-byte expanded form.
+///
+/// `Zeroize` / `ZeroizeOnDrop` are derived in addition to the inner
+/// `SecretBytes` already being `ZeroizeOnDrop`: the inner drop alone is
+/// sufficient for the on-drop wipe, but the newtype derive also exposes
+/// `.zeroize()` on the outer type so callers can explicitly wipe a
+/// still-live newtype value.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MlDsa65Secret(SecretBytes);
 
 impl MlDsa65Secret {

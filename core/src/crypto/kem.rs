@@ -36,14 +36,13 @@ use ml_kem::kem::{Decapsulate, Encapsulate};
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768, MlKem768Params};
 use rand_core::{CryptoRng, RngCore};
 use x25519_dalek::{PublicKey as XPublicKey, StaticSecret as XStaticSecret};
-use zeroize::Zeroize as _;
 
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce};
 use crate::crypto::kdf::{
     hkdf_sha256_extract_and_expand, TAG_BLOCK_CONTENT_KEY_WRAP, TAG_BLOCK_KEY_WRAP, TAG_HYBRID_KEM,
     TAG_HYBRID_KEM_TRANSCRIPT,
 };
-use crate::crypto::secret::{SecretBytes, Sensitive};
+use crate::crypto::secret::{SecretBytes, Sensitive, Zeroize, ZeroizeOnDrop};
 
 // ---------------------------------------------------------------------------
 // Sizes (§14)
@@ -104,6 +103,14 @@ impl MlKem768Public {
 
 /// ML-KEM-768 secret (decapsulation) key, 2400 bytes. Wraps [`SecretBytes`]
 /// for zeroize-on-drop and redacted `Debug`.
+///
+/// `Zeroize` / `ZeroizeOnDrop` are derived in addition to the inner
+/// `SecretBytes` already being `ZeroizeOnDrop`: the inner drop alone is
+/// sufficient for the on-drop wipe, but the newtype derive also exposes
+/// `.zeroize()` on the outer type so callers can explicitly wipe a
+/// still-live newtype value (e.g. when re-using an enclosing scratch
+/// struct). Without it, only `_` / scope-end drop wipes the bytes.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MlKem768Secret(SecretBytes);
 
 impl MlKem768Secret {

@@ -283,7 +283,7 @@ mod tests {
             .phrase()
             .split_whitespace()
             .enumerate()
-            .map(|(i, w)| if i % 2 == 0 { w.to_uppercase() } else { w.to_string() })
+            .map(|(i, w)| if i.is_multiple_of(2) { w.to_uppercase() } else { w.to_string() })
             .collect::<Vec<_>>()
             .join("   \t  ");
         let parsed = parse(&messy).expect("messy input must normalize");

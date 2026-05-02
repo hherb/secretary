@@ -11,7 +11,7 @@ use secretary_core::crypto::kdf::{
 use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 
 fn hex(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "odd-length hex string");
+    assert!(s.len().is_multiple_of(2), "odd-length hex string");
     let mut out = Vec::with_capacity(s.len() / 2);
     for chunk in s.as_bytes().chunks(2) {
         out.push((nib(chunk[0]) << 4) | nib(chunk[1]));
