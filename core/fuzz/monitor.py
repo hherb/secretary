@@ -510,8 +510,18 @@ class RunState:
     target: str
     sanitizer: str  # 'asan' | 'careful'
     status: Status = Status.IDLE
-    # maxlen=64 is generous; actual K used by check_plateau is smaller.
+    # `pulses` carries every parsed event (pulse / NEW / REDUCE / INITED /
+    # DONE / RELOAD); `heartbeats` carries only the slow `pulse` heartbeat.
+    # Plateau detection consumes heartbeats — putting them in their own
+    # deque keeps the K-window from being evicted by the high-rate NEW /
+    # REDUCE traffic an active campaign emits. With a single 64-entry
+    # deque, only 1-3 heartbeats survived in the window during heavy
+    # exploration and plateau could never fire on any target with a
+    # nontrivial NEW rate. Sized at 64 even though check_plateau uses
+    # K=10 by default — leaves headroom for a higher K if the operator
+    # tunes it via .monitor-state.json.
     pulses: deque[Pulse] = field(default_factory=lambda: deque(maxlen=64))
+    heartbeats: deque[Pulse] = field(default_factory=lambda: deque(maxlen=64))
     log_tail: deque[str] = field(default_factory=lambda: deque(maxlen=20))
     runs_cap: int | None = None
     started_at: float = 0.0  # monotonic clock at subprocess spawn (for elapsed time)
@@ -640,6 +650,7 @@ class MonitorApp:
 
         # Reset state for this run.
         rs.pulses.clear()
+        rs.heartbeats.clear()
         rs.log_tail.clear()
         rs.runs_cap = runs_cap
         if runs_cap is not None:
@@ -687,6 +698,16 @@ class MonitorApp:
             pulse = parse_pulse_line(line)
             if pulse is not None:
                 rs.pulses.append(pulse)
+                # Mirror to the heartbeats deque only for `pulse` events.
+                # The plateau check works against this dedicated deque so
+                # the K-window can't be evicted by NEW / REDUCE traffic
+                # — those events fire at every coverage delta and during
+                # corpus minimization, and even a 64-deep `pulses` deque
+                # routinely retained only 1-3 heartbeats during active
+                # exploration, leaving the K=10 check unreachable on
+                # any target that wasn't already at steady state.
+                if pulse.event_type == "pulse":
+                    rs.heartbeats.append(pulse)
                 # Plateau check: when fired, SIGTERM the subprocess once.
                 # libFuzzer may emit additional pulses between SIGTERM and
                 # actual exit, and they may also satisfy check_plateau —
@@ -694,22 +715,10 @@ class MonitorApp:
                 # AND on stop_reason being unset (not already SIGTERM'd
                 # this run) avoids redundant signals and overwriting the
                 # original "plateau at exec N" reason.
-                #
-                # Filter to `pulse` event-type heartbeats only. libFuzzer
-                # also emits NEW / REDUCE / INITED / DONE / RELOAD events
-                # at every coverage delta or corpus minimization step;
-                # during active corpus minimization 10 REDUCE lines fire
-                # in quick succession at unchanged cov/corp, and a K=10
-                # plateau check that includes them would false-positive
-                # on a brief lull between coverage finds. The `pulse`
-                # event is the slow power-of-2 heartbeat libFuzzer emits
-                # specifically as a periodic monitoring signal — that's
-                # what the spec's "no growth across last K pulses" means.
-                heartbeats = [p for p in rs.pulses if p.event_type == "pulse"]
                 if (
                     proc.returncode is None
                     and rs.stop_reason is None
-                    and check_plateau(heartbeats, self.plateau_k)
+                    and check_plateau(list(rs.heartbeats), self.plateau_k)
                 ):
                     rs.stop_reason = f"plateau at exec {pulse.exec_count}"
                     # Fire-and-forget: terminate_process_group awaits the
@@ -834,16 +843,15 @@ class MonitorApp:
                 # SVG inherits it via stroke="currentColor".
                 # Sparkline uses every parsed event for high-resolution cov
                 # trend (NEW deltas show up as visible steps). The dot
-                # strip uses pulse heartbeats only — same filter as the
-                # plateau check, so the K-1 dots reflect the same signal
-                # the auto-stop is watching.
+                # strip uses the dedicated heartbeats deque — same source
+                # the plateau check reads, so the K-1 dots reflect the
+                # same signal the auto-stop is watching.
                 cov_series = [p.cov for p in rs.pulses]
                 sparkline_html.set_content(render_sparkline_svg(cov_series, 280, 36))
                 sparkline_html.classes(replace=status_badge_class(rs.status))
-                heartbeats = [p for p in rs.pulses if p.event_type == "pulse"]
                 strip_html.set_content(
                     render_plateau_strip_svg(
-                        heartbeats, self.plateau_k, frozen=rs.status != Status.RUNNING
+                        list(rs.heartbeats), self.plateau_k, frozen=rs.status != Status.RUNNING
                     )
                 )
                 pulse_label.text = format_pulse_readout(

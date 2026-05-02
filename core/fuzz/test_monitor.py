@@ -433,6 +433,7 @@ class TestRunState:
         assert rs.runs_cap is None
         assert rs.crash_path is None
         assert len(rs.pulses) == 0
+        assert len(rs.heartbeats) == 0
         assert len(rs.log_tail) == 0
 
     def test_pulses_bounded(self):
@@ -440,6 +441,31 @@ class TestRunState:
         for i in range(100):
             rs.pulses.append(Pulse(exec_count=i, cov=0, ft=0, corp=0, exec_s=0, rss=0))
         assert len(rs.pulses) == 64  # maxlen=64
+
+    def test_heartbeats_bounded(self):
+        # Sized at 64 to leave headroom for an operator-tuned plateau_k.
+        rs = RunState(target="vault_toml", sanitizer="asan")
+        for i in range(100):
+            rs.heartbeats.append(
+                Pulse(exec_count=i, cov=0, ft=0, corp=0, exec_s=0, rss=0)
+            )
+        assert len(rs.heartbeats) == 64
+
+    def test_pulses_and_heartbeats_are_independent_deques(self):
+        # Regression for the "vault_toml never plateaus" bug: prior to
+        # the split, heartbeats lived in the same 64-entry deque as
+        # NEW / REDUCE events and got evicted during active exploration.
+        # Verify the two are distinct so heartbeat history accumulates
+        # independently.
+        rs = RunState(target="vault_toml", sanitizer="asan")
+        for i in range(80):  # > maxlen
+            rs.pulses.append(
+                Pulse(exec_count=i, cov=0, ft=0, corp=0, exec_s=0, rss=0,
+                      event_type="REDUCE")
+            )
+        # heartbeats untouched even though pulses overflowed.
+        assert len(rs.heartbeats) == 0
+        assert len(rs.pulses) == 64
 
     def test_log_tail_bounded(self):
         rs = RunState(target="vault_toml", sanitizer="asan")
