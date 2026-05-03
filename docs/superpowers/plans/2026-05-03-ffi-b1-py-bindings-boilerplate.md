@@ -485,26 +485,30 @@ The two FFI unit tests appear in the workspace total (447 passed + 6 ignored aft
 ### Python layer
 
 ```bash
-# One-time setup (after first checkout, or after Cargo.toml deps change):
-uv run --directory ffi/secretary-ffi-py maturin develop --release
+# One-time setup (after first checkout): uv sync invokes the maturin
+# build-backend automatically and installs the editable wheel into
+# ffi/secretary-ffi-py/.venv/.
+uv sync --directory ffi/secretary-ffi-py
 
 # Run the smoke tests:
 uv run --directory ffi/secretary-ffi-py pytest
 ```
 
-`maturin develop --release` builds the cdylib, packages it as a Python wheel, and installs it into the uv-managed venv at `ffi/secretary-ffi-py/.venv/`. The compiled `.so` (or `.dylib` on macOS) lives in the venv's `site-packages/` — **not** in the source tree, so there are no rogue binaries to gitignore.
-
-`--release` matches the project's "always --release" posture (the underlying crypto crates are slow in debug; PyO3 + transitive deps benefit from the same posture).
+`uv sync` resolves the `[build-system] requires` table (which lists `maturin>=1.9.4,<2.0`), spins up an isolated PEP 517 build env, runs `maturin build`, and installs the resulting wheel as an editable package into the project venv at `ffi/secretary-ffi-py/.venv/`. The compiled `.so` (or `.dylib` on macOS) lives in the venv's `site-packages/` — **not** in the source tree, so there are no rogue binaries to gitignore.
 
 **Cold build** is ~30–60s on M-class hardware (compiles `pyo3` + transitive deps for the first time). **Warm rebuilds** after a `src/lib.rs` edit are ~2–3s.
 
 ### Iteration loop
+
+After editing `src/lib.rs`, you need an explicit rebuild — `uv sync` won't notice Rust source changes. Use `maturin develop` (it's in the `[dependency-groups] dev` table so `uv run` finds it):
 
 ```bash
 # Edit src/lib.rs, then:
 uv run --directory ffi/secretary-ffi-py maturin develop --release
 uv run --directory ffi/secretary-ffi-py pytest
 ```
+
+`--release` matches the project's "always --release" posture (the underlying crypto crates are slow in debug; PyO3 + transitive deps benefit from the same posture).
 
 ## Scope (B.1)
 
