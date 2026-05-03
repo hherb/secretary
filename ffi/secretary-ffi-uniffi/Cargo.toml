@@ -12,6 +12,29 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 secretary-core = { path = "../../core" }
+# uniffi semver range, not exact pin: uniffi is pre-1.0 but the crate is
+# off the crypto path (FFI marshalling only, no primitives), so the
+# `tempfile = "=3.27.0"` exact-pin discipline doesn't apply. Mirrors
+# `pyo3 = "0.28"` in the sibling secretary-ffi-py crate. See
+# secretary_next_session.md "Begin Sub-project B.1.1" decisions.
+uniffi = { version = "0.31", features = ["cli"] }
 
-[lints]
-workspace = true
+[build-dependencies]
+uniffi = { version = "0.31", features = ["build"] }
+
+# In-crate uniffi-bindgen binary. Mozilla's recommended approach: ship
+# the bindgen as a `cargo run --bin` target so the bindgen version is
+# locked to the crate's `uniffi` dep. No global install required.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+# Crate-local lint table replacing the inherited workspace
+# `unsafe_code = "forbid"`. uniffi's `include_scaffolding!()` macro
+# expands to the generated `<namespace>.uniffi.rs` file from `target/`,
+# which contains `unsafe extern "C"` blocks (the FFI bridge to the C ABI
+# is inherently unsafe). `forbid` is non-overridable by inner #[allow],
+# so this crate downgrades to `deny` and the lib.rs `#![allow(unsafe_code)]`
+# covers the macro expansion. Same pattern as secretary-ffi-py for PyO3.
+[lints.rust]
+unsafe_code = "deny"
