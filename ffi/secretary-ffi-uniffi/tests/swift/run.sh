@@ -40,9 +40,15 @@ if [[ ! -f "$CDYLIB" ]]; then
 fi
 
 # --- Step 2: regenerate Swift bindings (idempotent — safe on every run) ---
+# `--features cli` enables the in-crate uniffi-bindgen binary (gated by
+# `required-features = ["cli"]` so it stays out of default cdylib builds).
+# `--release` matches step 1's profile so cargo reuses the compiled
+# uniffi + transitive deps instead of recompiling them under the dev
+# profile — bindgen itself doesn't need optimization, but profile parity
+# saves a multi-minute second compile of the dependency tree.
 echo "==> uniffi-bindgen generate (Swift)"
 mkdir -p "$BINDINGS_DIR"
-(cd "$REPO_ROOT" && cargo run --release -p secretary-ffi-uniffi \
+(cd "$REPO_ROOT" && cargo run --release --features cli -p secretary-ffi-uniffi \
     --bin uniffi-bindgen -- generate \
     --library "$CDYLIB" \
     --language swift \

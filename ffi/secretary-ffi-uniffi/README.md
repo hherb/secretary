@@ -26,7 +26,7 @@ ffi/secretary-ffi-uniffi/tests/swift/run.sh
 The script is self-contained — it resolves paths relative to itself, so it works from any CWD. The pipeline is:
 
 1. `cargo build --release -p secretary-ffi-uniffi` — produces `target/release/libsecretary_ffi_uniffi.dylib` (the cdylib that Swift links against).
-2. `cargo run --bin uniffi-bindgen -- generate --library ... --language swift --out-dir bindings/swift` — emits three files into `ffi/secretary-ffi-uniffi/bindings/swift/`:
+2. `cargo run --release --features cli -p secretary-ffi-uniffi --bin uniffi-bindgen -- generate --library ... --language swift --out-dir bindings/swift` — emits three files into `ffi/secretary-ffi-uniffi/bindings/swift/` (`--features cli` enables the gated bindgen binary; `--release` matches step 1's profile so cargo reuses the compiled uniffi + transitive deps):
    - `secretary.swift` — user-facing Swift API (calls `add` and `version`).
    - `secretaryFFI.h` — C header for the FFI bridge symbols.
    - `secretaryFFI.modulemap` — Clang module map so `import secretaryFFI` resolves.
@@ -56,6 +56,8 @@ Bindings are deliberately not committed: regenerating them on every run keeps th
 ## In-crate `uniffi-bindgen` binary
 
 The crate ships its own `[[bin]] uniffi-bindgen` target rather than relying on a globally-installed CLI. This is Mozilla's recommended pattern for uniffi 0.30+: shipping the bindgen alongside the crate locks its version to the crate's `uniffi` dep, which prevents the version-skew bugs you hit when contributors `cargo install uniffi-bindgen-cli` at different points in time. Trade-off: each contributor runs a one-time `cargo build` of the bindgen binary; net win in determinism.
+
+The bindgen target is gated behind a crate-local `cli` feature (`required-features = ["cli"]` in `Cargo.toml`) so its clap + askama transitives don't land in the cdylib's default dependency tree. `cargo build --workspace` and downstream consumers see the cdylib without those deps; the bindgen binary is built only when the smoke-runner script (or any explicit invocation) passes `--features cli`.
 
 ## Scope (B.1.1)
 

@@ -10,6 +10,16 @@ description = "uniffi binding stub for secretary-core. Smoke-test only; full bin
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Pulls in uniffi's `cli` feature (clap + askama + transitives) for the
+# in-crate `uniffi-bindgen` binary. Off by default so a downstream
+# consumer linking the cdylib (or building the workspace with
+# `cargo build --workspace`) doesn't pay for clap. The smoke-runner
+# script (`tests/swift/run.sh`) enables it explicitly when invoking
+# `cargo run --features cli --bin uniffi-bindgen`.
+cli = ["uniffi/cli"]
+
 [dependencies]
 secretary-core = { path = "../../core" }
 # uniffi semver range, not exact pin: uniffi is pre-1.0 but the crate is
@@ -17,7 +27,7 @@ secretary-core = { path = "../../core" }
 # `tempfile = "=3.27.0"` exact-pin discipline doesn't apply. Mirrors
 # `pyo3 = "0.28"` in the sibling secretary-ffi-py crate. See
 # secretary_next_session.md "Begin Sub-project B.1.1" decisions.
-uniffi = { version = "0.31", features = ["cli"] }
+uniffi = { version = "0.31" }
 
 [build-dependencies]
 uniffi = { version = "0.31", features = ["build"] }
@@ -25,9 +35,12 @@ uniffi = { version = "0.31", features = ["build"] }
 # In-crate uniffi-bindgen binary. Mozilla's recommended approach: ship
 # the bindgen as a `cargo run --bin` target so the bindgen version is
 # locked to the crate's `uniffi` dep. No global install required.
+# `required-features = ["cli"]` keeps the bindgen out of default builds
+# so its clap/askama deps don't land in the cdylib's dependency tree.
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
+required-features = ["cli"]
 
 # Crate-local lint table replacing the inherited workspace
 # `unsafe_code = "forbid"`. uniffi's `include_scaffolding!()` macro
