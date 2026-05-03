@@ -5,6 +5,16 @@
 //! blocks (the CPython C-API bridge is inherently unsafe). The crate-local
 //! lint relaxation (workspace `forbid` → crate-local `deny`) is required
 //! because `forbid` is non-overridable by inner #[allow]; see Cargo.toml.
+//!
+//! The `#[allow]` is **crate-level** rather than item-level because the
+//! function-style `#[pymodule]` macro generates code at crate scope (an
+//! `extern "C"` PyInit symbol alongside the entry-point function); a
+//! narrower item-level `#[allow]` doesn't cover that expansion. The
+//! tradeoff: a future contributor who adds a hand-rolled `unsafe` block
+//! anywhere in this crate gets silence rather than a `deny` error. The
+//! crate is intentionally tiny and reviewed; new `unsafe` blocks should
+//! be challenged in code review.
+//!
 //! Rationale: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
 
 #![allow(unsafe_code)]
