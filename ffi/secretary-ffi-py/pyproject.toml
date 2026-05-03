@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "secretary_ffi_py"
+description = "PyO3 bindings for secretary-core (B.1 boilerplate)."
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+dynamic = ["version"]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.maturin]
+# Module name as it appears to Python (`import secretary_ffi_py`). Must
+# match the function name on `#[pymodule]` in src/lib.rs.
+module-name = "secretary_ffi_py"
+# No Cargo features declared here: PyO3 0.28 deprecated the
+# `extension-module` feature in favor of the `PYO3_BUILD_EXTENSION_MODULE`
+# environment variable, which `maturin >= 1.9.4` sets automatically when
+# building wheels. Keeping the deprecated feature would break `cargo test`
+# (libpython linking is suppressed). `--release` is passed on the maturin
+# command line (`uv run ... maturin develop --release`), matching the
+# project's "always --release" posture for the slow crypto deps.
