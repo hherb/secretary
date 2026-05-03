@@ -2,14 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Post-PR-#20-review addendum (2026-05-03):** Three review-driven fixes landed after the four-task plan below executed and are not back-ported into the per-task content — read them as overrides:
-> 1. The exposed function `sum` was renamed to `add` (avoid shadowing Python's builtin `sum()` once imported). Below references to `sum` should be read as `add`. The historical commit subject `e98f684` ("expose sum and version via #[pymodule]") preserves the original name in git history.
-> 2. The body switched from `a + b` to `a.wrapping_add(b)` and added `add_wraps_on_overflow` (Rust) plus `test_add_wraps_on_overflow` (Python) pinning `add(u32::MAX, 1) == 0`.
-> 3. `version() as u32` switched to `u32::from(version())` (lossless widening via `From`).
+> **Note (post-PR-#20-review).** This plan has been rewritten to describe the as-shipped state. Three review-driven refinements landed in commit `eace3e2`:
 >
-> **Final test counts:** `cargo test --release --workspace` → 448 + 6 ignored (was 447 + 6 in the body); pytest → 3 (was 2 in the body).
+> - **`sum` → `add`** (avoid shadowing Python's builtin `sum()` once imported). Step 2's commit subject `e98f684` ("expose sum and version via #[pymodule]") is preserved verbatim in the per-task commit-message templates for git-history accuracy; everywhere else describes the as-shipped `add` surface.
+> - **`a + b` → `a.wrapping_add(b)`** + regression test `add_wraps_on_overflow` (Rust) and `test_add_wraps_on_overflow` (Python) pinning `add(u32::MAX, 1) == 0`.
+> - **`version() as u32` → `u32::from(version())`** (lossless u16 → u32 widening via the infallible `From` impl).
+>
+> Test counts in this plan reflect the post-rename state (448 + 6 cargo / 3 pytest). A new Step 5 documents the post-review fix as its own commit (`eace3e2`).
 
-**Goal:** Wire PyO3 + maturin into [ffi/secretary-ffi-py](../../../ffi/secretary-ffi-py/) so that `import secretary_ffi_py; sum(2, 3) == 5` and `version() == 1` work end-to-end from Python — proving the binding pipeline before exposing any vault crypto in B.2.
+**Goal:** Wire PyO3 + maturin into [ffi/secretary-ffi-py](../../../ffi/secretary-ffi-py/) so that `import secretary_ffi_py; secretary_ffi_py.add(2, 3) == 5` and `secretary_ffi_py.version() == 1` work end-to-end from Python — proving the binding pipeline before exposing any vault crypto in B.2.
 
 **Architecture:** Function-style `#[pymodule]` entrypoint plus two top-level `#[pyfunction]` items in a single `src/lib.rs`. Crate-local lint relaxation (`unsafe_code = "deny"` replacing inherited workspace `forbid`) and `#![allow(unsafe_code)]` at the lib.rs top — the minimal escape hatch for PyO3's macros, which expand to `unsafe` blocks (the CPython C-API bridge is inherently unsafe). Maturin builds the wheel into a `uv`-managed venv at `ffi/secretary-ffi-py/.venv/`; the compiled `.so` lives in the venv's `site-packages/`, not in the source tree. Two test layers: Rust unit tests via `cargo test --release --workspace`, Python pytest via `uv run --directory ffi/secretary-ffi-py pytest` after `maturin develop`.
 
@@ -17,7 +18,7 @@
 
 **Spec:** [docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md](../specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md)
 
-**Worktree:** `.worktrees/feat-ffi-b1-py-bindings-boilerplate/` on branch `feat/ffi-b1-py-bindings-boilerplate`. Spec doc commit `3bc0cea` is already in place; tasks below produce commits 1–4 of the cluster.
+**Worktree:** `.worktrees/feat-ffi-b1-py-bindings-boilerplate/` on branch `feat/ffi-b1-py-bindings-boilerplate`. Spec doc commit `3bc0cea` is already in place; tasks below produce commits 1–4 of the cluster, and Step 5 records the post-review refinement (`eace3e2`).
 
 **Note on deviation from spec:** The spec doc's code sample showed the declarative `#[pymodule] mod secretary_ffi_py { ... }` style. This plan uses the function-style `#[pymodule] fn secretary_ffi_py(...)` style instead — same Python-side behaviour, but avoids the awkward inner-module-named-the-same-as-the-crate, keeps `#[pyfunction]` items at crate root for direct testability without `pub(super)` visibility games, and is the time-tested PyO3 idiom. Both styles work in PyO3 0.28; the declarative style's value (nested modules, `#[pymodule_export]`) isn't needed at B.1 scope.
 
@@ -145,7 +146,7 @@ EOF
 **Files:**
 - Modify: `ffi/secretary-ffi-py/src/lib.rs`
 
-TDD ordering: write the two failing Rust unit tests first; watch them fail (compile error — `sum` doesn't exist; `version` returns `u16` so the test against the new `u32`-returning surface fails). Then implement.
+TDD ordering: write the three failing Rust unit tests first; watch them fail (compile error — `add` doesn't exist; `version` returns `u16` so the test against the new `u32`-returning surface fails). Then implement.
 
 - [ ] **Step 1: Write the failing tests first**
 
@@ -164,8 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn sum_returns_arithmetic_sum() {
-        assert_eq!(sum(2, 3), 5);
+    fn add_returns_arithmetic_sum() {
+        assert_eq!(add(2, 3), 5);
+    }
+
+    #[test]
+    fn add_wraps_on_overflow() {
+        // Pin the wrapping contract: u32::MAX + 1 wraps to 0. A future
+        // change to checked_add / saturating_add (or a switch to PyResult
+        // ergonomics in B.2) is a deliberate test failure rather than a
+        // silent contract change.
+        assert_eq!(add(u32::MAX, 1), 0);
     }
 }
 ```
@@ -178,7 +188,7 @@ Note: the file-level `#![forbid(unsafe_code)]` from the previous version is remo
 cargo test --release --workspace --package secretary-ffi-py 2>&1 | tail -20
 ```
 
-Expected: compile error — `cannot find function 'sum' in this scope`, `cannot find function 'version' in this scope`. This proves the tests are exercising the to-be-added surface.
+Expected: compile error — `cannot find function 'add' in this scope`, `cannot find function 'version' in this scope`. This proves the tests are exercising the to-be-added surface.
 
 - [ ] **Step 3: Implement the production code**
 
@@ -206,12 +216,13 @@ pub fn version() -> u16 {
     secretary_core::version::FORMAT_VERSION
 }
 
-/// Python-exposed addition. B.1 round-trip target. Wraps on overflow in
-/// release builds (matches default Rust `+`); B.2 will reconsider when
-/// fallible crypto operations make `PyResult` first-class.
+/// Python-exposed addition. B.1 round-trip target. Uses `wrapping_add`
+/// to make the overflow contract explicit (matches default Rust `+`
+/// semantics in release builds, which silently wrap); B.2 will reconsider
+/// when fallible crypto operations make `PyResult` first-class.
 #[pyfunction]
-fn sum(a: u32, b: u32) -> u32 {
-    a + b
+fn add(a: u32, b: u32) -> u32 {
+    a.wrapping_add(b)
 }
 
 /// Python-exposed wrapper around `version()`. Renamed at the PyO3 layer
@@ -220,7 +231,7 @@ fn sum(a: u32, b: u32) -> u32 {
 #[pyfunction]
 #[pyo3(name = "version")]
 fn version_py() -> u32 {
-    version() as u32
+    u32::from(version())
 }
 
 /// `#[pymodule]` entrypoint. The function name (`secretary_ffi_py`) is the
@@ -228,7 +239,7 @@ fn version_py() -> u32 {
 /// declared in `pyproject.toml` (`[tool.maturin] module-name`).
 #[pymodule]
 fn secretary_ffi_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum, m)?)?;
+    m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(version_py, m)?)?;
     Ok(())
 }
@@ -243,8 +254,13 @@ mod tests {
     }
 
     #[test]
-    fn sum_returns_arithmetic_sum() {
-        assert_eq!(sum(2, 3), 5);
+    fn add_returns_arithmetic_sum() {
+        assert_eq!(add(2, 3), 5);
+    }
+
+    #[test]
+    fn add_wraps_on_overflow() {
+        assert_eq!(add(u32::MAX, 1), 0);
     }
 }
 ```
@@ -255,13 +271,13 @@ mod tests {
 cargo test --release --workspace --package secretary-ffi-py 2>&1 | tail -10
 ```
 
-Expected: 2 passed (`version_returns_format_version`, `sum_returns_arithmetic_sum`).
+Expected: 3 passed (`version_returns_format_version`, `add_returns_arithmetic_sum`, `add_wraps_on_overflow`).
 
 ```bash
 cargo test --release --workspace 2>&1 | grep -E "test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "passed:", passed, "failed:", failed, "ignored:", ignored}'
 ```
 
-Expected output: `passed: 447 failed: 0 ignored: 6` (was 445; +2 from the new tests).
+Expected output: `passed: 448 failed: 0 ignored: 6` (was 445; +3 from the new tests).
 
 - [ ] **Step 5: Verify clippy is still clean**
 
@@ -276,15 +292,20 @@ Expected: completes with no warnings, exit code 0.
 ```bash
 git add ffi/secretary-ffi-py/src/lib.rs
 git commit -m "$(cat <<'EOF'
-feat(ffi-py): expose sum and version via #[pymodule]
+feat(ffi-py): expose add and version via #[pymodule]
 
 Wires the PyO3 entry point: a single `secretary_ffi_py` Python
-module exposing `sum(a, b) -> u32` and `version() -> u32` (the
-latter wraps the existing Rust `version()` helper, which still
-returns u16 for Rust callers).
+module exposing `add(a, b) -> u32` (using `wrapping_add` for
+explicit overflow semantics) and `version() -> u32` (the latter
+wraps the existing Rust `version()` helper, which still returns
+u16 for Rust callers, via `u32::from(...)` for lossless widening).
 
-TDD: two #[cfg(test)] unit tests pin both surfaces. Test count
-moves from 445 to 447 (+2). Python side wires up in commit 3.
+TDD: three #[cfg(test)] unit tests pin both surfaces and the
+wrapping contract. Test count moves from 445 to 448 (+3).
+Python side wires up in commit 3.
+
+`add` rather than `sum` so the Python-side surface doesn't shadow
+the builtin once imported at module level.
 
 Removes the file-level #![forbid(unsafe_code)] (the workspace
 relaxation in Cargo.toml from the previous commit only takes
@@ -296,6 +317,12 @@ Spec: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
+```
+
+> **Note:** the as-shipped git history has commit `e98f684` with subject `feat(ffi-py): expose sum and version via #[pymodule]` — that subject is preserved verbatim in the spec's commit-cluster table for git-history accuracy. The template above is the forward-looking version a contributor re-doing this step today would write, since the as-shipped function name is `add`. Either rendering of the subject is correct depending on whether you're describing the historical commit or the as-shipped surface.
+
+```bash
+# end of Task 2 Step 6
 ```
 
 ---
@@ -324,8 +351,14 @@ import) works end-to-end.
 import secretary_ffi_py
 
 
-def test_sum_returns_arithmetic_sum() -> None:
-    assert secretary_ffi_py.sum(2, 3) == 5
+def test_add_returns_arithmetic_sum() -> None:
+    assert secretary_ffi_py.add(2, 3) == 5
+
+
+def test_add_wraps_on_overflow() -> None:
+    # Mirror the Rust unit test in src/lib.rs that pins the wrapping
+    # contract through the FFI boundary. u32::MAX = 4_294_967_295.
+    assert secretary_ffi_py.add(4_294_967_295, 1) == 0
 
 
 def test_version_matches_format_version() -> None:
@@ -391,7 +424,7 @@ uv run --directory ffi/secretary-ffi-py --no-sync pytest 2>&1 | tail -10
 
 Expected: pytest collection error — `ModuleNotFoundError: No module named 'secretary_ffi_py'` (or `error: project requires sync`, depending on uv version — either is the expected failure mode that proves the wheel isn't yet built/installed).
 
-**If you forget `--no-sync` and uv runs `sync` automatically:** the wheel will be built as part of dependency resolution (uv treats the maturin `[build-system]` as a build-backend and invokes it during sync), and pytest will go straight to PASS. That's not a bug — it's an artifact of uv's PEP 517 integration. The TDD intent (verifying the test exercises the right surface) is satisfied as long as Step 5 below shows 2 passing tests.
+**If you forget `--no-sync` and uv runs `sync` automatically:** the wheel will be built as part of dependency resolution (uv treats the maturin `[build-system]` as a build-backend and invokes it during sync), and pytest will go straight to PASS. That's not a bug — it's an artifact of uv's PEP 517 integration. The TDD intent (verifying the test exercises the right surface) is satisfied as long as Step 5 below shows 3 passing tests.
 
 - [ ] **Step 4: Build and install the wheel via `uv sync` (which invokes maturin) OR explicit `maturin develop`**
 
@@ -412,7 +445,7 @@ Expected: maturin builds the cdylib, packages as a wheel, and installs it editab
 uv run --directory ffi/secretary-ffi-py pytest 2>&1 | tail -10
 ```
 
-Expected: 2 passed (`test_sum_returns_arithmetic_sum`, `test_version_matches_format_version`). 0 failed.
+Expected: 3 passed (`test_add_returns_arithmetic_sum`, `test_add_wraps_on_overflow`, `test_version_matches_format_version`). 0 failed.
 
 - [ ] **Step 6: Verify cargo test + clippy are still clean**
 
@@ -421,7 +454,7 @@ cargo test --release --workspace 2>&1 | grep -E "test result:" | awk '{passed+=$
 cargo clippy --release --workspace -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: `passed: 447 failed: 0 ignored: 6` and clippy clean.
+Expected: `passed: 448 failed: 0 ignored: 6` and clippy clean.
 
 - [ ] **Step 7: Verify nothing accidentally got staged**
 
@@ -444,7 +477,8 @@ Closes the B.1 round-trip end-to-end. After running
 `uv run --directory ffi/secretary-ffi-py maturin develop --release`
 the maturin-built wheel installs into ffi/secretary-ffi-py/.venv/
 and `uv run --directory ffi/secretary-ffi-py pytest` asserts the
-same surface as the Rust unit tests (sum(2,3)==5, version()==1).
+same surface as the Rust unit tests (add(2,3)==5,
+add(u32::MAX,1)==0, version()==1).
 
 pyproject.toml uses maturin>=1.9.4,<2.0 as the build backend
 requires-python = ">=3.11" matches the project's available
@@ -472,7 +506,7 @@ This task is documentation only — no functional change. The README is the answ
 ```markdown
 # secretary-ffi-py
 
-PyO3 + maturin bindings for [secretary-core](../../core/). Sub-project B.1 boilerplate — proves the binding pipeline works end-to-end with two trivial round-trip functions (`sum`, `version`). Vault crypto exposure comes in B.2.
+PyO3 + maturin bindings for [secretary-core](../../core/). Sub-project B.1 boilerplate — proves the binding pipeline works end-to-end with two trivial round-trip functions (`add`, `version`). Vault crypto exposure comes in B.2.
 
 ## Build & test
 
@@ -487,7 +521,7 @@ cargo test --release --workspace
 cargo clippy --release --workspace -- -D warnings
 ```
 
-The two FFI unit tests appear in the workspace total (447 passed + 6 ignored after this crate is fully wired up).
+The three FFI unit tests appear in the workspace total (448 passed + 6 ignored after this crate is fully wired up).
 
 ### Python layer
 
@@ -523,7 +557,7 @@ Exposed Python surface:
 
 | Function | Signature | Notes |
 |---|---|---|
-| `sum(a, b)` | `(int, int) -> int` | Rust `u32 + u32`; release-wraps on overflow (B.2 will reconsider when `PyResult` becomes first-class). |
+| `add(a, b)` | `(int, int) -> int` | Rust `u32::wrapping_add`; matches default release-build `+` semantics, which silently wrap on overflow (B.2 will reconsider when `PyResult` becomes first-class). Named `add` rather than `sum` to avoid shadowing Python's builtin. |
 | `version()` | `() -> int` | Returns `secretary_core::version::FORMAT_VERSION` (currently 1). |
 
 ## What B.1 deliberately does NOT do
@@ -592,7 +626,7 @@ cargo test --release --workspace 2>&1 | grep -E "test result:" | awk '{passed+=$
 cargo clippy --release --workspace -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: `passed: 447 failed: 0 ignored: 6` and clippy clean.
+Expected: `passed: 448 failed: 0 ignored: 6` and clippy clean.
 
 - [ ] **Step 2: Python smoke sweep**
 
@@ -600,7 +634,7 @@ Expected: `passed: 447 failed: 0 ignored: 6` and clippy clean.
 uv run --directory ffi/secretary-ffi-py pytest 2>&1 | tail -10
 ```
 
-Expected: 2 passed, 0 failed.
+Expected: 3 passed, 0 failed.
 
 - [ ] **Step 3: Conformance & spec-freshness baselines unchanged**
 
@@ -617,7 +651,7 @@ Expected: conformance reports all 5 sections PASS; spec-freshness shows `96 reso
 git log --oneline main..HEAD
 ```
 
-Expected: 13 commits, all on `feat/ffi-b1-py-bindings-boilerplate`. The original 5-commit estimate (spec doc + 4 task commits) grew to 13 because mid-stream code review surfaced four corrections — the PyO3 0.28 `extension-module` deprecation, the maturin dev-deps requirement, the pytest `testpaths` declaration, and a broken `CLAUDE.md` link in the README — each fixed in its own commit per the project's "step by step, one issue per commit" preference, with matching spec/plan amendments.
+Expected: 17 commits, all on `feat/ffi-b1-py-bindings-boilerplate`. The original 5-commit estimate (spec doc + 4 task commits) grew to 16 because mid-stream code review surfaced four corrections — the PyO3 0.28 `extension-module` deprecation, the maturin dev-deps requirement, the pytest `testpaths` declaration, and a broken `CLAUDE.md` link in the README — each fixed in its own commit per the project's "step by step, one issue per commit" preference, with matching spec/plan amendments. The 17th commit (`eace3e2`) bundles three post-PR-#20-review refinements: the `sum` → `add` rename, explicit `wrapping_add` + a regression test pinning `add(u32::MAX, 1) == 0`, and `version() as u32` → `u32::from(version())`. Bundled because the three fixes are tightly coupled in the same five-line function and propagate through the same doc surface.
 
 - [ ] **Step 5: Worktree cleanup posture**
 
@@ -637,6 +671,6 @@ The implementation work is complete. Per the project's `superpowers:finishing-a-
 
 **Placeholder scan:** No "TBD", "TODO", "implement later" anywhere in the plan. Every code block is concrete; every command has expected output. ✓
 
-**Type consistency:** `sum(a: u32, b: u32) -> u32` consistent across spec, Task 2, Task 3, Task 4 README. `version() -> u16` (Rust free fn) and `version() -> u32` (Python-exposed wrapper via `version_py` Rust ident with `#[pyo3(name = "version")]` rename) consistent across Task 2 and Task 3. The `secretary_ffi_py` module name is consistent across `#[pymodule]` fn name (Task 2), `[tool.maturin] module-name` (Task 3), and `import secretary_ffi_py` (Task 3 + Task 4). ✓
+**Type consistency:** `add(a: u32, b: u32) -> u32` consistent across spec, Task 2, Task 3, Task 4 README. `version() -> u16` (Rust free fn) and `version() -> u32` (Python-exposed wrapper via `version_py` Rust ident with `#[pyo3(name = "version")]` rename) consistent across Task 2 and Task 3. The `secretary_ffi_py` module name is consistent across `#[pymodule]` fn name (Task 2), `[tool.maturin] module-name` (Task 3), and `import secretary_ffi_py` (Task 3 + Task 4). ✓
 
 No issues to fix.

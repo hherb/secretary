@@ -5,15 +5,13 @@
 **Status:** Approved — ready for implementation
 **Touches:** `ffi/secretary-ffi-py/Cargo.toml`, `ffi/secretary-ffi-py/src/lib.rs`, `ffi/secretary-ffi-py/pyproject.toml` (new), `ffi/secretary-ffi-py/tests/test_smoke.py` (new), `ffi/secretary-ffi-py/README.md` (new)
 
-## Post-PR-#20-review addendum (2026-05-03)
-
-The four session-time correction commits (`121ccb9`, `ee45c5f` + `2cac9a5`, `6ee0215`, `9755342`) are recorded in the body below where they affected the design. Three additional fixes landed during PR #20 code review and are not back-ported into the body — read them as overrides:
-
-1. **`sum` → `add`.** The exposed Rust ident `sum` shadowed Python's builtin `sum()` once imported at module level (`from secretary_ffi_py import sum`). Renamed to `add`; PyO3-side name follows the Rust ident. Below references to `sum` should be read as `add`; the historical commit subject `e98f684` ("expose sum and version via #[pymodule]") preserves the original name in git history.
-2. **`a + b` → `a.wrapping_add(b)` + regression test.** Default `+` in release builds wraps silently — the comment said so but the code didn't. Switched to explicit `wrapping_add` so intent lives in the code, with `add_wraps_on_overflow` (Rust) and `test_add_wraps_on_overflow` (Python) pinning `add(u32::MAX, 1) == 0` so any future change to `checked_add` / `saturating_add` (or B.2's `PyResult` ergonomics) is a deliberate test failure rather than a silent contract change.
-3. **`version() as u32` → `u32::from(version())`.** Lossless u16→u32 widening expressed via the infallible `From` impl rather than `as`.
-
-**Final test counts:** `cargo test --release --workspace` → 448 + 6 ignored (was 447 + 6); `uv run --directory ffi/secretary-ffi-py pytest` → 3 (was 2).
+> **Note (post-PR-#20-review).** The body of this spec has been rewritten to describe the as-shipped state. Three review-driven refinements landed in commit `eace3e2`:
+>
+> - **`sum` → `add`** (avoid shadowing Python's builtin `sum()` once imported). Step 2's commit subject `e98f684` ("expose sum and version via #[pymodule]") is preserved verbatim in the commit-cluster table for git-history accuracy; everywhere else describes the as-shipped `add` surface.
+> - **`a + b` → `a.wrapping_add(b)`** + regression test `add_wraps_on_overflow` pinning `add(u32::MAX, 1) == 0`.
+> - **`version() as u32` → `u32::from(version())`** (lossless u16 → u32 widening via the infallible `From` impl).
+>
+> Test counts in this spec reflect the post-rename state (448 + 6 cargo / 3 pytest).
 
 ## Background
 
@@ -23,19 +21,19 @@ The two FFI crates exist as stubs today: [ffi/secretary-ffi-py/](../../../ffi/se
 
 ## Goals
 
-- A single `import secretary_ffi_py` from Python returns the value of two trivial Rust functions: `sum(a, b) -> u32` and `version() -> u32`.
+- A single `import secretary_ffi_py` from Python returns the value of two trivial Rust functions: `add(a, b) -> u32` and `version() -> u32`. (`add`, not `sum`, so the Python-side surface doesn't shadow the builtin once imported at module level.)
 - The build pipeline is documented end-to-end in the FFI crate's README so the next contributor doesn't have to reverse-engineer it.
-- The existing `cargo test --release --workspace` baseline (445 + 6 ignored) gains the FFI Rust unit tests cleanly (→ 447 + 6).
+- The existing `cargo test --release --workspace` baseline (445 + 6 ignored) gains the FFI Rust unit tests cleanly (→ 448 + 6).
 - The existing `clippy --release --workspace -- -D warnings` invariant continues to hold.
 - The workspace `unsafe_code = "forbid"` invariant stays intact for `core/` and `secretary-ffi-uniffi/`. Only the PyO3 crate gets a localized relaxation, with the rationale committed.
 
 ## Non-goals (YAGNI)
 
-- **No vault crypto exposed.** No `unlock`, no `open_vault`, no `Record` types. The PyO3 surface is just `sum` + `version`. Vault crypto exposure is B.2+ and warrants its own design pass (lifetime-of-secret across the FFI boundary, zeroize discipline through Python's GC, error-type marshalling).
+- **No vault crypto exposed.** No `unlock`, no `open_vault`, no `Record` types. The PyO3 surface is just `add` + `version`. Vault crypto exposure is B.2+ and warrants its own design pass (lifetime-of-secret across the FFI boundary, zeroize discipline through Python's GC, error-type marshalling).
 - **No Swift / Kotlin smoke runners.** `secretary-ffi-uniffi` stays as the existing stub. UDL design + uniffi-bindgen wiring is B.1.1.
 - **No CI integration for the Python pytest layer.** Repo has no `.github/workflows/` yet (matches the deferred-CI pattern from `spec_test_name_freshness.py`); the FFI README documents the manual invocation.
 - **No top-level `pyproject.toml`.** Each FFI crate self-describes its Python build under its own directory.
-- **No `PyResult` / exception marshalling.** `sum` uses default `+` (debug-panics on overflow, release-wraps). Fallible surface comes with B.2.
+- **No `PyResult` / exception marshalling.** `add` uses `wrapping_add` (matches default release-build `+` semantics, which silently wrap on overflow); a regression test `add_wraps_on_overflow` pins `add(u32::MAX, 1) == 0` so saturation / `PyResult<u32>` overflow plumbing in B.2 will be a deliberate contract change. Fallible surface (and `PyResult` ergonomics) comes with B.2.
 - **No multi-version Python matrix.** Whatever `uv` resolves; pinned via `requires-python` in `pyproject.toml`.
 - **No abi3 / stable ABI.** Build for whatever Python version `uv` resolves; abi3 is a release-engineering decision for a future B.x.
 
@@ -46,9 +44,9 @@ The two FFI crates exist as stubs today: [ffi/secretary-ffi-py/](../../../ffi/se
 | File | Status | Purpose |
 |---|---|---|
 | `ffi/secretary-ffi-py/Cargo.toml` | edit | Add `pyo3 = { version = "0.28" }` (no Cargo features — see note below on `extension-module` deprecation). Replace `[lints] workspace = true` with crate-local lint table (see *Lints & invariants*). |
-| `ffi/secretary-ffi-py/src/lib.rs` | edit | Add `#[pymodule] mod secretary_ffi_py { ... }` exposing `sum(a: u32, b: u32) -> u32` and `version() -> u32`. Keep the existing free function `version()` for Rust callers and Rust unit tests. Add `#[cfg(test)] mod tests` with two unit tests. |
+| `ffi/secretary-ffi-py/src/lib.rs` | edit | Add `#[pymodule] fn secretary_ffi_py(...)` exposing `add(a: u32, b: u32) -> u32` (using `wrapping_add` for explicit-overflow semantics) and `version() -> u32`. Keep the existing free function `version()` for Rust callers and Rust unit tests. Add `#[cfg(test)] mod tests` with three unit tests (`version_returns_format_version`, `add_returns_arithmetic_sum`, `add_wraps_on_overflow`). |
 | `ffi/secretary-ffi-py/pyproject.toml` | **new** | Build-system: `maturin>=1.9.4,<2.0` (≥1.9.4 required because PyO3 0.28 deprecated the `extension-module` Cargo feature in favour of the `PYO3_BUILD_EXTENSION_MODULE` env var that maturin ≥ 1.9.4 sets automatically). Dev deps: `pytest`, `maturin` (so `uv run --directory ... maturin develop` finds it in the project venv). Module name: `secretary_ffi_py`. `requires-python = ">=3.11"`. |
-| `ffi/secretary-ffi-py/tests/test_smoke.py` | **new** | Pytest: `import secretary_ffi_py`, assert `sum(2, 3) == 5` and `version() == 1` (matches `secretary_core::version::FORMAT_VERSION`). |
+| `ffi/secretary-ffi-py/tests/test_smoke.py` | **new** | Pytest: `import secretary_ffi_py`, assert `add(2, 3) == 5`, `add(u32::MAX, 1) == 0` (wrapping contract), and `version() == 1` (matches `secretary_core::version::FORMAT_VERSION`). |
 | `ffi/secretary-ffi-py/README.md` | **new** | Documents the build / test flow per acceptance criterion 5 of NEXT_SESSION.md (the "where does the Python build product live" answer). Cites this design doc. |
 
 No files outside the FFI crate change. Root `Cargo.toml` workspace lints stay untouched. No top-level `pyproject.toml`. `secretary-ffi-uniffi` stub untouched.
@@ -59,10 +57,10 @@ Two independent layers, each runnable on its own:
 
 | Layer | Where | Runs via | Proves |
 |---|---|---|---|
-| **Rust unit tests** | `ffi/secretary-ffi-py/src/lib.rs` `#[cfg(test)] mod tests` | `cargo test --release --workspace` | The Rust functions return the expected values when called directly. Adds 2 tests to the existing 445+6 baseline → 447+6. No Python interpreter involved. |
-| **Python smoke tests** | `ffi/secretary-ffi-py/tests/test_smoke.py` | `uv run --directory ffi/secretary-ffi-py pytest` (after `maturin develop`) | The maturin-built wheel installs cleanly into a `uv` venv, `import secretary_ffi_py` works, and the same two functions return the same values when called from Python. Proves the binding pipeline end-to-end. |
+| **Rust unit tests** | `ffi/secretary-ffi-py/src/lib.rs` `#[cfg(test)] mod tests` | `cargo test --release --workspace` | The Rust functions return the expected values when called directly. Adds 3 tests to the existing 445+6 baseline → 448+6. No Python interpreter involved. |
+| **Python smoke tests** | `ffi/secretary-ffi-py/tests/test_smoke.py` | `uv run --directory ffi/secretary-ffi-py pytest` (after `uv sync` / `maturin develop`) | The maturin-built wheel installs cleanly into a `uv` venv, `import secretary_ffi_py` works, and the same two functions return the same values when called from Python — including the wrapping-overflow boundary. Proves the binding pipeline end-to-end. |
 
-The split is load-bearing: the Rust layer keeps `cargo test --release --workspace` self-contained — no `uv` / Python / maturin required. The Python layer is gated on `maturin develop` having run first, but is independent of the Rust suite. They cross-validate each other: a logic bug in `sum` fails both layers; an FFI marshalling bug fails only the Python layer; a build/install bug stops the Python layer from running at all (clear failure signal).
+The split is load-bearing: the Rust layer keeps `cargo test --release --workspace` self-contained — no `uv` / Python / maturin required. The Python layer is gated on `maturin develop` having run first, but is independent of the Rust suite. They cross-validate each other: a logic bug in `add` fails both layers; an FFI marshalling bug fails only the Python layer; a build/install bug stops the Python layer from running at all (clear failure signal).
 
 ### Build flow
 
@@ -87,7 +85,7 @@ uv run --directory ffi/secretary-ffi-py pytest
 # `maturin` is in the [dependency-groups] dev table so `uv run` finds it.)
 
 # Rust-only flow stays identical:
-cargo test --release --workspace        # 447+6 (was 445+6)
+cargo test --release --workspace        # 448+6 (was 445+6)
 cargo clippy --release --workspace -- -D warnings
 ```
 
@@ -126,19 +124,19 @@ The workspace currently sets `unsafe_code = "forbid"` ([root Cargo.toml](../../.
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn sum(a: u32, b: u32) -> u32 {
-    a + b
+fn add(a: u32, b: u32) -> u32 {
+    a.wrapping_add(b)
 }
 
 #[pyfunction]
 #[pyo3(name = "version")]
 fn version_py() -> u32 {
-    version() as u32
+    u32::from(version())
 }
 
 #[pymodule]
 fn secretary_ffi_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum, m)?)?;
+    m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(version_py, m)?)?;
     Ok(())
 }
@@ -151,30 +149,32 @@ pub fn version() -> u16 {
 }
 ```
 
-`sum`'s overflow handling: default `a + b` (debug-panics, release-wraps). Saturation / `PyResult<u32>` overflow plumbing is deferred to B.2 when fallible crypto operations make `PyResult` a first-class citizen.
+`add`'s overflow handling: explicit `wrapping_add` (matches default release-build `+` semantics, which silently wrap on overflow). The named choice puts the contract in the code rather than a comment, and a regression test `add_wraps_on_overflow` pins `add(u32::MAX, 1) == 0` so a future switch to `checked_add` / `saturating_add` is a deliberate test failure rather than a silent contract change. Saturation / `PyResult<u32>` overflow plumbing is deferred to B.2 when fallible crypto operations make `PyResult` a first-class citizen.
 
 ## Implementation plan
 
-Five commits on `feat/ffi-b1-py-bindings-boilerplate` (worktree at `.worktrees/feat-ffi-b1-py-bindings-boilerplate/`), each leaving the workspace green (`cargo test --release --workspace` + `cargo clippy --release --workspace -- -D warnings`):
+Five planned commits on `feat/ffi-b1-py-bindings-boilerplate` (worktree at `.worktrees/feat-ffi-b1-py-bindings-boilerplate/`), each leaving the workspace green (`cargo test --release --workspace` + `cargo clippy --release --workspace -- -D warnings`). A sixth row records the post-PR-#20-review refinement:
 
 | # | Title | Diff scope | Verification |
 |---|---|---|---|
 | **0** | `docs(spec): B.1 FFI Python bindings boilerplate design` | This file. | None functional. |
 | **1** | `chore(ffi-py): relax workspace unsafe_code lint and add pyo3 dep` | `ffi/secretary-ffi-py/Cargo.toml` only: replace `[lints] workspace = true` with `[lints.rust] unsafe_code = "deny"` (the only workspace lint set today); add `pyo3 = { version = "0.28" }` (no Cargo features). | Workspace builds + tests + clippy stay clean. Test count still 445+6. |
-| **2** | `feat(ffi-py): expose sum and version via #[pymodule]` | `ffi/secretary-ffi-py/src/lib.rs`: add `#[pymodule] mod secretary_ffi_py` with `#[pyfunction] sum` + `#[pyfunction] version`; add `#[cfg(test)] mod tests` with 2 Rust unit tests. | Test count moves to 447+6; clippy clean. Python side not yet exercised. |
-| **3** | `feat(ffi-py): add maturin pyproject and pytest smoke test` | New `ffi/secretary-ffi-py/pyproject.toml` and `ffi/secretary-ffi-py/tests/test_smoke.py`. | `uv run --directory ffi/secretary-ffi-py maturin develop --release` then `uv run --directory ffi/secretary-ffi-py pytest` passes. Cargo flow unchanged from commit 2. |
+| **2** | `feat(ffi-py): expose sum and version via #[pymodule]` | `ffi/secretary-ffi-py/src/lib.rs`: add `#[pymodule] fn secretary_ffi_py` with `#[pyfunction] sum` + `#[pyfunction] version`; add `#[cfg(test)] mod tests` with 2 Rust unit tests. (Subject preserved verbatim from git; the function was renamed to `add` in Step 5 below.) | Test count moves to 447+6; clippy clean. Python side not yet exercised. |
+| **3** | `feat(ffi-py): add maturin pyproject and pytest smoke test` | New `ffi/secretary-ffi-py/pyproject.toml` and `ffi/secretary-ffi-py/tests/test_smoke.py`. | `uv run --directory ffi/secretary-ffi-py maturin develop --release` then `uv run --directory ffi/secretary-ffi-py pytest` passes (2 tests). Cargo flow unchanged from commit 2. |
 | **4** | `docs(ffi-py): document build flow and B.1 scope` | New `ffi/secretary-ffi-py/README.md`: build/test commands, where the `.so` lives, what's in scope vs deferred. Cites this design doc. | None functional. |
+| **5** | `refactor(ffi-py): PR #20 review fixes — rename sum→add, pin wrapping, document uv-cache trap` (`eace3e2`) | Three review-driven refinements bundled: rename the exposed `sum` to `add` (avoid shadowing Python's builtin); switch `a + b` → `a.wrapping_add(b)` and add `add_wraps_on_overflow` (Rust) + `test_add_wraps_on_overflow` (Python) pinning the wrapping contract; switch `version() as u32` → `u32::from(version())`. Plus a docs note in the FFI README documenting the uv editable-install cache-stickiness trap surfaced while validating the rename. | Test count moves to 448+6 cargo / 3 pytest; clippy clean; conformance + spec-freshness unaffected. |
 
 **TDD ordering inside each commit:**
 - Commit 2: write the 2 Rust unit tests first, watch them fail (function not yet exposed), implement.
 - Commit 3: write `test_smoke.py` first, watch `import secretary_ffi_py` fail, run `maturin develop`, watch tests pass.
+- Commit 5: write the wrapping regression tests first (Rust + Python), watch them fail (function not yet using `wrapping_add`), implement the rename + body change together.
 
 ## Open questions
 
 None. All four session-start clarifying questions resolved:
 
 1. **Lint relaxation scope** — crate-local in `secretary-ffi-py` only.
-2. **Function surface** — `sum` + `version` (both, since `version` already exists as a free function in the stub).
+2. **Function surface** — `add` + `version`. (`version` already exists as a free function in the stub. The exposed addition was named `sum` at design time and renamed to `add` in Step 5 to avoid shadowing Python's builtin once imported at module level.)
 3. **Python tests location** — `ffi/secretary-ffi-py/tests/` (FFI crate's own subdir; preserves the `core/tests/python/` "stdlib only" clean-room invariant).
 4. **`pyproject.toml` location** — `ffi/secretary-ffi-py/pyproject.toml`, standalone (no top-level `pyproject.toml`).
 
