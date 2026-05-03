@@ -21,9 +21,31 @@ CRATE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$CRATE_DIR/../.." && pwd)"
 BINDINGS_DIR="$CRATE_DIR/bindings/kotlin"
 TARGET_DIR="$REPO_ROOT/target/release"
-CDYLIB="$TARGET_DIR/libsecretary_ffi_uniffi.dylib"
 LIB_DIR="$SCRIPT_DIR/lib"
 JAR_OUT="$SCRIPT_DIR/secretary_smoke.jar"
+
+# --- Host-specific cdylib filename (cargo emits different conventions per OS) ---
+# JNA resolves `findLibraryName("secretary") == "secretary_ffi_uniffi"` against
+# `-Djna.library.path` first, then prefixes/suffixes per platform. Cargo's
+# cdylib output matches that convention: lib<name>.dylib (macOS),
+# lib<name>.so (Linux), <name>.dll (Windows — no `lib` prefix).
+case "$(uname -s)" in
+    Darwin*)
+        CDYLIB_NAME="libsecretary_ffi_uniffi.dylib"
+        ;;
+    Linux*)
+        CDYLIB_NAME="libsecretary_ffi_uniffi.so"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        CDYLIB_NAME="secretary_ffi_uniffi.dll"
+        ;;
+    *)
+        echo "ERROR: unsupported host OS $(uname -s)" >&2
+        echo "       supported: Darwin, Linux, MINGW/MSYS/CYGWIN (Windows under bash)" >&2
+        exit 2
+        ;;
+esac
+CDYLIB="$TARGET_DIR/$CDYLIB_NAME"
 
 # --- JNA pin (single source of truth for version + integrity) ---
 # JNA is the runtime classpath dep that uniffi 0.31's Kotlin bindings
