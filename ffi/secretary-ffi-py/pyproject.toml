@@ -16,7 +16,12 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+# maturin is also declared in [build-system] requires (it's the build
+# backend that uv invokes during `uv sync` to build the cdylib wheel).
+# Listing it again here puts it in the project venv so `uv run --directory
+# ffi/secretary-ffi-py maturin develop --release` works for the iteration
+# loop without needing `uvx maturin` (which uses an unpinned tool cache).
+dev = ["pytest>=8.0", "maturin>=1.9.4,<2.0"]
 
 [tool.maturin]
 # Module name as it appears to Python (`import secretary_ffi_py`). Must
