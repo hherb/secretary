@@ -28,80 +28,80 @@ The "Verification" section (around line 375, especially the §15
 cross-language conformance contract) is the load-bearing part for
 Phase A.7.
 
-**Repo state at session start:** 445 tests pass + 6 ignored under
-`cargo test --release --workspace`; clippy clean with `-D warnings`;
-`#![forbid(unsafe_code)]` crate-wide.
+**Repo state at session start:** 451 tests pass + 6 ignored under
+`cargo test --release --workspace` (445 baseline + 3 from B.1 PyO3
+crate + 3 from B.1.1 uniffi crate); clippy clean with `-D warnings`;
+`#![forbid(unsafe_code)]` crate-wide for `core/`; both FFI crates
+(`secretary-ffi-py` for PyO3 macros, `secretary-ffi-uniffi` for
+`uniffi::include_scaffolding!()`) carry the localized
+`unsafe_code = "deny"` carve-out per CLAUDE.md's "FFI as isolated
+reviewed boundary" principle. macOS-host Swift smoke runner at
+`ffi/secretary-ffi-uniffi/tests/swift/run.sh` passes 3/3 round-trip
+assertions through the cdylib + C ABI bridge.
 
 ---
 
 ## Recommended next concrete unit of work
 
-### Begin Sub-project B.1.1 — uniffi UDL + Swift/Kotlin smoke runners
+### Begin Sub-project B.1.1.1 — Kotlin smoke runner
 
-Sub-project B.1 (Python via PyO3 + maturin) landed in
-[PR #20](https://github.com/hherb/secretary/pull/20) at squash-merge
-`a2f76b8` on 2026-05-03. The remaining half of B.1 is the uniffi side
-(Swift for iOS, Kotlin for Android). Same shape as B.1 Python but on
-the [`ffi/secretary-ffi-uniffi/`](ffi/secretary-ffi-uniffi/) crate, which
-is still a stub.
+Sub-project B.1.1 (Swift via uniffi) shipped in the
+`feat/ffi-b1-1-uniffi-boilerplate` PR (squash-merge SHA recorded in a
+post-merge follow-up commit, matching the post-PR-20 pattern at
+`ca936c6`). What remains is the Kotlin side of the same binding
+pipeline. uniffi-bindgen already emits Kotlin bindings via
+`--language kotlin`; only the JVM/JNI runner harness is missing.
 
-**Scope of B.1.1** (per [ROADMAP.md](ROADMAP.md) Sub-project B phase plan):
-single uniffi UDL describing one tiny round-trip function (e.g.
-`fn add(a: u32, b: u32) -> u32`) wired through to both Swift and
-Kotlin bindings via uniffi-bindgen. No vault crypto exposed yet —
-mirrors B.1's "prove the binding pipeline" scope. Crypto surface
-comes in B.2+.
+**Scope of B.1.1.1:** parallel to `tests/swift/main.swift` +
+`tests/swift/run.sh` but on the Kotlin/JVM side. Same `add` /
+`version` round-trip surface, same three pinned-value asserts, same
+"self-contained run.sh" property. JVM-only path — no Android emulator.
 
 **Suggested first commit cluster:**
 
-1. Workspace integration: confirm `secretary-ffi-uniffi` builds under
-   `cargo build --release --workspace` (it currently builds as an
-   empty stub).
-2. UDL design: a single uniffi UDL describing
-   `fn add(a: u32, b: u32) -> u32`; lint table mirror of
-   `secretary-ffi-py/Cargo.toml` (localized `unsafe_code = "deny"`
-   per CLAUDE.md's "FFI as isolated reviewed boundary" principle).
-3. Build outputs: `secretary_ffi_uniffi.dylib` + `bindings/{Swift,Kotlin}`
-   generated with `uniffi-bindgen`. Document where the build products
-   live in [`ffi/secretary-ffi-uniffi/README.md`](ffi/secretary-ffi-uniffi/README.md),
-   parallel to the Python README's structure.
-4. Round-trip tests:
-   - Rust unit test in the uniffi crate.
-   - macOS-host Swift smoke runner (`main.swift` + the generated
-     bindings, no iOS simulator required).
-   - Kotlin smoke runner if feasible without an Android emulator —
-     **probably defer to a B.1.1.1 follow-up commit** so B.1.1 ships as
-     Rust + Swift only.
+1. JNA classpath bootstrap (vendor `jna.jar` under `tests/kotlin/lib/`
+   with a fetch step in `run.sh`, OR Gradle wrapper, OR documented
+   one-time install — see Decisions below).
+2. `tests/kotlin/Main.kt`: top-level `main()` calling `add`, `version`
+   with three asserts (mirrors Swift smoke runner exactly).
+3. `tests/kotlin/run.sh`: cargo build → bindgen Kotlin → kotlinc →
+   JVM run; sanity-checks for kotlinc + java on PATH.
+4. README updated: replace "What B.1.1 deliberately does NOT do →
+   Kotlin smoke runner" entry with a Kotlin-layer build & test section
+   parallel to the Swift one.
+5. ROADMAP.md flipped: B.1.1.1 ⏳ → ✅; ASCII progress bar advanced.
 
-The FFI work is **bounded** — no design ambiguity, just careful
-translation of the Rust API across the boundary. **Estimate:** ~2–3
-hours focused. The hardest single sub-question is the Kotlin smoke-
-runner cost vs. value (recommend defer).
+**Estimate:** ~1.5–2 hours focused. The hardest single sub-question
+is the JNA classpath bootstrap.
 
-**Decisions to make at the start of B.1.1:**
+**Decisions to make at the start of B.1.1.1:**
 
-1. **uniffi version pin.** uniffi is still pre-1.0 (`0.x`). Pin exactly
-   (like `tempfile = "=3.27.0"` for the security-critical path) or use
-   a semver range (like `pyo3 = "0.28"` for the FFI-only path)?
-   Recommend a semver range — uniffi isn't on the crypto path either.
-2. **uniffi UDL location.** With one binding crate today, the trivial
-   answer is "one UDL inside `ffi/secretary-ffi-uniffi/`". Worth saying
-   out loud so the next contributor doesn't have to re-derive it.
-3. **Kotlin smoke runner.** macOS-host Swift loader is essentially free
-   (`swiftc main.swift -L bindings/swift ...`). Kotlin requires either
-   an emulator or a JVM-only stub harness — defer if no emulator is
-   available.
+1. **JNA distribution path.** Options:
+   - (a) Vendor a minimal `jna.jar` under
+     `ffi/secretary-ffi-uniffi/tests/kotlin/lib/` and gitignore it
+     (fetch in `run.sh`).
+   - (b) Use a Gradle wrapper at `tests/kotlin/` with one resolved
+     dep — heavier but standard.
+   - (c) Document a one-time `brew install kotlin` + manual JNA
+     install and have run.sh check for both — lightest.
+   - Recommend (a) for parity with the Swift runner's "self-contained
+     `run.sh`" property.
+2. **Kotlin compile target.** Latest stable Kotlin (2.0+) on the JVM,
+   targeting `--release 21` (matches the Android Gradle Plugin's
+   floor). No need for KMP / multiplatform here — JVM target only.
+3. **Naming convention for the entry-point.** `Main.kt` with a
+   top-level `main()` function (idiomatic).
 
 **Why this is the right next thing:** the external paid review is
 gated on calendar / availability of a reviewer with FIPS 203 / 204
-implementer experience; we don't want to be blocked on it. B.1.1
+implementer experience; we don't want to be blocked on it. B.1.1.1
 proceeds in parallel — FFI doesn't touch `core/src/`, so any spec
 clarification the external reviewer surfaces can land alongside FFI
 work without conflict.
 
 ---
 
-## Smaller pickup items (if delaying Sub-project B.1.1)
+## Smaller pickup items (if delaying Sub-project B.1.1.1)
 
 If a session has less than ~2 hours of focused time and starting B.1.1
 feels too large, these are scoped pickup items that fit in one or two
@@ -254,17 +254,24 @@ candidates for an in-session pass.
   contributors' index now anchors the Phase A.7 reviewer-handoff
   package at [`docs/manual/contributors/index.md`](docs/manual/contributors/index.md).
 - Sub-project B (FFI): **B.1 Python complete** ([PR #20](https://github.com/hherb/secretary/pull/20),
-  squash-merge `a2f76b8`, 2026-05-03). PyO3 + maturin pipeline proven
-  end-to-end with two trivial round-trip functions (`add`, `version`);
-  two-layer test discipline (Rust `#[cfg(test)]` unit tests added
-  3 → 448+6 baseline, plus 3 Python pytests via
-  `uv run --directory ffi/secretary-ffi-py pytest`). Spec at
-  [`docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md`](docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md);
-  FFI crate README at [`ffi/secretary-ffi-py/README.md`](ffi/secretary-ffi-py/README.md);
-  session handoff at [`docs/handoffs/2026-05-03-b1-ffi-py-bindings.md`](docs/handoffs/2026-05-03-b1-ffi-py-bindings.md).
-  [`ffi/secretary-ffi-uniffi/`](ffi/secretary-ffi-uniffi/) remains a
-  stub — B.1.1 (uniffi UDL + Swift smoke; Kotlin probably deferred to
-  B.1.1.1) recommended as the next concrete unit of work.
+  squash-merge `a2f76b8`, 2026-05-03) and **B.1.1 Swift via uniffi
+  complete** (PR for `feat/ffi-b1-1-uniffi-boilerplate`; squash-merge
+  SHA to be recorded post-merge). Both crates expose the same
+  `add` / `version` round-trip surface. Two-layer test discipline:
+  Rust `#[cfg(test)]` unit tests (3 added per crate → 451+6 cargo
+  baseline) plus per-crate foreign-language layer (3 Python pytests
+  via `uv run --directory ffi/secretary-ffi-py pytest`; 3 Swift
+  smoke-runner asserts via `ffi/secretary-ffi-uniffi/tests/swift/run.sh`).
+  Crate READMEs at
+  [`ffi/secretary-ffi-py/README.md`](ffi/secretary-ffi-py/README.md)
+  and [`ffi/secretary-ffi-uniffi/README.md`](ffi/secretary-ffi-uniffi/README.md);
+  session handoffs at [`docs/handoffs/2026-05-03-b1-ffi-py-bindings.md`](docs/handoffs/2026-05-03-b1-ffi-py-bindings.md)
+  and [`docs/handoffs/2026-05-03-b1-1-ffi-uniffi-swift.md`](docs/handoffs/2026-05-03-b1-1-ffi-uniffi-swift.md).
+  Both FFI crates carry the localized `unsafe_code = "deny"` carve-out
+  (`forbid` non-overridable for FFI macro expansions). What's left
+  in B.1.1: the **Kotlin smoke runner (B.1.1.1)** is the recommended
+  next concrete unit of work — uniffi-bindgen already emits Kotlin via
+  `--language kotlin`, only the JVM/JNI runner harness is missing.
 - Sub-project C (sync orchestration): not started.
 - Sub-project D (platform UIs): not started.
 
@@ -408,4 +415,42 @@ git log. The high-water marks:
   conformance + spec-freshness PASS. Workspace `unsafe_code` lint
   relaxed from `forbid` to `deny` for `secretary-ffi-py` only (PyO3
   macros expand to unsafe blocks; `forbid` is non-overridable);
-  `core/` and `secretary-ffi-uniffi/` remain `#![forbid(unsafe_code)]`.
+  `core/` and `secretary-ffi-uniffi/` remain `#![forbid(unsafe_code)]`
+  at this point in the timeline (B.1.1 later relaxes uniffi too).
+- **Sub-project B.1.1 — uniffi UDL + macOS-host Swift smoke runner
+  (2026-05-03)**: PR for `feat/ffi-b1-1-uniffi-boilerplate` (squash-
+  merge SHA recorded in a post-merge follow-up commit, matching
+  PR-#20's `ca936c6` pattern). uniffi 0.31 UDL → cdylib → Swift
+  bindings pipeline proven end-to-end with the same `add` / `version`
+  round-trip surface as B.1; no vault crypto exposed (B.2+). Five
+  commits, each independently verifiable: (1) `5d770d3` pure-Rust
+  contract for `add` + `version` with three unit tests pinning the
+  `wrapping_add` overflow contract — independent of the uniffi
+  pipeline so a later UDL/bindgen regression can't silently weaken
+  the underlying behavior; (2) `57aecae` uniffi pipeline wiring
+  (semver-range `uniffi = "0.31"` in both `[dependencies]` (with
+  `cli` feature) and `[build-dependencies]` (with `build` feature),
+  `build.rs` calling `uniffi::generate_scaffolding`, in-crate
+  `[[bin]] uniffi-bindgen` so bindgen version is locked to crate's
+  `uniffi` dep, `src/secretary.udl` namespace, `lib.rs`
+  `include_scaffolding!()` + `#![allow(unsafe_code)]` carve-out
+  mirroring secretary-ffi-py's `forbid → deny` pattern); (3) `dcb722c`
+  macOS-host Swift smoke runner at `tests/swift/main.swift` +
+  `tests/swift/run.sh` (cargo build → uniffi-bindgen Swift → swiftc
+  → run with `DYLD_LIBRARY_PATH`); (4) `fc0341e` crate README
+  parallel to the Python crate's README + three stale-line refreshes
+  in `secretary-ffi-py/README.md`; (5) `cd73b4b` top-level README
+  status table and ROADMAP refresh. Decisions made at session start:
+  semver range pin (matches `pyo3 = "0.28"` discipline, FFI off
+  crypto path), single UDL inside the crate, Kotlin smoke runner
+  deferred to B.1.1.1 ("one language at a time, regardless of what
+  is already installed"). Crate README at
+  [`ffi/secretary-ffi-uniffi/README.md`](ffi/secretary-ffi-uniffi/README.md);
+  session handoff at
+  [`docs/handoffs/2026-05-03-b1-1-ffi-uniffi-swift.md`](docs/handoffs/2026-05-03-b1-1-ffi-uniffi-swift.md).
+  Verification: 451 cargo tests + 6 ignored (448 + 3 from B.1.1
+  uniffi unit tests), clippy clean, ffi-py pytest 3 passed (no
+  regression), conformance + spec-freshness PASS, Swift smoke runner
+  3/3 PASS through cdylib + C ABI bridge. Workspace `unsafe_code`
+  lint now relaxed `forbid → deny` for **both** FFI crates;
+  `core/` remains `#![forbid(unsafe_code)]`.
