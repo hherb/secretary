@@ -892,6 +892,64 @@
         ],
         "collisions": []
       }
+    },
+    {
+      "name": "concurrent_block_unknown_collision_lex_larger_wins",
+      "description": "Block-level forward-compat (§11.2) — same shape as vector #10 but the `unknown_hex` lives on the block plaintext, not nested inside a record. Concurrent merge with empty record arrays, so the merged block is driven purely by the block-level per-key lattice join in `merge_unknown_map`. Local has block.unknown_hex={v2_collide=05, v2_local_only=01}; remote has {v2_collide=0a, v2_remote_only=02}. On v2_collide, lex-compare `0x05` < `0x0a` → remote wins. v2_local_only and v2_remote_only are kept verbatim (single-side preservation). No tombstone semantics at the block level — the §11.3 carve-out is record-level only — so this vector exercises the unguarded §11.2 path. Adds the block-level coverage that vectors #10 and #11 carry only at the record level.",
+      "merging_device_hex": "09090909090909090909090909090909",
+      "local": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [],
+          "unknown_hex": {
+            "v2_collide": "05",
+            "v2_local_only": "01"
+          }
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 }
+        ]
+      },
+      "remote": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [],
+          "unknown_hex": {
+            "v2_collide": "0a",
+            "v2_remote_only": "02"
+          }
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 }
+        ]
+      },
+      "expected": {
+        "relation": "Concurrent",
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "1111111111111111111111111111aaaa",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [],
+          "unknown_hex": {
+            "v2_collide": "0a",
+            "v2_local_only": "01",
+            "v2_remote_only": "02"
+          }
+        },
+        "vector_clock": [
+          { "device_uuid_hex": "01010101010101010101010101010101", "counter": 1 },
+          { "device_uuid_hex": "02020202020202020202020202020202", "counter": 1 },
+          { "device_uuid_hex": "09090909090909090909090909090909", "counter": 1 }
+        ],
+        "collisions": []
+      }
     }
   ]
 }

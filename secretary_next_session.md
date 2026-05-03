@@ -108,13 +108,18 @@ commits each:
    script's docstring documents the suggested CI invocation for when
    that infrastructure lands.
 
-2. **`conflict_kat.json` block-level `unknown_hex` coverage** (from
-   [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md) item
-   #4). Audit the eleven KAT vectors and confirm at least one
-   exercises non-empty *block-level* `unknown_hex` (not just
-   record-level). If none does, add a minimal vector — same shape as
-   #10 / #11 but at the block level. Drop item #4 from the polishing
-   doc in the same commit.
+2. ✅ **`conflict_kat.json` block-level `unknown_hex` coverage** —
+   landed 2026-05-03. New 12th vector
+   `concurrent_block_unknown_collision_lex_larger_wins` mirrors
+   vector #10's shape but at the block level: empty record arrays,
+   block-level `unknown_hex` with one collision (lex-larger CBOR
+   bytes win) plus two single-side preserved keys. Verified by both
+   `core/tests/conflict.rs::kat_replays_match_rust_merge` and
+   `conformance.py` Section 4. Closed item #4 from
+   [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md) in
+   the same commit. The §11.3 carve-out is record-level only — the
+   new vector documents that the block-level §11.2 path is
+   unguarded by tombstone semantics.
 
 3. **Remaining Open Item 2 polishing** (3 items at
    [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md)):
@@ -214,6 +219,9 @@ candidates for an in-session pass.
   [`core/tests/python/spec_test_name_freshness.py`](core/tests/python/spec_test_name_freshness.py)
   (allowlist holds 2 entries; `--audit-allowlist` keeps it
   self-cleaning). Run before docs/ refactors.
+- `conflict_kat.json` coverage: ✅ 12 vectors (was 11); both
+  record-level and block-level `unknown_hex` paths exercised
+  end-to-end through the §15 cross-language conformance contract.
 - Sub-project B (FFI): stubs only at [ffi/secretary-ffi-py/](ffi/secretary-ffi-py/)
   and [ffi/secretary-ffi-uniffi/](ffi/secretary-ffi-uniffi/); B.1
   recommended as the next concrete unit of work.
@@ -294,3 +302,18 @@ git log. The high-water marks:
   (identical ordering on `Copy` total-ordered keys, surrounding
   duplicate-detection invariants unchanged). Restored the project's
   "clippy clean with `-D warnings`" invariant.
+- **Block-level `unknown_hex` KAT coverage (2026-05-03)**: closed
+  pickup item #2 / [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md)
+  item #4. Added 12th vector
+  `concurrent_block_unknown_collision_lex_larger_wins` to
+  [`core/tests/data/conflict_kat.json`](core/tests/data/conflict_kat.json)
+  — block-level `unknown_hex` with empty record arrays, one
+  collision (`v2_collide=05` vs `0a`, lex-larger remote wins), plus
+  two single-side preserved keys (`v2_local_only`, `v2_remote_only`).
+  No production-code change needed: both `merge_block`'s
+  `unknown` propagation and `parse_unknown_map` already wired to
+  the block level; Python's `py_merge_block` and `_normalise_block`
+  likewise. Verified by `kat_replays_match_rust_merge` (Rust) and
+  `conformance.py` Section 4 (Python clean-room). Section #4
+  dropped from `TODO_FINAL_POLISHING.md` in the same commit per
+  the doc's "drop the section in the same commit" instruction.

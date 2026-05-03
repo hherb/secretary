@@ -73,27 +73,6 @@ Defer until Section 6 is actually being written.
 
 ---
 
-## 4. Confirm Rust block-level forward-compat KAT coverage
-
-**Where:** [core/tests/data/conflict_kat.json](core/tests/data/conflict_kat.json)
-
-PR #9 added the Python side of `unknown_hex` for `py_merge_block` plus
-`_normalise_block`, and the Rust block-level merge already uses per-key
-`merge_unknown_map` (no override at block level — no tombstone semantics).
-However, the existing KAT vectors do not appear to exercise non-empty
-block-level `unknown_hex` end-to-end — the new vectors #10 and #11 carry
-record-level `unknown_hex` only.
-
-Action: audit the 11 KAT vectors and confirm at least one exercises
-block-level `unknown_hex` with a collision + single-side preservation. If
-none does, add a minimal vector — same shape as #10 but at the block level
-rather than nested inside a record.
-
-Out of scope for PR #9 (record-level was the priority); track as a coverage
-follow-up.
-
----
-
 ## How to close items
 
 When picking one up, drop the section from this file in the same commit that
