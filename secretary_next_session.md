@@ -210,6 +210,10 @@ candidates for an in-session pass.
 - Phase A.7 internal track: ✅ all three passes closed
   (threat-model refresh, side-channel internal, memory-hygiene).
 - Phase A.7 external track: pending (paid, time-bound).
+- Spec-doc test-name freshness check: ✅ in place at
+  [`core/tests/python/spec_test_name_freshness.py`](core/tests/python/spec_test_name_freshness.py)
+  (allowlist holds 2 entries; `--audit-allowlist` keeps it
+  self-cleaning). Run before docs/ refactors.
 - Sub-project B (FFI): stubs only at [ffi/secretary-ffi-py/](ffi/secretary-ffi-py/)
   and [ffi/secretary-ffi-uniffi/](ffi/secretary-ffi-uniffi/); B.1
   recommended as the next concrete unit of work.
@@ -265,3 +269,28 @@ git log. The high-water marks:
   carry-over (the §6.1 / §6.2 spec-doc annotations had been shipped
   in `c47c17c` 2026-04-28 but the TODO had propagated through
   several next-session generations).
+- **Spec-doc test-name freshness check (2026-05-03)**: closed pickup
+  item #1. Script at [`core/tests/python/spec_test_name_freshness.py`](core/tests/python/spec_test_name_freshness.py)
+  + allowlist file (`e622365`); five recognisers (RICH `path::name`,
+  BRACE `prefix_{a,b,c}`, CONTINUATION strip-N search, QUALIFIED
+  `Type::Variant`, PATH_BARE) over docs/{crypto-design,vault-format,
+  threat-model,glossary}.md + manual/contributors/* + adr/*.md;
+  PATH_BARE restricted to test-citation-dense docs to avoid wire-
+  format-field false positives. Caught one real drift on first run:
+  row 6 of the memory-hygiene memo had `core/src/vault/orchestrators.rs::open_block`
+  but the function never existed — the reader X25519 SK rebind lives
+  inside `share_block`. Fix bundled in the same commit. CI / pre-
+  commit wiring deliberately deferred (no `.github/workflows/` or
+  `.pre-commit-config.yaml` yet); script's docstring documents the
+  suggested invocation when CI infrastructure lands. Final live run:
+  96 resolved + 0 unresolved + 2 allowlisted.
+- **Clippy 1.95.0 follow-up (2026-05-03)**: stable clippy bumped to
+  1.95.0 since the 2026-05-02 next-session snapshot, which made
+  `unnecessary_sort_by` flag six pre-existing call sites in
+  `core/src/vault/{block,manifest}.rs` (all `Copy` byte-array keys
+  like `device_uuid`, `block_uuid`, `recipient_fingerprint`).
+  Mechanical `sort_by(|a,b| a.X.cmp(&b.X))` → `sort_by_key(|e| e.X)`
+  conversion at all six sites (`8699507`); no behaviour change
+  (identical ordering on `Copy` total-ordered keys, surrounding
+  duplicate-detection invariants unchanged). Restored the project's
+  "clippy clean with `-D warnings`" invariant.
