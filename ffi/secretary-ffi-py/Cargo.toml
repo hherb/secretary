@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 secretary-core = { path = "../../core" }
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3 = { version = "0.28" }
 
 # Crate-local lint table replacing the inherited workspace `unsafe_code = "forbid"`.
 # PyO3's #[pymodule] / #[pyfunction] macros expand to user-crate code containing
