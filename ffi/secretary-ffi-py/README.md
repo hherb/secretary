@@ -67,7 +67,7 @@ find ~/.cache/uv -name "*secretary*" -exec rm -rf {} +
 uv sync --directory ffi/secretary-ffi-py
 ```
 
-`uv sync` invokes the maturin build-backend automatically and installs the editable wheel fresh, so a separate `maturin develop` is not needed after this. Same trap is expected to apply to `secretary-ffi-uniffi` once B.1.1 lands.
+`uv sync` invokes the maturin build-backend automatically and installs the editable wheel fresh, so a separate `maturin develop` is not needed after this. The trap is **specific to maturin + uv editable installs** — the sibling [secretary-ffi-uniffi](../secretary-ffi-uniffi/) crate has no equivalent (cargo + swiftc only, no Python-style sticky-install layer).
 
 ## Scope (B.1)
 
@@ -85,11 +85,11 @@ Exposed Python surface:
 - **No CI integration for the Python pytest layer.** Repo has no `.github/workflows/` yet (matches the deferred-CI pattern from `core/tests/python/spec_test_name_freshness.py`); the manual invocation above is the source of truth until CI infrastructure lands.
 - **No multi-version Python matrix.** Whatever `uv` resolves under `requires-python = ">=3.11"`.
 - **No abi3 / stable ABI.** Build for whatever Python version `uv` resolves; abi3 is a release-engineering decision for a future B.x.
-- **No Swift / Kotlin bindings.** Lives in `secretary-ffi-uniffi`; B.1.1+.
+- **No Swift / Kotlin bindings.** Lives in [secretary-ffi-uniffi](../secretary-ffi-uniffi/) (Swift landed in B.1.1; Kotlin smoke runner deferred to B.1.1.1).
 
 ## Lint discipline
 
-This crate replaces the inherited workspace `unsafe_code = "forbid"` with crate-local `unsafe_code = "deny"` (PyO3 macros expand to `unsafe` blocks; `forbid` is non-overridable). The lib.rs carries a single crate-level `#![allow(unsafe_code)]` with a comment pointing at the design doc. Workspace `forbid` stays intact for `core/` and `secretary-ffi-uniffi`.
+This crate replaces the inherited workspace `unsafe_code = "forbid"` with crate-local `unsafe_code = "deny"` (PyO3 macros expand to `unsafe` blocks; `forbid` is non-overridable). The lib.rs carries a single crate-level `#![allow(unsafe_code)]` with a comment pointing at the design doc. Workspace `forbid` stays intact for `core/`. The sibling [secretary-ffi-uniffi](../secretary-ffi-uniffi/) crate adopted the same `forbid → deny` carve-out in B.1.1 for its uniffi macro expansions.
 
 Any new `unsafe` block elsewhere in this crate would still trigger `deny` and require an explicit `#[allow]` with justification at that site.
 
