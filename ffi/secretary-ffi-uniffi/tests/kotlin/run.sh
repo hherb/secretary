@@ -118,7 +118,18 @@ if [[ ! -f "$JNA_JAR" ]]; then
 fi
 # Always verify, even on a cached jar: a corrupted local file would
 # produce a confusing kotlinc/JNA error rather than an obvious mismatch.
-ACTUAL_SHA="$(shasum -a 256 "$JNA_JAR" | awk '{print $1}')"
+# Prefer `sha256sum` (Linux coreutils, single-purpose binary); fall back
+# to `shasum -a 256` (macOS default, also widely present on Linux as a
+# Perl script). Both emit `<hash>  <path>` so the awk slice is identical.
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SHA="$(sha256sum "$JNA_JAR" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_SHA="$(shasum -a 256 "$JNA_JAR" | awk '{print $1}')"
+else
+    echo "ERROR: neither sha256sum nor shasum found in PATH" >&2
+    echo "       install GNU coreutils (Linux) or Perl shasum (macOS default)" >&2
+    exit 2
+fi
 if [[ "$ACTUAL_SHA" != "$JNA_SHA256" ]]; then
     echo "ERROR: JNA jar SHA-256 mismatch" >&2
     echo "       expected: $JNA_SHA256" >&2
