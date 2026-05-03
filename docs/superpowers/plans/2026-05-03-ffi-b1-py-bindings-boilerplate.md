@@ -6,7 +6,7 @@
 
 **Architecture:** Function-style `#[pymodule]` entrypoint plus two top-level `#[pyfunction]` items in a single `src/lib.rs`. Crate-local lint relaxation (`unsafe_code = "deny"` replacing inherited workspace `forbid`) and `#![allow(unsafe_code)]` at the lib.rs top — the minimal escape hatch for PyO3's macros, which expand to `unsafe` blocks (the CPython C-API bridge is inherently unsafe). Maturin builds the wheel into a `uv`-managed venv at `ffi/secretary-ffi-py/.venv/`; the compiled `.so` lives in the venv's `site-packages/`, not in the source tree. Two test layers: Rust unit tests via `cargo test --release --workspace`, Python pytest via `uv run --directory ffi/secretary-ffi-py pytest` after `maturin develop`.
 
-**Tech Stack:** Rust 1.87 stable, PyO3 0.28, maturin 1.7+, uv 0.6+, pytest, Python 3.11+
+**Tech Stack:** Rust 1.87 stable, PyO3 0.28, maturin 1.9.4+ (required for `PYO3_BUILD_EXTENSION_MODULE` env-var auto-set), uv 0.6+, pytest, Python 3.11+
 
 **Spec:** [docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md](../specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md)
 
@@ -439,7 +439,7 @@ the maturin-built wheel installs into ffi/secretary-ffi-py/.venv/
 and `uv run --directory ffi/secretary-ffi-py pytest` asserts the
 same surface as the Rust unit tests (sum(2,3)==5, version()==1).
 
-pyproject.toml uses maturin>=1.7,<2.0 as the build backend;
+pyproject.toml uses maturin>=1.9.4,<2.0 as the build backend
 requires-python = ">=3.11" matches the project's available
 Python (uv resolves 3.12.3 today). Module name is set to
 `secretary_ffi_py` to match the #[pymodule] entry-point name.
@@ -610,7 +610,7 @@ Expected: conformance reports all 5 sections PASS; spec-freshness shows `96 reso
 git log --oneline main..HEAD
 ```
 
-Expected: 5 commits (spec doc + 4 task commits), all on `feat/ffi-b1-py-bindings-boilerplate`.
+Expected: 13 commits, all on `feat/ffi-b1-py-bindings-boilerplate`. The original 5-commit estimate (spec doc + 4 task commits) grew to 13 because mid-stream code review surfaced four corrections — the PyO3 0.28 `extension-module` deprecation, the maturin dev-deps requirement, the pytest `testpaths` declaration, and a broken `CLAUDE.md` link in the README — each fixed in its own commit per the project's "step by step, one issue per commit" preference, with matching spec/plan amendments.
 
 - [ ] **Step 5: Worktree cleanup posture**
 

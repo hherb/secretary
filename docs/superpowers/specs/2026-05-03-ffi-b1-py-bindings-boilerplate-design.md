@@ -91,36 +91,46 @@ PyO3 0.28 deprecated the `extension-module` Cargo feature in favour of the `PYO3
 
 The workspace currently sets `unsafe_code = "forbid"` ([root Cargo.toml](../../../Cargo.toml)) and the FFI crate inherits via `[lints] workspace = true`. PyO3's `#[pymodule]` / `#[pyfunction]` macros expand to user-crate code containing `unsafe` blocks (the bridge to the CPython C-API is inherently unsafe). `forbid` is non-overridable by inner `#[allow]`, so PyO3 will fail to compile in `secretary-ffi-py` unless the inheritance is relaxed.
 
-**Decision (B.1):** the FFI crate replaces `[lints] workspace = true` with its own lint table that uses `unsafe_code = "deny"` (locally overridable per-call-site), and the `#[pymodule]` block in `lib.rs` carries `#[allow(unsafe_code)]`. The workspace only defines `[workspace.lints.rust] unsafe_code = "forbid"` today (no clippy or rustdoc lint tables), so the crate-local replacement is a single line: `[lints.rust] unsafe_code = "deny"`.
+**Decision (B.1):** the FFI crate replaces `[lints] workspace = true` with its own lint table that uses `unsafe_code = "deny"` (locally overridable per-call-site), and `lib.rs` carries a crate-level `#![allow(unsafe_code)]`. The placement is **crate-level** rather than item-level because the function-style `#[pymodule]` macro generates code at crate scope (an `extern "C"` PyInit symbol alongside the entry-point function), which an item-level `#[allow]` doesn't cover. The workspace only defines `[workspace.lints.rust] unsafe_code = "forbid"` today (no clippy or rustdoc lint tables), so the crate-local replacement is a single line: `[lints.rust] unsafe_code = "deny"`.
 
 **Why this scope:** matches CLAUDE.md's existing principle: *"If a primitive truly needs FFI, isolate it in its own crate behind a reviewed boundary."* Workspace `forbid` stays intact for `core/` and `secretary-ffi-uniffi`. Any new `unsafe` block elsewhere in the FFI crate would still trigger a `deny` error and require an explicit `#[allow]` with justification.
 
 **The macro site:**
 
 ```rust
+//! Python bindings for secretary-core via PyO3.
+//!
+//! The crate-level `#![allow(unsafe_code)]` is the minimal escape hatch
+//! for PyO3's #[pymodule] / #[pyfunction] macros, which expand to unsafe
+//! blocks (the CPython C-API bridge is inherently unsafe). The crate-local
+//! lint relaxation (workspace `forbid` → crate-local `deny`) is required
+//! because `forbid` is non-overridable by inner #[allow]; see Cargo.toml.
+//!
+//! The `#[allow]` is **crate-level** rather than item-level because the
+//! function-style `#[pymodule]` macro generates code at crate scope (an
+//! `extern "C"` PyInit symbol alongside the entry-point function); a
+//! narrower item-level `#[allow]` doesn't cover that expansion.
+
+#![allow(unsafe_code)]
+
 use pyo3::prelude::*;
 
-/// Python-callable surface for secretary-core.
-///
-/// The crate-local lint relaxation (`unsafe_code = "deny"` instead of
-/// the workspace `forbid`) and the `#[allow(unsafe_code)]` here are
-/// the minimal escape hatch needed for PyO3's #[pymodule] / #[pyfunction]
-/// macros to compile. Rationale: see
-/// docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
-#[allow(unsafe_code)]
+#[pyfunction]
+fn sum(a: u32, b: u32) -> u32 {
+    a + b
+}
+
+#[pyfunction]
+#[pyo3(name = "version")]
+fn version_py() -> u32 {
+    version() as u32
+}
+
 #[pymodule]
-mod secretary_ffi_py {
-    use pyo3::prelude::*;
-
-    #[pyfunction]
-    fn sum(a: u32, b: u32) -> u32 {
-        a + b
-    }
-
-    #[pyfunction]
-    fn version() -> u32 {
-        super::version() as u32
-    }
+fn secretary_ffi_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(sum, m)?)?;
+    m.add_function(wrap_pyfunction!(version_py, m)?)?;
+    Ok(())
 }
 
 /// Smoke test: returns the vault format version exposed by the core crate.
