@@ -111,6 +111,12 @@ fi
 
 # --- Step 3: fetch JNA (pinned, integrity-verified) ---
 mkdir -p "$LIB_DIR"
+# Idempotent cleanup of any half-written download from a prior aborted
+# run. Without this, a curl killed mid-stream leaves a stale .tmp file
+# that's never cleaned up (the rename below only fires on curl success).
+# `rm -f` is a no-op when the file doesn't exist, so this is safe to
+# fire on every exit path including the happy one.
+trap 'rm -f "$JNA_JAR.tmp"' EXIT
 if [[ ! -f "$JNA_JAR" ]]; then
     echo "==> fetching jna-${JNA_VERSION}.jar from Maven Central"
     curl -fsSL "$JNA_URL" -o "$JNA_JAR.tmp"
