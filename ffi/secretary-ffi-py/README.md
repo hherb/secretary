@@ -73,4 +73,4 @@ Any new `unsafe` block elsewhere in this crate would still trigger `deny` and re
 
 - Design: [docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md](../../docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md)
 - Plan: [docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md](../../docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md)
-- Project convention: [CLAUDE.md](../../CLAUDE.md) (FFI as isolated reviewed boundary; "always --release" posture; uv exclusive)
+- Project conventions inherited from the wider codebase: FFI crates are the isolated reviewed boundary for `unsafe_code` relaxation; all cargo invocations use `--release` (the underlying crypto crates are slow in debug); Python tooling is `uv` exclusively (never `pip`).
