@@ -1945,7 +1945,8 @@ def py_merge_unknown_map(local_unk: dict, remote_unk: dict) -> dict:
         elif l_hex is not None:
             out[key] = bytes.fromhex(l_hex).hex()
         else:
-            out[key] = bytes.fromhex(r_hex).hex()  # type: ignore[arg-type]
+            assert r_hex is not None
+            out[key] = bytes.fromhex(r_hex).hex()
     return out
 
 

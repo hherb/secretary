@@ -7,29 +7,9 @@ to be picked up when adjacent code is next touched.
 
 ---
 
-## 1. Replace `# type: ignore[arg-type]` in `py_merge_unknown_map` with an explicit assert
+## 1. Lift the cross-language hex compare pattern into a helper if a second hex-bearing KAT field appears
 
-**Where:** [core/tests/python/conformance.py:955](core/tests/python/conformance.py#L955)
-
-The fall-through branch in `py_merge_unknown_map` ends with:
-
-```python
-out[key] = bytes.fromhex(r_hex).hex()  # type: ignore[arg-type]
-```
-
-`r_hex` is guaranteed non-`None` at that point because `all_keys` is the union
-of both sides' keys and the prior `elif l_hex is not None` branch already
-handled the local-only case — so at least one side is present. An explicit
-`assert r_hex is not None` would convince mypy without the suppression comment
-and document the invariant inline.
-
-Stylistic, not material. Pick up next time the function is touched.
-
----
-
-## 2. Lift the cross-language hex compare pattern into a helper if a second hex-bearing KAT field appears
-
-**Where:** [core/tests/python/conformance.py:921-956](core/tests/python/conformance.py#L921-L956) (`py_merge_unknown_map`)
+**Where:** [core/tests/python/conformance.py:1914-1949](core/tests/python/conformance.py#L1914-L1949) (`py_merge_unknown_map`)
 
 The case-insensitivity bug fixed in commit `2cb7202` (raw string compare on hex
 disagreeing with Rust's `u8::from_str_radix` byte-level decoding) is currently
@@ -48,9 +28,9 @@ Out of scope for this PR — only one call site exists today.
 
 ---
 
-## 3. Extract a `_record_pass_fail()` helper if Section 6 lands
+## 2. Extract a `_record_pass_fail()` helper if Section 6 lands
 
-**Where:** [core/tests/python/conformance.py:1116-1176](core/tests/python/conformance.py#L1116-L1176)
+**Where:** [core/tests/python/conformance.py:2381-2441](core/tests/python/conformance.py#L2381-L2441)
 (Section 5 — `section5_unknown_map_case_insensitivity`)
 
 Each Section 5 sub-test follows the same shape:
