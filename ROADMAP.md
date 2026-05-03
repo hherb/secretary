@@ -10,9 +10,9 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ---
 
-## Where we are: 2026-05-02
+## Where we are: 2026-05-03
 
-Sub-project A is feature-complete for v1; Phase A.7's three **internal** hardening passes are now closed and the external (paid) review track is the only Phase A.7 work remaining. Phase A.6 / PR-C landed the CRDT merge primitives (`core/src/vault/conflict.rs`: `clock_relation`, `merge_vector_clocks`, `merge_record`, `merge_block`) plus a record-level `tombstoned_at_ms` "death-clock" that closes the three-way-merge associativity gap that naive tombstone-on-tie semantics leave open. PR #9 added the polishing pass: a bidirectional defensive clamp on `tombstoned_at_ms`, tag-canonicalisation on the LWW-clone path, and a clean-room Python `py_merge_unknown_map` for the record-level `unknown` map — extending the §15 cross-language KAT to **eleven** vectors (`core/tests/data/conflict_kat.json`). Definition-of-Done item #3 in the design anchor (commutativity + associativity + idempotence under random sequences of edits) is satisfied across the *full* record domain — arbitrary tombstones, arbitrary resurrection sequences, arbitrary record-level `unknown` keys — proven by four `proptest` properties (commutativity, associativity, idempotence, and PR #9's well-formedness Property L) at default 256 cases each in `core/tests/proptest.rs`.
+Sub-project A is feature-complete for v1; Phase A.7's three **internal** hardening passes are closed and the external (paid) review track is the only Phase A.7 work remaining. **Sub-project B is now in flight**: B.1 (FFI binding boilerplate) is complete on the Python side — PyO3 + maturin wired up, two trivial round-trip functions (`add`, `version`) exposed, two-layer test discipline (Rust unit tests via `cargo test`, Python pytest via `uv run --directory ffi/secretary-ffi-py pytest`) operational. Swift / Kotlin via uniffi is deferred to B.1.1. No vault crypto exposed yet — that's B.2. Phase A.6 / PR-C landed the CRDT merge primitives (`core/src/vault/conflict.rs`: `clock_relation`, `merge_vector_clocks`, `merge_record`, `merge_block`) plus a record-level `tombstoned_at_ms` "death-clock" that closes the three-way-merge associativity gap that naive tombstone-on-tie semantics leave open. PR #9 added the polishing pass: a bidirectional defensive clamp on `tombstoned_at_ms`, tag-canonicalisation on the LWW-clone path, and a clean-room Python `py_merge_unknown_map` for the record-level `unknown` map — extending the §15 cross-language KAT to **eleven** vectors (`core/tests/data/conflict_kat.json`). Definition-of-Done item #3 in the design anchor (commutativity + associativity + idempotence under random sequences of edits) is satisfied across the *full* record domain — arbitrary tombstones, arbitrary resurrection sequences, arbitrary record-level `unknown` keys — proven by four `proptest` properties (commutativity, associativity, idempotence, and PR #9's well-formedness Property L) at default 256 cases each in `core/tests/proptest.rs`.
 
 Phase A.7 work since 2026-05-01:
 
@@ -26,12 +26,12 @@ PR #10 (earlier, 2026-05-01) added a thirteen-chapter [cryptography primer](docs
 
 ```
 [================================================================] Sub-project A — Rust core (feature-complete; A.7 internal track closed; external review pending)
-[                                                                ] Sub-project B — FFI bindings
+[========                                                        ] Sub-project B — FFI bindings (B.1 Python complete; B.1.1 Swift/Kotlin pending; B.2+ vault crypto pending)
 [                                                                ] Sub-project C — Sync orchestration
 [                                                                ] Sub-project D — Platform UIs
 ```
 
-445 tests pass + 6 ignored under `cargo test --release --workspace`. Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide. Every cryptographic primitive is pinned against published KATs; the CRDT merge layer is additionally proven on the full record domain (including arbitrary record-level `unknown`) by four `proptest` properties. Both `golden_vault_001/` (full crypto) and `conflict_kat.json` (merge semantics, eleven vectors) are verified end-to-end by the Rust suite and by the stdlib-only Python conformance script. The two internal-audit memos are the principal handoff documents for the paid external review.
+448 tests pass + 6 ignored under `cargo test --release --workspace` (445 + 3 from the new B.1 PyO3 unit tests). Clippy is clean with `-D warnings`. `#![forbid(unsafe_code)]` is crate-wide for `core/` and `secretary-ffi-uniffi/`; the new `secretary-ffi-py/` crate carries a localized `unsafe_code = "deny"` (PyO3 macros expand to unsafe blocks; `forbid` is non-overridable) per CLAUDE.md's "FFI as isolated reviewed boundary" principle. Every cryptographic primitive is pinned against published KATs; the CRDT merge layer is additionally proven on the full record domain (including arbitrary record-level `unknown`) by four `proptest` properties. Both `golden_vault_001/` (full crypto) and `conflict_kat.json` (merge semantics, twelve vectors) are verified end-to-end by the Rust suite and by the stdlib-only Python conformance script. The two internal-audit memos are the principal handoff documents for the paid external review. The Python pytest layer (3 tests, `uv run --directory ffi/secretary-ffi-py pytest`) cross-validates the FFI binding pipeline.
 
 ---
 
@@ -120,21 +120,22 @@ End of Sub-project A: Rust core is feature-complete for v1, audited (internally)
 
 ---
 
-## Sub-project B — FFI bindings ⏳ (planned)
+## Sub-project B — FFI bindings 🚧 (B.1 Python complete; rest planned)
 
 The Rust core is exposed to platform languages via two binding paths:
 
-- **PyO3** ([ffi/python](ffi/) — to be created): Python bindings for the desktop / web client. Async-aware where the underlying API is.
-- **uniffi**: Swift bindings for iOS, Kotlin bindings for Android — same UDL, two outputs.
+- **PyO3** ([ffi/secretary-ffi-py](ffi/secretary-ffi-py/)): Python bindings for the desktop / web client. Async-aware where the underlying API is.
+- **uniffi** ([ffi/secretary-ffi-uniffi](ffi/secretary-ffi-uniffi/) — stub): Swift bindings for iOS, Kotlin bindings for Android — same UDL, two outputs.
 
 Phase plan:
 
-- **B.1** — UDL design + binding boilerplate, hello-world round-trip on each platform.
-- **B.2** — Vault unlock + open exposed across all three languages.
+- **B.1 (Python)** ✅ — PyO3 + maturin binding pipeline proven end-to-end with two trivial round-trip functions (`add`, `version`). Two-layer test discipline (Rust unit tests + Python pytest) operational. Spec at [docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md](docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md); FFI crate README at [ffi/secretary-ffi-py/README.md](ffi/secretary-ffi-py/README.md).
+- **B.1.1 (Swift / Kotlin via uniffi)** ⏳ — UDL design + uniffi-bindgen wiring + smoke tests on macOS-host / Android emulator. Same shape as B.1 but on the uniffi crate.
+- **B.2** — Vault unlock + open exposed across all three languages. First fallible operations (`PyResult` ergonomics, exception marshalling), first secret-bearing types across the FFI boundary (zeroize discipline through Python's GC).
 - **B.3** — Block save / share / open exposed.
 - **B.4** — Conformance: same `golden_vault_001/` test runs in Python and Rust and Swift and Kotlin and produces bit-identical results.
 
-Sub-project B is bounded work — there is no design ambiguity, just careful translation. It can proceed in parallel with the Sub-project A audit if reviewers find a willing volunteer.
+Sub-project B is bounded work — there is no design ambiguity, just careful translation. It can proceed in parallel with the Sub-project A external review track.
 
 ---
 

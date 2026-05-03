@@ -12,6 +12,15 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 secretary-core = { path = "../../core" }
+pyo3 = { version = "0.28" }
 
-[lints]
-workspace = true
+# Crate-local lint table replacing the inherited workspace `unsafe_code = "forbid"`.
+# PyO3's #[pymodule] / #[pyfunction] macros expand to user-crate code containing
+# unsafe blocks (the CPython C-API bridge is inherently unsafe). `forbid` is
+# non-overridable by inner #[allow], so this crate downgrades to `deny` and the
+# lib.rs `#![allow(unsafe_code)]` covers the macro expansions. The workspace
+# only sets `unsafe_code = "forbid"` today (no clippy / rustdoc lint tables),
+# so this single line is the entire crate-local table.
+# Decision: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
+[lints.rust]
+unsafe_code = "deny"

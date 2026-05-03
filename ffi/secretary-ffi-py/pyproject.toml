@@ -1,0 +1,45 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "secretary_ffi_py"
+description = "PyO3 bindings for secretary-core (B.1 boilerplate)."
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+dynamic = ["version"]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[dependency-groups]
+# maturin is also declared in [build-system] requires (it's the build
+# backend that uv invokes during `uv sync` to build the cdylib wheel).
+# Listing it again here puts it in the project venv so `uv run --directory
+# ffi/secretary-ffi-py maturin develop --release` works for the iteration
+# loop without needing `uvx maturin` (which uses an unpinned tool cache).
+dev = ["pytest>=8.0", "maturin>=1.9.4,<2.0"]
+
+[tool.pytest.ini_options]
+# Pin test discovery to the tests/ directory. Without this, pytest's
+# rootdir autodetection can produce different values depending on the
+# `uv run --directory` entry point or the presence of a future
+# tests/conftest.py — both of which would surface as confusing "no tests
+# collected" / "tests collected from wrong path" failures rather than as
+# the actual problem (test discovery rules unspecified).
+testpaths = ["tests"]
+
+[tool.maturin]
+# Module name as it appears to Python (`import secretary_ffi_py`). Must
+# match the function name on `#[pymodule]` in src/lib.rs.
+module-name = "secretary_ffi_py"
+# No Cargo features declared here: PyO3 0.28 deprecated the
+# `extension-module` feature in favor of the `PYO3_BUILD_EXTENSION_MODULE`
+# environment variable, which `maturin >= 1.9.4` sets automatically when
+# building wheels. Keeping the deprecated feature would break `cargo test`
+# (libpython linking is suppressed). `--release` is passed on the maturin
+# command line (`uv run ... maturin develop --release`), matching the
+# project's "always --release" posture for the slow crypto deps.
