@@ -121,25 +121,38 @@ commits each:
    new vector documents that the block-level §11.2 path is
    unguarded by tombstone semantics.
 
-3. **Remaining Open Item 2 polishing** (3 items at
-   [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md)):
-   - Replace `# type: ignore[arg-type]` in `py_merge_unknown_map`
-     with an explicit `assert r_hex is not None`.
+3. **Remaining Open Item 2 polishing** (sub-item 1 ✅ landed
+   2026-05-03 in [PR #19](https://github.com/hherb/secretary/pull/19),
+   commit `8280a21`; sub-items 2 and 3 remain conditionally deferred
+   at [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md)):
+   - ✅ Replaced `# type: ignore[arg-type]` in `py_merge_unknown_map`
+     with an explicit `assert r_hex is not None`. Section 1 dropped
+     from `TODO_FINAL_POLISHING.md` per the doc's "drop the section
+     in the same commit" instruction. Stale line-number anchors in
+     the two surviving sections refreshed at the same time.
    - Lift the cross-language hex compare pattern into a
      `hex_lex_compare` / `hex_canonicalise` helper *if* a second
-     hex-bearing KAT field appears.
+     hex-bearing KAT field appears. (Conditional defer; no second
+     hex-bearing field exists today.)
    - Extract a `_record_pass_fail()` helper *if* a Section 6 with
-     5+ sub-tests lands.
+     5+ sub-tests lands. (Conditional defer; no Section 6 today.)
 
-   None are urgent; pick up when adjacent code is next touched.
+   The two surviving sub-items have no actionable trigger today;
+   `TODO_FINAL_POLISHING.md` deletes itself when both close.
 
-4. **A.7 doc consolidation.** The two internal-audit memos at
-   [docs/manual/contributors/](docs/manual/contributors/) read in
-   isolation today. Worth a small `index.md` (or extending the
-   existing primer index) that points at all three Phase A.7 outputs
-   — the differential-replay protocol, side-channel audit,
-   memory-hygiene audit — as the "what to give the external
-   reviewer" handoff package.
+4. ✅ **A.7 doc consolidation** — landed 2026-05-03 in
+   [PR #19](https://github.com/hherb/secretary/pull/19),
+   commit `56021fd`. New
+   [`docs/manual/contributors/index.md`](docs/manual/contributors/index.md)
+   gives per-memo scope + "when to read this" guidance for all three
+   Phase A.7 outputs (differential-replay protocol, side-channel
+   audit, memory-hygiene audit), and explicitly calls out the trio
+   as the principal handoff package for the planned external paid
+   review. Also documents the maintenance discipline: preserve each
+   memo's scope/methodology when extending; new findings outside an
+   existing scope go into a new memo, not glued onto the side. Spec-
+   freshness check now scans 14 docs (was 13) without false
+   positives.
 
 ---
 
@@ -222,6 +235,11 @@ candidates for an in-session pass.
 - `conflict_kat.json` coverage: ✅ 12 vectors (was 11); both
   record-level and block-level `unknown_hex` paths exercised
   end-to-end through the §15 cross-language conformance contract.
+- Pickup-item polishing: ✅ items #3 (sub-item 1) and #4 closed in
+  [PR #19](https://github.com/hherb/secretary/pull/19) (2026-05-03).
+  `TODO_FINAL_POLISHING.md` down to 2 conditionally-deferred sections;
+  contributors' index now anchors the Phase A.7 reviewer-handoff
+  package at [`docs/manual/contributors/index.md`](docs/manual/contributors/index.md).
 - Sub-project B (FFI): stubs only at [ffi/secretary-ffi-py/](ffi/secretary-ffi-py/)
   and [ffi/secretary-ffi-uniffi/](ffi/secretary-ffi-uniffi/); B.1
   recommended as the next concrete unit of work.
@@ -317,3 +335,30 @@ git log. The high-water marks:
   `conformance.py` Section 4 (Python clean-room). Section #4
   dropped from `TODO_FINAL_POLISHING.md` in the same commit per
   the doc's "drop the section in the same commit" instruction.
+- **Pickup items #3 and #4 (2026-05-03)**:
+  [PR #19](https://github.com/hherb/secretary/pull/19) — two
+  commits closing the smaller pickup items in advance of starting
+  Sub-project B.1.
+  - **Item #3 sub-item 1 (`8280a21`):** replaced
+    `# type: ignore[arg-type]` in `py_merge_unknown_map`'s
+    fall-through branch with explicit `assert r_hex is not None`,
+    enforcing the documented invariant at runtime and documenting
+    it inline. Section 1 dropped from
+    `docs/TODO_FINAL_POLISHING.md`; stale line-number anchors in
+    the surviving sections refreshed (`py_merge_unknown_map` had
+    moved from 921-956 → 1914-1949; Section 5 from 1116-1176 →
+    2381-2441). Sub-items 2 and 3 remain conditionally deferred
+    (no second hex-bearing KAT field, no Section 6).
+  - **Item #4 (`56021fd`):** new
+    [`docs/manual/contributors/index.md`](docs/manual/contributors/index.md)
+    as the entry point for the Phase A.7 reviewer-handoff package
+    (differential-replay protocol, side-channel audit, memory-
+    hygiene audit). Per-memo scope + "when to read this" guidance,
+    relationship to the planned external paid review, and the
+    maintenance discipline (preserve methodology when extending;
+    new findings outside an existing scope go into a new memo).
+    Spec-freshness check now scans 14 docs (was 13) without
+    introducing false positives. User-facing primer + hardening
+    guide explicitly cross-linked but distinct.
+  - Verification: 445 cargo tests + 6 ignored, clippy clean,
+    conformance + spec-freshness PASS.
