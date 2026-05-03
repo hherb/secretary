@@ -37,7 +37,7 @@ The two FFI crates exist as stubs today: [ffi/secretary-ffi-py/](../../../ffi/se
 |---|---|---|
 | `ffi/secretary-ffi-py/Cargo.toml` | edit | Add `pyo3 = { version = "0.28" }` (no Cargo features — see note below on `extension-module` deprecation). Replace `[lints] workspace = true` with crate-local lint table (see *Lints & invariants*). |
 | `ffi/secretary-ffi-py/src/lib.rs` | edit | Add `#[pymodule] mod secretary_ffi_py { ... }` exposing `sum(a: u32, b: u32) -> u32` and `version() -> u32`. Keep the existing free function `version()` for Rust callers and Rust unit tests. Add `#[cfg(test)] mod tests` with two unit tests. |
-| `ffi/secretary-ffi-py/pyproject.toml` | **new** | Build-system: `maturin>=1.7,<2.0`. Dev deps: `pytest`. Module name: `secretary_ffi_py`. `requires-python = ">=3.11"`. |
+| `ffi/secretary-ffi-py/pyproject.toml` | **new** | Build-system: `maturin>=1.9.4,<2.0` (≥1.9.4 required because PyO3 0.28 deprecated the `extension-module` Cargo feature in favour of the `PYO3_BUILD_EXTENSION_MODULE` env var that maturin ≥ 1.9.4 sets automatically). Dev deps: `pytest`, `maturin` (so `uv run --directory ... maturin develop` finds it in the project venv). Module name: `secretary_ffi_py`. `requires-python = ">=3.11"`. |
 | `ffi/secretary-ffi-py/tests/test_smoke.py` | **new** | Pytest: `import secretary_ffi_py`, assert `sum(2, 3) == 5` and `version() == 1` (matches `secretary_core::version::FORMAT_VERSION`). |
 | `ffi/secretary-ffi-py/README.md` | **new** | Documents the build / test flow per acceptance criterion 5 of NEXT_SESSION.md (the "where does the Python build product live" answer). Cites this design doc. |
 
