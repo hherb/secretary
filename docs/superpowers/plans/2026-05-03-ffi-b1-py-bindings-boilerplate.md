@@ -352,7 +352,12 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+# maturin is also declared in [build-system] requires (it's the build
+# backend that uv invokes during `uv sync` to build the cdylib wheel).
+# Listing it again here puts it in the project venv so `uv run --directory
+# ffi/secretary-ffi-py maturin develop --release` works for the iteration
+# loop without needing `uvx maturin` (which uses an unpinned tool cache).
+dev = ["pytest>=8.0", "maturin>=1.9.4,<2.0"]
 
 [tool.maturin]
 # Module name as it appears to Python (`import secretary_ffi_py`). Must
@@ -367,24 +372,32 @@ module-name = "secretary_ffi_py"
 # project's "always --release" posture for the slow crypto deps.
 ```
 
-- [ ] **Step 3: Sync the uv environment and run pytest; confirm import fails**
+- [ ] **Step 3: Run pytest BEFORE `uv sync` to observe the failing import**
 
 Run from worktree root:
 
 ```bash
-uv sync --directory ffi/secretary-ffi-py
-uv run --directory ffi/secretary-ffi-py pytest 2>&1 | tail -10
+# Without uv sync first — the venv either doesn't exist yet or doesn't
+# have secretary_ffi_py installed. This is the TDD "watch it fail" step.
+uv run --directory ffi/secretary-ffi-py --no-sync pytest 2>&1 | tail -10
 ```
 
-Expected: pytest collection error — `ModuleNotFoundError: No module named 'secretary_ffi_py'`. This proves the test runner is reaching the right place and the failure mode is exactly "the wheel hasn't been installed yet."
+Expected: pytest collection error — `ModuleNotFoundError: No module named 'secretary_ffi_py'` (or `error: project requires sync`, depending on uv version — either is the expected failure mode that proves the wheel isn't yet built/installed).
 
-- [ ] **Step 4: Build and install the wheel via maturin develop**
+**If you forget `--no-sync` and uv runs `sync` automatically:** the wheel will be built as part of dependency resolution (uv treats the maturin `[build-system]` as a build-backend and invokes it during sync), and pytest will go straight to PASS. That's not a bug — it's an artifact of uv's PEP 517 integration. The TDD intent (verifying the test exercises the right surface) is satisfied as long as Step 5 below shows 2 passing tests.
+
+- [ ] **Step 4: Build and install the wheel via `uv sync` (which invokes maturin) OR explicit `maturin develop`**
 
 ```bash
+# Option A (canonical for first-time setup): let uv sync do the build
+uv sync --directory ffi/secretary-ffi-py 2>&1 | tail -10
+
+# Option B (canonical for iteration after editing src/lib.rs): explicit
+# maturin develop. Requires maturin in dev deps (see Step 2's pyproject.toml).
 uv run --directory ffi/secretary-ffi-py maturin develop --release 2>&1 | tail -10
 ```
 
-Expected: prints something like `📦 Built wheel for ... to .../target/wheels/secretary_ffi_py-...-cp...whl` and `🛠 Installed secretary_ffi_py-0.1.0`. Cold build will take ~30–60s; warm rebuilds are ~2–3s.
+Expected: maturin builds the cdylib, packages as a wheel, and installs it editable into the project's `.venv/`. You'll see `📦 Built wheel for CPython 3.12 to .../secretary_ffi_py-...-cp312-cp312-...whl` and `🛠 Installed secretary_ffi_py-0.1.0`. Cold build is ~30–60s (compiles `pyo3` + transitive deps); warm rebuilds are ~2–3s.
 
 - [ ] **Step 5: Run pytest; confirm it now passes**
 

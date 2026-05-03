@@ -59,16 +59,11 @@ The split is load-bearing: the Rust layer keeps `cargo test --release --workspac
 The single answer to NEXT_SESSION.md's hardest sub-question (criterion 5):
 
 ```bash
-# One-time setup (after first checkout, or after Cargo.toml deps change):
-uv run --directory ffi/secretary-ffi-py maturin develop --release
-
-# Builds the cdylib, packages as a Python wheel, installs into the
-# uv-managed venv at ffi/secretary-ffi-py/.venv/. After this:
-#   - The compiled .so/.dylib lives inside the venv's site-packages,
-#     NOT in the source tree (no rogue .so files to .gitignore).
-#   - `import secretary_ffi_py` works from anything `uv run`-ed in
-#     that directory.
-#   - `--release` matches the project's "always --release" posture.
+# One-time setup (after first checkout): uv sync invokes the maturin
+# build-backend automatically and installs the editable wheel into
+# ffi/secretary-ffi-py/.venv/. The .so lives in the venv's site-packages,
+# NOT in the source tree (no rogue .so files to .gitignore).
+uv sync --directory ffi/secretary-ffi-py
 
 # Run the smoke tests:
 uv run --directory ffi/secretary-ffi-py pytest
@@ -77,7 +72,9 @@ uv run --directory ffi/secretary-ffi-py pytest
 #   1. Edit src/lib.rs
 #   2. uv run --directory ffi/secretary-ffi-py maturin develop --release
 #   3. uv run --directory ffi/secretary-ffi-py pytest
-# (Step 2 is incremental; ~2-3s after the first cold build.)
+# (Step 2 is incremental; ~2-3s after the first cold build. `--release`
+# matches the project's "always --release" posture for the slow crypto deps.
+# `maturin` is in the [dependency-groups] dev table so `uv run` finds it.)
 
 # Rust-only flow stays identical:
 cargo test --release --workspace        # 447+6 (was 445+6)
