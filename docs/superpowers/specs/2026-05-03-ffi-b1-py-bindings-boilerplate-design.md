@@ -35,7 +35,7 @@ The two FFI crates exist as stubs today: [ffi/secretary-ffi-py/](../../../ffi/se
 
 | File | Status | Purpose |
 |---|---|---|
-| `ffi/secretary-ffi-py/Cargo.toml` | edit | Add `pyo3 = { version = "0.28", features = ["extension-module"] }`. Replace `[lints] workspace = true` with crate-local lint table (see *Lints & invariants*). |
+| `ffi/secretary-ffi-py/Cargo.toml` | edit | Add `pyo3 = { version = "0.28" }` (no Cargo features — see note below on `extension-module` deprecation). Replace `[lints] workspace = true` with crate-local lint table (see *Lints & invariants*). |
 | `ffi/secretary-ffi-py/src/lib.rs` | edit | Add `#[pymodule] mod secretary_ffi_py { ... }` exposing `sum(a: u32, b: u32) -> u32` and `version() -> u32`. Keep the existing free function `version()` for Rust callers and Rust unit tests. Add `#[cfg(test)] mod tests` with two unit tests. |
 | `ffi/secretary-ffi-py/pyproject.toml` | **new** | Build-system: `maturin>=1.7,<2.0`. Dev deps: `pytest`. Module name: `secretary_ffi_py`. `requires-python = ">=3.11"`. |
 | `ffi/secretary-ffi-py/tests/test_smoke.py` | **new** | Pytest: `import secretary_ffi_py`, assert `sum(2, 3) == 5` and `version() == 1` (matches `secretary_core::version::FORMAT_VERSION`). |
@@ -85,6 +85,10 @@ cargo clippy --release --workspace -- -D warnings
 ```
 
 The build artifact lives in `ffi/secretary-ffi-py/.venv/site-packages/`. The repo's existing [.gitignore](../../../.gitignore) already covers `.venv` (line 73), `*.so` (line 7), and `.pytest_cache/` (line 51) — no `.gitignore` change needed.
+
+### `extension-module` deprecation (PyO3 0.28)
+
+PyO3 0.28 deprecated the `extension-module` Cargo feature in favour of the `PYO3_BUILD_EXTENSION_MODULE` environment variable, which `maturin >= 1.9.4` sets automatically when building wheels. The deprecated feature suppresses linking against `libpython`, which is correct for the produced extension `.so` (the host Python interpreter already provides those symbols) but breaks `cargo test` because the test binary is a standalone executable that DOES need libpython at link time. Removing the feature makes both `cargo test` and `maturin develop` work simultaneously, and is the path now recommended by upstream PyO3 ([FAQ entry](https://pyo3.rs/main/faq.html)). Consequence for B.1: the PyO3 dep declaration is `pyo3 = { version = "0.28" }` with no `features` array, and `pyproject.toml` declares `requires = ["maturin>=1.9.4,<2.0"]` (not `>=1.7`) so the env-var auto-set is guaranteed.
 
 ### Lints & invariants
 
@@ -139,7 +143,7 @@ Five commits on `feat/ffi-b1-py-bindings-boilerplate` (worktree at `.worktrees/f
 | # | Title | Diff scope | Verification |
 |---|---|---|---|
 | **0** | `docs(spec): B.1 FFI Python bindings boilerplate design` | This file. | None functional. |
-| **1** | `chore(ffi-py): relax workspace unsafe_code lint and add pyo3 dep` | `ffi/secretary-ffi-py/Cargo.toml` only: replace `[lints] workspace = true` with `[lints.rust] unsafe_code = "deny"` (the only workspace lint set today); add `pyo3 = { version = "0.28", features = ["extension-module"] }`. | Workspace builds + tests + clippy stay clean. Test count still 445+6. |
+| **1** | `chore(ffi-py): relax workspace unsafe_code lint and add pyo3 dep` | `ffi/secretary-ffi-py/Cargo.toml` only: replace `[lints] workspace = true` with `[lints.rust] unsafe_code = "deny"` (the only workspace lint set today); add `pyo3 = { version = "0.28" }` (no Cargo features). | Workspace builds + tests + clippy stay clean. Test count still 445+6. |
 | **2** | `feat(ffi-py): expose sum and version via #[pymodule]` | `ffi/secretary-ffi-py/src/lib.rs`: add `#[pymodule] mod secretary_ffi_py` with `#[pyfunction] sum` + `#[pyfunction] version`; add `#[cfg(test)] mod tests` with 2 Rust unit tests. | Test count moves to 447+6; clippy clean. Python side not yet exercised. |
 | **3** | `feat(ffi-py): add maturin pyproject and pytest smoke test` | New `ffi/secretary-ffi-py/pyproject.toml` and `ffi/secretary-ffi-py/tests/test_smoke.py`. | `uv run --directory ffi/secretary-ffi-py maturin develop --release` then `uv run --directory ffi/secretary-ffi-py pytest` passes. Cargo flow unchanged from commit 2. |
 | **4** | `docs(ffi-py): document build flow and B.1 scope` | New `ffi/secretary-ffi-py/README.md`: build/test commands, where the `.so` lives, what's in scope vs deferred. Cites this design doc. | None functional. |
