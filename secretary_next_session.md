@@ -36,61 +36,74 @@ Phase A.7.
 
 ## Recommended next concrete unit of work
 
-### Begin Sub-project B.1 — FFI bindings boilerplate
+### Begin Sub-project B.1.1 — uniffi UDL + Swift/Kotlin smoke runners
 
-The natural sequential next phase. Sub-project A is done; Sub-project B
-(FFI bindings via PyO3 + uniffi) is the first downstream phase that
-unblocks everything else (Sub-project C sync orchestration, Sub-project
-D platform UIs).
+Sub-project B.1 (Python via PyO3 + maturin) landed in
+[PR #20](https://github.com/hherb/secretary/pull/20) at squash-merge
+`a2f76b8` on 2026-05-03. The remaining half of B.1 is the uniffi side
+(Swift for iOS, Kotlin for Android). Same shape as B.1 Python but on
+the [`ffi/secretary-ffi-uniffi/`](ffi/secretary-ffi-uniffi/) crate, which
+is still a stub.
 
-**Scope of B.1** (per [ROADMAP.md](ROADMAP.md) Sub-project B phase plan):
-UDL design + binding boilerplate + a hello-world round-trip on each
-platform. No vault crypto exposed yet — just prove the binding pipeline
-works end-to-end.
+**Scope of B.1.1** (per [ROADMAP.md](ROADMAP.md) Sub-project B phase plan):
+single uniffi UDL describing one tiny round-trip function (e.g.
+`fn add(a: u32, b: u32) -> u32`) wired through to both Swift and
+Kotlin bindings via uniffi-bindgen. No vault crypto exposed yet —
+mirrors B.1's "prove the binding pipeline" scope. Crypto surface
+comes in B.2+.
 
-The two binding crates exist as stubs today:
+**Suggested first commit cluster:**
 
-- [ffi/secretary-ffi-py/](ffi/secretary-ffi-py/) — PyO3 bindings (Python
-  desktop / web client).
-- [ffi/secretary-ffi-uniffi/](ffi/secretary-ffi-uniffi/) — uniffi
-  bindings (one UDL → Swift for iOS, Kotlin for Android).
-
-**Suggested first commit cluster** (what an in-session pass would aim
-for):
-
-1. Workspace integration: ensure both FFI crates build under
-   `cargo build --release --workspace`. The current stubs may or may
-   not — verify first.
-2. UDL design: a single uniffi UDL describing one tiny round-trip
-   function (e.g. `fn sum(a: u32, b: u32) -> u32`) for the
-   uniffi crate; the equivalent `#[pyfunction]` in the PyO3 crate.
-3. Build outputs: `secretary_ffi_uniffi.dylib` (or `.so`) +
-   `bindings/{Swift,Kotlin}` generated with uniffi-bindgen; a
-   `secretary_ffi_py.so` Python extension importable as
-   `import secretary_ffi_py`.
-4. Round-trip tests: a Rust unit test that calls the function directly,
-   plus a Python `pytest` and (if feasible in-session) a
-   Swift / Kotlin smoke runner that loads the generated bindings and
-   asserts the same return value.
+1. Workspace integration: confirm `secretary-ffi-uniffi` builds under
+   `cargo build --release --workspace` (it currently builds as an
+   empty stub).
+2. UDL design: a single uniffi UDL describing
+   `fn add(a: u32, b: u32) -> u32`; lint table mirror of
+   `secretary-ffi-py/Cargo.toml` (localized `unsafe_code = "deny"`
+   per CLAUDE.md's "FFI as isolated reviewed boundary" principle).
+3. Build outputs: `secretary_ffi_uniffi.dylib` + `bindings/{Swift,Kotlin}`
+   generated with `uniffi-bindgen`. Document where the build products
+   live in [`ffi/secretary-ffi-uniffi/README.md`](ffi/secretary-ffi-uniffi/README.md),
+   parallel to the Python README's structure.
+4. Round-trip tests:
+   - Rust unit test in the uniffi crate.
+   - macOS-host Swift smoke runner (`main.swift` + the generated
+     bindings, no iOS simulator required).
+   - Kotlin smoke runner if feasible without an Android emulator —
+     **probably defer to a B.1.1.1 follow-up commit** so B.1.1 ships as
+     Rust + Swift only.
 
 The FFI work is **bounded** — no design ambiguity, just careful
-translation of the Rust API across the boundary. The hardest single
-question is "where does the Python build product live so that
-`uv run` can import it" — solvable but worth scoping carefully on the
-first attempt.
+translation of the Rust API across the boundary. **Estimate:** ~2–3
+hours focused. The hardest single sub-question is the Kotlin smoke-
+runner cost vs. value (recommend defer).
+
+**Decisions to make at the start of B.1.1:**
+
+1. **uniffi version pin.** uniffi is still pre-1.0 (`0.x`). Pin exactly
+   (like `tempfile = "=3.27.0"` for the security-critical path) or use
+   a semver range (like `pyo3 = "0.28"` for the FFI-only path)?
+   Recommend a semver range — uniffi isn't on the crypto path either.
+2. **uniffi UDL location.** With one binding crate today, the trivial
+   answer is "one UDL inside `ffi/secretary-ffi-uniffi/`". Worth saying
+   out loud so the next contributor doesn't have to re-derive it.
+3. **Kotlin smoke runner.** macOS-host Swift loader is essentially free
+   (`swiftc main.swift -L bindings/swift ...`). Kotlin requires either
+   an emulator or a JVM-only stub harness — defer if no emulator is
+   available.
 
 **Why this is the right next thing:** the external paid review is
 gated on calendar / availability of a reviewer with FIPS 203 / 204
-implementer experience; we don't want to be blocked on it. Starting
-B.1 in parallel keeps progress moving on bounded work, and any spec
+implementer experience; we don't want to be blocked on it. B.1.1
+proceeds in parallel — FFI doesn't touch `core/src/`, so any spec
 clarification the external reviewer surfaces can land alongside FFI
-work without conflict (the FFI crate doesn't touch `core/src/` code).
+work without conflict.
 
 ---
 
-## Smaller pickup items (if delaying Sub-project B)
+## Smaller pickup items (if delaying Sub-project B.1.1)
 
-If a session has less than ~2 hours of focused time and starting B.1
+If a session has less than ~2 hours of focused time and starting B.1.1
 feels too large, these are scoped pickup items that fit in one or two
 commits each:
 
@@ -240,9 +253,18 @@ candidates for an in-session pass.
   `TODO_FINAL_POLISHING.md` down to 2 conditionally-deferred sections;
   contributors' index now anchors the Phase A.7 reviewer-handoff
   package at [`docs/manual/contributors/index.md`](docs/manual/contributors/index.md).
-- Sub-project B (FFI): stubs only at [ffi/secretary-ffi-py/](ffi/secretary-ffi-py/)
-  and [ffi/secretary-ffi-uniffi/](ffi/secretary-ffi-uniffi/); B.1
-  recommended as the next concrete unit of work.
+- Sub-project B (FFI): **B.1 Python complete** ([PR #20](https://github.com/hherb/secretary/pull/20),
+  squash-merge `a2f76b8`, 2026-05-03). PyO3 + maturin pipeline proven
+  end-to-end with two trivial round-trip functions (`add`, `version`);
+  two-layer test discipline (Rust `#[cfg(test)]` unit tests added
+  3 → 448+6 baseline, plus 3 Python pytests via
+  `uv run --directory ffi/secretary-ffi-py pytest`). Spec at
+  [`docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md`](docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md);
+  FFI crate README at [`ffi/secretary-ffi-py/README.md`](ffi/secretary-ffi-py/README.md);
+  session handoff at [`docs/handoffs/2026-05-03-b1-ffi-py-bindings.md`](docs/handoffs/2026-05-03-b1-ffi-py-bindings.md).
+  [`ffi/secretary-ffi-uniffi/`](ffi/secretary-ffi-uniffi/) remains a
+  stub — B.1.1 (uniffi UDL + Swift smoke; Kotlin probably deferred to
+  B.1.1.1) recommended as the next concrete unit of work.
 - Sub-project C (sync orchestration): not started.
 - Sub-project D (platform UIs): not started.
 
@@ -362,3 +384,28 @@ git log. The high-water marks:
     guide explicitly cross-linked but distinct.
   - Verification: 445 cargo tests + 6 ignored, clippy clean,
     conformance + spec-freshness PASS.
+- **Sub-project B.1 — FFI Python bindings boilerplate (2026-05-03)**:
+  [PR #20](https://github.com/hherb/secretary/pull/20) — squash-merge
+  `a2f76b8`. PyO3 + maturin pipeline proven end-to-end with two
+  trivial round-trip functions (`add`, `version`); no vault crypto
+  exposed (B.2+). 15 commits squashed; four mid-stream code-review
+  corrections each as their own commit per project policy:
+  (1) PyO3 0.28 `extension-module` Cargo feature deprecated in favour
+  of the `PYO3_BUILD_EXTENSION_MODULE` env var auto-set by maturin
+  ≥ 1.9.4; (2) maturin needed in `[dependency-groups] dev` not just
+  `[build-system] requires` so `uv run --directory ... maturin develop`
+  resolves; (3) explicit `[tool.pytest.ini_options] testpaths = ["tests"]`
+  to pin pytest discovery; (4) replaced broken `[CLAUDE.md](../../CLAUDE.md)`
+  link in the FFI README (CLAUDE.md is local-only) with an inline
+  conventions summary. Spec at
+  [`docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md`](docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md);
+  plan at
+  [`docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md`](docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md);
+  session handoff at
+  [`docs/handoffs/2026-05-03-b1-ffi-py-bindings.md`](docs/handoffs/2026-05-03-b1-ffi-py-bindings.md).
+  Verification: 448 cargo tests + 6 ignored (445 + 3 from B.1
+  PyO3 unit tests), clippy clean, ffi-py pytest 3 passed,
+  conformance + spec-freshness PASS. Workspace `unsafe_code` lint
+  relaxed from `forbid` to `deny` for `secretary-ffi-py` only (PyO3
+  macros expand to unsafe blocks; `forbid` is non-overridable);
+  `core/` and `secretary-ffi-uniffi/` remain `#![forbid(unsafe_code)]`.
