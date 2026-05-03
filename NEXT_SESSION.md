@@ -27,10 +27,7 @@ Sub-project B.1" as next work).
 
 ### Commits (this consolidation session)
 
-To be filled in once the consolidation commit lands. Expected one
-commit:
-
-- `docs(next-session): consolidate post-PR-20 state — B.1 done, B.1.1 next`
+- `be36f5d` — `docs(next-session): consolidate post-PR-20 state — B.1 done, B.1.1 next`
 
 ### What changed
 
