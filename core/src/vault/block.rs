@@ -665,7 +665,7 @@ const _: () = {
 /// likely indicates a caller bug.
 pub fn encode_header(header: &BlockHeader) -> Result<Vec<u8>, BlockError> {
     let mut sorted: Vec<VectorClockEntry> = header.vector_clock.clone();
-    sorted.sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+    sorted.sort_by_key(|e| e.device_uuid);
     // Detect duplicates after sorting — adjacent equal device_uuids.
     for w in sorted.windows(2) {
         if w[0].device_uuid == w[1].device_uuid {
@@ -1238,7 +1238,7 @@ pub fn encode_recipient_table(
     }
 
     let mut sorted: Vec<RecipientWrap> = recipients.to_vec();
-    sorted.sort_by(|a, b| a.recipient_fingerprint.cmp(&b.recipient_fingerprint));
+    sorted.sort_by_key(|w| w.recipient_fingerprint);
     for w in sorted.windows(2) {
         if w[0].recipient_fingerprint == w[1].recipient_fingerprint {
             return Err(BlockError::DuplicateRecipient {
@@ -1665,7 +1665,7 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // We sort `wraps` here too so that the recipient list inside the
     // returned BlockFile matches what would be emitted on disk byte-
     // for-byte, and so the AAD computed below matches.
-    wraps.sort_by(|a, b| a.recipient_fingerprint.cmp(&b.recipient_fingerprint));
+    wraps.sort_by_key(|w| w.recipient_fingerprint);
     for w in wraps.windows(2) {
         if w[0].recipient_fingerprint == w[1].recipient_fingerprint {
             return Err(BlockError::DuplicateRecipient {

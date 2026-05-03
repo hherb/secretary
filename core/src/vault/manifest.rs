@@ -454,7 +454,7 @@ fn manifest_to_entries(m: &Manifest) -> Result<Vec<(Value, Value)>, ManifestErro
 /// Encode a vector clock array sorted ascending by `device_uuid`.
 fn vector_clock_to_value(vc: &[VectorClockEntry]) -> Result<Value, ManifestError> {
     let mut sorted: Vec<&VectorClockEntry> = vc.iter().collect();
-    sorted.sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+    sorted.sort_by_key(|e| e.device_uuid);
 
     let items: Result<Vec<Value>, ManifestError> = sorted
         .into_iter()
@@ -478,7 +478,7 @@ fn vector_clock_to_value(vc: &[VectorClockEntry]) -> Result<Value, ManifestError
 
 fn blocks_to_value(blocks: &[BlockEntry]) -> Result<Value, ManifestError> {
     let mut sorted: Vec<&BlockEntry> = blocks.iter().collect();
-    sorted.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+    sorted.sort_by_key(|e| e.block_uuid);
 
     let items: Result<Vec<Value>, ManifestError> = sorted
         .into_iter()
@@ -538,7 +538,7 @@ fn block_entry_to_value(entry: &BlockEntry) -> Result<Value, ManifestError> {
 
 fn trash_to_value(trash: &[TrashEntry]) -> Result<Value, ManifestError> {
     let mut sorted: Vec<&TrashEntry> = trash.iter().collect();
-    sorted.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+    sorted.sort_by_key(|e| e.block_uuid);
 
     let items: Result<Vec<Value>, ManifestError> = sorted
         .into_iter()
