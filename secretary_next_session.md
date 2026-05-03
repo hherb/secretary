@@ -94,16 +94,19 @@ If a session has less than ~2 hours of focused time and starting B.1
 feels too large, these are scoped pickup items that fit in one or two
 commits each:
 
-1. **Spec-doc test-name freshness CI check.** Surfaced 2026-05-02:
-   the §5 verification trace in `docs/threat-model.md` had drifted
-   (4 stale test names + ~20 missing entries) before the threat-model
-   refresh pass. A small mechanical CI script would catch the drift
-   early — extract every backticked identifier from `docs/*.md` whose
-   pattern looks like a Rust function name, then `grep -r` for it
-   under `core/`. Anything that doesn't resolve is either a stale
-   spec citation or a renamed test. Concrete deliverable: a `uv run`
-   script at `core/tests/python/spec_test_name_freshness.py` plus a
-   workflow / pre-commit hook integration. Low risk, useful guard.
+1. ✅ **Spec-doc test-name freshness CI check** — landed 2026-05-03.
+   Script at [`core/tests/python/spec_test_name_freshness.py`](core/tests/python/spec_test_name_freshness.py)
+   plus per-citation allowlist at [`core/tests/python/spec_freshness_allowlist.txt`](core/tests/python/spec_freshness_allowlist.txt).
+   Ships in a CI-ready state with `--self-test`, `--quiet`, `--verbose`,
+   `--audit-allowlist`, and `--list-files` modes; exit codes mirror
+   `conformance.py`. Caught one real drift on first run (`open_block` →
+   `share_block` in `memory-hygiene-audit-internal.md` row 6). Allowlist
+   currently holds 2 entries (one prose negation in §11.4 of
+   crypto-design.md, one KAT vector key referenced in threat-model.md).
+   Workflow / pre-commit hook integration deliberately deferred — repo
+   has no `.github/workflows/` or `.pre-commit-config.yaml` yet; the
+   script's docstring documents the suggested CI invocation for when
+   that infrastructure lands.
 
 2. **`conflict_kat.json` block-level `unknown_hex` coverage** (from
    [docs/TODO_FINAL_POLISHING.md](docs/TODO_FINAL_POLISHING.md) item

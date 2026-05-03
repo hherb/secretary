@@ -1,0 +1,20 @@
+# spec_freshness_allowlist — one citation per line.
+#
+# Format:
+#     # reason: <single-line justification>
+#     <doc-relative-path>::<exact-backtick-span>
+#
+# A `# reason:` line MUST immediately precede each entry. Blank lines are
+# OK between entries; comment lines (other than `# reason:`) are not
+# allowed inside an entry. The `# reason:` requirement is enforced at parse
+# time so dead allowlist entries can't accumulate silently.
+#
+# Run `uv run core/tests/python/spec_test_name_freshness.py --audit-allowlist`
+# to flag entries whose underlying citation now resolves (i.e. the citation
+# has been fixed and the allowlist entry is now stale and should be removed).
+
+# reason: prose negation in §11.4 — `_conflicts` is what the wire format does NOT carry, leading-underscore is field-name convention not a continuation suffix
+docs/crypto-design.md::_conflicts
+
+# reason: KAT vector key in core/tests/data/conflict_kat.json (line 806), not a Rust fn name
+docs/threat-model.md::concurrent_tombstone_wins_preserves_live_unknown

@@ -128,7 +128,7 @@ pattern used elsewhere in the crate
 | 3 | `core/src/unlock/mod.rs::open_with_password` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
 | 4 | `core/src/unlock/mod.rs::open_with_recovery` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
 | 5 | `core/src/vault/orchestrators.rs::save_block` | author Ed25519 SK temp `*expose()` | bind to `ed_sk_bytes`, zeroize after move |
-| 6 | `core/src/vault/orchestrators.rs::open_block` | reader X25519 SK temp `*expose()` | bind to `x_sk_bytes`, zeroize after move |
+| 6 | `core/src/vault/orchestrators.rs::share_block` | reader X25519 SK temp `*expose()` | bind to `x_sk_bytes`, zeroize after move |
 | 7 | `core/src/vault/block.rs::encrypt_block` | BCK key temp `*bck.expose()` | bind to `bck_key_bytes`, zeroize after move |
 | 8 | `core/src/vault/block.rs::decrypt_block` | BCK key temp `*bck.expose()` | bind to `bck_key_bytes`, zeroize after move |
 | 9 | `core/src/crypto/kem.rs::encap` | X25519 shared-secret bytes from `ss_x_raw.to_bytes()` | bind to `ss_x_bytes`, zeroize after move |
