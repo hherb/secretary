@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Post-PR-#20-review addendum (2026-05-03):** Three review-driven fixes landed after the four-task plan below executed and are not back-ported into the per-task content — read them as overrides:
+> 1. The exposed function `sum` was renamed to `add` (avoid shadowing Python's builtin `sum()` once imported). Below references to `sum` should be read as `add`. The historical commit subject `e98f684` ("expose sum and version via #[pymodule]") preserves the original name in git history.
+> 2. The body switched from `a + b` to `a.wrapping_add(b)` and added `add_wraps_on_overflow` (Rust) plus `test_add_wraps_on_overflow` (Python) pinning `add(u32::MAX, 1) == 0`.
+> 3. `version() as u32` switched to `u32::from(version())` (lossless widening via `From`).
+>
+> **Final test counts:** `cargo test --release --workspace` → 448 + 6 ignored (was 447 + 6 in the body); pytest → 3 (was 2 in the body).
+
 **Goal:** Wire PyO3 + maturin into [ffi/secretary-ffi-py](../../../ffi/secretary-ffi-py/) so that `import secretary_ffi_py; sum(2, 3) == 5` and `version() == 1` work end-to-end from Python — proving the binding pipeline before exposing any vault crypto in B.2.
 
 **Architecture:** Function-style `#[pymodule]` entrypoint plus two top-level `#[pyfunction]` items in a single `src/lib.rs`. Crate-local lint relaxation (`unsafe_code = "deny"` replacing inherited workspace `forbid`) and `#![allow(unsafe_code)]` at the lib.rs top — the minimal escape hatch for PyO3's macros, which expand to `unsafe` blocks (the CPython C-API bridge is inherently unsafe). Maturin builds the wheel into a `uv`-managed venv at `ffi/secretary-ffi-py/.venv/`; the compiled `.so` lives in the venv's `site-packages/`, not in the source tree. Two test layers: Rust unit tests via `cargo test --release --workspace`, Python pytest via `uv run --directory ffi/secretary-ffi-py pytest` after `maturin develop`.

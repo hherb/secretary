@@ -9,8 +9,14 @@ import) works end-to-end.
 import secretary_ffi_py
 
 
-def test_sum_returns_arithmetic_sum() -> None:
-    assert secretary_ffi_py.sum(2, 3) == 5
+def test_add_returns_arithmetic_sum() -> None:
+    assert secretary_ffi_py.add(2, 3) == 5
+
+
+def test_add_wraps_on_overflow() -> None:
+    # Mirror the Rust unit test in src/lib.rs that pins the wrapping
+    # contract through the FFI boundary. u32::MAX = 4_294_967_295.
+    assert secretary_ffi_py.add(4_294_967_295, 1) == 0
 
 
 def test_version_matches_format_version() -> None:

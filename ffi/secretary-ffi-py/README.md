@@ -1,6 +1,6 @@
 # secretary-ffi-py
 
-PyO3 + maturin bindings for [secretary-core](../../core/). Sub-project B.1 boilerplate — proves the binding pipeline works end-to-end with two trivial round-trip functions (`sum`, `version`). Vault crypto exposure comes in B.2.
+PyO3 + maturin bindings for [secretary-core](../../core/). Sub-project B.1 boilerplate — proves the binding pipeline works end-to-end with two trivial round-trip functions (`add`, `version`). Vault crypto exposure comes in B.2.
 
 ## Build & test
 
@@ -15,7 +15,7 @@ cargo test --release --workspace
 cargo clippy --release --workspace -- -D warnings
 ```
 
-The two FFI unit tests appear in the workspace total (447 passed + 6 ignored after this crate is fully wired up).
+The three FFI unit tests appear in the workspace total (448 passed + 6 ignored after this crate is fully wired up).
 
 ### Python layer
 
@@ -45,13 +45,37 @@ uv run --directory ffi/secretary-ffi-py pytest
 
 `--release` matches the project's "always --release" posture (the underlying crypto crates are slow in debug; PyO3 + transitive deps benefit from the same posture).
 
+### Cache-stickiness gotcha when iterating on the Python surface
+
+If you rename or add a `#[pyfunction]` and pytest reports `module 'secretary_ffi_py' has no attribute '<new_name>'` — but `cargo test --release --workspace` passes the renamed Rust unit tests — the build is fine; the install is stale.
+
+Cause: uv's editable-install cache (`~/.cache/uv/sdists-v9/editable/*` and `~/.cache/uv/archive-v0/*`) keys on `<package>-<version>`, and `pyproject.toml` declares a static `version = "0.1.0"` (via `dynamic = ["version"]` falling through to `Cargo.toml`'s workspace version). Every rebuild produces wheels with the same name+version, so uv treats them as equivalent and on the next `uv run` / `uv sync` it auto-restores the *first* wheel's `.so` into the venv — silently undoing the freshly-built one.
+
+Quick diagnostic:
+
+```bash
+shasum target/maturin/libsecretary_ffi_py.dylib \
+       ffi/secretary-ffi-py/.venv/lib/python3.12/site-packages/secretary_ffi_py/*.so
+# Hashes should match. If they don't, the install is stale.
+```
+
+Nuclear fix that always works (≈ 8s rebuild from clean state):
+
+```bash
+rm -rf ffi/secretary-ffi-py/.venv
+find ~/.cache/uv -name "*secretary*" -exec rm -rf {} +
+uv sync --directory ffi/secretary-ffi-py
+```
+
+`uv sync` invokes the maturin build-backend automatically and installs the editable wheel fresh, so a separate `maturin develop` is not needed after this. Same trap is expected to apply to `secretary-ffi-uniffi` once B.1.1 lands.
+
 ## Scope (B.1)
 
 Exposed Python surface:
 
 | Function | Signature | Notes |
 |---|---|---|
-| `sum(a, b)` | `(int, int) -> int` | Rust `u32 + u32`; release-wraps on overflow (B.2 will reconsider when `PyResult` becomes first-class). |
+| `add(a, b)` | `(int, int) -> int` | Rust `u32::wrapping_add`; matches default release-build `+` semantics, which silently wrap on overflow (B.2 will reconsider when `PyResult` becomes first-class). Named `add` rather than `sum` to avoid shadowing Python's builtin. |
 | `version()` | `() -> int` | Returns `secretary_core::version::FORMAT_VERSION` (currently 1). |
 
 ## What B.1 deliberately does NOT do

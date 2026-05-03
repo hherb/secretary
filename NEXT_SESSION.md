@@ -12,7 +12,9 @@ For the comprehensive rolling-baton (full carry-over context, deferred-with-reas
 **Branch:** `feat/ffi-b1-py-bindings-boilerplate` (15 commits on top of `9d5885c`).
 **PR:** not yet opened — branch is ready for review-and-merge.
 
-The work proves the PyO3 + maturin binding pipeline end-to-end with two trivial round-trip functions (`sum`, `version`). No vault crypto exposed (B.2+). Two test layers cross-validate each other: Rust `#[cfg(test)]` unit tests run as part of `cargo test --release --workspace` (added 2 → 447+6 baseline); Python pytest runs via `uv run --directory ffi/secretary-ffi-py pytest` after `uv sync` builds the wheel.
+The work proves the PyO3 + maturin binding pipeline end-to-end with two trivial round-trip functions (`add`, `version`). No vault crypto exposed (B.2+). Two test layers cross-validate each other: Rust `#[cfg(test)]` unit tests run as part of `cargo test --release --workspace` (added 3 → 448+6 baseline); Python pytest runs via `uv run --directory ffi/secretary-ffi-py pytest` after `uv sync` builds the wheel.
+
+The function originally named `sum` was renamed to `add` during PR #20 review to avoid shadowing Python's builtin `sum()`. Commits referencing `sum` in their subject lines (e.g. `e98f684`) preserve the original name in git history; the post-merge API surface is `add`.
 
 ### Commits (in chronological order)
 
@@ -47,9 +49,9 @@ The plan called for ~5 commits; the final 15 reflect four code-review-driven cor
 
 Run from `/Users/hherb/src/secretary/.worktrees/feat-ffi-b1-py-bindings-boilerplate/`:
 
-- `cargo test --release --workspace` → **447 passed + 6 ignored, 0 failed** (was 445 + 6).
+- `cargo test --release --workspace` → **448 passed + 6 ignored, 0 failed** (was 445 + 6).
 - `cargo clippy --release --workspace -- -D warnings` → **clean**, exit 0.
-- `uv run --directory ffi/secretary-ffi-py pytest` → **2 passed**, 0 failed.
+- `uv run --directory ffi/secretary-ffi-py pytest` → **3 passed**, 0 failed.
 - `uv run core/tests/python/conformance.py` → **all 5 sections PASS** (cross-language clean-room verifier).
 - `uv run core/tests/python/spec_test_name_freshness.py` → **96 resolved + 0 unresolved + 2 allowlisted**, PASS.
 
@@ -63,7 +65,7 @@ The branch is in good shape — both per-task spec/quality reviews and the holis
 
 **Acceptance criteria (PR opened and merged):**
 1. `gh pr create` from the worktree directory, base `main`, head `feat/ffi-b1-py-bindings-boilerplate`.
-2. PR title: e.g. `feat(ffi-py): B.1 PyO3 + maturin Python bindings boilerplate (sum, version round-trip)`.
+2. PR title: e.g. `feat(ffi-py): B.1 PyO3 + maturin Python bindings boilerplate (add, version round-trip)`.
 3. PR description summarises (a) what B.1 ships, (b) the four mid-stream corrections, (c) test verifications.
 4. After CI (currently manual — repo has no `.github/workflows/`), squash or merge — the project policy is "new commit per fix" rather than rebase/squash, so a merge commit preserves the corrective-commit history.
 
@@ -74,7 +76,7 @@ The remaining half of B.1 (per the corrected scope split). Same shape as B.1 Pyt
 **Acceptance criteria for B.1.1:**
 
 1. `ffi/secretary-ffi-uniffi/Cargo.toml` adds `uniffi = "..."` (current stable). Lint table mirror of `secretary-ffi-py/`.
-2. A single uniffi UDL describing one tiny round-trip function (e.g. `fn sum(a: u32, b: u32) -> u32`) wired through to both Swift and Kotlin bindings via uniffi-bindgen.
+2. A single uniffi UDL describing one tiny round-trip function (e.g. `fn add(a: u32, b: u32) -> u32`) wired through to both Swift and Kotlin bindings via uniffi-bindgen.
 3. **Round-trip tests:**
    - Rust unit test in the uniffi crate.
    - macOS-host Swift smoke runner (`main.swift` + the generated bindings, no iOS simulator required).
@@ -129,7 +131,7 @@ uv run --directory ffi/secretary-ffi-py pytest
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 
-# Expected: 447 passed + 6 ignored, clippy clean, pytest 2 passed,
+# Expected: 448 passed + 6 ignored, clippy clean, pytest 3 passed,
 # conformance PASS, spec freshness 96 resolved + 0 unresolved + 2 allowlisted.
 
 # 3a. To open the PR (when ready):
@@ -155,7 +157,7 @@ cd .worktrees/feat-ffi-b1-1-uniffi-boilerplate
 
 ## Closing inventory
 
-- **Tests:** 447 + 6 ignored (cargo); 2 passed (Python pytest); 5 conformance sections PASS; spec freshness 96 / 0 / 2.
+- **Tests:** 448 + 6 ignored (cargo); 3 passed (Python pytest); 5 conformance sections PASS; spec freshness 96 / 0 / 2.
 - **Clippy:** clean with `-D warnings`.
 - **B.1 branch:** 15 commits on top of `main` at `c5e18b8`. Ready to push and PR.
 - **Spec doc:** `docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md`.

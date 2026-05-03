@@ -29,12 +29,13 @@ pub fn version() -> u16 {
     secretary_core::version::FORMAT_VERSION
 }
 
-/// Python-exposed addition. B.1 round-trip target. Wraps on overflow in
-/// release builds (matches default Rust `+`); B.2 will reconsider when
-/// fallible crypto operations make `PyResult` first-class.
+/// Python-exposed addition. B.1 round-trip target. Uses `wrapping_add`
+/// to make the overflow contract explicit (matches default Rust `+`
+/// semantics in release builds, which silently wrap); B.2 will reconsider
+/// when fallible crypto operations make `PyResult` first-class.
 #[pyfunction]
-fn sum(a: u32, b: u32) -> u32 {
-    a + b
+fn add(a: u32, b: u32) -> u32 {
+    a.wrapping_add(b)
 }
 
 /// Python-exposed wrapper around `version()`. Renamed at the PyO3 layer
@@ -43,7 +44,7 @@ fn sum(a: u32, b: u32) -> u32 {
 #[pyfunction]
 #[pyo3(name = "version")]
 fn version_py() -> u32 {
-    version() as u32
+    u32::from(version())
 }
 
 /// `#[pymodule]` entrypoint. The function name (`secretary_ffi_py`) is the
@@ -51,7 +52,7 @@ fn version_py() -> u32 {
 /// declared in `pyproject.toml` (`[tool.maturin] module-name`).
 #[pymodule]
 fn secretary_ffi_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum, m)?)?;
+    m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(version_py, m)?)?;
     Ok(())
 }
@@ -66,7 +67,16 @@ mod tests {
     }
 
     #[test]
-    fn sum_returns_arithmetic_sum() {
-        assert_eq!(sum(2, 3), 5);
+    fn add_returns_arithmetic_sum() {
+        assert_eq!(add(2, 3), 5);
+    }
+
+    #[test]
+    fn add_wraps_on_overflow() {
+        // Pin the wrapping contract: u32::MAX + 1 wraps to 0. A future
+        // change to checked_add / saturating_add (or a switch to PyResult
+        // ergonomics in B.2) is a deliberate test failure rather than a
+        // silent contract change.
+        assert_eq!(add(u32::MAX, 1), 0);
     }
 }

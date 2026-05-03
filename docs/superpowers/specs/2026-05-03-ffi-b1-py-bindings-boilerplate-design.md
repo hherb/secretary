@@ -5,6 +5,16 @@
 **Status:** Approved — ready for implementation
 **Touches:** `ffi/secretary-ffi-py/Cargo.toml`, `ffi/secretary-ffi-py/src/lib.rs`, `ffi/secretary-ffi-py/pyproject.toml` (new), `ffi/secretary-ffi-py/tests/test_smoke.py` (new), `ffi/secretary-ffi-py/README.md` (new)
 
+## Post-PR-#20-review addendum (2026-05-03)
+
+The four session-time correction commits (`121ccb9`, `ee45c5f` + `2cac9a5`, `6ee0215`, `9755342`) are recorded in the body below where they affected the design. Three additional fixes landed during PR #20 code review and are not back-ported into the body — read them as overrides:
+
+1. **`sum` → `add`.** The exposed Rust ident `sum` shadowed Python's builtin `sum()` once imported at module level (`from secretary_ffi_py import sum`). Renamed to `add`; PyO3-side name follows the Rust ident. Below references to `sum` should be read as `add`; the historical commit subject `e98f684` ("expose sum and version via #[pymodule]") preserves the original name in git history.
+2. **`a + b` → `a.wrapping_add(b)` + regression test.** Default `+` in release builds wraps silently — the comment said so but the code didn't. Switched to explicit `wrapping_add` so intent lives in the code, with `add_wraps_on_overflow` (Rust) and `test_add_wraps_on_overflow` (Python) pinning `add(u32::MAX, 1) == 0` so any future change to `checked_add` / `saturating_add` (or B.2's `PyResult` ergonomics) is a deliberate test failure rather than a silent contract change.
+3. **`version() as u32` → `u32::from(version())`.** Lossless u16→u32 widening expressed via the infallible `From` impl rather than `as`.
+
+**Final test counts:** `cargo test --release --workspace` → 448 + 6 ignored (was 447 + 6); `uv run --directory ffi/secretary-ffi-py pytest` → 3 (was 2).
+
 ## Background
 
 Sub-project A (the Rust cryptographic core) is feature-complete for v1; Phase A.7's three internal hardening passes have closed. The next bounded unit of work per [secretary_next_session.md](../../../secretary_next_session.md) is **Sub-project B.1**: FFI binding boilerplate that proves the Python binding pipeline works end-to-end. This unblocks Sub-project C (sync orchestration) and Sub-project D (platform UIs), and runs in parallel with the gated external paid review track.
