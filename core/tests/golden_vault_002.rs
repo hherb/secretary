@@ -112,7 +112,8 @@ fn golden_vault_002_pinned() {
         let on_disk = std::fs::read(&abs).unwrap_or_else(|e| panic!("read {abs:?}: {e}"));
         assert_eq!(
             &on_disk, expected,
-            "fixture file diverged from rebuilt bytes: {abs:?}"
+            "drift in {abs:?} — regenerate fixture via the materialize_golden_vault_002 \
+             ignored test if this is a deliberate format change"
         );
     }
 }
@@ -163,6 +164,9 @@ fn golden_vault_002_cross_vault_mismatch() {
     use secretary_core::unlock::UnlockError;
 
     let root_002 = fixture_root();
+    // vault_001's root — constructed inline because each integration-test
+    // `*.rs` file is its own crate and can't share helpers with sibling
+    // `golden_vault_NNN.rs` files.
     let root_001 = {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.push("tests");

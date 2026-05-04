@@ -10,7 +10,7 @@
   "password": "correct horse battery staple two",
 
   "kdf_params": {
-    "_doc": "Sub-floor memory_kib (8192) for test speed; the v1 floor is 65536. open_vault does not enforce the floor on read.",
+    "_doc": "Sub-floor memory_kib (8192) for test speed; same justification as vault_001. open_with_password does not enforce the v1 floor on read.",
     "memory_kib": 8192,
     "iterations": 1,
     "parallelism": 1,
@@ -65,7 +65,7 @@
   },
 
   "block_plaintext": {
-    "_doc": "Single login record with username + password (text) fields. Single device, vector clock counter = 1. Distinct values from golden_vault_001 to confirm independent record contents.",
+    "_doc": "One block with two records, distinct from vault_001's plaintext to keep the fixtures byte-distinct end-to-end. The block_uuid above is what the encrypt_block AAD references.",
     "block_version": 1,
     "block_name": "Personal logins 002",
     "schema_version": 1,
