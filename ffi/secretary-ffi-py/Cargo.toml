@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 secretary-core = { path = "../../core" }
+secretary-ffi-bridge = { path = "../secretary-ffi-bridge" }
 pyo3 = { version = "0.28" }
 
 # Crate-local lint table replacing the inherited workspace `unsafe_code = "forbid"`.
