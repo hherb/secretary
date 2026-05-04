@@ -18,3 +18,7 @@ thiserror = "2"
 # impls. Same discipline as core/Cargo.toml; same reason — the failure
 # mode is silent.
 zeroize = "=1.8.2"
+
+[dev-dependencies]
+# Match the version pinned in core/Cargo.toml so we share the lock entry.
+rand_chacha = "0.3"

@@ -36,5 +36,5 @@ pub mod identity;
 pub mod unlock;
 
 pub use error::FfiUnlockError;          // uncommented in Task 4
-// pub use identity::UnlockedIdentity;     // uncommented in Task 5
+pub use identity::UnlockedIdentity;         // uncommented in Task 5
 // pub use unlock::open_with_password;     // uncommented in Task 6
