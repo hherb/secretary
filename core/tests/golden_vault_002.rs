@@ -13,7 +13,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
@@ -186,10 +186,3 @@ fn golden_vault_002_cross_vault_mismatch() {
         "expected VaultMismatch, got {err:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Verify path helper functions compile and don't regress
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn _verify_path_helpers(_p: &Path) {}
