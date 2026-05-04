@@ -545,6 +545,16 @@ def section1_block_kat() -> tuple[bool, list[str]]:
     return all_ok, lines
 
 
+# Note: conformance.py verifies golden_vault_001/ only. core/tests/data/
+# also contains a golden_vault_002/ fixture used by the FFI integration
+# tests (secretary-ffi-bridge, secretary-ffi-py, secretary-ffi-uniffi)
+# to exercise the VaultMismatch error path with a real second vault.
+# That fixture is intentionally out of scope here — one canonical fixture
+# is sufficient for the spec-clean-room contract this script enforces.
+# §15 cross-language conformance is a per-fixture property; vault_002
+# does not need its own conformance check because it shares vault_001's
+# build pipeline (core/tests/common/fixture_builder.rs).
+
 # ---------------------------------------------------------------------------
 # §2.0 Section 2 (PR-B, Task 15): full crypto verify against
 # `core/tests/data/golden_vault_001/`.
