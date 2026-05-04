@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-04 (Sub-project B.2 — vault unlock through FFI)
-**Status:** Sub-project B.2 complete; PR #<NN_PR> open / merged. The first fallible, secret-bearing FFI operation is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the new shared `secretary-ffi-bridge` crate. With B.2 done, the FFI surface includes its first vault crypto operation; B.3 expands it with `open_with_recovery` and (deferred-design) `create_vault`.
+**Status:** Sub-project B.2 complete; PR #24 open / merged. The first fallible, secret-bearing FFI operation is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the new shared `secretary-ffi-bridge` crate. With B.2 done, the FFI surface includes its first vault crypto operation; B.3 expands it with `open_with_recovery` and (deferred-design) `create_vault`.
 
 ## (1) What we shipped this session
 
@@ -124,5 +124,5 @@ After PR merge, follow the post-PR-22 pattern: a separate fix-up commit on `main
 - **Swift smoke:** 7 (3 B.1.1 + 4 B.2)
 - **Kotlin smoke:** 7 (3 B.1.1.1 + 4 B.2)
 - **Bridge crate:** 20 unit tests; pure-safe Rust; exact-pinned `zeroize = "=1.8.2"`.
-- **PR:** #<NN_PR> (open / merged TBD)
+- **PR:** #24 (open / merged TBD)
 - **Companion routine** `trig_018gYtGpiycgLXqUsDpV2NZD` (weekly uniffi Closeable-trait watch) is now satisfied — uniffi 0.31's auto-AutoCloseable was confirmed during Task 9, so the routine can be retired or repurposed for the next uniffi version's behavior change. Decide in the next session.
