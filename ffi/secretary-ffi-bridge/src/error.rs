@@ -54,8 +54,9 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
         // Explicit match arms (no wildcard) so future core variants force a
         // compile error here. The defensive arms at the bottom map currently-
         // unreachable variants for forward-compat: if a future change to
-        // `open_with_password` makes them reachable, they fold into
-        // `CorruptVault { message }` rather than panicking.
+        // `open_with_password` makes them reachable, they land on a chosen
+        // FFI variant rather than panicking. The choice is per-arm — see the
+        // SECURITY comment block below for the per-variant rationale.
         match e {
             E::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
             E::VaultMismatch => Self::VaultMismatch,
