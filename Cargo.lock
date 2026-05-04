@@ -1234,11 +1234,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-ffi-bridge"
+version = "0.1.0"
+dependencies = [
+ "rand_chacha 0.3.1",
+ "secretary-core",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "secretary-ffi-py"
 version = "0.1.0"
 dependencies = [
  "pyo3",
  "secretary-core",
+ "secretary-ffi-bridge",
+ "zeroize",
 ]
 
 [[package]]
@@ -1246,7 +1258,10 @@ name = "secretary-ffi-uniffi"
 version = "0.1.0"
 dependencies = [
  "secretary-core",
+ "secretary-ffi-bridge",
+ "thiserror",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

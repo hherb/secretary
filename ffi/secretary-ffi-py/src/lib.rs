@@ -15,6 +15,12 @@
 //! crate is intentionally tiny and reviewed; new `unsafe` blocks should
 //! be challenged in code review.
 //!
+//! B.2 (this version) adds the `open_with_password` entry-point and the
+//! `UnlockedIdentity` opaque handle, projecting `secretary-ffi-bridge`'s
+//! FFI-friendly facade through PyO3.
+//!
+//! Rationale (B.2): docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md
+//!
 //! Rationale: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
 
 #![allow(unsafe_code)]
@@ -47,13 +53,127 @@ fn version_py() -> u32 {
     u32::from(version())
 }
 
+// ---------------------------------------------------------------------------
+// B.2: open_with_password + UnlockedIdentity + exception classes.
+//
+// The actual logic lives in secretary-ffi-bridge; this file is the PyO3
+// projection layer.
+// ---------------------------------------------------------------------------
+
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
+use pyo3::types::{PyBytes, PyType};
+use secretary_ffi_bridge::FfiUnlockError;
+
+create_exception!(secretary_ffi_py, WrongPasswordOrCorrupt, PyException);
+create_exception!(secretary_ffi_py, VaultMismatch, PyException);
+create_exception!(secretary_ffi_py, CorruptVault, PyException);
+
+/// Map a bridge-crate `FfiUnlockError` to the matching Python exception
+/// class. Used at the `open_with_password` boundary via `.map_err`. A
+/// free function (rather than a `From` impl) is preferred because the
+/// orphan rules forbid `impl From<FfiUnlockError> for PyErr` from a
+/// downstream crate, and `?`-routing isn't needed at the single call
+/// site.
+fn ffi_unlock_error_to_pyerr(e: FfiUnlockError) -> PyErr {
+    match e {
+        FfiUnlockError::WrongPasswordOrCorrupt => WrongPasswordOrCorrupt::new_err(e.to_string()),
+        FfiUnlockError::VaultMismatch => VaultMismatch::new_err(e.to_string()),
+        FfiUnlockError::CorruptVault { message } => CorruptVault::new_err(message),
+    }
+}
+
+/// Opaque Python-side handle to a successfully-unlocked vault identity.
+/// Newtype around `secretary_ffi_bridge::UnlockedIdentity`; methods are
+/// thin forwarders. Implements the context-manager protocol so the
+/// idiomatic usage is `with open_with_password(...) as id: ...`.
+#[pyclass]
+pub struct UnlockedIdentity(secretary_ffi_bridge::UnlockedIdentity);
+
+#[pymethods]
+impl UnlockedIdentity {
+    /// User-facing display name from the IdentityBundle. Returns `""` if
+    /// the handle has been explicitly closed.
+    fn display_name(&self) -> String {
+        self.0.display_name()
+    }
+
+    /// 16-byte stable identifier from the IdentityBundle. Returns
+    /// `b'\x00' * 16` if the handle has been explicitly closed.
+    fn user_uuid<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.0.user_uuid())
+    }
+
+    /// Drop the wrapped identity now, zeroizing all secret fields at
+    /// exactly this moment. Idempotent.
+    fn close(&self) {
+        self.0.close();
+    }
+
+    /// Context-manager `__enter__`. Returns `self` so `with ... as id`
+    /// binds the handle.
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    /// Context-manager `__exit__`. Calls `close()` and returns `False`
+    /// so any exception raised inside the `with`-block propagates after
+    /// close runs.
+    fn __exit__(
+        &self,
+        _exc_type: Option<&Bound<'_, PyType>>,
+        _exc_value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
+    ) -> bool {
+        self.0.close();
+        false
+    }
+}
+
+/// Unlock a vault using its master password. See module-level docs for
+/// the exception classes raised on failure.
+#[pyfunction]
+fn open_with_password(
+    vault_toml_bytes: &[u8],
+    identity_bundle_bytes: &[u8],
+    mut password: Vec<u8>,
+) -> PyResult<UnlockedIdentity> {
+    use zeroize::Zeroize;
+    // The bridge crate copies into SecretBytes (which zeroizes on drop).
+    // This Vec is a transient cleartext residue on the wrapper's heap;
+    // zero it explicitly so we don't leave the password lingering after
+    // the call returns. Mirrors the stack-residue discipline in
+    // docs/manual/contributors/memory-hygiene-audit-internal.md.
+    let result = secretary_ffi_bridge::open_with_password(
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        &password,
+    )
+    .map(UnlockedIdentity)
+    .map_err(ffi_unlock_error_to_pyerr);
+    password.zeroize();
+    result
+}
+
 /// `#[pymodule]` entrypoint. The function name (`secretary_ffi_py`) is the
 /// Python module name that `import` looks up; it must match the wheel name
 /// declared in `pyproject.toml` (`[tool.maturin] module-name`).
 #[pymodule]
-fn secretary_ffi_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Existing B.1 surface:
     m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(version_py, m)?)?;
+
+    // B.2 surface:
+    m.add_class::<UnlockedIdentity>()?;
+    m.add_function(wrap_pyfunction!(open_with_password, m)?)?;
+    m.add(
+        "WrongPasswordOrCorrupt",
+        py.get_type::<WrongPasswordOrCorrupt>(),
+    )?;
+    m.add("VaultMismatch", py.get_type::<VaultMismatch>())?;
+    m.add("CorruptVault", py.get_type::<CorruptVault>())?;
+
     Ok(())
 }
 

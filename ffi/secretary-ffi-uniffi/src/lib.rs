@@ -45,6 +45,118 @@ pub fn add(a: u32, b: u32) -> u32 {
     a.wrapping_add(b)
 }
 
+// ---------------------------------------------------------------------------
+// B.2: open_with_password + UnlockedIdentity + UnlockError.
+//
+// The actual logic lives in secretary-ffi-bridge; this file is the uniffi
+// projection layer.
+// ---------------------------------------------------------------------------
+
+use secretary_ffi_bridge::FfiUnlockError;
+
+/// uniffi-side error type. uniffi auto-marshals this to Swift `enum
+/// UnlockError: Error` and Kotlin `sealed class UnlockError`. Mirrors
+/// the bridge crate's `FfiUnlockError` shape exactly.
+///
+/// The structured field is named `detail` rather than `message` because
+/// uniffi 0.31's Kotlin codegen produces an "overload resolution
+/// ambiguity" between `Throwable.message` and a user-defined `message`
+/// field. `detail` keeps the field structured-accessible on Swift /
+/// Kotlin while avoiding the codegen collision. The field name must
+/// stay in sync with `secretary.udl`.
+#[derive(Debug, thiserror::Error)]
+pub enum UnlockError {
+    /// Wrong password OR vault corruption — deliberately conflated per
+    /// `docs/threat-model.md` §13.
+    #[error("wrong password or vault corruption")]
+    WrongPasswordOrCorrupt,
+    /// `vault.toml` and `identity.bundle.enc` reference different vaults.
+    #[error("vault.toml and identity.bundle.enc reference different vaults")]
+    VaultMismatch,
+    /// Vault is corrupt or unreadable. The `detail` field carries a
+    /// diagnostic string from the inner core error.
+    #[error("vault is corrupt or unreadable: {detail}")]
+    CorruptVault {
+        /// Diagnostic text from the inner `core::UnlockError` variant's
+        /// `Display` impl. Free-form; not part of the API contract.
+        detail: String,
+    },
+}
+
+impl From<FfiUnlockError> for UnlockError {
+    fn from(e: FfiUnlockError) -> Self {
+        match e {
+            FfiUnlockError::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
+            FfiUnlockError::VaultMismatch => Self::VaultMismatch,
+            FfiUnlockError::CorruptVault { message } => Self::CorruptVault { detail: message },
+        }
+    }
+}
+
+/// uniffi-side opaque handle. Newtype around bridge's `UnlockedIdentity`;
+/// methods are thin forwarders. Drops on foreign refcount → 0 (RAII safety
+/// net via uniffi's generated `AutoCloseable.close()` on Kotlin /
+/// `deinit` on Swift) or via explicit `wipe()` (preferred — zeroizes
+/// the wrapped secrets at exactly the moment of the call).
+///
+/// The explicit-zeroize method is named `wipe` rather than `close` to
+/// avoid colliding with uniffi's auto-generated Kotlin
+/// `AutoCloseable.close()`; see `secretary.udl` for the rationale.
+pub struct UnlockedIdentity(secretary_ffi_bridge::UnlockedIdentity);
+
+impl UnlockedIdentity {
+    /// User-facing display name. Returns `""` if the handle has been wiped.
+    pub fn display_name(&self) -> String {
+        self.0.display_name()
+    }
+
+    /// 16-byte stable identifier. Returns 16 zero bytes if wiped.
+    pub fn user_uuid(&self) -> Vec<u8> {
+        self.0.user_uuid()
+    }
+
+    /// Drop the wrapped identity now, zeroizing all secret fields. Idempotent.
+    pub fn wipe(&self) {
+        self.0.close();
+    }
+}
+
+/// Unlock a vault using its master password. uniffi-projected.
+///
+/// # Errors
+///
+/// Returns [`UnlockError`] on failure. See the bridge crate's
+/// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
+/// thinned 3-variant rationale.
+///
+/// # Why `Arc<UnlockedIdentity>`?
+///
+/// uniffi marshals UDL `interface` types as refcounted handles on the
+/// foreign side. The Rust signature must therefore return `Arc<T>` (uniffi
+/// owns the refcount; the foreign caller's release decrements it). Without
+/// the `Arc<>`, uniffi's generated scaffolding emits a type-mismatch error
+/// (`expected Result<Arc<UnlockedIdentity>, ...>, found Result<UnlockedIdentity, _>`).
+pub fn open_with_password(
+    vault_toml_bytes: Vec<u8>,
+    identity_bundle_bytes: Vec<u8>,
+    mut password: Vec<u8>,
+) -> Result<std::sync::Arc<UnlockedIdentity>, UnlockError> {
+    use zeroize::Zeroize;
+    // Mirrors the secretary-ffi-py wrapper's stack-residue discipline:
+    // zero the password Vec after the bridge returns. The bridge already
+    // zeroizes its SecretBytes copy; this wipes the projection-side
+    // transient.
+    let result = secretary_ffi_bridge::open_with_password(
+        &vault_toml_bytes,
+        &identity_bundle_bytes,
+        &password,
+    )
+    .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
+    .map_err(UnlockError::from);
+    password.zeroize();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +178,43 @@ mod tests {
         // signature in B.2) is a deliberate test failure rather than a
         // silent contract change.
         assert_eq!(add(u32::MAX, 1), 0);
+    }
+
+    // -------------------------------------------------------------------
+    // B.2: pin the From<FfiUnlockError> for UnlockError mapping.
+    //
+    // The bridge crate already tests core → FfiUnlockError; these three
+    // tests pin the FfiUnlockError → uniffi-side UnlockError translation
+    // explicitly so a future variant rename / reorder can't silently
+    // remap one variant to another.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn from_bridge_wrong_password_or_corrupt_maps_one_to_one() {
+        let bridge_err = FfiUnlockError::WrongPasswordOrCorrupt;
+        let uniffi_err: UnlockError = bridge_err.into();
+        assert!(matches!(uniffi_err, UnlockError::WrongPasswordOrCorrupt));
+    }
+
+    #[test]
+    fn from_bridge_vault_mismatch_maps_one_to_one() {
+        let bridge_err = FfiUnlockError::VaultMismatch;
+        let uniffi_err: UnlockError = bridge_err.into();
+        assert!(matches!(uniffi_err, UnlockError::VaultMismatch));
+    }
+
+    #[test]
+    fn from_bridge_corrupt_vault_preserves_message() {
+        // Bridge calls the field `message`; uniffi-side calls it `detail`
+        // (Kotlin codegen would otherwise collide with `Throwable.message`).
+        // The translation must preserve the diagnostic text verbatim.
+        let bridge_err = FfiUnlockError::CorruptVault {
+            message: "fnord".to_string(),
+        };
+        let uniffi_err: UnlockError = bridge_err.into();
+        let UnlockError::CorruptVault { detail } = uniffi_err else {
+            panic!("expected CorruptVault");
+        };
+        assert_eq!(detail, "fnord");
     }
 }

@@ -20,6 +20,13 @@ TARGET_DIR="$REPO_ROOT/target/release"
 CDYLIB="$TARGET_DIR/libsecretary_ffi_uniffi.dylib"
 BIN_OUT="$SCRIPT_DIR/secretary_smoke"
 
+# B.2: smoke runner reads golden vault fixtures from the repo's
+# core/tests/data/ tree. Exported so main.swift can resolve the
+# fixture path at runtime without hard-coding it (and so the same
+# fixture set is the single source of truth shared with the bridge
+# crate's tests, the pytest suite, and the Kotlin smoke runner).
+export SECRETARY_GOLDEN_VAULT_DIR="$REPO_ROOT/core/tests/data"
+
 # --- Sanity: macOS + swiftc available ---
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "ERROR: this smoke runner targets macOS hosts (got $(uname -s))" >&2

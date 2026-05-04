@@ -71,6 +71,9 @@ uv sync --directory ffi/secretary-ffi-py
 
 ## Scope (B.1)
 
+> **B.2 (this version) extends the surface beyond the B.1 boilerplate; see [Vault unlock (B.2)](#vault-unlock-b2) at the bottom of this README. The sections below are kept as historical context.**
+
+
 Exposed Python surface:
 
 | Function | Signature | Notes |
@@ -98,3 +101,93 @@ Any new `unsafe` block elsewhere in this crate would still trigger `deny` and re
 - Design: [docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md](../../docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md)
 - Plan: [docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md](../../docs/superpowers/plans/2026-05-03-ffi-b1-py-bindings-boilerplate.md)
 - Project conventions inherited from the wider codebase: FFI crates are the isolated reviewed boundary for `unsafe_code` relaxation; all cargo invocations use `--release` (the underlying crypto crates are slow in debug); Python tooling is `uv` exclusively (never `pip`).
+
+## Vault unlock (B.2)
+
+Three new symbols at the module level: `open_with_password()`,
+`UnlockedIdentity` (opaque handle class), and three exception classes
+`WrongPasswordOrCorrupt` / `VaultMismatch` / `CorruptVault`.
+
+### Idiomatic usage
+
+```python
+import secretary_ffi_py
+
+with open(".../vault.toml", "rb") as f:
+    toml = f.read()
+with open(".../identity.bundle.enc", "rb") as f:
+    bundle = f.read()
+
+with secretary_ffi_py.open_with_password(toml, bundle, b"my password") as identity:
+    print(identity.display_name())   # str
+    print(identity.user_uuid())      # bytes (16 bytes)
+# `with` block exit → identity.close() → Sensitive<...> fields zeroized
+```
+
+### Error handling
+
+```python
+try:
+    identity = secretary_ffi_py.open_with_password(toml, bundle, password)
+except secretary_ffi_py.WrongPasswordOrCorrupt:
+    # User's password is wrong, OR the vault has been tampered with.
+    # These are deliberately indistinguishable per the §13 anti-oracle property.
+    ...
+except secretary_ffi_py.VaultMismatch:
+    # vault.toml and identity.bundle.enc reference different vaults.
+    # User should re-pair the two files from backups.
+    ...
+except secretary_ffi_py.CorruptVault as e:
+    # Vault file is malformed beyond recovery. str(e) carries inner diagnostic.
+    print(f"Vault corrupt: {e}")
+```
+
+### Password-input discipline (caller-zeroize)
+
+Passwords are accepted as **bytes** (not `str`):
+
+```python
+# Convenience: bytes literal (not zeroizable)
+secretary_ffi_py.open_with_password(toml, bundle, b"my password")
+
+# First-party / disciplined caller: bytearray (zeroizable)
+pw = bytearray(b"my password")
+try:
+    with secretary_ffi_py.open_with_password(toml, bundle, pw) as identity:
+        ...
+finally:
+    for i in range(len(pw)):
+        pw[i] = 0
+```
+
+**Third-party library consumers:** the bytes-input shape is intentional
+to enable caller-side zeroize. Wrap your password handling in a
+zeroizing context manager if you handle credentials over the long term.
+First-party clients of this crate (the future `secretary-ui-py`,
+desktop / web frontends) MUST zero their input buffers after the call;
+this is the documented discipline.
+
+### Lifecycle
+
+`UnlockedIdentity` supports the context-manager protocol (`with ... as
+id:`) AND has an explicit `close()` method:
+
+```python
+identity = secretary_ffi_py.open_with_password(toml, bundle, password)
+try:
+    print(identity.display_name())
+finally:
+    identity.close()   # explicit; pin drop time
+```
+
+After `close()`, accessors return empty / zero values rather than
+raising — this matches the non-throwing pattern from B.1's `add` /
+`version`.
+
+### Test coverage
+
+10 pytests (`uv run --directory ffi/secretary-ffi-py pytest`): 3 B.1
+smoke (`add`, `add wraps`, `version`) + 7 B.2 (`open_with_password`
+success, wrong password, vault mismatch, corrupt vault, idempotent
+close, use-after-close, bytearray caller-zeroize discipline).
+

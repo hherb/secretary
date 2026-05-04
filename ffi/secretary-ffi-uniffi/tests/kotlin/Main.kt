@@ -10,6 +10,8 @@
 // Invocation: ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 import uniffi.secretary.add
+import uniffi.secretary.openWithPassword
+import uniffi.secretary.UnlockException
 import uniffi.secretary.version
 import kotlin.system.exitProcess
 
@@ -18,6 +20,19 @@ import kotlin.system.exitProcess
 // this constant in lockstep with the spec — that keeps the smoke test
 // honest as a cross-language contract assertion rather than a tautology.
 private const val EXPECTED_FORMAT_VERSION: UShort = 1u
+
+// Truncation distance for assertion 7 (truncated TOML → CorruptVault).
+// Matches secretary-ffi-py/tests/test_smoke.py::_TRUNCATION_SUFFIX_BYTES
+// and the Swift smoke runner; keeping all three pinned to the same
+// value makes the cross-language "what counts as corrupt" surface uniform.
+//
+// Why robust under v1: vault.toml is plain TOML and contains no AEAD-
+// framed payloads (those live in identity.bundle.enc), so any
+// truncation must fail at TOML parse / required-field-present checks
+// long before the AEAD step that produces WrongPasswordOrCorrupt. If
+// a future format places AEAD content in vault.toml, re-validate
+// across all four sites (bridge, pytest, Swift, Kotlin).
+private const val TRUNCATION_SUFFIX_BYTES: Int = 50
 
 // Collect failures rather than exit on first so a single run reports
 // every contract that drifted, not just the first. The smoke surface
@@ -47,8 +62,142 @@ fun main() {
         "version() == $EXPECTED_FORMAT_VERSION (got $v)",
     )
 
+    // --- B.2: open_with_password assertions ---
+    //
+    // Fixture path comes from run.sh via SECRETARY_GOLDEN_VAULT_DIR so the
+    // same on-disk vaults are exercised by the bridge crate's tests, the
+    // pytest suite, and both uniffi smoke runners. Hard-coding here would
+    // silently drift the moment the fixture set moves.
+    val vaultDir = System.getenv("SECRETARY_GOLDEN_VAULT_DIR") ?: run {
+        System.err.println(
+            "error: SECRETARY_GOLDEN_VAULT_DIR not set; run via tests/kotlin/run.sh",
+        )
+        exitProcess(1)
+    }
+
+    val vault001Path = java.nio.file.Paths.get(vaultDir, "golden_vault_001")
+    val vault002Path = java.nio.file.Paths.get(vaultDir, "golden_vault_002")
+
+    // Wrap fixture reads in a try/catch — without it, a missing or
+    // unreadable golden_vault file produces an unhandled JVM stack
+    // trace; with it, we exit cleanly with the same shape Swift uses
+    // ("error: failed to read golden vault fixtures: ...").
+    val (toml001, bundle001, bundle002) = try {
+        Triple(
+            java.nio.file.Files.readAllBytes(vault001Path.resolve("vault.toml")),
+            java.nio.file.Files.readAllBytes(vault001Path.resolve("identity.bundle.enc")),
+            java.nio.file.Files.readAllBytes(vault002Path.resolve("identity.bundle.enc")),
+        )
+    } catch (e: java.io.IOException) {
+        System.err.println("error: failed to read golden vault fixtures: $e")
+        exitProcess(1)
+    }
+    val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
+
+    // Pinned KAT — must match secretary-ffi-bridge's tests + pytest +
+    // Swift smoke runner. Source of truth: golden_vault_001_inputs.json.
+    val expectedDisplayName = "Owner"
+    val expectedUserUuid = byteArrayOf(
+        0xbf.toByte(), 0x08, 0xa3.toByte(), 0x30, 0x0c, 0xd9.toByte(), 0x94.toByte(), 0xb8.toByte(),
+        0x77, 0xe1.toByte(), 0xa1.toByte(), 0x5b, 0xaa.toByte(), 0x28, 0xdf.toByte(), 0x35,
+    )
+
+    // Assertion 4: success path. .use { } exercises uniffi 0.31's
+    // auto-generated AutoCloseable on UnlockedIdentity; the closure-exit
+    // hook releases the refcount, drops the Rust handle, and zeroizes
+    // the underlying SecretBox. No hand-rolled extension is required.
+    try {
+        openWithPassword(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            password = password001,
+        ).use { identity ->
+            val displayName = identity.displayName()
+            val uuid = identity.userUuid()
+            check(
+                displayName == expectedDisplayName && uuid.contentEquals(expectedUserUuid),
+                "open_with_password success → display_name + user_uuid match pinned KAT (got displayName=\"$displayName\")",
+            )
+        }
+    } catch (e: Throwable) {
+        check(false, "open_with_password success threw $e, expected to succeed")
+    }
+
+    // Assertion 5: wrong password → WrongPasswordOrCorrupt.
+    try {
+        openWithPassword(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            password = "definitely wrong".toByteArray(Charsets.UTF_8),
+        )
+        check(false, "wrong password should have thrown WrongPasswordOrCorrupt")
+    } catch (e: UnlockException.WrongPasswordOrCorrupt) {
+        check(true, "wrong password → WrongPasswordOrCorrupt")
+    } catch (e: Throwable) {
+        check(false, "wrong password threw $e, expected WrongPasswordOrCorrupt")
+    }
+
+    // Assertion 6: cross-vault file pair → VaultMismatch.
+    try {
+        openWithPassword(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle002,
+            password = password001,
+        )
+        check(false, "vault_001 toml + vault_002 bundle should have thrown VaultMismatch")
+    } catch (e: UnlockException.VaultMismatch) {
+        check(true, "vault_001 toml + vault_002 bundle → VaultMismatch")
+    } catch (e: Throwable) {
+        check(false, "vault mismatch threw $e, expected VaultMismatch")
+    }
+
+    // Assertion 7: truncated TOML → CorruptVault(detail). The truncation
+    // suffix is the same distance the pytest suite uses
+    // (_TRUNCATION_SUFFIX_BYTES); aligning it keeps the cross-language
+    // "what counts as corrupt" surface uniform.
+    try {
+        val truncated = toml001.copyOfRange(0, toml001.size - TRUNCATION_SUFFIX_BYTES)
+        openWithPassword(
+            vaultTomlBytes = truncated,
+            identityBundleBytes = bundle001,
+            password = password001,
+        )
+        check(false, "truncated toml should have thrown CorruptVault")
+    } catch (e: UnlockException.CorruptVault) {
+        check(true, "truncated toml → CorruptVault(detail=\"${e.detail}\")")
+    } catch (e: Throwable) {
+        check(false, "truncated toml threw $e, expected CorruptVault")
+    }
+
+    // Assertion 8: explicit wipe() path (parity with Swift's
+    // defer { wipe() }). The .use { } path above exercises uniffi's
+    // auto-generated AutoCloseable.close(); this assertion exercises
+    // the explicit wipe() entry point so both close paths are covered
+    // on Kotlin. Verifies idempotency + use-after-wipe defaults.
+    try {
+        val identity = openWithPassword(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            password = password001,
+        )
+        identity.wipe()
+        identity.wipe() // idempotent — must not throw
+        val nameAfterWipe = identity.displayName()
+        val uuidAfterWipe = identity.userUuid()
+        check(
+            nameAfterWipe == "" && uuidAfterWipe.contentEquals(ByteArray(16)),
+            "explicit wipe() → use-after-wipe returns empty defaults (got displayName=\"$nameAfterWipe\", uuid.size=${uuidAfterWipe.size})",
+        )
+        // Release the AutoCloseable handle so the Rust-side refcount
+        // decrements; the foreign caller is responsible for this once
+        // .use { } isn't carrying it.
+        identity.close()
+    } catch (e: Throwable) {
+        check(false, "explicit wipe() path threw $e, expected to succeed")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 3 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 8 assertion(s) failed")
         exitProcess(1)
     }
 

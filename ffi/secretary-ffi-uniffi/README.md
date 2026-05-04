@@ -83,6 +83,9 @@ The bindgen target is gated behind a crate-local `cli` feature (`required-featur
 
 ## Scope (B.1.1 + B.1.1.1)
 
+> **B.2 (this version) extends the surface beyond the B.1.1 boilerplate; see [Vault unlock (B.2)](#vault-unlock-b2) at the bottom of this README. The sections below are kept as historical context.**
+
+
 Exposed surface, identical across both bindings:
 
 | Function | Swift signature | Kotlin signature | Notes |
@@ -110,3 +113,103 @@ Any new `unsafe` block elsewhere in this crate would still trigger `deny` and re
 - Decisions and plan-of-attack: [secretary_next_session.md](../../secretary_next_session.md) § "Begin Sub-project B.1.1" and § "Begin Sub-project B.1.1.1 — Kotlin smoke runner".
 - Sibling Python crate: [../secretary-ffi-py/README.md](../secretary-ffi-py/README.md).
 - Project conventions inherited from the wider codebase: FFI crates are the isolated reviewed boundary for `unsafe_code` relaxation; all cargo invocations use `--release` (the underlying crypto crates are slow in debug); foreign-language bindings ship their bindgen in-crate, not as a global tool.
+
+## Vault unlock (B.2)
+
+UDL adds: `interface UnlockedIdentity` (opaque handle), `[Error]
+interface UnlockError` (3-variant), and namespace function
+`[Throws=UnlockError] open_with_password(bytes, bytes, bytes) ->
+UnlockedIdentity`.
+
+The Rust-side `UnlockedIdentity::close()` is renamed to `wipe()` on the
+uniffi projection, and `CorruptVault.message` is renamed to `detail`,
+both because of uniffi 0.31's Kotlin codegen — a UDL-declared `close()`
+collides with auto-generated `AutoCloseable.close()`, and a UDL-declared
+`message` collides with `Throwable.message`. The bridge crate's API is
+unchanged; only the uniffi projection renames.
+
+### Swift idiom (`defer { wipe() }`)
+
+```swift
+import secretary
+
+let toml = try Data(contentsOf: vaultTomlURL)
+let bundle = try Data(contentsOf: identityBundleURL)
+let password = "my password".data(using: .utf8)!
+
+let identity = try openWithPassword(
+    vaultTomlBytes: toml,
+    identityBundleBytes: bundle,
+    password: password
+)
+defer { identity.wipe() }    // pin explicit zeroize at scope exit
+
+print(identity.displayName())
+print(identity.userUuid())
+
+// Error path:
+do {
+    let _ = try openWithPassword(...)
+} catch UnlockError.WrongPasswordOrCorrupt {
+    // ...
+} catch let UnlockError.CorruptVault(detail) {
+    print("Vault corrupt: \(detail)")
+}
+```
+
+### Kotlin idiom (`.use { }`)
+
+uniffi 0.31's Kotlin codegen auto-implements `AutoCloseable` on
+`UnlockedIdentity`, so Kotlin's stdlib `.use { }` works directly — no
+hand-rolled extension function needed.
+
+```kotlin
+import uniffi.secretary.*
+
+val toml = Files.readAllBytes(vaultTomlPath)
+val bundle = Files.readAllBytes(identityBundlePath)
+val password = "my password".toByteArray(Charsets.UTF_8)
+
+openWithPassword(
+    vaultTomlBytes = toml,
+    identityBundleBytes = bundle,
+    password = password,
+).use { identity ->
+    println(identity.displayName())
+    println(identity.userUuid().contentToString())
+}
+// .use exit → AutoCloseable.close() → Rust refcount → 0 → Drop → zeroize.
+// To zeroize earlier inside the block, call identity.wipe() explicitly.
+
+// Error path:
+try {
+    openWithPassword(...)
+} catch (e: UnlockException.WrongPasswordOrCorrupt) {
+    // ...
+} catch (e: UnlockException.CorruptVault) {
+    println("Vault corrupt: ${e.detail}")
+}
+```
+
+### Password-input discipline (caller-zeroize)
+
+Same as the Python crate: passwords accepted as **bytes** (`Data` in
+Swift, `ByteArray` in Kotlin), not `String`. The Rust-side projection
+zeroizes its transient `Vec<u8>` after the bridge returns; first-party
+clients should additionally zero their mutable buffer after the call.
+
+### Test fixtures via env var
+
+The Swift / Kotlin smoke runners read `SECRETARY_GOLDEN_VAULT_DIR`
+(set by `run.sh`) for the `core/tests/data/` parent directory; runners
+append `golden_vault_001` or `golden_vault_002` as needed. Standalone
+runs (without `run.sh`) fail loudly with an actionable error message.
+
+### Test coverage
+
+7 Swift asserts + 7 Kotlin asserts (3 B.1.1 smoke + 4 B.2 each):
+success path, wrong password, cross-vault mismatch (vault_001 toml +
+vault_002 bundle), truncated TOML. Both runners share the
+`SECRETARY_GOLDEN_VAULT_DIR` fixture path with the bridge-crate Rust
+tests and the Python pytest suite — KAT drift cannot land silently.
+

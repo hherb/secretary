@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Shared helpers for integration tests — KAT loader and hex utilities.
+//! Shared infrastructure for the `golden_vault_NNN` integration tests.
+//!
+//! Each `golden_vault_NNN.rs` integration-test file is compiled as a separate
+//! test binary, so we use Rust's special `tests/common/mod.rs` convention to
+//! share helpers without producing an extra phantom test binary. The actual
+//! fixture-builder code lives in [`fixture_builder`].
 //!
 //! Each `tests/*.rs` is its own crate; this module is included via
 //! `mod common;` and is *not* picked up as a separate test target by Cargo
@@ -12,6 +17,8 @@
 //! [`load_kat`].
 
 #![allow(dead_code)] // not every test consumes every helper.
+
+pub mod fixture_builder;
 
 use std::fs;
 use std::path::PathBuf;

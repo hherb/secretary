@@ -5,14 +5,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "PyO3 binding stub for secretary-core. Smoke-test only; full bindings live in the desktop sub-project."
+description = "PyO3 bindings for secretary-core. Exposes vault unlock and the UnlockedIdentity handle; full per-platform bindings live downstream."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 secretary-core = { path = "../../core" }
+secretary-ffi-bridge = { path = "../secretary-ffi-bridge" }
 pyo3 = { version = "0.28" }
+zeroize = "=1.8.2"
 
 # Crate-local lint table replacing the inherited workspace `unsafe_code = "forbid"`.
 # PyO3's #[pymodule] / #[pyfunction] macros expand to user-crate code containing

@@ -4,6 +4,7 @@ members = [
     "core",
     "ffi/secretary-ffi-py",
     "ffi/secretary-ffi-uniffi",
+    "ffi/secretary-ffi-bridge",
 ]
 exclude = ["core/fuzz"]
 
