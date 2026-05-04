@@ -20,15 +20,17 @@ just the single-session delta.
 
 Three logical commits on branch `feat/ffi-b1-1-1-kotlin-smoke-runner`,
 each one verifiable independently and ordered so an early step can be
-reverted without unwinding later ones. The squash-merge SHA on `main`
-will be recorded in a post-merge follow-up commit (matching the
-post-PR-21 pattern at `ca936c6`).
+reverted without unwinding later ones, plus three follow-up
+cross-platform-robustness fixes (host-OS cdylib extension, macOS
+`shasum` fallback for `sha256sum`, `.tmp` cleanup on aborted JNA
+fetch). Squash-merged to `main` as `96cfc4b`
+(PR [#22](https://github.com/hherb/secretary/pull/22)).
 
 | SHA | Commit | What changed |
 |---|---|---|
 | `f6370bf` | feat(ffi-uniffi): B.1.1.1 — JVM-host Kotlin smoke runner | New `tests/kotlin/Main.kt` with three pinned-value asserts (`add(2u, 3u) == 5u`, `add(UInt.MAX_VALUE, 1u) == 0u`, `version() == 1u`) using a named `EXPECTED_FORMAT_VERSION` constant; new `tests/kotlin/run.sh` orchestration script (cargo build → uniffi-bindgen Kotlin → SHA-256-verified `jna-5.14.0.jar` fetch from Maven Central → kotlinc `-include-runtime` fat-jar → `java -Djna.library.path=… MainKt`); `.gitignore` excludes for `tests/kotlin/lib/` (cached JNA) and `tests/kotlin/secretary_smoke.jar` (compiled fat-jar). Mirrors the structure of the Swift smoke runner. |
 | `805b575` | docs(ffi-uniffi): B.1.1.1 — README cross-language section for Kotlin | `ffi/secretary-ffi-uniffi/README.md` updated: opening line now mentions the B.1.1 / B.1.1.1 split; "Build & test" intro switches from "two test layers" to "three test layers" (Rust + Swift + Kotlin); new "Kotlin layer (JVM host)" section parallel to the Swift one (5-step pipeline, JNA pin rationale, `kotlinc` / `java` prerequisites with brew + SDKMAN install hints); "Where the build products live" gains Kotlin entries; scope table now shows both Swift and Kotlin signatures side-by-side; "What B.1.1 deliberately does NOT do" rewritten as "What B.1.1 / B.1.1.1 deliberately do NOT do" (drops the "no Kotlin smoke runner" bullet, gains an Android-emulator deferral bullet). |
-| _(this commit; SHA recorded post-merge in a follow-up — self-referential SHAs cannot be filled in the same commit they refer to)_ | docs: refresh README.md + ROADMAP.md + NEXT_SESSION.md for B.1.1.1 | Top-level status table flipped uniffi entry to ✅ B.1.1 + B.1.1.1 (was "Kotlin smoke runner deferred to B.1.1.1"); test-count narrative clarified that B.1.1.1's contribution is JVM-side (no new Rust tests); ROADMAP.md ASCII progress bar advanced 12 → 14 chars; ROADMAP § "Sub-project B" header updated; B.1.1.1 entry flipped ⏳ → ✅ with full pipeline description; NEXT_SESSION.md updated to record this session and recommend B.2 as next unit; timestamped handoff copy added to `docs/handoffs/2026-05-03-b1-1-1-ffi-uniffi-kotlin.md`. |
+| `6fbb7b4` | docs: refresh README.md + ROADMAP.md + NEXT_SESSION.md for B.1.1.1 | Top-level status table flipped uniffi entry to ✅ B.1.1 + B.1.1.1 (was "Kotlin smoke runner deferred to B.1.1.1"); test-count narrative clarified that B.1.1.1's contribution is JVM-side (no new Rust tests); ROADMAP.md ASCII progress bar advanced 12 → 14 chars; ROADMAP § "Sub-project B" header updated; B.1.1.1 entry flipped ⏳ → ✅ with full pipeline description; NEXT_SESSION.md updated to record this session and recommend B.2 as next unit; timestamped handoff copy added to `docs/handoffs/2026-05-03-b1-1-1-ffi-uniffi-kotlin.md`. |
 
 ### Verification at session close
 
@@ -252,6 +254,7 @@ git branch -D feat/ffi-b1-1-1-kotlin-smoke-runner
 - **`docs/TODO_FINAL_POLISHING.md`:** 2 conditionally-deferred
   sections remaining (no actionable trigger today; file deletes itself
   when both close).
-- **PR for B.1.1.1 status:** open at session close. Three commits on
-  `feat/ffi-b1-1-1-kotlin-smoke-runner`. Squash-merge SHA to be
-  recorded in a post-merge follow-up commit.
+- **PR for B.1.1.1 status:** merged. Six commits on
+  `feat/ffi-b1-1-1-kotlin-smoke-runner` (three logical + three
+  cross-platform fixes) squash-merged to `main` as `96cfc4b`
+  (PR [#22](https://github.com/hherb/secretary/pull/22)).
