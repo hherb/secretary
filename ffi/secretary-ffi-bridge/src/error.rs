@@ -66,13 +66,33 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             | E::MalformedBundle(_)
             | E::KdfFailure(_) => Self::CorruptVault { message: e.to_string() },
 
-            // Defensive forward-compat: variants currently unreachable from
-            // open_with_password (they require open_with_recovery or
-            // create_vault) but mapped here so a future core change doesn't
-            // silently cause a panic at the FFI boundary.
-            E::WrongMnemonicOrCorrupt
-            | E::InvalidMnemonic(_)
-            | E::WeakKdfParams { .. } => Self::CorruptVault { message: e.to_string() },
+            // SECURITY: defensive forward-compat for variants currently
+            // unreachable from `open_with_password` (they require
+            // `open_with_recovery` / `create_vault`). Each arm is chosen
+            // to preserve the anti-oracle property by default if a future
+            // core change makes the variant reachable here:
+            //
+            // - `WrongMnemonicOrCorrupt` is the recovery-path's conflated
+            //   form (wrong mnemonic OR corrupt) — semantically equivalent
+            //   to `WrongPasswordOrCorrupt`. Folding it to `CorruptVault`
+            //   would split the conflation on the foreign side and leak
+            //   "the credential is wrong vs. the vault is corrupt", which
+            //   violates `docs/threat-model.md` §13. Route to
+            //   `WrongPasswordOrCorrupt` so the conflation survives.
+            //
+            // - `InvalidMnemonic` describes a non-credential parse failure
+            //   (the mnemonic doesn't decode as BIP-39). Not an oracle
+            //   surface; `CorruptVault` is correct.
+            //
+            // - `WeakKdfParams` describes vault-config divergence from the
+            //   §3 floor. Not an oracle surface; `CorruptVault` is correct.
+            //
+            // If reachability changes for any of these, re-validate the
+            // mapping against the threat model — don't silently inherit it.
+            E::WrongMnemonicOrCorrupt => Self::WrongPasswordOrCorrupt,
+            E::InvalidMnemonic(_) | E::WeakKdfParams { .. } => {
+                Self::CorruptVault { message: e.to_string() }
+            }
         }
     }
 }
@@ -153,18 +173,38 @@ mod tests {
     }
 
     #[test]
-    fn wrong_mnemonic_or_corrupt_maps_defensively_to_corrupt_vault() {
+    fn wrong_mnemonic_or_corrupt_maps_to_wrong_password_or_corrupt_for_anti_oracle() {
+        // SECURITY: WrongMnemonicOrCorrupt is the recovery-path's anti-
+        // oracle conflation (wrong mnemonic OR corrupt), semantically
+        // equivalent to FfiUnlockError::WrongPasswordOrCorrupt. The defensive
+        // arm in From<UnlockError> routes here — NOT to CorruptVault —
+        // because folding a conflated variant into CorruptVault would
+        // split it on the foreign side and leak "credential wrong vs.
+        // vault corrupt" across the boundary, violating threat-model §13.
         // Currently unreachable through open_with_password (only
-        // open_with_recovery returns this). Defensive forward-compat
-        // mapping so a future core change can't introduce a panic at
-        // the FFI boundary silently.
+        // open_with_recovery returns this); the mapping is forward-compat
+        // insurance, not an active path.
         let core_err = UnlockError::WrongMnemonicOrCorrupt;
+        let ffi: FfiUnlockError = core_err.into();
+        assert!(matches!(ffi, FfiUnlockError::WrongPasswordOrCorrupt));
+    }
+
+    #[test]
+    fn invalid_mnemonic_maps_defensively_to_corrupt_vault() {
+        // Not an anti-oracle conflation: InvalidMnemonic reports a non-
+        // credential parse failure (the input doesn't decode as BIP-39).
+        // CorruptVault is the correct landing for forward-compat reachability.
+        use secretary_core::unlock::mnemonic::MnemonicError;
+        let core_err = UnlockError::InvalidMnemonic(MnemonicError::WrongLength { got: 12 });
         let ffi: FfiUnlockError = core_err.into();
         assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
     }
 
     #[test]
     fn weak_kdf_params_maps_defensively_to_corrupt_vault() {
+        // Not an anti-oracle conflation: WeakKdfParams reports vault-config
+        // divergence from the §3 floor, not credential validity. CorruptVault
+        // is the correct landing for forward-compat reachability.
         let core_err = UnlockError::WeakKdfParams {
             memory_kib: 8,
             min_memory_kib: 65536,
