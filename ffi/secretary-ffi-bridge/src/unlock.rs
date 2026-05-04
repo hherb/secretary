@@ -99,6 +99,16 @@ mod tests {
     #[test]
     fn open_with_password_truncated_vault_toml_returns_corrupt_vault() {
         // Slice off the last 50 bytes of vault.toml — produces invalid TOML.
+        //
+        // Why this is robust under v1: vault.toml is plain TOML and contains
+        // no AEAD-framed payloads (those live in identity.bundle.enc). Any
+        // truncation of vault.toml fails at TOML parse / required-field-
+        // present checks long before reaching the AEAD step that produces
+        // WrongPasswordOrCorrupt — so this test cannot accidentally fall
+        // through into the wrong error variant for the current architecture.
+        // If a future format places AEAD content in vault.toml, re-validate
+        // this test (and its pytest / Swift / Kotlin siblings, which all
+        // pin the same 50-byte distance).
         let truncated = &VAULT_001_TOML[..VAULT_001_TOML.len().saturating_sub(50)];
         let err = open_with_password(
             truncated, VAULT_001_BUNDLE, VAULT_001_PASSWORD,

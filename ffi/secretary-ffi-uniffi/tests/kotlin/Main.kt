@@ -25,6 +25,13 @@ private const val EXPECTED_FORMAT_VERSION: UShort = 1u
 // Matches secretary-ffi-py/tests/test_smoke.py::_TRUNCATION_SUFFIX_BYTES
 // and the Swift smoke runner; keeping all three pinned to the same
 // value makes the cross-language "what counts as corrupt" surface uniform.
+//
+// Why robust under v1: vault.toml is plain TOML and contains no AEAD-
+// framed payloads (those live in identity.bundle.enc), so any
+// truncation must fail at TOML parse / required-field-present checks
+// long before the AEAD step that produces WrongPasswordOrCorrupt. If
+// a future format places AEAD content in vault.toml, re-validate
+// across all four sites (bridge, pytest, Swift, Kotlin).
 private const val TRUNCATION_SUFFIX_BYTES: Int = 50
 
 // Collect failures rather than exit on first so a single run reports

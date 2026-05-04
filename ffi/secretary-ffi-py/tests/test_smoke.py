@@ -58,6 +58,13 @@ VAULT_001_OWNER_USER_UUID = bytes.fromhex("bf08a3300cd994b877e1a15baa28df35")
 # Number of trailing bytes stripped to corrupt the TOML structurally.
 # Empirically large enough to break the document past any tolerant
 # parser; mirrors the bridge crate's unlock.rs negative-test value.
+#
+# Why robust under v1: vault.toml is plain TOML and contains no AEAD-
+# framed payloads (those live in identity.bundle.enc), so any
+# truncation must fail at TOML parse / required-field-present checks
+# long before the AEAD step that produces WrongPasswordOrCorrupt.
+# The same constant + reasoning is pinned in the bridge crate's
+# unlock.rs and the Swift / Kotlin smoke runners.
 _TRUNCATION_SUFFIX_BYTES = 50
 
 

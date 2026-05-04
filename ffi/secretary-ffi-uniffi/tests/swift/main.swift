@@ -92,6 +92,13 @@ let expectedUserUuid = Data([
 // Matches secretary-ffi-py/tests/test_smoke.py::_TRUNCATION_SUFFIX_BYTES
 // and the Kotlin smoke runner; keeping all three pinned to the same
 // value makes the cross-language "what counts as corrupt" surface uniform.
+//
+// Why robust under v1: vault.toml is plain TOML and contains no AEAD-
+// framed payloads (those live in identity.bundle.enc), so any
+// truncation must fail at TOML parse / required-field-present checks
+// long before the AEAD step that produces WrongPasswordOrCorrupt. If
+// a future format places AEAD content in vault.toml, re-validate
+// across all four sites (bridge, pytest, Swift, Kotlin).
 let TRUNCATION_SUFFIX_BYTES = 50
 
 // Assertion 4: success path. defer { wipe() } exercises the explicit-
