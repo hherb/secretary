@@ -21,6 +21,12 @@ import kotlin.system.exitProcess
 // honest as a cross-language contract assertion rather than a tautology.
 private const val EXPECTED_FORMAT_VERSION: UShort = 1u
 
+// Truncation distance for assertion 7 (truncated TOML → CorruptVault).
+// Matches secretary-ffi-py/tests/test_smoke.py::_TRUNCATION_SUFFIX_BYTES
+// and the Swift smoke runner; keeping all three pinned to the same
+// value makes the cross-language "what counts as corrupt" surface uniform.
+private const val TRUNCATION_SUFFIX_BYTES: Int = 50
+
 // Collect failures rather than exit on first so a single run reports
 // every contract that drifted, not just the first. The smoke surface
 // is small now but grows in B.2+; aggregating from the start avoids
@@ -65,9 +71,20 @@ fun main() {
     val vault001Path = java.nio.file.Paths.get(vaultDir, "golden_vault_001")
     val vault002Path = java.nio.file.Paths.get(vaultDir, "golden_vault_002")
 
-    val toml001 = java.nio.file.Files.readAllBytes(vault001Path.resolve("vault.toml"))
-    val bundle001 = java.nio.file.Files.readAllBytes(vault001Path.resolve("identity.bundle.enc"))
-    val bundle002 = java.nio.file.Files.readAllBytes(vault002Path.resolve("identity.bundle.enc"))
+    // Wrap fixture reads in a try/catch — without it, a missing or
+    // unreadable golden_vault file produces an unhandled JVM stack
+    // trace; with it, we exit cleanly with the same shape Swift uses
+    // ("error: failed to read golden vault fixtures: ...").
+    val (toml001, bundle001, bundle002) = try {
+        Triple(
+            java.nio.file.Files.readAllBytes(vault001Path.resolve("vault.toml")),
+            java.nio.file.Files.readAllBytes(vault001Path.resolve("identity.bundle.enc")),
+            java.nio.file.Files.readAllBytes(vault002Path.resolve("identity.bundle.enc")),
+        )
+    } catch (e: java.io.IOException) {
+        System.err.println("error: failed to read golden vault fixtures: $e")
+        exitProcess(1)
+    }
     val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
 
     // Pinned KAT — must match secretary-ffi-bridge's tests + pytest +
@@ -127,12 +144,12 @@ fun main() {
         check(false, "vault mismatch threw $e, expected VaultMismatch")
     }
 
-    // Assertion 7: truncated TOML → CorruptVault(detail). The 50-byte
-    // suffix is the same truncation distance the pytest suite uses
+    // Assertion 7: truncated TOML → CorruptVault(detail). The truncation
+    // suffix is the same distance the pytest suite uses
     // (_TRUNCATION_SUFFIX_BYTES); aligning it keeps the cross-language
     // "what counts as corrupt" surface uniform.
     try {
-        val truncated = toml001.copyOfRange(0, toml001.size - 50)
+        val truncated = toml001.copyOfRange(0, toml001.size - TRUNCATION_SUFFIX_BYTES)
         openWithPassword(
             vaultTomlBytes = truncated,
             identityBundleBytes = bundle001,

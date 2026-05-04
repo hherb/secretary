@@ -88,6 +88,12 @@ let expectedUserUuid = Data([
     0x77, 0xe1, 0xa1, 0x5b, 0xaa, 0x28, 0xdf, 0x35,
 ])
 
+// Truncation distance for assertion 7 (truncated TOML → CorruptVault).
+// Matches secretary-ffi-py/tests/test_smoke.py::_TRUNCATION_SUFFIX_BYTES
+// and the Kotlin smoke runner; keeping all three pinned to the same
+// value makes the cross-language "what counts as corrupt" surface uniform.
+let TRUNCATION_SUFFIX_BYTES = 50
+
 // Assertion 4: success path. defer { wipe() } exercises the explicit-
 // zeroize hook (`wipe`, not `close`, per uniffi 0.31 codegen — see the
 // generated UnlockedIdentity doc comment for the rename rationale).
@@ -137,12 +143,12 @@ do {
     check(false, "vault mismatch threw \(error), expected VaultMismatch")
 }
 
-// Assertion 7: truncated TOML → CorruptVault(detail). The 50-byte
-// suffix is the same truncation distance the pytest suite uses
+// Assertion 7: truncated TOML → CorruptVault(detail). The truncation
+// suffix is the same distance the pytest suite uses
 // (_TRUNCATION_SUFFIX_BYTES); aligning it keeps the cross-language
 // "what counts as corrupt" surface uniform.
 do {
-    let truncated = Data(toml001.dropLast(50))
+    let truncated = Data(toml001.dropLast(TRUNCATION_SUFFIX_BYTES))
     _ = try openWithPassword(
         vaultTomlBytes: truncated,
         identityBundleBytes: bundle001,
