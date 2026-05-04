@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-04 (Sub-project B.2 — vault unlock through FFI)
-**Status:** Sub-project B.2 complete; PR #24 open / merged. The first fallible, secret-bearing FFI operation is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the new shared `secretary-ffi-bridge` crate. With B.2 done, the FFI surface includes its first vault crypto operation; B.3 expands it with `open_with_recovery` and (deferred-design) `create_vault`.
+**Status:** Sub-project B.2 complete and merged. PR [#24](https://github.com/hherb/secretary/pull/24) squash-merged to `main` as `4d0fffc`; post-merge `cedaccc` closed issue #23 (`cargo fmt --all` repo-wide drift). The first fallible, secret-bearing FFI operation is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the new shared `secretary-ffi-bridge` crate. With B.2 done, the FFI surface includes its first vault crypto operation; B.3 expands it with `open_with_recovery` and (deferred-design) `create_vault`.
 
 ## (1) What we shipped this session
 
@@ -12,13 +12,15 @@
 | 7.5 | 9 — uniffi UDL + glue | `29e3e1c` | UDL surface adds `[Throws=UnlockError] open_with_password`, `interface UnlockedIdentity`, `[Error] interface UnlockError`; Rust glue: 3-variant error enum + `From<FfiUnlockError>` + opaque-handle newtype + Vec<u8> password zeroize. Three uniffi-codegen-driven deviations from plan: `CorruptVault.message → detail` (Kotlin Throwable.message collision), `UnlockedIdentity::close → wipe` (Kotlin AutoCloseable.close auto-generation), `Result<Arc<UnlockedIdentity>, _>` return type (uniffi interface marshalling). |
 | 7.5 | 10 — Swift + Kotlin smoke | `7cda192`, `fcd56aa` | 4 new Swift asserts + 4 new Kotlin asserts (success / wrong password / cross-vault mismatch / truncated TOML), driven via SECRETARY_GOLDEN_VAULT_DIR env var in run.sh. Kotlin uses stdlib `.use { }` directly via uniffi 0.31's auto-AutoCloseable — hand-rolled UnlockedIdentityExt.kt skipped. Review fix-ups: Kotlin fixture-read try/catch parity with Swift, named TRUNCATION_SUFFIX_BYTES constant. |
 | Final | 11 — READMEs + ROADMAP | `959ef1b` | New ffi/secretary-ffi-bridge/README.md; B.2 sections appended to ffi/secretary-ffi-py/README.md and ffi/secretary-ffi-uniffi/README.md (Python uses original `close`, uniffi uses renamed `wipe` / `.detail`). Top-level README + ROADMAP advanced: B.2 ✅, ASCII progress bar 14→21 chars, "Where we are" date 2026-05-03 → 2026-05-04, test count 451+6 → 477+9 with per-crate breakdown. |
-| Final | 12 — handoff + PR | (this commit) | Post-B.2 NEXT_SESSION + docs/handoffs/ archive + GitHub issue #23 filed for repo-wide cargo fmt drift + branch pushed + PR opened. |
+| Final | 12 — handoff + PR | `959ef1b` (then squash-merged as `4d0fffc`) | Post-B.2 NEXT_SESSION + docs/handoffs/ archive + GitHub issue #23 filed for repo-wide cargo fmt drift + branch pushed + PR opened. |
+| Post-merge | Issue #23 cleanup | `cedaccc` | `cargo fmt --all` (workspace + `core/fuzz/`) — pure rustfmt cosmetics, zero logic changes; verified all gates green. Closes #23. |
+| Post-merge | SHA-record fix-up | (this commit) | Records squash-merge SHA `4d0fffc` in NEXT_SESSION.md + this handoff archive copy; corrects bridge-crate test count (20 → 22 — was rounded down at session close); disables companion routine `trig_018gYtGpiycgLXqUsDpV2NZD` via RemoteTrigger (`enabled: false`); fresh handoff copy at `docs/handoffs/2026-05-04-post-pr24-cleanup.md`. Same shape as `36850ec` did for PR #22. |
 
 ### Verification at session close
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **477 passed + 9 ignored, 0 failed** (was 451 + 6 at branch start) |
+| `cargo test --release --workspace` | **479 passed + 9 ignored, 0 failed** (was 451 + 6 at branch start; the 477 cited at session close undercounted the bridge crate's 22 unit tests as 20) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `uv run --directory ffi/secretary-ffi-py pytest` | **10 passed** (was 3 — added 7 B.2 tests) |
 | `uv run core/tests/python/conformance.py` | **PASS** |
@@ -78,17 +80,16 @@ These are the B.2 decisions that will constrain B.3's brainstorm:
 
 ### Pre-existing technical debt (filed, not folded into this PR)
 
-- **Issue #23 — Repo-wide cargo fmt drift** in unrelated files (predates B.2 branch). To be addressed in a single follow-up commit on `main`.
+- ~~**Issue #23 — Repo-wide cargo fmt drift** in unrelated files (predates B.2 branch). To be addressed in a single follow-up commit on `main`.~~ **Closed by `cedaccc`** on `main` post-merge — pure rustfmt cosmetics, zero logic changes, all gates re-verified green.
 
 ## (4) Exact commands to resume
 
 ```bash
-# Once PR feat/ffi-b2-vault-unlock merges to main:
 cd /Users/hherb/src/secretary
 git checkout main
 git pull --ff-only
 
-# Verify the B.2 ship lands on main:
+# Verify the post-merge state on main:
 cargo test --release --workspace 2>&1 | grep -E "^test result:" | python3 -c "
 import sys, re
 p=f=i=0
@@ -97,32 +98,39 @@ for line in sys.stdin:
     if m: p+=int(m.group(1)); f+=int(m.group(2)); i+=int(m.group(3))
 print(f'TOTAL: {p} passed; {f} failed; {i} ignored')"
 cargo clippy --release --workspace -- -D warnings && echo "clippy OK"
+cargo fmt --all -- --check && echo "fmt OK"
+
+# IMPORTANT: re-build the maturin dylib BEFORE running pytest.
+# Without this, .venv carries the pre-merge .so and the new B.2 symbols
+# (`open_with_password`, `WrongPasswordOrCorrupt`, etc.) are missing —
+# pytest fails with `AttributeError: module 'secretary_ffi_py' has no attribute …`.
+( cd ffi/secretary-ffi-py && uv run maturin develop --release --uv )
+
 uv run --directory ffi/secretary-ffi-py pytest
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 bash ffi/secretary-ffi-uniffi/tests/swift/run.sh
 bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
-# Expected: 477 passed + 9 ignored cargo; 10 pytest; PASS conformance + freshness;
-# 7/7 Swift; 7/7 Kotlin; clippy clean.
+# Expected: 479 passed + 9 ignored cargo; clippy clean; fmt OK; 10 pytest;
+# PASS conformance + freshness; 7/7 Swift; 7/7 Kotlin.
 
 # Begin Sub-project B.3 with brainstorm. Read the deferred-items section
 # of docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md first.
 # Then: /brainstorm
 ```
 
-After PR merge, follow the post-PR-22 pattern: a separate fix-up commit on `main` that records the squash-merge SHA in this NEXT_SESSION.md (matches `36850ec`'s format).
-
 ---
 
 ## Closing inventory
 
-- **Branch:** `feat/ffi-b2-vault-unlock`
-- **Total commits since branching from `main@959c6ed`:** ~19 (10 implementation + 5 review fix-ups + 1 mid-execution baton + 3 doc/handoff = approximate; verify with `git log --oneline main..HEAD`)
-- **Workspace tests:** 477 + 9 ignored
+- **Branch:** `feat/ffi-b2-vault-unlock` (squash-merged + deletable; current work happens on `main`)
+- **Total commits since branching from `main@959c6ed`:** ~19 on the feature branch (10 implementation + 5 review fix-ups + 1 mid-execution baton + 3 doc/handoff). Squash-merged to `main` as `4d0fffc`.
+- **Workspace tests:** 479 + 9 ignored
 - **Pytest:** 10 (3 B.1 + 7 B.2)
 - **Swift smoke:** 7 (3 B.1.1 + 4 B.2)
 - **Kotlin smoke:** 7 (3 B.1.1.1 + 4 B.2)
-- **Bridge crate:** 20 unit tests; pure-safe Rust; exact-pinned `zeroize = "=1.8.2"`.
-- **PR:** #24 (open / merged TBD)
-- **Companion routine** `trig_018gYtGpiycgLXqUsDpV2NZD` (weekly uniffi Closeable-trait watch) is now satisfied — uniffi 0.31's auto-AutoCloseable was confirmed during Task 9, so the routine can be retired or repurposed for the next uniffi version's behavior change. Decide in the next session.
+- **Bridge crate:** 22 unit tests (11 in `error.rs` + 7 in `identity.rs` + 4 in `unlock.rs`); pure-safe Rust; exact-pinned `zeroize = "=1.8.2"`.
+- **PR:** [#24](https://github.com/hherb/secretary/pull/24) squash-merged as `4d0fffc`.
+- **Issue:** [#23](https://github.com/hherb/secretary/issues/23) closed as completed by `cedaccc`.
+- **Companion routine** `trig_018gYtGpiycgLXqUsDpV2NZD` (weekly uniffi Closeable-trait watch) is **disabled** (`enabled: false` via RemoteTrigger) — uniffi 0.31's auto-AutoCloseable was confirmed during Task 9, so the watch is satisfied. To delete fully (rather than disable): https://claude.ai/code/routines/trig_018gYtGpiycgLXqUsDpV2NZD. A new watch can be set up later if the next major uniffi version changes that behavior.
