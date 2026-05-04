@@ -1258,7 +1258,10 @@ name = "secretary-ffi-uniffi"
 version = "0.1.0"
 dependencies = [
  "secretary-core",
+ "secretary-ffi-bridge",
+ "thiserror",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]
