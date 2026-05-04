@@ -57,6 +57,8 @@ pub struct Inputs {
     pub created_at_ms: u64,
     pub last_mod_ms: u64,
     pub password: String,
+    pub kdf_params: InputsKdfParams,
+    pub rng_seed_for_aead_nonces: String,
     /// 24-word BIP-39 recovery phrase, lowercase, space-separated.
     /// Derived deterministically from the pinned `recovery_entropy` (also in
     /// this struct via the seeded ChaCha20 RNG draws). Pinned as a string so
@@ -65,12 +67,10 @@ pub struct Inputs {
     /// string matches `bip39::Mnemonic::from_entropy(recovery_entropy).to_string()`,
     /// so JSON drift cannot land silently.
     pub recovery_mnemonic_phrase: String,
-    pub kdf_params: InputsKdfParams,
     pub owner: InputsIdentity,
     pub alice: InputsIdentity,
     pub bob: InputsIdentity,
     pub block_plaintext: InputsBlockPlaintext,
-    pub rng_seed_for_aead_nonces: String,
 }
 
 #[derive(Debug, Deserialize)]
