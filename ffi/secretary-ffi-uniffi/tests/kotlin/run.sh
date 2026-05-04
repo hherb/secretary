@@ -24,6 +24,13 @@ TARGET_DIR="$REPO_ROOT/target/release"
 LIB_DIR="$SCRIPT_DIR/lib"
 JAR_OUT="$SCRIPT_DIR/secretary_smoke.jar"
 
+# B.2: smoke runner reads golden vault fixtures from the repo's
+# core/tests/data/ tree. Exported so Main.kt can resolve the fixture
+# path at runtime (via System.getenv) without hard-coding it (and so
+# the same fixture set is the single source of truth shared with the
+# bridge crate's tests, the pytest suite, and the Swift smoke runner).
+export SECRETARY_GOLDEN_VAULT_DIR="$REPO_ROOT/core/tests/data"
+
 # --- Host-specific cdylib filename (cargo emits different conventions per OS) ---
 # JNA resolves `findLibraryName("secretary") == "secretary_ffi_uniffi"` against
 # `-Djna.library.path` first, then prefixes/suffixes per platform. Cargo's
