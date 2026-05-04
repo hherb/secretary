@@ -18,7 +18,7 @@
 //! Rust-side `Drop` cascade still runs.
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Opaque handle to an unlocked vault identity. See [module docs](self).
 pub struct UnlockedIdentity {
@@ -31,14 +31,23 @@ pub struct UnlockedIdentity {
     inner: Mutex<Option<secretary_core::unlock::UnlockedIdentity>>,
 }
 
+/// Acquire the inner lock, **falling through poisoning** to preserve the
+/// non-throwing API contract. A poisoned mutex would normally cause every
+/// accessor to panic, contradicting the module-level promise that "accessor
+/// calls on a closed handle return empty / zero values rather than
+/// panicking". `into_inner` on the `PoisonError` recovers the guard so the
+/// caller gets either the live state (if the panicking thread didn't leave
+/// invariants broken) or `None` (if `close()` happened to run mid-panic);
+/// in both cases the accessors fall through to defaults rather than
+/// re-panicking.
+fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Redacted Debug: never leak secret material through the fmt path.
 impl fmt::Debug for UnlockedIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_closed = self
-            .inner
-            .lock()
-            .expect("UnlockedIdentity mutex poisoned")
-            .is_none();
+        let is_closed = lock_or_recover(&self.inner).is_none();
         f.debug_struct("UnlockedIdentity")
             .field("closed", &is_closed)
             .finish()
@@ -58,9 +67,7 @@ impl UnlockedIdentity {
     ///
     /// Returns `""` if the handle has been explicitly closed.
     pub fn display_name(&self) -> String {
-        self.inner
-            .lock()
-            .expect("UnlockedIdentity mutex poisoned")
+        lock_or_recover(&self.inner)
             .as_ref()
             .map(|id| id.identity.display_name.clone())
             .unwrap_or_default()
@@ -70,9 +77,7 @@ impl UnlockedIdentity {
     ///
     /// Returns `vec![0u8; 16]` if the handle has been explicitly closed.
     pub fn user_uuid(&self) -> Vec<u8> {
-        self.inner
-            .lock()
-            .expect("UnlockedIdentity mutex poisoned")
+        lock_or_recover(&self.inner)
             .as_ref()
             .map(|id| id.identity.user_uuid.to_vec())
             .unwrap_or_else(|| vec![0u8; 16])
@@ -82,11 +87,7 @@ impl UnlockedIdentity {
     /// fields at exactly this moment. **Idempotent** — multiple calls do
     /// not panic.
     pub fn close(&self) {
-        let _drop = self
-            .inner
-            .lock()
-            .expect("UnlockedIdentity mutex poisoned")
-            .take();
+        let _drop = lock_or_recover(&self.inner).take();
         // _drop goes out of scope here → core::UnlockedIdentity drops →
         // Sensitive<...> ZeroizeOnDrop runs for every secret field.
     }
@@ -151,6 +152,42 @@ mod tests {
         id.close(); // second call must not panic
         id.close(); // third call must not panic
         assert_eq!(id.display_name(), "");
+    }
+
+    #[test]
+    fn accessors_fall_through_mutex_poisoning_without_panicking() {
+        // Module docs promise non-throwing accessors. A panic anywhere
+        // holding the inner Mutex's guard would otherwise poison it and
+        // turn every subsequent accessor into a panic via the original
+        // `.expect("UnlockedIdentity mutex poisoned")`. The
+        // `lock_or_recover` helper makes the guard recoverable so this
+        // test exercises the contract: poison the mutex, then verify
+        // accessors still return the expected values.
+        use std::sync::Arc;
+        use std::thread;
+
+        let id = Arc::new(fresh_unlocked_identity());
+        let id_clone = Arc::clone(&id);
+
+        // Force poisoning by panicking inside a thread that holds the
+        // guard. We reach into the mutex directly via a helper to lock
+        // it in the same shape `lock_or_recover` does, then trigger a
+        // panic while the guard is alive.
+        let _ = thread::spawn(move || {
+            let _guard = id_clone.inner.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+
+        // Mutex is now poisoned. With `lock_or_recover`, accessors must
+        // still return live values (the inner Option<...> wasn't mutated
+        // by the panicking thread) and must not panic.
+        assert_eq!(id.display_name(), "TestUser");
+        assert_eq!(id.user_uuid().len(), 16);
+        // close() must not panic on a poisoned mutex either.
+        id.close();
+        assert_eq!(id.display_name(), "");
+        assert_eq!(id.user_uuid(), vec![0u8; 16]);
     }
 
     #[test]
