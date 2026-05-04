@@ -15,6 +15,12 @@
 //! crate is intentionally tiny and reviewed; new `unsafe` blocks should
 //! be challenged in code review.
 //!
+//! B.2 (this version) adds the `open_with_password` entry-point and the
+//! `UnlockedIdentity` opaque handle, projecting `secretary-ffi-bridge`'s
+//! FFI-friendly facade through PyO3.
+//!
+//! Rationale (B.2): docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md
+//!
 //! Rationale: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
 
 #![allow(unsafe_code)]
@@ -63,8 +69,12 @@ create_exception!(secretary_ffi_py, WrongPasswordOrCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultMismatch, PyException);
 create_exception!(secretary_ffi_py, CorruptVault, PyException);
 
-/// Convert a bridge-crate `FfiUnlockError` into the appropriate Python
-/// exception. Routed via `From<FfiUnlockError> for PyErr`.
+/// Map a bridge-crate `FfiUnlockError` to the matching Python exception
+/// class. Used at the `open_with_password` boundary via `.map_err`. A
+/// free function (rather than a `From` impl) is preferred because the
+/// orphan rules forbid `impl From<FfiUnlockError> for PyErr` from a
+/// downstream crate, and `?`-routing isn't needed at the single call
+/// site.
 fn ffi_unlock_error_to_pyerr(e: FfiUnlockError) -> PyErr {
     match e {
         FfiUnlockError::WrongPasswordOrCorrupt => WrongPasswordOrCorrupt::new_err(e.to_string()),

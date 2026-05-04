@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "PyO3 binding stub for secretary-core. Smoke-test only; full bindings live in the desktop sub-project."
+description = "PyO3 bindings for secretary-core. Exposes vault unlock and the UnlockedIdentity handle; full per-platform bindings live downstream."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
