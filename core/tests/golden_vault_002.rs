@@ -143,9 +143,8 @@ fn golden_vault_002_opens_with_password() {
     let root = fixture_root();
     let vault_toml = std::fs::read(root.join("vault.toml")).expect("read vault.toml");
     let bundle = std::fs::read(root.join("identity.bundle.enc")).expect("read bundle");
-    let password = secretary_core::crypto::secret::SecretBytes::new(
-        inputs.password.as_bytes().to_vec(),
-    );
+    let password =
+        secretary_core::crypto::secret::SecretBytes::new(inputs.password.as_bytes().to_vec());
     let unlocked = unlock::open_with_password(&vault_toml, &bundle, &password)
         .expect("open_with_password golden_vault_002");
     assert_eq!(
@@ -176,12 +175,13 @@ fn golden_vault_002_cross_vault_mismatch() {
     };
 
     // vault_001's vault.toml + vault_002's identity.bundle.enc → VaultMismatch
-    let vault_toml_001 = std::fs::read(root_001.join("vault.toml")).expect("read vault_001 vault.toml");
-    let bundle_002 = std::fs::read(root_002.join("identity.bundle.enc")).expect("read vault_002 bundle");
+    let vault_toml_001 =
+        std::fs::read(root_001.join("vault.toml")).expect("read vault_001 vault.toml");
+    let bundle_002 =
+        std::fs::read(root_002.join("identity.bundle.enc")).expect("read vault_002 bundle");
     let inputs_002 = load_inputs(&inputs_path());
-    let password_002 = secretary_core::crypto::secret::SecretBytes::new(
-        inputs_002.password.as_bytes().to_vec(),
-    );
+    let password_002 =
+        secretary_core::crypto::secret::SecretBytes::new(inputs_002.password.as_bytes().to_vec());
 
     let err = unlock::open_with_password(&vault_toml_001, &bundle_002, &password_002)
         .expect_err("cross-vault pair must fail");

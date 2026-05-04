@@ -122,7 +122,13 @@ pub fn encrypt(
     let cipher = XChaCha20Poly1305::new(key.expose().into());
     let xnonce = XNonce::from_slice(nonce);
     cipher
-        .encrypt(xnonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            xnonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         // The underlying `aead::Error` type is intentionally opaque; on the
         // encrypt path it can only fail on absurd input lengths, and we map
         // it to InvalidLength rather than Decryption.

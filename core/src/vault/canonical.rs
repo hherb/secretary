@@ -118,9 +118,7 @@ pub fn canonical_sort_entries(
 /// Sorts via [`canonical_sort_entries`] (because `ciborium` emits a
 /// `Value::Map`'s `Vec<(Value, Value)>` in iteration order, NOT in CBOR
 /// canonical order), then serialises as a single definite-length map.
-pub fn encode_canonical_map(
-    entries: &[(Value, Value)],
-) -> Result<Vec<u8>, CanonicalError> {
+pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CanonicalError> {
     let sorted = canonical_sort_entries(entries)?;
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
@@ -139,10 +137,7 @@ pub fn encode_canonical_map(
 /// `from_reader_with_recursion_limit(.., usize::MAX)` or similar, add an
 /// explicit `depth` parameter here to prevent stack overflow on
 /// adversarial input.
-pub fn reject_floats_and_tags(
-    v: &Value,
-    field_hint: &'static str,
-) -> Result<(), CanonicalError> {
+pub fn reject_floats_and_tags(v: &Value, field_hint: &'static str) -> Result<(), CanonicalError> {
     match v {
         Value::Float(_) => Err(CanonicalError::FloatRejected { field: field_hint }),
         Value::Tag(_, _) => Err(CanonicalError::TagRejected { field: field_hint }),
@@ -225,8 +220,7 @@ mod tests {
         // A float at the top level: walker emits FloatRejected with the
         // exact field hint we passed in.
         let v = Value::Float(1.5);
-        let err = reject_floats_and_tags(&v, "<root>")
-            .expect_err("float must be rejected");
+        let err = reject_floats_and_tags(&v, "<root>").expect_err("float must be rejected");
         assert!(
             matches!(err, CanonicalError::FloatRejected { field: "<root>" }),
             "expected FloatRejected {{ field: \"<root>\" }}, got {err:?}"
@@ -251,8 +245,7 @@ mod tests {
         // Tag 0 (RFC 3339 datetime) at the top level — irrelevant to the
         // walker, which rejects ALL tags regardless of tag number.
         let v = Value::Tag(0, Box::new(Value::Text("2024-04-25T00:00:00Z".into())));
-        let err = reject_floats_and_tags(&v, "<root>")
-            .expect_err("tag must be rejected");
+        let err = reject_floats_and_tags(&v, "<root>").expect_err("tag must be rejected");
         assert!(
             matches!(err, CanonicalError::TagRejected { field: "<root>" }),
             "expected TagRejected {{ field: \"<root>\" }}, got {err:?}"

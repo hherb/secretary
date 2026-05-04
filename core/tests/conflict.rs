@@ -93,18 +93,12 @@ fn three_way_merge_is_associative_on_persisted_record() {
     // converge on the same persisted state.
     let a = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("alice".into()), 100, 1),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("alice".into()), 100, 1))],
         100,
     );
     let b = record(
         7,
-        &[(
-            "p",
-            rfield(RecordFieldValue::Text("pass-b".into()), 200, 2),
-        )],
+        &[("p", rfield(RecordFieldValue::Text("pass-b".into()), 200, 2))],
         200,
     );
     let c = record(
@@ -135,26 +129,17 @@ fn three_way_merge_with_collisions_picks_global_lww_winner() {
     // value.
     let a = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("v-a".into()), 100, 1),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("v-a".into()), 100, 1))],
         100,
     );
     let b = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("v-b".into()), 200, 2),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("v-b".into()), 200, 2))],
         200,
     );
     let c = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("v-c".into()), 150, 3),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("v-c".into()), 150, 3))],
         150,
     );
 
@@ -180,10 +165,7 @@ fn mixed_tombstone_tie_takes_tombstone_side_tags() {
     // Tombstone wins on tie; merged tags follow the tombstoning side.
     let mut local = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("alice".into()), 100, 1),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("alice".into()), 100, 1))],
         100,
     );
     local.tombstone = true;
@@ -192,17 +174,17 @@ fn mixed_tombstone_tie_takes_tombstone_side_tags() {
 
     let mut remote = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("alice".into()), 100, 2),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("alice".into()), 100, 2))],
         100,
     );
     remote.tags = vec!["work".to_string()];
 
     let m = merge_record(&local, &remote);
     assert!(m.merged.tombstone, "tombstone wins on tie");
-    assert!(m.merged.fields.is_empty(), "tombstoned records have no fields");
+    assert!(
+        m.merged.fields.is_empty(),
+        "tombstoned records have no fields"
+    );
     assert_eq!(
         m.merged.tags,
         vec!["archived".to_string()],
@@ -218,20 +200,14 @@ fn mixed_tombstone_tie_takes_tombstone_side_tags() {
 fn record_unknown_lex_larger_canonical_cbor_wins_on_collision() {
     let mut a = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("alice".into()), 100, 1),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("alice".into()), 100, 1))],
         100,
     );
     a.unknown.insert("v2_key".to_string(), unknown_int(5));
 
     let mut b = record(
         7,
-        &[(
-            "u",
-            rfield(RecordFieldValue::Text("alice".into()), 100, 1),
-        )],
+        &[("u", rfield(RecordFieldValue::Text("alice".into()), 100, 1))],
         100,
     );
     b.unknown.insert("v2_key".to_string(), unknown_int(10));
@@ -318,7 +294,13 @@ fn concurrent_merge_ticks_merging_device_into_existing_clock() {
 fn concurrent_merge_ticks_merging_device_already_in_clock() {
     let merging_device = [9; 16];
     // The merging device already has a counter — tick increments it.
-    let local = vec![vc(1, 3), VectorClockEntry { device_uuid: merging_device, counter: 7 }];
+    let local = vec![
+        vc(1, 3),
+        VectorClockEntry {
+            device_uuid: merging_device,
+            counter: 7,
+        },
+    ];
     let incoming = vec![vc(2, 4)];
     let m = merge_block(
         &pt(5, Vec::new()),
@@ -360,12 +342,18 @@ fn merge_block_partitions_collisions_correctly() {
     );
     let r_conflicting_a = record(
         4,
-        &[("u", rfield(RecordFieldValue::Text("conflict-a".into()), 100, 1))],
+        &[(
+            "u",
+            rfield(RecordFieldValue::Text("conflict-a".into()), 100, 1),
+        )],
         100,
     );
     let r_conflicting_b = record(
         4,
-        &[("u", rfield(RecordFieldValue::Text("conflict-b".into()), 200, 2))],
+        &[(
+            "u",
+            rfield(RecordFieldValue::Text("conflict-b".into()), 200, 2),
+        )],
         200,
     );
 
@@ -399,16 +387,13 @@ fn merge_block_partitions_collisions_correctly() {
 #[test]
 fn conflict_error_propagates_through_vault_error_from() {
     use secretary_core::vault::VaultError;
-    let err = merge_block(
-        &pt(1, Vec::new()),
-        &[],
-        &pt(2, Vec::new()),
-        &[],
-        [9; 16],
-    )
-    .expect_err("uuid mismatch");
+    let err = merge_block(&pt(1, Vec::new()), &[], &pt(2, Vec::new()), &[], [9; 16])
+        .expect_err("uuid mismatch");
     let vault_err: VaultError = err.into();
-    assert!(matches!(vault_err, VaultError::Conflict(ConflictError::BlockUuidMismatch { .. })));
+    assert!(matches!(
+        vault_err,
+        VaultError::Conflict(ConflictError::BlockUuidMismatch { .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -449,12 +434,7 @@ fn parse_hex_array<const N: usize>(s: &str) -> [u8; N] {
 fn parse_field_value(spec: &serde_json::Value) -> RecordFieldValue {
     let value_type = spec["value_type"].as_str().expect("value_type");
     match value_type {
-        "text" => RecordFieldValue::Text(
-            spec["value_text"]
-                .as_str()
-                .expect("value_text")
-                .into(),
-        ),
+        "text" => RecordFieldValue::Text(spec["value_text"].as_str().expect("value_text").into()),
         "bytes" => {
             let hex = spec["value_hex"].as_str().expect("value_hex");
             let bytes: Vec<u8> = (0..hex.len())
@@ -520,7 +500,10 @@ fn parse_record(spec: &serde_json::Value) -> Record {
         .collect();
     Record {
         record_uuid: parse_hex_array(spec["record_uuid_hex"].as_str().expect("record_uuid_hex")),
-        record_type: spec["record_type"].as_str().expect("record_type").to_string(),
+        record_type: spec["record_type"]
+            .as_str()
+            .expect("record_type")
+            .to_string(),
         fields,
         tags,
         created_at_ms: spec["created_at_ms"].as_u64().expect("created_at_ms"),
@@ -587,26 +570,44 @@ fn kat_replays_match_rust_merge() {
 
     for vector in vectors {
         let name = vector["name"].as_str().expect("name");
-        let merging_device: [u8; 16] =
-            parse_hex_array(vector["merging_device_hex"].as_str().expect("merging_device_hex"));
+        let merging_device: [u8; 16] = parse_hex_array(
+            vector["merging_device_hex"]
+                .as_str()
+                .expect("merging_device_hex"),
+        );
 
         let local_block = parse_block(&vector["local"]["block"]);
         let local_clock = parse_clock(&vector["local"]["vector_clock"]);
         let remote_block = parse_block(&vector["remote"]["block"]);
         let remote_clock = parse_clock(&vector["remote"]["vector_clock"]);
 
-        let merged =
-            merge_block(&local_block, &local_clock, &remote_block, &remote_clock, merging_device)
-                .unwrap_or_else(|e| panic!("vector {name}: merge_block failed: {e}"));
+        let merged = merge_block(
+            &local_block,
+            &local_clock,
+            &remote_block,
+            &remote_clock,
+            merging_device,
+        )
+        .unwrap_or_else(|e| panic!("vector {name}: merge_block failed: {e}"));
 
-        let expected_relation = parse_relation(vector["expected"]["relation"].as_str().expect("relation"));
-        assert_eq!(merged.relation, expected_relation, "vector {name}: relation");
+        let expected_relation =
+            parse_relation(vector["expected"]["relation"].as_str().expect("relation"));
+        assert_eq!(
+            merged.relation, expected_relation,
+            "vector {name}: relation"
+        );
 
         let expected_block = parse_block(&vector["expected"]["block"]);
-        assert_eq!(merged.merged, expected_block, "vector {name}: merged block plaintext");
+        assert_eq!(
+            merged.merged, expected_block,
+            "vector {name}: merged block plaintext"
+        );
 
         let expected_clock = parse_clock(&vector["expected"]["vector_clock"]);
-        assert_eq!(merged.vector_clock, expected_clock, "vector {name}: merged vector clock");
+        assert_eq!(
+            merged.vector_clock, expected_clock,
+            "vector {name}: merged vector clock"
+        );
 
         let expected_collisions = vector["expected"]["collisions"]
             .as_array()
@@ -617,10 +618,12 @@ fn kat_replays_match_rust_merge() {
             "vector {name}: collision count"
         );
         for (got, want) in merged.collisions.iter().zip(expected_collisions.iter()) {
-            let want_uuid: [u8; 16] = parse_hex_array(
-                want["record_uuid_hex"].as_str().expect("record_uuid_hex"),
+            let want_uuid: [u8; 16] =
+                parse_hex_array(want["record_uuid_hex"].as_str().expect("record_uuid_hex"));
+            assert_eq!(
+                got.record_uuid, want_uuid,
+                "vector {name}: collision record_uuid"
             );
-            assert_eq!(got.record_uuid, want_uuid, "vector {name}: collision record_uuid");
             let want_fcs = want["field_collisions"]
                 .as_array()
                 .expect("field_collisions[]");

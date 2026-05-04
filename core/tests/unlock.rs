@@ -6,7 +6,7 @@ mod common;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
-use secretary_core::crypto::kdf::{Argon2idParams, derive_recovery_kek, TAG_RECOVERY_KEK};
+use secretary_core::crypto::kdf::{derive_recovery_kek, Argon2idParams, TAG_RECOVERY_KEK};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::unlock::{
     self, bundle_file, create_vault_unchecked, open_with_password, open_with_recovery, UnlockError,
@@ -42,8 +42,12 @@ fn flipped_bundle_ct_byte_returns_corrupt_vault() {
     bf.bundle_ct_with_tag[mid] ^= 0xFF;
     let tampered = bundle_file::encode(&bf);
 
-    let err = open_with_password(&v.vault_toml_bytes, &tampered, &SecretBytes::new(pw.to_vec()))
-        .unwrap_err();
+    let err = open_with_password(
+        &v.vault_toml_bytes,
+        &tampered,
+        &SecretBytes::new(pw.to_vec()),
+    )
+    .unwrap_err();
     // wrap_pw decrypts fine (we didn't touch it) → bundle AEAD fails →
     // CorruptVault.
     assert!(matches!(err, UnlockError::CorruptVault));
@@ -108,11 +112,8 @@ fn flipped_bundle_ct_byte_returns_corrupt_vault_via_recovery() {
     bf.bundle_ct_with_tag[mid] ^= 0xFF;
     let tampered = bundle_file::encode(&bf);
 
-    let err = open_with_recovery(
-        &v.vault_toml_bytes,
-        &tampered,
-        v.recovery_mnemonic.phrase(),
-    ).unwrap_err();
+    let err = open_with_recovery(&v.vault_toml_bytes, &tampered, v.recovery_mnemonic.phrase())
+        .unwrap_err();
     // wrap_rec decrypts fine → bundle AEAD fails → CorruptVault.
     assert!(matches!(err, UnlockError::CorruptVault));
 }
@@ -125,8 +126,12 @@ fn non_utf8_vault_toml_returns_malformed_vault_toml() {
     let v = create(5, b"hunter2");
     let invalid: &[u8] = &[0xFF, 0xFE, 0x00, 0x80];
 
-    let err = open_with_password(invalid, &v.identity_bundle_bytes, &SecretBytes::new(b"hunter2".to_vec()))
-        .unwrap_err();
+    let err = open_with_password(
+        invalid,
+        &v.identity_bundle_bytes,
+        &SecretBytes::new(b"hunter2".to_vec()),
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         UnlockError::MalformedVaultToml(VaultTomlError::MalformedToml(ref m)) if m.contains("non-UTF-8")
@@ -143,25 +148,29 @@ fn bip39_recovery_kat_vectors() {
     assert!(!kat.vectors.is_empty(), "KAT file has no vectors");
     for v in &kat.vectors {
         // Pin 1: mnemonic → entropy (BIP-39 English wordlist + checksum).
-        let parsed = mnemonic::parse(&v.mnemonic).unwrap_or_else(|e| {
-            panic!("vector {}: parse failed: {e}", v.name)
-        });
+        let parsed = mnemonic::parse(&v.mnemonic)
+            .unwrap_or_else(|e| panic!("vector {}: parse failed: {e}", v.name));
         assert_eq!(
-            parsed.entropy().expose(), &v.entropy,
-            "vector {}: mnemonic→entropy mismatch", v.name,
+            parsed.entropy().expose(),
+            &v.entropy,
+            "vector {}: mnemonic→entropy mismatch",
+            v.name,
         );
 
         // Pin 2: info_tag is exactly TAG_RECOVERY_KEK bytes.
         assert_eq!(
             v.info_tag, TAG_RECOVERY_KEK,
-            "vector {}: info_tag does not match TAG_RECOVERY_KEK", v.name,
+            "vector {}: info_tag does not match TAG_RECOVERY_KEK",
+            v.name,
         );
 
         // Pin 3: entropy → recovery_kek (HKDF-SHA-256, 32-zero-byte salt, info=tag).
         let kek = derive_recovery_kek(&Sensitive::new(v.entropy));
         assert_eq!(
-            kek.expose(), &v.expected_recovery_kek,
-            "vector {}: HKDF output mismatch", v.name,
+            kek.expose(),
+            &v.expected_recovery_kek,
+            "vector {}: HKDF output mismatch",
+            v.name,
         );
     }
 }

@@ -288,7 +288,10 @@ mod tests {
         let rendered = format!("{:?}", b);
         assert!(!rendered.contains("ca"), "Debug leaked hex: {rendered}");
         assert!(!rendered.contains("0xca"), "Debug leaked hex: {rendered}");
-        assert!(rendered.contains("len"), "Debug should include len: {rendered}");
+        assert!(
+            rendered.contains("len"),
+            "Debug should include len: {rendered}"
+        );
     }
 
     #[test]

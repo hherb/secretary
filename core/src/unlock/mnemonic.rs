@@ -151,17 +151,18 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     // The bip39 crate reports `UnknownWord` by index into the phrase, not by
     // content. We resolve the index against our local token list here so the
     // caller-facing error variant carries the actual offending word.
-    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, &normalized).map_err(|e| {
-        match e {
-            bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord(
-                tokens
-                    .get(idx)
-                    .map(|s| (*s).to_string())
-                    .unwrap_or_else(|| "(unknown)".to_string()),
-            ),
-            other => map_bip39_error(other),
-        }
-    })?;
+    let bip =
+        Bip39Mnemonic::parse_in_normalized(Language::English, &normalized).map_err(
+            |e| match e {
+                bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord(
+                    tokens
+                        .get(idx)
+                        .map(|s| (*s).to_string())
+                        .unwrap_or_else(|| "(unknown)".to_string()),
+                ),
+                other => map_bip39_error(other),
+            },
+        )?;
 
     // Same 33-byte stack residue as `generate`: zeroize the full buffer
     // after the trimmed 32-byte entropy has been copied out, since the
@@ -283,7 +284,13 @@ mod tests {
             .phrase()
             .split_whitespace()
             .enumerate()
-            .map(|(i, w)| if i.is_multiple_of(2) { w.to_uppercase() } else { w.to_string() })
+            .map(|(i, w)| {
+                if i.is_multiple_of(2) {
+                    w.to_uppercase()
+                } else {
+                    w.to_string()
+                }
+            })
             .collect::<Vec<_>>()
             .join("   \t  ");
         let parsed = parse(&messy).expect("messy input must normalize");
@@ -307,7 +314,10 @@ mod tests {
         let bad = words.join(" ");
         let err = parse(&bad).unwrap_err();
         // The payload must carry the actual offending word, not a placeholder.
-        assert_eq!(err, MnemonicError::UnknownWord("notarealbip39word".to_string()));
+        assert_eq!(
+            err,
+            MnemonicError::UnknownWord("notarealbip39word".to_string())
+        );
     }
 
     #[test]
@@ -327,8 +337,7 @@ mod tests {
         // remain in the list but the checksum no longer matches.
         let mut rng = ChaCha20Rng::from_seed([100u8; 32]);
         let m = generate(&mut rng);
-        let mut words: Vec<String> =
-            m.phrase().split_whitespace().map(String::from).collect();
+        let mut words: Vec<String> = m.phrase().split_whitespace().map(String::from).collect();
         words.swap(0, 1);
         let bad = words.join(" ");
         // It's possible the swap yields a still-valid checksum; for a fixed
@@ -336,7 +345,10 @@ mod tests {
         // BadChecksum or UnknownWord", never Ok.
         let err = parse(&bad).unwrap_err();
         assert!(
-            matches!(err, MnemonicError::BadChecksum | MnemonicError::UnknownWord(_)),
+            matches!(
+                err,
+                MnemonicError::BadChecksum | MnemonicError::UnknownWord(_)
+            ),
             "expected BadChecksum or UnknownWord, got {err:?}",
         );
     }

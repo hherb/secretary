@@ -334,15 +334,11 @@ impl IdentityBundle {
     /// reader must recognise v1 inputs only, so a future v2 writer (or a
     /// tampered file) is rejected loudly rather than silently accepted.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
-        let value: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| BundleError::CborError(e.to_string()))?;
+        let value: Value =
+            ciborium::de::from_reader(bytes).map_err(|e| BundleError::CborError(e.to_string()))?;
         let map = match value {
             Value::Map(m) => m,
-            _ => {
-                return Err(BundleError::CborError(
-                    "expected top-level CBOR map".into(),
-                ))
-            }
+            _ => return Err(BundleError::CborError("expected top-level CBOR map".into())),
         };
 
         let mut user_uuid: Option<[u8; USER_UUID_LEN]> = None;
@@ -362,11 +358,7 @@ impl IdentityBundle {
                 return Err(BundleError::CborError("non-string map key".into()));
             };
             match key.as_str() {
-                KEY_USER_UUID => set_once(
-                    &mut user_uuid,
-                    take_uuid(v)?,
-                    &key,
-                )?,
+                KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, &key)?,
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
@@ -524,23 +516,24 @@ fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
         Value::Bytes(b) => b,
         _ => return Err(BundleError::InvalidUuid),
     };
-    bytes.try_into().map_err(|_: Vec<u8>| BundleError::InvalidUuid)
+    bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
 }
 
-fn take_fixed_bytes<const N: usize>(
-    v: Value,
-    field: &'static str,
-) -> Result<[u8; N], BundleError> {
+fn take_fixed_bytes<const N: usize>(v: Value, field: &'static str) -> Result<[u8; N], BundleError> {
     let bytes = match v {
         Value::Bytes(b) => b,
         _ => return Err(BundleError::CborError("expected byte string".into())),
     };
     let got = bytes.len();
-    bytes.try_into().map_err(|_: Vec<u8>| BundleError::WrongKeySize {
-        field,
-        expected: N,
-        got,
-    })
+    bytes
+        .try_into()
+        .map_err(|_: Vec<u8>| BundleError::WrongKeySize {
+            field,
+            expected: N,
+            got,
+        })
 }
 
 fn take_sized_bytes(
@@ -626,7 +619,10 @@ mod tests {
         // contains a key the spec doesn't define. The decoder must reject
         // before the missing-field check has a chance to fire.
         let mut entries = vec![
-            (Value::Text(KEY_USER_UUID.into()), Value::Bytes(vec![0u8; 16])),
+            (
+                Value::Text(KEY_USER_UUID.into()),
+                Value::Bytes(vec![0u8; 16]),
+            ),
             (Value::Text("rogue".into()), Value::Text("payload".into())),
         ];
         entries.sort_by(|a, b| super::canonical_key_cmp(&a.0, &b.0));
@@ -673,7 +669,9 @@ mod tests {
         let b = generate("X", 0, &mut rng);
         let bytes = b.to_canonical_cbor().unwrap();
         let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
-        let Value::Map(mut entries) = value else { panic!() };
+        let Value::Map(mut entries) = value else {
+            panic!()
+        };
         for (k, v) in entries.iter_mut() {
             if let Value::Text(s) = k {
                 if s == KEY_X25519_PK {
@@ -706,7 +704,9 @@ mod tests {
         let b = generate("X", 0, &mut rng);
         let bytes = b.to_canonical_cbor().unwrap();
         let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
-        let Value::Map(mut entries) = value else { panic!() };
+        let Value::Map(mut entries) = value else {
+            panic!()
+        };
         for (k, v) in entries.iter_mut() {
             if let Value::Text(s) = k {
                 if s == KEY_CREATED_AT {

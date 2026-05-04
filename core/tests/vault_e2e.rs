@@ -134,9 +134,7 @@ fn vector_clock_count_truncated_rejected() {
             assert_eq!(needed, 48, "needed must equal 2 * VECTOR_CLOCK_ENTRY_LEN");
             assert_eq!(got, 24, "got must equal the single entry's bytes");
         }
-        other => panic!(
-            "expected Truncated {{ needed: 48, got: 24 }}, got {other:?}",
-        ),
+        other => panic!("expected Truncated {{ needed: 48, got: 24 }}, got {other:?}",),
     }
 }
 

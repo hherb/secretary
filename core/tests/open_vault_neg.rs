@@ -31,8 +31,8 @@ use secretary_core::unlock::{
     self, bundle, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
 };
 use secretary_core::vault::{
-    decode_manifest_file, decrypt_manifest_body, encode_manifest_file, open_vault,
-    sign_manifest, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
+    decode_manifest_file, decrypt_manifest_body, encode_manifest_file, open_vault, sign_manifest,
+    KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
 };
 
 // ---------------------------------------------------------------------------
@@ -347,7 +347,10 @@ fn open_vault_manifest_vault_uuid_mismatch_rejected() {
     let err = open_vault(dir.path(), Unlocker::Password(&pw), None)
         .expect_err("body.vault_uuid != header.vault_uuid must reject");
     match err {
-        VaultError::ManifestVaultUuidMismatch { header, body: body_uuid } => {
+        VaultError::ManifestVaultUuidMismatch {
+            header,
+            body: body_uuid,
+        } => {
             assert_eq!(header, original_header_vault_uuid);
             assert_eq!(body_uuid, [0xc7u8; 16]);
         }

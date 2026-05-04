@@ -59,8 +59,8 @@ fn fast_kdf() -> Argon2idParams {
 /// Mirrors the four-file write layout of the public `create_vault`
 /// — adapted only on the KDF side.
 fn make_fast_vault(seed: u8, password: &[u8], display_name: &str) -> (tempfile::TempDir, Mnemonic) {
-    use secretary_core::identity::card::CARD_VERSION_V1;
     use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
+    use secretary_core::identity::card::CARD_VERSION_V1;
     use secretary_core::vault::{
         encode_manifest_file, sign_manifest, KdfParamsRef, Manifest, ManifestHeader,
     };
@@ -74,8 +74,7 @@ fn make_fast_vault(seed: u8, password: &[u8], display_name: &str) -> (tempfile::
 
     // Re-parse vault.toml to recover vault_uuid + salt — mirrors
     // create_vault.
-    let vt =
-        vault_toml::decode(std::str::from_utf8(&created.vault_toml_bytes).unwrap()).unwrap();
+    let vt = vault_toml::decode(std::str::from_utf8(&created.vault_toml_bytes).unwrap()).unwrap();
 
     // Owner card.
     let pq_sk = MlDsa65Secret::from_bytes(created.identity.ml_dsa_65_sk.expose()).unwrap();
@@ -142,7 +141,11 @@ fn make_fast_vault(seed: u8, password: &[u8], display_name: &str) -> (tempfile::
         &created.identity_bundle_bytes,
     )
     .unwrap();
-    fs::write(contacts_dir.join(format!("{owner_uuid_hex}.card")), &owner_card_bytes).unwrap();
+    fs::write(
+        contacts_dir.join(format!("{owner_uuid_hex}.card")),
+        &owner_card_bytes,
+    )
+    .unwrap();
     fs::write(dir.path().join("manifest.cbor.enc"), &mf_bytes).unwrap();
     (dir, created.recovery_mnemonic)
 }
@@ -218,8 +221,8 @@ fn create_vault_files_parse() {
     let manifest_bytes = fs::read(dir.path().join("manifest.cbor.enc")).unwrap();
     let card_bytes = fs::read(find_owner_card(dir.path())).unwrap();
 
-    let vt = vault_toml::decode(std::str::from_utf8(&vt_bytes).unwrap())
-        .expect("vault.toml decodes");
+    let vt =
+        vault_toml::decode(std::str::from_utf8(&vt_bytes).unwrap()).expect("vault.toml decodes");
     let bf = bundle_file::decode(&bundle_bytes).expect("identity.bundle.enc decodes");
     let mf = decode_manifest_file(&manifest_bytes).expect("manifest.cbor.enc decodes");
     let card = ContactCard::from_canonical_cbor(&card_bytes).expect("contact card decodes");
@@ -297,7 +300,10 @@ fn create_vault_manifest_decrypts() {
 
     assert_eq!(m.manifest_version, 1);
     assert_eq!(m.owner_user_uuid, opened.identity.user_uuid);
-    assert!(m.vector_clock.is_empty(), "fresh vault has empty vector_clock");
+    assert!(
+        m.vector_clock.is_empty(),
+        "fresh vault has empty vector_clock"
+    );
     assert!(m.blocks.is_empty(), "fresh vault has no blocks");
     assert!(m.trash.is_empty(), "fresh vault has empty trash");
     assert!(m.unknown.is_empty(), "no forward-compat unknowns yet");

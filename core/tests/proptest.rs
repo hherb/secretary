@@ -498,8 +498,8 @@ mod vault {
 
     use secretary_core::crypto::aead::AEAD_TAG_LEN;
     use secretary_core::crypto::kem::{
-        self, HybridWrap, MlKem768Public, MlKem768Secret, BLOCK_CONTENT_KEY_LEN,
-        ML_KEM_768_CT_LEN, X25519_PK_LEN,
+        self, HybridWrap, MlKem768Public, MlKem768Secret, BLOCK_CONTENT_KEY_LEN, ML_KEM_768_CT_LEN,
+        X25519_PK_LEN,
     };
     use secretary_core::crypto::secret::Sensitive;
     use secretary_core::crypto::sig::{
@@ -512,7 +512,9 @@ mod vault {
         RecipientPublicKeys, RecipientWrap, FILE_KIND_BLOCK,
     };
     use secretary_core::vault::conflict::merge_record;
-    use secretary_core::vault::record::{self, Record, RecordField, RecordFieldValue, UnknownValue};
+    use secretary_core::vault::record::{
+        self, Record, RecordField, RecordFieldValue, UnknownValue,
+    };
     use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
     /// Fixed-size signature suffix per §6.1: author_fp(16) + sig_ed_len(2) +
@@ -618,22 +620,33 @@ mod vault {
             Just("seed".to_string()),
             Just("notes".to_string()),
         ];
-        let fields_strategy = prop::collection::btree_map(field_name, record_field_strategy(), 0..=3);
+        let fields_strategy =
+            prop::collection::btree_map(field_name, record_field_strategy(), 0..=3);
         let tags_strategy = prop::collection::vec("[a-z]{1,8}", 0..=3);
 
         (
-            any::<[u8; 16]>(),       // record_uuid
-            record_type,             // record_type
-            fields_strategy,         // fields
-            tags_strategy,           // tags
-            any::<u64>(),            // created_at_ms
-            any::<u64>(),            // last_mod_ms
-            any::<bool>(),           // tombstone
-            any::<u64>(),            // tombstoned_at_ms (raw — canonicalised at use sites)
-            unknown_map_strategy(),  // unknown
+            any::<[u8; 16]>(),      // record_uuid
+            record_type,            // record_type
+            fields_strategy,        // fields
+            tags_strategy,          // tags
+            any::<u64>(),           // created_at_ms
+            any::<u64>(),           // last_mod_ms
+            any::<bool>(),          // tombstone
+            any::<u64>(),           // tombstoned_at_ms (raw — canonicalised at use sites)
+            unknown_map_strategy(), // unknown
         )
             .prop_map(
-                |(record_uuid, record_type, fields, tags, created, last, tombstone, tombstoned, unknown)| {
+                |(
+                    record_uuid,
+                    record_type,
+                    fields,
+                    tags,
+                    created,
+                    last,
+                    tombstone,
+                    tombstoned,
+                    unknown,
+                )| {
                     Record {
                         record_uuid,
                         record_type,
@@ -743,7 +756,10 @@ mod vault {
         let id = bundle::generate("X", 1_714_060_800_000, &mut rng);
 
         let mut pk_bundle = Vec::with_capacity(
-            id.x25519_pk.len() + id.ml_kem_768_pk.len() + id.ed25519_pk.len() + id.ml_dsa_65_pk.len(),
+            id.x25519_pk.len()
+                + id.ml_kem_768_pk.len()
+                + id.ed25519_pk.len()
+                + id.ml_dsa_65_pk.len(),
         );
         pk_bundle.extend_from_slice(&id.x25519_pk);
         pk_bundle.extend_from_slice(&id.ml_kem_768_pk);
@@ -1336,13 +1352,14 @@ mod manifest_props {
     }
 
     fn vector_clock_strategy() -> impl Strategy<Value = Vec<VectorClockEntry>> {
-        prop::collection::vec(vector_clock_entry_strategy(), 0..=4)
-            .prop_filter("duplicate device_uuid in vector clock", |vc| {
-                let mut ids: Vec<[u8; UUID_LEN]> =
-                    vc.iter().map(|e| e.device_uuid).collect();
+        prop::collection::vec(vector_clock_entry_strategy(), 0..=4).prop_filter(
+            "duplicate device_uuid in vector clock",
+            |vc| {
+                let mut ids: Vec<[u8; UUID_LEN]> = vc.iter().map(|e| e.device_uuid).collect();
                 ids.sort();
                 ids.windows(2).all(|p| p[0] != p[1])
-            })
+            },
+        )
     }
 
     /// Strategy for `BlockEntry`. `block_name` is bounded ASCII; nested
@@ -1351,13 +1368,13 @@ mod manifest_props {
     /// invariant.
     fn block_entry_strategy() -> impl Strategy<Value = BlockEntry> {
         (
-            arr16(),                                                     // block_uuid
-            "[a-zA-Z0-9_-]{0,20}",                                       // block_name
-            arr32_fp(),                                                  // fingerprint
-            prop::collection::vec(arr16(), 0..=3),                       // recipients
-            vector_clock_strategy(),                                     // vector_clock_summary
-            any::<u64>(),                                                // created_at_ms
-            any::<u64>(),                                                // last_mod_ms
+            arr16(),                               // block_uuid
+            "[a-zA-Z0-9_-]{0,20}",                 // block_name
+            arr32_fp(),                            // fingerprint
+            prop::collection::vec(arr16(), 0..=3), // recipients
+            vector_clock_strategy(),               // vector_clock_summary
+            any::<u64>(),                          // created_at_ms
+            any::<u64>(),                          // last_mod_ms
         )
             .prop_filter("duplicate recipient uuid", |(_, _, _, recip, _, _, _)| {
                 let mut sorted = recip.clone();
@@ -1433,27 +1450,25 @@ mod manifest_props {
 
     fn manifest_strategy() -> impl Strategy<Value = Manifest> {
         (
-            arr16(),                  // vault_uuid
-            arr16(),                  // owner_user_uuid
-            vector_clock_strategy(),  // vector_clock
-            blocks_strategy(),        // blocks
-            trash_strategy(),         // trash
-            kdf_params_strategy(),    // kdf_params
+            arr16(),                 // vault_uuid
+            arr16(),                 // owner_user_uuid
+            vector_clock_strategy(), // vector_clock
+            blocks_strategy(),       // blocks
+            trash_strategy(),        // trash
+            kdf_params_strategy(),   // kdf_params
         )
             .prop_map(
-                |(vault_uuid, owner_user_uuid, vector_clock, blocks, trash, kdf_params)| {
-                    Manifest {
-                        manifest_version: MANIFEST_VERSION_V1,
-                        vault_uuid,
-                        format_version: FORMAT_VERSION,
-                        suite_id: SUITE_ID,
-                        owner_user_uuid,
-                        vector_clock,
-                        blocks,
-                        trash,
-                        kdf_params,
-                        unknown: BTreeMap::new(),
-                    }
+                |(vault_uuid, owner_user_uuid, vector_clock, blocks, trash, kdf_params)| Manifest {
+                    manifest_version: MANIFEST_VERSION_V1,
+                    vault_uuid,
+                    format_version: FORMAT_VERSION,
+                    suite_id: SUITE_ID,
+                    owner_user_uuid,
+                    vector_clock,
+                    blocks,
+                    trash,
+                    kdf_params,
+                    unknown: BTreeMap::new(),
                 },
             )
     }

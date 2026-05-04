@@ -32,9 +32,9 @@ use secretary_core::unlock::{
     vault_toml,
 };
 use secretary_core::vault::{
-    encode_block_file, encode_manifest_file, encrypt_block, sign_manifest, BlockEntry,
-    BlockHeader, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Record, RecordField,
-    RecordFieldValue, RecipientPublicKeys, VectorClockEntry, FILE_KIND_BLOCK,
+    encode_block_file, encode_manifest_file, encrypt_block, sign_manifest, BlockEntry, BlockHeader,
+    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, RecipientPublicKeys, Record,
+    RecordField, RecordFieldValue, VectorClockEntry, FILE_KIND_BLOCK,
 };
 use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
@@ -239,11 +239,7 @@ pub fn identity_from_inputs(id: &InputsIdentity) -> IdentityBundle {
         "ml_dsa_65_sk_seed must be 32 bytes (FIPS 204 xi)"
     );
     let ml_dsa_65_pk = parse_hex(&id.ml_dsa_65_pk);
-    assert_eq!(
-        ml_dsa_65_pk.len(),
-        1952,
-        "ml_dsa_65_pk must be 1952 bytes"
-    );
+    assert_eq!(ml_dsa_65_pk.len(), 1952, "ml_dsa_65_pk must be 1952 bytes");
 
     IdentityBundle {
         user_uuid,
@@ -263,8 +259,7 @@ pub fn identity_from_inputs(id: &InputsIdentity) -> IdentityBundle {
 /// Build a self-signed [`ContactCard`] from a pinned [`IdentityBundle`].
 /// Mirrors `share_block.rs::make_signed_card` but consumes a pre-built bundle.
 pub fn signed_card_from(id: &IdentityBundle) -> ContactCard {
-    let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose())
-        .expect("ml-dsa-65 seed length");
+    let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).expect("ml-dsa-65 seed length");
     let mut card = ContactCard {
         card_version: CARD_VERSION_V1,
         contact_uuid: id.user_uuid,
@@ -285,7 +280,10 @@ pub fn signed_card_from(id: &IdentityBundle) -> ContactCard {
 // Block plaintext construction (pinned)
 // ---------------------------------------------------------------------------
 
-pub fn build_block_plaintext(inputs: &InputsBlockPlaintext, block_uuid: [u8; 16]) -> BlockPlaintext {
+pub fn build_block_plaintext(
+    inputs: &InputsBlockPlaintext,
+    block_uuid: [u8; 16],
+) -> BlockPlaintext {
     let mut records = Vec::with_capacity(inputs.records.len());
     for r in &inputs.records {
         let mut fields: BTreeMap<String, RecordField> = BTreeMap::new();
@@ -386,8 +384,7 @@ pub fn build_identity_envelope(
     let password = SecretBytes::new(inputs.password.as_bytes().to_vec());
 
     // Step 1: derive Master KEK from the pinned password + salt.
-    let master_kek =
-        derive_master_kek(&password, &salt, &kdf_params).expect("derive_master_kek");
+    let master_kek = derive_master_kek(&password, &salt, &kdf_params).expect("derive_master_kek");
 
     // Step 2: derive a deterministic Recovery KEK. We use the AEAD-RNG to
     // draw 32 bytes of "recovery entropy" — we don't need the BIP-39
@@ -432,9 +429,8 @@ pub fn build_identity_envelope(
         .expect("32B IBK + 16B tag = 48B wrap_pw");
 
     let wrap_rec_aad = compose_aad(TAG_ID_WRAP_REC, &vault_uuid);
-    let wrap_rec_with_tag =
-        aead::encrypt(&recovery_kek, &nonce_rec, &wrap_rec_aad, ibk.expose())
-            .expect("aead encrypt wrap_rec");
+    let wrap_rec_with_tag = aead::encrypt(&recovery_kek, &nonce_rec, &wrap_rec_aad, ibk.expose())
+        .expect("aead encrypt wrap_rec");
     let wrap_rec_arr: [u8; 48] = wrap_rec_with_tag
         .as_slice()
         .try_into()
@@ -468,7 +464,9 @@ pub fn build_identity_envelope(
             salt,
         },
     };
-    let vault_toml_bytes = vault_toml::encode(&vt).expect("vault_toml encode").into_bytes();
+    let vault_toml_bytes = vault_toml::encode(&vt)
+        .expect("vault_toml encode")
+        .into_bytes();
 
     EnvelopeOutputs {
         vault_toml_bytes,
@@ -515,10 +513,8 @@ pub fn build_golden_vault(inputs: &Inputs) -> BTreeMap<PathBuf, Vec<u8>> {
     // recovery entropy, IBK, three identity-bundle AEAD nonces, manifest
     // AEAD nonce, BCK, per-recipient encap inputs (X25519 ephemeral +
     // ML-KEM message + per-wrap nonce), and the block-body AEAD nonce.
-    let aead_seed = parse_hex_array::<32>(
-        &inputs.rng_seed_for_aead_nonces,
-        "rng_seed_for_aead_nonces",
-    );
+    let aead_seed =
+        parse_hex_array::<32>(&inputs.rng_seed_for_aead_nonces, "rng_seed_for_aead_nonces");
     let mut rng = ChaCha20Rng::from_seed(aead_seed);
 
     // Build vault.toml + identity.bundle.enc. The IBK we derive here is
@@ -556,9 +552,7 @@ pub fn build_golden_vault(inputs: &Inputs) -> BTreeMap<PathBuf, Vec<u8>> {
     let owner_ed_sk: Ed25519Secret = Sensitive::new(*owner.ed25519_sk.expose());
     let owner_pq_sk_dsa =
         MlDsa65Secret::from_bytes(owner.ml_dsa_65_sk.expose()).expect("ml-dsa sk owner");
-    let owner_pk_bundle = owner_card
-        .pk_bundle_bytes()
-        .expect("owner pk_bundle_bytes");
+    let owner_pk_bundle = owner_card.pk_bundle_bytes().expect("owner pk_bundle_bytes");
 
     // Single recipient: owner. The §15 vector keeps the fan-out minimal so
     // the cross-language reader has the smallest possible block to parse.
@@ -685,4 +679,3 @@ pub fn build_golden_vault(inputs: &Inputs) -> BTreeMap<PathBuf, Vec<u8>> {
 
     out
 }
-

@@ -139,10 +139,7 @@ pub enum VaultError {
     /// included so a UI can show the user exactly which sides
     /// disagree.
     #[error("owner UUID mismatch: vault identity has {vault:?}, found {found:?}")]
-    OwnerUuidMismatch {
-        vault: [u8; 16],
-        found: [u8; 16],
-    },
+    OwnerUuidMismatch { vault: [u8; 16], found: [u8; 16] },
 
     /// Sanity check failed during [`open_vault`]: the manifest file's
     /// `author_fingerprint` does not match the fingerprint computed
@@ -164,10 +161,7 @@ pub enum VaultError {
     /// could legitimately decouple from header layout, and surfaces
     /// the disagreement loudly when both UUIDs round-trip but disagree.
     #[error("manifest vault_uuid mismatch: header has {header:?}, body has {body:?}")]
-    ManifestVaultUuidMismatch {
-        header: [u8; 16],
-        body: [u8; 16],
-    },
+    ManifestVaultUuidMismatch { header: [u8; 16], body: [u8; 16] },
 
     /// `docs/vault-format.md` §4.3 step 6 cross-check failed: the
     /// `kdf_params` in the (signed) manifest body do not equal the

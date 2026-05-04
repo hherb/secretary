@@ -149,10 +149,7 @@ pub enum RecordError {
     /// §6.3 CBOR key name; `length` is the byte count actually seen on
     /// the wire.
     #[error("invalid UUID for {field}: expected {RECORD_UUID_LEN} bytes, got {length}")]
-    InvalidUuid {
-        field: &'static str,
-        length: usize,
-    },
+    InvalidUuid { field: &'static str, length: usize },
 
     /// An integer field's value did not fit a `u64`. §6.3 timestamps and
     /// counters are all unsigned 64-bit.
@@ -249,8 +246,8 @@ impl UnknownValue {
     /// individual unknown values constructed in isolation are validated
     /// only for the no-float / no-tag rules.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecordError> {
-        let parsed: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| RecordError::CborDecode(e.to_string()))?;
+        let parsed: Value =
+            ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(e.to_string()))?;
         reject_floats_and_tags(&parsed, "<unknown>")?;
         Ok(UnknownValue(parsed))
     }
@@ -530,8 +527,8 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
 /// Forward-compat unknown keys are preserved into [`Record::unknown`]
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
-    let parsed: Value = ciborium::de::from_reader(bytes)
-        .map_err(|e| RecordError::CborDecode(e.to_string()))?;
+    let parsed: Value =
+        ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(e.to_string()))?;
 
     // Walk the tree to enforce the no-float and no-tag rules everywhere
     // (including inside forward-compat unknown values). Doing this once
@@ -977,7 +974,10 @@ mod tests {
         let parsed = decode(&bytes).expect("decode minimal");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode minimal");
-        assert_eq!(bytes, bytes_again, "minimal record round-trips bit-identically");
+        assert_eq!(
+            bytes, bytes_again,
+            "minimal record round-trips bit-identically"
+        );
     }
 
     #[test]
@@ -1075,8 +1075,8 @@ mod tests {
 
         // Re-parse via ciborium directly (bypassing decode()) so we can
         // inspect the raw map keys without depending on Record's view.
-        let value: Value = ciborium::de::from_reader(&bytes[..])
-            .expect("ciborium parse of canonical record");
+        let value: Value =
+            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1112,8 +1112,8 @@ mod tests {
         let r = dummy_record();
         assert_eq!(r.tombstoned_at_ms, 0);
         let bytes = encode(&r).expect("encode");
-        let value: Value = ciborium::de::from_reader(&bytes[..])
-            .expect("ciborium parse of canonical record");
+        let value: Value =
+            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1163,8 +1163,7 @@ mod tests {
         assert!(r.tags.is_empty());
         let bytes = encode(&r).expect("encode");
 
-        let value: Value = ciborium::de::from_reader(&bytes[..])
-            .expect("ciborium parse");
+        let value: Value = ciborium::de::from_reader(&bytes[..]).expect("ciborium parse");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1230,10 +1229,8 @@ mod tests {
         let sorted_inner = canonical_sort_entries(&inner_field_entries)
             .expect("canonical_sort_entries inner field");
 
-        let outer_fields_entries: Vec<(Value, Value)> = vec![(
-            Value::Text("username".into()),
-            Value::Map(sorted_inner),
-        )];
+        let outer_fields_entries: Vec<(Value, Value)> =
+            vec![(Value::Text("username".into()), Value::Map(sorted_inner))];
         let sorted_fields = canonical_sort_entries(&outer_fields_entries)
             .expect("canonical_sort_entries outer fields");
 
@@ -1294,14 +1291,11 @@ mod tests {
                 Value::Text("v2-field".into()),
             ),
         ];
-        let sorted_inner = canonical_sort_entries(&inner_field_entries)
-            .expect("sort inner field");
-        let outer_fields_entries: Vec<(Value, Value)> = vec![(
-            Value::Text("username".into()),
-            Value::Map(sorted_inner),
-        )];
-        let sorted_fields = canonical_sort_entries(&outer_fields_entries)
-            .expect("sort outer fields");
+        let sorted_inner = canonical_sort_entries(&inner_field_entries).expect("sort inner field");
+        let outer_fields_entries: Vec<(Value, Value)> =
+            vec![(Value::Text("username".into()), Value::Map(sorted_inner))];
+        let sorted_fields =
+            canonical_sort_entries(&outer_fields_entries).expect("sort outer fields");
         for (k, v) in entries.iter_mut() {
             if let Value::Text(s) = k {
                 if s == KEY_FIELDS {
@@ -1335,8 +1329,7 @@ mod tests {
                 ]),
             ),
         ];
-        let sorted_nested = canonical_sort_entries(&nested_inner)
-            .expect("sort nested map");
+        let sorted_nested = canonical_sort_entries(&nested_inner).expect("sort nested map");
 
         let r = dummy_record();
         let mut entries = record_entries_canonical(&r);
@@ -1382,18 +1375,13 @@ mod tests {
     fn reject_float_inside_unknown_value() {
         // Unknown key whose value is a map that contains a float deeper
         // in the tree. The float walker recurses into unknown subtrees.
-        let inner = vec![
-            (
-                Value::Text("nested".into()),
-                Value::Array(vec![Value::Float(2.5)]),
-            ),
-        ];
+        let inner = vec![(
+            Value::Text("nested".into()),
+            Value::Array(vec![Value::Float(2.5)]),
+        )];
         let r = dummy_record();
         let mut entries = record_entries_canonical(&r);
-        entries.push((
-            Value::Text("future_struct".into()),
-            Value::Map(inner),
-        ));
+        entries.push((Value::Text("future_struct".into()), Value::Map(inner)));
         let bytes = encode_entries_canonical(&entries);
         let err = decode(&bytes).expect_err("float inside unknown must be rejected");
         assert!(
@@ -1432,8 +1420,8 @@ mod tests {
         // indefinite-length frame.
         let mut buf: Vec<u8> = Vec::new();
         buf.push(0xbf); // indefinite-length map start
-        // Build the entries by hand: take a canonical record's map bytes,
-        // strip the leading map-header byte, and append before our 0xFF.
+                        // Build the entries by hand: take a canonical record's map bytes,
+                        // strip the leading map-header byte, and append before our 0xFF.
         let r = dummy_record();
         let canonical = encode(&r).expect("baseline encode");
         // The first byte of the canonical map is 0xa0 + n (n entries
@@ -1481,8 +1469,8 @@ mod tests {
         // ciborium, then re-emit the map header followed by the entries,
         // substituting the tags entry's value with raw indefinite-array
         // bytes.
-        let value: Value = ciborium::de::from_reader(&canonical[..])
-            .expect("parse canonical record");
+        let value: Value =
+            ciborium::de::from_reader(&canonical[..]).expect("parse canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("not a map"),
@@ -1731,8 +1719,7 @@ mod tests {
         ];
         let sorted = canonical_sort_entries(&entries).expect("sort");
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&Value::Map(sorted), &mut bytes)
-            .expect("encode test map");
+        ciborium::ser::into_writer(&Value::Map(sorted), &mut bytes).expect("encode test map");
 
         let uv = UnknownValue::from_canonical_cbor(&bytes)
             .expect("from_canonical_cbor accepts canonical map");
@@ -1748,8 +1735,8 @@ mod tests {
         // A CBOR float value at the top level.
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&Value::Float(1.5), &mut bytes).expect("encode float");
-        let err = UnknownValue::from_canonical_cbor(&bytes)
-            .expect_err("UnknownValue must reject floats");
+        let err =
+            UnknownValue::from_canonical_cbor(&bytes).expect_err("UnknownValue must reject floats");
         assert!(
             matches!(err, RecordError::FloatRejected { field: "<unknown>" }),
             "expected FloatRejected {{ field: \"<unknown>\" }}, got {err:?}"
@@ -1762,8 +1749,8 @@ mod tests {
         let tagged = Value::Tag(0, Box::new(Value::Text("2024-04-25T00:00:00Z".into())));
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&tagged, &mut bytes).expect("encode tagged");
-        let err = UnknownValue::from_canonical_cbor(&bytes)
-            .expect_err("UnknownValue must reject tags");
+        let err =
+            UnknownValue::from_canonical_cbor(&bytes).expect_err("UnknownValue must reject tags");
         assert!(
             matches!(err, RecordError::TagRejected),
             "expected TagRejected, got {err:?}"

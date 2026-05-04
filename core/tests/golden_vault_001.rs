@@ -227,14 +227,12 @@ fn golden_vault_001_opens_with_password() {
         .to_canonical_cbor()
         .expect("owner card to_canonical_cbor");
     let owner_fp = fingerprint(&owner_card_bytes);
-    let owner_pk_bundle = owner_card
-        .pk_bundle_bytes()
-        .expect("owner pk_bundle_bytes");
-    let owner_dsa_pk = MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk)
-        .expect("ml-dsa pk owner");
+    let owner_pk_bundle = owner_card.pk_bundle_bytes().expect("owner pk_bundle_bytes");
+    let owner_dsa_pk =
+        MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk).expect("ml-dsa pk owner");
     let owner_x_sk: kem::X25519Secret = Sensitive::new(*open.identity.x25519_sk.expose());
-    let owner_pq_sk = MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose())
-        .expect("ml-kem sk owner");
+    let owner_pq_sk =
+        MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose()).expect("ml-kem sk owner");
 
     let recovered = decrypt_block(
         &block_file,
@@ -252,7 +250,10 @@ fn golden_vault_001_opens_with_password() {
     // Cross-check plaintext shape against the JSON inputs.
     assert_eq!(recovered.block_uuid, block_uuid);
     assert_eq!(recovered.block_name, inputs.block_plaintext.block_name);
-    assert_eq!(recovered.records.len(), inputs.block_plaintext.records.len());
+    assert_eq!(
+        recovered.records.len(),
+        inputs.block_plaintext.records.len()
+    );
     let recovered_record = &recovered.records[0];
     let inputs_record = &inputs.block_plaintext.records[0];
     assert_eq!(recovered_record.record_type, inputs_record.record_type);

@@ -9,8 +9,8 @@ fuzz_target!(|data: &[u8]| {
     // here is defense-in-depth — if the internal canonicality gate is ever
     // weakened, this target catches the regression.
     if let Ok(parsed) = record::decode(data) {
-        let reencoded = record::encode(&parsed)
-            .expect("encode after successful decode must not fail");
+        let reencoded =
+            record::encode(&parsed).expect("encode after successful decode must not fail");
         assert_eq!(
             reencoded.as_slice(),
             data,

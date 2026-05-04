@@ -311,7 +311,11 @@ fn share_block_round_trip() {
     assert_eq!(reopened.manifest.blocks.len(), 1);
     let entry = &reopened.manifest.blocks[0];
     assert_eq!(entry.block_uuid, block_uuid);
-    assert_eq!(entry.recipients.len(), 2, "both owner + alice in recipients");
+    assert_eq!(
+        entry.recipients.len(),
+        2,
+        "both owner + alice in recipients"
+    );
     assert!(entry.recipients.contains(&owner_card.contact_uuid));
     assert!(entry.recipients.contains(&alice_card.contact_uuid));
     assert_eq!(entry.last_mod_ms, 1_714_060_910_000);
@@ -335,8 +339,7 @@ fn share_block_round_trip() {
         .path()
         .join("blocks")
         .join(format!("{block_uuid_hex}.cbor.enc"));
-    let recovered =
-        decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
+    let recovered = decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
     assert_eq!(recovered.block_uuid, plaintext.block_uuid);
     assert_eq!(recovered.block_name, plaintext.block_name);
 }
@@ -412,8 +415,7 @@ fn share_block_with_pre_existing_recipients_preserved() {
         .join("blocks")
         .join(format!("{block_uuid_hex}.cbor.enc"));
 
-    let r_owner =
-        decrypt_block_file_as(&block_path, &owner_card, &owner_card, &reopened.identity);
+    let r_owner = decrypt_block_file_as(&block_path, &owner_card, &owner_card, &reopened.identity);
     assert_eq!(r_owner.block_uuid, plaintext.block_uuid);
     let r_alice = decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
     assert_eq!(r_alice.block_uuid, plaintext.block_uuid);

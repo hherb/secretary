@@ -29,11 +29,8 @@ pub fn open_with_password(
     password: &[u8],
 ) -> Result<UnlockedIdentity, FfiUnlockError> {
     let pw = secretary_core::crypto::secret::SecretBytes::new(password.to_vec());
-    let unlocked = secretary_core::unlock::open_with_password(
-        vault_toml_bytes,
-        identity_bundle_bytes,
-        &pw,
-    )?;
+    let unlocked =
+        secretary_core::unlock::open_with_password(vault_toml_bytes, identity_bundle_bytes, &pw)?;
     Ok(UnlockedIdentity::new(unlocked))
     // pw drops here → SecretBytes ZeroizeOnDrop wipes our local copy.
     // The caller's foreign-side password buffer is THEIR concern.
@@ -54,15 +51,12 @@ mod tests {
     // module that re-exports the bytes — making the dependency explicit
     // rather than path-walked. Tracked as a future cleanup, not a v1
     // blocker.
-    const VAULT_001_TOML: &[u8] = include_bytes!(
-        "../../../core/tests/data/golden_vault_001/vault.toml"
-    );
-    const VAULT_001_BUNDLE: &[u8] = include_bytes!(
-        "../../../core/tests/data/golden_vault_001/identity.bundle.enc"
-    );
-    const VAULT_002_BUNDLE: &[u8] = include_bytes!(
-        "../../../core/tests/data/golden_vault_002/identity.bundle.enc"
-    );
+    const VAULT_001_TOML: &[u8] =
+        include_bytes!("../../../core/tests/data/golden_vault_001/vault.toml");
+    const VAULT_001_BUNDLE: &[u8] =
+        include_bytes!("../../../core/tests/data/golden_vault_001/identity.bundle.enc");
+    const VAULT_002_BUNDLE: &[u8] =
+        include_bytes!("../../../core/tests/data/golden_vault_002/identity.bundle.enc");
 
     const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
     const VAULT_001_OWNER_DISPLAY_NAME: &str = "Owner";
@@ -70,15 +64,14 @@ mod tests {
     /// golden_vault_001_inputs.json. If this changes, all FFI smoke
     /// runners must update in the same commit.
     const VAULT_001_OWNER_USER_UUID: &[u8] = &[
-        0xbf, 0x08, 0xa3, 0x30, 0x0c, 0xd9, 0x94, 0xb8,
-        0x77, 0xe1, 0xa1, 0x5b, 0xaa, 0x28, 0xdf, 0x35,
+        0xbf, 0x08, 0xa3, 0x30, 0x0c, 0xd9, 0x94, 0xb8, 0x77, 0xe1, 0xa1, 0x5b, 0xaa, 0x28, 0xdf,
+        0x35,
     ];
 
     #[test]
     fn open_with_password_success_returns_unlocked_handle() {
-        let id = open_with_password(
-            VAULT_001_TOML, VAULT_001_BUNDLE, VAULT_001_PASSWORD,
-        ).expect("unlock should succeed");
+        let id = open_with_password(VAULT_001_TOML, VAULT_001_BUNDLE, VAULT_001_PASSWORD)
+            .expect("unlock should succeed");
         assert_eq!(id.display_name(), VAULT_001_OWNER_DISPLAY_NAME);
         assert_eq!(id.user_uuid(), VAULT_001_OWNER_USER_UUID);
     }
@@ -86,8 +79,11 @@ mod tests {
     #[test]
     fn open_with_password_wrong_password_returns_thinned_error() {
         let err = open_with_password(
-            VAULT_001_TOML, VAULT_001_BUNDLE, b"definitely the wrong password",
-        ).unwrap_err();
+            VAULT_001_TOML,
+            VAULT_001_BUNDLE,
+            b"definitely the wrong password",
+        )
+        .unwrap_err();
         assert!(matches!(err, FfiUnlockError::WrongPasswordOrCorrupt));
     }
 
@@ -96,9 +92,8 @@ mod tests {
         // vault_001's vault.toml + vault_002's identity.bundle.enc → cross-check
         // at core's vault_uuid + created_at_ms comparison fails before any KDF
         // work.
-        let err = open_with_password(
-            VAULT_001_TOML, VAULT_002_BUNDLE, VAULT_001_PASSWORD,
-        ).unwrap_err();
+        let err =
+            open_with_password(VAULT_001_TOML, VAULT_002_BUNDLE, VAULT_001_PASSWORD).unwrap_err();
         assert!(
             matches!(err, FfiUnlockError::VaultMismatch),
             "expected VaultMismatch, got {err:?}",
@@ -119,9 +114,7 @@ mod tests {
         // this test (and its pytest / Swift / Kotlin siblings, which all
         // pin the same 50-byte distance).
         let truncated = &VAULT_001_TOML[..VAULT_001_TOML.len().saturating_sub(50)];
-        let err = open_with_password(
-            truncated, VAULT_001_BUNDLE, VAULT_001_PASSWORD,
-        ).unwrap_err();
+        let err = open_with_password(truncated, VAULT_001_BUNDLE, VAULT_001_PASSWORD).unwrap_err();
         assert!(
             matches!(err, FfiUnlockError::CorruptVault { .. }),
             "expected CorruptVault, got {err:?}",

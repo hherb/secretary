@@ -26,8 +26,8 @@ pub struct VaultToml {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KdfSection {
-    pub algorithm: String,        // must be "argon2id"
-    pub version: String,          // must be "1.3"
+    pub algorithm: String, // must be "argon2id"
+    pub version: String,   // must be "1.3"
     pub memory_kib: u32,
     pub iterations: u32,
     pub parallelism: u32,
@@ -131,7 +131,10 @@ fn take_i64(table: &toml::value::Table, key: &'static str) -> Result<i64, VaultT
 
 /// Look up a string field from a TOML table, returning `MissingField` if
 /// absent or not a string.
-fn take_str<'a>(table: &'a toml::value::Table, key: &'static str) -> Result<&'a str, VaultTomlError> {
+fn take_str<'a>(
+    table: &'a toml::value::Table,
+    key: &'static str,
+) -> Result<&'a str, VaultTomlError> {
     table
         .get(key)
         .and_then(toml::Value::as_str)
@@ -141,8 +144,8 @@ fn take_str<'a>(table: &'a toml::value::Table, key: &'static str) -> Result<&'a 
 pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     use toml::Value;
 
-    let value: Value = toml::from_str(s)
-        .map_err(|e| VaultTomlError::MalformedToml(e.to_string()))?;
+    let value: Value =
+        toml::from_str(s).map_err(|e| VaultTomlError::MalformedToml(e.to_string()))?;
     let table = value
         .as_table()
         .ok_or_else(|| VaultTomlError::MalformedToml("expected table".into()))?;
@@ -172,8 +175,10 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     let vault_uuid = parse_uuid_canonical(vault_uuid_str).ok_or(VaultTomlError::InvalidUuid)?;
 
     let created_at_ms = take_i64(table, "created_at_ms")?;
-    let created_at_ms = u64::try_from(created_at_ms)
-        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "created_at_ms" })?;
+    let created_at_ms =
+        u64::try_from(created_at_ms).map_err(|_| VaultTomlError::FieldOutOfRange {
+            field: "created_at_ms",
+        })?;
 
     // Strict [kdf] decode: every key must be known. Unknown keys are a hard
     // error here because misinterpreting KDF parameters would derive a wrong key
@@ -184,7 +189,12 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
         .ok_or(VaultTomlError::MissingField("kdf"))?;
 
     const KNOWN_KDF_KEYS: &[&str] = &[
-        "algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64",
+        "algorithm",
+        "version",
+        "memory_kib",
+        "iterations",
+        "parallelism",
+        "salt_b64",
     ];
     for k in kdf_table.keys() {
         if !KNOWN_KDF_KEYS.contains(&k.as_str()) {
@@ -203,25 +213,31 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
     }
 
     let memory_kib = take_i64(kdf_table, "memory_kib")?;
-    let memory_kib = u32::try_from(memory_kib)
-        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.memory_kib" })?;
+    let memory_kib = u32::try_from(memory_kib).map_err(|_| VaultTomlError::FieldOutOfRange {
+        field: "kdf.memory_kib",
+    })?;
 
     let iterations = take_i64(kdf_table, "iterations")?;
-    let iterations = u32::try_from(iterations)
-        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.iterations" })?;
+    let iterations = u32::try_from(iterations).map_err(|_| VaultTomlError::FieldOutOfRange {
+        field: "kdf.iterations",
+    })?;
 
     let parallelism = take_i64(kdf_table, "parallelism")?;
-    let parallelism = u32::try_from(parallelism)
-        .map_err(|_| VaultTomlError::FieldOutOfRange { field: "kdf.parallelism" })?;
+    let parallelism = u32::try_from(parallelism).map_err(|_| VaultTomlError::FieldOutOfRange {
+        field: "kdf.parallelism",
+    })?;
 
     let salt_b64 = take_str(kdf_table, "salt_b64")?;
     let salt_vec = STANDARD
         .decode(salt_b64)
         .map_err(|e| VaultTomlError::MalformedToml(format!("salt_b64: {e}")))?;
-    let salt: [u8; 32] = salt_vec
-        .as_slice()
-        .try_into()
-        .map_err(|_| VaultTomlError::InvalidSaltLength { got: salt_vec.len() })?;
+    let salt: [u8; 32] =
+        salt_vec
+            .as_slice()
+            .try_into()
+            .map_err(|_| VaultTomlError::InvalidSaltLength {
+                got: salt_vec.len(),
+            })?;
 
     Ok(VaultToml {
         format_version,
@@ -282,7 +298,11 @@ fn parse_uuid_canonical(s: &str) -> Option<[u8; 16]> {
 /// Convert a pre-validated lowercase hex byte to its nibble value.
 #[inline]
 fn hex_nibble(c: u8) -> u8 {
-    if c.is_ascii_digit() { c - b'0' } else { c - b'a' + 10 }
+    if c.is_ascii_digit() {
+        c - b'0'
+    } else {
+        c - b'a' + 10
+    }
 }
 
 #[cfg(test)]
@@ -319,7 +339,11 @@ mod tests {
         // Insert the unknown key before [kdf] so TOML parses it as a top-level
         // entry; appending after [kdf] would make it a kdf key (§2: unknown
         // top-level keys are ignored, unknown kdf keys are errors).
-        let s = encode(&sample()).expect("encode").replacen("[kdf]\n", "future_key = \"some value\"\n[kdf]\n", 1);
+        let s = encode(&sample()).expect("encode").replacen(
+            "[kdf]\n",
+            "future_key = \"some value\"\n[kdf]\n",
+            1,
+        );
         let parsed = decode(&s).expect("unknown top-level key must be ignored");
         assert_eq!(parsed, sample());
     }
@@ -328,35 +352,46 @@ mod tests {
     fn decode_rejects_unknown_kdf_key() {
         // Insert rogue key directly after [kdf] header so TOML parses it into
         // the kdf table regardless of section ordering.
-        let s = encode(&sample()).expect("encode").replacen("[kdf]\n", "[kdf]\nrogue_param = 42\n", 1);
+        let s =
+            encode(&sample())
+                .expect("encode")
+                .replacen("[kdf]\n", "[kdf]\nrogue_param = 42\n", 1);
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnknownKdfKey(ref k) if k == "rogue_param"));
     }
 
     #[test]
     fn decode_rejects_unsupported_format_version() {
-        let s = encode(&sample()).expect("encode").replace("format_version = 1", "format_version = 2");
+        let s = encode(&sample())
+            .expect("encode")
+            .replace("format_version = 1", "format_version = 2");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedFormatVersion(2)));
     }
 
     #[test]
     fn decode_rejects_unsupported_suite_id() {
-        let s = encode(&sample()).expect("encode").replace("suite_id = 1", "suite_id = 2");
+        let s = encode(&sample())
+            .expect("encode")
+            .replace("suite_id = 1", "suite_id = 2");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedSuiteId(2)));
     }
 
     #[test]
     fn decode_rejects_wrong_kdf_algorithm() {
-        let s = encode(&sample()).expect("encode").replace("algorithm = \"argon2id\"", "algorithm = \"scrypt\"");
+        let s = encode(&sample())
+            .expect("encode")
+            .replace("algorithm = \"argon2id\"", "algorithm = \"scrypt\"");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedKdfAlgorithm(ref s) if s == "scrypt"));
     }
 
     #[test]
     fn decode_rejects_wrong_kdf_version() {
-        let s = encode(&sample()).expect("encode").replace("version = \"1.3\"", "version = \"1.0\"");
+        let s = encode(&sample())
+            .expect("encode")
+            .replace("version = \"1.3\"", "version = \"1.0\"");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::UnsupportedKdfVersion(ref s) if s == "1.0"));
     }
@@ -374,10 +409,9 @@ mod tests {
 
     #[test]
     fn decode_rejects_invalid_salt_b64() {
-        let s = encode(&sample()).expect("encode").replace(
-            &STANDARD.encode([0xCDu8; 32]),
-            "not!valid!base64!!!",
-        );
+        let s = encode(&sample())
+            .expect("encode")
+            .replace(&STANDARD.encode([0xCDu8; 32]), "not!valid!base64!!!");
         let err = decode(&s).unwrap_err();
         assert!(matches!(err, VaultTomlError::MalformedToml(ref m) if m.starts_with("salt_b64:")));
     }
@@ -417,6 +451,8 @@ mod tests {
         let mut v = sample();
         v.created_at_ms = (i64::MAX as u64) + 1;
         let err = encode(&v).unwrap_err();
-        assert!(matches!(err, VaultTomlError::TimestampOutOfRange(t) if t == (i64::MAX as u64) + 1));
+        assert!(
+            matches!(err, VaultTomlError::TimestampOutOfRange(t) if t == (i64::MAX as u64) + 1)
+        );
     }
 }

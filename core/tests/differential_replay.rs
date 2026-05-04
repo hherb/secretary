@@ -92,12 +92,18 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
 
     let mut child = Command::new("uv")
         .arg("run")
-        .arg("--with").arg("cryptography")
-        .arg("--with").arg("pynacl")
-        .arg("--with").arg("pqcrypto")
-        .arg("--with").arg("argon2-cffi")
-        .arg("--with").arg("blake3")
-        .arg("--with").arg("cbor2")
+        .arg("--with")
+        .arg("cryptography")
+        .arg("--with")
+        .arg("pynacl")
+        .arg("--with")
+        .arg("pqcrypto")
+        .arg("--with")
+        .arg("argon2-cffi")
+        .arg("--with")
+        .arg("blake3")
+        .arg("--with")
+        .arg("cbor2")
         .arg(&conformance)
         .arg("--diff-replay")
         .arg(target)
@@ -162,7 +168,10 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
                 .decode(b64)
                 .map_err(|e| format!("base64: {}", e))
         }
-        Some("reject") => Err(json["error_class"].as_str().unwrap_or("unknown").to_string()),
+        Some("reject") => Err(json["error_class"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string()),
         _ => panic!("python output missing status: {}", stdout_buf),
     }
 }

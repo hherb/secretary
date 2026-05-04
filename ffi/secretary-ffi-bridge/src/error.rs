@@ -65,7 +65,9 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             | E::MalformedVaultToml(_)
             | E::MalformedBundleFile(_)
             | E::MalformedBundle(_)
-            | E::KdfFailure(_) => Self::CorruptVault { message: e.to_string() },
+            | E::KdfFailure(_) => Self::CorruptVault {
+                message: e.to_string(),
+            },
 
             // SECURITY: defensive forward-compat for variants currently
             // unreachable from `open_with_password` (they require
@@ -91,9 +93,9 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             // If reachability changes for any of these, re-validate the
             // mapping against the threat model — don't silently inherit it.
             E::WrongMnemonicOrCorrupt => Self::WrongPasswordOrCorrupt,
-            E::InvalidMnemonic(_) | E::WeakKdfParams { .. } => {
-                Self::CorruptVault { message: e.to_string() }
-            }
+            E::InvalidMnemonic(_) | E::WeakKdfParams { .. } => Self::CorruptVault {
+                message: e.to_string(),
+            },
         }
     }
 }
@@ -101,11 +103,10 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secretary_core::unlock::{
-        bundle::BundleError, bundle_file::BundleFileError, vault_toml::VaultTomlError,
-        UnlockError,
-    };
     use secretary_core::crypto::kdf::KdfError;
+    use secretary_core::unlock::{
+        bundle::BundleError, bundle_file::BundleFileError, vault_toml::VaultTomlError, UnlockError,
+    };
 
     #[test]
     fn wrong_password_or_corrupt_maps_one_to_one() {
@@ -232,9 +233,6 @@ mod tests {
         let corrupt = FfiUnlockError::CorruptVault {
             message: "fnord".to_string(),
         };
-        assert_eq!(
-            corrupt.to_string(),
-            "vault is corrupt or unreadable: fnord",
-        );
+        assert_eq!(corrupt.to_string(), "vault is corrupt or unreadable: fnord",);
     }
 }

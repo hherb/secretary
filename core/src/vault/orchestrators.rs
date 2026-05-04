@@ -210,8 +210,7 @@ pub fn create_vault(
     // route through the v1-floor-enforcing entry point on purpose;
     // tests that need fast KDF call `unlock::create_vault_unchecked`
     // by hand.
-    let created =
-        unlock::create_vault(password, display_name, created_at_ms, kdf_params, rng)?;
+    let created = unlock::create_vault(password, display_name, created_at_ms, kdf_params, rng)?;
 
     // Step 3: re-parse vault.toml to recover `vault_uuid` and the
     // 32-byte Argon2id `salt`. Both are needed for the manifest's
@@ -316,11 +315,9 @@ pub fn create_vault(
     let identity_bundle_path = folder.join(IDENTITY_BUNDLE_FILENAME);
     let manifest_path = folder.join(MANIFEST_FILENAME);
 
-    io::write_atomic(&vault_toml_path, &created.vault_toml_bytes).map_err(|e| {
-        VaultError::Io {
-            context: "failed to write vault.toml",
-            source: e,
-        }
+    io::write_atomic(&vault_toml_path, &created.vault_toml_bytes).map_err(|e| VaultError::Io {
+        context: "failed to write vault.toml",
+        source: e,
     })?;
     io::write_atomic(&identity_bundle_path, &created.identity_bundle_bytes).map_err(|e| {
         VaultError::Io {
@@ -544,8 +541,7 @@ pub fn open_vault(
     // Step 7: AEAD-decrypt the manifest body. Reassemble (ct || tag)
     // from the split fields in the on-disk envelope; that's the wire
     // shape decrypt_manifest_body expects.
-    let mut ct_with_tag =
-        Vec::with_capacity(manifest_file.aead_ct.len() + AEAD_TAG_LEN);
+    let mut ct_with_tag = Vec::with_capacity(manifest_file.aead_ct.len() + AEAD_TAG_LEN);
     ct_with_tag.extend_from_slice(&manifest_file.aead_ct);
     ct_with_tag.extend_from_slice(&manifest_file.aead_tag);
     let manifest_body = manifest::decrypt_manifest_body(
@@ -591,16 +587,15 @@ pub fn open_vault(
     // signature-valid — manifest with no warning. Re-parse vault.toml
     // here rather than threading the parsed form through unlock to
     // keep the check local and unambiguous.
-    let vt_str = std::str::from_utf8(&vault_toml_bytes).map_err(|_| VaultError::Unlock(
-        crate::unlock::UnlockError::MalformedVaultToml(
+    let vt_str = std::str::from_utf8(&vault_toml_bytes).map_err(|_| {
+        VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(
             crate::unlock::vault_toml::VaultTomlError::MalformedToml(
                 "vault.toml is not valid UTF-8".to_string(),
             ),
-        ),
-    ))?;
-    let vt = vault_toml::decode(vt_str).map_err(|e| {
-        VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(e))
+        ))
     })?;
+    let vt = vault_toml::decode(vt_str)
+        .map_err(|e| VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(e)))?;
     let expected_kdf = manifest::KdfParamsRef {
         memory_kib: vt.kdf.memory_kib,
         iterations: vt.kdf.iterations,
@@ -648,10 +643,7 @@ pub fn open_vault(
 /// (a non-incrementing tick makes two writes look like one and `is_rollback`
 /// would declare them "Equal"). Practical reachability is essentially zero
 /// (~10¹¹ years at one write/ns) but a typed surface beats a silent freeze.
-fn tick_clock(
-    clock: &mut Vec<VectorClockEntry>,
-    device_uuid: &[u8; 16],
-) -> Result<(), VaultError> {
+fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) -> Result<(), VaultError> {
     if let Some(entry) = clock.iter_mut().find(|e| &e.device_uuid == device_uuid) {
         entry.counter = entry
             .counter
@@ -758,9 +750,7 @@ pub fn save_block(
     let mut pq_pks: Vec<MlKem768Public> = Vec::with_capacity(recipients.len());
     for r in recipients {
         bundles.push(r.pk_bundle_bytes()?);
-        pq_pks.push(
-            MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?,
-        );
+        pq_pks.push(MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?);
     }
     // Each recipient's fingerprint is the 16-byte identity fingerprint
     // over the canonical-CBOR signed contact card bytes (§6.1). This is
@@ -1188,9 +1178,7 @@ pub fn share_block(
         Vec::with_capacity(new_recipients.len());
     for r in &new_recipients {
         bundles.push(r.pk_bundle_bytes()?);
-        pq_pks.push(
-            MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?,
-        );
+        pq_pks.push(MlKem768Public::from_bytes(&r.ml_kem_768_pk).map_err(block::BlockError::from)?);
         recipient_fps.push(fingerprint(&r.to_canonical_cbor()?));
     }
     let recipient_keys: Vec<RecipientPublicKeys<'_>> = new_recipients
@@ -1261,8 +1249,7 @@ pub fn share_block(
         source: e,
     })?;
     let new_recipient_uuid_hex = format_uuid_hyphenated(&new_recipient.contact_uuid);
-    let new_recipient_card_path =
-        contacts_dir.join(format!("{new_recipient_uuid_hex}.card"));
+    let new_recipient_card_path = contacts_dir.join(format!("{new_recipient_uuid_hex}.card"));
     io::write_atomic(&new_recipient_card_path, &new_recipient_card_bytes).map_err(|e| {
         VaultError::Io {
             context: "failed to write new recipient contact card",
@@ -1392,7 +1379,9 @@ mod orchestrator_tests {
         let file = dir.path().join("a-regular-file");
         std::fs::write(&file, b"x").unwrap();
         let err = ensure_empty_directory(&file).expect_err("file path must error");
-        assert!(matches!(err, VaultError::Io { context, .. } if context.contains("not a directory")));
+        assert!(
+            matches!(err, VaultError::Io { context, .. } if context.contains("not a directory"))
+        );
     }
 
     #[test]

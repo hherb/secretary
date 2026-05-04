@@ -25,9 +25,7 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint;
-use secretary_core::unlock::{
-    self, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
-};
+use secretary_core::unlock::{self, create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
     encode_manifest_file, open_vault, sign_manifest, KdfParamsRef, Manifest, ManifestError,
     ManifestHeader, OpenVault, Unlocker, VaultError, VectorClockEntry,
@@ -64,9 +62,8 @@ fn make_fast_vault(
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
     let pw = SecretBytes::new(password.to_vec());
     let created_at_ms = 1_714_060_800_000u64;
-    let created =
-        create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng)
-            .expect("unlock::create_vault_unchecked");
+    let created = create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng)
+        .expect("unlock::create_vault_unchecked");
 
     // Re-parse vault.toml to recover vault_uuid + salt.
     let vt = vault_toml::decode(std::str::from_utf8(&created.vault_toml_bytes).unwrap()).unwrap();

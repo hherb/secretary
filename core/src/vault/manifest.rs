@@ -480,10 +480,8 @@ fn blocks_to_value(blocks: &[BlockEntry]) -> Result<Value, ManifestError> {
     let mut sorted: Vec<&BlockEntry> = blocks.iter().collect();
     sorted.sort_by_key(|e| e.block_uuid);
 
-    let items: Result<Vec<Value>, ManifestError> = sorted
-        .into_iter()
-        .map(block_entry_to_value)
-        .collect();
+    let items: Result<Vec<Value>, ManifestError> =
+        sorted.into_iter().map(block_entry_to_value).collect();
     Ok(Value::Array(items?))
 }
 
@@ -540,10 +538,8 @@ fn trash_to_value(trash: &[TrashEntry]) -> Result<Value, ManifestError> {
     let mut sorted: Vec<&TrashEntry> = trash.iter().collect();
     sorted.sort_by_key(|e| e.block_uuid);
 
-    let items: Result<Vec<Value>, ManifestError> = sorted
-        .into_iter()
-        .map(trash_entry_to_value)
-        .collect();
+    let items: Result<Vec<Value>, ManifestError> =
+        sorted.into_iter().map(trash_entry_to_value).collect();
     Ok(Value::Array(items?))
 }
 
@@ -583,10 +579,7 @@ fn kdf_params_to_value(k: &KdfParamsRef) -> Result<Value, ManifestError> {
             Value::Text(KEY_PARALLELISM.into()),
             Value::Integer(u64::from(k.parallelism).into()),
         ),
-        (
-            Value::Text(KEY_SALT.into()),
-            Value::Bytes(k.salt.to_vec()),
-        ),
+        (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
     ];
     let sorted = canonical_sort_entries(&inner)?;
     Ok(Value::Map(sorted))
@@ -626,8 +619,8 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
-    let parsed: Value = ciborium::de::from_reader(bytes)
-        .map_err(|e| ManifestError::CborDecode(e.to_string()))?;
+    let parsed: Value =
+        ciborium::de::from_reader(bytes).map_err(|e| ManifestError::CborDecode(e.to_string()))?;
 
     // Walk the tree once up front to enforce no-float / no-tag everywhere
     // (including inside forward-compat unknown values).
@@ -701,7 +694,9 @@ fn parse_manifest_map(map: Vec<(Value, Value)>) -> Result<Manifest, ManifestErro
     if format_version != FORMAT_VERSION_V1 {
         return Err(ManifestError::UnsupportedFormatVersion(format_version));
     }
-    let suite_id = suite_id.ok_or(ManifestError::MissingField { field: KEY_SUITE_ID })?;
+    let suite_id = suite_id.ok_or(ManifestError::MissingField {
+        field: KEY_SUITE_ID,
+    })?;
     if suite_id != SUITE_ID_V1 {
         return Err(ManifestError::UnsupportedSuiteId(suite_id));
     }
@@ -853,14 +848,16 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
                 block_name = Some(take_text(val, KEY_BLOCK_NAME)?);
             }
             KEY_FINGERPRINT => {
-                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)?);
+                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(
+                    val,
+                    KEY_FINGERPRINT,
+                )?);
             }
             KEY_RECIPIENTS => {
                 recipients = Some(parse_recipients(val)?);
             }
             KEY_VECTOR_CLOCK_SUMMARY => {
-                vector_clock_summary =
-                    Some(parse_vector_clock(val, KEY_VECTOR_CLOCK_SUMMARY)?);
+                vector_clock_summary = Some(parse_vector_clock(val, KEY_VECTOR_CLOCK_SUMMARY)?);
             }
             KEY_SUITE_ID => {
                 suite_id = Some(take_u16(val, KEY_SUITE_ID)?);
@@ -893,7 +890,9 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
         vector_clock_summary: vector_clock_summary.ok_or(ManifestError::MissingField {
             field: KEY_VECTOR_CLOCK_SUMMARY,
         })?,
-        suite_id: suite_id.ok_or(ManifestError::MissingField { field: KEY_SUITE_ID })?,
+        suite_id: suite_id.ok_or(ManifestError::MissingField {
+            field: KEY_SUITE_ID,
+        })?,
         created_at_ms: created_at_ms.ok_or(ManifestError::MissingField {
             field: KEY_CREATED_AT_MS,
         })?,
@@ -1125,8 +1124,7 @@ fn value_to_unknown(v: Value) -> Result<UnknownValue, ManifestError> {
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&v, &mut buf)
         .map_err(|e| ManifestError::CborEncode(e.to_string()))?;
-    UnknownValue::from_canonical_cbor(&buf)
-        .map_err(|e| ManifestError::CborDecode(e.to_string()))
+    UnknownValue::from_canonical_cbor(&buf).map_err(|e| ManifestError::CborDecode(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,8 +1310,8 @@ pub fn decrypt_manifest_body(
     nonce: &AeadNonce,
 ) -> Result<Manifest, ManifestError> {
     let aad = header.encode();
-    let plaintext = aead::decrypt(ibk, nonce, &aad, ct_with_tag)
-        .map_err(|_| ManifestError::AeadFailure)?;
+    let plaintext =
+        aead::decrypt(ibk, nonce, &aad, ct_with_tag).map_err(|_| ManifestError::AeadFailure)?;
     decode_manifest(plaintext.expose())
 }
 
@@ -1407,8 +1405,7 @@ fn signed_message_bytes(
             remaining: aead_ct.len(),
         }
     })?;
-    let mut out =
-        Vec::with_capacity(MANIFEST_HEADER_LEN + 24 + 4 + aead_ct.len() + AEAD_TAG_LEN);
+    let mut out = Vec::with_capacity(MANIFEST_HEADER_LEN + 24 + 4 + aead_ct.len() + AEAD_TAG_LEN);
     out.extend_from_slice(&header_bytes);
     out.extend_from_slice(aead_nonce);
     out.extend_from_slice(&ct_len_u32.to_be_bytes());
@@ -1451,12 +1448,11 @@ pub fn encode_manifest_file(file: &ManifestFile) -> Result<Vec<u8>, ManifestErro
             got: file.sig_pq.as_bytes().len() as u16,
         });
     }
-    let ct_len_u32 = u32::try_from(file.aead_ct.len()).map_err(|_| {
-        ManifestError::AeadCtLenMismatch {
+    let ct_len_u32 =
+        u32::try_from(file.aead_ct.len()).map_err(|_| ManifestError::AeadCtLenMismatch {
             declared: u32::MAX,
             remaining: file.aead_ct.len(),
-        }
-    })?;
+        })?;
 
     let header_bytes = file.header.encode();
     let sig_pq_bytes = file.sig_pq.as_bytes();
@@ -1553,12 +1549,8 @@ pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError>
     // If the declared aead_ct_len asks for more bytes than are present
     // (after subtracting the fixed-size suffix), surface the typed
     // mismatch rather than waiting for a downstream truncation.
-    let fixed_suffix_after_ct = AEAD_TAG_LEN
-        + IDENTITY_FINGERPRINT_LEN
-        + 2
-        + ED25519_SIG_LEN
-        + 2
-        + ML_DSA_65_SIG_LEN;
+    let fixed_suffix_after_ct =
+        AEAD_TAG_LEN + IDENTITY_FINGERPRINT_LEN + 2 + ED25519_SIG_LEN + 2 + ML_DSA_65_SIG_LEN;
     let remaining_after_len_prefix = rest.len().saturating_sub(pos);
     if remaining_after_len_prefix < fixed_suffix_after_ct {
         // We don't even have enough bytes for the fixed-size tail; report
@@ -1722,7 +1714,12 @@ pub fn verify_manifest(
     pk_ed: &Ed25519Public,
     pk_pq: &MlDsa65Public,
 ) -> Result<(), ManifestError> {
-    let m = signed_message_bytes(&file.header, &file.aead_nonce, &file.aead_ct, &file.aead_tag)?;
+    let m = signed_message_bytes(
+        &file.header,
+        &file.aead_nonce,
+        &file.aead_ct,
+        &file.aead_tag,
+    )?;
     let hybrid = HybridSig {
         sig_ed: file.sig_ed,
         sig_pq: file.sig_pq.clone(),
@@ -1774,10 +1771,8 @@ pub fn is_rollback(local: &[VectorClockEntry], incoming: &[VectorClockEntry]) ->
     // order. Use BTreeMap for deterministic union iteration (test
     // diagnostics stay reproducible) and to side-step any hash-DoS
     // concerns at zero perf cost on these tiny inputs.
-    let local_map: BTreeMap<[u8; 16], u64> = local
-        .iter()
-        .map(|e| (e.device_uuid, e.counter))
-        .collect();
+    let local_map: BTreeMap<[u8; 16], u64> =
+        local.iter().map(|e| (e.device_uuid, e.counter)).collect();
     let incoming_map: BTreeMap<[u8; 16], u64> = incoming
         .iter()
         .map(|e| (e.device_uuid, e.counter))
@@ -1935,13 +1930,17 @@ mod tests {
         m_sorted
             .vector_clock
             .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-        m_sorted.blocks.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted
+            .blocks
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
         for blk in &mut m_sorted.blocks {
             blk.recipients.sort();
             blk.vector_clock_summary
                 .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
         }
-        m_sorted.trash.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted
+            .trash
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
         assert_eq!(parsed, m_sorted);
 
         let bytes_again = encode_manifest(&parsed).expect("re-encode populated");
@@ -2162,8 +2161,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let bytes = encode_manifest(&m).expect("encode duplicates");
-        let err = decode_manifest(&bytes)
-            .expect_err("duplicate device_uuid must be rejected on decode");
+        let err =
+            decode_manifest(&bytes).expect_err("duplicate device_uuid must be rejected on decode");
         assert!(
             matches!(err, ManifestError::VectorClockDuplicateDevice),
             "expected VectorClockDuplicateDevice, got {err:?}"
@@ -2197,8 +2196,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let bytes = encode_manifest(&m).expect("encode duplicates");
-        let err = decode_manifest(&bytes)
-            .expect_err("duplicate block_uuid must be rejected on decode");
+        let err =
+            decode_manifest(&bytes).expect_err("duplicate block_uuid must be rejected on decode");
         assert!(
             matches!(err, ManifestError::DuplicateBlockUuid),
             "expected DuplicateBlockUuid, got {err:?}"
@@ -2208,8 +2207,7 @@ mod tests {
     #[test]
     fn rejects_non_map_top_level() {
         let mut buf = Vec::new();
-        ciborium::ser::into_writer(&Value::Array(Vec::new()), &mut buf)
-            .expect("encode array");
+        ciborium::ser::into_writer(&Value::Array(Vec::new()), &mut buf).expect("encode array");
         let err = decode_manifest(&buf).expect_err("array top-level must reject");
         assert!(
             matches!(err, ManifestError::NotAMap),
@@ -2330,10 +2328,7 @@ mod tests {
                 kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
             ),
             // Integer key — illegal under §4.2 ("all map keys are tstr").
-            (
-                Value::Integer(0u64.into()),
-                Value::Integer(0u64.into()),
-            ),
+            (Value::Integer(0u64.into()), Value::Integer(0u64.into())),
         ];
         let bytes = encode_canonical_map(&entries).expect("encode_canonical_map");
 
@@ -2565,7 +2560,11 @@ mod tests {
     fn header_encode_round_trips() {
         let h = fixed_manifest_header();
         let bytes = h.encode();
-        assert_eq!(bytes.len(), MANIFEST_HEADER_LEN, "encoded header is 42 bytes");
+        assert_eq!(
+            bytes.len(),
+            MANIFEST_HEADER_LEN,
+            "encoded header is 42 bytes"
+        );
         assert_eq!(bytes.len(), 42, "MANIFEST_HEADER_LEN spec value");
 
         // Pin the constant prefix. magic = "SECR" big-endian.
@@ -2621,8 +2620,7 @@ mod tests {
         let mut bytes = fixed_manifest_header().encode();
         // format_version lives at offset 4..6 (after magic).
         bytes[4..6].copy_from_slice(&0x0002_u16.to_be_bytes());
-        let err = ManifestHeader::decode(&bytes)
-            .expect_err("non-v1 format_version must reject");
+        let err = ManifestHeader::decode(&bytes).expect_err("non-v1 format_version must reject");
         assert!(
             matches!(err, ManifestError::UnsupportedFormatVersion(2)),
             "expected UnsupportedFormatVersion(2), got {err:?}"
@@ -2681,8 +2679,7 @@ mod tests {
         );
 
         // Also: empty input.
-        let err = ManifestHeader::decode(&[])
-            .expect_err("empty input must reject as truncated");
+        let err = ManifestHeader::decode(&[]).expect_err("empty input must reject as truncated");
         assert!(
             matches!(
                 err,
@@ -2705,8 +2702,8 @@ mod tests {
         let ibk = test_ibk(0x00);
         let nonce = test_nonce();
 
-        let ct_with_tag = encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce)
-            .expect("encrypt body");
+        let ct_with_tag =
+            encrypt_manifest_body(&header, &manifest_bytes, &ibk, &nonce).expect("encrypt body");
         // The tag is appended to the ciphertext per crypto::aead's contract.
         assert_eq!(
             ct_with_tag.len(),
@@ -2715,8 +2712,8 @@ mod tests {
         );
 
         let ibk2 = test_ibk(0x00);
-        let recovered = decrypt_manifest_body(&header, &ct_with_tag, &ibk2, &nonce)
-            .expect("decrypt body");
+        let recovered =
+            decrypt_manifest_body(&header, &ct_with_tag, &ibk2, &nonce).expect("decrypt body");
 
         // populated_manifest's input arrays are non-canonical-order; the
         // decoded copy is in canonical order. Use the same sort-then-compare
@@ -2725,13 +2722,17 @@ mod tests {
         m_sorted
             .vector_clock
             .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-        m_sorted.blocks.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted
+            .blocks
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
         for blk in &mut m_sorted.blocks {
             blk.recipients.sort();
             blk.vector_clock_summary
                 .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
         }
-        m_sorted.trash.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted
+            .trash
+            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
         assert_eq!(recovered, m_sorted, "decrypted manifest matches original");
     }
 
@@ -2840,8 +2841,7 @@ mod tests {
         let bytes = encode_manifest_file(&file).expect("encode_manifest_file");
         let decoded = decode_manifest_file(&bytes).expect("decode_manifest_file");
         assert_eq!(decoded, file, "ManifestFile round-trips bit-identically");
-        let bytes_again =
-            encode_manifest_file(&decoded).expect("re-encode_manifest_file");
+        let bytes_again = encode_manifest_file(&decoded).expect("re-encode_manifest_file");
         assert_eq!(bytes, bytes_again, "encode is deterministic");
     }
 
@@ -2863,10 +2863,7 @@ mod tests {
 
         // Spot-check: sig_ed_len at offset (42+24+4+ct_len+16+16) = 64.
         let sig_ed_len_offset = 42 + 24 + 4 + ct_len + 16 + 16;
-        let sig_ed_len_bytes = [
-            bytes[sig_ed_len_offset],
-            bytes[sig_ed_len_offset + 1],
-        ];
+        let sig_ed_len_bytes = [bytes[sig_ed_len_offset], bytes[sig_ed_len_offset + 1]];
         assert_eq!(
             u16::from_be_bytes(sig_ed_len_bytes),
             64,
@@ -2889,10 +2886,7 @@ mod tests {
 
         // Spot-check: sig_pq_len at offset (sig_ed_len_offset+2+64) = 3309.
         let sig_pq_len_offset = sig_ed_len_offset + 2 + 64;
-        let sig_pq_len_bytes = [
-            bytes[sig_pq_len_offset],
-            bytes[sig_pq_len_offset + 1],
-        ];
+        let sig_pq_len_bytes = [bytes[sig_pq_len_offset], bytes[sig_pq_len_offset + 1]];
         assert_eq!(
             u16::from_be_bytes(sig_pq_len_bytes),
             3309,
@@ -3031,9 +3025,8 @@ mod tests {
         bytes.extend_from_slice(&fixed_manifest_header().encode());
         bytes.extend_from_slice(&[0u8; 24]); // nonce
         bytes.extend_from_slice(&0u32.to_be_bytes()); // aead_ct_len = 0
-        // No more bytes — the fixed suffix-after-ct (3409) is missing.
-        let err = decode_manifest_file(&bytes)
-            .expect_err("missing signature suffix must reject");
+                                                      // No more bytes — the fixed suffix-after-ct (3409) is missing.
+        let err = decode_manifest_file(&bytes).expect_err("missing signature suffix must reject");
         assert!(
             matches!(
                 err,
@@ -3053,12 +3046,7 @@ mod tests {
     /// Same pattern as block.rs's signing-key fixtures.
     fn fixture_hybrid_keypair(
         seed: u8,
-    ) -> (
-        Ed25519Secret,
-        Ed25519Public,
-        MlDsa65Secret,
-        MlDsa65Public,
-    ) {
+    ) -> (Ed25519Secret, Ed25519Public, MlDsa65Secret, MlDsa65Public) {
         use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
         let mut ed_rng = ChaCha20Rng::from_seed([seed; 32]);
         let mut pq_rng = ChaCha20Rng::from_seed([seed.wrapping_add(1); 32]);
@@ -3099,13 +3087,12 @@ mod tests {
             file.aead_ct.push(0x00);
         }
         file.aead_ct[0] ^= 0xff;
-        let err = verify_manifest(&file, &pk_ed, &pk_pq)
-            .expect_err("tampered aead_ct must fail verify");
+        let err =
+            verify_manifest(&file, &pk_ed, &pk_pq).expect_err("tampered aead_ct must fail verify");
         assert!(
             matches!(
                 err,
-                ManifestError::Ed25519SignatureInvalid
-                    | ManifestError::MlDsa65SignatureInvalid
+                ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid
             ),
             "expected hybrid verify failure, got {err:?}"
         );
@@ -3124,13 +3111,12 @@ mod tests {
             .expect("sign_manifest");
         // Mutate last_mod_ms — the header is part of the signed bytes.
         file.header.last_mod_ms = file.header.last_mod_ms.wrapping_add(1);
-        let err = verify_manifest(&file, &pk_ed, &pk_pq)
-            .expect_err("tampered header must fail verify");
+        let err =
+            verify_manifest(&file, &pk_ed, &pk_pq).expect_err("tampered header must fail verify");
         assert!(
             matches!(
                 err,
-                ManifestError::Ed25519SignatureInvalid
-                    | ManifestError::MlDsa65SignatureInvalid
+                ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid
             ),
             "expected hybrid verify failure on header tamper, got {err:?}"
         );
@@ -3149,13 +3135,11 @@ mod tests {
         let file = sign_manifest(header, &body, &ibk, &nonce, author, &sk_ed, &sk_pq)
             .expect("sign_manifest");
         // Verify with a *different* keypair's public keys.
-        let err = verify_manifest(&file, &pk_ed2, &pk_pq2)
-            .expect_err("wrong pk must fail verify");
+        let err = verify_manifest(&file, &pk_ed2, &pk_pq2).expect_err("wrong pk must fail verify");
         assert!(
             matches!(
                 err,
-                ManifestError::Ed25519SignatureInvalid
-                    | ManifestError::MlDsa65SignatureInvalid
+                ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid
             ),
             "expected hybrid verify failure under wrong pk, got {err:?}"
         );
@@ -3194,8 +3178,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                ManifestError::Ed25519SignatureInvalid
-                    | ManifestError::MlDsa65SignatureInvalid
+                ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid
             ),
             "expected hybrid verify failure on aead_nonce tamper, got {err:?}"
         );
@@ -3222,13 +3205,12 @@ mod tests {
         // Flip a byte in the AEAD tag. Tag is fixed-size (16 bytes), so
         // any index 0..AEAD_TAG_LEN works; pick the first.
         file.aead_tag[0] ^= 0x01;
-        let err = verify_manifest(&file, &pk_ed, &pk_pq)
-            .expect_err("tampered aead_tag must fail verify");
+        let err =
+            verify_manifest(&file, &pk_ed, &pk_pq).expect_err("tampered aead_tag must fail verify");
         assert!(
             matches!(
                 err,
-                ManifestError::Ed25519SignatureInvalid
-                    | ManifestError::MlDsa65SignatureInvalid
+                ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid
             ),
             "expected hybrid verify failure on aead_tag tamper, got {err:?}"
         );
@@ -3251,8 +3233,7 @@ mod tests {
         verify_manifest(&file, &pk_ed, &pk_pq).expect("verify_manifest");
 
         // Reconstruct ct_with_tag = aead_ct ++ aead_tag for the AEAD API.
-        let mut ct_with_tag =
-            Vec::with_capacity(file.aead_ct.len() + AEAD_TAG_LEN);
+        let mut ct_with_tag = Vec::with_capacity(file.aead_ct.len() + AEAD_TAG_LEN);
         ct_with_tag.extend_from_slice(&file.aead_ct);
         ct_with_tag.extend_from_slice(&file.aead_tag);
         let recovered = decrypt_manifest_body(&file.header, &ct_with_tag, &ibk, &nonce)
@@ -3276,7 +3257,10 @@ mod tests {
         body_sorted
             .trash
             .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
-        assert_eq!(recovered, body_sorted, "decrypted manifest matches original");
+        assert_eq!(
+            recovered, body_sorted,
+            "decrypted manifest matches original"
+        );
     }
 
     // ---- §10 rollback resistance --------------------------------------

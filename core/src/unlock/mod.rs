@@ -48,7 +48,10 @@ pub enum UnlockError {
     /// vaults. Tests that need fast Argon2id can call
     /// [`create_vault_unchecked`] explicitly.
     #[error("Argon2id memory_kib ({memory_kib}) is below v1 floor ({min_memory_kib})")]
-    WeakKdfParams { memory_kib: u32, min_memory_kib: u32 },
+    WeakKdfParams {
+        memory_kib: u32,
+        min_memory_kib: u32,
+    },
 }
 
 // AEAD failures are mapped at every call site:
@@ -87,7 +90,10 @@ impl fmt::Debug for CreatedVault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CreatedVault")
             .field("vault_toml_bytes_len", &self.vault_toml_bytes.len())
-            .field("identity_bundle_bytes_len", &self.identity_bundle_bytes.len())
+            .field(
+                "identity_bundle_bytes_len",
+                &self.identity_bundle_bytes.len(),
+            )
             .field("recovery_mnemonic", &self.recovery_mnemonic) // delegates to Mnemonic's redacting Debug
             .field("identity_block_key", &"<redacted>")
             .field("identity", &self.identity) // delegates to IdentityBundle's redacting Debug
@@ -202,8 +208,13 @@ pub fn create_vault_unchecked(
     // .expect() is safe: AEAD encrypt fails only on absurd plaintext sizes
     // (~2^36 bytes); §5 IdentityBundle CBOR is bounded at a few KB.
     let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vault_uuid);
-    let bundle_ct_with_tag = encrypt(&identity_block_key, &nonce_id, &bundle_aad, &bundle_plaintext)
-        .expect("AEAD encrypt of §5 bundle plaintext is structurally infallible");
+    let bundle_ct_with_tag = encrypt(
+        &identity_block_key,
+        &nonce_id,
+        &bundle_aad,
+        &bundle_plaintext,
+    )
+    .expect("AEAD encrypt of §5 bundle plaintext is structurally infallible");
 
     // Step 8: wrap_pw — AEAD-encrypt the IBK bytes under master_kek.
     // identity_block_key.expose() -> &[u8; 32] coerces to &[u8] (plaintext).
@@ -372,7 +383,10 @@ pub fn open_with_password(
     // Step 6: CBOR decode (the From<BundleError> impl maps malformed CBOR cleanly).
     let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
 
-    Ok(UnlockedIdentity { identity_block_key, identity })
+    Ok(UnlockedIdentity {
+        identity_block_key,
+        identity,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +450,10 @@ pub fn open_with_recovery(
     .map_err(|_| UnlockError::CorruptVault)?;
 
     let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
-    Ok(UnlockedIdentity { identity_block_key, identity })
+    Ok(UnlockedIdentity {
+        identity_block_key,
+        identity,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -461,10 +478,16 @@ mod create_tests {
 
         let opened = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password)
             .expect("open");
-        assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
+        assert_eq!(
+            opened.identity_block_key.expose(),
+            v.identity_block_key.expose()
+        );
         assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
         assert_eq!(opened.identity.display_name, v.identity.display_name);
-        assert_eq!(opened.identity.x25519_sk.expose(), v.identity.x25519_sk.expose());
+        assert_eq!(
+            opened.identity.x25519_sk.expose(),
+            v.identity.x25519_sk.expose()
+        );
     }
 
     #[test]
@@ -475,8 +498,8 @@ mod create_tests {
         let v = create_vault_unchecked(&password, "Alice", 0, params, &mut rng).unwrap();
 
         let bad = SecretBytes::new(b"hunter3".to_vec());
-        let err = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &bad)
-            .unwrap_err();
+        let err =
+            open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &bad).unwrap_err();
         assert!(matches!(err, UnlockError::WrongPasswordOrCorrupt));
     }
 
@@ -531,10 +554,16 @@ mod create_tests {
         let words = v.recovery_mnemonic.phrase().to_string();
         let opened = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, &words)
             .expect("open");
-        assert_eq!(opened.identity_block_key.expose(), v.identity_block_key.expose());
+        assert_eq!(
+            opened.identity_block_key.expose(),
+            v.identity_block_key.expose()
+        );
         assert_eq!(opened.identity.user_uuid, v.identity.user_uuid);
         assert_eq!(opened.identity.display_name, v.identity.display_name);
-        assert_eq!(opened.identity.x25519_sk.expose(), v.identity.x25519_sk.expose());
+        assert_eq!(
+            opened.identity.x25519_sk.expose(),
+            v.identity.x25519_sk.expose()
+        );
     }
 
     #[test]
@@ -547,8 +576,12 @@ mod create_tests {
         // A different fresh mnemonic — valid checksum, just not this vault's.
         let mut other_rng = ChaCha20Rng::from_seed([99u8; 32]);
         let other = mnemonic::generate(&mut other_rng);
-        let err = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, other.phrase())
-            .unwrap_err();
+        let err = open_with_recovery(
+            &v.vault_toml_bytes,
+            &v.identity_bundle_bytes,
+            other.phrase(),
+        )
+        .unwrap_err();
         assert!(matches!(err, UnlockError::WrongMnemonicOrCorrupt));
     }
 
@@ -556,22 +589,49 @@ mod create_tests {
     fn open_with_invalid_mnemonic_returns_invalid_mnemonic() {
         let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
         let v = create_vault_unchecked(
-            &SecretBytes::new(b"x".to_vec()), "Alice", 0,
-            Argon2idParams::new(8, 1, 1), &mut rng,
-        ).unwrap();
-        let err = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, "abandon abandon")
-            .unwrap_err();
-        assert!(matches!(err, UnlockError::InvalidMnemonic(mnemonic::MnemonicError::WrongLength { .. })));
+            &SecretBytes::new(b"x".to_vec()),
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
+        let err = open_with_recovery(
+            &v.vault_toml_bytes,
+            &v.identity_bundle_bytes,
+            "abandon abandon",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            UnlockError::InvalidMnemonic(mnemonic::MnemonicError::WrongLength { .. })
+        ));
     }
 
     #[test]
     fn both_unlock_paths_yield_same_identity_block_key() {
         let mut rng = ChaCha20Rng::from_seed([12u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
-        let v = create_vault_unchecked(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng).unwrap();
+        let v = create_vault_unchecked(
+            &password,
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
 
-        let by_pw = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
-        let by_rec = open_with_recovery(&v.vault_toml_bytes, &v.identity_bundle_bytes, v.recovery_mnemonic.phrase()).unwrap();
-        assert_eq!(by_pw.identity_block_key.expose(), by_rec.identity_block_key.expose());
+        let by_pw =
+            open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
+        let by_rec = open_with_recovery(
+            &v.vault_toml_bytes,
+            &v.identity_bundle_bytes,
+            v.recovery_mnemonic.phrase(),
+        )
+        .unwrap();
+        assert_eq!(
+            by_pw.identity_block_key.expose(),
+            by_rec.identity_block_key.expose()
+        );
     }
 }

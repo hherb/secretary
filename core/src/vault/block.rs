@@ -71,18 +71,16 @@ use rand_core::{CryptoRng, RngCore};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::Sensitive;
-use zeroize::Zeroize as _;
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, HybridSig, MlDsa65Public, MlDsa65Secret, MlDsa65Sig,
     SigError, SigRole, ED25519_SIG_LEN,
 };
 use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
+use zeroize::Zeroize as _;
 
 use super::canonical::{encode_canonical_map, reject_floats_and_tags, CanonicalError};
-use super::record::{
-    self, Record, RecordError, UnknownValue, RECORD_UUID_LEN,
-};
+use super::record::{self, Record, RecordError, UnknownValue, RECORD_UUID_LEN};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -301,10 +299,7 @@ pub enum BlockError {
     /// A 16-byte UUID field arrived with the wrong length. Currently
     /// only `block_uuid` triggers this in plaintext.
     #[error("invalid UUID for block plaintext field {field}: expected {BLOCK_UUID_LEN} bytes, got {length}")]
-    InvalidUuid {
-        field: &'static str,
-        length: usize,
-    },
+    InvalidUuid { field: &'static str, length: usize },
 
     /// An integer plaintext field's value did not fit a `u64` (or `u32`
     /// for `block_version` / `schema_version`). All numeric §6.3 block
@@ -384,9 +379,7 @@ pub enum BlockError {
     /// block claims a different author than the caller is expecting,
     /// which the UI should surface as "wrong sender" rather than as
     /// "tampered file".
-    #[error(
-        "author fingerprint mismatch: expected {expected:02x?}, found {found:02x?}"
-    )]
+    #[error("author fingerprint mismatch: expected {expected:02x?}, found {found:02x?}")]
     AuthorFingerprintMismatch {
         expected: Fingerprint,
         found: Fingerprint,
@@ -672,14 +665,11 @@ pub fn encode_header(header: &BlockHeader) -> Result<Vec<u8>, BlockError> {
             return Err(BlockError::VectorClockDuplicateDevice);
         }
     }
-    let count = u16::try_from(sorted.len())
-        .map_err(|_| BlockError::IntegerOverflow {
-            field: "vector_clock_count",
-        })?;
+    let count = u16::try_from(sorted.len()).map_err(|_| BlockError::IntegerOverflow {
+        field: "vector_clock_count",
+    })?;
 
-    let mut out = Vec::with_capacity(
-        HEADER_PREFIX_LEN + 2 + sorted.len() * VECTOR_CLOCK_ENTRY_LEN,
-    );
+    let mut out = Vec::with_capacity(HEADER_PREFIX_LEN + 2 + sorted.len() * VECTOR_CLOCK_ENTRY_LEN);
     out.extend_from_slice(&header.magic.to_be_bytes());
     out.extend_from_slice(&header.format_version.to_be_bytes());
     out.extend_from_slice(&header.suite_id.to_be_bytes());
@@ -751,11 +741,12 @@ pub fn decode_header(bytes: &[u8]) -> Result<(BlockHeader, &[u8]), BlockError> {
 
     let vector_clock_count = read_u16_be(bytes, &mut pos)?;
     let count_usize = vector_clock_count as usize;
-    let needed = count_usize
-        .checked_mul(VECTOR_CLOCK_ENTRY_LEN)
-        .ok_or(BlockError::IntegerOverflow {
-            field: "vector_clock_entries",
-        })?;
+    let needed =
+        count_usize
+            .checked_mul(VECTOR_CLOCK_ENTRY_LEN)
+            .ok_or(BlockError::IntegerOverflow {
+                field: "vector_clock_entries",
+            })?;
     let available = bytes.len().saturating_sub(pos);
     if available < needed {
         return Err(BlockError::Truncated {
@@ -864,9 +855,7 @@ pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<Vec<u8>, BlockErro
     Ok(encode_canonical_map(&entries)?)
 }
 
-fn plaintext_to_entries(
-    plaintext: &BlockPlaintext,
-) -> Result<Vec<(Value, Value)>, BlockError> {
+fn plaintext_to_entries(plaintext: &BlockPlaintext) -> Result<Vec<(Value, Value)>, BlockError> {
     // Initial known-fields list. A `vec![]` literal here (rather than
     // `Vec::new()` + sequential pushes) satisfies clippy's
     // `vec_init_then_push` lint, which fires when more than three items
@@ -969,8 +958,8 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 /// (§6.4 step 9) is the *caller's* responsibility — see
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
-    let parsed: Value = ciborium::de::from_reader(bytes)
-        .map_err(|e| BlockError::CborDecode(e.to_string()))?;
+    let parsed: Value =
+        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(e.to_string()))?;
 
     // Walk the tree to enforce no-float / no-tag everywhere (including
     // forward-compat unknowns and inside record maps). Doing this once
@@ -1055,9 +1044,7 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
         schema_version: schema_version.ok_or(BlockError::MissingField {
             field: KEY_SCHEMA_VERSION,
         })?,
-        records: records.ok_or(BlockError::MissingField {
-            field: KEY_RECORDS,
-        })?,
+        records: records.ok_or(BlockError::MissingField { field: KEY_RECORDS })?,
         unknown,
     })
 }
@@ -1094,8 +1081,7 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
 /// through canonical CBOR — which also re-validates no-float / no-tag.
 fn value_to_unknown(v: Value) -> Result<UnknownValue, BlockError> {
     let mut buf = Vec::new();
-    ciborium::ser::into_writer(&v, &mut buf)
-        .map_err(|e| BlockError::CborEncode(e.to_string()))?;
+    ciborium::ser::into_writer(&v, &mut buf).map_err(|e| BlockError::CborEncode(e.to_string()))?;
     let u = UnknownValue::from_canonical_cbor(&buf)?;
     Ok(u)
 }
@@ -1225,9 +1211,7 @@ fn decode_recipient(bytes: &[u8]) -> Result<RecipientWrap, BlockError> {
 /// ([`BlockError::DuplicateRecipient`]), and counts beyond
 /// [`u16::MAX`] ([`BlockError::TooManyRecipients`]: the wire-format
 /// length prefix is u16).
-pub fn encode_recipient_table(
-    recipients: &[RecipientWrap],
-) -> Result<Vec<u8>, BlockError> {
+pub fn encode_recipient_table(recipients: &[RecipientWrap]) -> Result<Vec<u8>, BlockError> {
     if recipients.is_empty() {
         return Err(BlockError::EmptyRecipientList);
     }
@@ -1272,9 +1256,7 @@ pub fn encode_recipient_table(
 /// 4. No duplicate fingerprints
 ///    ([`BlockError::DuplicateRecipient`]).
 /// 5. Non-empty table ([`BlockError::EmptyRecipientList`]).
-pub fn decode_recipient_table(
-    bytes: &[u8],
-) -> Result<(Vec<RecipientWrap>, &[u8]), BlockError> {
+pub fn decode_recipient_table(bytes: &[u8]) -> Result<(Vec<RecipientWrap>, &[u8]), BlockError> {
     let mut pos = 0;
     let count = read_u16_be(bytes, &mut pos)?;
     let count_usize = count as usize;
@@ -1327,11 +1309,10 @@ pub fn decode_recipient_table(
 /// `aead_ct.len() + AEAD_TAG_LEN`. See [`BlockFile::aead_ct`] for the
 /// split rationale.
 fn encode_aead_section(block: &BlockFile) -> Result<Vec<u8>, BlockError> {
-    let ct_len_u32 = u32::try_from(block.aead_ct.len()).map_err(|_| {
-        BlockError::IntegerOverflow {
+    let ct_len_u32 =
+        u32::try_from(block.aead_ct.len()).map_err(|_| BlockError::IntegerOverflow {
             field: "aead_ct_len",
-        }
-    })?;
+        })?;
     let mut out = Vec::with_capacity(24 + 4 + block.aead_ct.len() + AEAD_TAG_LEN);
     out.extend_from_slice(&block.aead_nonce);
     out.extend_from_slice(&ct_len_u32.to_be_bytes());
@@ -1402,10 +1383,7 @@ fn decode_aead_section(bytes: &[u8]) -> Result<AeadSection<'_>, BlockError> {
 /// the PQ signature length on the wire (only [`ED25519_SIG_LEN`] is
 /// fixed), so we only enforce the length-prefix's u16 ceiling rather
 /// than [`crate::crypto::sig::ML_DSA_65_SIG_LEN`].
-fn encode_signature_suffix(
-    author: &Fingerprint,
-    sig: &HybridSig,
-) -> Result<Vec<u8>, BlockError> {
+fn encode_signature_suffix(author: &Fingerprint, sig: &HybridSig) -> Result<Vec<u8>, BlockError> {
     if sig.sig_ed.len() != ED25519_SIG_LEN {
         return Err(BlockError::SigEdWrongLength {
             found: sig.sig_ed.len(),
@@ -1421,9 +1399,7 @@ fn encode_signature_suffix(
     let sig_ed_len_u16 = sig.sig_ed.len() as u16;
     let sig_pq_len_u16 = sig_pq_bytes.len() as u16;
 
-    let mut out = Vec::with_capacity(
-        16 + 2 + sig.sig_ed.len() + 2 + sig_pq_bytes.len(),
-    );
+    let mut out = Vec::with_capacity(16 + 2 + sig.sig_ed.len() + 2 + sig_pq_bytes.len());
     out.extend_from_slice(author);
     out.extend_from_slice(&sig_ed_len_u16.to_be_bytes());
     out.extend_from_slice(&sig.sig_ed);
@@ -1440,9 +1416,7 @@ fn encode_signature_suffix(
 ///
 /// Validates `sig_ed_len == ED25519_SIG_LEN` strictly and rejects
 /// truncated input at every field boundary.
-fn decode_signature_suffix(
-    bytes: &[u8],
-) -> Result<(Fingerprint, HybridSig, &[u8]), BlockError> {
+fn decode_signature_suffix(bytes: &[u8]) -> Result<(Fingerprint, HybridSig, &[u8]), BlockError> {
     let mut pos = 0;
     let author = read_array::<16>(bytes, &mut pos)?;
     let sig_ed_len = read_u16_be(bytes, &mut pos)? as usize;
@@ -1568,17 +1542,11 @@ fn signed_message_bytes(
 ) -> Result<Vec<u8>, BlockError> {
     let header_bytes = encode_header(header)?;
     let recipient_bytes = encode_recipient_table(recipients)?;
-    let ct_len_u32 =
-        u32::try_from(aead_ct.len()).map_err(|_| BlockError::IntegerOverflow {
-            field: "aead_ct_len",
-        })?;
+    let ct_len_u32 = u32::try_from(aead_ct.len()).map_err(|_| BlockError::IntegerOverflow {
+        field: "aead_ct_len",
+    })?;
     let mut out = Vec::with_capacity(
-        header_bytes.len()
-            + recipient_bytes.len()
-            + 24
-            + 4
-            + aead_ct.len()
-            + AEAD_TAG_LEN,
+        header_bytes.len() + recipient_bytes.len() + 24 + 4 + aead_ct.len() + AEAD_TAG_LEN,
     );
     out.extend_from_slice(&header_bytes);
     out.extend_from_slice(&recipient_bytes);
@@ -1867,8 +1835,7 @@ mod tests {
             ],
         };
         let header_bytes = encode_header(&header).expect("encode_header");
-        let (decoded_header, rest) =
-            decode_header(&header_bytes).expect("decode_header");
+        let (decoded_header, rest) = decode_header(&header_bytes).expect("decode_header");
         assert!(rest.is_empty(), "decode_header must consume all bytes");
 
         // The encoder sorts vector_clock, so the decoded form has the
@@ -1911,10 +1878,8 @@ mod tests {
             records: vec![one_record],
             unknown: BTreeMap::new(),
         };
-        let plaintext_bytes =
-            encode_plaintext(&plaintext).expect("encode_plaintext");
-        let decoded_plaintext =
-            decode_plaintext(&plaintext_bytes).expect("decode_plaintext");
+        let plaintext_bytes = encode_plaintext(&plaintext).expect("encode_plaintext");
+        let decoded_plaintext = decode_plaintext(&plaintext_bytes).expect("decode_plaintext");
         assert_eq!(decoded_plaintext, plaintext);
 
         // ---- Cross-check --------------------------------------------
@@ -1959,7 +1924,10 @@ mod tests {
         // smoke test; the real pk_bundle_bytes() helper on ContactCard
         // will land alongside the contact-card encryption work.
         let mut pk_bundle: Vec<u8> = Vec::with_capacity(
-            id.x25519_pk.len() + id.ml_kem_768_pk.len() + id.ed25519_pk.len() + id.ml_dsa_65_pk.len(),
+            id.x25519_pk.len()
+                + id.ml_kem_768_pk.len()
+                + id.ed25519_pk.len()
+                + id.ml_dsa_65_pk.len(),
         );
         pk_bundle.extend_from_slice(&id.x25519_pk);
         pk_bundle.extend_from_slice(&id.ml_kem_768_pk);
@@ -1990,10 +1958,9 @@ mod tests {
         // is a [u8;32] = Ed25519Public; ml_dsa_65_pk is Vec<u8> that we
         // wrap into MlDsa65Public.
         let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
-        let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose())
-            .expect("ml-dsa-65 sk length");
-        let dsa_pk =
-            MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
+        let dsa_sk =
+            MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).expect("ml-dsa-65 sk length");
+        let dsa_pk = MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
 
         // ---- Header / plaintext --------------------------------------
         let block_uuid: [u8; BLOCK_UUID_LEN] = [0x42; BLOCK_UUID_LEN];
@@ -2124,15 +2091,15 @@ mod tests {
         let owner_fp: Fingerprint = [0xaa; 16];
         let other_fp: Fingerprint = [0xbb; 16];
 
-        let owner_pq_pk = kem::MlKem768Public::from_bytes(&owner.ml_kem_768_pk)
-            .expect("ml-kem-768 pk length");
+        let owner_pq_pk =
+            kem::MlKem768Public::from_bytes(&owner.ml_kem_768_pk).expect("ml-kem-768 pk length");
 
         // Owner sign / verify keys for encrypt_block / decrypt_block.
         let owner_ed_sk: Ed25519Secret = Sensitive::new(*owner.ed25519_sk.expose());
-        let owner_dsa_sk = MlDsa65Secret::from_bytes(owner.ml_dsa_65_sk.expose())
-            .expect("ml-dsa-65 sk length");
-        let owner_dsa_pk = MlDsa65Public::from_bytes(&owner.ml_dsa_65_pk)
-            .expect("ml-dsa-65 pk length");
+        let owner_dsa_sk =
+            MlDsa65Secret::from_bytes(owner.ml_dsa_65_sk.expose()).expect("ml-dsa-65 sk length");
+        let owner_dsa_pk =
+            MlDsa65Public::from_bytes(&owner.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
 
         // ---- Block addressed only to the owner ----------------------
         let block_uuid = [0x42; BLOCK_UUID_LEN];
@@ -2227,10 +2194,9 @@ mod tests {
         let pq_sk = kem::MlKem768Secret::from_bytes(id.ml_kem_768_sk.expose())
             .expect("ml-kem-768 sk length");
         let ed_sk: Ed25519Secret = Sensitive::new(*id.ed25519_sk.expose());
-        let dsa_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose())
-            .expect("ml-dsa-65 sk length");
-        let dsa_pk =
-            MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
+        let dsa_sk =
+            MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).expect("ml-dsa-65 sk length");
+        let dsa_pk = MlDsa65Public::from_bytes(&id.ml_dsa_65_pk).expect("ml-dsa-65 pk length");
 
         // ---- Build a valid block ------------------------------------
         let block_uuid = [0x42; BLOCK_UUID_LEN];
@@ -2293,9 +2259,7 @@ mod tests {
         .expect_err("tampered signature must be rejected");
         match err {
             BlockError::Sig(SigError::Ed25519VerifyFailed) => {}
-            other => panic!(
-                "expected BlockError::Sig(Ed25519VerifyFailed), got {other:?}"
-            ),
+            other => panic!("expected BlockError::Sig(Ed25519VerifyFailed), got {other:?}"),
         }
     }
 }

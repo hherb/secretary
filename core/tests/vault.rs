@@ -76,9 +76,9 @@ const HEADER_LEN_NO_VC: usize = 60;
 const OFF_RECIPIENT_TABLE_START: usize = HEADER_LEN_NO_VC + 2; // 62
 const OFF_RECIPIENT_FINGERPRINT: usize = OFF_RECIPIENT_TABLE_START; // 62
 const OFF_RECIPIENT_CT_X: usize = OFF_RECIPIENT_TABLE_START + 16; // 78
-// Recipient ct_pq starts at 78 + 32 = 110, runs 1088 bytes to 1198.
-// Recipient nonce_w starts at 1198, runs 24 bytes to 1222.
-// Recipient ct_w (32 + 16 = 48 bytes) runs 1222..1270.
+                                                                  // Recipient ct_pq starts at 78 + 32 = 110, runs 1088 bytes to 1198.
+                                                                  // Recipient nonce_w starts at 1198, runs 24 bytes to 1222.
+                                                                  // Recipient ct_w (32 + 16 = 48 bytes) runs 1222..1270.
 
 const OFF_AEAD_NONCE: usize = OFF_RECIPIENT_TABLE_START + RECIPIENT_ENTRY_LEN; // 1270
 const OFF_AEAD_CT_LEN: usize = OFF_AEAD_NONCE + 24; // 1294
@@ -209,7 +209,11 @@ fn encrypt_self(
 
 /// Run the standard self-recipient decrypt path against `block`, using
 /// the same identity for sender and reader.
-fn decrypt_self(h: &Handles, id: &IdentityBundle, block: &BlockFile) -> Result<BlockPlaintext, BlockError> {
+fn decrypt_self(
+    h: &Handles,
+    id: &IdentityBundle,
+    block: &BlockFile,
+) -> Result<BlockPlaintext, BlockError> {
     decrypt_block(
         block,
         &h.fp,
@@ -242,7 +246,10 @@ fn block_file_round_trips_self_recipient() {
     let decoded = decode_block_file(&bytes).expect("decode_block_file");
     assert_eq!(decoded, block);
     let re_encoded = encode_block_file(&decoded).expect("re-encode");
-    assert_eq!(re_encoded, bytes, "encode→decode→encode must be a fixed point");
+    assert_eq!(
+        re_encoded, bytes,
+        "encode→decode→encode must be a fixed point"
+    );
 
     // decrypt round-trips the plaintext.
     let recovered = decrypt_self(&h, &id, &decoded).expect("decrypt_block");
@@ -1070,8 +1077,7 @@ fn decode_rejects_sig_pq_wrong_length() {
         bytes[OFF_AEAD_CT_LEN + 2],
         bytes[OFF_AEAD_CT_LEN + 3],
     ]) as usize;
-    let off_sig_pq_len =
-        OFF_AEAD_CT + aead_ct_len + AEAD_TAG_LEN + 16 + 2 + ED25519_SIG_LEN; // after sig_ed
+    let off_sig_pq_len = OFF_AEAD_CT + aead_ct_len + AEAD_TAG_LEN + 16 + 2 + ED25519_SIG_LEN; // after sig_ed
     bytes[off_sig_pq_len..off_sig_pq_len + 2].copy_from_slice(&3308u16.to_be_bytes());
     let err = decode_block_file(&bytes).expect_err("sig_pq_len != 3309 must be rejected");
     match err {
@@ -1105,7 +1111,10 @@ fn decode_rejects_vector_clock_unsorted() {
     // file because this fails before recipient_table parsing.
     let err =
         decode_block_file(&header_bytes).expect_err("descending vector clock must be rejected");
-    assert!(matches!(err, BlockError::VectorClockNotSorted), "got {err:?}");
+    assert!(
+        matches!(err, BlockError::VectorClockNotSorted),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,7 +1209,9 @@ fn build_block_from_kat(v: &common::BlockKatVector) -> (BlockFile, IdentityBundl
                         .as_ref()
                         .expect("KAT: value_type=bytes requires value_hex");
                     RecValue::Bytes(
-                        common::hex(hex_str).expect("KAT: value_hex must be hex").into(),
+                        common::hex(hex_str)
+                            .expect("KAT: value_hex must be hex")
+                            .into(),
                     )
                 }
                 other => panic!("KAT: unknown value_type {other:?}"),
@@ -1311,7 +1322,10 @@ fn block_kat_self_recipient_one_record() {
     .expect("decrypt_block");
 
     assert_eq!(plaintext.records.len(), v.expected.records_count);
-    assert_eq!(plaintext.records[0].record_type, v.expected.first_record_type);
+    assert_eq!(
+        plaintext.records[0].record_type,
+        v.expected.first_record_type
+    );
     assert_eq!(plaintext.block_uuid, v.inputs.block_uuid);
     assert_eq!(plaintext.block_name, v.inputs.block_name);
 }

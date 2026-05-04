@@ -57,9 +57,7 @@ fn build_secure_note_record() -> Record {
     fields.insert(
         "body".to_string(),
         RecordField {
-            value: RecordFieldValue::Text(
-                "two-factor backup codes\n12345678\n23456789".into(),
-            ),
+            value: RecordFieldValue::Text("two-factor backup codes\n12345678\n23456789".into()),
             last_mod: 1714060801000,
             device_uuid: DEVICE_UUID,
             unknown: BTreeMap::new(),

@@ -15,7 +15,7 @@ use crate::version::{FORMAT_VERSION, MAGIC};
 /// the same FORMAT_VERSION while remaining distinguishable.
 pub(crate) const FILE_KIND_IDENTITY_BUNDLE: u16 = 0x0001;
 pub(crate) const NONCE_LEN: usize = 24;
-pub(crate) const WRAP_CT_PLUS_TAG_LEN: usize = 32 + 16;  // identity_block_key + tag
+pub(crate) const WRAP_CT_PLUS_TAG_LEN: usize = 32 + 16; // identity_block_key + tag
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleFile {
@@ -64,10 +64,19 @@ pub fn encode(file: &BundleFile) -> Vec<u8> {
         "bundle_ct_with_tag must include the trailing 16-byte Poly1305 tag"
     );
     let mut out = Vec::with_capacity(
-        4 + 2 + 2 + 16 + 8
-            + NONCE_LEN + 4 + WRAP_CT_PLUS_TAG_LEN
-            + NONCE_LEN + 4 + WRAP_CT_PLUS_TAG_LEN
-            + NONCE_LEN + 4 + file.bundle_ct_with_tag.len()
+        4 + 2
+            + 2
+            + 16
+            + 8
+            + NONCE_LEN
+            + 4
+            + WRAP_CT_PLUS_TAG_LEN
+            + NONCE_LEN
+            + 4
+            + WRAP_CT_PLUS_TAG_LEN
+            + NONCE_LEN
+            + 4
+            + file.bundle_ct_with_tag.len(),
     );
     out.extend_from_slice(&MAGIC.to_be_bytes());
     out.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
@@ -91,8 +100,8 @@ pub fn encode(file: &BundleFile) -> Vec<u8> {
     // the trailing 16 bytes are bundle_tag (a separate §3 field). We write both
     // in a single extend_from_slice — the wire layout is bundle_ct then bundle_tag,
     // which is exactly what bundle_ct_with_tag contains in order.
-    let bundle_ct_len = u32::try_from(file.bundle_ct_with_tag.len() - 16)
-        .expect("bundle ct < 4 GiB");
+    let bundle_ct_len =
+        u32::try_from(file.bundle_ct_with_tag.len() - 16).expect("bundle ct < 4 GiB");
     out.extend_from_slice(&bundle_ct_len.to_be_bytes());
     out.extend_from_slice(&file.bundle_ct_with_tag);
 
@@ -240,7 +249,7 @@ mod tests {
     #[test]
     fn decode_rejects_bad_format_version() {
         let mut bytes = encode(&sample());
-        bytes[5] = 0x02;  // bump format_version low byte from 0x01 to 0x02
+        bytes[5] = 0x02; // bump format_version low byte from 0x01 to 0x02
         let err = decode(&bytes).unwrap_err();
         assert!(matches!(err, BundleFileError::UnsupportedFormatVersion(2)));
     }
@@ -280,7 +289,11 @@ mod tests {
         let err = decode(&tampered).unwrap_err();
         assert!(matches!(
             err,
-            BundleFileError::WrapLengthMismatch { field: "wrap_pw", expected: 32, declared: 64 }
+            BundleFileError::WrapLengthMismatch {
+                field: "wrap_pw",
+                expected: 32,
+                declared: 64
+            }
         ));
     }
 
@@ -305,7 +318,11 @@ mod tests {
         let err = decode(&tampered).unwrap_err();
         assert!(matches!(
             err,
-            BundleFileError::WrapLengthMismatch { field: "wrap_rec", expected: 32, declared: 64 }
+            BundleFileError::WrapLengthMismatch {
+                field: "wrap_rec",
+                expected: 32,
+                declared: 64
+            }
         ));
     }
 }

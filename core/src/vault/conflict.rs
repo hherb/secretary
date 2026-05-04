@@ -725,10 +725,7 @@ pub enum ConflictError {
     /// manifest's `BlockEntry` table by UUID and only call merge_block
     /// on matching UUIDs), not a mergeable conflict.
     #[error("block_uuid mismatch: local has {local:?}, remote has {remote:?}")]
-    BlockUuidMismatch {
-        local: [u8; 16],
-        remote: [u8; 16],
-    },
+    BlockUuidMismatch { local: [u8; 16], remote: [u8; 16] },
     /// A vector-clock per-device counter would overflow `u64::MAX` when
     /// the merging device's component is incremented. Mirror of
     /// [`super::VaultError::ClockOverflow`] so the merge primitive can
@@ -1039,20 +1036,14 @@ mod tests {
     fn concurrent_when_each_side_has_a_higher_counter() {
         let local = vec![entry(1, 5), entry(2, 3)];
         let incoming = vec![entry(1, 3), entry(2, 5)];
-        assert_eq!(
-            clock_relation(&local, &incoming),
-            ClockRelation::Concurrent
-        );
+        assert_eq!(clock_relation(&local, &incoming), ClockRelation::Concurrent);
     }
 
     #[test]
     fn concurrent_when_each_side_has_a_unique_device() {
         let local = vec![entry(1, 3)];
         let incoming = vec![entry(2, 5)];
-        assert_eq!(
-            clock_relation(&local, &incoming),
-            ClockRelation::Concurrent
-        );
+        assert_eq!(clock_relation(&local, &incoming), ClockRelation::Concurrent);
     }
 
     #[test]
@@ -1540,7 +1531,7 @@ mod tests {
         let mut hostile = rec([1; 16]);
         hostile.last_mod_ms = 1000;
         hostile.tombstoned_at_ms = u64::MAX; // malformed
-        // Hostile carries no fields itself.
+                                             // Hostile carries no fields itself.
 
         let mut honest = rec([1; 16]);
         honest.last_mod_ms = 1000;
@@ -1951,16 +1942,18 @@ mod tests {
     fn merge_block_concurrent_unions_disjoint_records() {
         let mut a = pt([5; 16]);
         let mut record_a = rec([10; 16]);
-        record_a
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("alice".into()), 50, 1));
+        record_a.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("alice".into()), 50, 1),
+        );
         a.records.push(record_a);
 
         let mut b = pt([5; 16]);
         let mut record_b = rec([20; 16]);
-        record_b
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("bob".into()), 60, 2));
+        record_b.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("bob".into()), 60, 2),
+        );
         b.records.push(record_b);
 
         let local_clock = vec![entry(1, 1)];
@@ -1981,16 +1974,18 @@ mod tests {
         // Same record_uuid in both sides with conflicting values.
         let mut a = pt([5; 16]);
         let mut record_a = rec([10; 16]);
-        record_a
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("v1".into()), 100, 1));
+        record_a.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("v1".into()), 100, 1),
+        );
         a.records.push(record_a);
 
         let mut b = pt([5; 16]);
         let mut record_b = rec([10; 16]);
-        record_b
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("v2".into()), 200, 2));
+        record_b.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("v2".into()), 200, 2),
+        );
         b.records.push(record_b);
 
         let local_clock = vec![entry(1, 1)];
@@ -2053,22 +2048,25 @@ mod tests {
         let mut a = pt([5; 16]);
         a.block_name = "abc".into();
         let mut record_a1 = rec([10; 16]);
-        record_a1
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("v1".into()), 100, 1));
+        record_a1.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("v1".into()), 100, 1),
+        );
         a.records.push(record_a1);
 
         let mut b = pt([5; 16]);
         b.block_name = "abd".into();
         let mut record_b1 = rec([10; 16]);
-        record_b1
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("v2".into()), 200, 2));
+        record_b1.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("v2".into()), 200, 2),
+        );
         b.records.push(record_b1);
         let mut record_b2 = rec([20; 16]);
-        record_b2
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("only-b".into()), 50, 2));
+        record_b2.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("only-b".into()), 50, 2),
+        );
         b.records.push(record_b2);
 
         let local_clock = vec![entry(1, 1)];
@@ -2083,9 +2081,10 @@ mod tests {
     fn merge_block_concurrent_idempotent_basic() {
         let mut a = pt([5; 16]);
         let mut record_a = rec([10; 16]);
-        record_a
-            .fields
-            .insert("u".into(), rfield(RecordFieldValue::Text("v".into()), 100, 1));
+        record_a.fields.insert(
+            "u".into(),
+            rfield(RecordFieldValue::Text("v".into()), 100, 1),
+        );
         a.records.push(record_a);
         let clock = vec![entry(1, 1)];
         let m = merge_block(&a, &clock, &a, &clock, [9; 16]).expect("ok");

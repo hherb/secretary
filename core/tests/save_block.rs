@@ -31,8 +31,7 @@ use secretary_core::unlock::{
 };
 use secretary_core::vault::{
     decode_block_file, decrypt_block, encode_manifest_file, manifest, open_vault, save_block,
-    sign_manifest, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker,
-    VaultError,
+    sign_manifest, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -267,8 +266,12 @@ fn save_block_then_open_round_trip() {
     assert_eq!(entry.created_at_ms, now_ms);
 
     // Decrypting the block file as the owner must recover the plaintext.
-    let recovered =
-        decrypt_block_file_as(&block_path, &reopened.owner_card, &reopened.owner_card, &reopened.identity);
+    let recovered = decrypt_block_file_as(
+        &block_path,
+        &reopened.owner_card,
+        &reopened.owner_card,
+        &reopened.identity,
+    );
     assert_eq!(recovered.block_uuid, plaintext.block_uuid);
     assert_eq!(recovered.block_name, plaintext.block_name);
     assert_eq!(recovered.records, plaintext.records);
@@ -344,8 +347,7 @@ fn save_block_updates_existing_block_in_place() {
         .join("blocks")
         .join(format!("{block_uuid_hex}.cbor.enc"));
     let on_disk = fs::read(&block_path).unwrap();
-    let computed: [u8; 32] =
-        *secretary_core::crypto::hash::hash(&on_disk).as_bytes();
+    let computed: [u8; 32] = *secretary_core::crypto::hash::hash(&on_disk).as_bytes();
     assert_eq!(
         computed, entry.fingerprint,
         "on-disk bytes must hash to the manifest fingerprint"
@@ -507,12 +509,10 @@ fn save_block_recipients_can_all_decrypt() {
         decrypt_block_file_as(&block_path, &owner_card, &owner_card, &open.identity);
     assert_eq!(recovered_owner.block_uuid, plaintext.block_uuid);
 
-    let recovered_alice =
-        decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
+    let recovered_alice = decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
     assert_eq!(recovered_alice.block_uuid, plaintext.block_uuid);
 
-    let recovered_bob =
-        decrypt_block_file_as(&block_path, &owner_card, &bob_card, &bob_id);
+    let recovered_bob = decrypt_block_file_as(&block_path, &owner_card, &bob_card, &bob_id);
     assert_eq!(recovered_bob.block_uuid, plaintext.block_uuid);
 }
 
@@ -561,8 +561,7 @@ fn save_block_then_tampered_block_fails_open() {
     drop(open);
     let reopened = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
     let stored_fp = reopened.manifest.blocks[0].fingerprint;
-    let on_disk_fp: [u8; 32] =
-        *secretary_core::crypto::hash::hash(&corrupted).as_bytes();
+    let on_disk_fp: [u8; 32] = *secretary_core::crypto::hash::hash(&corrupted).as_bytes();
     assert_ne!(
         stored_fp, on_disk_fp,
         "tampered bytes must not match the manifest fingerprint"
@@ -667,8 +666,8 @@ fn save_block_re_sign_manifest_verifies() {
     // open_vault internally verifies the manifest signature before
     // attempting AEAD decrypt; a successful re-open is the integration-
     // level proof that save_block emitted a valid §8 hybrid signature.
-    let reopened = open_vault(dir.path(), Unlocker::Password(&pw), None)
-        .expect("re-opened vault must verify");
+    let reopened =
+        open_vault(dir.path(), Unlocker::Password(&pw), None).expect("re-opened vault must verify");
 
     // Belt-and-braces: explicit verify_manifest call against the loaded
     // owner card's public keys.
