@@ -136,11 +136,23 @@ impl UnlockedIdentity {
 fn open_with_password(
     vault_toml_bytes: &[u8],
     identity_bundle_bytes: &[u8],
-    password: Vec<u8>,
+    mut password: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    secretary_ffi_bridge::open_with_password(vault_toml_bytes, identity_bundle_bytes, &password)
-        .map(UnlockedIdentity)
-        .map_err(ffi_unlock_error_to_pyerr)
+    use zeroize::Zeroize;
+    // The bridge crate copies into SecretBytes (which zeroizes on drop).
+    // This Vec is a transient cleartext residue on the wrapper's heap;
+    // zero it explicitly so we don't leave the password lingering after
+    // the call returns. Mirrors the stack-residue discipline in
+    // docs/manual/contributors/memory-hygiene-audit-internal.md.
+    let result = secretary_ffi_bridge::open_with_password(
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        &password,
+    )
+    .map(UnlockedIdentity)
+    .map_err(ffi_unlock_error_to_pyerr);
+    password.zeroize();
+    result
 }
 
 /// `#[pymodule]` entrypoint. The function name (`secretary_ffi_py`) is the

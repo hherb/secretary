@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 secretary-core = { path = "../../core" }
 secretary-ffi-bridge = { path = "../secretary-ffi-bridge" }
 pyo3 = { version = "0.28" }
+zeroize = "=1.8.2"
 
 # Crate-local lint table replacing the inherited workspace `unsafe_code = "forbid"`.
 # PyO3's #[pymodule] / #[pyfunction] macros expand to user-crate code containing

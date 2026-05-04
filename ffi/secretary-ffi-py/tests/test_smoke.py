@@ -6,6 +6,10 @@ machinery. They prove the binding pipeline (PyO3 + maturin + uv venv +
 import) works end-to-end.
 """
 
+from pathlib import Path
+
+import pytest
+
 import secretary_ffi_py
 
 
@@ -31,9 +35,6 @@ def test_version_matches_format_version() -> None:
 # B.2: open_with_password tests against golden_vault_001 + golden_vault_002.
 # ---------------------------------------------------------------------------
 
-from pathlib import Path
-import pytest
-
 
 def _golden_vault_dir(n: int) -> Path:
     """Resolve `core/tests/data/golden_vault_{n:03d}/` relative to this test
@@ -54,8 +55,13 @@ VAULT_001_PASSWORD = b"correct horse battery staple"
 VAULT_001_OWNER_DISPLAY_NAME = "Owner"
 VAULT_001_OWNER_USER_UUID = bytes.fromhex("bf08a3300cd994b877e1a15baa28df35")
 
+# Number of trailing bytes stripped to corrupt the TOML structurally.
+# Empirically large enough to break the document past any tolerant
+# parser; mirrors the bridge crate's unlock.rs negative-test value.
+_TRUNCATION_SUFFIX_BYTES = 50
 
-def test_open_with_password_success_returns_pinned_identity():
+
+def test_open_with_password_success_returns_pinned_identity() -> None:
     toml = _read_fixture(1, "vault.toml")
     bundle = _read_fixture(1, "identity.bundle.enc")
     with secretary_ffi_py.open_with_password(toml, bundle, VAULT_001_PASSWORD) as identity:
@@ -63,14 +69,14 @@ def test_open_with_password_success_returns_pinned_identity():
         assert identity.user_uuid() == VAULT_001_OWNER_USER_UUID
 
 
-def test_open_with_password_wrong_password_raises_wrong_password_or_corrupt():
+def test_open_with_password_wrong_password_raises_wrong_password_or_corrupt() -> None:
     toml = _read_fixture(1, "vault.toml")
     bundle = _read_fixture(1, "identity.bundle.enc")
     with pytest.raises(secretary_ffi_py.WrongPasswordOrCorrupt):
         secretary_ffi_py.open_with_password(toml, bundle, b"definitely wrong")
 
 
-def test_open_with_password_swapped_files_raises_vault_mismatch():
+def test_open_with_password_swapped_files_raises_vault_mismatch() -> None:
     # vault_001's vault.toml + vault_002's identity.bundle.enc → cross-check
     # at core/src/unlock/mod.rs's vault_uuid + created_at_ms comparison fails.
     toml_001 = _read_fixture(1, "vault.toml")
@@ -79,15 +85,15 @@ def test_open_with_password_swapped_files_raises_vault_mismatch():
         secretary_ffi_py.open_with_password(toml_001, bundle_002, VAULT_001_PASSWORD)
 
 
-def test_open_with_password_truncated_toml_raises_corrupt_vault():
+def test_open_with_password_truncated_toml_raises_corrupt_vault() -> None:
     toml = _read_fixture(1, "vault.toml")
     bundle = _read_fixture(1, "identity.bundle.enc")
-    truncated = toml[:-50]
+    truncated = toml[:-_TRUNCATION_SUFFIX_BYTES]
     with pytest.raises(secretary_ffi_py.CorruptVault):
         secretary_ffi_py.open_with_password(truncated, bundle, VAULT_001_PASSWORD)
 
 
-def test_close_is_idempotent():
+def test_close_is_idempotent() -> None:
     toml = _read_fixture(1, "vault.toml")
     bundle = _read_fixture(1, "identity.bundle.enc")
     identity = secretary_ffi_py.open_with_password(toml, bundle, VAULT_001_PASSWORD)
@@ -96,7 +102,7 @@ def test_close_is_idempotent():
     identity.close()  # third call must not raise
 
 
-def test_use_after_close_returns_empty_values():
+def test_use_after_close_returns_empty_values() -> None:
     toml = _read_fixture(1, "vault.toml")
     bundle = _read_fixture(1, "identity.bundle.enc")
     identity = secretary_ffi_py.open_with_password(toml, bundle, VAULT_001_PASSWORD)
@@ -105,7 +111,7 @@ def test_use_after_close_returns_empty_values():
     assert identity.user_uuid() == b"\x00" * 16
 
 
-def test_open_with_password_accepts_bytearray_for_caller_zeroize_discipline():
+def test_open_with_password_accepts_bytearray_for_caller_zeroize_discipline() -> None:
     """Documents the design: passwords accepted as bytes-like; disciplined
     callers can zero a mutable bytearray after the call."""
     toml = _read_fixture(1, "vault.toml")
