@@ -136,9 +136,9 @@ impl UnlockedIdentity {
 fn open_with_password(
     vault_toml_bytes: &[u8],
     identity_bundle_bytes: &[u8],
-    password: &[u8],
+    password: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    secretary_ffi_bridge::open_with_password(vault_toml_bytes, identity_bundle_bytes, password)
+    secretary_ffi_bridge::open_with_password(vault_toml_bytes, identity_bundle_bytes, &password)
         .map(UnlockedIdentity)
         .map_err(ffi_unlock_error_to_pyerr)
 }
