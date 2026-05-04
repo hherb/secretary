@@ -13,6 +13,9 @@
 //! of waiting for foreign GC). It is **idempotent** — multiple calls do
 //! not panic. Subsequent accessor calls on a closed handle return empty
 //! / zero values rather than panicking, keeping the API non-throwing.
+//! The non-throwing guarantee extends to a poisoned inner mutex via
+//! [`lock_or_recover`]: a panic anywhere holding the guard does not
+//! turn future accessors into panics.
 //!
 //! RAII is the safety net: when the foreign-side reference releases, the
 //! Rust-side `Drop` cascade still runs.
