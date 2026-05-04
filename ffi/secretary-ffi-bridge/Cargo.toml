@@ -1,0 +1,20 @@
+[package]
+name = "secretary-ffi-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "FFI-friendly facade of secretary-core; projected through PyO3 (secretary-ffi-py) and uniffi (secretary-ffi-uniffi). Single source of code truth for FFI thinned-error mapping and opaque-handle wrappers."
+
+[lints]
+workspace = true
+
+[dependencies]
+secretary-core = { path = "../../core" }
+thiserror = "2"
+# `zeroize` is on the security-critical path: opaque handles wrapping
+# secret-bearing core types must zeroize on drop. Pinned to an EXACT
+# version (not a caret range) so that any patch / minor / major bump
+# requires a deliberate changelog review of the relevant `Zeroize`
+# impls. Same discipline as core/Cargo.toml; same reason — the failure
+# mode is silent.
+zeroize = "=1.8.2"

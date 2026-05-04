@@ -1234,6 +1234,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-ffi-bridge"
+version = "0.1.0"
+dependencies = [
+ "secretary-core",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "secretary-ffi-py"
 version = "0.1.0"
 dependencies = [
