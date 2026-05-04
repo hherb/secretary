@@ -52,7 +52,7 @@ use std::path::PathBuf;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
 use secretary_core::crypto::kem::{self, MlKem768Secret};
-use secretary_core::crypto::secret::SecretBytes;
+use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 use secretary_core::crypto::sig::MlDsa65Public;
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{bundle, open_with_password};
@@ -232,7 +232,7 @@ fn golden_vault_001_opens_with_password() {
         .expect("owner pk_bundle_bytes");
     let owner_dsa_pk = MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk)
         .expect("ml-dsa pk owner");
-    let owner_x_sk: kem::X25519Secret = secretary_core::crypto::secret::Sensitive::new(*open.identity.x25519_sk.expose());
+    let owner_x_sk: kem::X25519Secret = Sensitive::new(*open.identity.x25519_sk.expose());
     let owner_pq_sk = MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose())
         .expect("ml-kem sk owner");
 

@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![allow(dead_code)] // not every test consumes every helper.
 
 //! Shared infrastructure for the `golden_vault_NNN` integration tests.
 //!
@@ -16,6 +15,8 @@
 //! cross-language conformance contract from `docs/crypto-design.md` §15.
 //! Each KAT family has a typed `*Kat` struct here; tests load with
 //! [`load_kat`].
+
+#![allow(dead_code)] // not every test consumes every helper.
 
 pub mod fixture_builder;
 

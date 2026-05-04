@@ -145,6 +145,9 @@ pub fn parse_hex(s: &str) -> Vec<u8> {
     out
 }
 
+// Test-fixture nibble decoder: panics on malformed input (acceptable for
+// KAT-pinned hex strings). See `common::nib` for the Result-returning
+// variant used by the serde-driven JSON KAT loader.
 fn nib(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
