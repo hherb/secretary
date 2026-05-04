@@ -168,9 +168,33 @@ do {
     check(false, "truncated toml threw \(error), expected CorruptVault")
 }
 
+// Assertion 8: use-after-wipe defaults (parity with Kotlin's explicit
+// wipe() assertion). Assertion 4 above exercises wipe() via defer,
+// which fires at scope exit and leaves no opportunity to inspect
+// post-wipe state. This assertion calls wipe() in-line and verifies
+// the documented non-throwing defaults: empty displayName, 16 zero
+// bytes for userUuid, idempotent wipe.
+do {
+    let identity = try openWithPassword(
+        vaultTomlBytes: toml001,
+        identityBundleBytes: bundle001,
+        password: password001
+    )
+    identity.wipe()
+    identity.wipe() // idempotent — must not throw
+    let nameAfterWipe = identity.displayName()
+    let uuidAfterWipe = identity.userUuid()
+    check(
+        nameAfterWipe == "" && uuidAfterWipe == Data(repeating: 0, count: 16),
+        "explicit wipe() → use-after-wipe returns empty defaults (got displayName=\"\(nameAfterWipe)\", uuid.count=\(uuidAfterWipe.count))"
+    )
+} catch {
+    check(false, "explicit wipe() path threw \(error), expected to succeed")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 7 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of 8 assertion(s) failed\n".utf8)
     )
     exit(1)
 }

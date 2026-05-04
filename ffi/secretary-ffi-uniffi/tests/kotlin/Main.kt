@@ -169,8 +169,35 @@ fun main() {
         check(false, "truncated toml threw $e, expected CorruptVault")
     }
 
+    // Assertion 8: explicit wipe() path (parity with Swift's
+    // defer { wipe() }). The .use { } path above exercises uniffi's
+    // auto-generated AutoCloseable.close(); this assertion exercises
+    // the explicit wipe() entry point so both close paths are covered
+    // on Kotlin. Verifies idempotency + use-after-wipe defaults.
+    try {
+        val identity = openWithPassword(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            password = password001,
+        )
+        identity.wipe()
+        identity.wipe() // idempotent — must not throw
+        val nameAfterWipe = identity.displayName()
+        val uuidAfterWipe = identity.userUuid()
+        check(
+            nameAfterWipe == "" && uuidAfterWipe.contentEquals(ByteArray(16)),
+            "explicit wipe() → use-after-wipe returns empty defaults (got displayName=\"$nameAfterWipe\", uuid.size=${uuidAfterWipe.size})",
+        )
+        // Release the AutoCloseable handle so the Rust-side refcount
+        // decrements; the foreign caller is responsible for this once
+        // .use { } isn't carrying it.
+        identity.close()
+    } catch (e: Throwable) {
+        check(false, "explicit wipe() path threw $e, expected to succeed")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 7 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 8 assertion(s) failed")
         exitProcess(1)
     }
 
