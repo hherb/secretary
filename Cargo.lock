@@ -1237,6 +1237,7 @@ dependencies = [
 name = "secretary-ffi-bridge"
 version = "0.1.0"
 dependencies = [
+ "rand_chacha 0.3.1",
  "secretary-core",
  "thiserror",
  "zeroize",

@@ -17,6 +17,7 @@
 //! RAII is the safety net: when the foreign-side reference releases, the
 //! Rust-side `Drop` cascade still runs.
 
+use std::fmt;
 use std::sync::Mutex;
 
 /// Opaque handle to an unlocked vault identity. See [module docs](self).
@@ -30,11 +31,23 @@ pub struct UnlockedIdentity {
     inner: Mutex<Option<secretary_core::unlock::UnlockedIdentity>>,
 }
 
+/// Redacted Debug: never leak secret material through the fmt path.
+impl fmt::Debug for UnlockedIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let is_closed = self
+            .inner
+            .lock()
+            .expect("UnlockedIdentity mutex poisoned")
+            .is_none();
+        f.debug_struct("UnlockedIdentity")
+            .field("closed", &is_closed)
+            .finish()
+    }
+}
+
 impl UnlockedIdentity {
     /// Wrap a freshly-unlocked `core::UnlockedIdentity`. Crate-private:
     /// only [`crate::unlock::open_with_password`] constructs this.
-    // Task 6 wires the call site; suppress dead-code until then.
-    #[allow(dead_code)]
     pub(crate) fn new(inner: secretary_core::unlock::UnlockedIdentity) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
