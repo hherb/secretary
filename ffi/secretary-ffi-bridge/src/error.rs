@@ -154,6 +154,10 @@ mod tests {
 
     #[test]
     fn wrong_mnemonic_or_corrupt_maps_defensively_to_corrupt_vault() {
+        // Currently unreachable through open_with_password (only
+        // open_with_recovery returns this). Defensive forward-compat
+        // mapping so a future core change can't introduce a panic at
+        // the FFI boundary silently.
         let core_err = UnlockError::WrongMnemonicOrCorrupt;
         let ffi: FfiUnlockError = core_err.into();
         assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
@@ -171,6 +175,11 @@ mod tests {
 
     #[test]
     fn display_format_is_stable_for_each_variant() {
+        // These strings are anchored in FfiUnlockError's own #[error(...)]
+        // attributes (NOT derived from core::UnlockError's Display), and
+        // they must not change — the foreign smoke runners in Tasks 8/10
+        // (Python pytest, Swift, Kotlin) will assert against them when
+        // checking exception messages.
         assert_eq!(
             FfiUnlockError::WrongPasswordOrCorrupt.to_string(),
             "wrong password or vault corruption",
