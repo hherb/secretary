@@ -19,6 +19,8 @@
 
   "rng_seed_for_aead_nonces": "0202020202020202020202020202020202020202020202020202020202020202",
 
+  "recovery_mnemonic_phrase": "wall annual clay zebra cost cricket choose light small neck mimic season fix situate love asset dismiss online island disease turkey grab dish that",
+
   "owner": {
     "_doc": "Generated via cargo test -- --ignored generate_golden_inputs (seed [0xA0; 32]).",
     "user_uuid": "bf08a3300cd994b877e1a15baa28df35",
