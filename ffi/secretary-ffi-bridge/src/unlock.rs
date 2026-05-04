@@ -45,6 +45,15 @@ mod tests {
 
     // Embed the on-disk fixtures via include_bytes! so the integration
     // tests don't depend on test-time filesystem layout.
+    //
+    // Cross-crate coupling: the relative paths reach across the workspace
+    // into `core/tests/data/`. Acceptable for v1 (the fixture set is the
+    // single source of truth and a path break fails at compile time, not
+    // at runtime), but if we ever need to reuse fixtures from more than
+    // one binding crate, the next step is a `secretary-core::testing`
+    // module that re-exports the bytes — making the dependency explicit
+    // rather than path-walked. Tracked as a future cleanup, not a v1
+    // blocker.
     const VAULT_001_TOML: &[u8] = include_bytes!(
         "../../../core/tests/data/golden_vault_001/vault.toml"
     );
