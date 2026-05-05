@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-05 (Sub-project B.3a — recovery-phrase unlock through FFI)
-**Status:** Sub-project B.3a complete; PR [#26](https://github.com/hherb/secretary/pull/26) pending merge. The recovery-phrase unlock path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. `FfiUnlockError` grew from 3 → 5 variants. With B.3a done, the FFI surface includes both unlock entry points; B.3b expands it with `create_vault` (the output-direction mnemonic case + the deferred "how does `Sensitive<T>` materialize on the foreign side?" question).
+**Status:** Sub-project B.3a complete and merged. PR [#26](https://github.com/hherb/secretary/pull/26) squash-merged to `main` as `85c95b4`. The recovery-phrase unlock path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. `FfiUnlockError` grew from 3 → 5 variants. With B.3a done, the FFI surface includes both unlock entry points; B.3b expands it with `create_vault` (the output-direction mnemonic case + the deferred "how does `Sensitive<T>` materialize on the foreign side?" question).
 
 ## (1) What we shipped this session
 
@@ -138,11 +138,11 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 ## Closing inventory
 
-- **Branch:** `feat/ffi-b3a-recovery-unlock` (PR-pending; squash-merge target is `main`)
-- **Total commits since branching from `main@ea5d530`:** 17 on the feature branch (8 task-implementation + 7 review-or-incidental fix-ups + 2 doc/handoff). Will squash to 1 in the PR.
+- **Branch:** `feat/ffi-b3a-recovery-unlock` (squash-merged + deletable; current work happens on `main`)
+- **Total commits since branching from `main@ea5d530`:** 17 on the feature branch (8 task-implementation + 7 review-or-incidental fix-ups + 2 doc/handoff). Squash-merged to `main` as `85c95b4`.
 - **Workspace tests:** 489 + 9 ignored
 - **Pytest:** 16 (10 from B.1 + B.2 + 6 B.3a)
 - **Swift smoke:** 12/12 (3 B.1.1 + 5 B.2 + 4 B.3a)
 - **Kotlin smoke:** 12/12 (3 B.1.1.1 + 5 B.2 + 4 B.3a)
 - **Bridge crate:** 30 unit tests (14 in `error.rs` + 7 in `identity.rs` + 9 in `unlock.rs`); pure-safe Rust; exact-pinned `zeroize = "=1.8.2"`.
-- **PR:** [#26](https://github.com/hherb/secretary/pull/26)
+- **PR:** [#26](https://github.com/hherb/secretary/pull/26) squash-merged as `85c95b4`.
