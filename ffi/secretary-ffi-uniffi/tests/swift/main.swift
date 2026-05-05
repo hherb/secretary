@@ -80,6 +80,33 @@ do {
 }
 let password001 = "correct horse battery staple".data(using: .utf8)!
 
+// B.3a: read recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
+// JSON path is sibling to the golden_vault_NNN/ fixture directory.
+let inputs001Url = URL(fileURLWithPath: vaultDir).appendingPathComponent("golden_vault_001_inputs.json")
+let inputs002Url = URL(fileURLWithPath: vaultDir).appendingPathComponent("golden_vault_002_inputs.json")
+
+func _phraseFromInputs(_ url: URL) -> Data {
+    do {
+        let data = try Data(contentsOf: url)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let phrase = json?["recovery_mnemonic_phrase"] as? String else {
+            FileHandle.standardError.write(
+                Data("error: recovery_mnemonic_phrase missing or not a string in \(url.path)\n".utf8)
+            )
+            exit(1)
+        }
+        return phrase.data(using: .utf8)!
+    } catch {
+        FileHandle.standardError.write(
+            Data("error: failed to read \(url.path): \(error)\n".utf8)
+        )
+        exit(1)
+    }
+}
+
+let phrase001: Data = _phraseFromInputs(inputs001Url)
+let phrase002: Data = _phraseFromInputs(inputs002Url)
+
 // Pinned KAT — must match secretary-ffi-bridge's tests + pytest +
 // Kotlin smoke runner. Source of truth: golden_vault_001_inputs.json.
 let expectedDisplayName = "Owner"
@@ -192,9 +219,78 @@ do {
     check(false, "explicit wipe() path threw \(error), expected to succeed")
 }
 
+// --- B.3a: open_with_recovery assertions ---
+
+// Assertion 9: recovery success path.
+do {
+    let identity = try openWithRecovery(
+        vaultTomlBytes: toml001,
+        identityBundleBytes: bundle001,
+        mnemonic: phrase001
+    )
+    defer { identity.wipe() }
+
+    let displayName = identity.displayName()
+    let uuid = identity.userUuid()
+    check(
+        displayName == expectedDisplayName && uuid == expectedUserUuid,
+        "open_with_recovery success → display_name + user_uuid match pinned KAT (got displayName=\"\(displayName)\")"
+    )
+} catch {
+    check(false, "open_with_recovery success threw \(error), expected to succeed")
+}
+
+// Assertion 10: wrong recovery phrase → WrongMnemonicOrCorrupt.
+do {
+    _ = try openWithRecovery(
+        vaultTomlBytes: toml001,
+        identityBundleBytes: bundle001,
+        mnemonic: phrase002
+    )
+    check(false, "vault_002 phrase against vault_001 should have thrown WrongMnemonicOrCorrupt")
+} catch UnlockError.WrongMnemonicOrCorrupt {
+    check(true, "vault_002 phrase against vault_001 → WrongMnemonicOrCorrupt")
+} catch {
+    check(false, "wrong phrase threw \(error), expected WrongMnemonicOrCorrupt")
+}
+
+// Assertion 11: 3-word phrase → InvalidMnemonic(detail).
+do {
+    let bad = "only three words".data(using: .utf8)!
+    _ = try openWithRecovery(
+        vaultTomlBytes: toml001,
+        identityBundleBytes: bundle001,
+        mnemonic: bad
+    )
+    check(false, "3-word phrase should have thrown InvalidMnemonic")
+} catch let UnlockError.InvalidMnemonic(detail) {
+    check(
+        detail.contains("got 3"),
+        "3-word phrase → InvalidMnemonic(detail=\"\(detail)\") should mention `got 3`"
+    )
+} catch {
+    check(false, "3-word phrase threw \(error), expected InvalidMnemonic")
+}
+
+// Assertion 12: cross-vault file pair with recovery path → VaultMismatch.
+// Mnemonic correctness is irrelevant here; the vault_uuid + created_at_ms
+// comparison fires before any mnemonic parse.
+do {
+    _ = try openWithRecovery(
+        vaultTomlBytes: toml001,
+        identityBundleBytes: bundle002,
+        mnemonic: phrase001
+    )
+    check(false, "vault_001 toml + vault_002 bundle (recovery) should have thrown VaultMismatch")
+} catch UnlockError.VaultMismatch {
+    check(true, "vault_001 toml + vault_002 bundle (recovery) → VaultMismatch")
+} catch {
+    check(false, "vault mismatch (recovery) threw \(error), expected VaultMismatch")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 8 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of 12 assertion(s) failed\n".utf8)
     )
     exit(1)
 }

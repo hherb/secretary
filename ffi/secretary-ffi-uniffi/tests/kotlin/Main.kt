@@ -11,6 +11,7 @@
 
 import uniffi.secretary.add
 import uniffi.secretary.openWithPassword
+import uniffi.secretary.openWithRecovery
 import uniffi.secretary.UnlockException
 import uniffi.secretary.version
 import kotlin.system.exitProcess
@@ -93,6 +94,35 @@ fun main() {
         exitProcess(1)
     }
     val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
+
+    // B.3a: read recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
+    //
+    // We deliberately avoid pulling in a JSON library here (org.json is
+    // not in the JVM stdlib; adding a Maven dep would mean touching
+    // run.sh's classpath + checksum logic — out of scope for this task).
+    // The value we want is a BIP-39 24-word mnemonic: lowercase ASCII
+    // letters + single spaces, no JSON-escapable characters, so a
+    // single-line regex against `"recovery_mnemonic_phrase": "..."`
+    // is unambiguous on these fixture files. If the inputs JSON ever
+    // grows escapes inside this field, switch to a real JSON parser.
+    val phraseRegex = Regex("\"recovery_mnemonic_phrase\"\\s*:\\s*\"([^\"\\\\]+)\"")
+    fun phraseFromInputs(name: String): ByteArray {
+        val inputsPath = java.nio.file.Paths.get(vaultDir, name)
+        return try {
+            val text = java.nio.file.Files.readString(inputsPath)
+            val match = phraseRegex.find(text) ?: run {
+                System.err.println("error: recovery_mnemonic_phrase missing in $inputsPath")
+                exitProcess(1)
+            }
+            match.groupValues[1].toByteArray(Charsets.UTF_8)
+        } catch (e: Throwable) {
+            System.err.println("error: failed to read $inputsPath: $e")
+            exitProcess(1)
+        }
+    }
+
+    val phrase001 = phraseFromInputs("golden_vault_001_inputs.json")
+    val phrase002 = phraseFromInputs("golden_vault_002_inputs.json")
 
     // Pinned KAT — must match secretary-ffi-bridge's tests + pytest +
     // Swift smoke runner. Source of truth: golden_vault_001_inputs.json.
@@ -196,8 +226,74 @@ fun main() {
         check(false, "explicit wipe() path threw $e, expected to succeed")
     }
 
+    // --- B.3a: open_with_recovery assertions ---
+
+    // Assertion 9: recovery success path.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = phrase001,
+        ).use { identity ->
+            val displayName = identity.displayName()
+            val uuid = identity.userUuid()
+            check(
+                displayName == expectedDisplayName && uuid.contentEquals(expectedUserUuid),
+                "open_with_recovery success → display_name + user_uuid match pinned KAT (got displayName=\"$displayName\")",
+            )
+        }
+    } catch (e: Throwable) {
+        check(false, "open_with_recovery success threw $e, expected to succeed")
+    }
+
+    // Assertion 10: wrong recovery phrase → WrongMnemonicOrCorrupt.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = phrase002,
+        )
+        check(false, "vault_002 phrase against vault_001 should have thrown WrongMnemonicOrCorrupt")
+    } catch (e: UnlockException.WrongMnemonicOrCorrupt) {
+        check(true, "vault_002 phrase against vault_001 → WrongMnemonicOrCorrupt")
+    } catch (e: Throwable) {
+        check(false, "wrong phrase threw $e, expected WrongMnemonicOrCorrupt")
+    }
+
+    // Assertion 11: 3-word phrase → InvalidMnemonic(detail).
+    try {
+        val bad = "only three words".toByteArray(Charsets.UTF_8)
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = bad,
+        )
+        check(false, "3-word phrase should have thrown InvalidMnemonic")
+    } catch (e: UnlockException.InvalidMnemonic) {
+        check(
+            e.detail.contains("got 3"),
+            "3-word phrase → InvalidMnemonic(detail=\"${e.detail}\") should mention `got 3`",
+        )
+    } catch (e: Throwable) {
+        check(false, "3-word phrase threw $e, expected InvalidMnemonic")
+    }
+
+    // Assertion 12: cross-vault file pair with recovery path → VaultMismatch.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle002,
+            mnemonic = phrase001,
+        )
+        check(false, "vault_001 toml + vault_002 bundle (recovery) should have thrown VaultMismatch")
+    } catch (e: UnlockException.VaultMismatch) {
+        check(true, "vault_001 toml + vault_002 bundle (recovery) → VaultMismatch")
+    } catch (e: Throwable) {
+        check(false, "vault mismatch (recovery) threw $e, expected VaultMismatch")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 8 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 12 assertion(s) failed")
         exitProcess(1)
     }
 
