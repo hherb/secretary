@@ -71,7 +71,7 @@ uv sync --directory ffi/secretary-ffi-py
 
 ## Scope (B.1)
 
-> **B.2 (this version) extends the surface beyond the B.1 boilerplate; see [Vault unlock (B.2)](#vault-unlock-b2) at the bottom of this README. The sections below are kept as historical context.**
+> **B.3a (this version) adds the recovery-phrase unlock path on top of B.2's password-path surface; see [Vault unlock — recovery path (B.3a)](#vault-unlock--recovery-path-b3a) at the bottom of this README. B.2 (`open_with_password`) is still current; see [Vault unlock (B.2)](#vault-unlock-b2). The sections below are kept as historical context.**
 
 
 Exposed Python surface:
@@ -186,8 +186,86 @@ raising — this matches the non-throwing pattern from B.1's `add` /
 
 ### Test coverage
 
-10 pytests (`uv run --directory ffi/secretary-ffi-py pytest`): 3 B.1
+16 pytests (`uv run --directory ffi/secretary-ffi-py pytest`): 3 B.1
 smoke (`add`, `add wraps`, `version`) + 7 B.2 (`open_with_password`
 success, wrong password, vault mismatch, corrupt vault, idempotent
-close, use-after-close, bytearray caller-zeroize discipline).
+close, use-after-close, bytearray caller-zeroize discipline) + 6 B.3a
+(see the [B.3a section](#vault-unlock--recovery-path-b3a) below).
+
+## Vault unlock — recovery path (B.3a)
+
+Adds `open_with_recovery()` and two new exception classes
+(`WrongMnemonicOrCorrupt`, `InvalidMnemonic`) to the module surface.
+Mirrors B.2's password path with mnemonic input replacing the password
+input — same opaque-handle output (`UnlockedIdentity`), same
+context-manager protocol, same caller-zeroize discipline on the
+`bytearray` input.
+
+### Idiomatic usage
+
+```python
+import secretary_ffi_py
+
+with open(".../vault.toml", "rb") as f:
+    toml = f.read()
+with open(".../identity.bundle.enc", "rb") as f:
+    bundle = f.read()
+
+# Mnemonic input as bytearray for caller-zeroize discipline
+phrase = bytearray(b"abandon abandon abandon ... 24 words")
+try:
+    with secretary_ffi_py.open_with_recovery(toml, bundle, phrase) as identity:
+        print(identity.display_name())   # str
+        print(identity.user_uuid())      # bytes (16 bytes)
+finally:
+    for i in range(len(phrase)):
+        phrase[i] = 0   # caller-side zeroize — matches B.2 password path
+```
+
+### Error handling
+
+```python
+try:
+    secretary_ffi_py.open_with_recovery(toml, bundle, phrase)
+except secretary_ffi_py.WrongMnemonicOrCorrupt:
+    # Phrase is wrong, OR the vault has been tampered with.
+    # Deliberately indistinguishable per the §13 anti-oracle property
+    # (same conflation as WrongPasswordOrCorrupt for the password path).
+    ...
+except secretary_ffi_py.InvalidMnemonic as e:
+    # Pre-decryption validation failure: wrong word count, unknown word,
+    # bad checksum, or invalid UTF-8. NOT an oracle. str(e) carries
+    # diagnostic text suitable for UI rendering ("expected 24 words,
+    # got 3", "word not in BIP-39 English list: xyzzy", etc.).
+    print(f"Invalid phrase: {e}")
+except secretary_ffi_py.VaultMismatch:
+    # vault.toml and identity.bundle.enc reference different vaults.
+    ...
+except secretary_ffi_py.CorruptVault as e:
+    # Vault file is malformed beyond recovery. str(e) carries inner diagnostic.
+    print(f"Vault corrupt: {e}")
+```
+
+### Mnemonic-input discipline (caller-zeroize)
+
+Same shape as the password input: bytes (`bytes` literal or mutable
+`bytearray`), not `str`. The mnemonic is *more secret* than the
+password (it derives the recovery KEK; compromising it permanently
+unlocks the vault), so first-party clients MUST pass a `bytearray` and
+zero it after the call — strings are immutable in Python and cannot be
+zeroized.
+
+The bridge crate wraps the input slice in a transient `Vec<u8>` that
+is zeroized after the bridge returns; first-party clients should zero
+their foreign-side buffer too. Wrap your phrase handling in a
+zeroizing context manager if you handle credentials over the long
+term.
+
+### Lifecycle
+
+`open_with_recovery` returns the same `UnlockedIdentity` opaque handle
+type as `open_with_password`. Both unlock paths produce byte-identical
+secret state on success — accessors, `close()`, the context-manager
+protocol, and the use-after-close non-throwing semantics all work
+identically regardless of which entry point produced the handle.
 

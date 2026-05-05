@@ -83,7 +83,7 @@ The bindgen target is gated behind a crate-local `cli` feature (`required-featur
 
 ## Scope (B.1.1 + B.1.1.1)
 
-> **B.2 (this version) extends the surface beyond the B.1.1 boilerplate; see [Vault unlock (B.2)](#vault-unlock-b2) at the bottom of this README. The sections below are kept as historical context.**
+> **B.3a (this version) adds the recovery-phrase unlock path on top of B.2's password-path surface; see [Vault unlock — recovery path (B.3a)](#vault-unlock--recovery-path-b3a) at the bottom of this README. B.2 (`open_with_password`) is still current; see [Vault unlock (B.2)](#vault-unlock-b2). The sections below are kept as historical context.**
 
 
 Exposed surface, identical across both bindings:
@@ -117,16 +117,24 @@ Any new `unsafe` block elsewhere in this crate would still trigger `deny` and re
 ## Vault unlock (B.2)
 
 UDL adds: `interface UnlockedIdentity` (opaque handle), `[Error]
-interface UnlockError` (3-variant), and namespace function
+interface UnlockError`, and namespace function
 `[Throws=UnlockError] open_with_password(bytes, bytes, bytes) ->
-UnlockedIdentity`.
+UnlockedIdentity`. (As of B.3a the same `[Error] interface UnlockError`
+spans five variants — see the [B.3a section](#vault-unlock--recovery-path-b3a)
+below.)
 
-The Rust-side `UnlockedIdentity::close()` is renamed to `wipe()` on the
-uniffi projection, and `CorruptVault.message` is renamed to `detail`,
-both because of uniffi 0.31's Kotlin codegen — a UDL-declared `close()`
-collides with auto-generated `AutoCloseable.close()`, and a UDL-declared
-`message` collides with `Throwable.message`. The bridge crate's API is
-unchanged; only the uniffi projection renames.
+The Rust-side `UnlockedIdentity::close()` is renamed to `wipe()` on
+the uniffi projection because uniffi 0.31's Kotlin codegen
+auto-generates `AutoCloseable.close()` on every interface handle, and
+a UDL-declared `close()` would collide. The bridge crate's API is
+unchanged; only the uniffi projection renames it.
+
+`CorruptVault.message` was likewise renamed to `detail` in B.2 to
+avoid a Kotlin `Throwable.message` collision. In B.3a the bridge
+crate field itself was renamed to `detail` for naming uniformity with
+the new `InvalidMnemonic { detail }` variant; the uniffi codegen
+still produces `detail` on the foreign side, just now without a
+Kotlin-only rename in between.
 
 ### Swift idiom (`defer { wipe() }`)
 
@@ -207,9 +215,115 @@ runs (without `run.sh`) fail loudly with an actionable error message.
 
 ### Test coverage
 
-7 Swift asserts + 7 Kotlin asserts (3 B.1.1 smoke + 4 B.2 each):
-success path, wrong password, cross-vault mismatch (vault_001 toml +
-vault_002 bundle), truncated TOML. Both runners share the
-`SECRETARY_GOLDEN_VAULT_DIR` fixture path with the bridge-crate Rust
-tests and the Python pytest suite — KAT drift cannot land silently.
+12 Swift asserts + 12 Kotlin asserts (3 B.1.1 smoke + 5 B.2 unlock +
+4 B.3a unlock each): B.2 covers the success path, wrong password,
+cross-vault mismatch (vault_001 toml + vault_002 bundle), truncated
+TOML, and explicit-`wipe()` use-after-close behaviour. B.3a adds the
+parallel four for the recovery path (see the [B.3a section](#vault-unlock--recovery-path-b3a)
+below). Both runners share the `SECRETARY_GOLDEN_VAULT_DIR` fixture
+path with the bridge-crate Rust tests and the Python pytest suite —
+KAT drift cannot land silently.
+
+## Vault unlock — recovery path (B.3a)
+
+UDL adds: 2 new variants on `[Error] interface UnlockError`
+(`WrongMnemonicOrCorrupt`, `InvalidMnemonic(string detail)`) and
+1 new namespace function
+`[Throws=UnlockError] open_with_recovery(bytes, bytes, bytes) ->
+UnlockedIdentity`. Mnemonic input is `bytes` (UTF-8 encoded BIP-39
+phrase), parallel to B.2's password input shape. The bridge does
+`std::str::from_utf8` and surfaces malformed-UTF-8 input as
+`InvalidMnemonic(detail: "phrase contained invalid UTF-8")`.
+
+### Swift idiom (`defer { wipe() }`)
+
+```swift
+import secretary
+
+let toml = try Data(contentsOf: vaultTomlURL)
+let bundle = try Data(contentsOf: identityBundleURL)
+let phrase: [UInt8] = Array("abandon abandon ... 24 words".utf8)
+
+do {
+    let identity = try openWithRecovery(
+        vaultTomlBytes: toml,
+        identityBundleBytes: bundle,
+        mnemonic: phrase
+    )
+    defer { identity.wipe() }    // pin explicit zeroize at scope exit
+    print(identity.displayName())
+} catch UnlockError.WrongMnemonicOrCorrupt {
+    // Phrase is wrong, OR vault tampered with — §13 anti-oracle
+    // conflation, parallel to WrongPasswordOrCorrupt for the
+    // password path.
+} catch let UnlockError.InvalidMnemonic(detail) {
+    // Pre-decryption validation failure: wrong word count, unknown
+    // word, bad checksum, or invalid UTF-8. NOT an oracle.
+    print("Invalid phrase: \(detail)")
+} catch UnlockError.VaultMismatch {
+    // ...
+} catch let UnlockError.CorruptVault(detail) {
+    print("Vault corrupt: \(detail)")
+}
+```
+
+### Kotlin idiom (`.use { }`)
+
+```kotlin
+import uniffi.secretary.*
+
+val toml = Files.readAllBytes(vaultTomlPath)
+val bundle = Files.readAllBytes(identityBundlePath)
+val phrase = "abandon abandon ... 24 words".toByteArray(Charsets.UTF_8)
+
+try {
+    openWithRecovery(
+        vaultTomlBytes = toml,
+        identityBundleBytes = bundle,
+        mnemonic = phrase,
+    ).use { identity ->
+        println(identity.displayName())
+    }
+} catch (e: UnlockException.WrongMnemonicOrCorrupt) {
+    // ...
+} catch (e: UnlockException.InvalidMnemonic) {
+    println("Invalid phrase: ${e.detail}")
+} catch (e: UnlockException.VaultMismatch) {
+    // ...
+} catch (e: UnlockException.CorruptVault) {
+    println("Vault corrupt: ${e.detail}")
+} finally {
+    phrase.fill(0)   // caller-side zeroize discipline
+}
+```
+
+The single `UnlockError` (Swift) / `UnlockException` (Kotlin) enum
+spans both unlock entry points; foreign callers do not maintain two
+error types. The variants they need to handle differ by which entry
+point they called: `WrongPasswordOrCorrupt` vs `WrongMnemonicOrCorrupt`
+are mutually exclusive by call site. `VaultMismatch` and
+`CorruptVault` apply to both.
+
+### Mnemonic-input discipline (caller-zeroize)
+
+Same shape as the password input: `Data` in Swift, `ByteArray` in
+Kotlin (not `String`). The mnemonic is *more secret* than the
+password (it derives the recovery KEK; compromising it permanently
+unlocks the vault), so first-party clients MUST pass a mutable buffer
+and zero it after the call — strings are immutable in both languages
+and cannot be zeroized.
+
+The Rust-side projection wraps the input as an owned `Vec<u8>` and
+zeroizes it after the bridge call returns; first-party clients
+should additionally zero their foreign-side buffer.
+
+### Test fixtures via env var
+
+The Swift / Kotlin smoke runners read `recovery_mnemonic_phrase` from
+`golden_vault_{001,002}_inputs.json` at runtime — no hardcoded
+24-word strings in the smoke runners. The phrase is mathematically
+determined by the already-pinned recovery entropy in those JSON
+files; a `bip39::Mnemonic::from_entropy(entropy).to_string() ==
+pinned_phrase` drift-detection assertion in `core/tests/common/fixture_builder.rs`
+keeps the JSON pin honest.
 
