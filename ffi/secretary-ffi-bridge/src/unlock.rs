@@ -8,8 +8,9 @@
 //! paths converge on byte-identical secret state per the §3/§4 dual-KEK
 //! design.
 //!
-//! For the password path, the input slice is wrapped in [`SecretBytes`],
-//! which zeroizes on drop. The recovery path takes the mnemonic input as
+//! For the password path, the input slice is wrapped in
+//! [`SecretBytes`](secretary_core::crypto::secret::SecretBytes), which
+//! zeroizes on drop. The recovery path takes the mnemonic input as
 //! `&[u8]` (UTF-8 bytes) and runs `std::str::from_utf8` as the bridge's
 //! sole pre-core validation seam; downstream BIP-39 validation lives in
 //! `core::unlock::mnemonic::parse`. In both cases, the caller's
