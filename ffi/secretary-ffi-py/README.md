@@ -69,6 +69,10 @@ uv sync --directory ffi/secretary-ffi-py
 
 `uv sync` invokes the maturin build-backend automatically and installs the editable wheel fresh, so a separate `maturin develop` is not needed after this. The trap is **specific to maturin + uv editable installs** — the sibling [secretary-ffi-uniffi](../secretary-ffi-uniffi/) crate has no equivalent (cargo + swiftc only, no Python-style sticky-install layer).
 
+> **Don't substitute `uv cache clean secretary-ffi-py` for the `find ... -name '*secretary*'` line.** They look equivalent but aren't — `uv cache clean <pkg>` removes a subset of cache entries (it'll cheerfully report "Removed 96 files") but leaves stale hardlinks in `~/.cache/uv/archive-v0/<hash>/secretary_ffi_py/` and `~/.cache/uv/wheels-v5/url/<hash>/secretary-ffi-py/`. Those stale entries are exactly what the next `uv run` will hardlink back into the venv. Verify with `find ~/.cache/uv -name "*secretary*" | wc -l` — should be `0` after the find-rm. (Reproduced 2026-05-05 post-PR-26 merge; cost ~30 min.)
+>
+> **After a long-lived branch's squash-merge, also nuke `target/`.** If the nuclear fix above runs but pytest still reports missing symbols, full-workspace `cargo clean` (not `cargo clean -p secretary-ffi-py`) plus `rm -rf target/wheels/` clears stale build artifacts that cargo's per-crate clean misses when the source hash changed across the merge. Reproduced 2026-05-05 alongside the uv-cache issue; both fixes were needed.
+
 ## Scope (B.1)
 
 > **B.3a (this version) adds the recovery-phrase unlock path on top of B.2's password-path surface; see [Vault unlock — recovery path (B.3a)](#vault-unlock--recovery-path-b3a) at the bottom of this README. B.2 (`open_with_password`) is still current; see [Vault unlock (B.2)](#vault-unlock-b2). The sections below are kept as historical context.**
