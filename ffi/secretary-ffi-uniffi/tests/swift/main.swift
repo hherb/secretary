@@ -288,9 +288,87 @@ do {
     check(false, "vault mismatch (recovery) threw \(error), expected VaultMismatch")
 }
 
+// --- B.3b: create_vault assertions ---
+
+// Assertion 13: create_vault produces a CreateVaultOutput with the
+// expected shape — non-empty bytes for both on-disk artifacts, the
+// identity is immediately live with the display_name we passed.
+do {
+    let out = try createVault(
+        password: "smoke-runner-password".data(using: .utf8)!,
+        displayName: "Owner",
+        createdAtMs: 1_700_000_000_000
+    )
+    defer { out.identity.wipe() }
+    defer { out.mnemonic.wipe() }
+    let displayName = out.identity.displayName()
+    let tomlNonEmpty = !out.vaultTomlBytes.isEmpty
+    let bundleNonEmpty = !out.identityBundleBytes.isEmpty
+    check(
+        displayName == "Owner" && tomlNonEmpty && bundleNonEmpty,
+        "create_vault shape: displayName=\"\(displayName)\" tomlBytes=\(out.vaultTomlBytes.count) bundleBytes=\(out.identityBundleBytes.count)"
+    )
+} catch {
+    check(false, "create_vault threw \(error), expected to succeed")
+}
+
+// Assertion 14: round-trip with password — the vault bytes produced by
+// create_vault re-open with the same password and yield the same
+// display_name. Pins the create→open agreement.
+do {
+    let pw = "round-trip-password".data(using: .utf8)!
+    let out = try createVault(
+        password: pw,
+        displayName: "RoundTripBob",
+        createdAtMs: 1_700_000_000_000
+    )
+    defer { out.identity.wipe() }
+    out.mnemonic.wipe()  // not used in this path
+    let reopened = try openWithPassword(
+        vaultTomlBytes: out.vaultTomlBytes,
+        identityBundleBytes: out.identityBundleBytes,
+        password: pw
+    )
+    defer { reopened.wipe() }
+    check(
+        reopened.displayName() == "RoundTripBob",
+        "create→open_with_password round-trip: got displayName=\"\(reopened.displayName())\""
+    )
+} catch {
+    check(false, "round-trip with password threw \(error), expected to succeed")
+}
+
+// Assertion 15: round-trip with recovery — take the phrase, re-open via
+// the recovery path. Pins create→take→open end-to-end.
+do {
+    let out = try createVault(
+        password: "unused".data(using: .utf8)!,
+        displayName: "RoundTripCarol",
+        createdAtMs: 1_700_000_000_000
+    )
+    defer { out.identity.wipe() }
+    if let phrase = out.mnemonic.takePhrase() {
+        let reopened = try openWithRecovery(
+            vaultTomlBytes: out.vaultTomlBytes,
+            identityBundleBytes: out.identityBundleBytes,
+            mnemonic: Data(phrase)
+        )
+        defer { reopened.wipe() }
+        check(
+            reopened.displayName() == "RoundTripCarol",
+            "create→take_phrase→open_with_recovery: got displayName=\"\(reopened.displayName())\""
+        )
+    } else {
+        check(false, "take_phrase returned nil on first call")
+    }
+    out.mnemonic.wipe()
+} catch {
+    check(false, "round-trip with recovery threw \(error), expected to succeed")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 12 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of 15 assertion(s) failed\n".utf8)
     )
     exit(1)
 }

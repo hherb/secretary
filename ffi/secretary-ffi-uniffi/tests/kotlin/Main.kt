@@ -10,6 +10,7 @@
 // Invocation: ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 import uniffi.secretary.add
+import uniffi.secretary.createVault
 import uniffi.secretary.openWithPassword
 import uniffi.secretary.openWithRecovery
 import uniffi.secretary.UnlockException
@@ -337,8 +338,94 @@ fun main() {
         check(false, "vault mismatch (recovery) threw $e, expected VaultMismatch")
     }
 
+    // --- B.3b: create_vault assertions ---
+
+    // Assertion 13: create_vault produces a CreateVaultOutput with the
+    // expected shape — non-empty bytes for both on-disk artifacts, the
+    // identity is immediately live with the display_name we passed.
+    try {
+        val out = createVault(
+            password = "smoke-runner-password".toByteArray(Charsets.UTF_8),
+            displayName = "Owner",
+            createdAtMs = 1_700_000_000_000UL,
+        )
+        out.mnemonic.use { /* immediately wipe */ }
+        out.identity.use { id ->
+            val displayName = id.displayName()
+            val tomlNonEmpty = out.vaultTomlBytes.isNotEmpty()
+            val bundleNonEmpty = out.identityBundleBytes.isNotEmpty()
+            check(
+                displayName == "Owner" && tomlNonEmpty && bundleNonEmpty,
+                "create_vault shape: displayName=\"$displayName\" tomlBytes=${out.vaultTomlBytes.size} bundleBytes=${out.identityBundleBytes.size}",
+            )
+        }
+    } catch (e: Throwable) {
+        check(false, "create_vault threw $e, expected to succeed")
+    }
+
+    // Assertion 14: round-trip with password — the vault bytes produced by
+    // create_vault re-open with the same password and yield the same
+    // display_name. Pins the create→open agreement.
+    try {
+        val pw = "round-trip-password".toByteArray(Charsets.UTF_8)
+        val out = createVault(
+            password = pw,
+            displayName = "RoundTripBob",
+            createdAtMs = 1_700_000_000_000UL,
+        )
+        out.mnemonic.use { /* not used in this path */ }
+        out.identity.use { _ ->
+            openWithPassword(
+                vaultTomlBytes = out.vaultTomlBytes,
+                identityBundleBytes = out.identityBundleBytes,
+                password = pw,
+            ).use { reopened ->
+                check(
+                    reopened.displayName() == "RoundTripBob",
+                    "create→open_with_password round-trip: got displayName=\"${reopened.displayName()}\"",
+                )
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "round-trip with password threw $e, expected to succeed")
+    }
+
+    // Assertion 15: round-trip with recovery — take the phrase, re-open via
+    // the recovery path. Pins create→take→open end-to-end.
+    try {
+        val out = createVault(
+            password = "unused".toByteArray(Charsets.UTF_8),
+            displayName = "RoundTripCarol",
+            createdAtMs = 1_700_000_000_000UL,
+        )
+        out.identity.use { _ ->
+            out.mnemonic.use { mn ->
+                val phrase = mn.takePhrase()
+                check(phrase != null, "take_phrase returned null on first call")
+                if (phrase != null) {
+                    // takePhrase() returns List<UByte>? per uniffi 0.31's
+                    // mapping of `sequence<u8>?`; convert to ByteArray for
+                    // the `bytes` parameter on openWithRecovery.
+                    val phraseBytes = ByteArray(phrase.size) { phrase[it].toByte() }
+                    openWithRecovery(
+                        vaultTomlBytes = out.vaultTomlBytes,
+                        identityBundleBytes = out.identityBundleBytes,
+                        mnemonic = phraseBytes,
+                    ).use { reopened ->
+                        check(
+                            reopened.displayName() == "RoundTripCarol",
+                            "create→take_phrase→open_with_recovery: got displayName=\"${reopened.displayName()}\"",
+                        )
+                    }
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "round-trip with recovery threw $e, expected to succeed")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 12 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 15 assertion(s) failed")
         exitProcess(1)
     }
 
