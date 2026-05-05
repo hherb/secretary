@@ -48,6 +48,22 @@ def _read_fixture(n: int, name: str) -> bytes:
     return (_golden_vault_dir(n) / name).read_bytes()
 
 
+@pytest.fixture(scope="module")
+def created_vault():
+    """Single create_vault invocation reused across read-only B.3b tests
+    in this module. Cost: ~1s for V1_DEFAULT Argon2id.
+
+    Tests that consume the one-shot mnemonic use their own fresh
+    invocation; the fixture's mnemonic stays untouched so multiple
+    read-only tests can share the same identity handle.
+    """
+    return secretary_ffi_py.create_vault(
+        password=b"test-fixture-password",
+        display_name="Owner",
+        created_at_ms=42_000,
+    )
+
+
 def _golden_vault_phrase(n: int) -> bytes:
     """Read the pinned `recovery_mnemonic_phrase` field from
     `core/tests/data/golden_vault_{n:03d}_inputs.json` and return it as
@@ -218,3 +234,113 @@ def test_open_with_recovery_accepts_bytearray_for_caller_zeroize_discipline() ->
     for i in range(len(phrase)):
         phrase[i] = 0
     assert all(b == 0 for b in phrase)
+
+
+# ---------------------------------------------------------------------------
+# B.3b: create_vault tests against an in-process freshly-built vault.
+# Bridge hardcodes OsRng + Argon2idParams::V1_DEFAULT, so each invocation
+# costs ~1s (real Argon2id at 256 MiB / 3 iterations / 1 thread).
+# ---------------------------------------------------------------------------
+
+
+def test_create_vault_returns_artifacts_with_expected_shape(created_vault) -> None:
+    """The four CreateVaultOutput fields exist and carry the expected
+    types: bytes for the on-disk artifacts; opaque handles for the
+    identity and mnemonic. Uses the module-scoped fixture (no extra
+    Argon2id cost)."""
+    assert isinstance(created_vault.vault_toml_bytes, bytes)
+    assert len(created_vault.vault_toml_bytes) > 0
+    assert isinstance(created_vault.identity_bundle_bytes, bytes)
+    assert len(created_vault.identity_bundle_bytes) > 0
+    # The identity and mnemonic getters take ownership; assert their types
+    # without consuming both — split into separate tests below (which use
+    # fresh invocations to avoid clobbering the fixture).
+
+
+def test_create_vault_identity_is_immediately_live() -> None:
+    """The identity returned from create_vault is ready for vault
+    operations without a second open_with_password call. Uses a fresh
+    invocation since `identity` is take-once."""
+    out = secretary_ffi_py.create_vault(
+        password=b"x",
+        display_name="ImmediateLive",
+        created_at_ms=0,
+    )
+    with out.identity as identity:
+        assert identity.display_name() == "ImmediateLive"
+    out.mnemonic.close()
+
+
+def test_create_vault_mnemonic_take_returns_24_words() -> None:
+    """The recovery mnemonic exits the FFI as 24 space-separated UTF-8
+    words. Pin the contract on the byte shape; the BIP-39 wordlist
+    membership is core's responsibility (already covered by core tests)."""
+    out = secretary_ffi_py.create_vault(
+        password=b"x",
+        display_name="X",
+        created_at_ms=0,
+    )
+    with out.mnemonic as mn:
+        phrase = mn.take_phrase()
+        assert phrase is not None, "first call must return bytes"
+        assert isinstance(phrase, bytes)
+        assert len(phrase.split(b" ")) == 24, f"expected 24 words, got: {phrase!r}"
+    out.identity.close()
+
+
+def test_create_vault_mnemonic_take_is_one_shot() -> None:
+    """Second take_phrase call returns None — documented one-shot
+    semantics."""
+    out = secretary_ffi_py.create_vault(
+        password=b"x",
+        display_name="X",
+        created_at_ms=0,
+    )
+    with out.mnemonic as mn:
+        first = mn.take_phrase()
+        second = mn.take_phrase()
+        assert first is not None
+        assert second is None, "second take_phrase must return None"
+    out.identity.close()
+
+
+def test_create_vault_round_trip_with_password() -> None:
+    """The vault bytes produced by create_vault re-open with the same
+    password and yield the same display_name. Pins the dual-KEK
+    convergence point: the bridge's create_vault and open_with_password
+    agree on identity bytes."""
+    pw = b"my-round-trip-password"
+    out = secretary_ffi_py.create_vault(
+        password=pw,
+        display_name="RoundTripBob",
+        created_at_ms=42_000,
+    )
+    out.mnemonic.close()  # not exercising the recovery path here
+    with secretary_ffi_py.open_with_password(
+        out.vault_toml_bytes,
+        out.identity_bundle_bytes,
+        pw,
+    ) as id2:
+        assert id2.display_name() == "RoundTripBob"
+    out.identity.close()
+
+
+def test_create_vault_round_trip_with_recovery() -> None:
+    """The vault bytes produced by create_vault re-open via the recovery
+    path using the just-taken mnemonic. Pins the create→take→open
+    pipeline end-to-end."""
+    out = secretary_ffi_py.create_vault(
+        password=b"unused",
+        display_name="RoundTripCarol",
+        created_at_ms=42_000,
+    )
+    with out.mnemonic as mn:
+        phrase = mn.take_phrase()
+        assert phrase is not None
+        with secretary_ffi_py.open_with_recovery(
+            out.vault_toml_bytes,
+            out.identity_bundle_bytes,
+            phrase,
+        ) as id2:
+            assert id2.display_name() == "RoundTripCarol"
+    out.identity.close()
