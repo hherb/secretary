@@ -110,6 +110,15 @@ impl MnemonicOutput {
         }
     }
 
+    /// Test-only constructor. Crate-public so the sibling
+    /// secretary-ffi-uniffi crate's mod tests can build a wrapper without
+    /// invoking the slow create_vault path. Hidden from rustdoc; not part
+    /// of the supported public API.
+    #[doc(hidden)]
+    pub fn new_for_test(m: Mnemonic) -> Self {
+        Self::new(m)
+    }
+
     /// Take the recovery phrase as freshly-allocated UTF-8 bytes. ONE-SHOT —
     /// subsequent calls return `None`.
     ///

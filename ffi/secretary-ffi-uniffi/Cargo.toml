@@ -35,6 +35,13 @@ zeroize = "=1.8.2"
 [build-dependencies]
 uniffi = { version = "0.31", features = ["build"] }
 
+[dev-dependencies]
+# Deterministic seeded RNG for the B.3b mod tests' fast
+# MnemonicOutput-wrapper test (avoids the slow Argon2id cost of
+# create_vault). Match the version pinned in core/Cargo.toml so we share
+# the lock entry.
+rand_chacha = "0.3"
+
 # In-crate uniffi-bindgen binary. Mozilla's recommended approach: ship
 # the bindgen as a `cargo run --bin` target so the bindgen version is
 # locked to the crate's `uniffi` dep. No global install required.
