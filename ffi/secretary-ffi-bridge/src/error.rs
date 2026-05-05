@@ -27,6 +27,10 @@
 //!   `{core::CorruptVault, all MalformedX, KdfFailure, WeakKdfParams}`.
 //!   Carries a diagnostic `detail: String` for debugging; structured
 //!   pattern-matching on the inner cause is intentionally not supported.
+//!   Display text is path-neutral (`"vault data integrity failure"`)
+//!   so the variant reads correctly on BOTH the open path (where it
+//!   fires when a vault file is malformed) AND the create path (where
+//!   it fires on rare system-level failures during vault production).
 
 use thiserror::Error;
 
@@ -66,9 +70,13 @@ pub enum FfiUnlockError {
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
 
-    /// Vault is corrupt or unreadable. Carries a diagnostic `detail` string
-    /// for debugging; not pattern-matchable on the inner cause.
-    #[error("vault is corrupt or unreadable: {detail}")]
+    /// Vault data integrity failure — covers BOTH directions: open-path
+    /// failure (vault file is malformed / unreadable) AND create-path
+    /// failure (couldn't even produce the vault bytes; rare, e.g. Argon2id
+    /// system-OOM or CBOR serialization failure of the in-memory bundle).
+    /// Carries a diagnostic `detail` string for debugging; not
+    /// pattern-matchable on the inner cause.
+    #[error("vault data integrity failure: {detail}")]
     CorruptVault {
         /// Diagnostic text from the inner `core::UnlockError` variant's
         /// `Display` impl. Free-form; not part of the API contract.
@@ -226,7 +234,7 @@ mod tests {
         let corrupt = FfiUnlockError::CorruptVault {
             detail: "fnord".to_string(),
         };
-        assert_eq!(corrupt.to_string(), "vault is corrupt or unreadable: fnord",);
+        assert_eq!(corrupt.to_string(), "vault data integrity failure: fnord",);
     }
 
     #[test]
@@ -302,5 +310,29 @@ mod tests {
             unreachable!()
         };
         assert_eq!(detail, "tripwire");
+    }
+
+    #[test]
+    fn corrupt_vault_display_uses_path_neutral_text() {
+        // B.3b changed the Display text from "vault is corrupt or unreadable"
+        // (read-path-only) to "vault data integrity failure" (path-neutral)
+        // so the variant reads correctly on the create path too. This test
+        // is a tripwire: a future refactor that reverts to read-path-only
+        // text would fail here, forcing a deliberate decision rather than
+        // a silent regression.
+        let ffi = FfiUnlockError::CorruptVault {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{ffi}");
+        assert!(
+            rendered.contains("vault data integrity failure"),
+            "Display did not contain the path-neutral text: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+        // Negative: must NOT contain the old read-path-only phrasing.
+        assert!(
+            !rendered.contains("corrupt or unreadable"),
+            "Display still contains the old read-path-only text: {rendered}",
+        );
     }
 }
