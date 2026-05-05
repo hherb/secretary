@@ -41,6 +41,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod create;
 pub mod error;
 pub mod identity;
 pub mod unlock;
