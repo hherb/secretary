@@ -1,13 +1,20 @@
-//! `open_with_password` — fallible, secret-bearing operation: vault unlock
-//! by master password.
+//! Fallible, secret-bearing unlock operations:
+//! [`open_with_password`] (master-password path) and
+//! [`open_with_recovery`] (24-word BIP-39 recovery-phrase path).
 //!
-//! FFI-friendly wrapper around `secretary_core::unlock::open_with_password`.
-//! Maps the `Result<core::UnlockedIdentity, core::UnlockError>` shape to
-//! `Result<UnlockedIdentity, FfiUnlockError>` (thinned + opaque).
+//! FFI-friendly wrappers around `secretary_core::unlock::*`. Each function
+//! maps the `Result<core::UnlockedIdentity, core::UnlockError>` shape to
+//! `Result<UnlockedIdentity, FfiUnlockError>` (thinned + opaque). Both
+//! paths converge on byte-identical secret state per the §3/§4 dual-KEK
+//! design.
 //!
-//! The input password slice is wrapped in [`SecretBytes`], which zeroizes
-//! on drop. The caller's foreign-side buffer is the caller's concern —
-//! see the per-language READMEs for the documented discipline.
+//! For the password path, the input slice is wrapped in [`SecretBytes`],
+//! which zeroizes on drop. The recovery path takes the mnemonic input as
+//! `&[u8]` (UTF-8 bytes) and runs `std::str::from_utf8` as the bridge's
+//! sole pre-core validation seam; downstream BIP-39 validation lives in
+//! `core::unlock::mnemonic::parse`. In both cases, the caller's
+//! foreign-side buffer is the caller's concern — see the per-language
+//! READMEs for the documented zeroize discipline.
 
 use crate::{FfiUnlockError, UnlockedIdentity};
 
@@ -104,8 +111,6 @@ mod tests {
         include_bytes!("../../../core/tests/data/golden_vault_001/identity.bundle.enc");
     const VAULT_002_BUNDLE: &[u8] =
         include_bytes!("../../../core/tests/data/golden_vault_002/identity.bundle.enc");
-    const VAULT_002_TOML: &[u8] =
-        include_bytes!("../../../core/tests/data/golden_vault_002/vault.toml");
 
     /// Pinned 24-word BIP-39 recovery phrase for golden_vault_001.
     /// Source of truth: `core/tests/data/golden_vault_001_inputs.json`'s
@@ -117,7 +122,10 @@ mod tests {
     const VAULT_001_PHRASE: &[u8] = b"wall annual clay zebra cost cricket choose light small neck mimic season fix situate love asset dismiss online island disease turkey grab dish that";
 
     /// Pinned 24-word BIP-39 recovery phrase for golden_vault_002.
-    /// Source of truth: `core/tests/data/golden_vault_002_inputs.json`.
+    /// Source of truth: `core/tests/data/golden_vault_002_inputs.json`'s
+    /// `recovery_mnemonic_phrase` field. Same drift-detection invariant
+    /// as `VAULT_001_PHRASE` — the fixture builder asserts the JSON pin
+    /// matches `bip39::Mnemonic::from_entropy(pinned_entropy).to_string()`.
     const VAULT_002_PHRASE: &[u8] = b"debate pride tunnel elder caution media glass joke that rabbit mean write eager across furnace volume lawn cage decline fat path guess slogan hunt";
 
     const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
