@@ -347,6 +347,7 @@ do {
         createdAtMs: 1_700_000_000_000
     )
     defer { out.identity.wipe() }
+    defer { out.mnemonic.wipe() }
     if let phrase = out.mnemonic.takePhrase() {
         let reopened = try openWithRecovery(
             vaultTomlBytes: out.vaultTomlBytes,
@@ -361,7 +362,6 @@ do {
     } else {
         check(false, "take_phrase returned nil on first call")
     }
-    out.mnemonic.wipe()
 } catch {
     check(false, "round-trip with recovery threw \(error), expected to succeed")
 }
