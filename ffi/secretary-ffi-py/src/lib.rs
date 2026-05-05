@@ -72,6 +72,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyBytes, PyType};
 use secretary_ffi_bridge::FfiUnlockError;
+use zeroize::Zeroize;
 
 create_exception!(secretary_ffi_py, WrongPasswordOrCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultMismatch, PyException);
@@ -150,7 +151,6 @@ fn open_with_password(
     identity_bundle_bytes: &[u8],
     mut password: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    use zeroize::Zeroize;
     // The bridge crate copies into SecretBytes (which zeroizes on drop).
     // This Vec is a transient cleartext residue on the wrapper's heap;
     // zero it explicitly so we don't leave the password lingering after
@@ -175,7 +175,6 @@ fn open_with_recovery(
     identity_bundle_bytes: &[u8],
     mut mnemonic: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    use zeroize::Zeroize;
     // Mirrors the open_with_password wrapper-side zeroize discipline:
     // the bridge takes &[u8] and never retains; this Vec is the wrapper's
     // owned copy of the foreign caller's bytes-like input. Zero it after
