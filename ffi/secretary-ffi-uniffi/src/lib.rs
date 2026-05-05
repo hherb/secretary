@@ -94,9 +94,13 @@ pub enum UnlockError {
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
-    /// Vault is corrupt or unreadable. The `detail` field carries a
-    /// diagnostic string from the inner core error.
-    #[error("vault is corrupt or unreadable: {detail}")]
+    /// Vault data integrity failure — covers BOTH directions: open-path
+    /// failure (vault file is malformed / unreadable) AND create-path
+    /// failure (couldn't even produce the vault bytes; rare, e.g. Argon2id
+    /// system-OOM or CBOR serialization failure of the in-memory bundle).
+    /// Carries a diagnostic `detail` string for debugging; not
+    /// pattern-matchable on the inner cause.
+    #[error("vault data integrity failure: {detail}")]
     CorruptVault {
         /// Diagnostic text from the inner `core::UnlockError` variant's
         /// `Display` impl. Free-form; not part of the API contract.
@@ -289,5 +293,27 @@ mod tests {
             panic!("expected InvalidMnemonic");
         };
         assert_eq!(detail, "expected 24 words, got 3");
+    }
+
+    #[test]
+    fn corrupt_vault_display_uses_path_neutral_text() {
+        // Mirror of the bridge crate's tripwire (see ffi/secretary-ffi-bridge/
+        // src/error.rs). The uniffi-side UnlockError carries its own Display
+        // attributes (because uniffi codegen uses this enum to produce the
+        // Swift / Kotlin error messages); this test pins the path-neutral
+        // wording so a future revert here is a deliberate decision.
+        let err = UnlockError::CorruptVault {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("vault data integrity failure"),
+            "Display did not contain the path-neutral text: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+        assert!(
+            !rendered.contains("corrupt or unreadable"),
+            "Display still contains the old read-path-only text: {rendered}",
+        );
     }
 }
