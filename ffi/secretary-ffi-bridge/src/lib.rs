@@ -9,15 +9,25 @@
 //!
 //! # Surface
 //!
-//! - [`FfiUnlockError`] — thinned 3-variant error type expressing
+//! - [`FfiUnlockError`] — thinned 5-variant error type expressing
 //!   user-actionable intent rather than mirroring `core::UnlockError`'s
-//!   internal enum structure. See [`error`] module docs.
+//!   internal enum structure. Two variants per unlock path
+//!   (`WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`) plus a
+//!   pre-decryption `InvalidMnemonic { detail }` for BIP-39 validation
+//!   failures, plus the cross-path `VaultMismatch` and `CorruptVault { detail }`.
+//!   See [`error`] module docs.
 //! - [`UnlockedIdentity`] — opaque handle wrapping a successfully-unlocked
 //!   `core::UnlockedIdentity`. Foreign callers hold a refcount and read
 //!   non-secret fields via accessor methods; the secret keys stay Rust-
-//!   side and zeroize on drop. See [`identity`] module docs.
+//!   side and zeroize on drop. Both unlock entry points return this same
+//!   shape (the §3/§4 dual-KEK design produces byte-identical secret state).
+//!   See [`identity`] module docs.
 //! - [`open_with_password`] — fallible, secret-bearing operation: vault
 //!   unlock by master password. See [`unlock`] module docs.
+//! - [`open_with_recovery`] — fallible, secret-bearing operation: vault
+//!   unlock by 24-word BIP-39 recovery phrase. Mnemonic input is UTF-8
+//!   bytes (`&[u8]`), parallel to the password input shape. See [`unlock`]
+//!   module docs.
 //!
 //! # Invariants
 //!
@@ -35,6 +45,6 @@ pub mod error;
 pub mod identity;
 pub mod unlock;
 
-pub use error::FfiUnlockError; // uncommented in Task 4
-pub use identity::UnlockedIdentity; // uncommented in Task 5
-pub use unlock::open_with_password; // uncommented in Task 6
+pub use error::FfiUnlockError;
+pub use identity::UnlockedIdentity;
+pub use unlock::{open_with_password, open_with_recovery};
