@@ -95,30 +95,53 @@ fun main() {
     }
     val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
 
-    // B.3a: read recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
+    // B.3a: extract recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
     //
-    // We deliberately avoid pulling in a JSON library here (org.json is
-    // not in the JVM stdlib; adding a Maven dep would mean touching
-    // run.sh's classpath + checksum logic — out of scope for this task).
-    // The value we want is a BIP-39 24-word mnemonic: lowercase ASCII
-    // letters + single spaces, no JSON-escapable characters, so a
-    // single-line regex against `"recovery_mnemonic_phrase": "..."`
-    // is unambiguous on these fixture files. If the inputs JSON ever
-    // grows escapes inside this field, switch to a real JSON parser.
-    val phraseRegex = Regex("\"recovery_mnemonic_phrase\"\\s*:\\s*\"([^\"\\\\]+)\"")
+    // DO NOT USE THIS PARSER FOR ANY OTHER JSON. It is a purpose-built
+    // single-field reader for one specific field in one specific
+    // project-controlled fixture file. It does NOT handle JSON escapes
+    // (\", \\, \n, \uXXXX); the value's shape is constrained by BIP-39
+    // to lowercase ASCII letters + single spaces, so escapes cannot occur.
+    //
+    // No JSON library is pulled in because:
+    //   1. org.json (the only JSON parser bundled with Android, sometimes
+    //      mistakenly assumed to be in OpenJDK) ships under the "JSON
+    //      License" with the "Good not Evil" field-of-use restriction —
+    //      INCOMPATIBLE with this project's AGPL-3.0-or-later licensing.
+    //   2. Apache-2.0-licensed alternatives (Gson, Jackson, kotlinx
+    //      .serialization) would each add a network-fetched + SHA-256-
+    //      verified dep to run.sh — disproportionate infrastructure for
+    //      reading one string field from one project-controlled file.
+    //
+    // Threat model: malformed JSON cannot compromise security here.
+    // The fixture is project-controlled; the smoke runner is developer-
+    // only (never shipped); the value flows only into BIP-39 validation
+    // (wordlist + checksum) and AEAD decryption — both reject any
+    // garbage input loudly. core/tests/common/fixture_builder.rs
+    // additionally cross-checks `bip39::Mnemonic::from_entropy(entropy)
+    // .to_string() == phrase` at fixture-build time, so phrase tampering
+    // in the JSON cannot land silently.
     fun phraseFromInputs(name: String): ByteArray {
         val inputsPath = java.nio.file.Paths.get(vaultDir, name)
-        return try {
-            val text = java.nio.file.Files.readString(inputsPath)
-            val match = phraseRegex.find(text) ?: run {
-                System.err.println("error: recovery_mnemonic_phrase missing in $inputsPath")
-                exitProcess(1)
-            }
-            match.groupValues[1].toByteArray(Charsets.UTF_8)
+        val text = try {
+            java.nio.file.Files.readString(inputsPath)
         } catch (e: Throwable) {
             System.err.println("error: failed to read $inputsPath: $e")
             exitProcess(1)
         }
+        // Find `"recovery_mnemonic_phrase"`, then the next two `"`
+        // characters mark the value's quoted-string boundaries.
+        val keyMarker = "\"recovery_mnemonic_phrase\""
+        val keyAt = text.indexOf(keyMarker)
+        val openQuote = if (keyAt >= 0) text.indexOf('"', keyAt + keyMarker.length + 1) else -1
+        val closeQuote = if (openQuote >= 0) text.indexOf('"', openQuote + 1) else -1
+        if (closeQuote < 0) {
+            System.err.println(
+                "error: recovery_mnemonic_phrase missing or malformed in $inputsPath",
+            )
+            exitProcess(1)
+        }
+        return text.substring(openQuote + 1, closeQuote).toByteArray(Charsets.UTF_8)
     }
 
     val phrase001 = phraseFromInputs("golden_vault_001_inputs.json")
