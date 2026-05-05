@@ -18,6 +18,14 @@
 //! be challenged in code review.
 //!
 //! Rationale: secretary_next_session.md "Begin Sub-project B.1.1".
+//!
+//! B.3a (this version) adds the `open_with_recovery` namespace function
+//! and 2 new `UnlockError` variants (`WrongMnemonicOrCorrupt`,
+//! `InvalidMnemonic { detail }`). Mnemonic input is UTF-8 bytes; the
+//! bridge's UTF-8 validation seam surfaces malformed input as
+//! `InvalidMnemonic`.
+//!
+//! Rationale (B.3a): docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md
 
 #![allow(unsafe_code)]
 
@@ -53,6 +61,7 @@ pub fn add(a: u32, b: u32) -> u32 {
 // ---------------------------------------------------------------------------
 
 use secretary_ffi_bridge::FfiUnlockError;
+use zeroize::Zeroize;
 
 /// uniffi-side error type. uniffi auto-marshals this to Swift `enum
 /// UnlockError: Error` and Kotlin `sealed class UnlockError`. Mirrors
@@ -67,9 +76,21 @@ use secretary_ffi_bridge::FfiUnlockError;
 #[derive(Debug, thiserror::Error)]
 pub enum UnlockError {
     /// Wrong password OR vault corruption — deliberately conflated per
-    /// `docs/threat-model.md` §13.
+    /// `docs/threat-model.md` §13. Returned by `open_with_password`.
     #[error("wrong password or vault corruption")]
     WrongPasswordOrCorrupt,
+    /// Wrong recovery phrase OR vault corruption — parallel to the password
+    /// path. Returned by `open_with_recovery`.
+    #[error("wrong recovery phrase or vault corruption")]
+    WrongMnemonicOrCorrupt,
+    /// Invalid recovery phrase — pre-decryption BIP-39 validation failure
+    /// (wrong word count, unknown word, bad checksum, or invalid UTF-8).
+    /// NOT a security oracle.
+    #[error("invalid recovery phrase: {detail}")]
+    InvalidMnemonic {
+        /// Diagnostic text; free-form.
+        detail: String,
+    },
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
@@ -87,8 +108,10 @@ impl From<FfiUnlockError> for UnlockError {
     fn from(e: FfiUnlockError) -> Self {
         match e {
             FfiUnlockError::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
+            FfiUnlockError::WrongMnemonicOrCorrupt => Self::WrongMnemonicOrCorrupt,
+            FfiUnlockError::InvalidMnemonic { detail } => Self::InvalidMnemonic { detail },
             FfiUnlockError::VaultMismatch => Self::VaultMismatch,
-            FfiUnlockError::CorruptVault { message } => Self::CorruptVault { detail: message },
+            FfiUnlockError::CorruptVault { detail } => Self::CorruptVault { detail },
         }
     }
 }
@@ -127,7 +150,7 @@ impl UnlockedIdentity {
 ///
 /// Returns [`UnlockError`] on failure. See the bridge crate's
 /// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
-/// thinned 3-variant rationale.
+/// thinned 5-variant rationale.
 ///
 /// # Why `Arc<UnlockedIdentity>`?
 ///
@@ -141,7 +164,6 @@ pub fn open_with_password(
     identity_bundle_bytes: Vec<u8>,
     mut password: Vec<u8>,
 ) -> Result<std::sync::Arc<UnlockedIdentity>, UnlockError> {
-    use zeroize::Zeroize;
     // Mirrors the secretary-ffi-py wrapper's stack-residue discipline:
     // zero the password Vec after the bridge returns. The bridge already
     // zeroizes its SecretBytes copy; this wipes the projection-side
@@ -154,6 +176,37 @@ pub fn open_with_password(
     .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
     .map_err(UnlockError::from);
     password.zeroize();
+    result
+}
+
+/// Unlock a vault using its 24-word BIP-39 recovery phrase. uniffi-projected.
+///
+/// Mnemonic input is UTF-8-encoded bytes (`Vec<u8>`); the bridge's UTF-8
+/// validation seam surfaces malformed-UTF-8 input as
+/// [`UnlockError::InvalidMnemonic`] with `detail: "phrase contained
+/// invalid UTF-8"`.
+///
+/// # Errors
+///
+/// Returns [`UnlockError`] on failure. See the bridge crate's
+/// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
+/// thinned 5-variant rationale.
+pub fn open_with_recovery(
+    vault_toml_bytes: Vec<u8>,
+    identity_bundle_bytes: Vec<u8>,
+    mut mnemonic: Vec<u8>,
+) -> Result<std::sync::Arc<UnlockedIdentity>, UnlockError> {
+    // Mirrors the open_with_password wrapper-side stack-residue discipline:
+    // zero the mnemonic Vec after the bridge returns. The bridge takes &[u8]
+    // and never retains; this Vec is the projection-side transient.
+    let result = secretary_ffi_bridge::open_with_recovery(
+        &vault_toml_bytes,
+        &identity_bundle_bytes,
+        &mnemonic,
+    )
+    .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
+    .map_err(UnlockError::from);
+    mnemonic.zeroize();
     result
 }
 
@@ -204,17 +257,37 @@ mod tests {
     }
 
     #[test]
-    fn from_bridge_corrupt_vault_preserves_message() {
-        // Bridge calls the field `message`; uniffi-side calls it `detail`
-        // (Kotlin codegen would otherwise collide with `Throwable.message`).
-        // The translation must preserve the diagnostic text verbatim.
+    fn from_bridge_corrupt_vault_preserves_detail() {
+        // B.3a renamed the bridge's CorruptVault field from `message` to
+        // `detail` for naming uniformity with InvalidMnemonic { detail }.
+        // Both layers now use `detail`; the From translation is a struct-
+        // shorthand pass-through.
         let bridge_err = FfiUnlockError::CorruptVault {
-            message: "fnord".to_string(),
+            detail: "fnord".to_string(),
         };
         let uniffi_err: UnlockError = bridge_err.into();
         let UnlockError::CorruptVault { detail } = uniffi_err else {
             panic!("expected CorruptVault");
         };
         assert_eq!(detail, "fnord");
+    }
+
+    #[test]
+    fn from_bridge_wrong_mnemonic_or_corrupt_maps_one_to_one() {
+        let bridge_err = FfiUnlockError::WrongMnemonicOrCorrupt;
+        let uniffi_err: UnlockError = bridge_err.into();
+        assert!(matches!(uniffi_err, UnlockError::WrongMnemonicOrCorrupt));
+    }
+
+    #[test]
+    fn from_bridge_invalid_mnemonic_preserves_detail() {
+        let bridge_err = FfiUnlockError::InvalidMnemonic {
+            detail: "expected 24 words, got 3".to_string(),
+        };
+        let uniffi_err: UnlockError = bridge_err.into();
+        let UnlockError::InvalidMnemonic { detail } = uniffi_err else {
+            panic!("expected InvalidMnemonic");
+        };
+        assert_eq!(detail, "expected 24 words, got 3");
     }
 }

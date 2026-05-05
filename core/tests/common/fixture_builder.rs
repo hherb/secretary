@@ -58,11 +58,19 @@ pub struct Inputs {
     pub last_mod_ms: u64,
     pub password: String,
     pub kdf_params: InputsKdfParams,
+    pub rng_seed_for_aead_nonces: String,
+    /// 24-word BIP-39 recovery phrase, lowercase, space-separated.
+    /// Derived deterministically from the pinned `recovery_entropy` (also in
+    /// this struct via the seeded ChaCha20 RNG draws). Pinned as a string so
+    /// FFI smoke runners can read it directly without re-implementing BIP-39
+    /// encoding. The fixture builder asserts at build time that the pinned
+    /// string matches `bip39::Mnemonic::from_entropy(recovery_entropy).to_string()`,
+    /// so JSON drift cannot land silently.
+    pub recovery_mnemonic_phrase: String,
     pub owner: InputsIdentity,
     pub alice: InputsIdentity,
     pub bob: InputsIdentity,
     pub block_plaintext: InputsBlockPlaintext,
-    pub rng_seed_for_aead_nonces: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -393,6 +401,19 @@ pub fn build_identity_envelope(
     // vector). Future work could pin the mnemonic words too.
     let mut recovery_entropy = [0u8; 32];
     rng.fill_bytes(&mut recovery_entropy);
+    // SECURITY: pin the JSON `recovery_mnemonic_phrase` field to the
+    // bip39-derived value of the seeded entropy. If either side ever
+    // drifts (RNG seed change, JSON typo, bip39 wordlist update), this
+    // assertion fires loudly at fixture-build time. The pinned phrase
+    // is the source of truth for FFI smoke runners that don't link
+    // against bip39; the assertion proves the JSON cannot lie.
+    let derived_phrase = bip39::Mnemonic::from_entropy(&recovery_entropy)
+        .expect("32 bytes is a valid BIP-39 entropy length")
+        .to_string();
+    assert_eq!(
+        derived_phrase, inputs.recovery_mnemonic_phrase,
+        "pinned recovery_mnemonic_phrase drifted from RNG-derived entropy",
+    );
     let recovery_entropy_wrapped = Sensitive::new(recovery_entropy);
     let recovery_kek = derive_recovery_kek(&recovery_entropy_wrapped);
 

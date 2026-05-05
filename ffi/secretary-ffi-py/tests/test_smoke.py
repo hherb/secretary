@@ -6,6 +6,7 @@ machinery. They prove the binding pipeline (PyO3 + maturin + uv venv +
 import) works end-to-end.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,21 @@ def _golden_vault_dir(n: int) -> Path:
 
 def _read_fixture(n: int, name: str) -> bytes:
     return (_golden_vault_dir(n) / name).read_bytes()
+
+
+def _golden_vault_phrase(n: int) -> bytes:
+    """Read the pinned `recovery_mnemonic_phrase` field from
+    `core/tests/data/golden_vault_{n:03d}_inputs.json` and return it as
+    UTF-8 bytes ready for `open_with_recovery`. The fixture builder
+    asserts the JSON pin matches `bip39::Mnemonic::from_entropy(...)
+    .to_string()`, so this stays honest as long as the JSON does."""
+    inputs_path = (
+        Path(__file__).resolve().parents[3]
+        / "core" / "tests" / "data" / f"golden_vault_{n:03d}_inputs.json"
+    )
+    with inputs_path.open() as fh:
+        data = json.load(fh)
+    return data["recovery_mnemonic_phrase"].encode("utf-8")
 
 
 # Pinned KAT values — must match secretary-ffi-bridge's tests and the
@@ -130,3 +146,75 @@ def test_open_with_password_accepts_bytearray_for_caller_zeroize_discipline() ->
     for i in range(len(pw)):
         pw[i] = 0
     assert all(b == 0 for b in pw)
+
+
+# ---------------------------------------------------------------------------
+# B.3a: open_with_recovery tests against golden_vault_001 + golden_vault_002.
+# ---------------------------------------------------------------------------
+
+
+def test_open_with_recovery_success_returns_pinned_identity() -> None:
+    toml = _read_fixture(1, "vault.toml")
+    bundle = _read_fixture(1, "identity.bundle.enc")
+    phrase = _golden_vault_phrase(1)
+    with secretary_ffi_py.open_with_recovery(toml, bundle, phrase) as identity:
+        # Same KAT as the open_with_password success path — both unlock
+        # paths converge on byte-identical secret state per §3/§4 dual-
+        # KEK design.
+        assert identity.display_name() == VAULT_001_OWNER_DISPLAY_NAME
+        assert identity.user_uuid() == VAULT_001_OWNER_USER_UUID
+
+
+def test_open_with_recovery_wrong_mnemonic_raises_wrong_mnemonic_or_corrupt() -> None:
+    # vault_002's phrase against vault_001's vault — valid 24-word phrase
+    # but wrong vault, so AEAD-decrypt under recovery_kek tag-fails →
+    # WrongMnemonicOrCorrupt (anti-oracle preserving).
+    toml = _read_fixture(1, "vault.toml")
+    bundle = _read_fixture(1, "identity.bundle.enc")
+    wrong_phrase = _golden_vault_phrase(2)
+    with pytest.raises(secretary_ffi_py.WrongMnemonicOrCorrupt):
+        secretary_ffi_py.open_with_recovery(toml, bundle, wrong_phrase)
+
+
+def test_open_with_recovery_wrong_length_raises_invalid_mnemonic() -> None:
+    toml = _read_fixture(1, "vault.toml")
+    bundle = _read_fixture(1, "identity.bundle.enc")
+    with pytest.raises(secretary_ffi_py.InvalidMnemonic) as exc_info:
+        secretary_ffi_py.open_with_recovery(toml, bundle, b"only three words")
+    assert "got 3" in str(exc_info.value)
+
+
+def test_open_with_recovery_invalid_utf8_raises_invalid_mnemonic() -> None:
+    # 0xFF is not valid UTF-8 in any byte position; the bridge's UTF-8
+    # validation seam catches this before the BIP-39 wordlist lookup.
+    toml = _read_fixture(1, "vault.toml")
+    bundle = _read_fixture(1, "identity.bundle.enc")
+    with pytest.raises(secretary_ffi_py.InvalidMnemonic) as exc_info:
+        secretary_ffi_py.open_with_recovery(toml, bundle, bytes([0xFF] * 32))
+    assert "UTF-8" in str(exc_info.value)
+
+
+def test_open_with_recovery_swapped_files_raises_vault_mismatch() -> None:
+    # vault_001 toml + vault_002 bundle + vault_001 phrase. The vault_uuid
+    # comparison fires BEFORE mnemonic parsing, so even an "invalid" phrase
+    # would still produce VaultMismatch on this input pair.
+    toml_001 = _read_fixture(1, "vault.toml")
+    bundle_002 = _read_fixture(2, "identity.bundle.enc")
+    phrase_001 = _golden_vault_phrase(1)
+    with pytest.raises(secretary_ffi_py.VaultMismatch):
+        secretary_ffi_py.open_with_recovery(toml_001, bundle_002, phrase_001)
+
+
+def test_open_with_recovery_accepts_bytearray_for_caller_zeroize_discipline() -> None:
+    """Documents the design: mnemonic accepted as bytes-like; disciplined
+    callers can zero a mutable bytearray after the call (parallel to the
+    password-input pattern from B.2)."""
+    toml = _read_fixture(1, "vault.toml")
+    bundle = _read_fixture(1, "identity.bundle.enc")
+    phrase = bytearray(_golden_vault_phrase(1))
+    with secretary_ffi_py.open_with_recovery(toml, bundle, phrase) as identity:
+        assert identity.display_name() == VAULT_001_OWNER_DISPLAY_NAME
+    # Caller's zeroize discipline (recommended for first-party clients):
+    for i in range(len(phrase)):
+        phrase[i] = 0
+    assert all(b == 0 for b in phrase)

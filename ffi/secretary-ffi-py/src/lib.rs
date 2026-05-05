@@ -19,7 +19,15 @@
 //! `UnlockedIdentity` opaque handle, projecting `secretary-ffi-bridge`'s
 //! FFI-friendly facade through PyO3.
 //!
+//! B.3a adds the `open_with_recovery` entry-point and 2 new exception
+//! classes (`WrongMnemonicOrCorrupt`, `InvalidMnemonic`). Mnemonic
+//! input is `bytes`/`bytearray` (UTF-8 encoded); the bridge's UTF-8-
+//! validation seam surfaces malformed-UTF-8 input as `InvalidMnemonic`
+//! with `detail: "phrase contained invalid UTF-8"`.
+//!
 //! Rationale (B.2): docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md
+//!
+//! Rationale (B.3a): docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md
 //!
 //! Rationale: docs/superpowers/specs/2026-05-03-ffi-b1-py-bindings-boilerplate-design.md
 
@@ -64,10 +72,13 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyBytes, PyType};
 use secretary_ffi_bridge::FfiUnlockError;
+use zeroize::Zeroize;
 
 create_exception!(secretary_ffi_py, WrongPasswordOrCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultMismatch, PyException);
 create_exception!(secretary_ffi_py, CorruptVault, PyException);
+create_exception!(secretary_ffi_py, WrongMnemonicOrCorrupt, PyException);
+create_exception!(secretary_ffi_py, InvalidMnemonic, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -78,8 +89,10 @@ create_exception!(secretary_ffi_py, CorruptVault, PyException);
 fn ffi_unlock_error_to_pyerr(e: FfiUnlockError) -> PyErr {
     match e {
         FfiUnlockError::WrongPasswordOrCorrupt => WrongPasswordOrCorrupt::new_err(e.to_string()),
+        FfiUnlockError::WrongMnemonicOrCorrupt => WrongMnemonicOrCorrupt::new_err(e.to_string()),
+        FfiUnlockError::InvalidMnemonic { detail } => InvalidMnemonic::new_err(detail),
         FfiUnlockError::VaultMismatch => VaultMismatch::new_err(e.to_string()),
-        FfiUnlockError::CorruptVault { message } => CorruptVault::new_err(message),
+        FfiUnlockError::CorruptVault { detail } => CorruptVault::new_err(detail),
     }
 }
 
@@ -138,7 +151,6 @@ fn open_with_password(
     identity_bundle_bytes: &[u8],
     mut password: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    use zeroize::Zeroize;
     // The bridge crate copies into SecretBytes (which zeroizes on drop).
     // This Vec is a transient cleartext residue on the wrapper's heap;
     // zero it explicitly so we don't leave the password lingering after
@@ -152,6 +164,30 @@ fn open_with_password(
     .map(UnlockedIdentity)
     .map_err(ffi_unlock_error_to_pyerr);
     password.zeroize();
+    result
+}
+
+/// Unlock a vault using its 24-word BIP-39 recovery phrase. See
+/// module-level docs for the exception classes raised on failure.
+#[pyfunction]
+fn open_with_recovery(
+    vault_toml_bytes: &[u8],
+    identity_bundle_bytes: &[u8],
+    mut mnemonic: Vec<u8>,
+) -> PyResult<UnlockedIdentity> {
+    // Mirrors the open_with_password wrapper-side zeroize discipline:
+    // the bridge takes &[u8] and never retains; this Vec is the wrapper's
+    // owned copy of the foreign caller's bytes-like input. Zero it after
+    // the bridge returns so the password-equivalent doesn't linger on
+    // the wrapper heap.
+    let result = secretary_ffi_bridge::open_with_recovery(
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        &mnemonic,
+    )
+    .map(UnlockedIdentity)
+    .map_err(ffi_unlock_error_to_pyerr);
+    mnemonic.zeroize();
     result
 }
 
@@ -173,6 +209,14 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("VaultMismatch", py.get_type::<VaultMismatch>())?;
     m.add("CorruptVault", py.get_type::<CorruptVault>())?;
+
+    // B.3a surface:
+    m.add_function(wrap_pyfunction!(open_with_recovery, m)?)?;
+    m.add(
+        "WrongMnemonicOrCorrupt",
+        py.get_type::<WrongMnemonicOrCorrupt>(),
+    )?;
+    m.add("InvalidMnemonic", py.get_type::<InvalidMnemonic>())?;
 
     Ok(())
 }

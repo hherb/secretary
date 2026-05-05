@@ -183,6 +183,10 @@ The §13 anti-oracle conflation property (AEAD tag failure ≡ wrong key OR corr
 
 The `MnemonicError` sub-enum (`WrongLength`/`UnknownWord`/`BadChecksum`) is flattened into a single `detail: String` field carrying the Display text — the FFI surface stays decoupled from any future BIP-39 sub-variant additions.
 
+**Timing-side-channel note (variant 3 vs variant 2):** an `InvalidMnemonic` reply returns immediately after the BIP-39 parse step, while a `WrongMnemonicOrCorrupt` reply pays the full Argon2id + AEAD-decrypt cost first. The wall-clock difference therefore reveals only the **shape** of the input phrase (well-formed BIP-39 vs not), which the attacker already controls — they submitted it. It does not reveal anything about the credential-vs-corruption distinction the §13 conflation is designed to hide. The two anti-oracle variants (1 and 2) remain time-indistinguishable from each other and from `CorruptVault` arising from post-AEAD decode failures, which is the property §13 actually requires.
+
+**Display-string coupling note (test fragility):** the bridge / pytest / Swift / Kotlin tests assert substrings like `"got 3"`, `"checksum"`, and `"xyzzy"` against the `detail` field. Those substrings come from the upstream `bip39` crate's `MnemonicError::Display` impl. If `bip39` ever rewords its messages (e.g. "got N" → "received N words"), all such assertions fail in lockstep across the four sites. That is a loud, easy-to-fix regression rather than a silent coupling, but the spec records it explicitly so a future bip39 upgrade lands deliberately. The flatten-to-string design is still the right v1 trade — the alternative (mirror the `MnemonicError` sub-enum across the FFI) couples the foreign API to BIP-39's variant set, which is a worse coupling than to its Display strings.
+
 ### Lifecycle / handle drop
 
 Identical to B.2 — `open_with_recovery` returns the same `UnlockedIdentity` opaque handle, with the same drop chain:

@@ -19,6 +19,8 @@
 
   "rng_seed_for_aead_nonces": "0303030303030303030303030303030303030303030303030303030303030303",
 
+  "recovery_mnemonic_phrase": "debate pride tunnel elder caution media glass joke that rabbit mean write eager across furnace volume lawn cage decline fat path guess slogan hunt",
+
   "owner": {
     "_doc": "Generated via cargo test -- --ignored generate_golden_inputs_002 (seed [0xB0; 32]).",
     "user_uuid": "96d8b02665f1d6dfa3489869b015abd4",

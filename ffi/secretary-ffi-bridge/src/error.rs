@@ -1,4 +1,4 @@
-//! Thinned 3-variant FFI-friendly error type.
+//! Thinned 5-variant FFI-friendly error type.
 //!
 //! `core::unlock::UnlockError` has 7 variants reachable from
 //! `open_with_password`, three of which wrap inner enums with their own
@@ -8,42 +8,77 @@
 //! inners to strings (anti-pattern; foreign callers parse strings to
 //! understand failure causes).
 //!
-//! [`FfiUnlockError`] thins to 3 variants expressing **user-actionable
-//! intent**:
+//! [`FfiUnlockError`] thins to 5 variants expressing **user-actionable
+//! intent** rather than mirroring the core enum's structural shape:
 //!
 //! - [`FfiUnlockError::WrongPasswordOrCorrupt`] — "your password is wrong,
-//!   try again". **Deliberately conflates wrong-password and corruption**
-//!   per `docs/threat-model.md` §13's anti-oracle property; this MUST NOT
-//!   be split into separate variants on the foreign side.
+//!   try again". Returned by `open_with_password`. **Deliberately conflates
+//!   wrong-password and corruption** per `docs/threat-model.md` §13's
+//!   anti-oracle property; this MUST NOT be split into separate variants.
+//! - [`FfiUnlockError::WrongMnemonicOrCorrupt`] — parallel to the above for
+//!   the `open_with_recovery` path. Same anti-oracle conflation under
+//!   `recovery_kek`.
+//! - [`FfiUnlockError::InvalidMnemonic`] — pre-decryption: the input does
+//!   not validate as a 24-word BIP-39 phrase (wrong word count, unknown
+//!   word, bad checksum, or invalid UTF-8). NOT a security oracle.
 //! - [`FfiUnlockError::VaultMismatch`] — "vault.toml and identity.bundle.enc
 //!   reference different vaults; re-pair from backups".
 //! - [`FfiUnlockError::CorruptVault`] — collapses
-//!   `{core::CorruptVault, all MalformedX, KdfFailure}`. Carries a
-//!   diagnostic `message: String` for debugging; structured pattern-
-//!   matching on the inner cause is intentionally not supported.
+//!   `{core::CorruptVault, all MalformedX, KdfFailure, WeakKdfParams}`.
+//!   Carries a diagnostic `detail: String` for debugging; structured
+//!   pattern-matching on the inner cause is intentionally not supported.
 
 use thiserror::Error;
 
-/// FFI-friendly thinned error type for `open_with_password`. See [module
-/// docs](self) for the rationale.
+/// FFI-friendly thinned error type for the unlock entry points
+/// (`open_with_password` and `open_with_recovery`). See [module docs](self)
+/// for the rationale.
 #[derive(Debug, Error)]
 pub enum FfiUnlockError {
     /// Wrong password OR vault corruption — deliberately conflated per
-    /// `docs/threat-model.md` §13.
+    /// `docs/threat-model.md` §13. Returned by `open_with_password`.
     #[error("wrong password or vault corruption")]
     WrongPasswordOrCorrupt,
+
+    /// Wrong recovery phrase OR vault corruption — parallel to
+    /// `WrongPasswordOrCorrupt` for the recovery path. Same anti-oracle
+    /// conflation: AEAD tag failure under `recovery_kek` is
+    /// indistinguishable from corruption to the cryptography. Returned by
+    /// `open_with_recovery`.
+    #[error("wrong recovery phrase or vault corruption")]
+    WrongMnemonicOrCorrupt,
+
+    /// Invalid recovery phrase — pre-decryption validation failure
+    /// (wrong word count, unknown word, bad checksum, or invalid UTF-8).
+    /// Carries a free-form `detail` string for UI rendering. NOT a
+    /// security oracle: BIP-39 wordlist + checksum validation runs on
+    /// the input *before* any vault byte is touched, so the failure
+    /// mode is "fix the typo and retry" rather than "vault is gone".
+    #[error("invalid recovery phrase: {detail}")]
+    InvalidMnemonic {
+        /// Diagnostic text from the inner `MnemonicError` variant's
+        /// `Display` impl, or `"phrase contained invalid UTF-8"` when
+        /// the FFI input slice is not valid UTF-8.
+        detail: String,
+    },
 
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
 
-    /// Vault is corrupt or unreadable. Carries a diagnostic message for
-    /// debugging; not pattern-matchable on the inner cause.
-    #[error("vault is corrupt or unreadable: {message}")]
+    /// Vault is corrupt or unreadable. Carries a diagnostic `detail` string
+    /// for debugging; not pattern-matchable on the inner cause.
+    #[error("vault is corrupt or unreadable: {detail}")]
     CorruptVault {
         /// Diagnostic text from the inner `core::UnlockError` variant's
         /// `Display` impl. Free-form; not part of the API contract.
-        message: String,
+        ///
+        /// Renamed from `message` to `detail` in B.3a for naming
+        /// uniformity with `InvalidMnemonic { detail }`. The uniffi
+        /// projection layer was already using `detail` in B.2 to
+        /// avoid a Kotlin `Throwable.message` collision; B.3a propagates
+        /// the rename back to the bridge so all layers agree.
+        detail: String,
     },
 }
 
@@ -52,13 +87,17 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
         use secretary_core::unlock::UnlockError as E;
 
         // Explicit match arms (no wildcard) so future core variants force a
-        // compile error here. The defensive arms at the bottom map currently-
-        // unreachable variants for forward-compat: if a future change to
-        // `open_with_password` makes them reachable, they land on a chosen
-        // FFI variant rather than panicking. The choice is per-arm — see the
-        // SECURITY comment block below for the per-variant rationale.
+        // compile error here. Each arm is chosen to preserve the §13
+        // anti-oracle property where applicable: WrongPasswordOrCorrupt and
+        // WrongMnemonicOrCorrupt each conflate "wrong key OR corrupt"
+        // independently for their respective unlock path; InvalidMnemonic is
+        // pre-decryption and is NOT an oracle.
         match e {
             E::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
+            E::WrongMnemonicOrCorrupt => Self::WrongMnemonicOrCorrupt,
+            E::InvalidMnemonic(inner) => Self::InvalidMnemonic {
+                detail: inner.to_string(),
+            },
             E::VaultMismatch => Self::VaultMismatch,
 
             E::CorruptVault
@@ -66,35 +105,20 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             | E::MalformedBundleFile(_)
             | E::MalformedBundle(_)
             | E::KdfFailure(_) => Self::CorruptVault {
-                message: e.to_string(),
+                detail: e.to_string(),
             },
 
-            // SECURITY: defensive forward-compat for variants currently
-            // unreachable from `open_with_password` (they require
-            // `open_with_recovery` / `create_vault`). Each arm is chosen
-            // to preserve the anti-oracle property by default if a future
-            // core change makes the variant reachable here:
-            //
-            // - `WrongMnemonicOrCorrupt` is the recovery-path's conflated
-            //   form (wrong mnemonic OR corrupt) — semantically equivalent
-            //   to `WrongPasswordOrCorrupt`. Folding it to `CorruptVault`
-            //   would split the conflation on the foreign side and leak
-            //   "the credential is wrong vs. the vault is corrupt", which
-            //   violates `docs/threat-model.md` §13. Route to
-            //   `WrongPasswordOrCorrupt` so the conflation survives.
-            //
-            // - `InvalidMnemonic` describes a non-credential parse failure
-            //   (the mnemonic doesn't decode as BIP-39). Not an oracle
-            //   surface; `CorruptVault` is correct.
-            //
-            // - `WeakKdfParams` describes vault-config divergence from the
-            //   §3 floor. Not an oracle surface; `CorruptVault` is correct.
-            //
-            // If reachability changes for any of these, re-validate the
-            // mapping against the threat model — don't silently inherit it.
-            E::WrongMnemonicOrCorrupt => Self::WrongPasswordOrCorrupt,
-            E::InvalidMnemonic(_) | E::WeakKdfParams { .. } => Self::CorruptVault {
-                message: e.to_string(),
+            // SECURITY: defensive forward-compat for the only currently-
+            // unreachable variant. `WeakKdfParams` is returned by `create_vault`
+            // (which enforces the §1.2 v1 floor at write time); neither
+            // `open_with_password` nor `open_with_recovery` enforces the floor
+            // at read time. With `create_vault` deferred to B.3b, the variant
+            // is unreachable through B.3a's surface; the mapping is forward-
+            // compat insurance. If `create_vault` enters scope, re-validate
+            // the mapping (and either expose `WeakKdfParams` as its own variant
+            // or leave it folded into `CorruptVault`).
+            E::WeakKdfParams { .. } => Self::CorruptVault {
+                detail: e.to_string(),
             },
         }
     }
@@ -126,25 +150,22 @@ mod tests {
     fn corrupt_vault_collapses_to_corrupt_vault() {
         let core_err = UnlockError::CorruptVault;
         let ffi: FfiUnlockError = core_err.into();
-        let FfiUnlockError::CorruptVault { message } = ffi else {
+        let FfiUnlockError::CorruptVault { detail } = ffi else {
             panic!("expected CorruptVault");
         };
-        assert!(message.contains("vault data integrity failure"));
+        assert!(detail.contains("vault data integrity failure"));
     }
 
     #[test]
     fn malformed_vault_toml_collapses_to_corrupt_vault_with_inner_display() {
-        // VaultTomlError::MissingField takes &'static str (not String).
-        // "missing field: kdf" contains "kdf"; outer wraps to
-        // "malformed vault.toml: missing field: kdf".
         let inner = VaultTomlError::MissingField("kdf");
         let core_err = UnlockError::MalformedVaultToml(inner);
         let ffi: FfiUnlockError = core_err.into();
-        let FfiUnlockError::CorruptVault { message } = ffi else {
+        let FfiUnlockError::CorruptVault { detail } = ffi else {
             panic!("expected CorruptVault");
         };
-        assert!(message.contains("malformed vault.toml"));
-        assert!(message.contains("kdf"));
+        assert!(detail.contains("malformed vault.toml"));
+        assert!(detail.contains("kdf"));
     }
 
     #[test]
@@ -175,44 +196,16 @@ mod tests {
     }
 
     #[test]
-    fn wrong_mnemonic_or_corrupt_maps_to_wrong_password_or_corrupt_for_anti_oracle() {
-        // SECURITY: WrongMnemonicOrCorrupt is the recovery-path's anti-
-        // oracle conflation (wrong mnemonic OR corrupt), semantically
-        // equivalent to FfiUnlockError::WrongPasswordOrCorrupt. The defensive
-        // arm in From<UnlockError> routes here — NOT to CorruptVault —
-        // because folding a conflated variant into CorruptVault would
-        // split it on the foreign side and leak "credential wrong vs.
-        // vault corrupt" across the boundary, violating threat-model §13.
-        // Currently unreachable through open_with_password (only
-        // open_with_recovery returns this); the mapping is forward-compat
-        // insurance, not an active path.
+    fn wrong_mnemonic_or_corrupt_maps_to_dedicated_variant() {
+        // B.3a promotes WrongMnemonicOrCorrupt from a defensive fold-into-
+        // WrongPasswordOrCorrupt to its own dedicated FFI variant. The two
+        // variants are now mutually exclusive by call site (open_with_password
+        // emits the password variant; open_with_recovery emits the mnemonic
+        // variant). The §13 anti-oracle conflation is preserved within each
+        // path independently.
         let core_err = UnlockError::WrongMnemonicOrCorrupt;
         let ffi: FfiUnlockError = core_err.into();
-        assert!(matches!(ffi, FfiUnlockError::WrongPasswordOrCorrupt));
-    }
-
-    #[test]
-    fn invalid_mnemonic_maps_defensively_to_corrupt_vault() {
-        // Not an anti-oracle conflation: InvalidMnemonic reports a non-
-        // credential parse failure (the input doesn't decode as BIP-39).
-        // CorruptVault is the correct landing for forward-compat reachability.
-        use secretary_core::unlock::mnemonic::MnemonicError;
-        let core_err = UnlockError::InvalidMnemonic(MnemonicError::WrongLength { got: 12 });
-        let ffi: FfiUnlockError = core_err.into();
-        assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
-    }
-
-    #[test]
-    fn weak_kdf_params_maps_defensively_to_corrupt_vault() {
-        // Not an anti-oracle conflation: WeakKdfParams reports vault-config
-        // divergence from the §3 floor, not credential validity. CorruptVault
-        // is the correct landing for forward-compat reachability.
-        let core_err = UnlockError::WeakKdfParams {
-            memory_kib: 8,
-            min_memory_kib: 65536,
-        };
-        let ffi: FfiUnlockError = core_err.into();
-        assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
+        assert!(matches!(ffi, FfiUnlockError::WrongMnemonicOrCorrupt));
     }
 
     #[test]
@@ -231,8 +224,83 @@ mod tests {
             "vault.toml and identity.bundle.enc reference different vaults",
         );
         let corrupt = FfiUnlockError::CorruptVault {
-            message: "fnord".to_string(),
+            detail: "fnord".to_string(),
         };
         assert_eq!(corrupt.to_string(), "vault is corrupt or unreadable: fnord",);
+    }
+
+    #[test]
+    fn invalid_mnemonic_wrong_length_carries_detail() {
+        use secretary_core::unlock::mnemonic::MnemonicError;
+        let core_err = UnlockError::InvalidMnemonic(MnemonicError::WrongLength { got: 3 });
+        let ffi: FfiUnlockError = core_err.into();
+        let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
+            panic!("expected InvalidMnemonic, got {ffi:?}");
+        };
+        assert!(
+            detail.contains("got 3"),
+            "detail did not carry word count: {detail}"
+        );
+    }
+
+    #[test]
+    fn invalid_mnemonic_unknown_word_carries_detail() {
+        use secretary_core::unlock::mnemonic::MnemonicError;
+        let core_err =
+            UnlockError::InvalidMnemonic(MnemonicError::UnknownWord("xyzzy".to_string()));
+        let ffi: FfiUnlockError = core_err.into();
+        let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
+            panic!("expected InvalidMnemonic, got {ffi:?}");
+        };
+        assert!(
+            detail.contains("xyzzy"),
+            "detail did not carry the offending word: {detail}"
+        );
+    }
+
+    #[test]
+    fn invalid_mnemonic_bad_checksum_carries_detail() {
+        use secretary_core::unlock::mnemonic::MnemonicError;
+        let core_err = UnlockError::InvalidMnemonic(MnemonicError::BadChecksum);
+        let ffi: FfiUnlockError = core_err.into();
+        let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
+            panic!("expected InvalidMnemonic, got {ffi:?}");
+        };
+        assert!(
+            detail.to_lowercase().contains("checksum"),
+            "detail did not mention checksum: {detail}"
+        );
+    }
+
+    #[test]
+    fn weak_kdf_params_remains_defensively_mapped_to_corrupt_vault() {
+        // SECURITY: with create_vault deferred to B.3b, this variant is
+        // unreachable from open_with_password / open_with_recovery. The
+        // defensive mapping here is forward-compat insurance — if create_vault
+        // enters scope, re-validate whether WeakKdfParams should be exposed
+        // as its own variant or stay folded into CorruptVault.
+        let core_err = UnlockError::WeakKdfParams {
+            memory_kib: 16,
+            min_memory_kib: 65536,
+        };
+        let ffi: FfiUnlockError = core_err.into();
+        assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn corrupt_vault_field_renamed_to_detail() {
+        // Pin the field rename: B.2 used `message`, B.3a renames to `detail`
+        // for uniformity with InvalidMnemonic { detail }. This test is a
+        // tripwire — a future refactor that reverts to `message` would fail
+        // here AND break the uniffi/PyO3 forwarders, so it must be deliberate.
+        let ffi = FfiUnlockError::CorruptVault {
+            detail: "tripwire".to_string(),
+        };
+        let rendered = format!("{ffi}");
+        assert!(rendered.contains("tripwire"));
+        let FfiUnlockError::CorruptVault { detail } = ffi else {
+            unreachable!()
+        };
+        assert_eq!(detail, "tripwire");
     }
 }

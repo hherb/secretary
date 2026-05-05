@@ -11,6 +11,7 @@
 
 import uniffi.secretary.add
 import uniffi.secretary.openWithPassword
+import uniffi.secretary.openWithRecovery
 import uniffi.secretary.UnlockException
 import uniffi.secretary.version
 import kotlin.system.exitProcess
@@ -33,6 +34,13 @@ private const val EXPECTED_FORMAT_VERSION: UShort = 1u
 // a future format places AEAD content in vault.toml, re-validate
 // across all four sites (bridge, pytest, Swift, Kotlin).
 private const val TRUNCATION_SUFFIX_BYTES: Int = 50
+
+// Robustness check for `phraseFromInputs` (see its docstring): exactly 24
+// lowercase-ASCII words separated by single spaces — the documented shape
+// for a BIP-39 24-word English phrase. Catches the edge case where the
+// substring tokenizer ever latches onto an unintended location in the
+// fixture JSON.
+private val BIP39_PHRASE_SHAPE: Regex = Regex("^[a-z]+( [a-z]+){23}$")
 
 // Collect failures rather than exit on first so a single run reports
 // every contract that drifted, not just the first. The smoke surface
@@ -93,6 +101,73 @@ fun main() {
         exitProcess(1)
     }
     val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
+
+    // B.3a: extract recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
+    //
+    // DO NOT USE THIS PARSER FOR ANY OTHER JSON. It is a purpose-built
+    // single-field reader for one specific field in one specific
+    // project-controlled fixture file. It does NOT handle JSON escapes
+    // (\", \\, \n, \uXXXX); the value's shape is constrained by BIP-39
+    // to lowercase ASCII letters + single spaces, so escapes cannot occur.
+    //
+    // No JSON library is pulled in because:
+    //   1. org.json (the only JSON parser bundled with Android, sometimes
+    //      mistakenly assumed to be in OpenJDK) ships under the "JSON
+    //      License" with the "Good not Evil" field-of-use restriction —
+    //      INCOMPATIBLE with this project's AGPL-3.0-or-later licensing.
+    //   2. Apache-2.0-licensed alternatives (Gson, Jackson, kotlinx
+    //      .serialization) would each add a network-fetched + SHA-256-
+    //      verified dep to run.sh — disproportionate infrastructure for
+    //      reading one string field from one project-controlled file.
+    //
+    // Threat model: malformed JSON cannot compromise security here.
+    // The fixture is project-controlled; the smoke runner is developer-
+    // only (never shipped); the value flows only into BIP-39 validation
+    // (wordlist + checksum) and AEAD decryption — both reject any
+    // garbage input loudly. core/tests/common/fixture_builder.rs
+    // additionally cross-checks `bip39::Mnemonic::from_entropy(entropy)
+    // .to_string() == phrase` at fixture-build time, so phrase tampering
+    // in the JSON cannot land silently.
+    //
+    // Robustness assertion: the post-extract `BIP39_PHRASE_SHAPE` regex
+    // catches the case where the literal `"recovery_mnemonic_phrase"`
+    // ever appears elsewhere in the JSON (e.g. as a value inside some
+    // future doc-comment field) and the substring search latches onto
+    // the wrong location — any non-phrase value fails the
+    // 24-lowercase-words shape and exits loudly instead of feeding
+    // garbage downstream.
+    fun phraseFromInputs(name: String): ByteArray {
+        val inputsPath = java.nio.file.Paths.get(vaultDir, name)
+        val text = try {
+            java.nio.file.Files.readString(inputsPath)
+        } catch (e: Throwable) {
+            System.err.println("error: failed to read $inputsPath: $e")
+            exitProcess(1)
+        }
+        // Find `"recovery_mnemonic_phrase"`, then the next two `"`
+        // characters mark the value's quoted-string boundaries.
+        val keyMarker = "\"recovery_mnemonic_phrase\""
+        val keyAt = text.indexOf(keyMarker)
+        val openQuote = if (keyAt >= 0) text.indexOf('"', keyAt + keyMarker.length + 1) else -1
+        val closeQuote = if (openQuote >= 0) text.indexOf('"', openQuote + 1) else -1
+        if (closeQuote < 0) {
+            System.err.println(
+                "error: recovery_mnemonic_phrase missing or malformed in $inputsPath",
+            )
+            exitProcess(1)
+        }
+        val value = text.substring(openQuote + 1, closeQuote)
+        if (!BIP39_PHRASE_SHAPE.matches(value)) {
+            System.err.println(
+                "error: recovery_mnemonic_phrase in $inputsPath does not match 24-lowercase-word shape",
+            )
+            exitProcess(1)
+        }
+        return value.toByteArray(Charsets.UTF_8)
+    }
+
+    val phrase001 = phraseFromInputs("golden_vault_001_inputs.json")
+    val phrase002 = phraseFromInputs("golden_vault_002_inputs.json")
 
     // Pinned KAT — must match secretary-ffi-bridge's tests + pytest +
     // Swift smoke runner. Source of truth: golden_vault_001_inputs.json.
@@ -196,8 +271,74 @@ fun main() {
         check(false, "explicit wipe() path threw $e, expected to succeed")
     }
 
+    // --- B.3a: open_with_recovery assertions ---
+
+    // Assertion 9: recovery success path.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = phrase001,
+        ).use { identity ->
+            val displayName = identity.displayName()
+            val uuid = identity.userUuid()
+            check(
+                displayName == expectedDisplayName && uuid.contentEquals(expectedUserUuid),
+                "open_with_recovery success → display_name + user_uuid match pinned KAT (got displayName=\"$displayName\")",
+            )
+        }
+    } catch (e: Throwable) {
+        check(false, "open_with_recovery success threw $e, expected to succeed")
+    }
+
+    // Assertion 10: wrong recovery phrase → WrongMnemonicOrCorrupt.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = phrase002,
+        )
+        check(false, "vault_002 phrase against vault_001 should have thrown WrongMnemonicOrCorrupt")
+    } catch (e: UnlockException.WrongMnemonicOrCorrupt) {
+        check(true, "vault_002 phrase against vault_001 → WrongMnemonicOrCorrupt")
+    } catch (e: Throwable) {
+        check(false, "wrong phrase threw $e, expected WrongMnemonicOrCorrupt")
+    }
+
+    // Assertion 11: 3-word phrase → InvalidMnemonic(detail).
+    try {
+        val bad = "only three words".toByteArray(Charsets.UTF_8)
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle001,
+            mnemonic = bad,
+        )
+        check(false, "3-word phrase should have thrown InvalidMnemonic")
+    } catch (e: UnlockException.InvalidMnemonic) {
+        check(
+            e.detail.contains("got 3"),
+            "3-word phrase → InvalidMnemonic(detail=\"${e.detail}\") should mention `got 3`",
+        )
+    } catch (e: Throwable) {
+        check(false, "3-word phrase threw $e, expected InvalidMnemonic")
+    }
+
+    // Assertion 12: cross-vault file pair with recovery path → VaultMismatch.
+    try {
+        openWithRecovery(
+            vaultTomlBytes = toml001,
+            identityBundleBytes = bundle002,
+            mnemonic = phrase001,
+        )
+        check(false, "vault_001 toml + vault_002 bundle (recovery) should have thrown VaultMismatch")
+    } catch (e: UnlockException.VaultMismatch) {
+        check(true, "vault_001 toml + vault_002 bundle (recovery) → VaultMismatch")
+    } catch (e: Throwable) {
+        check(false, "vault mismatch (recovery) threw $e, expected VaultMismatch")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 8 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 12 assertion(s) failed")
         exitProcess(1)
     }
 
