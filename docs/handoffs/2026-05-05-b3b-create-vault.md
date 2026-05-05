@@ -135,4 +135,4 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 - **Kotlin smoke:** 15/15 (12 from prior + 3 B.3b; 16 PASS lines emitted because assertion 15 has a guard)
 - **Bridge crate:** 36 unit tests (was 30; +6 net)
 - **uniffi crate:** 11 unit tests (was 8; +3 net including Task 1b's tripwire)
-- **PR:** [#NN](https://github.com/hherb/secretary/pull/NN) (URL recorded post-push in a follow-up commit)
+- **PR:** [#27](https://github.com/hherb/secretary/pull/27)
