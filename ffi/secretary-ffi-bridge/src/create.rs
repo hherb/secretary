@@ -6,7 +6,7 @@
 //!
 //! # Why a separate handle for the mnemonic
 //!
-//! `secretary_core::unlock::create_vault` returns a [`CreatedVault`]
+//! `secretary_core::unlock::create_vault` returns a [`CreatedVault`](secretary_core::unlock::CreatedVault)
 //! containing — among other artifacts — a freshly-generated 24-word BIP-39
 //! mnemonic wrapped as `Sensitive<...>` on the Rust side. That phrase MUST
 //! reach the foreign caller exactly once so the user can write it down,
@@ -21,7 +21,7 @@
 //! So the bridge keeps the `Sensitive<...>` Rust-side, exposes a one-shot
 //! [`MnemonicOutput::take_phrase`] accessor that copies the bytes out into
 //! caller-owned heap (a fresh `Vec<u8>`), and drops the inner
-//! [`Mnemonic`](secretary_core::unlock::mnemonic::Mnemonic) immediately —
+//! [`Mnemonic`] immediately —
 //! which zeroizes the `String` phrase + `Sensitive<[u8; 32]>` entropy. The
 //! caller is responsible for zeroizing their copy after use, mirroring the
 //! input-side caller-zeroize discipline from B.2 / B.3a but inverted in
