@@ -150,7 +150,7 @@ impl UnlockedIdentity {
 ///
 /// Returns [`UnlockError`] on failure. See the bridge crate's
 /// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
-/// thinned 3-variant rationale.
+/// thinned 5-variant rationale.
 ///
 /// # Why `Arc<UnlockedIdentity>`?
 ///
