@@ -244,10 +244,12 @@ def test_open_with_recovery_accepts_bytearray_for_caller_zeroize_discipline() ->
 
 
 def test_create_vault_returns_artifacts_with_expected_shape(created_vault) -> None:
-    """The four CreateVaultOutput fields exist and carry the expected
-    types: bytes for the on-disk artifacts; opaque handles for the
-    identity and mnemonic. Uses the module-scoped fixture (no extra
-    Argon2id cost)."""
+    """The two non-secret CreateVaultOutput byte fields exist with the
+    expected types and non-zero lengths. The handle-typed fields
+    (`identity`, `mnemonic`) are take-once getters that would clobber
+    the fixture; their types are verified by the dedicated tests below
+    (`_immediately_live` for identity, `_take_returns_24_words` for
+    mnemonic). Uses the module-scoped fixture (no extra Argon2id cost)."""
     assert isinstance(created_vault.vault_toml_bytes, bytes)
     assert len(created_vault.vault_toml_bytes) > 0
     assert isinstance(created_vault.identity_bundle_bytes, bytes)
