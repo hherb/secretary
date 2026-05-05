@@ -240,15 +240,21 @@ impl CreateVaultOutput {
     }
 
     /// Take ownership of the live `UnlockedIdentity` handle. ONE-SHOT —
-    /// subsequent calls raise `RuntimeError`. The Python idiom is to
-    /// bind the result and use it directly, e.g.
+    /// the first read MOVES the handle out of the parent struct, and
+    /// every subsequent read of `output.identity` raises
+    /// `RuntimeError`. Despite the `#[getter]` shape (Python sees a
+    /// property), this access is *destructive*; do not call it from
+    /// debug introspection paths (`repr`, logging, REPL tab-completion
+    /// previews) and then try to reuse the handle. The Python idiom is
+    /// to bind the property directly to a `with` block, e.g.
     /// `with output.identity as id: ...`.
     ///
     /// Implemented via interior take rather than a borrowed reference
     /// because Python `with` semantics need to OWN the context manager;
     /// returning a reference into a `#[pyclass]` field would couple the
     /// `with`-block's lifetime to the parent `output` value in ways that
-    /// are awkward at the FFI boundary.
+    /// are awkward at the FFI boundary. The README's "Vault creation
+    /// (B.3b)" section documents the consequences for callers.
     #[getter]
     fn identity(&mut self) -> PyResult<UnlockedIdentity> {
         self.identity.take().ok_or_else(|| {
@@ -259,7 +265,8 @@ impl CreateVaultOutput {
     }
 
     /// Take ownership of the one-shot `MnemonicOutput` handle. Same
-    /// take-once semantics as `identity`.
+    /// destructive take-once semantics as `identity` — see that
+    /// method's docstring for the full caveat.
     #[getter]
     fn mnemonic(&mut self) -> PyResult<MnemonicOutput> {
         self.mnemonic.take().ok_or_else(|| {

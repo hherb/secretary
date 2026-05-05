@@ -116,15 +116,20 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
                 detail: e.to_string(),
             },
 
-            // SECURITY: defensive forward-compat for the only currently-
-            // unreachable variant. `WeakKdfParams` is returned by `create_vault`
-            // (which enforces the §1.2 v1 floor at write time); neither
-            // `open_with_password` nor `open_with_recovery` enforces the floor
-            // at read time. With `create_vault` deferred to B.3b, the variant
-            // is unreachable through B.3a's surface; the mapping is forward-
-            // compat insurance. If `create_vault` enters scope, re-validate
-            // the mapping (and either expose `WeakKdfParams` as its own variant
-            // or leave it folded into `CorruptVault`).
+            // SECURITY: defensive forward-compat for a structurally-
+            // unreachable variant. `core::UnlockError::WeakKdfParams` is
+            // returned ONLY by `core::unlock::create_vault` when the
+            // caller-supplied `Argon2idParams` falls below the §1.2 v1
+            // floor; neither `open_with_password` nor `open_with_recovery`
+            // enforces the floor at read time. The bridge's
+            // [`crate::create::create_vault`] hardcodes
+            // `Argon2idParams::V1_DEFAULT` (m=256 MiB, well above the
+            // 64 MiB floor), so this variant cannot fire through any
+            // current FFI surface. The fold-into-`CorruptVault` mapping
+            // stays as forward-compat insurance for any future surface
+            // that exposes caller-tunable KDF params; if such a surface
+            // ever lands, re-validate whether `WeakKdfParams` should be
+            // exposed as its own variant or stay folded.
             E::WeakKdfParams { .. } => Self::CorruptVault {
                 detail: e.to_string(),
             },
@@ -282,11 +287,15 @@ mod tests {
 
     #[test]
     fn weak_kdf_params_remains_defensively_mapped_to_corrupt_vault() {
-        // SECURITY: with create_vault deferred to B.3b, this variant is
-        // unreachable from open_with_password / open_with_recovery. The
-        // defensive mapping here is forward-compat insurance — if create_vault
-        // enters scope, re-validate whether WeakKdfParams should be exposed
-        // as its own variant or stay folded into CorruptVault.
+        // SECURITY: `WeakKdfParams` is unreachable through every current
+        // FFI surface — `open_with_password` / `open_with_recovery` do not
+        // enforce the §1.2 v1 floor at read time, and the bridge's
+        // `create_vault` hardcodes `Argon2idParams::V1_DEFAULT`. The
+        // fold-into-`CorruptVault` mapping is forward-compat insurance for
+        // a future surface that exposes caller-tunable KDF params; this
+        // test pins the mapping so a future refactor that re-routes
+        // `WeakKdfParams` (e.g. promotes it to its own variant) is a
+        // deliberate decision rather than a silent regression.
         let core_err = UnlockError::WeakKdfParams {
             memory_kib: 16,
             min_memory_kib: 65536,

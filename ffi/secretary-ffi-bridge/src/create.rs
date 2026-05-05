@@ -49,7 +49,7 @@
 //!
 //! Rationale: docs/superpowers/specs/2026-05-05-ffi-b3b-create-vault-design.md
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 
 use rand_core::OsRng;
 use secretary_core::crypto::kdf::Argon2idParams;
@@ -58,15 +58,7 @@ use secretary_core::unlock::{self, mnemonic::Mnemonic};
 
 use crate::error::FfiUnlockError;
 use crate::identity::UnlockedIdentity;
-
-/// Acquire the inner lock, falling through poisoning to preserve the
-/// non-throwing API contract. See [`crate::identity`]'s `lock_or_recover`
-/// for the same pattern; copied here verbatim because Rust's privacy
-/// rules prevent re-using the identity-module-private helper across
-/// modules without exposing a wider surface than warranted.
-fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
+use crate::sync_helpers::lock_or_recover;
 
 /// One-shot opaque handle wrapping a freshly-generated [`Mnemonic`].
 ///

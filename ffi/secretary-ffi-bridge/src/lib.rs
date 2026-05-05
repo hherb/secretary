@@ -63,6 +63,7 @@
 pub mod create;
 pub mod error;
 pub mod identity;
+mod sync_helpers;
 pub mod unlock;
 
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};

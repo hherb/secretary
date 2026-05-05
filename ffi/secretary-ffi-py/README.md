@@ -311,6 +311,28 @@ Two new `#[pyclass]` types:
   `take_phrase()` returns `bytes` once, then `None`. `close()` (or
   `__exit__` via `with`) wipes idempotently.
 
+> **`output.identity` and `output.mnemonic` are *destructive* getters.**
+> Although they read like ordinary properties, accessing each one
+> *moves* ownership out of the parent `CreateVaultOutput`; a second
+> read of the same property raises `RuntimeError`. The shape is
+> deliberate: holding the live handle inside the parent struct would
+> couple the `with`-block lifetime to the parent value in ways that
+> are awkward at the FFI boundary, so the take-once pattern sidesteps
+> the problem. Practical consequences:
+>
+> - **Don't introspect** `output.identity` / `output.mnemonic` for
+>   debugging (e.g. by calling `repr(output.identity)` and then trying
+>   to use it again) — the first read consumes the field.
+> - **Idiomatic use** is to bind the property directly to a `with`
+>   block: `with output.identity as id: ...`, `with output.mnemonic
+>   as mn: ...`. This guarantees a single read at a deterministic
+>   site.
+> - **Order doesn't matter** between the two: take whichever you need
+>   first. The non-secret `vault_toml_bytes` / `identity_bundle_bytes`
+>   getters are *not* destructive — they copy out of the underlying
+>   `Vec<u8>` each call, so they remain usable for as long as the
+>   parent `CreateVaultOutput` is alive.
+
 The bridge instantiates `OsRng` and `Argon2idParams::V1_DEFAULT`
 internally; foreign callers cannot tune either. Cost: ~1s per
 `create_vault` call for real Argon2id at V1_DEFAULT (256 MiB / 3 iter).
