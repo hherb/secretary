@@ -66,8 +66,8 @@ pub enum FfiUnlockError {
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
 
-    /// Vault is corrupt or unreadable. Carries a diagnostic message for
-    /// debugging; not pattern-matchable on the inner cause.
+    /// Vault is corrupt or unreadable. Carries a diagnostic `detail` string
+    /// for debugging; not pattern-matchable on the inner cause.
     #[error("vault is corrupt or unreadable: {detail}")]
     CorruptVault {
         /// Diagnostic text from the inner `core::UnlockError` variant's
@@ -237,18 +237,25 @@ mod tests {
         let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
-        assert!(detail.contains("got 3"), "detail did not carry word count: {detail}");
+        assert!(
+            detail.contains("got 3"),
+            "detail did not carry word count: {detail}"
+        );
     }
 
     #[test]
     fn invalid_mnemonic_unknown_word_carries_detail() {
         use secretary_core::unlock::mnemonic::MnemonicError;
-        let core_err = UnlockError::InvalidMnemonic(MnemonicError::UnknownWord("xyzzy".to_string()));
+        let core_err =
+            UnlockError::InvalidMnemonic(MnemonicError::UnknownWord("xyzzy".to_string()));
         let ffi: FfiUnlockError = core_err.into();
         let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
-        assert!(detail.contains("xyzzy"), "detail did not carry the offending word: {detail}");
+        assert!(
+            detail.contains("xyzzy"),
+            "detail did not carry the offending word: {detail}"
+        );
     }
 
     #[test]
@@ -259,7 +266,10 @@ mod tests {
         let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
-        assert!(detail.to_lowercase().contains("checksum"), "detail did not mention checksum: {detail}");
+        assert!(
+            detail.to_lowercase().contains("checksum"),
+            "detail did not mention checksum: {detail}"
+        );
     }
 
     #[test]
