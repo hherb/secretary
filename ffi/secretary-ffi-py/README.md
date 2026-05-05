@@ -273,3 +273,45 @@ secret state on success — accessors, `close()`, the context-manager
 protocol, and the use-after-close non-throwing semantics all work
 identically regardless of which entry point produced the handle.
 
+### Vault creation (B.3b)
+
+```python
+import secretary_ffi_py as sec
+import time
+
+output = sec.create_vault(
+    password=b"my-strong-password",
+    display_name="Owner",
+    created_at_ms=int(time.time() * 1000),
+)
+
+# Read the recovery phrase ONCE. Display to user, then zeroize the buffer.
+with output.mnemonic as mn:
+    phrase = bytearray(mn.take_phrase())  # one-shot; second call returns None
+    show_recovery_phrase_to_user(phrase)
+    for i in range(len(phrase)):
+        phrase[i] = 0   # caller-side zeroize discipline
+
+# Persist the byte artifacts atomically. Caller's responsibility.
+write_atomic(vault_dir / "vault.toml", output.vault_toml_bytes)
+write_atomic(vault_dir / "identity.bundle.enc", output.identity_bundle_bytes)
+
+# Use the live identity directly — no second open_with_password call needed.
+with output.identity as identity:
+    print(identity.display_name())
+```
+
+Two new `#[pyclass]` types:
+
+- `secretary_ffi_py.CreateVaultOutput` — the four-field result struct.
+  `vault_toml_bytes` / `identity_bundle_bytes` are `bytes` (non-secret).
+  `identity` and `mnemonic` are take-once getters that move ownership
+  out of the parent struct.
+- `secretary_ffi_py.MnemonicOutput` — one-shot opaque handle.
+  `take_phrase()` returns `bytes` once, then `None`. `close()` (or
+  `__exit__` via `with`) wipes idempotently.
+
+The bridge instantiates `OsRng` and `Argon2idParams::V1_DEFAULT`
+internally; foreign callers cannot tune either. Cost: ~1s per
+`create_vault` call for real Argon2id at V1_DEFAULT (256 MiB / 3 iter).
+
