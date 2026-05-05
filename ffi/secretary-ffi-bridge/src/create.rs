@@ -94,15 +94,10 @@ fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// - The Drop impl runs `wipe`-equivalent automatically via
 ///   `Mutex<Option<Mnemonic>>`'s standard drop chain.
 pub struct MnemonicOutput {
-    /// Wrapped behind a `Mutex<Option<...>>` to provide:
-    /// - **one-shot take** via `Option::take()` (returns the inner
-    ///   Mnemonic exactly once)
-    /// - **idempotent wipe** via the same `Option::take()` (a second
-    ///   wipe finds `None` and is a no-op)
-    /// - **thread-safe access** (the Mutex serializes the take/wipe
-    ///   calls; the lock is short — at most copying the phrase bytes)
-    /// - **post-take non-throwing** semantics (subsequent take returns
-    ///   `None` rather than panicking)
+    /// `Mutex<Option<...>>` provides one-shot take via `Option::take()`,
+    /// idempotent wipe, thread-safe access, and non-throwing post-take
+    /// semantics. The WHY of each property is at the function level
+    /// (`take_phrase`, `wipe`).
     inner: Mutex<Option<Mnemonic>>,
 }
 
