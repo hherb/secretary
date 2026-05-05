@@ -26,6 +26,16 @@
 //! `InvalidMnemonic`.
 //!
 //! Rationale (B.3a): docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md
+//!
+//! B.3b adds the `create_vault` namespace function and 2 new opaque-
+//! handle types (`CreateVaultOutput` dictionary, `MnemonicOutput`
+//! interface). Bridge instantiates `OsRng` and
+//! `Argon2idParams::V1_DEFAULT` internally; foreign callers get
+//! neither knob. Recovery mnemonic crosses back via
+//! `MnemonicOutput.take_phrase()` as `sequence<u8>?` (one-shot;
+//! second call returns null).
+//!
+//! Rationale (B.3b): docs/superpowers/specs/2026-05-05-ffi-b3b-create-vault-design.md
 
 #![allow(unsafe_code)]
 
@@ -94,9 +104,13 @@ pub enum UnlockError {
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
     #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
-    /// Vault is corrupt or unreadable. The `detail` field carries a
-    /// diagnostic string from the inner core error.
-    #[error("vault is corrupt or unreadable: {detail}")]
+    /// Vault data integrity failure — covers BOTH directions: open-path
+    /// failure (vault file is malformed / unreadable) AND create-path
+    /// failure (couldn't even produce the vault bytes; rare, e.g. Argon2id
+    /// system-OOM or CBOR serialization failure of the in-memory bundle).
+    /// Carries a diagnostic `detail` string for debugging; not
+    /// pattern-matchable on the inner cause.
+    #[error("vault data integrity failure: {detail}")]
     CorruptVault {
         /// Diagnostic text from the inner `core::UnlockError` variant's
         /// `Display` impl. Free-form; not part of the API contract.
@@ -142,6 +156,49 @@ impl UnlockedIdentity {
     pub fn wipe(&self) {
         self.0.close();
     }
+}
+
+/// uniffi-side opaque-handle wrapper around
+/// `secretary_ffi_bridge::MnemonicOutput`. Newtype; methods are thin
+/// forwarders.
+///
+/// One-shot semantics: `take_phrase()` returns `Some(bytes)` once, then
+/// `None` on every subsequent call. `wipe()` is idempotent.
+///
+/// The explicit-zeroize method is named `wipe` rather than `close` for
+/// the same reason as `UnlockedIdentity`: uniffi 0.31's Kotlin codegen
+/// auto-generates an `AutoCloseable.close()` and a UDL-declared
+/// `close()` would collide.
+pub struct MnemonicOutput(secretary_ffi_bridge::MnemonicOutput);
+
+impl MnemonicOutput {
+    /// Take the recovery phrase as UTF-8 bytes. ONE-SHOT — second call
+    /// returns `None`. Bytes are caller-owned heap; caller MUST zeroize
+    /// after use.
+    pub fn take_phrase(&self) -> Option<Vec<u8>> {
+        self.0.take_phrase()
+    }
+
+    /// Drop any still-resident inner mnemonic now, zeroizing its
+    /// `Sensitive<...>` fields. Idempotent.
+    pub fn wipe(&self) {
+        self.0.wipe();
+    }
+}
+
+/// uniffi-side dictionary (struct-by-value) for `create_vault`'s return
+/// shape. Two `Vec<u8>` (non-secret) plus two `Arc<Interface>` (uniffi
+/// marshals interface-typed dictionary fields as `Arc` handles).
+pub struct CreateVaultOutput {
+    /// Vault metadata bytes — non-secret. Persist atomically.
+    pub vault_toml_bytes: Vec<u8>,
+    /// Encrypted identity bundle bytes — non-secret. Persist atomically.
+    pub identity_bundle_bytes: Vec<u8>,
+    /// Live opaque handle to the just-created identity. Ready for vault
+    /// operations immediately; no second `open_with_password` call needed.
+    pub identity: std::sync::Arc<UnlockedIdentity>,
+    /// One-shot opaque handle for the recovery phrase.
+    pub mnemonic: std::sync::Arc<MnemonicOutput>,
 }
 
 /// Unlock a vault using its master password. uniffi-projected.
@@ -208,6 +265,49 @@ pub fn open_with_recovery(
     .map_err(UnlockError::from);
     mnemonic.zeroize();
     result
+}
+
+/// Create a fresh v1 vault. uniffi-projected. (B.3b)
+///
+/// The bridge crate instantiates `OsRng` and
+/// `Argon2idParams::V1_DEFAULT` internally; foreign callers cannot tune
+/// either.
+///
+/// Returns a [`CreateVaultOutput`] containing on-disk byte artifacts and
+/// two opaque handles ([`UnlockedIdentity`] and [`MnemonicOutput`]).
+///
+/// # Errors
+///
+/// Returns [`UnlockError`] on failure. See the bridge crate's
+/// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
+/// thinned 5-variant rationale.
+pub fn create_vault(
+    mut password: Vec<u8>,
+    display_name: String,
+    created_at_ms: u64,
+) -> Result<CreateVaultOutput, UnlockError> {
+    // Mirrors the open_with_password / open_with_recovery wrapper-side
+    // stack-residue discipline: zero the password Vec after the bridge
+    // returns. The bridge takes &[u8] and never retains; this Vec is the
+    // projection-side transient.
+    let result = secretary_ffi_bridge::create_vault(&password, &display_name, created_at_ms);
+    password.zeroize();
+
+    let bridge_out = result.map_err(UnlockError::from)?;
+
+    let secretary_ffi_bridge::CreateVaultOutput {
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        identity,
+        mnemonic,
+    } = bridge_out;
+
+    Ok(CreateVaultOutput {
+        vault_toml_bytes,
+        identity_bundle_bytes,
+        identity: std::sync::Arc::new(UnlockedIdentity(identity)),
+        mnemonic: std::sync::Arc::new(MnemonicOutput(mnemonic)),
+    })
 }
 
 #[cfg(test)]
@@ -289,5 +389,79 @@ mod tests {
             panic!("expected InvalidMnemonic");
         };
         assert_eq!(detail, "expected 24 words, got 3");
+    }
+
+    #[test]
+    fn corrupt_vault_display_uses_path_neutral_text() {
+        // Mirror of the bridge crate's tripwire (see ffi/secretary-ffi-bridge/
+        // src/error.rs). The uniffi-side UnlockError carries its own Display
+        // attributes (because uniffi codegen uses this enum to produce the
+        // Swift / Kotlin error messages); this test pins the path-neutral
+        // wording so a future revert here is a deliberate decision.
+        let err = UnlockError::CorruptVault {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("vault data integrity failure"),
+            "Display did not contain the path-neutral text: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+        assert!(
+            !rendered.contains("corrupt or unreadable"),
+            "Display still contains the old read-path-only text: {rendered}",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // B.3b: uniffi-side projection of create_vault.
+    //
+    // The bridge crate already covers MnemonicOutput contract semantics
+    // in isolation (one-shot take_phrase, idempotent wipe, 24-word phrase).
+    // The two tests below pin the uniffi-layer wrapper plumbing only:
+    // one slow integration test (real Argon2id) and one fast wrapper test
+    // (synthesized MnemonicOutput, no Argon2id).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn create_vault_returns_live_identity_and_mnemonic() {
+        // Slow test: real Argon2id. ~1s. Sole uniffi-layer integration test
+        // for create_vault; the bridge crate already covers MnemonicOutput
+        // contract semantics in isolation.
+        let out = create_vault(
+            b"hunter2".to_vec(),
+            "UniffiTest".to_string(),
+            1_700_000_000_000,
+        )
+        .expect("create_vault should succeed");
+        assert_eq!(out.identity.display_name(), "UniffiTest");
+        assert_eq!(out.identity.user_uuid().len(), 16);
+        assert!(!out.vault_toml_bytes.is_empty());
+        assert!(!out.identity_bundle_bytes.is_empty());
+
+        let phrase = out.mnemonic.take_phrase().expect("phrase available");
+        assert_eq!(
+            phrase.split(|&b| b == b' ').count(),
+            24,
+            "expected 24-word phrase",
+        );
+
+        let second = out.mnemonic.take_phrase();
+        assert!(second.is_none(), "second take_phrase must return None");
+    }
+
+    #[test]
+    fn mnemonic_output_wipe_is_idempotent_through_uniffi_wrapper() {
+        // Fast test: synthesize a MnemonicOutput from a seeded mnemonic
+        // generation. No Argon2id; checks the wrapper plumbing only.
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+        use secretary_core::unlock::mnemonic;
+        let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
+        let m = mnemonic::generate(&mut rng);
+        let bridge_mo = secretary_ffi_bridge::MnemonicOutput::new_for_test(m);
+        let mo = MnemonicOutput(bridge_mo);
+        mo.wipe();
+        mo.wipe(); // must not panic
+        assert!(mo.take_phrase().is_none());
     }
 }

@@ -200,6 +200,48 @@ unlock). When `create_vault` is exposed in B.3b, the mapping will be
 re-validated and the variant will either get its own thinned variant
 or stay folded — that decision belongs to B.3b's design pass.
 
+## B.3b — Vault creation
+
+Adds `create_vault` to the bridge surface — the third `pub fn` entry
+point and the first that produces secret material in the **output**
+direction.
+
+```rust
+pub fn create_vault(
+    password: &[u8],
+    display_name: &str,
+    created_at_ms: u64,
+) -> Result<CreateVaultOutput, FfiUnlockError>;
+```
+
+Bridge instantiates `OsRng` and `Argon2idParams::V1_DEFAULT` internally;
+foreign callers cannot tune either knob. With `V1_DEFAULT` hardcoded,
+`core::UnlockError::WeakKdfParams` is structurally unreachable through
+this surface — the existing defensive fold-into-`CorruptVault` mapping
+remains for forward-compat.
+
+The return shape is a 4-field `CreateVaultOutput`:
+
+| Field | Type | Direction |
+|---|---|---|
+| `vault_toml_bytes` | `Vec<u8>` | non-secret bytes; caller persists atomically |
+| `identity_bundle_bytes` | `Vec<u8>` | non-secret bytes; caller persists atomically |
+| `identity` | `UnlockedIdentity` | live opaque handle, ready for vault ops |
+| `mnemonic` | `MnemonicOutput` | one-shot opaque handle for recovery phrase |
+
+`MnemonicOutput` is a new opaque-handle type with one-shot
+`take_phrase() -> Option<Vec<u8>>` and idempotent `wipe()`. The phrase
+exits the `Sensitive<T>` boundary as caller-owned heap-allocated bytes;
+callers MUST zeroize their copy after use (matches the input-side
+caller-zeroize discipline of B.2 / B.3a, inverted in direction). Second
+`take_phrase()` call returns `None` (one-shot semantics, NOT an error).
+
+`CorruptVault`'s Display text was tweaked from `"vault is corrupt or
+unreadable: {detail}"` to the path-neutral `"vault data integrity
+failure: {detail}"` so the variant reads correctly on both the open
+path and the new create path. Variant name and shape unchanged; the
+5-variant cardinality from B.3a is structurally intact.
+
 ## References
 
 - Spec (B.3a): [docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md](../../docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md)

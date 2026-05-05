@@ -21,7 +21,9 @@
 //! Rust-side `Drop` cascade still runs.
 
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
+
+use crate::sync_helpers::lock_or_recover;
 
 /// Opaque handle to an unlocked vault identity. See [module docs](self).
 pub struct UnlockedIdentity {
@@ -32,19 +34,6 @@ pub struct UnlockedIdentity {
     /// - **use-after-close non-throwing** semantics (`as_ref()` on `None`
     ///   yields default values via `unwrap_or_default()`)
     inner: Mutex<Option<secretary_core::unlock::UnlockedIdentity>>,
-}
-
-/// Acquire the inner lock, **falling through poisoning** to preserve the
-/// non-throwing API contract. A poisoned mutex would normally cause every
-/// accessor to panic, contradicting the module-level promise that "accessor
-/// calls on a closed handle return empty / zero values rather than
-/// panicking". `into_inner` on the `PoisonError` recovers the guard so the
-/// caller gets either the live state (if the panicking thread didn't leave
-/// invariants broken) or `None` (if `close()` happened to run mid-panic);
-/// in both cases the accessors fall through to defaults rather than
-/// re-panicking.
-fn lock_or_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Redacted Debug: never leak secret material through the fmt path.

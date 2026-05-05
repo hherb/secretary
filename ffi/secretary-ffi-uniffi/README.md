@@ -327,3 +327,54 @@ files; a `bip39::Mnemonic::from_entropy(entropy).to_string() ==
 pinned_phrase` drift-detection assertion in `core/tests/common/fixture_builder.rs`
 keeps the JSON pin honest.
 
+### Vault creation (B.3b)
+
+**Swift:**
+
+```swift
+let output = try createVault(
+    password: passwordBytes,
+    displayName: "Owner",
+    createdAtMs: Int64(Date().timeIntervalSince1970 * 1000)
+)
+defer { output.identity.wipe() }
+defer { output.mnemonic.wipe() }
+
+if let phrase = output.mnemonic.takePhrase() {
+    showRecoveryPhraseToUser(phrase)
+    // caller-side zeroize discipline — see spec for the language idiom
+}
+
+try Data(output.vaultTomlBytes).write(to: tomlURL, options: .atomic)
+try Data(output.identityBundleBytes).write(to: bundleURL, options: .atomic)
+
+print(output.identity.displayName())
+```
+
+**Kotlin:**
+
+```kotlin
+val output = createVault(
+    password = passwordBytes,
+    displayName = "Owner",
+    createdAtMs = System.currentTimeMillis(),
+)
+output.mnemonic.use { mn ->
+    mn.takePhrase()?.let { phrase ->
+        showRecoveryPhraseToUser(phrase)
+        phrase.fill(0)
+    }
+}
+Files.write(tomlPath, output.vaultTomlBytes, ...)
+Files.write(bundlePath, output.identityBundleBytes, ...)
+output.identity.use { id ->
+    println(id.displayName())
+}
+```
+
+The bridge instantiates `OsRng` and `Argon2idParams::V1_DEFAULT`
+internally; foreign callers cannot tune either knob. The recovery
+mnemonic crosses the FFI as `sequence<u8>?` (one-shot via
+`takePhrase()` — second call returns null). Caller is responsible for
+zeroizing the returned bytes after use.
+

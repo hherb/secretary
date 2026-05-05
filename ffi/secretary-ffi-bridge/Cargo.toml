@@ -10,6 +10,10 @@ workspace = true
 
 [dependencies]
 secretary-core = { path = "../../core" }
+# `rand_core::OsRng` feeds the OS CSPRNG into core's `create_vault`. Match
+# the version pinned in core/Cargo.toml so we share the lock entry. The
+# `getrandom` feature is required to enable the `OsRng` type.
+rand_core = { version = "0.6", features = ["getrandom"] }
 thiserror = "2"
 # `zeroize` is on the security-critical path: opaque handles wrapping
 # secret-bearing core types must zeroize on drop. Pinned to an EXACT
