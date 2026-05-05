@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-05 (Sub-project B.3a — recovery-phrase unlock through FFI)
-**Status:** Sub-project B.3a complete; PR pending merge. The recovery-phrase unlock path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. `FfiUnlockError` grew from 3 → 5 variants. With B.3a done, the FFI surface includes both unlock entry points; B.3b expands it with `create_vault` (the output-direction mnemonic case + the deferred "how does `Sensitive<T>` materialize on the foreign side?" question).
+**Status:** Sub-project B.3a complete; PR [#26](https://github.com/hherb/secretary/pull/26) pending merge. The recovery-phrase unlock path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. `FfiUnlockError` grew from 3 → 5 variants. With B.3a done, the FFI surface includes both unlock entry points; B.3b expands it with `create_vault` (the output-direction mnemonic case + the deferred "how does `Sensitive<T>` materialize on the foreign side?" question).
 
 ## (1) What we shipped this session
 
@@ -145,4 +145,4 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 - **Swift smoke:** 12/12 (3 B.1.1 + 5 B.2 + 4 B.3a)
 - **Kotlin smoke:** 12/12 (3 B.1.1.1 + 5 B.2 + 4 B.3a)
 - **Bridge crate:** 30 unit tests (14 in `error.rs` + 7 in `identity.rs` + 9 in `unlock.rs`); pure-safe Rust; exact-pinned `zeroize = "=1.8.2"`.
-- **PR:** [#NN](https://github.com/hherb/secretary/pull/NN) (URL recorded after `gh pr create` returns)
+- **PR:** [#26](https://github.com/hherb/secretary/pull/26)
