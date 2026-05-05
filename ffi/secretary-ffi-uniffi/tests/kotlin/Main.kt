@@ -35,6 +35,13 @@ private const val EXPECTED_FORMAT_VERSION: UShort = 1u
 // across all four sites (bridge, pytest, Swift, Kotlin).
 private const val TRUNCATION_SUFFIX_BYTES: Int = 50
 
+// Robustness check for `phraseFromInputs` (see its docstring): exactly 24
+// lowercase-ASCII words separated by single spaces — the documented shape
+// for a BIP-39 24-word English phrase. Catches the edge case where the
+// substring tokenizer ever latches onto an unintended location in the
+// fixture JSON.
+private val BIP39_PHRASE_SHAPE: Regex = Regex("^[a-z]+( [a-z]+){23}$")
+
 // Collect failures rather than exit on first so a single run reports
 // every contract that drifted, not just the first. The smoke surface
 // is small now but grows in B.2+; aggregating from the start avoids
@@ -121,6 +128,14 @@ fun main() {
     // additionally cross-checks `bip39::Mnemonic::from_entropy(entropy)
     // .to_string() == phrase` at fixture-build time, so phrase tampering
     // in the JSON cannot land silently.
+    //
+    // Robustness assertion: the post-extract `BIP39_PHRASE_SHAPE` regex
+    // catches the case where the literal `"recovery_mnemonic_phrase"`
+    // ever appears elsewhere in the JSON (e.g. as a value inside some
+    // future doc-comment field) and the substring search latches onto
+    // the wrong location — any non-phrase value fails the
+    // 24-lowercase-words shape and exits loudly instead of feeding
+    // garbage downstream.
     fun phraseFromInputs(name: String): ByteArray {
         val inputsPath = java.nio.file.Paths.get(vaultDir, name)
         val text = try {
@@ -141,7 +156,14 @@ fun main() {
             )
             exitProcess(1)
         }
-        return text.substring(openQuote + 1, closeQuote).toByteArray(Charsets.UTF_8)
+        val value = text.substring(openQuote + 1, closeQuote)
+        if (!BIP39_PHRASE_SHAPE.matches(value)) {
+            System.err.println(
+                "error: recovery_mnemonic_phrase in $inputsPath does not match 24-lowercase-word shape",
+            )
+            exitProcess(1)
+        }
+        return value.toByteArray(Charsets.UTF_8)
     }
 
     val phrase001 = phraseFromInputs("golden_vault_001_inputs.json")
