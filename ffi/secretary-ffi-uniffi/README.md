@@ -378,3 +378,117 @@ mnemonic crosses the FFI as `sequence<u8>?` (one-shot via
 `takePhrase()` — second call returns null). Caller is responsible for
 zeroizing the returned bytes after use.
 
+### Vault open — folder-based (B.4a)
+
+Adds `open_vault_with_password(folderPath:password:)` and
+`open_vault_with_recovery(folderPath:mnemonic:)` — the first
+folder-IO entry points on the uniffi surface. Both arguments are
+`bytes` in the UDL; callers pass the UTF-8-encoded path as bytes
+(matching how the Kotlin/Swift path crosses the C ABI). File I/O stays
+Rust-side; the binding-flavor crates receive typed results.
+
+UDL declaration:
+
+```udl
+[Throws=VaultError]
+OpenVaultOutput open_vault_with_password(bytes folder_path, bytes password);
+
+[Throws=VaultError]
+OpenVaultOutput open_vault_with_recovery(bytes folder_path, bytes mnemonic);
+```
+
+uniffi 0.31 codegen produced no surprises for B.4a: `bytes` →
+`Data`/`ByteArray`, `VaultError`/`VaultException` enum/sealed-class,
+and `ULong` for `u64` all matched the plan first try. The `close →
+wipe` rename (established in B.2) continues to be the only uniffi-side
+projection rename.
+
+**Swift idiom (`defer { wipe() }`):**
+
+```swift
+import secretary
+
+let folderPath = "/path/to/vault".data(using: .utf8)!
+let password = "correct horse...".data(using: .utf8)!
+
+let output = try openVaultWithPassword(folderPath: folderPath, password: password)
+defer { output.identity.wipe() }
+defer { output.manifest.wipe() }
+
+print(output.identity.displayName())
+for block in output.manifest.blockSummaries() {
+    print("\(block.blockName) (\(block.blockUuid.hexString))")
+}
+
+// Error path:
+do {
+    let _ = try openVaultWithPassword(folderPath: folderPath, password: wrongPw)
+} catch VaultError.WrongPasswordOrCorrupt {
+    // Password wrong or data integrity failure — anti-oracle conflation per §13.
+} catch let VaultError.FolderInvalid(detail) {
+    print("Folder problem: \(detail)")
+} catch let VaultError.CorruptVault(detail) {
+    print("Vault corrupt: \(detail)")
+}
+```
+
+**Kotlin idiom (`.use { }`):**
+
+```kotlin
+import uniffi.secretary.*
+
+val folderPath = "/path/to/vault".toByteArray(Charsets.UTF_8)
+val password = "correct horse...".toByteArray(Charsets.UTF_8)
+
+val output = openVaultWithPassword(folderPath = folderPath, password = password)
+output.identity.use { identity ->
+    output.manifest.use { manifest ->
+        println(identity.displayName())
+        for (block in manifest.blockSummaries()) {
+            println("${block.blockName} (${block.blockUuid.contentToString()})")
+        }
+    }
+}
+
+// Error path:
+try {
+    openVaultWithPassword(folderPath = folderPath, password = wrongPw)
+} catch (e: VaultException.WrongPasswordOrCorrupt) {
+    // Password wrong or data integrity failure — anti-oracle conflation per §13.
+} catch (e: VaultException.FolderInvalid) {
+    println("Folder problem: ${e.detail}")
+} catch (e: VaultException.CorruptVault) {
+    println("Vault corrupt: ${e.detail}")
+}
+```
+
+**New UDL types:**
+
+- `interface OpenVaultManifest` — opaque handle to the decrypted
+  manifest. Same `close → wipe` rename rationale as `UnlockedIdentity`.
+  Accessors: `vaultUuid()`, `ownerUserUuid()`, `blockCount()`,
+  `blockSummaries()`, `findBlock(blockUuid:)`. `local_highest_clock`
+  is always `None` / `null` — rollback deferred to Sub-project C.
+- `dictionary OpenVaultOutput` — two fields: `identity: UnlockedIdentity`,
+  `manifest: OpenVaultManifest`.
+- `dictionary BlockSummary` — five plaintext-in-the-manifest fields:
+  `blockUuid: Data/ByteArray`, `blockName: String`, `createdAtMs: ULong`,
+  `lastModifiedMs: ULong`, `recipientUuids: [Data]/[ByteArray]`.
+- `[Error] interface VaultError` — new 6-variant error type (distinct
+  from `UnlockError`): `WrongPasswordOrCorrupt`, `WrongMnemonicOrCorrupt`,
+  `InvalidMnemonic(string detail)`, `VaultMismatch`, `CorruptVault(string
+  detail)`, `FolderInvalid(string detail)`. Mirrors `UnlockError`'s 5
+  unlock-class variants byte-identically plus the new `FolderInvalid`
+  variant. Swift sees `VaultError`; Kotlin sees `VaultException`.
+
+**Test coverage (post-B.4a):**
+
+18 Swift asserts (3 B.1.1 smoke + 5 B.2 password-unlock +
+4 B.3a recovery-unlock + 3 B.3b vault-creation + 3 B.4a folder-open).
+19 Kotlin asserts (3 B.1.1.1 smoke + 5 B.2 password-unlock +
+4 B.3a recovery-unlock + 3 B.3b vault-creation + 4 B.4a folder-open).
+Bridge-crate Rust tests: 54 (13 in the new `vault.rs` module for
+`FfiVaultError` mapping + folder-open integration + manifest accessors,
+on top of the 30 prior tests growing to 41 with B.3b's create-path
+additions). uniffi-crate Rust tests: 13.
+

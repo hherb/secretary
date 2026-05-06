@@ -1,4 +1,14 @@
-//! Thinned 5-variant FFI-friendly error type.
+//! Thinned FFI-friendly error types for the bridge layer.
+//!
+//! [`FfiUnlockError`] — 5-variant thinned error for the **bytes-in** unlock
+//! entry points (`open_with_password`, `open_with_recovery`, `create_vault`).
+//! [`FfiVaultError`] — 6-variant **folder-in** error type. Mirrors
+//! `FfiUnlockError`'s 5 unlock-class variants byte-identically (variant
+//! name + Display string) plus a new `FolderInvalid { detail }` for missing
+//! or inaccessible vault folders. Returned by `open_vault_with_password` /
+//! `open_vault_with_recovery`.
+//!
+//! # Why thinned (FfiUnlockError rationale)
 //!
 //! `core::unlock::UnlockError` has 7 variants reachable from
 //! `open_with_password`, three of which wrap inner enums with their own
@@ -31,6 +41,21 @@
 //!   so the variant reads correctly on BOTH the open path (where it
 //!   fires when a vault file is malformed) AND the create path (where
 //!   it fires on rare system-level failures during vault production).
+//!
+//! # Why a separate FfiVaultError (mirror property)
+//!
+//! The bytes-in unlock paths cannot raise IO errors — they take owned byte
+//! slices, not paths. The folder-in vault paths read four files from disk
+//! (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`,
+//! `contacts/<owner_uuid>.card`) and need a way to surface "your path is
+//! wrong" distinctly from "your data is corrupt". The 5 overlapping
+//! variants share **byte-identical** Display strings with their
+//! `FfiUnlockError` counterparts — pinned by a tripwire test in this
+//! module. The drift-resistance comes from `From<core::vault::VaultError>`
+//! delegating unlock-class translation through a private
+//! `From<FfiUnlockError>` arm; if a future change adds a 6th variant to
+//! `FfiUnlockError`, the new variant automatically picks up the right
+//! `FfiVaultError` mapping via the delegation.
 
 use thiserror::Error;
 
@@ -343,5 +368,329 @@ mod tests {
             !rendered.contains("corrupt or unreadable"),
             "Display still contains the old read-path-only text: {rendered}",
         );
+    }
+
+    // =============================================================================
+    // FfiVaultError tests — mirror property + dedicated FolderInvalid + drift tripwire
+    // =============================================================================
+
+    #[test]
+    fn vault_error_display_strings_mirror_unlock_error_byte_identical() {
+        // Tripwire: the 5 overlapping variants MUST produce byte-identical
+        // Display strings between FfiUnlockError and FfiVaultError. A future
+        // rename on either side that breaks the mirror property would fail
+        // here, forcing a deliberate decision rather than silent drift.
+        assert_eq!(
+            FfiUnlockError::WrongPasswordOrCorrupt.to_string(),
+            FfiVaultError::WrongPasswordOrCorrupt.to_string(),
+        );
+        assert_eq!(
+            FfiUnlockError::WrongMnemonicOrCorrupt.to_string(),
+            FfiVaultError::WrongMnemonicOrCorrupt.to_string(),
+        );
+        assert_eq!(
+            FfiUnlockError::InvalidMnemonic {
+                detail: "test".to_string()
+            }
+            .to_string(),
+            FfiVaultError::InvalidMnemonic {
+                detail: "test".to_string()
+            }
+            .to_string(),
+        );
+        assert_eq!(
+            FfiUnlockError::VaultMismatch.to_string(),
+            FfiVaultError::VaultMismatch.to_string(),
+        );
+        assert_eq!(
+            FfiUnlockError::CorruptVault {
+                detail: "test".to_string()
+            }
+            .to_string(),
+            FfiVaultError::CorruptVault {
+                detail: "test".to_string()
+            }
+            .to_string(),
+        );
+    }
+
+    #[test]
+    fn vault_error_folder_invalid_display_uses_dedicated_text() {
+        let ffi = FfiVaultError::FolderInvalid {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{ffi}");
+        assert!(
+            rendered.contains("vault folder is not accessible"),
+            "Display did not contain the dedicated FolderInvalid text: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+    }
+
+    #[test]
+    fn from_ffi_unlock_error_translates_each_variant_one_to_one() {
+        // The private bridge-internal From<FfiUnlockError> arm. This is
+        // reachable from FfiVaultError::from(VaultError::Unlock(...)) but
+        // worth pinning directly so any rename / variant addition fails here
+        // first.
+        assert!(matches!(
+            FfiVaultError::from(FfiUnlockError::WrongPasswordOrCorrupt),
+            FfiVaultError::WrongPasswordOrCorrupt,
+        ));
+        assert!(matches!(
+            FfiVaultError::from(FfiUnlockError::WrongMnemonicOrCorrupt),
+            FfiVaultError::WrongMnemonicOrCorrupt,
+        ));
+        let inv = FfiVaultError::from(FfiUnlockError::InvalidMnemonic {
+            detail: "bad".to_string(),
+        });
+        let FfiVaultError::InvalidMnemonic { detail } = inv else {
+            panic!("expected InvalidMnemonic, got {inv:?}");
+        };
+        assert_eq!(detail, "bad");
+        assert!(matches!(
+            FfiVaultError::from(FfiUnlockError::VaultMismatch),
+            FfiVaultError::VaultMismatch,
+        ));
+        let corrupt = FfiVaultError::from(FfiUnlockError::CorruptVault {
+            detail: "x".to_string(),
+        });
+        let FfiVaultError::CorruptVault { detail } = corrupt else {
+            panic!("expected CorruptVault, got {corrupt:?}");
+        };
+        assert_eq!(detail, "x");
+    }
+
+    #[test]
+    fn from_core_vault_error_unlock_arm_delegates_through_ffi_unlock_error() {
+        // VaultError::Unlock(WrongPasswordOrCorrupt) → FfiVaultError::WrongPasswordOrCorrupt
+        // via the FfiUnlockError translation. Test the full delegation path.
+        use secretary_core::unlock::UnlockError;
+        use secretary_core::vault::VaultError;
+        let core_err = VaultError::Unlock(UnlockError::WrongPasswordOrCorrupt);
+        let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::WrongPasswordOrCorrupt));
+    }
+
+    #[test]
+    fn from_core_vault_error_io_not_found_maps_to_folder_invalid() {
+        use secretary_core::vault::VaultError;
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+        let core_err = VaultError::Io {
+            context: "failed to read vault.toml",
+            source: io_err,
+        };
+        let ffi: FfiVaultError = core_err.into();
+        let FfiVaultError::FolderInvalid { detail } = ffi else {
+            panic!("expected FolderInvalid, got {ffi:?}");
+        };
+        assert!(
+            detail.contains("vault.toml") && detail.contains("no such file"),
+            "FolderInvalid detail did not carry context + source: {detail}",
+        );
+    }
+
+    #[test]
+    fn from_core_vault_error_io_permission_denied_maps_to_folder_invalid() {
+        use secretary_core::vault::VaultError;
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let core_err = VaultError::Io {
+            context: "failed to read identity.bundle.enc",
+            source: io_err,
+        };
+        let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::FolderInvalid { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_io_other_kind_falls_through_to_corrupt_vault() {
+        // Kinds other than NotFound / PermissionDenied are not foreign-
+        // caller-actionable as "your path is wrong" — fold to CorruptVault.
+        use secretary_core::vault::VaultError;
+        let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, "bad data");
+        let core_err = VaultError::Io {
+            context: "failed to parse manifest.cbor.enc",
+            source: io_err,
+        };
+        let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_owner_uuid_mismatch_maps_to_corrupt_vault() {
+        // Post-unlock integrity failure folds into CorruptVault catchall.
+        use secretary_core::vault::VaultError;
+        let core_err = VaultError::OwnerUuidMismatch {
+            vault: [0u8; 16],
+            found: [1u8; 16],
+        };
+        let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_kdf_params_mismatch_maps_to_corrupt_vault() {
+        // Post-unlock integrity failure pinned to CorruptVault.
+        // Note: the variant in core is `KdfParamsMismatch` (not `ManifestKdfParamsMismatch`).
+        use secretary_core::vault::VaultError;
+        let core_err = VaultError::KdfParamsMismatch;
+        let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+}
+
+// =============================================================================
+// FfiVaultError — folder-in counterpart to FfiUnlockError
+// =============================================================================
+
+/// FFI-friendly thinned error type for the **folder-in** vault entry points
+/// (`open_vault_with_password` and `open_vault_with_recovery`). Mirrors
+/// [`FfiUnlockError`]'s 5 unlock-class variants byte-identically (variant
+/// name + Display string) plus a new [`FfiVaultError::FolderInvalid`]
+/// variant for missing or inaccessible vault folders.
+///
+/// # Why a separate error type
+///
+/// The bytes-in unlock entry points (B.2 / B.3a, returning `FfiUnlockError`)
+/// cannot raise IO errors — they take owned byte slices, not paths. The
+/// folder-in entry points (B.4a) read four files from disk
+/// (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`,
+/// `contacts/<owner_uuid>.card`) and need a way to surface "your path is
+/// wrong" distinctly from "your data is corrupt". Promoting that distinction
+/// to a separate variant with `detail: String` carrying the missing-file
+/// name lets foreign UIs render the right affordance (fix the path vs.
+/// re-pair from backups). Pre-unlock IO errors don't leak unlock-secret
+/// information, so the §13 anti-oracle constraint allows the granularity.
+///
+/// # Mirror property
+///
+/// The 5 overlapping variants share **byte-identical** Display strings with
+/// their `FfiUnlockError` counterparts. Foreign-side dispatch logic on a
+/// folder-in `FfiVaultError` reads identically to dispatch on a bytes-in
+/// `FfiUnlockError`. A code-quality tripwire test in this module pins the
+/// strings byte-identical so a future variant rename on `FfiUnlockError`
+/// cannot drift unnoticed.
+#[derive(Debug, Error)]
+pub enum FfiVaultError {
+    /// Wrong password OR vault corruption — deliberately conflated per
+    /// `docs/threat-model.md` §13. Returned by `open_vault_with_password`.
+    /// Mirrors [`FfiUnlockError::WrongPasswordOrCorrupt`] in name and
+    /// Display text.
+    #[error("wrong password or vault corruption")]
+    WrongPasswordOrCorrupt,
+
+    /// Wrong recovery phrase OR vault corruption — parallel anti-oracle
+    /// conflation for `open_vault_with_recovery`. Mirrors
+    /// [`FfiUnlockError::WrongMnemonicOrCorrupt`] in name and Display text.
+    #[error("wrong recovery phrase or vault corruption")]
+    WrongMnemonicOrCorrupt,
+
+    /// Invalid recovery phrase — pre-decryption validation failure (wrong
+    /// word count, unknown word, bad checksum, or invalid UTF-8 input).
+    /// Mirrors [`FfiUnlockError::InvalidMnemonic`] in name and Display text.
+    #[error("invalid recovery phrase: {detail}")]
+    InvalidMnemonic {
+        /// Diagnostic text from the inner `MnemonicError` variant's
+        /// `Display` impl, or `"phrase contained invalid UTF-8"` when
+        /// the FFI input slice is not valid UTF-8.
+        detail: String,
+    },
+
+    /// `vault.toml` and `identity.bundle.enc` reference different vaults.
+    /// Mirrors [`FfiUnlockError::VaultMismatch`] in name and Display text.
+    #[error("vault.toml and identity.bundle.enc reference different vaults")]
+    VaultMismatch,
+
+    /// Vault data integrity failure — covers BOTH the unlock-time corruption
+    /// cases mirrored from [`FfiUnlockError::CorruptVault`] AND the
+    /// post-unlock integrity failures specific to folder-in: manifest
+    /// decrypt/parse/verify, owner-card decode/self-verify, fingerprint
+    /// cross-check, KDF-params cross-check. Display text is path-neutral
+    /// and matches [`FfiUnlockError::CorruptVault`] exactly. Carries a
+    /// diagnostic `detail` string for debugging; not pattern-matchable on
+    /// the inner cause.
+    #[error("vault data integrity failure: {detail}")]
+    CorruptVault {
+        /// Diagnostic text from the inner `core::VaultError` variant's
+        /// `Display` impl. Free-form; not part of the API contract.
+        detail: String,
+    },
+
+    /// Vault folder doesn't exist, isn't readable, or is missing one of
+    /// the required files (`vault.toml`, `identity.bundle.enc`,
+    /// `manifest.cbor.enc`, `contacts/<owner_uuid>.card`). New variant
+    /// introduced by B.4a — no counterpart on [`FfiUnlockError`] (bytes-in
+    /// callers cannot raise IO errors against their own filesystem through
+    /// the bridge). The `detail` string carries the IO context (e.g.
+    /// `"failed to read vault.toml: No such file or directory (os error 2)"`).
+    #[error("vault folder is not accessible: {detail}")]
+    FolderInvalid {
+        /// IO context string: which file we tried to read + the underlying
+        /// `io::Error`'s Display.
+        detail: String,
+    },
+}
+
+impl From<secretary_core::vault::VaultError> for FfiVaultError {
+    fn from(e: secretary_core::vault::VaultError) -> Self {
+        use secretary_core::vault::VaultError as VE;
+
+        match e {
+            // Unlock-class errors: delegate to the FfiUnlockError translation
+            // logic so the 5 mirrored variants stay drift-free. If a future
+            // refactor adds a 6th variant to FfiUnlockError, the new variant
+            // automatically picks up the right FfiVaultError mapping via the
+            // private From<FfiUnlockError> arm below.
+            VE::Unlock(unlock_err) => {
+                let intermediate: FfiUnlockError = unlock_err.into();
+                intermediate.into()
+            }
+
+            // Pre-unlock IO errors → FolderInvalid. The matched ErrorKinds
+            // are the foreign-caller-actionable ones (path is wrong, no
+            // permission). Any other IO error kind (e.g. interrupted, broken
+            // pipe) falls through to CorruptVault since it's neither
+            // user-actionable nor data-integrity-clean.
+            VE::Io { context, source }
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                FfiVaultError::FolderInvalid {
+                    detail: format!("{context}: {source}"),
+                }
+            }
+
+            // Post-unlock integrity failures and unexpected IO kinds: fold
+            // into CorruptVault catchall. These cannot leak unlock-secret
+            // information (the IBK was already recovered when they fire).
+            // Manifest decode, owner-card verification, UUID mismatches,
+            // KDF-params mismatch, vector-clock overflow, signature
+            // primitive failure, etc. all land here.
+            other => FfiVaultError::CorruptVault {
+                detail: format!("{other}"),
+            },
+        }
+    }
+}
+
+/// Bridge-internal conversion. This impl is necessarily `pub` (it
+/// implements the standard `From` trait, whose visibility cannot be
+/// restricted), but it is **not part of the stable FFI surface**. Do not
+/// use this arm directly from foreign-projection code — it would couple
+/// the binding-flavor crates (`secretary-ffi-py`, `secretary-ffi-uniffi`)
+/// to a private translation step. Foreign code goes through
+/// `From<core::vault::VaultError>`, which delegates to this arm internally
+/// for the unlock-class variants.
+impl From<FfiUnlockError> for FfiVaultError {
+    fn from(e: FfiUnlockError) -> Self {
+        match e {
+            FfiUnlockError::WrongPasswordOrCorrupt => FfiVaultError::WrongPasswordOrCorrupt,
+            FfiUnlockError::WrongMnemonicOrCorrupt => FfiVaultError::WrongMnemonicOrCorrupt,
+            FfiUnlockError::InvalidMnemonic { detail } => FfiVaultError::InvalidMnemonic { detail },
+            FfiUnlockError::VaultMismatch => FfiVaultError::VaultMismatch,
+            FfiUnlockError::CorruptVault { detail } => FfiVaultError::CorruptVault { detail },
+        }
     }
 }
