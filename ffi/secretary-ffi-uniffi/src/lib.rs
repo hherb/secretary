@@ -437,14 +437,28 @@ pub fn open_vault_with_password(
     folder_path: Vec<u8>,
     mut password: Vec<u8>,
 ) -> Result<OpenVaultOutput, VaultError> {
-    let path = std::path::PathBuf::from(std::str::from_utf8(&folder_path).map_err(|_| {
-        VaultError::FolderInvalid {
-            detail: "folder path contained invalid UTF-8".to_string(),
-        }
-    })?);
-    let result = secretary_ffi_bridge::open_vault_with_password(&path, &password);
+    use zeroize::Zeroize;
+
+    // Compute the full result chain (path validation + bridge call) into a
+    // single binding so we can zeroize the password BEFORE any `?`-propagation.
+    // Both fallible paths produce the same Err type, so there is no lost
+    // context in the match arms.
+    let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
+        match std::str::from_utf8(&folder_path) {
+            Ok(s) => {
+                let path = std::path::PathBuf::from(s);
+                secretary_ffi_bridge::open_vault_with_password(&path, &password)
+                    .map_err(VaultError::from)
+            }
+            Err(_) => Err(VaultError::FolderInvalid {
+                detail: "folder path contained invalid UTF-8".to_string(),
+            }),
+        };
+
+    // Zeroize unconditionally — runs on both success and error paths.
     password.zeroize();
-    let bridge_out = result.map_err(VaultError::from)?;
+
+    let bridge_out = result?;
     Ok(OpenVaultOutput {
         identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
         manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
@@ -465,14 +479,28 @@ pub fn open_vault_with_recovery(
     folder_path: Vec<u8>,
     mut mnemonic: Vec<u8>,
 ) -> Result<OpenVaultOutput, VaultError> {
-    let path = std::path::PathBuf::from(std::str::from_utf8(&folder_path).map_err(|_| {
-        VaultError::FolderInvalid {
-            detail: "folder path contained invalid UTF-8".to_string(),
-        }
-    })?);
-    let result = secretary_ffi_bridge::open_vault_with_recovery(&path, &mnemonic);
+    use zeroize::Zeroize;
+
+    // Compute the full result chain (path validation + bridge call) into a
+    // single binding so we can zeroize the mnemonic BEFORE any `?`-propagation.
+    // Both fallible paths produce the same Err type, so there is no lost
+    // context in the match arms.
+    let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
+        match std::str::from_utf8(&folder_path) {
+            Ok(s) => {
+                let path = std::path::PathBuf::from(s);
+                secretary_ffi_bridge::open_vault_with_recovery(&path, &mnemonic)
+                    .map_err(VaultError::from)
+            }
+            Err(_) => Err(VaultError::FolderInvalid {
+                detail: "folder path contained invalid UTF-8".to_string(),
+            }),
+        };
+
+    // Zeroize unconditionally — runs on both success and error paths.
     mnemonic.zeroize();
-    let bridge_out = result.map_err(VaultError::from)?;
+
+    let bridge_out = result?;
     Ok(OpenVaultOutput {
         identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
         manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
@@ -692,5 +720,41 @@ mod tests {
         assert_eq!(proj.created_at_ms, 100);
         assert_eq!(proj.last_modified_ms, 200);
         assert_eq!(proj.recipient_uuids, vec![vec![2u8; 16], vec![3u8; 16]]);
+    }
+
+    // -------------------------------------------------------------------
+    // B.4a memory-hygiene regression: invalid-UTF-8 folder_path must
+    // return FolderInvalid regardless of whether the secret arg is valid.
+    //
+    // The structural fix (zeroize before `?`-propagation) is enforced by
+    // code shape; these tests pin the observable error contract so that a
+    // future refactor that re-introduces `?`-before-zeroize also breaks
+    // a named test rather than silently regressing.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn open_vault_with_password_invalid_utf8_path_returns_folder_invalid() {
+        // \xff\xfe is invalid UTF-8; the function must return FolderInvalid
+        // rather than panicking or returning a different variant.
+        // OpenVaultOutput doesn't implement Debug (it holds Arc<opaque handles>),
+        // so we match rather than calling unwrap_err().
+        match open_vault_with_password(b"\xff\xfe".to_vec(), b"hunter2".to_vec()) {
+            Err(VaultError::FolderInvalid { .. }) => {}
+            Err(other) => panic!("expected FolderInvalid, got {other:?}"),
+            Ok(_) => panic!("expected Err for invalid UTF-8 path"),
+        }
+    }
+
+    #[test]
+    fn open_vault_with_recovery_invalid_utf8_path_returns_folder_invalid() {
+        // Mirror of the password variant — pins the mnemonic forwarder.
+        match open_vault_with_recovery(
+            b"\xff\xfe".to_vec(),
+            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec(),
+        ) {
+            Err(VaultError::FolderInvalid { .. }) => {}
+            Err(other) => panic!("expected FolderInvalid, got {other:?}"),
+            Ok(_) => panic!("expected Err for invalid UTF-8 path"),
+        }
     }
 }
