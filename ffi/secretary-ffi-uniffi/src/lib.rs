@@ -201,6 +201,118 @@ pub struct CreateVaultOutput {
     pub mnemonic: std::sync::Arc<MnemonicOutput>,
 }
 
+// =============================================================================
+// B.4a — VaultError (mirrors FfiVaultError 6-variant flat enum)
+// =============================================================================
+
+/// uniffi projection of FfiVaultError. Six flat variants matching the UDL
+/// declaration. The rename rationale is the same as UnlockError's: uniffi
+/// 0.31's Kotlin codegen has overload-resolution conflicts between
+/// `Throwable.message` and a UDL-declared `message` field, so structured
+/// fields are named `detail`.
+#[derive(Debug, thiserror::Error)]
+pub enum VaultError {
+    #[error("wrong password or vault corruption")]
+    WrongPasswordOrCorrupt,
+    #[error("wrong recovery phrase or vault corruption")]
+    WrongMnemonicOrCorrupt,
+    #[error("invalid recovery phrase: {detail}")]
+    InvalidMnemonic { detail: String },
+    #[error("vault.toml and identity.bundle.enc reference different vaults")]
+    VaultMismatch,
+    #[error("vault data integrity failure: {detail}")]
+    CorruptVault { detail: String },
+    #[error("vault folder is not accessible: {detail}")]
+    FolderInvalid { detail: String },
+}
+
+impl From<secretary_ffi_bridge::FfiVaultError> for VaultError {
+    fn from(e: secretary_ffi_bridge::FfiVaultError) -> Self {
+        use secretary_ffi_bridge::FfiVaultError as B;
+        match e {
+            B::WrongPasswordOrCorrupt => VaultError::WrongPasswordOrCorrupt,
+            B::WrongMnemonicOrCorrupt => VaultError::WrongMnemonicOrCorrupt,
+            B::InvalidMnemonic { detail } => VaultError::InvalidMnemonic { detail },
+            B::VaultMismatch => VaultError::VaultMismatch,
+            B::CorruptVault { detail } => VaultError::CorruptVault { detail },
+            B::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
+        }
+    }
+}
+
+// =============================================================================
+// B.4a — OpenVaultManifest (opaque handle wrapper)
+// =============================================================================
+
+/// uniffi wrapper around secretary_ffi_bridge::OpenVaultManifest.
+pub struct OpenVaultManifest(secretary_ffi_bridge::OpenVaultManifest);
+
+impl OpenVaultManifest {
+    pub fn vault_uuid(&self) -> Vec<u8> {
+        self.0.vault_uuid()
+    }
+
+    pub fn owner_user_uuid(&self) -> Vec<u8> {
+        self.0.owner_user_uuid()
+    }
+
+    pub fn block_count(&self) -> u64 {
+        self.0.block_count()
+    }
+
+    pub fn block_summaries(&self) -> Vec<BlockSummary> {
+        self.0
+            .block_summaries()
+            .into_iter()
+            .map(BlockSummary::from)
+            .collect()
+    }
+
+    pub fn find_block(&self, block_uuid: Vec<u8>) -> Option<BlockSummary> {
+        self.0.find_block(&block_uuid).map(BlockSummary::from)
+    }
+
+    pub fn wipe(&self) {
+        self.0.wipe();
+    }
+}
+
+// =============================================================================
+// B.4a — BlockSummary value type (uniffi dictionary)
+// =============================================================================
+
+/// uniffi dictionary projection of secretary_ffi_bridge::BlockSummary.
+pub struct BlockSummary {
+    pub block_uuid: Vec<u8>,
+    pub block_name: String,
+    pub created_at_ms: u64,
+    pub last_modified_ms: u64,
+    pub recipient_uuids: Vec<Vec<u8>>,
+}
+
+impl From<secretary_ffi_bridge::BlockSummary> for BlockSummary {
+    fn from(b: secretary_ffi_bridge::BlockSummary) -> Self {
+        Self {
+            block_uuid: b.block_uuid.to_vec(),
+            block_name: b.block_name,
+            created_at_ms: b.created_at_ms,
+            last_modified_ms: b.last_modified_ms,
+            recipient_uuids: b.recipient_uuids.into_iter().map(|u| u.to_vec()).collect(),
+        }
+    }
+}
+
+// =============================================================================
+// B.4a — OpenVaultOutput dictionary
+// =============================================================================
+
+/// uniffi dictionary projection. Holds two opaque-handle Arc references.
+/// Same shape as B.3b's CreateVaultOutput dictionary.
+pub struct OpenVaultOutput {
+    pub identity: std::sync::Arc<UnlockedIdentity>,
+    pub manifest: std::sync::Arc<OpenVaultManifest>,
+}
+
 /// Unlock a vault using its master password. uniffi-projected.
 ///
 /// # Errors
@@ -307,6 +419,63 @@ pub fn create_vault(
         identity_bundle_bytes,
         identity: std::sync::Arc::new(UnlockedIdentity(identity)),
         mnemonic: std::sync::Arc::new(MnemonicOutput(mnemonic)),
+    })
+}
+
+/// Open a vault folder using its master password. uniffi-projected. (B.4a)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path to the vault folder as
+/// bytes. Returns [`VaultError::FolderInvalid`] if the path contains invalid
+/// UTF-8.
+///
+/// # Errors
+///
+/// Returns [`VaultError`] on failure. See the bridge crate's
+/// [`FfiVaultError`](secretary_ffi_bridge::FfiVaultError) docs for the
+/// thinned 6-variant rationale.
+pub fn open_vault_with_password(
+    folder_path: Vec<u8>,
+    mut password: Vec<u8>,
+) -> Result<OpenVaultOutput, VaultError> {
+    let path = std::path::PathBuf::from(std::str::from_utf8(&folder_path).map_err(|_| {
+        VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }
+    })?);
+    let result = secretary_ffi_bridge::open_vault_with_password(&path, &password);
+    password.zeroize();
+    let bridge_out = result.map_err(VaultError::from)?;
+    Ok(OpenVaultOutput {
+        identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
+        manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
+    })
+}
+
+/// Open a vault folder using its 24-word BIP-39 recovery phrase. uniffi-projected. (B.4a)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path as bytes.
+/// `mnemonic` is the UTF-8-encoded phrase as bytes; the bridge's UTF-8
+/// validation seam surfaces malformed-UTF-8 input as
+/// [`VaultError::InvalidMnemonic`] with `detail: "phrase contained invalid UTF-8"`.
+///
+/// # Errors
+///
+/// Returns [`VaultError`] on failure.
+pub fn open_vault_with_recovery(
+    folder_path: Vec<u8>,
+    mut mnemonic: Vec<u8>,
+) -> Result<OpenVaultOutput, VaultError> {
+    let path = std::path::PathBuf::from(std::str::from_utf8(&folder_path).map_err(|_| {
+        VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }
+    })?);
+    let result = secretary_ffi_bridge::open_vault_with_recovery(&path, &mnemonic);
+    mnemonic.zeroize();
+    let bridge_out = result.map_err(VaultError::from)?;
+    Ok(OpenVaultOutput {
+        identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
+        manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
     })
 }
 
@@ -463,5 +632,65 @@ mod tests {
         mo.wipe();
         mo.wipe(); // must not panic
         assert!(mo.take_phrase().is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // B.4a: pin the From<FfiVaultError> for VaultError mapping and
+    // BlockSummary projection.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vault_error_maps_each_variant_one_to_one() {
+        use secretary_ffi_bridge::FfiVaultError as B;
+        assert!(matches!(
+            VaultError::from(B::WrongPasswordOrCorrupt),
+            VaultError::WrongPasswordOrCorrupt
+        ));
+        assert!(matches!(
+            VaultError::from(B::WrongMnemonicOrCorrupt),
+            VaultError::WrongMnemonicOrCorrupt
+        ));
+        let inv = VaultError::from(B::InvalidMnemonic {
+            detail: "x".to_string(),
+        });
+        let VaultError::InvalidMnemonic { detail } = inv else {
+            panic!("expected InvalidMnemonic")
+        };
+        assert_eq!(detail, "x");
+        assert!(matches!(
+            VaultError::from(B::VaultMismatch),
+            VaultError::VaultMismatch
+        ));
+        let cor = VaultError::from(B::CorruptVault {
+            detail: "y".to_string(),
+        });
+        let VaultError::CorruptVault { detail } = cor else {
+            panic!("expected CorruptVault")
+        };
+        assert_eq!(detail, "y");
+        let fol = VaultError::from(B::FolderInvalid {
+            detail: "z".to_string(),
+        });
+        let VaultError::FolderInvalid { detail } = fol else {
+            panic!("expected FolderInvalid")
+        };
+        assert_eq!(detail, "z");
+    }
+
+    #[test]
+    fn block_summary_projection_round_trip_preserves_all_fields() {
+        let bridge = secretary_ffi_bridge::BlockSummary {
+            block_uuid: [1u8; 16],
+            block_name: "test".to_string(),
+            created_at_ms: 100,
+            last_modified_ms: 200,
+            recipient_uuids: vec![[2u8; 16], [3u8; 16]],
+        };
+        let proj = BlockSummary::from(bridge);
+        assert_eq!(proj.block_uuid, vec![1u8; 16]);
+        assert_eq!(proj.block_name, "test");
+        assert_eq!(proj.created_at_ms, 100);
+        assert_eq!(proj.last_modified_ms, 200);
+        assert_eq!(proj.recipient_uuids, vec![vec![2u8; 16], vec![3u8; 16]]);
     }
 }
