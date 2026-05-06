@@ -152,10 +152,10 @@ fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::WrongMnemonicOrCorrupt => {
             VaultWrongMnemonicOrCorrupt::new_err(e.to_string())
         }
-        FfiVaultError::InvalidMnemonic { .. } => VaultInvalidMnemonic::new_err(e.to_string()),
+        FfiVaultError::InvalidMnemonic { detail } => VaultInvalidMnemonic::new_err(detail),
         FfiVaultError::VaultMismatch => VaultMismatchFolder::new_err(e.to_string()),
-        FfiVaultError::CorruptVault { .. } => VaultCorruptVault::new_err(e.to_string()),
-        FfiVaultError::FolderInvalid { .. } => VaultFolderInvalid::new_err(e.to_string()),
+        FfiVaultError::CorruptVault { detail } => VaultCorruptVault::new_err(detail),
+        FfiVaultError::FolderInvalid { detail } => VaultFolderInvalid::new_err(detail),
     }
 }
 
