@@ -65,6 +65,7 @@ pub mod error;
 pub mod identity;
 mod sync_helpers;
 pub mod unlock;
+pub mod vault;
 
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use error::FfiUnlockError;
