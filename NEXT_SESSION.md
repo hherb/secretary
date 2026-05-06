@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-05 (Sub-project B.3b — vault creation through FFI)
-**Status:** Sub-project B.3b complete; PR pending merge. The vault creation path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. With B.3b done, the FFI surface contains every `secretary_core::unlock` v1 entry point: `open_with_password`, `open_with_recovery`, and `create_vault`. The deferred-from-B.2 "how does `Sensitive<T>` materialize on the foreign side?" question is answered with a one-shot opaque `MnemonicOutput` handle pattern. Subsequent FFI work addresses different concerns (vault operations on records, sharing primitives, public-key accessors).
+**Status:** Sub-project B.3b complete and merged. PR [#27](https://github.com/hherb/secretary/pull/27) squash-merged to `main` as `a8d1b14`. The vault creation path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. With B.3b done, the FFI surface contains every `secretary_core::unlock` v1 entry point: `open_with_password`, `open_with_recovery`, and `create_vault`. The deferred-from-B.2 "how does `Sensitive<T>` materialize on the foreign side?" question is answered with a one-shot opaque `MnemonicOutput` handle pattern. Subsequent FFI work addresses different concerns (vault operations on records, sharing primitives, public-key accessors).
 
 ## (1) What we shipped this session
 
@@ -127,12 +127,12 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 ## Closing inventory
 
-- **Branch:** `feat/ffi-b3b-create-vault` (PR-pending; squash-merge target is `main`)
-- **Total commits since branching from `main@e6f97e6`:** 12 on the feature branch (8 task implementations + 1 inserted task 1b + 4 review/style fix-ups + 1 doc/handoff). Will squash to 1 in the PR.
+- **Branch:** `feat/ffi-b3b-create-vault` (squash-merged + deletable; current work happens on `main`)
+- **Total commits since branching from `main@e6f97e6`:** 12 on the feature branch (8 task implementations + 1 inserted task 1b + 4 review/style fix-ups + 1 doc/handoff). Squash-merged to `main` as `a8d1b14`.
 - **Workspace tests:** 498 + 9 ignored
 - **Pytest:** 22 (16 from B.1 + B.2 + B.3a + 6 B.3b)
 - **Swift smoke:** 15/15 (12 from prior + 3 B.3b)
 - **Kotlin smoke:** 15/15 (12 from prior + 3 B.3b; 16 PASS lines emitted because assertion 15 has a guard)
 - **Bridge crate:** 36 unit tests (was 30; +6 net)
 - **uniffi crate:** 11 unit tests (was 8; +3 net including Task 1b's tripwire)
-- **PR:** [#27](https://github.com/hherb/secretary/pull/27)
+- **PR:** [#27](https://github.com/hherb/secretary/pull/27) squash-merged as `a8d1b14`.
