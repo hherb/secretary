@@ -520,6 +520,50 @@ mod tests {
     }
 
     #[test]
+    fn find_block_returns_some_for_known_block_uuid() {
+        // Positive find_block test: looking up a UUID that IS in the
+        // manifest must return Some(BlockSummary) whose fields agree with
+        // the JSON pin. Complements the wipe test below (which exercises
+        // the None path) and the ad-hoc len-check (find_block(&[0; 16]) on
+        // a vault with no all-zero block UUID also returns None there).
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+
+        let json_path = fixture_folder("").join("golden_vault_001_inputs.json");
+        let json_str = std::fs::read_to_string(&json_path).expect("inputs JSON");
+        let pinned: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+        let pinned_block = &pinned["block_summaries"][0];
+        let known_uuid_hex = pinned_block["block_uuid"].as_str().expect("hex string");
+        let known_uuid_bytes = hex::decode(known_uuid_hex).expect("valid hex");
+
+        let summary = out
+            .manifest
+            .find_block(&known_uuid_bytes)
+            .expect("find_block must return Some for a known block_uuid");
+        assert_eq!(hex::encode(summary.block_uuid), known_uuid_hex);
+        assert_eq!(
+            summary.block_name,
+            pinned_block["block_name"].as_str().expect("string"),
+        );
+        assert_eq!(
+            summary.created_at_ms,
+            pinned_block["created_at_ms"].as_u64().expect("u64"),
+        );
+    }
+
+    #[test]
+    fn find_block_returns_none_for_wrong_length_uuid() {
+        // The 16-byte runtime length check is the only validation on the
+        // UUID input. Pin both the too-short and too-long rejections so a
+        // future refactor (e.g. accepting [u8; 16] directly) is a deliberate
+        // API change rather than a silent regression.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        assert_eq!(out.manifest.find_block(&[0u8; 15]), None);
+        assert_eq!(out.manifest.find_block(&[0u8; 17]), None);
+    }
+
+    #[test]
     fn open_vault_manifest_wipe_returns_empty_defaults() {
         let folder = fixture_folder("golden_vault_001");
         let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
