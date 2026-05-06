@@ -201,22 +201,50 @@ uniffi codegen rename note: per B.3b's experience, uniffi 0.31 may codegen `Vec<
 ```rust
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum FfiVaultError {
-    #[error("password is wrong, or vault data integrity failure")]
-    WrongPassword,
-    #[error("mnemonic is wrong, or vault data integrity failure")]
+    /// Wrong password OR vault corruption — deliberately conflated per
+    /// `docs/threat-model.md` §13 (anti-oracle). Returned by
+    /// `open_vault_with_password`. Mirrors `FfiUnlockError::WrongPasswordOrCorrupt`
+    /// in name and Display text.
+    #[error("wrong password or vault corruption")]
+    WrongPasswordOrCorrupt,
+
+    /// Wrong recovery phrase OR vault corruption — parallel anti-oracle
+    /// conflation for `open_vault_with_recovery`. Mirrors
+    /// `FfiUnlockError::WrongMnemonicOrCorrupt` in name and Display text.
+    #[error("wrong recovery phrase or vault corruption")]
     WrongMnemonicOrCorrupt,
-    #[error("invalid mnemonic: {detail}")]
+
+    /// Invalid recovery phrase — pre-decryption validation failure (wrong
+    /// word count, unknown word, bad checksum, or invalid UTF-8 input).
+    /// Mirrors `FfiUnlockError::InvalidMnemonic` in name and Display text.
+    #[error("invalid recovery phrase: {detail}")]
     InvalidMnemonic { detail: String },
-    #[error("vault.toml and identity bundle disagree about vault_uuid")]
+
+    /// `vault.toml` and `identity.bundle.enc` reference different vaults.
+    /// Mirrors `FfiUnlockError::VaultMismatch`.
+    #[error("vault.toml and identity.bundle.enc reference different vaults")]
     VaultMismatch,
+
+    /// Vault data integrity failure — covers BOTH the unlock-time corruption
+    /// cases mirrored from `FfiUnlockError::CorruptVault` AND the post-unlock
+    /// integrity failures specific to folder-in (manifest decrypt/parse/verify,
+    /// owner-card decode/self-verify, fingerprint cross-check, KDF-params
+    /// cross-check). Display text is path-neutral and matches
+    /// `FfiUnlockError::CorruptVault` exactly.
     #[error("vault data integrity failure: {detail}")]
     CorruptVault { detail: String },
+
+    /// Vault folder doesn't exist, isn't readable, or is missing one of the
+    /// required files (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`,
+    /// `contacts/<owner_uuid>.card`). New variant introduced by B.4a — no
+    /// counterpart on `FfiUnlockError` (bytes-in callers cannot raise IO
+    /// errors against their own filesystem through the bridge).
     #[error("vault folder is not accessible: {detail}")]
     FolderInvalid { detail: String },
 }
 ```
 
-Six flat variants. Five mirror `FfiUnlockError` exactly in name and Display text — a deliberate parallel surface, not a coincidence; foreign-side dispatch logic on a folder-in `FfiVaultError` reads identically to dispatch on a bytes-in `FfiUnlockError`.
+Six flat variants. Five mirror `FfiUnlockError` **exactly in both name and Display text** — a deliberate parallel surface, not a coincidence: foreign-side dispatch logic on a folder-in `FfiVaultError` reads identically to dispatch on a bytes-in `FfiUnlockError`. A code-quality tripwire test pins the Display strings byte-identical between the two error types so a future variant rename on `FfiUnlockError` cannot drift unnoticed.
 
 The sixth variant `FolderInvalid { detail }` covers the new error class B.4a introduces: the foreign caller passed a folder path that doesn't exist, isn't readable, or doesn't contain the required files (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`, `contacts/<owner_uuid>.card`). All four "missing required file" cases collapse into `FolderInvalid` with the file name in `detail`.
 
@@ -254,7 +282,7 @@ impl From<core::vault::VaultError> for FfiVaultError {
 impl From<FfiUnlockError> for FfiVaultError {
     fn from(e: FfiUnlockError) -> Self {
         match e {
-            FfiUnlockError::WrongPassword => FfiVaultError::WrongPassword,
+            FfiUnlockError::WrongPasswordOrCorrupt => FfiVaultError::WrongPasswordOrCorrupt,
             FfiUnlockError::WrongMnemonicOrCorrupt => FfiVaultError::WrongMnemonicOrCorrupt,
             FfiUnlockError::InvalidMnemonic { detail } => {
                 FfiVaultError::InvalidMnemonic { detail }
@@ -272,7 +300,7 @@ The `From<FfiUnlockError>` arm is **the** translation logic for the five mirrore
 
 ### §13 anti-oracle preservation
 
-`WrongPassword` continues to absorb both "your password was wrong" and "vault data integrity failure that surfaced during password decap". `WrongMnemonicOrCorrupt` does the same for the recovery path. The Display text is path-neutral on both surfaces — the foreign caller cannot distinguish the unlock-secret-wrong case from the data-corrupt case, preserving the §13 property independently per error type.
+`WrongPasswordOrCorrupt` continues to absorb both "your password was wrong" and "vault data integrity failure that surfaced during password decap". `WrongMnemonicOrCorrupt` does the same for the recovery path. The Display text is path-neutral on both surfaces — the foreign caller cannot distinguish the unlock-secret-wrong case from the data-corrupt case, preserving the §13 property independently per error type. The variant name `WrongPasswordOrCorrupt` (rather than e.g. `WrongPassword`) deliberately encodes the conflation in the type name itself, mirroring the discipline established in B.2.
 
 `CorruptVault { detail }` absorbs all post-unlock integrity failures — manifest decode, owner-card self-verification, manifest author-fingerprint mismatch, vault-UUID mismatch (manifest header vs body), KDF-params mismatch (vault.toml vs manifest), vector-clock overflow on a device, signature primitive failure during manifest verify. These post-unlock failures don't leak unlock-secret information (the IBK was already recovered when they fired). The catchall here is granular enough — adding individual variants would expand the error surface without giving the foreign caller actionable distinctions.
 
@@ -341,9 +369,9 @@ foreign caller
 
 | Error type | Path | §13 conflation |
 |---|---|---|
-| `FfiUnlockError::WrongPassword` | bytes-in unlock (B.2) | "wrong password" or "corrupt unlock data" |
+| `FfiUnlockError::WrongPasswordOrCorrupt` | bytes-in unlock (B.2) | "wrong password" or "corrupt unlock data" |
 | `FfiUnlockError::WrongMnemonicOrCorrupt` | bytes-in unlock (B.3a) | "wrong mnemonic" or "corrupt unlock data" |
-| `FfiVaultError::WrongPassword` | folder-in unlock (B.4a) | "wrong password" or "corrupt unlock data" *(same set as bytes-in — only `vault.toml` + `identity.bundle.enc` are read before unlock)* |
+| `FfiVaultError::WrongPasswordOrCorrupt` | folder-in unlock (B.4a) | "wrong password" or "corrupt unlock data" *(same set as bytes-in — only `vault.toml` + `identity.bundle.enc` are read before unlock)* |
 | `FfiVaultError::WrongMnemonicOrCorrupt` | folder-in unlock (B.4a) | same as above for recovery path |
 | `FfiVaultError::CorruptVault` | folder-in (B.4a) | absorbs **more** cases than `FfiUnlockError::CorruptVault` because folder-in does post-unlock work: manifest decrypt/parse/verify, owner-card decode/self-verify, fingerprint cross-check, KDF-params cross-check. None of these post-unlock failures leak unlock-secret information (the IBK was already recovered when they fire), so granularity here is acceptable; the catchall is chosen for surface-area economy, not for §13 reasons. |
 
@@ -359,7 +387,7 @@ The §13 conflation principle still holds on the unlock-class variants: the "wro
 
 1. `test_open_vault_with_password_success_v1` — golden_vault_001/, correct password → returns `OpenVaultOutput`; identity.display_name + user_uuid match pinned values; manifest.vault_uuid + owner_user_uuid match pinned values; `block_count() > 0`.
 2. `test_open_vault_with_recovery_success_v1` — golden_vault_001/, correct mnemonic → same shape as #1; manifest contents identical regardless of unlock path.
-3. `test_open_vault_with_password_wrong_password` → `FfiVaultError::WrongPassword`.
+3. `test_open_vault_with_password_wrong_password` → `FfiVaultError::WrongPasswordOrCorrupt`.
 4. `test_open_vault_with_recovery_wrong_mnemonic` → `FfiVaultError::WrongMnemonicOrCorrupt`.
 5. `test_open_vault_with_recovery_invalid_mnemonic` (e.g. 3 words) → `FfiVaultError::InvalidMnemonic { detail }` mentions `expected 24 words, got 3`.
 6. `test_open_vault_folder_does_not_exist` → `FfiVaultError::FolderInvalid { detail }` mentions the path.
@@ -371,7 +399,7 @@ The §13 conflation principle still holds on the unlock-class variants: the "wro
 
 1. `test_open_vault_with_password_success` — bytes input; identity + manifest both populated; manifest.block_count() > 0.
 2. `test_open_vault_with_recovery_success` — same as #1 via recovery path.
-3. `test_open_vault_with_password_wrong_password_raises` → `WrongPassword` exception.
+3. `test_open_vault_with_password_wrong_password_raises` → `WrongPasswordOrCorrupt` exception.
 4. `test_open_vault_with_recovery_invalid_mnemonic_raises` → `InvalidMnemonic` exception with detail.
 5. `test_open_vault_folder_does_not_exist_raises` → `FolderInvalid` exception with path in detail.
 6. `test_block_summaries_round_trip` — assert every BlockSummary field shape against pinned JSON.
