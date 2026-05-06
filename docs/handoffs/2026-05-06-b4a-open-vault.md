@@ -24,21 +24,21 @@
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **520 passed + 9 ignored, 0 failed** (was 498 + 9 at branch start; +22 from B.4a cumulative: +18 in the bridge crate, +2 in uniffi from Task 6, +2 in uniffi regression tests for the zeroize fix-up `cc8bcba`) |
+| `cargo test --release --workspace` | **522 passed + 9 ignored, 0 failed** (was 498 + 9 at branch start; +24 from B.4a cumulative: +20 in the bridge crate, +2 in uniffi from Task 6, +2 in uniffi regression tests for the zeroize fix-up `cc8bcba`) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
-| `uv run --directory ffi/secretary-ffi-py pytest` | **29 passed** (was 22 — added 7 B.4a tests) |
+| `uv run --directory ffi/secretary-ffi-py pytest` | **30 passed** (was 22 — added 7 B.4a tests + 1 find_block boundary test) |
 | `uv run core/tests/python/conformance.py` | **PASS** |
 | `uv run core/tests/python/spec_test_name_freshness.py` | **PASS** |
 | `bash ffi/secretary-ffi-uniffi/tests/swift/run.sh` | **18/18 PASS** (was 15/15 — added 3 B.4a asserts) |
 | `bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh` | **19 PASS lines** (was 16 PASS lines — added 3 B.4a asserts) |
 
-### Per-crate breakdown of the 518-test workspace
+### Per-crate breakdown of the 522-test workspace
 
 - `secretary-core` — 448 (unchanged; +9 ignored)
-- `secretary-ffi-bridge` — **54** (was 36; +18 net: +9 unit tests in new `vault.rs` + error and vault type coverage)
-- `secretary-ffi-py` — 3 (unchanged Rust unit tests; the 29 pytest count is separate)
-- `secretary-ffi-uniffi` — **13** (was 11; +2 mapping/integration tests from Task 6)
+- `secretary-ffi-bridge` — **56** (was 36; +20 net: +9 unit tests in new `vault.rs` + error and vault type coverage + 2 find_block coverage tests from review fix-up)
+- `secretary-ffi-py` — 3 (unchanged Rust unit tests; the 30 pytest count is separate)
+- `secretary-ffi-uniffi` — **15** (was 11; +2 mapping/integration tests from Task 6 + 2 zeroize regression tests from `cc8bcba`)
 
 ### Two-stage review caught real bugs (and confirmed real wins) — same shape as B.3a / B.3b
 
@@ -119,7 +119,7 @@ uv run core/tests/python/spec_test_name_freshness.py
 bash ffi/secretary-ffi-uniffi/tests/swift/run.sh
 bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
-# Expected: 520 passed + 9 ignored cargo; clippy clean; fmt OK; 29 pytest;
+# Expected: 522 passed + 9 ignored cargo; clippy clean; fmt OK; 30 pytest;
 # PASS conformance + freshness; 18/18 Swift; 19 Kotlin PASS lines.
 
 # Begin Sub-project B.4b:
