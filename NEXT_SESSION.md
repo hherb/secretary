@@ -143,4 +143,4 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 - **Kotlin smoke:** 19 PASS lines (16 from prior + 3 B.4a)
 - **Bridge crate:** 54 unit tests (was 36; +18 net)
 - **uniffi crate:** 13 unit tests (was 11; +2 net from Task 6)
-- **PR:** pending — URL to be recorded here after merge.
+- **PR:** [#28](https://github.com/hherb/secretary/pull/28) — open, pending squash-merge to `main`.
