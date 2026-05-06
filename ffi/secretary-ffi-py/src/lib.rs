@@ -330,6 +330,12 @@ impl OpenVaultManifest {
 
     /// Locate one block by its 16-byte UUID. Returns `None` if wiped or
     /// no matching block exists.
+    ///
+    /// `block_uuid` is `Vec<u8>` rather than `&[u8]` so PyO3 accepts both
+    /// `bytes` and `bytearray` inputs — `&[u8]` would restrict to
+    /// immutable `bytes` only. The 16-byte heap copy is negligible; the
+    /// foreign-friendly accept-both ergonomics + parity with uniffi's
+    /// UDL `bytes` → `Vec<u8>` projection are worth it.
     pub fn find_block(&self, block_uuid: Vec<u8>) -> Option<BlockSummary> {
         self.0.find_block(&block_uuid).map(BlockSummary::from)
     }

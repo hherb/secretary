@@ -455,6 +455,42 @@ def test_block_summaries_round_trip_pinned_against_inputs_json() -> None:
                 assert actual_recipient_hex == p["recipient_uuids"]
 
 
+def test_find_block_returns_some_for_known_uuid_and_none_for_unknown() -> None:
+    """Verify find_block() at the Python boundary: returns the matching
+    BlockSummary for a known UUID and None for a not-present UUID.
+
+    Also pins both `bytes` and `bytearray` acceptance — PyO3's `Vec<u8>`
+    parameter takes either; if the signature were ever tightened to
+    `&[u8]` only `bytes` would work, so the bytearray assertion is a
+    deliberate tripwire for that regression."""
+    folder = _golden_vault_path(1)
+    pinned = _golden_vault_block_summaries(1)
+    known_uuid_bytes = bytes.fromhex(pinned[0]["block_uuid"])
+    unknown_uuid_bytes = bytes(16)  # 16 zero bytes — not present in the vault
+
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.manifest as manifest:
+            # Positive: known UUID returns matching summary.
+            summary = manifest.find_block(known_uuid_bytes)
+            assert summary is not None
+            assert bytes(summary.block_uuid).hex() == pinned[0]["block_uuid"]
+            assert summary.block_name == pinned[0]["block_name"]
+
+            # bytearray input also works — PyO3's Vec<u8> conversion
+            # accepts both immutable bytes and mutable bytearray.
+            summary_ba = manifest.find_block(bytearray(known_uuid_bytes))
+            assert summary_ba is not None
+            assert bytes(summary_ba.block_uuid).hex() == pinned[0]["block_uuid"]
+
+            # Negative: unknown UUID returns None (not an exception).
+            assert manifest.find_block(unknown_uuid_bytes) is None
+
+            # Wrong-length input returns None per the bridge's runtime check.
+            assert manifest.find_block(b"\x00" * 15) is None
+            assert manifest.find_block(b"\x00" * 17) is None
+
+
 def test_with_block_double_close_invariants() -> None:
     """Nested context managers wipe each handle on exit; subsequent accessor
     calls return the documented empty defaults rather than raising."""
