@@ -213,9 +213,10 @@ impl OpenVaultManifest {
     /// moment. **Idempotent** — multiple calls do not panic.
     pub fn wipe(&self) {
         let _drop = lock_or_recover(&self.inner).take();
-        // _drop goes out of scope here → OpenVaultManifestInner drops →
-        // Sensitive<[u8; 32]> ZeroizeOnDrop runs on the IBK; ContactCard,
-        // Manifest, ManifestFile drop in source order.
+        // _drop goes out of scope here → OpenVaultManifestInner drops in
+        // field-declaration order: identity_block_key (Sensitive<[u8; 32]>
+        // — IBK zeroized first via ZeroizeOnDrop), then manifest,
+        // manifest_file, owner_card.
     }
 }
 
@@ -498,6 +499,22 @@ mod tests {
                 actual.last_modified_ms,
                 pinned["last_modified_ms"].as_u64().expect("u64"),
                 "last_modified_ms drift",
+            );
+            let pinned_recipient_hexes: Vec<&str> = pinned["recipient_uuids"]
+                .as_array()
+                .expect("recipient_uuids is an array")
+                .iter()
+                .map(|v| v.as_str().expect("hex string"))
+                .collect();
+            let actual_recipient_hexes: Vec<String> =
+                actual.recipient_uuids.iter().map(hex::encode).collect();
+            assert_eq!(
+                actual_recipient_hexes,
+                pinned_recipient_hexes
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+                "recipient_uuids drift",
             );
         }
     }
