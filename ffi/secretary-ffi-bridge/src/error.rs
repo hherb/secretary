@@ -1,4 +1,14 @@
-//! Thinned 5-variant FFI-friendly error type.
+//! Thinned FFI-friendly error types for the bridge layer.
+//!
+//! [`FfiUnlockError`] — 5-variant thinned error for the **bytes-in** unlock
+//! entry points (`open_with_password`, `open_with_recovery`, `create_vault`).
+//! [`FfiVaultError`] — 6-variant **folder-in** error type. Mirrors
+//! `FfiUnlockError`'s 5 unlock-class variants byte-identically (variant
+//! name + Display string) plus a new `FolderInvalid { detail }` for missing
+//! or inaccessible vault folders. Returned by `open_vault_with_password` /
+//! `open_vault_with_recovery`.
+//!
+//! # Why thinned (FfiUnlockError rationale)
 //!
 //! `core::unlock::UnlockError` has 7 variants reachable from
 //! `open_with_password`, three of which wrap inner enums with their own
@@ -31,6 +41,21 @@
 //!   so the variant reads correctly on BOTH the open path (where it
 //!   fires when a vault file is malformed) AND the create path (where
 //!   it fires on rare system-level failures during vault production).
+//!
+//! # Why a separate FfiVaultError (mirror property)
+//!
+//! The bytes-in unlock paths cannot raise IO errors — they take owned byte
+//! slices, not paths. The folder-in vault paths read four files from disk
+//! (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`,
+//! `contacts/<owner_uuid>.card`) and need a way to surface "your path is
+//! wrong" distinctly from "your data is corrupt". The 5 overlapping
+//! variants share **byte-identical** Display strings with their
+//! `FfiUnlockError` counterparts — pinned by a tripwire test in this
+//! module. The drift-resistance comes from `From<core::vault::VaultError>`
+//! delegating unlock-class translation through a private
+//! `From<FfiUnlockError>` arm; if a future change adds a 6th variant to
+//! `FfiUnlockError`, the new variant automatically picks up the right
+//! `FfiVaultError` mapping via the delegation.
 
 use thiserror::Error;
 
@@ -650,11 +675,14 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
     }
 }
 
-/// Private bridge-internal arm. Not part of the FFI surface; lives behind
-/// `pub(crate)` only because the [`From<core::vault::VaultError>`] impl above
-/// needs to delegate to it. **Do not use this arm directly from foreign-
-/// projection code** — it would couple the binding-flavor crates to a
-/// private translation step. Foreign code goes through `From<core::VaultError>`.
+/// Bridge-internal conversion. This impl is necessarily `pub` (it
+/// implements the standard `From` trait, whose visibility cannot be
+/// restricted), but it is **not part of the stable FFI surface**. Do not
+/// use this arm directly from foreign-projection code — it would couple
+/// the binding-flavor crates (`secretary-ffi-py`, `secretary-ffi-uniffi`)
+/// to a private translation step. Foreign code goes through
+/// `From<core::vault::VaultError>`, which delegates to this arm internally
+/// for the unlock-class variants.
 impl From<FfiUnlockError> for FfiVaultError {
     fn from(e: FfiUnlockError) -> Self {
         match e {
