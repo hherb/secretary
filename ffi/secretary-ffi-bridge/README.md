@@ -147,7 +147,7 @@ operations, not record-read-time), `RwLock` is a drop-in upgrade.
 cargo test --release -p secretary-ffi-bridge
 ```
 
-30 unit tests across three modules (post-B.3a):
+54 unit tests across four modules (post-B.4a):
 
 - `error.rs` (14 tests) — `From<core::unlock::UnlockError>` mapping for
   every reachable variant + the defensive `WeakKdfParams` arm; the
@@ -160,6 +160,15 @@ cargo test --release -p secretary-ffi-bridge
   `golden_vault_001/` + `golden_vault_002/`: success, wrong key,
   vault mismatch, corrupt vault, plus B.3a's mnemonic-specific cases
   (wrong phrase, invalid length, invalid UTF-8).
+- `vault.rs` (24 tests) — both folder-in open paths against
+  `golden_vault_001/` + `golden_vault_002/`: success, wrong password,
+  wrong mnemonic, invalid mnemonic, vault mismatch, corrupt vault, and
+  folder-not-found; `OpenVaultManifest` accessor shapes (vault_uuid,
+  owner_user_uuid, block_count, block_summaries, find_block);
+  `BlockSummary` field values pinned against KAT fixtures; `FfiVaultError`
+  Display strings and `From` mapping for every `VaultError` and
+  `UnlockError` variant; idempotent `wipe()` and use-after-wipe
+  non-throwing semantics.
 
 Tests embed both `golden_vault_001/` and `golden_vault_002/` via
 `include_bytes!` so no runtime filesystem dependency. Pinned KAT
@@ -242,8 +251,92 @@ failure: {detail}"` so the variant reads correctly on both the open
 path and the new create path. Variant name and shape unchanged; the
 5-variant cardinality from B.3a is structurally intact.
 
+## B.4a — Folder-based vault open
+
+Adds two new entry points — `open_vault_with_password` and
+`open_vault_with_recovery` — that take a **folder path** rather than
+raw bytes. This is the first folder-IO entry point on the bridge
+surface; all subsequent B.4b/c/d operations (read_block, save_block,
+share_block) inherit the same folder-ownership model.
+
+```rust
+pub fn open_vault_with_password(
+    folder: &std::path::Path,
+    password: &[u8],
+) -> Result<OpenVaultOutput, FfiVaultError>;
+
+pub fn open_vault_with_recovery(
+    folder: &std::path::Path,
+    mnemonic: &[u8],
+) -> Result<OpenVaultOutput, FfiVaultError>;
+```
+
+The bridge reads `vault.toml`, `identity.bundle.enc`,
+`manifest.cbor.enc`, and the owner contact card from the folder.
+File I/O stays Rust-side; the binding-flavor crates receive typed
+results.
+
+### Return shape: `OpenVaultOutput`
+
+A two-field struct — the same shape as B.3b's `CreateVaultOutput` but
+for the open direction:
+
+| Field | Type | Notes |
+|---|---|---|
+| `identity` | `UnlockedIdentity` | Opaque handle; same type as B.2/B.3a/B.3b |
+| `manifest` | `OpenVaultManifest` | New opaque handle; holds IBK + manifest + envelope + owner card |
+
+### `OpenVaultManifest` accessors
+
+| Method | Return type | Notes |
+|---|---|---|
+| `vault_uuid()` | `[u8; 16]` | 16-byte vault UUID |
+| `owner_user_uuid()` | `[u8; 16]` | 16-byte owner UUID |
+| `block_count()` | `u64` | Number of blocks in the manifest |
+| `block_summaries()` | `Vec<BlockSummary>` | All block summaries |
+| `find_block(uuid)` | `Option<BlockSummary>` | Lookup by UUID |
+| `wipe()` | `()` | Zeroize IBK; idempotent |
+
+`local_highest_clock` is always `None` in B.4a — rollback detection
+is deferred to Sub-project C's sync orchestration layer. B.4b/c/d
+will extend `OpenVaultManifest` with `read_block` / `save_block` /
+`share_block` methods without changing its construction.
+
+### `BlockSummary` value type
+
+Five plaintext-in-the-manifest fields (no secret material):
+`block_uuid`, `block_name`, `created_at_ms`, `last_modified_ms`,
+`recipient_uuids`.
+
+### `FfiVaultError` — new 6-variant error type
+
+Mirrors `FfiUnlockError`'s 5 unlock-class variants byte-identically
+(variant name + Display string) and adds one new variant:
+
+| Variant | Trigger |
+|---|---|
+| `WrongPasswordOrCorrupt` | AEAD tag fail under master KEK |
+| `WrongMnemonicOrCorrupt` | AEAD tag fail under recovery KEK |
+| `InvalidMnemonic { detail }` | Pre-decryption BIP-39 validation failure |
+| `VaultMismatch` | vault.toml / identity.bundle.enc UUID mismatch |
+| `CorruptVault { detail }` | Malformed TOML/CBOR/bundle or manifest verify failure |
+| `FolderInvalid { detail }` | Folder missing, unreadable, or required files absent |
+
+`FfiVaultError` is a **separate type** from `FfiUnlockError` (it is
+the folder-in error surface; `FfiUnlockError` is the bytes-in error
+surface). The mirror property means foreign callers do not need to
+maintain two error-handling patterns for the unlock variants.
+
+`From<core::unlock::UnlockError>` uses explicit match arms with no
+wildcard — a future core variant forces a compile error here.
+`From<core::vault::orchestrators::VaultError>` provides the
+`CorruptVault` and `FolderInvalid` paths from the manifest-layer error
+surface.
+
 ## References
 
+- Spec (B.4a): [docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md](../../docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md)
+- Plan (B.4a): [docs/superpowers/plans/2026-05-06-ffi-b4a-open-vault.md](../../docs/superpowers/plans/2026-05-06-ffi-b4a-open-vault.md)
 - Spec (B.3a): [docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md](../../docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md)
 - Plan (B.3a): [docs/superpowers/plans/2026-05-04-ffi-b3a-recovery-unlock.md](../../docs/superpowers/plans/2026-05-04-ffi-b3a-recovery-unlock.md)
 - Spec (B.2): [docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md](../../docs/superpowers/specs/2026-05-04-ffi-b2-vault-unlock-design.md)

@@ -337,3 +337,93 @@ The bridge instantiates `OsRng` and `Argon2idParams::V1_DEFAULT`
 internally; foreign callers cannot tune either. Cost: ~1s per
 `create_vault` call for real Argon2id at V1_DEFAULT (256 MiB / 3 iter).
 
+## Vault open — folder-based (B.4a)
+
+Adds `open_vault_with_password()` and `open_vault_with_recovery()` —
+the first folder-based entry points in the Python surface. These read
+`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`, and the
+owner contact card from the named folder; file I/O stays Rust-side.
+
+### Idiomatic usage
+
+```python
+import secretary_ffi_py as m
+
+with m.open_vault_with_password("/path/to/vault", b"correct horse...") as out:
+    with out.identity as identity, out.manifest as manifest:
+        print(f"vault owned by {identity.display_name()}")
+        for block in manifest.block_summaries():
+            print(f"  {block.block_name} ({block.block_uuid.hex()})")
+        found = manifest.find_block(some_uuid_bytes)
+```
+
+`folder` is a **string path** (or any `os.PathLike` that str-converts
+to a valid path); it is NOT bytes. `password` / `mnemonic` remain
+bytes for caller-zeroize discipline — same pattern as B.2 / B.3a.
+
+### New types
+
+- `secretary_ffi_py.OpenVaultOutput` — two-field result struct; same
+  take-once destructive getter semantics as `CreateVaultOutput`.
+  `identity` returns an `UnlockedIdentity` (same type as B.2/B.3a).
+  `mnemonic` **is not present** — only `identity` and `manifest`.
+- `secretary_ffi_py.OpenVaultManifest` — opaque handle to the
+  decrypted manifest. Supports the context-manager protocol and
+  explicit `close()`. Accessors: `vault_uuid() -> bytes`,
+  `owner_user_uuid() -> bytes`, `block_count() -> int`,
+  `block_summaries() -> list[BlockSummary]`,
+  `find_block(bytes) -> BlockSummary | None`.
+- `secretary_ffi_py.BlockSummary` — value-type dataclass; five fields:
+  `block_uuid: bytes`, `block_name: str`, `created_at_ms: int`,
+  `last_modified_ms: int`, `recipient_uuids: list[bytes]`.
+
+### Error handling
+
+Six new exception classes mirror the 6-variant `FfiVaultError`:
+
+```python
+try:
+    with m.open_vault_with_password("/path/to/vault", password) as out:
+        ...
+except m.VaultWrongPasswordOrCorrupt:
+    # Password is wrong, OR vault data integrity failure.
+    # Anti-oracle conflation per §13 — do NOT split in UI code.
+    ...
+except m.VaultWrongMnemonicOrCorrupt:
+    # Recovery path only.
+    ...
+except m.VaultInvalidMnemonic as e:
+    # Pre-decryption BIP-39 validation failure. str(e) carries detail.
+    print(f"Invalid phrase: {e}")
+except m.VaultMismatchFolder:
+    # vault.toml and identity.bundle.enc reference different vaults.
+    ...
+except m.VaultCorruptVault as e:
+    # Manifest decode / verification failed. str(e) carries detail.
+    print(f"Vault corrupt: {e}")
+except m.VaultFolderInvalid as e:
+    # Folder missing, unreadable, or required files absent.
+    print(f"Folder problem: {e}")
+```
+
+Note: these are **new exception classes** (`Vault*`), distinct from
+the bytes-in exception classes (`WrongPasswordOrCorrupt`, etc.) used by
+`open_with_password` / `open_with_recovery` / `create_vault`. The
+`Vault*` prefix makes the boundary visible in foreign callers.
+
+### `local_highest_clock`
+
+Always `None` in B.4a. Rollback detection (§10 of the spec) is
+deferred to Sub-project C's sync orchestration layer. The
+`OpenVaultManifest` handle is designed so B.4b/c/d can add
+`read_block` / `save_block` / `share_block` without altering B.4a's
+construction.
+
+### Test coverage
+
+29 pytests total (`uv run --directory ffi/secretary-ffi-py pytest`):
+3 B.1 smoke + 7 B.2 password-unlock + 6 B.3a recovery-unlock +
+6 B.3b vault-creation + 7 B.4a folder-open (password path success,
+recovery path success, wrong password, vault mismatch,
+folder-not-found, block summaries accessor, find_block accessor).
+
