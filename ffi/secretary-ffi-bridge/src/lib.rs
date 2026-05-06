@@ -9,44 +9,58 @@
 //!
 //! # Surface
 //!
-//! - [`FfiUnlockError`] — thinned 5-variant error type expressing
-//!   user-actionable intent rather than mirroring `core::UnlockError`'s
-//!   internal enum structure. Two variants per unlock path
-//!   (`WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`) plus a
-//!   pre-decryption `InvalidMnemonic { detail }` for BIP-39 validation
-//!   failures, plus the cross-path `VaultMismatch` and `CorruptVault { detail }`.
-//!   `CorruptVault`'s Display text is path-neutral
-//!   (`"vault data integrity failure"`) and reads correctly on both
-//!   the open and create paths. See [`error`] module docs.
+//! ## Errors
+//!
+//! - [`FfiUnlockError`] — thinned 5-variant error type for the **bytes-in**
+//!   unlock entry points ([`open_with_password`], [`open_with_recovery`])
+//!   and the bytes-out [`create_vault`]. See [`error`] module docs.
+//! - [`FfiVaultError`] — thinned 6-variant error type for the **folder-in**
+//!   vault entry points ([`open_vault_with_password`],
+//!   [`open_vault_with_recovery`]). Mirrors [`FfiUnlockError`]'s 5
+//!   unlock-class variants byte-identically (variant name + Display
+//!   string) plus a new [`FfiVaultError::FolderInvalid`] for missing or
+//!   inaccessible vault folders. See [`error`] module docs.
+//!
+//! ## Handles
+//!
 //! - [`UnlockedIdentity`] — opaque handle wrapping a successfully-unlocked
-//!   `core::UnlockedIdentity`. Foreign callers hold a refcount and read
-//!   non-secret fields via accessor methods; the secret keys stay Rust-
-//!   side and zeroize on drop. Both unlock entry points return this same
-//!   shape (the §3/§4 dual-KEK design produces byte-identical secret state).
-//!   `create_vault` also returns this shape — immediately live, no second
-//!   `open_with_password` call needed. See [`identity`] module docs.
-//! - [`open_with_password`] — fallible, secret-bearing operation: vault
-//!   unlock by master password. See [`unlock`] module docs.
-//! - [`open_with_recovery`] — fallible, secret-bearing operation: vault
-//!   unlock by 24-word BIP-39 recovery phrase. Mnemonic input is UTF-8
-//!   bytes (`&[u8]`), parallel to the password input shape. See [`unlock`]
-//!   module docs.
-//! - [`create_vault`] — fallible, secret-bearing operation: produce a
-//!   fresh v1 vault using OS CSPRNG and `Argon2idParams::V1_DEFAULT`.
-//!   Returns [`CreateVaultOutput`] (non-secret byte artifacts +
-//!   live [`UnlockedIdentity`] + one-shot [`MnemonicOutput`]). See
-//!   [`create`] module docs.
-//! - [`CreateVaultOutput`] — return type from `create_vault`. Four fields:
-//!   `vault_toml_bytes`, `identity_bundle_bytes` (non-secret bytes the
-//!   caller persists atomically), `identity` (live unlocked-identity
-//!   handle), and `mnemonic` (one-shot recovery-phrase handle).
+//!   `core::UnlockedIdentity`. Returned by every unlock or open path
+//!   ([`open_with_password`], [`open_with_recovery`], [`create_vault`],
+//!   [`open_vault_with_password`], [`open_vault_with_recovery`]). See
+//!   [`identity`] module docs.
 //! - [`MnemonicOutput`] — one-shot opaque handle for the freshly-generated
-//!   24-word BIP-39 recovery mnemonic. The phrase exits the
-//!   `Sensitive<T>` boundary via [`MnemonicOutput::take_phrase`] as
-//!   caller-owned `Vec<u8>` with documented caller-zeroize discipline;
-//!   second `take_phrase` call returns `None` (one-shot semantics, NOT
-//!   an error). [`MnemonicOutput::wipe`] is idempotent. See [`create`]
-//!   module docs.
+//!   24-word BIP-39 recovery mnemonic returned by [`create_vault`]. See
+//!   [`create`] module docs.
+//! - [`OpenVaultManifest`] — opaque handle for the decrypted manifest
+//!   returned by the folder-in open paths. Holds the IBK + manifest body
+//!   + manifest envelope + verified owner card internally; B.4a exposes
+//!     only read-only block-list accessors. See [`vault`] module docs.
+//!
+//! ## Entry points
+//!
+//! Bytes-in (B.2 / B.3a / B.3b):
+//! - [`open_with_password`] — fallible bytes-in unlock by master password.
+//! - [`open_with_recovery`] — fallible bytes-in unlock by 24-word phrase.
+//! - [`create_vault`] — fallible bytes-out vault creation using OS CSPRNG +
+//!   `Argon2idParams::V1_DEFAULT`.
+//!
+//! Folder-in (B.4a):
+//! - [`open_vault_with_password`] — fallible folder-in vault open by
+//!   master password. Reads `vault.toml` + `identity.bundle.enc` +
+//!   `manifest.cbor.enc` + owner contact card from the folder via
+//!   `core::vault::open_vault`. Returns [`OpenVaultOutput`] with the
+//!   live identity and the read-only manifest handle.
+//! - [`open_vault_with_recovery`] — same as above but using a 24-word
+//!   BIP-39 recovery phrase. Mnemonic input is UTF-8 bytes (`&[u8]`).
+//!
+//! ## Output shapes
+//!
+//! - [`CreateVaultOutput`] — return type from [`create_vault`]: byte
+//!   artifacts to persist + live identity + one-shot mnemonic.
+//! - [`OpenVaultOutput`] — return type from the folder-in open paths:
+//!   live identity + read-only manifest handle.
+//! - [`BlockSummary`] — read-only metadata projection of one
+//!   `core::BlockEntry`. Five plaintext-in-the-manifest fields.
 //!
 //! # Invariants
 //!
@@ -55,7 +69,13 @@
 //!   `unsafe_code = "deny"` carve-outs locally).
 //! - The `From<core::unlock::UnlockError>` impl in [`error`] uses explicit
 //!   match arms with no wildcard so future core variants force a compile
-//!   error instead of silently mapping to a default.
+//!   error instead of silently mapping to a default. The
+//!   `From<core::vault::VaultError>` impl delegates to the unlock-class
+//!   translation through a private `From<FfiUnlockError>` arm so renames
+//!   on `FfiUnlockError` propagate automatically.
+//! - The 5 unlock-class variants of `FfiUnlockError` and `FfiVaultError`
+//!   share **byte-identical** Display strings — pinned by a tripwire
+//!   test in [`error`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -68,6 +88,10 @@ pub mod unlock;
 pub mod vault;
 
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
-pub use error::FfiUnlockError;
+pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use unlock::{open_with_password, open_with_recovery};
+pub use vault::{
+    open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
+    OpenVaultOutput,
+};
