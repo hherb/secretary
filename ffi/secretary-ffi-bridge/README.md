@@ -147,7 +147,7 @@ operations, not record-read-time), `RwLock` is a drop-in upgrade.
 cargo test --release -p secretary-ffi-bridge
 ```
 
-54 unit tests across four modules (post-B.4a):
+56 unit tests across four modules (post-B.4a):
 
 - `error.rs` (14 tests) — `From<core::unlock::UnlockError>` mapping for
   every reachable variant + the defensive `WeakKdfParams` arm; the
@@ -160,7 +160,7 @@ cargo test --release -p secretary-ffi-bridge
   `golden_vault_001/` + `golden_vault_002/`: success, wrong key,
   vault mismatch, corrupt vault, plus B.3a's mnemonic-specific cases
   (wrong phrase, invalid length, invalid UTF-8).
-- `vault.rs` (24 tests) — both folder-in open paths against
+- `vault.rs` (26 tests) — both folder-in open paths against
   `golden_vault_001/` + `golden_vault_002/`: success, wrong password,
   wrong mnemonic, invalid mnemonic, vault mismatch, corrupt vault, and
   folder-not-found; `OpenVaultManifest` accessor shapes (vault_uuid,
@@ -275,6 +275,15 @@ The bridge reads `vault.toml`, `identity.bundle.enc`,
 `manifest.cbor.enc`, and the owner contact card from the folder.
 File I/O stays Rust-side; the binding-flavor crates receive typed
 results.
+
+> **Projection note:** the bridge takes `folder: &std::path::Path`. PyO3
+> projects this from a Python `os.PathLike` / `str` via
+> `std::path::PathBuf` (idiomatic for Python). uniffi has no `Path` type
+> in its UDL grammar, so the uniffi forwarder takes `folder_path: bytes`
+> (UTF-8) and validates inside Rust — invalid UTF-8 surfaces as
+> `VaultError::FolderInvalid` with `detail: "folder path contained
+> invalid UTF-8"`. Each binding flavor uses its idiomatic foreign type;
+> the bridge `&Path` API is unaffected.
 
 ### Return shape: `OpenVaultOutput`
 
