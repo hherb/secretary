@@ -24,7 +24,7 @@
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **518 passed + 9 ignored, 0 failed** (was 498 + 9 at branch start; +20 from B.4a cumulative across the bridge + uniffi crates) |
+| `cargo test --release --workspace` | **520 passed + 9 ignored, 0 failed** (was 498 + 9 at branch start; +22 from B.4a cumulative: +18 in the bridge crate, +2 in uniffi from Task 6, +2 in uniffi regression tests for the zeroize fix-up `cc8bcba`) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
 | `uv run --directory ffi/secretary-ffi-py pytest` | **29 passed** (was 22 — added 7 B.4a tests) |
@@ -119,7 +119,7 @@ uv run core/tests/python/spec_test_name_freshness.py
 bash ffi/secretary-ffi-uniffi/tests/swift/run.sh
 bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
-# Expected: 518 passed + 9 ignored cargo; clippy clean; fmt OK; 29 pytest;
+# Expected: 520 passed + 9 ignored cargo; clippy clean; fmt OK; 29 pytest;
 # PASS conformance + freshness; 18/18 Swift; 19 Kotlin PASS lines.
 
 # Begin Sub-project B.4b:
@@ -137,10 +137,10 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 - **Branch:** `feat/ffi-b4a-open-vault` (open PR; pending squash-merge to `main`)
 - **Total commits since branching from `main@85c95b4`:** 11 on the feature branch (8 task implementations + 2 review/style fix-ups + 1 doc/handoff). PR to be squash-merged.
-- **Workspace tests:** 518 + 9 ignored
+- **Workspace tests:** 520 + 9 ignored
 - **Pytest:** 29 (22 from B.1 + B.2 + B.3a + B.3b + 7 B.4a)
 - **Swift smoke:** 18/18 (15 from prior + 3 B.4a)
 - **Kotlin smoke:** 19 PASS lines (16 from prior + 3 B.4a)
 - **Bridge crate:** 54 unit tests (was 36; +18 net)
-- **uniffi crate:** 13 unit tests (was 11; +2 net from Task 6)
+- **uniffi crate:** 15 unit tests (was 11; +2 net from Task 6 + 2 regression tests added in `cc8bcba` for the zeroize-on-invalid-UTF-8-folder-path fix)
 - **PR:** [#28](https://github.com/hherb/secretary/pull/28) — open, pending squash-merge to `main`.
