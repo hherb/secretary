@@ -79,6 +79,31 @@ def _golden_vault_phrase(n: int) -> bytes:
     return data["recovery_mnemonic_phrase"].encode("utf-8")
 
 
+def _golden_vault_path(n: int) -> Path:
+    """Return the absolute Path to the golden_vault_NNN folder.
+    Walks up 3 parents from `ffi/secretary-ffi-py/tests/` to repo root."""
+    return (
+        Path(__file__).resolve().parents[3]
+        / "core" / "tests" / "data" / f"golden_vault_{n:03d}"
+    )
+
+
+def _golden_vault_block_summaries(n: int) -> list:
+    """Return the pinned block_summaries array for golden_vault_NNN.
+
+    Source: core/tests/data/golden_vault_NNN_inputs.json's `block_summaries`
+    field, added in Task 2 Step 3. Each entry has: block_uuid (hex string),
+    block_name (string), created_at_ms (int), last_modified_ms (int),
+    recipient_uuids (list of hex strings).
+    """
+    inputs_path = (
+        Path(__file__).resolve().parents[3]
+        / "core" / "tests" / "data" / f"golden_vault_{n:03d}_inputs.json"
+    )
+    with open(inputs_path) as f:
+        return json.load(f)["block_summaries"]
+
+
 # Pinned KAT values — must match secretary-ffi-bridge's tests and the
 # golden_vault_001_inputs.json source of truth. KAT drift cannot land
 # silently: bridge tests + this file + Swift/Kotlin smoke runners all
@@ -346,3 +371,109 @@ def test_create_vault_round_trip_with_recovery() -> None:
         ) as id2:
             assert id2.display_name() == "RoundTripCarol"
     out.identity.close()
+
+
+# =============================================================================
+# B.4a — folder-in open_vault tests
+# =============================================================================
+
+
+def test_open_vault_with_password_success() -> None:
+    """Open vault from a folder with the correct password; verify both
+    handles are populated and produce expected values."""
+    folder = _golden_vault_path(1)
+    password = bytearray(b"correct horse battery staple")
+    out = secretary_ffi_py.open_vault_with_password(str(folder), bytes(password))
+    # Wipe the bytearray immediately — caller-zeroize discipline.
+    for i in range(len(password)):
+        password[i] = 0
+
+    with out as vault:
+        with vault.identity as identity:
+            assert identity.display_name() == "Owner"
+            assert len(identity.user_uuid()) == 16
+        with vault.manifest as manifest:
+            assert len(manifest.vault_uuid()) == 16
+            assert manifest.block_count() >= 0  # could be 0 if fixture has no blocks
+
+
+def test_open_vault_with_recovery_success() -> None:
+    """Same as test_open_vault_with_password_success but via the recovery path."""
+    folder = _golden_vault_path(1)
+    phrase = bytearray(_golden_vault_phrase(1))
+    out = secretary_ffi_py.open_vault_with_recovery(str(folder), bytes(phrase))
+    for i in range(len(phrase)):
+        phrase[i] = 0
+
+    with out as vault:
+        with vault.identity as identity:
+            assert identity.display_name() == "Owner"
+            assert len(identity.user_uuid()) == 16
+
+
+def test_open_vault_with_password_wrong_password_raises() -> None:
+    """Wrong password → VaultWrongPasswordOrCorrupt."""
+    folder = _golden_vault_path(1)
+    with pytest.raises(secretary_ffi_py.VaultWrongPasswordOrCorrupt):
+        secretary_ffi_py.open_vault_with_password(str(folder), b"definitely wrong")
+
+
+def test_open_vault_with_recovery_invalid_phrase_raises() -> None:
+    """3-word phrase → VaultInvalidMnemonic with detail mentioning word count."""
+    folder = _golden_vault_path(1)
+    with pytest.raises(secretary_ffi_py.VaultInvalidMnemonic) as exc_info:
+        secretary_ffi_py.open_vault_with_recovery(str(folder), b"only three words")
+    assert "got 3" in str(exc_info.value)
+
+
+def test_open_vault_folder_does_not_exist_raises() -> None:
+    """Nonexistent folder path → VaultFolderInvalid with detail mentioning the
+    missing file."""
+    folder = "/tmp/__nonexistent_folder_b4a__"
+    with pytest.raises(secretary_ffi_py.VaultFolderInvalid) as exc_info:
+        secretary_ffi_py.open_vault_with_password(folder, b"any password")
+    detail = str(exc_info.value).lower()
+    assert "vault.toml" in detail or "no such file" in detail
+
+
+def test_block_summaries_round_trip_pinned_against_inputs_json() -> None:
+    """Verify block_summaries() returns the JSON-pinned shape exactly."""
+    folder = _golden_vault_path(1)
+    pinned = _golden_vault_block_summaries(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.manifest as manifest:
+            actual = manifest.block_summaries()
+            assert manifest.block_count() == len(pinned)
+            assert len(actual) == len(pinned)
+            for a, p in zip(actual, pinned):
+                assert bytes(a.block_uuid).hex() == p["block_uuid"]
+                assert a.block_name == p["block_name"]
+                assert a.created_at_ms == p["created_at_ms"]
+                assert a.last_modified_ms == p["last_modified_ms"]
+                actual_recipient_hex = [bytes(r).hex() for r in a.recipient_uuids]
+                assert actual_recipient_hex == p["recipient_uuids"]
+
+
+def test_with_block_double_close_invariants() -> None:
+    """Nested context managers wipe each handle on exit; subsequent accessor
+    calls return the documented empty defaults rather than raising."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+
+    # Take the handles out and enter them as context managers; after the
+    # inner with-blocks exit, wipe() / close() has run on each handle.
+    with out as vault:
+        with vault.identity as identity:
+            # Still live inside the block.
+            assert identity.display_name() == "Owner"
+        with vault.manifest as manifest:
+            # Still live inside the block.
+            assert manifest.block_count() >= 1
+
+    # Both handles' wipe/close ran on with-block exit; accessors return defaults.
+    assert identity.display_name() == ""
+    assert identity.user_uuid() == bytes(16)
+    assert manifest.vault_uuid() == bytes(16)
+    assert manifest.block_count() == 0
+    assert manifest.block_summaries() == []
