@@ -11,9 +11,12 @@
 
 import uniffi.secretary.add
 import uniffi.secretary.createVault
+import uniffi.secretary.openVaultWithPassword
+import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithPassword
 import uniffi.secretary.openWithRecovery
 import uniffi.secretary.UnlockException
+import uniffi.secretary.VaultException
 import uniffi.secretary.version
 import kotlin.system.exitProcess
 
@@ -424,8 +427,61 @@ fun main() {
         check(false, "round-trip with recovery threw $e, expected to succeed")
     }
 
+    // =============================================================================
+    // B.4a — folder-in open_vault asserts
+    // =============================================================================
+
+    val goldenVault001Folder = "$vaultDir/golden_vault_001"
+
+    // Assertion 16: open_vault_with_password success — identity + manifest both populated.
+    try {
+        val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
+        val out = openVaultWithPassword(folderPath, password001)
+        val identity = out.identity
+        val manifest = out.manifest
+        val displayName = identity.displayName()
+        val blockCount = manifest.blockCount()
+        check(
+            displayName == expectedDisplayName && blockCount > 0UL,
+            "open_vault_with_password success → displayName=\"$displayName\", blockCount=$blockCount",
+        )
+        identity.wipe()
+        manifest.wipe()
+        identity.close()
+        manifest.close()
+    } catch (e: Throwable) {
+        check(false, "open_vault_with_password success threw $e, expected to succeed")
+    }
+
+    // Assertion 17: wrong password → VaultException.WrongPasswordOrCorrupt.
+    try {
+        val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
+        val wrongPassword = "definitely wrong".toByteArray(Charsets.UTF_8)
+        openVaultWithPassword(folderPath, wrongPassword)
+        check(false, "wrong password (vault) should have thrown VaultException.WrongPasswordOrCorrupt")
+    } catch (e: VaultException.WrongPasswordOrCorrupt) {
+        check(true, "open_vault_with_password wrong password → VaultException.WrongPasswordOrCorrupt")
+    } catch (e: Throwable) {
+        check(false, "wrong password (vault) threw $e, expected VaultException.WrongPasswordOrCorrupt")
+    }
+
+    // Assertion 18: nonexistent folder → VaultException.FolderInvalid with detail.
+    try {
+        val folderPath = "/tmp/__nonexistent_b4a_kotlin__".toByteArray(Charsets.UTF_8)
+        openVaultWithPassword(folderPath, password001)
+        check(false, "nonexistent folder should have thrown VaultException.FolderInvalid")
+    } catch (e: VaultException.FolderInvalid) {
+        val detail = e.detail.lowercase()
+        check(
+            detail.contains("vault.toml") || detail.contains("no such file"),
+            "nonexistent folder → VaultException.FolderInvalid(detail=\"${e.detail}\")",
+        )
+    } catch (e: Throwable) {
+        check(false, "nonexistent folder threw $e, expected VaultException.FolderInvalid")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 15 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 18 assertion(s) failed")
         exitProcess(1)
     }
 

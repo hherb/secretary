@@ -366,9 +366,60 @@ do {
     check(false, "round-trip with recovery threw \(error), expected to succeed")
 }
 
+// =============================================================================
+// B.4a — folder-in open_vault asserts
+// =============================================================================
+
+// Assert 16: open_vault_with_password success — identity + manifest both populated.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let displayName = out.identity.displayName()
+    let blockCount = out.manifest.blockCount()
+    check(
+        displayName == expectedDisplayName && blockCount > 0,
+        "open_vault_with_password success → displayName=\"\(displayName)\", blockCount=\(blockCount)"
+    )
+} catch {
+    check(false, "open_vault_with_password success threw \(error), expected to succeed")
+}
+
+// Assert 17: open_vault_with_password wrong password → VaultError.WrongPasswordOrCorrupt.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let wrongPassword = Data("definitely wrong".utf8)
+    _ = try openVaultWithPassword(folderPath: folderPath, password: wrongPassword)
+    check(false, "wrong password should have thrown VaultError.WrongPasswordOrCorrupt")
+} catch VaultError.WrongPasswordOrCorrupt {
+    check(true, "open_vault_with_password wrong password → VaultError.WrongPasswordOrCorrupt")
+} catch {
+    check(false, "wrong password (vault) threw \(error), expected VaultError.WrongPasswordOrCorrupt")
+}
+
+// Assert 18: nonexistent folder → VaultError.FolderInvalid with detail.
+do {
+    let folderPath = Data("/tmp/__nonexistent_b4a_swift__".utf8)
+    _ = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    check(false, "nonexistent folder should have thrown VaultError.FolderInvalid")
+} catch let e as VaultError {
+    if case let .FolderInvalid(detail) = e {
+        let lc = detail.lowercased()
+        check(
+            lc.contains("vault.toml") || lc.contains("no such file"),
+            "nonexistent folder → VaultError.FolderInvalid(detail=\"\(detail)\")"
+        )
+    } else {
+        check(false, "nonexistent folder threw wrong VaultError variant: \(e)")
+    }
+} catch {
+    check(false, "nonexistent folder threw \(error), expected VaultError.FolderInvalid")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 15 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of 18 assertion(s) failed\n".utf8)
     )
     exit(1)
 }
