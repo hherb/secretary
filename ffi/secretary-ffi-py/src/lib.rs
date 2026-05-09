@@ -263,6 +263,18 @@ impl MnemonicOutput {
 }
 
 // ---------------------------------------------------------------------------
+// FFI input convention (lib.rs):
+//   - `Vec<u8>` for any `bytes`-like parameter that the foreign caller may
+//     reasonably pass as either `bytes` (immutable) or `bytearray` (mutable,
+//     for caller-zeroize discipline). PyO3's automatic conversion accepts
+//     both for Vec<u8>; for &[u8] it accepts only bytes.
+//   - This applies uniformly to UUIDs, passwords, mnemonics, and any other
+//     bytes-typed input. Mirrors the uniffi UDL `bytes -> Vec<u8>`
+//     projection so the two binding-flavor crates stay aligned.
+//   - The 16-byte (or similar small-fixed-length) heap copy is negligible.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // B.4a: BlockSummary + OpenVaultManifest + OpenVaultOutput pyclasses.
 // ---------------------------------------------------------------------------
 
