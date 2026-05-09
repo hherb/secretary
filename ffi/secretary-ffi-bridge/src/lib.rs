@@ -14,12 +14,15 @@
 //! - [`FfiUnlockError`] — thinned 5-variant error type for the **bytes-in**
 //!   unlock entry points ([`open_with_password`], [`open_with_recovery`])
 //!   and the bytes-out [`create_vault`]. See [`error`] module docs.
-//! - [`FfiVaultError`] — thinned 6-variant error type for the **folder-in**
+//! - [`FfiVaultError`] — thinned 7-variant error type for the **folder-in**
 //!   vault entry points ([`open_vault_with_password`],
-//!   [`open_vault_with_recovery`]). Mirrors [`FfiUnlockError`]'s 5
-//!   unlock-class variants byte-identically (variant name + Display
-//!   string) plus a new [`FfiVaultError::FolderInvalid`] for missing or
-//!   inaccessible vault folders. See [`error`] module docs.
+//!   [`open_vault_with_recovery`], [`read_block`]). Mirrors
+//!   [`FfiUnlockError`]'s 5 unlock-class variants byte-identically
+//!   (variant name + Display string) plus [`FfiVaultError::FolderInvalid`]
+//!   for missing or inaccessible vault folders, plus
+//!   [`FfiVaultError::BlockNotFound`] for read-time block-UUID lookups
+//!   that miss the manifest's live blocks list. See [`error`] module
+//!   docs.
 //!
 //! ## Handles
 //!
@@ -35,6 +38,19 @@
 //!   returned by the folder-in open paths. Holds the IBK + manifest body
 //!   + manifest envelope + verified owner card internally; B.4a exposes
 //!     only read-only block-list accessors. See [`vault`] module docs.
+//! - [`BlockReadOutput`] — opaque handle for one block's decrypted
+//!   records. Returned by [`read_block`]. Holds owned [`Record`]s;
+//!   [`BlockReadOutput::wipe`] cascades wipe to every contained record
+//!   + field. See [`record`] module docs.
+//! - [`Record`] — per-record handle. Wraps non-secret metadata
+//!   (record_uuid, record_type, tags, timestamps, tombstone) plus an
+//!   ordered list of [`FieldHandle`]s. `Arc<Mutex<Option<...>>>` so
+//!   foreign callers can store cheap clones that share the same wiped
+//!   state.
+//! - [`FieldHandle`] — per-field handle. Holds the secret-payload
+//!   [`secretary_core::vault::record::RecordFieldValue`] (text or bytes);
+//!   explicit [`FieldHandle::expose_text`] / [`FieldHandle::expose_bytes`]
+//!   boundary for surfacing the secret to the foreign caller.
 //!
 //! ## Entry points
 //!
@@ -52,6 +68,14 @@
 //!   live identity and the read-only manifest handle.
 //! - [`open_vault_with_recovery`] — same as above but using a 24-word
 //!   BIP-39 recovery phrase. Mnemonic input is UTF-8 bytes (`&[u8]`).
+//!
+//! Read (B.4b):
+//! - [`read_block`] — fallible decrypt of one block's records given
+//!   an open vault and a 16-byte block UUID. Borrows
+//!   [`UnlockedIdentity`] + [`OpenVaultManifest`]. Returns
+//!   [`BlockReadOutput`] with the decrypted records on success;
+//!   [`FfiVaultError::BlockNotFound`] / [`FfiVaultError::CorruptVault`]
+//!   on lookup or decryption failure.
 //!
 //! ## Output shapes
 //!
@@ -91,6 +115,7 @@ pub mod vault;
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
+pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use unlock::{open_with_password, open_with_recovery};
 pub use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
