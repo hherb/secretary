@@ -25,7 +25,9 @@ use crate::vault::OpenVaultManifest;
 /// # Errors
 ///
 /// - [`FfiVaultError::BlockNotFound`] — the requested UUID is not in
-///   the manifest's live blocks list (trashed blocks also surface here).
+///   `manifest.blocks` (the live blocks list). `manifest.trash` is a
+///   separate list and is NOT searched, so trashed UUIDs naturally
+///   surface here too.
 /// - [`FfiVaultError::CorruptVault`] — block file missing on disk,
 ///   malformed envelope, signature verification failure, decap
 ///   failure, AAD/tag failure, or `BlockUuidMismatch`.

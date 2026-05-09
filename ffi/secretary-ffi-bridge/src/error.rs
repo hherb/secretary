@@ -672,9 +672,14 @@ pub enum FfiVaultError {
     },
 
     /// The requested block UUID does not appear in the manifest's live
-    /// blocks list. Trashed blocks are filtered out — they also surface
-    /// as `BlockNotFound` until Sub-project C adds the restore-from-trash
-    /// flow with full vector-clock context.
+    /// blocks list (`manifest.blocks`). Trashed blocks live in a
+    /// separate list (`manifest.trash`, holding `TrashEntry` records
+    /// with their own `block_uuid`) which `read_block` does NOT
+    /// search; a trashed UUID therefore naturally falls through to
+    /// `BlockNotFound` here. Sub-project C will introduce the
+    /// restore-from-trash flow with full vector-clock context, at
+    /// which point trashed UUIDs may surface through a dedicated
+    /// recovery path instead.
     ///
     /// `uuid_hex` is the 32-char lowercase hex of the requested UUID, e.g.
     /// `"112233445566778899aabbccddeeff00"`. Stored as a `String` for
@@ -687,7 +692,7 @@ pub enum FfiVaultError {
     /// missing or unreadable" (data integrity failure). The wrong-length
     /// UUID case (≠16 bytes) does NOT fold here either — that's a
     /// programmer error and surfaces as `ValueError` (PyO3) /
-    /// `IllegalArgumentException` (uniffi) at the binding layer; the
+    /// `VaultError::InvalidArgument` (uniffi) at the binding layer; the
     /// bridge function takes `&[u8; 16]` (compile-time enforced).
     #[error("block not found in manifest: {uuid_hex}")]
     BlockNotFound {
