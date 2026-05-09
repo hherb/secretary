@@ -123,6 +123,7 @@ create_exception!(secretary_ffi_py, VaultMismatchFolder, PyException);
 create_exception!(secretary_ffi_py, VaultCorruptVault, PyException);
 create_exception!(secretary_ffi_py, VaultFolderInvalid, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotFound, PyException);
+create_exception!(secretary_ffi_py, VaultSaveCryptoFailure, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -164,6 +165,7 @@ fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             // hex string back.
             VaultBlockNotFound::new_err(uuid_hex)
         }
+        FfiVaultError::SaveCryptoFailure { detail } => VaultSaveCryptoFailure::new_err(detail),
     }
 }
 
@@ -997,6 +999,13 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BlockReadOutput>()?;
     m.add_function(wrap_pyfunction!(read_block, m)?)?;
     m.add("VaultBlockNotFound", py.get_type::<VaultBlockNotFound>())?;
+
+    // B.4c surface (save-time crypto failure exception class; the
+    // save_block #[pyfunction] + input pyclasses land in a later commit).
+    m.add(
+        "VaultSaveCryptoFailure",
+        py.get_type::<VaultSaveCryptoFailure>(),
+    )?;
 
     Ok(())
 }

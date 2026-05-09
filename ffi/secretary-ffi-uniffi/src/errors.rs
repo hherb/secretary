@@ -78,11 +78,11 @@ impl From<FfiUnlockError> for UnlockError {
 }
 
 // =============================================================================
-// VaultError (mirrors FfiVaultError 7 variants + uniffi-only InvalidArgument)
+// VaultError (mirrors FfiVaultError 8 variants + uniffi-only InvalidArgument)
 // =============================================================================
 
 /// uniffi projection of FfiVaultError + one extra variant for FFI input-
-/// shape errors (`InvalidArgument`). Eight flat variants matching the UDL
+/// shape errors (`InvalidArgument`). Nine flat variants matching the UDL
 /// declaration.
 ///
 /// The structured-field rename rationale is the same as UnlockError's:
@@ -116,6 +116,8 @@ pub enum VaultError {
     BlockNotFound { uuid_hex: String },
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
+    #[error("save-time crypto failure: {detail}")]
+    SaveCryptoFailure { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -128,6 +130,7 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::CorruptVault { detail } => VaultError::CorruptVault { detail },
             FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
             FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
+            FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure { detail },
         }
     }
 }
