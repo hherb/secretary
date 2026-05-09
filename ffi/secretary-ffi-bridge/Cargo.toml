@@ -15,6 +15,13 @@ secretary-core = { path = "../../core" }
 # `getrandom` feature is required to enable the `OsRng` type.
 rand_core = { version = "0.6", features = ["getrandom"] }
 thiserror = "2"
+# Used by `record::read_block` to format `BlockNotFound { uuid_hex }` and
+# the CorruptVault detail strings as 32-char lowercase hex (matches
+# `FfiVaultError::BlockNotFound`'s documented `uuid_hex` shape). Runtime
+# dep — the read path needs it on every error mapping. Also used in
+# integration tests under `tests/`, so the `[dev-dependencies]` entry
+# below is now redundant; kept removed to avoid the duplicate.
+hex = "0.4"
 # `zeroize` is on the security-critical path: opaque handles wrapping
 # secret-bearing core types must zeroize on drop. Pinned to an EXACT
 # version (not a caret range) so that any patch / minor / major bump
@@ -33,5 +40,5 @@ tempfile = "=3.27.0"
 # used by block_summaries_returns_pinned_layout_for_v1 to parse the
 # golden_vault_001_inputs.json cross-check.
 serde_json = "1"
-# used by block_summaries_returns_pinned_layout_for_v1 for byte→hex formatting.
-hex = "0.4"
+# `hex` is now a runtime dep (see [dependencies] above for the rationale);
+# tests inherit it via the unified entry there.

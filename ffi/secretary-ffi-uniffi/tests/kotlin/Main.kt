@@ -15,6 +15,7 @@ import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithPassword
 import uniffi.secretary.openWithRecovery
+import uniffi.secretary.readBlock
 import uniffi.secretary.UnlockException
 import uniffi.secretary.VaultException
 import uniffi.secretary.version
@@ -480,8 +481,108 @@ fun main() {
         check(false, "nonexistent folder threw $e, expected VaultException.FolderInvalid")
     }
 
+    // =============================================================================
+    // B.4b — read_block asserts
+    // =============================================================================
+
+    val vault001BlockUuid = byteArrayOf(
+        0x11.toByte(), 0x22.toByte(), 0x33.toByte(), 0x44.toByte(),
+        0x55.toByte(), 0x66.toByte(), 0x77.toByte(), 0x88.toByte(),
+        0x99.toByte(), 0xaa.toByte(), 0xbb.toByte(), 0xcc.toByte(),
+        0xdd.toByte(), 0xee.toByte(), 0xff.toByte(), 0x00.toByte(),
+    )
+
+    // Assert 19: read_block success → record_count == 1 + field_count == 2.
+    try {
+        val folderPathBytes = vault001Path.toString().toByteArray(Charsets.UTF_8)
+        val out = openVaultWithPassword(folderPathBytes, password001)
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                readBlock(id, mf, vault001BlockUuid).use { block ->
+                    val recordCount = block.recordCount()
+                    val record = block.recordAt(0u)
+                    val fieldCount = record?.fieldCount() ?: 0u
+                    check(
+                        recordCount == 1uL && fieldCount == 2uL,
+                        "read_block success → record_count == 1 + field_count == 2 (got $recordCount, $fieldCount)",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "read_block success threw $e, expected to succeed")
+    }
+
+    // Assert 20: field_by_name("password").expose_text() == "hunter2".
+    try {
+        val folderPathBytes = vault001Path.toString().toByteArray(Charsets.UTF_8)
+        val out = openVaultWithPassword(folderPathBytes, password001)
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                readBlock(id, mf, vault001BlockUuid).use { block ->
+                    val record = block.recordAt(0u)!!
+                    val pwField = record.fieldByName("password")!!
+                    val secret = pwField.exposeText()
+                    check(
+                        secret == "hunter2",
+                        "field_by_name(\"password\").expose_text() == \"hunter2\" (got \"$secret\")",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "expose_text threw $e, expected to succeed")
+    }
+
+    // Assert 21: read_block(unknown_uuid) → VaultException.BlockNotFound(uuid_hex matches).
+    try {
+        val folderPathBytes = vault001Path.toString().toByteArray(Charsets.UTF_8)
+        val out = openVaultWithPassword(folderPathBytes, password001)
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                val unknownUuid = ByteArray(16)
+                try {
+                    readBlock(id, mf, unknownUuid)
+                    check(false, "read_block(unknown_uuid) should have thrown VaultException.BlockNotFound")
+                } catch (e: VaultException.BlockNotFound) {
+                    check(
+                        e.uuidHex == "00000000000000000000000000000000",
+                        "read_block(unknown_uuid) → VaultException.BlockNotFound(uuidHex=\"${e.uuidHex}\")",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "unknown UUID threw unexpected $e")
+    }
+
+    // Assert 22: wipe → record_count == 0. Note: Kotlin codegen exposes
+    // both `wipe()` (explicit cascade, leaves handle alive) AND `close()`
+    // (AutoCloseable destructor, releases Rust handle — calling any
+    // method afterward throws IllegalStateException). We need wipe()
+    // here so `recordCount()` post-call still returns the documented 0
+    // sentinel rather than throwing.
+    try {
+        val folderPathBytes = vault001Path.toString().toByteArray(Charsets.UTF_8)
+        val out = openVaultWithPassword(folderPathBytes, password001)
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                readBlock(id, mf, vault001BlockUuid).use { block ->
+                    block.wipe()
+                    val countAfter = block.recordCount()
+                    check(
+                        countAfter == 0uL,
+                        "wipe → record_count == 0 (got $countAfter)",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "wipe-then-record_count threw $e, expected to succeed")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 18 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 23 assertion(s) failed")
         exitProcess(1)
     }
 

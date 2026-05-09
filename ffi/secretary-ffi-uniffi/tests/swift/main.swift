@@ -417,9 +417,111 @@ do {
     check(false, "nonexistent folder threw \(error), expected VaultError.FolderInvalid")
 }
 
+// =============================================================================
+// B.4b — read_block asserts
+// =============================================================================
+
+let vault001BlockUuid = Data([
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+])
+
+// Assert 19: read_block success — record_count == 1 + field_count == 2.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let block = try readBlock(
+        identity: out.identity,
+        manifest: out.manifest,
+        blockUuid: vault001BlockUuid
+    )
+    defer { block.wipe() }
+    let recordCount = block.recordCount()
+    let record = block.recordAt(idx: 0)
+    let fieldCount = record?.fieldCount() ?? 0
+    check(
+        recordCount == 1 && fieldCount == 2,
+        "read_block success → record_count == 1 + field_count == 2 (got \(recordCount), \(fieldCount))"
+    )
+} catch {
+    check(false, "read_block success threw \(error), expected to succeed")
+}
+
+// Assert 20: field_by_name("password").expose_text() == "hunter2".
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let block = try readBlock(
+        identity: out.identity,
+        manifest: out.manifest,
+        blockUuid: vault001BlockUuid
+    )
+    defer { block.wipe() }
+    let record = block.recordAt(idx: 0)!
+    let pwField = record.fieldByName(name: "password")!
+    let secret = pwField.exposeText()
+    check(
+        secret == "hunter2",
+        "field_by_name(\"password\").expose_text() == \"hunter2\" (got \"\(secret ?? "<nil>")\")"
+    )
+} catch {
+    check(false, "expose_text threw \(error), expected to succeed")
+}
+
+// Assert 21: read_block(unknown_uuid) → VaultError.BlockNotFound(uuid matches).
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let unknownUuid = Data(repeating: 0, count: 16)
+    _ = try readBlock(
+        identity: out.identity,
+        manifest: out.manifest,
+        blockUuid: unknownUuid
+    )
+    check(false, "read_block(unknown_uuid) should have thrown VaultError.BlockNotFound")
+} catch let e as VaultError {
+    if case let .BlockNotFound(uuidHex) = e {
+        check(
+            uuidHex == "00000000000000000000000000000000",
+            "read_block(unknown_uuid) → VaultError.BlockNotFound(uuid_hex=\"\(uuidHex)\")"
+        )
+    } else {
+        check(false, "unknown UUID threw wrong VaultError variant: \(e)")
+    }
+} catch {
+    check(false, "unknown UUID threw \(error), expected VaultError.BlockNotFound")
+}
+
+// Assert 22: wipe → record_count == 0.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithPassword(folderPath: folderPath, password: password001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let block = try readBlock(
+        identity: out.identity,
+        manifest: out.manifest,
+        blockUuid: vault001BlockUuid
+    )
+    block.wipe()
+    let countAfter = block.recordCount()
+    check(
+        countAfter == 0,
+        "wipe → record_count == 0 (got \(countAfter))"
+    )
+} catch {
+    check(false, "wipe threw \(error), expected to succeed")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 18 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of 22 assertion(s) failed\n".utf8)
     )
     exit(1)
 }
