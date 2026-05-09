@@ -84,10 +84,12 @@ impl UnlockedIdentity {
         // Sensitive<...> ZeroizeOnDrop runs for every secret field.
     }
 
-    /// Bridge-internal accessor returning a fresh clone of the X25519 +
-    /// ML-KEM-768 reader secret keys + the corresponding public-key
-    /// material needed for `core::block::decrypt_block`. NOT exposed
-    /// through PyO3 / uniffi — used only by `crate::record::read_block`.
+    /// Bridge-internal accessor returning fresh clones of the X25519 +
+    /// ML-KEM-768 reader secret keys for `core::block::decrypt_block`.
+    /// Public-key material is supplied separately via the manifest's
+    /// owner contact card (see `crate::vault::OpenVaultManifest::owner_card`).
+    /// NOT exposed through PyO3 / uniffi — used only by
+    /// `crate::record::read_block`.
     ///
     /// Returns `None` if the handle has been closed. The returned
     /// `(X25519Secret, MlKem768Secret)` tuple is `Sensitive`-wrapped on
