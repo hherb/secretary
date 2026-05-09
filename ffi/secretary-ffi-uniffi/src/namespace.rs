@@ -293,7 +293,7 @@ mod tests {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(
                     detail.contains("16 bytes") && detail.contains("got 15"),
-                    "detail did not mention length: {detail}",
+                    "detail did not mention expected length markers",
                 );
             }
             Err(other) => panic!("expected InvalidArgument for wrong-length, got {other:?}"),
