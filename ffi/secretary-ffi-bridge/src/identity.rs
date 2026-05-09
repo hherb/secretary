@@ -8,10 +8,10 @@
 //!
 //! # Lifecycle
 //!
-//! [`UnlockedIdentity::close`] explicitly drops the wrapped identity now
+//! [`UnlockedIdentity::wipe`] explicitly drops the wrapped identity now
 //! (zeroizing all `Sensitive<...>` fields at exactly this moment instead
 //! of waiting for foreign GC). It is **idempotent** — multiple calls do
-//! not panic. Subsequent accessor calls on a closed handle return empty
+//! not panic. Subsequent accessor calls on a wiped handle return empty
 //! / zero values rather than panicking, keeping the API non-throwing.
 //! The non-throwing guarantee extends to a poisoned inner mutex via the
 //! private `lock_or_recover` helper: a panic anywhere holding the guard
@@ -19,6 +19,18 @@
 //!
 //! RAII is the safety net: when the foreign-side reference releases, the
 //! Rust-side `Drop` cascade still runs.
+//!
+//! # Naming
+//!
+//! Every other bridge-side handle (`MnemonicOutput`, `OpenVaultManifest`,
+//! `BlockReadOutput`, `Record`, `FieldHandle`) exposes its explicit-zeroize
+//! method as `wipe()`. This handle uses the same name for vocabulary
+//! uniformity. The PyO3 binding crate still presents `close()` to Python
+//! callers because Python's context-manager protocol expects a `close()`
+//! method (`__exit__` calls `close`), and PyO3 forwards Python's `close()`
+//! to this `wipe()` internally. The uniffi binding crate calls `wipe()`
+//! directly because uniffi 0.31's Kotlin codegen auto-generates an
+//! `AutoCloseable.close()` that would collide with a UDL-declared `close()`.
 
 use std::fmt;
 use std::sync::Mutex;
@@ -28,10 +40,10 @@ use crate::sync_helpers::lock_or_recover;
 /// Opaque handle to an unlocked vault identity. See [module docs](self).
 pub struct UnlockedIdentity {
     /// Wrapped behind a `Mutex<Option<...>>` to provide:
-    /// - **idempotent close** via `Option::take()`
+    /// - **idempotent wipe** via `Option::take()`
     /// - **thread-safe accessors** (lock is short — clone a String or copy
     ///   16 bytes — for sub-microsecond read overhead)
-    /// - **use-after-close non-throwing** semantics (`as_ref()` on `None`
+    /// - **use-after-wipe non-throwing** semantics (`as_ref()` on `None`
     ///   yields default values via `unwrap_or_default()`)
     inner: Mutex<Option<secretary_core::unlock::UnlockedIdentity>>,
 }
@@ -39,9 +51,9 @@ pub struct UnlockedIdentity {
 /// Redacted Debug: never leak secret material through the fmt path.
 impl fmt::Debug for UnlockedIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_closed = lock_or_recover(&self.inner).is_none();
+        let is_wiped = lock_or_recover(&self.inner).is_none();
         f.debug_struct("UnlockedIdentity")
-            .field("closed", &is_closed)
+            .field("wiped", &is_wiped)
             .finish()
     }
 }
@@ -57,7 +69,7 @@ impl UnlockedIdentity {
 
     /// User-facing display name from the IdentityBundle. UTF-8.
     ///
-    /// Returns `""` if the handle has been explicitly closed.
+    /// Returns `""` if the handle has been explicitly wiped.
     pub fn display_name(&self) -> String {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -67,7 +79,7 @@ impl UnlockedIdentity {
 
     /// 16-byte stable identifier from the IdentityBundle.
     ///
-    /// Returns `vec![0u8; 16]` if the handle has been explicitly closed.
+    /// Returns `vec![0u8; 16]` if the handle has been explicitly wiped.
     pub fn user_uuid(&self) -> Vec<u8> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -78,7 +90,12 @@ impl UnlockedIdentity {
     /// Drop the wrapped identity now, zeroizing all `Sensitive<...>`
     /// fields at exactly this moment. **Idempotent** — multiple calls do
     /// not panic.
-    pub fn close(&self) {
+    ///
+    /// Renamed from `close()` to `wipe()` for vocabulary uniformity with
+    /// every other bridge-side handle. PyO3's binding crate forwards
+    /// Python's `close()` (context-manager protocol) to this method
+    /// internally; uniffi's binding crate calls this directly.
+    pub fn wipe(&self) {
         let _drop = lock_or_recover(&self.inner).take();
         // _drop goes out of scope here → core::UnlockedIdentity drops →
         // Sensitive<...> ZeroizeOnDrop runs for every secret field.
@@ -94,7 +111,7 @@ impl UnlockedIdentity {
     /// Returns a typed [`ReaderSecretKeysError`] so the orchestrator can
     /// attach a non-misleading detail string for each failure mode (the
     /// previous `Option<...>` return collapsed both modes into a single
-    /// "handle closed" message even when the actual failure was an
+    /// "handle wiped" message even when the actual failure was an
     /// in-memory parse failure on already-validated bytes). The returned
     /// `(X25519Secret, MlKem768Secret)` tuple is `Sensitive`-wrapped on
     /// the `Sensitive::new` path; the caller drops it after the
@@ -137,13 +154,15 @@ impl UnlockedIdentity {
 }
 
 /// Bridge-internal failure mode for [`UnlockedIdentity::reader_secret_keys`].
-/// Lets the orchestrator distinguish a closed handle (legitimate user
+/// Lets the orchestrator distinguish a wiped handle (legitimate user
 /// action) from an in-memory ML-KEM-768 parse failure (structurally
 /// impossible — implies post-unlock memory corruption) when surfacing
 /// the failure as `FfiVaultError::CorruptVault`.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReaderSecretKeysError {
-    /// The identity handle has been closed/wiped.
+    /// The identity handle has been wiped. Variant name retains
+    /// `HandleClosed` for backwards compatibility with the orchestrator's
+    /// existing match arms; semantically equivalent to "handle wiped".
     HandleClosed,
     /// ML-KEM-768 secret key parse failed on bytes that were already
     /// validated at unlock-time. Structurally impossible — surfacing
@@ -191,28 +210,28 @@ mod tests {
     }
 
     #[test]
-    fn close_then_display_name_returns_empty() {
+    fn wipe_then_display_name_returns_empty() {
         let id = fresh_unlocked_identity();
-        id.close();
+        id.wipe();
         assert_eq!(id.display_name(), "");
     }
 
     #[test]
-    fn close_then_user_uuid_returns_zero_bytes() {
+    fn wipe_then_user_uuid_returns_zero_bytes() {
         let id = fresh_unlocked_identity();
-        id.close();
+        id.wipe();
         assert_eq!(id.user_uuid(), vec![0u8; 16]);
     }
 
     #[test]
-    fn reader_secret_keys_after_close_returns_handle_closed() {
-        // Pin the typed-error contract: a closed handle surfaces as
+    fn reader_secret_keys_after_wipe_returns_handle_closed() {
+        // Pin the typed-error contract: a wiped handle surfaces as
         // ReaderSecretKeysError::HandleClosed (not collapsed with the
         // structurally-impossible MlKem768ParseFailed case). The
         // orchestrator depends on this distinction to attach a
         // non-misleading CorruptVault.detail.
         let id = fresh_unlocked_identity();
-        id.close();
+        id.wipe();
         assert_eq!(
             id.reader_secret_keys().err(),
             Some(ReaderSecretKeysError::HandleClosed),
@@ -230,11 +249,11 @@ mod tests {
     }
 
     #[test]
-    fn close_is_idempotent() {
+    fn wipe_is_idempotent() {
         let id = fresh_unlocked_identity();
-        id.close();
-        id.close(); // second call must not panic
-        id.close(); // third call must not panic
+        id.wipe();
+        id.wipe(); // second call must not panic
+        id.wipe(); // third call must not panic
         assert_eq!(id.display_name(), "");
     }
 
@@ -268,15 +287,15 @@ mod tests {
         // by the panicking thread) and must not panic.
         assert_eq!(id.display_name(), "TestUser");
         assert_eq!(id.user_uuid().len(), 16);
-        // close() must not panic on a poisoned mutex either.
-        id.close();
+        // wipe() must not panic on a poisoned mutex either.
+        id.wipe();
         assert_eq!(id.display_name(), "");
         assert_eq!(id.user_uuid(), vec![0u8; 16]);
     }
 
     #[test]
-    fn accessors_thread_safe_with_close() {
-        // Smoke test: spawn a reader thread; main thread closes; reader
+    fn accessors_thread_safe_with_wipe() {
+        // Smoke test: spawn a reader thread; main thread wipes; reader
         // gets a valid (possibly empty) string, never a panic.
         use std::sync::Arc;
         let id = Arc::new(fresh_unlocked_identity());
@@ -289,7 +308,7 @@ mod tests {
         for _ in 0..500 {
             let _ = id.display_name();
         }
-        id.close();
+        id.wipe();
         handle.join().expect("reader thread panicked");
         // Post-join, all accessors return defaults.
         assert_eq!(id.display_name(), "");

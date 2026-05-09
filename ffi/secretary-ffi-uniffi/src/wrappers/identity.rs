@@ -24,8 +24,13 @@ impl UnlockedIdentity {
     }
 
     /// Drop the wrapped identity now, zeroizing all secret fields. Idempotent.
+    ///
+    /// Forwards to the bridge crate's `UnlockedIdentity::wipe()`. Every
+    /// bridge-side handle exposes its explicit-zeroize method as `wipe()`
+    /// (no `close()` remains on the bridge surface), so all six wrapper
+    /// `wipe()` impls in this module call `self.0.wipe()` uniformly.
     pub fn wipe(&self) {
-        self.0.close();
+        self.0.wipe();
     }
 }
 

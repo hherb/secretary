@@ -189,9 +189,11 @@ impl UnlockedIdentity {
     }
 
     /// Drop the wrapped identity now, zeroizing all secret fields at
-    /// exactly this moment. Idempotent.
+    /// exactly this moment. Idempotent. Forwards to the bridge crate's
+    /// `UnlockedIdentity::wipe()`; the Python-facing method is named
+    /// `close()` for the context-manager protocol idiom.
     fn close(&self) {
-        self.0.close();
+        self.0.wipe();
     }
 
     /// Context-manager `__enter__`. Returns `self` so `with ... as id`
@@ -209,7 +211,7 @@ impl UnlockedIdentity {
         _exc_value: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> bool {
-        self.0.close();
+        self.0.wipe();
         false
     }
 }
@@ -667,7 +669,8 @@ impl OpenVaultOutput {
         _exc_value: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> bool {
-        // Drop identity: close() zeroizes the IBK + secret keys.
+        // Drop identity: close() zeroizes the IBK + secret keys via the
+        // bridge's wipe() forwarder.
         if let Some(id) = self.identity.take() {
             id.close();
         }

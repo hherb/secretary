@@ -1,11 +1,11 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-09 (Sub-project B.4b — deferred-cleanup pass)
-**Status:** four B.4b deferred items resolved on branch `chore/b4b-deferred-cleanup`; PR pending review/merge. No new feature work this session.
+**Status:** five B.4b cleanup items resolved on branch `chore/b4b-deferred-cleanup`; PR pending review/merge. No new feature work this session.
 
 ## (1) What we shipped this session
 
-Four task commits on the feature branch `chore/b4b-deferred-cleanup`:
+Five task commits on the feature branch `chore/b4b-deferred-cleanup`:
 
 | Task | Commit | What landed |
 |---|---|---|
@@ -13,6 +13,7 @@ Four task commits on the feature branch `chore/b4b-deferred-cleanup`:
 | 2: cast tightening | `5e9b123` | `record_at` / `field_at` `idx as usize` → `usize::try_from(idx).ok()?` so out-of-range indexes return `None` on 32-bit targets too. `record_count() as u64` and `field_count() as u64` left alone — usize → u64 is lossless on every supported Rust target |
 | 3: stale UDL docstrings | `220222a` | `wipe()` method docstrings on UnlockedIdentity, MnemonicOutput, OpenVaultManifest gained the same "uniffi 0.31 codegen generates BOTH `wipe()` AND `close()` as separate methods on Kotlin (not a rename)" paragraph that BlockReadOutput / Record / FieldHandle already carried from B.4b's review-fix `43abd13`. Interface-level "close → wipe rename rationale" wording unchanged — that's the design rationale for our naming choice and is still accurate |
 | 4: orphan-rule housekeeping | `259825d` | `From<FfiUnlockError> for FfiVaultError` arm body moved into private `unlock_err_to_vault_err` free function; the `pub From` impl is now a thin delegator. Reachability through orphan rules is unchanged either way; the improvement is local — future variant additions edit one private function instead of an `impl From` block whose `pub` visibility looks like API surface but isn't. Closes #32 |
+| 5: bridge `close()` → `wipe()` | (this commit) | `secretary_ffi_bridge::UnlockedIdentity::close()` renamed to `wipe()` for vocabulary uniformity with every other bridge-side handle (`MnemonicOutput`, `OpenVaultManifest`, `BlockReadOutput`, `Record`, `FieldHandle` all expose `wipe()`). PyO3's Python-facing `close()` method is preserved (Python's context-manager idiom expects `close()`); it now forwards to bridge `wipe()` internally. Uniffi wrapper `UnlockedIdentity::wipe()` now calls `self.0.wipe()` symmetrically with the other handle wrappers. 4 test names renamed (`close_then_*` → `wipe_then_*`, `accessors_thread_safe_with_close` → `..._with_wipe`); `ReaderSecretKeysError::HandleClosed` variant name retained for backwards compat with orchestrator match arms (semantic note added) |
 
 ### Verification at session close
 
