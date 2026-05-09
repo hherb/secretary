@@ -97,8 +97,12 @@ pub struct OpenVaultOutput {
 /// name the type without triggering the `private_interfaces` lint.
 pub(crate) struct OpenVaultManifestInner {
     /// 32-byte Identity Block Key. Sensitive; zeroized on drop. Held for
-    /// B.4b's `read_block` to use without re-opening the vault.
-    #[allow(dead_code)] // B.4b will use this; intentional now for forward-compat
+    /// B.4c's `save_block` (which derives a fresh BCK and rewraps under
+    /// each recipient using the IBK as the manifest-encryption key).
+    /// `read_block` (B.4b) does NOT need the IBK directly — it goes
+    /// through `core::block::decrypt_block` with the reader's secret
+    /// keys from `UnlockedIdentity`.
+    #[allow(dead_code)] // B.4c will use this; intentional now for forward-compat
     identity_block_key: Sensitive<[u8; 32]>,
     /// Decrypted manifest body — block list, vault-level vector clock,
     /// kdf_params attestation, owner UUIDs.
@@ -109,10 +113,17 @@ pub(crate) struct OpenVaultManifestInner {
     #[allow(dead_code)] // B.4c will use this; intentional now for forward-compat
     manifest_file: ManifestFile,
     /// Owner's self-signed contact card, already self-verified during
-    /// `core::open_vault`. Held internally for B.4c/d signature operations;
-    /// **not** exposed through B.4a accessors (deferred to B.4d).
-    #[allow(dead_code)] // B.4c/d will use this; intentional now for forward-compat
+    /// `core::open_vault`. B.4b reads it via the bridge-internal
+    /// `owner_card()` accessor in `read_block` (sender + reader for the
+    /// v1 single-author flow). B.4c/d will use it for save/share
+    /// signature operations. NOT exposed through public B.4a/B.4b
+    /// accessors (deferred to B.4d's contact-card surface).
     owner_card: ContactCard,
+    /// NEW in B.4b: vault folder path the manifest was opened from.
+    /// Used by `read_block` to resolve `blocks/<uuid>.cbor.enc`.
+    /// B.4c (`save_block`) and B.4d (`share_block`) will reuse this for
+    /// atomic-write paths through `tempfile::persist`.
+    vault_folder: std::path::PathBuf,
 }
 
 /// Opaque handle to a successfully-opened vault's manifest.
@@ -218,6 +229,46 @@ impl OpenVaultManifest {
         // — IBK zeroized first via ZeroizeOnDrop), then manifest,
         // manifest_file, owner_card.
     }
+
+    /// Bridge-internal accessor for the vault folder path. NOT exposed
+    /// through PyO3 / uniffi — used only by `crate::record::read_block`
+    /// to resolve `blocks/<uuid>.cbor.enc`. Returns `None` if the handle
+    /// has been wiped (then `read_block` falls through to a typed error).
+    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
+    pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
+        lock_or_recover(&self.inner)
+            .as_ref()
+            .map(|i| i.vault_folder.clone())
+    }
+
+    /// Bridge-internal accessor for the manifest body. NOT exposed
+    /// through PyO3 / uniffi. Returns a clone of the manifest (block
+    /// list + vector clock + kdf_params attestation). Returns `None`
+    /// if the handle has been wiped.
+    ///
+    /// Used by `crate::record::read_block` to look up the BlockEntry
+    /// by UUID. The clone is cheap (block list is typically a handful
+    /// of entries; KAT vault has 1).
+    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
+    pub(crate) fn manifest_body(&self) -> Option<Manifest> {
+        lock_or_recover(&self.inner)
+            .as_ref()
+            .map(|i| i.manifest.clone())
+    }
+
+    /// Bridge-internal accessor for the verified owner contact card.
+    /// NOT exposed through PyO3 / uniffi. Returns `None` if the
+    /// handle has been wiped.
+    ///
+    /// Used by `crate::record::read_block` as both the sender card and
+    /// the reader card (v1 single-author block reading; multi-author
+    /// flow deferred to B.4d).
+    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
+    pub(crate) fn owner_card(&self) -> Option<ContactCard> {
+        lock_or_recover(&self.inner)
+            .as_ref()
+            .map(|i| i.owner_card.clone())
+    }
 }
 
 /// Internal projection: `core::BlockEntry` → `BlockSummary` (drops
@@ -249,7 +300,7 @@ pub fn open_vault_with_password(
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let pw = SecretBytes::new(password.to_vec());
     let core_out = secretary_core::vault::open_vault(folder, Unlocker::Password(&pw), None)?;
-    Ok(split_core_open_vault(core_out))
+    Ok(split_core_open_vault(core_out, folder.to_path_buf()))
     // pw drops here → SecretBytes ZeroizeOnDrop wipes our local copy.
     // The caller's foreign-side password buffer is THEIR concern.
 }
@@ -273,7 +324,7 @@ pub fn open_vault_with_recovery(
             detail: "phrase contained invalid UTF-8".to_string(),
         })?;
     let core_out = secretary_core::vault::open_vault(folder, Unlocker::Recovery(phrase), None)?;
-    Ok(split_core_open_vault(core_out))
+    Ok(split_core_open_vault(core_out, folder.to_path_buf()))
 }
 
 /// Split a `core::vault::OpenVault` into the two FFI handles.
@@ -282,7 +333,10 @@ pub fn open_vault_with_recovery(
 /// bytes out via `expose()` and mint a second `Sensitive` for the manifest
 /// handle.  Both copies carry `ZeroizeOnDrop`; the intermediate stack array
 /// is explicitly zeroized per `CLAUDE.md`'s stack-residue discipline.
-fn split_core_open_vault(core_out: secretary_core::vault::OpenVault) -> OpenVaultOutput {
+fn split_core_open_vault(
+    core_out: secretary_core::vault::OpenVault,
+    vault_folder: std::path::PathBuf,
+) -> OpenVaultOutput {
     let secretary_core::vault::OpenVault {
         identity_block_key,
         identity,
@@ -313,6 +367,7 @@ fn split_core_open_vault(core_out: secretary_core::vault::OpenVault) -> OpenVaul
             manifest,
             manifest_file,
             owner_card,
+            vault_folder,
         }),
     }
 }
@@ -579,5 +634,46 @@ mod tests {
         out.manifest.wipe();
         out.manifest.wipe();
         assert_eq!(out.manifest.block_count(), 0);
+    }
+
+    #[test]
+    fn vault_folder_accessor_returns_path_when_live_and_none_when_wiped() {
+        // Pin the bridge-internal vault_folder accessor's contract.
+        // record::read_block (B.4b Task 3) depends on this returning
+        // Some(path) before wipe and None after, so a regression here
+        // would surface as a bogus FfiVaultError::CorruptVault from
+        // read_block rather than a clean failure.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let returned = out.manifest.vault_folder().expect("Some(path) before wipe");
+        assert_eq!(
+            returned, folder,
+            "vault_folder() must return the path passed to open_vault_with_password",
+        );
+        out.manifest.wipe();
+        assert_eq!(
+            out.manifest.vault_folder(),
+            None,
+            "vault_folder() must return None after wipe",
+        );
+    }
+
+    #[test]
+    fn manifest_body_and_owner_card_accessors_return_some_when_live() {
+        // Pin the two new bridge-internal accessors. read_block needs
+        // them to drive core::block::decrypt_block; a None here when
+        // the handle is live would manifest as CorruptVault from
+        // read_block.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let body = out
+            .manifest
+            .manifest_body()
+            .expect("Some(body) before wipe");
+        assert_eq!(body.vault_uuid, body.vault_uuid); // trivial; pins the type
+        let _card = out.manifest.owner_card().expect("Some(card) before wipe");
+        out.manifest.wipe();
+        assert_eq!(out.manifest.manifest_body(), None);
+        assert!(out.manifest.owner_card().is_none());
     }
 }

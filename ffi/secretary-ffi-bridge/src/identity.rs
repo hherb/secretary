@@ -83,6 +83,48 @@ impl UnlockedIdentity {
         // _drop goes out of scope here → core::UnlockedIdentity drops →
         // Sensitive<...> ZeroizeOnDrop runs for every secret field.
     }
+
+    /// Bridge-internal accessor returning a fresh clone of the X25519 +
+    /// ML-KEM-768 reader secret keys + the corresponding public-key
+    /// material needed for `core::block::decrypt_block`. NOT exposed
+    /// through PyO3 / uniffi — used only by `crate::record::read_block`.
+    ///
+    /// Returns `None` if the handle has been closed. The returned
+    /// `(X25519Secret, MlKem768Secret)` tuple is `Sensitive`-wrapped on
+    /// the `Sensitive::new` path; the caller drops it after the
+    /// `decrypt_block` call returns and zeroize-on-drop takes care of
+    /// the secret bytes.
+    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
+    pub(crate) fn reader_secret_keys(
+        &self,
+    ) -> Option<(
+        secretary_core::crypto::kem::X25519Secret,
+        secretary_core::crypto::kem::MlKem768Secret,
+    )> {
+        use secretary_core::crypto::kem;
+        use secretary_core::crypto::secret::Sensitive;
+        use zeroize::Zeroize as _;
+
+        let guard = lock_or_recover(&self.inner);
+        let id = guard.as_ref()?;
+
+        // X25519: copy the 32 bytes onto the stack, mint a Sensitive,
+        // then zeroize the stack copy. Mirrors the same discipline as
+        // `crate::vault::split_core_open_vault`.
+        let mut x_sk_bytes: [u8; 32] = *id.identity.x25519_sk.expose();
+        let x_sk: kem::X25519Secret = Sensitive::new(x_sk_bytes);
+        x_sk_bytes.zeroize();
+
+        // ML-KEM-768: from_bytes returns Result<_, KemError>. The bundle
+        // was already validated at unlock-time (core::unlock checks the
+        // length on decode), so a failure here would be impossible
+        // unless the in-memory bundle was corrupted post-unlock — fold
+        // to None for parity with the close-state shape (read_block will
+        // surface this as CorruptVault upstream).
+        let pq_sk = kem::MlKem768Secret::from_bytes(id.identity.ml_kem_768_sk.expose()).ok()?;
+
+        Some((x_sk, pq_sk))
+    }
 }
 
 #[cfg(test)]
