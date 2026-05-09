@@ -684,3 +684,245 @@ def test_record_field_handles_share_state_after_wipe() -> None:
                 field_a.wipe()
                 assert field_a.expose_text() is None
                 assert field_b.expose_text() is None
+
+
+# ---------------------------------------------------------------------------
+# B.4c: save_block tests
+#
+# save_block mutates the on-disk vault — every test gets its own writable
+# copy of golden_vault_001 in pytest's tmp_path so the read-only fixture
+# is never touched. Mirrors the bridge crate's `fresh_writable_vault`
+# helper and the Swift / Kotlin smoke runners' freshOpenVault helpers.
+# ---------------------------------------------------------------------------
+
+# Pinned UUIDs / timestamps for the new save_block tests. Distinct from
+# golden_vault_001's existing block (whose uuid is 112233...ff00).
+SAVE_BLOCK_NEW_BLOCK_UUID = bytes([0xAB] * 16)
+SAVE_BLOCK_NEW_RECORD_UUID = bytes([0xCD] * 16)
+SAVE_BLOCK_DEVICE_UUID = bytes([0x07] * 16)
+SAVE_BLOCK_NOW_MS_BASE = 1_715_000_000_000
+
+
+def _fresh_writable_vault(tmp_path: Path) -> tuple:
+    """Copy golden_vault_001 into `tmp_path / vault001/` and open it.
+
+    Returns the OpenVaultOutput handle so callers can use it as a context
+    manager: `with _fresh_writable_vault(tmp_path) as out: ...`. The
+    on-disk copy lives until `tmp_path` is reaped by pytest, so save
+    mutations are visible to subsequent re-opens within the same test.
+    """
+    import shutil
+    dst = tmp_path / "vault001"
+    shutil.copytree(_golden_vault_path(1), dst)
+    return secretary_ffi_py.open_vault_with_password(str(dst), VAULT_001_PASSWORD), dst
+
+
+def test_save_block_round_trip_insert(tmp_path: Path) -> None:
+    """save_block insert → read_block round-trip preserves text + bytes."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            input = secretary_ffi_py.BlockInput(
+                block_uuid=SAVE_BLOCK_NEW_BLOCK_UUID,
+                block_name="Notes",
+                records=[
+                    secretary_ffi_py.RecordInput(
+                        record_uuid=SAVE_BLOCK_NEW_RECORD_UUID,
+                        fields=[
+                            secretary_ffi_py.FieldInput(
+                                "title",
+                                secretary_ffi_py.FieldInputValue.text("wifi password"),
+                            ),
+                            secretary_ffi_py.FieldInput(
+                                "key",
+                                secretary_ffi_py.FieldInputValue.bytes(b"\xDE\xAD\xBE\xEF"),
+                            ),
+                        ],
+                    ),
+                ],
+            )
+            secretary_ffi_py.save_block(
+                identity, manifest, input, SAVE_BLOCK_DEVICE_UUID, SAVE_BLOCK_NOW_MS_BASE,
+            )
+            with secretary_ffi_py.read_block(
+                identity, manifest, SAVE_BLOCK_NEW_BLOCK_UUID,
+            ) as block:
+                assert block.record_count() == 1
+                record = block.record_at(0)
+                assert record.field_by_name("title").expose_text() == "wifi password"
+                assert record.field_by_name("key").expose_bytes() == b"\xDE\xAD\xBE\xEF"
+
+
+def test_save_block_update_replaces_existing_entry(tmp_path: Path) -> None:
+    """Same block_uuid on second save replaces the manifest entry; the
+    block_name advances and block_count stays at the new total (no double-
+    counting)."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            pre_count = manifest.block_count()
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "v1", []),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE,
+            )
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "v2", []),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE + 1_000,
+            )
+            assert manifest.block_count() == pre_count + 1
+            summary = manifest.find_block(SAVE_BLOCK_NEW_BLOCK_UUID)
+            assert summary is not None
+            assert summary.block_name == "v2"
+
+
+def test_save_block_with_empty_records_succeeds(tmp_path: Path) -> None:
+    """Empty `records` is allowed (the spec permits empty blocks)."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            pre_count = manifest.block_count()
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "empty", []),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE,
+            )
+            assert manifest.block_count() == pre_count + 1
+
+
+def test_save_block_persists_visible_to_fresh_open(tmp_path: Path) -> None:
+    """Save → drop handles → re-open from the same on-disk copy → block
+    visible + payload readable. Pins persistence-to-disk + re-open
+    agreement end-to-end."""
+    out, dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(
+                    SAVE_BLOCK_NEW_BLOCK_UUID,
+                    "persisted",
+                    [
+                        secretary_ffi_py.RecordInput(
+                            SAVE_BLOCK_NEW_RECORD_UUID,
+                            [
+                                secretary_ffi_py.FieldInput(
+                                    "k", secretary_ffi_py.FieldInputValue.text("v"),
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE,
+            )
+
+    # Re-open the same on-disk copy in a fresh OpenVaultOutput.
+    out2 = secretary_ffi_py.open_vault_with_password(str(dst), VAULT_001_PASSWORD)
+    with out2 as vault2:
+        with vault2.identity as identity2, vault2.manifest as manifest2:
+            summary = manifest2.find_block(SAVE_BLOCK_NEW_BLOCK_UUID)
+            assert summary is not None
+            assert summary.block_name == "persisted"
+            with secretary_ffi_py.read_block(
+                identity2, manifest2, SAVE_BLOCK_NEW_BLOCK_UUID,
+            ) as block:
+                assert (
+                    block.record_at(0).field_by_name("k").expose_text() == "v"
+                )
+
+
+def test_save_block_on_wiped_manifest_raises_corrupt_vault(tmp_path: Path) -> None:
+    """Wipe the manifest → save_block raises VaultCorruptVault with
+    `manifest` in the detail."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        identity = vault.identity
+        manifest = vault.manifest
+        manifest.wipe()
+        with pytest.raises(secretary_ffi_py.VaultCorruptVault) as exc_info:
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "x", []),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE,
+            )
+        assert "manifest" in str(exc_info.value)
+
+
+def test_save_block_on_wiped_identity_raises_corrupt_vault(tmp_path: Path) -> None:
+    """Wipe the identity → save_block raises VaultCorruptVault with
+    `identity` in the detail.
+
+    `UnlockedIdentity.close()` is the Python-facing zeroize trigger
+    (matches Python's context-manager idiom); it forwards to the bridge
+    crate's `wipe()` internally. Other handles expose `wipe()` directly."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        identity = vault.identity
+        manifest = vault.manifest
+        identity.close()
+        with pytest.raises(secretary_ffi_py.VaultCorruptVault) as exc_info:
+            secretary_ffi_py.save_block(
+                identity,
+                manifest,
+                secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "x", []),
+                SAVE_BLOCK_DEVICE_UUID,
+                SAVE_BLOCK_NOW_MS_BASE,
+            )
+        assert "identity" in str(exc_info.value)
+
+
+def test_save_block_input_wrong_length_block_uuid_raises_value_error() -> None:
+    """`BlockInput(block_uuid=...)` length validation fires inside the
+    constructor; no vault open required."""
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.BlockInput(b"\x00" * 5, "x", [])
+    assert "16 bytes" in str(exc_info.value)
+    assert "got 5" in str(exc_info.value)
+
+
+def test_save_block_input_wrong_length_record_uuid_raises_value_error() -> None:
+    """`RecordInput(record_uuid=...)` length validation fires inside the
+    constructor — distinct from BlockInput's check."""
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.RecordInput(b"\x00" * 5, [])
+    assert "16 bytes" in str(exc_info.value)
+    assert "got 5" in str(exc_info.value)
+
+
+def test_save_block_wrong_length_device_uuid_raises_value_error(tmp_path: Path) -> None:
+    """`save_block(device_uuid=...)` length validation fires at the
+    pyfunction boundary (BlockInput already validated block_uuid)."""
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with pytest.raises(ValueError) as exc_info:
+                secretary_ffi_py.save_block(
+                    identity,
+                    manifest,
+                    secretary_ffi_py.BlockInput(SAVE_BLOCK_NEW_BLOCK_UUID, "x", []),
+                    bytes(15),
+                    SAVE_BLOCK_NOW_MS_BASE,
+                )
+            assert "device_uuid" in str(exc_info.value)
+            assert "16 bytes" in str(exc_info.value)
+
+
+def test_vault_save_crypto_failure_is_distinct_exception_class() -> None:
+    """Smoke: VaultSaveCryptoFailure is importable, distinct from
+    VaultCorruptVault, and is a subclass of Exception."""
+    assert (
+        secretary_ffi_py.VaultSaveCryptoFailure
+        is not secretary_ffi_py.VaultCorruptVault
+    )
+    assert issubclass(secretary_ffi_py.VaultSaveCryptoFailure, Exception)
