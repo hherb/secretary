@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_body_and_owner_card_accessors_return_some_when_live() {
+    fn manifest_body_and_owner_card_accessors_return_some_when_live_and_none_when_wiped() {
         // Pin the two new bridge-internal accessors. read_block needs
         // them to drive core::block::decrypt_block; a None here when
         // the handle is live would manifest as CorruptVault from
