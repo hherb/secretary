@@ -105,6 +105,16 @@ impl FieldHandle {
     /// `FieldHandle` is NOT wiped by this call — call [`Self::wipe`]
     /// explicitly when done with the handle.
     ///
+    /// **Foreign-runtime heap-copy caveat:** the `String` handed back
+    /// is *functionally* un-zeroizable in most foreign runtimes. Python
+    /// `str` is interned and copied through CPython's allocator with
+    /// no guarantees about residual heap content; Kotlin / Swift
+    /// `String` is similarly out of the caller's hands once the
+    /// runtime takes ownership. The only authoritative wipe is
+    /// [`Self::wipe`], which zeroizes the bridge-side `SecretString`
+    /// in place. Treat this method as a one-shot read-out boundary,
+    /// not a recoverable copy.
+    ///
     /// Invalid-UTF-8 cannot reach this accessor by construction: CBOR
     /// `tstr` (major type 3) requires valid UTF-8 per RFC 8949 §3.1,
     /// and `core::vault::record::parse_record_field` only constructs
@@ -130,6 +140,15 @@ impl FieldHandle {
     /// Swift `[UInt8]` going out of scope, Kotlin GC). The underlying
     /// `SecretBytes` in the `FieldHandle` is NOT wiped by this call —
     /// call [`Self::wipe`] explicitly when done with the handle.
+    ///
+    /// **Foreign-runtime heap-copy caveat:** Python `bytes` is immutable
+    /// and cannot be zeroized in place; convert to `bytearray` and
+    /// overwrite if you need authoritative cleanup. Kotlin `ByteArray`
+    /// supports `.fill(0)` but the runtime may have already copied
+    /// the buffer. The only authoritative wipe is [`Self::wipe`],
+    /// which zeroizes the bridge-side `SecretBytes` in place. Treat
+    /// this method as a one-shot read-out boundary, not a recoverable
+    /// copy.
     pub fn expose_bytes(&self) -> Option<Vec<u8>> {
         lock_or_recover(&self.inner)
             .as_ref()
