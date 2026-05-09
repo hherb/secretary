@@ -7,14 +7,10 @@
 //! v1 single-author: sender = reader = vault owner. Multi-author flow
 //! deferred to B.4d's `share_block`.
 
-use std::path::PathBuf;
-
 use secretary_core::crypto::sig::MlDsa65Public;
-use secretary_core::identity::card::ContactCard;
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::vault::block;
 use secretary_core::vault::record::Record as CoreRecord;
-use secretary_core::vault::Manifest;
 
 use super::{BlockReadOutput, FieldHandle, Record};
 use crate::error::FfiVaultError;
@@ -45,9 +41,14 @@ pub fn read_block(
     manifest: &OpenVaultManifest,
     block_uuid: &[u8; 16],
 ) -> Result<BlockReadOutput, FfiVaultError> {
-    let manifest_body: Manifest = manifest.manifest_body().ok_or_else(handle_wiped)?;
-    let owner_card: ContactCard = manifest.owner_card().ok_or_else(handle_wiped)?;
-    let vault_folder: PathBuf = manifest.vault_folder().ok_or_else(handle_wiped)?;
+    // Single-lock atomic snapshot — folds 3 sequential lock_or_recover
+    // calls into 1, closing the theoretical TOCTOU window where another
+    // thread could call manifest.wipe() between accessor invocations and
+    // surface as a misleading CorruptVault on whichever accessor lost
+    // the race.
+    let (manifest_body, owner_card, vault_folder) = manifest
+        .snapshot_for_read_block()
+        .ok_or_else(handle_wiped)?;
 
     // Locate the manifest BlockEntry. Trash entries are not considered.
     let _entry = manifest_body

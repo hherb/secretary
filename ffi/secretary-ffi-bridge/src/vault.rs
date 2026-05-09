@@ -231,9 +231,17 @@ impl OpenVaultManifest {
     }
 
     /// Bridge-internal accessor for the vault folder path. NOT exposed
-    /// through PyO3 / uniffi — used only by `crate::record::read_block`
-    /// to resolve `blocks/<uuid>.cbor.enc`. Returns `None` if the handle
-    /// has been wiped (then `read_block` falls through to a typed error).
+    /// through PyO3 / uniffi. Returns `None` if the handle has been
+    /// wiped.
+    ///
+    /// Originally consumed by `crate::record::read_block`; B.4b's
+    /// `snapshot_for_read_block` superseded the per-field call site
+    /// to fold 3 lock acquisitions into 1. This accessor is retained
+    /// for forward-compat — B.4c (write_block) and B.4d (share_block)
+    /// will need vault folder access without necessarily wanting the
+    /// manifest body + owner card together. Marked
+    /// `#[allow(dead_code)]` until the next downstream caller lands.
+    #[allow(dead_code)]
     pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -245,9 +253,14 @@ impl OpenVaultManifest {
     /// list + vector clock + kdf_params attestation). Returns `None`
     /// if the handle has been wiped.
     ///
-    /// Used by `crate::record::read_block` to look up the BlockEntry
-    /// by UUID. The clone is cheap (block list is typically a handful
-    /// of entries; KAT vault has 1).
+    /// Originally consumed by `crate::record::read_block`; B.4b's
+    /// `snapshot_for_read_block` superseded the per-field call site
+    /// to fold 3 lock acquisitions into 1. This accessor is retained
+    /// for forward-compat — B.4c (write_block) will need to inspect
+    /// the manifest body to allocate a fresh block UUID and append
+    /// to `blocks`. Marked `#[allow(dead_code)]` until the next
+    /// downstream caller lands.
+    #[allow(dead_code)]
     pub(crate) fn manifest_body(&self) -> Option<Manifest> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -258,13 +271,50 @@ impl OpenVaultManifest {
     /// NOT exposed through PyO3 / uniffi. Returns `None` if the
     /// handle has been wiped.
     ///
-    /// Used by `crate::record::read_block` as both the sender card and
-    /// the reader card (v1 single-author block reading; multi-author
-    /// flow deferred to B.4d).
+    /// Originally consumed by `crate::record::read_block`; B.4b's
+    /// `snapshot_for_read_block` superseded the per-field call site
+    /// to fold 3 lock acquisitions into 1. This accessor is retained
+    /// for forward-compat — B.4d (share_block) will need the owner
+    /// card without the manifest body to encrypt to additional
+    /// recipients. Marked `#[allow(dead_code)]` until the next
+    /// downstream caller lands.
+    #[allow(dead_code)]
     pub(crate) fn owner_card(&self) -> Option<ContactCard> {
         lock_or_recover(&self.inner)
             .as_ref()
             .map(|i| i.owner_card.clone())
+    }
+
+    /// Bridge-internal atomic snapshot of the three pieces
+    /// `crate::record::read_block` needs in one shot: the manifest
+    /// body, the verified owner contact card, and the vault folder
+    /// path. NOT exposed through PyO3 / uniffi.
+    ///
+    /// This folds the three sequential `lock_or_recover` calls in
+    /// `read_block` into a single critical section, closing the
+    /// theoretical atomicity gap where another thread could call
+    /// [`OpenVaultManifest::wipe`] between the individual accessor
+    /// calls (e.g. observing `Some(manifest)` then `None` on
+    /// `owner_card`, leaking through as a misleading
+    /// `FfiVaultError::CorruptVault`).
+    ///
+    /// Returns `None` if the handle has been wiped before the lock
+    /// was taken (then `read_block` falls through to a typed
+    /// `CorruptVault` with the "wiped" detail). The 3 individual
+    /// accessors ([`OpenVaultManifest::manifest_body`],
+    /// [`OpenVaultManifest::owner_card`], [`OpenVaultManifest::vault_folder`])
+    /// are intentionally retained for forward-compat — B.4c / B.4d
+    /// will reuse them piecewise.
+    pub(crate) fn snapshot_for_read_block(
+        &self,
+    ) -> Option<(Manifest, ContactCard, std::path::PathBuf)> {
+        lock_or_recover(&self.inner).as_ref().map(|i| {
+            (
+                i.manifest.clone(),
+                i.owner_card.clone(),
+                i.vault_folder.clone(),
+            )
+        })
     }
 }
 
@@ -676,5 +726,37 @@ mod tests {
         out.manifest.wipe();
         assert_eq!(out.manifest.manifest_body(), None);
         assert!(out.manifest.owner_card().is_none());
+    }
+
+    #[test]
+    fn snapshot_for_read_block_returns_some_triple_when_live_and_none_when_wiped() {
+        // Pin the single-lock atomic snapshot accessor used by
+        // record::read_block. Closes a theoretical TOCTOU gap where
+        // another thread could call wipe() between the 3 individual
+        // accessor calls; a regression here would let the gap reopen.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let (body, card, returned_folder) = out
+            .manifest
+            .snapshot_for_read_block()
+            .expect("Some(triple) before wipe");
+        assert_eq!(body.vault_uuid.len(), 16, "vault_uuid is 16 bytes");
+        assert!(
+            !body.blocks.is_empty(),
+            "golden_vault_001 must have at least one block",
+        );
+        assert_eq!(
+            returned_folder, folder,
+            "snapshot folder must match open_vault_with_password input",
+        );
+        // Structural sanity on the returned card — full identity
+        // verification is exercised in core::vault tests; here we
+        // only need to know the snapshot returned the live card.
+        assert_eq!(card.contact_uuid.len(), 16, "card contact_uuid is 16 bytes",);
+        out.manifest.wipe();
+        assert!(
+            out.manifest.snapshot_for_read_block().is_none(),
+            "snapshot_for_read_block must return None after wipe",
+        );
     }
 }
