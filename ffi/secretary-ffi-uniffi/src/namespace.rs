@@ -233,6 +233,91 @@ pub fn read_block(
         .map_err(VaultError::from)
 }
 
+/// Encrypt and atomically persist one block of records. (B.4c)
+///
+/// `device_uuid` and `input.block_uuid` (and each `RecordInput.record_uuid`)
+/// must be exactly 16 bytes; otherwise returns
+/// [`VaultError::InvalidArgument`]. Same wrong-length-rides-inside-VaultError
+/// rationale as [`read_block`].
+///
+/// Converts uniffi-flat input dictionaries to bridge-side types
+/// ([`secretary_ffi_bridge::SecretString`] / [`secretary_core::crypto::secret::SecretBytes`]
+/// wrappers preserve zeroize-on-drop) and forwards to
+/// [`secretary_ffi_bridge::save_block`].
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `device_uuid`,
+///   `input.block_uuid`, or any `RecordInput.record_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::FolderInvalid`] — IO failure during atomic write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn save_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    input: crate::BlockInput,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<(), VaultError> {
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    let block_uuid = uuid_from_vec(&input.block_uuid, "input.block_uuid")?;
+
+    let records = input
+        .records
+        .into_iter()
+        .map(convert_record_input)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let bridge_input = secretary_ffi_bridge::BlockInput {
+        block_uuid,
+        block_name: input.block_name,
+        records,
+    };
+
+    secretary_ffi_bridge::save_block(&identity.0, &manifest.0, bridge_input, device_uuid, now_ms)
+        .map_err(VaultError::from)
+}
+
+/// Validate a 16-byte UUID slice; surface wrong length as
+/// [`VaultError::InvalidArgument`] with the field name in the detail.
+fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
+        detail: format!("{field} must be 16 bytes, got {}", bytes.len()),
+    })
+}
+
+/// Convert a uniffi-side [`crate::RecordInput`] into a bridge-side
+/// [`secretary_ffi_bridge::RecordInput`]. Wraps each field's payload in
+/// the appropriate zeroize-on-drop secret carrier.
+fn convert_record_input(
+    r: crate::RecordInput,
+) -> Result<secretary_ffi_bridge::RecordInput, VaultError> {
+    use secretary_core::crypto::secret::{SecretBytes, SecretString};
+
+    let record_uuid = uuid_from_vec(&r.record_uuid, "record_uuid")?;
+    let fields = r
+        .fields
+        .into_iter()
+        .map(|f| secretary_ffi_bridge::FieldInput {
+            name: f.name,
+            value: match f.value {
+                crate::FieldInputValue::Text { text } => {
+                    secretary_ffi_bridge::FieldInputValue::Text(SecretString::from(text))
+                }
+                crate::FieldInputValue::Bytes { data } => {
+                    secretary_ffi_bridge::FieldInputValue::Bytes(SecretBytes::from(data))
+                }
+            },
+        })
+        .collect();
+
+    Ok(secretary_ffi_bridge::RecordInput {
+        record_uuid,
+        fields,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
