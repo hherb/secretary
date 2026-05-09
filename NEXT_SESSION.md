@@ -1,89 +1,86 @@
 # NEXT_SESSION.md
 
-**Session date:** 2026-05-06 (Sub-project B.4a — folder-based open_vault through FFI)
-**Status:** Sub-project B.4a complete; PR pending merge. The folder-in vault open path is now exposed across PyO3 (Python) and uniffi (Swift / Kotlin) via the existing shared `secretary-ffi-bridge` crate. The FFI surface now has 7 user-facing entry points: bytes-in `open_with_password` / `open_with_recovery` / `create_vault`, folder-in `open_vault_with_password` / `open_vault_with_recovery`, plus the `add` / `version` smokes. Two error types: `FfiUnlockError` (5-variant, bytes-in unchanged) and `FfiVaultError` (6-variant, folder-in NEW; mirrors 5 unlock-class variants byte-identically + 1 new FolderInvalid). Two opaque handles return from open paths: `UnlockedIdentity` (re-used unchanged) and `OpenVaultManifest` (NEW; holds IBK + manifest + envelope + verified owner card internally for B.4b/c/d to extend).
+**Session date:** 2026-05-09 (Sub-project B.4b — design spec)
+**Status:** B.4b design approved + committed to `main`. Implementation plan + code pending. The spec resolves all four open design questions from the post-B.4a baton (record-type FFI projection, read-block API shape, BlockNotFound error variant, trash entries) and adds one defense-in-depth fuzz-target item that's in scope for the implementation. Workspace state on `main` is unchanged from B.4a's post-merge baseline (522 + 9 cargo, 30 pytest, 18/18 Swift, 19 Kotlin).
 
 ## (1) What we shipped this session
 
 | Task | Commit(s) | What landed |
 |---|---|---|
-| 1 — bridge FfiVaultError | `57dc201` | New 6-variant flat `FfiVaultError` enum in `ffi/secretary-ffi-bridge/src/error.rs`. `From<core::VaultError>` delegates unlock-class variants through a private `From<FfiUnlockError>` arm so future FfiUnlockError renames propagate automatically. All 6 Display strings verified against spec. Spec-review fix-up `d745f91` added before Task 2 per "fix spec-review issues before quality review". |
-| 1 fix-up | `d745f91` | Doc comment fixes on `FfiVaultError` and its variants per code-quality review; no behaviour change. |
-| 2 — bridge vault.rs | `7c71b15`, `00e783d` | New `ffi/secretary-ffi-bridge/src/vault.rs` with `open_vault_with_password`, `open_vault_with_recovery`, `OpenVaultOutput`, `OpenVaultManifest`, `BlockSummary` + 9 unit tests (round-trip with password, round-trip with recovery, wrong-password error mapping, folder-invalid error mapping, `block_summaries` matches pinned KAT from golden vaults, `find_block` found / not-found, `wipe` semantics, accessor after wipe panics). Fix-up commit `00e783d` pinned `Cargo.toml` comment, improved drop-order doc, and pinned `recipient_uuids` in the test KAT. |
-| 2 fix-up | `00e783d` | Style fix-up: Cargo.toml comment correction, drop-order doc improvement, recipient_uuids KAT pin. |
-| 3 — bridge lib.rs | `dc4c25b` | Re-exports `FfiVaultError`, `OpenVaultOutput`, `OpenVaultManifest`, `BlockSummary`, `open_vault_with_password`, `open_vault_with_recovery`; crate-doc updated to reflect 7-entry-point surface. |
-| 4 — PyO3 wrapper | `2196c0e`, `555c94c` | `#[pyfunction] open_vault_with_password` and `open_vault_with_recovery`; 3 new `#[pyclass]` (`OpenVaultOutput`, `OpenVaultManifest`, `BlockSummary`); 6 `create_exception!` calls for `VaultFolderInvalid`, `VaultWrongPasswordOrCorrupt`, `VaultWeakKdf`, `VaultIdentityExpired`, `VaultStorageError`, `VaultUnexpected`. Fix-up `555c94c` corrected `detail` field name consistency in `ffi_vault_error_to_pyerr`. |
-| 4 fix-up | `555c94c` | Style fix-up: `detail` field name consistency in `ffi_vault_error_to_pyerr` mapping arms. |
-| 5 — pytest | `f68bc01` | +7 tests: `test_open_vault_shape`, `test_open_vault_block_summaries`, `test_open_vault_find_block`, `test_open_vault_block_count`, `test_open_vault_wipe`, `test_open_vault_wrong_password_error`, `test_open_vault_folder_invalid_error`; module-scoped `opened_vault` fixture amortizes Argon2id cost. |
-| 6 — UDL + uniffi glue | `63c555a` | UDL gains 2 `dictionary` types (`OpenVaultOutput`, `BlockSummary`) + 1 `interface` (`OpenVaultManifest`) + 1 `[Error]` enum (`VaultError`) + 2 namespace fns (`open_vault_with_password`, `open_vault_with_recovery`); uniffi-side wrapper structs with `Arc<Interface>`; +2 mapping/integration tests. |
-| 7 — Swift + Kotlin smoke | `17ec4b9` | +3 asserts each (shape: vault_uuid + block_count non-empty, block_summaries round-trip, find_block found + not-found); unified into existing golden vault fixture. |
-| 8 — READMEs + ROADMAP | `d2ac3ec` | Bridge / py / uniffi crate READMEs gain B.4a sections; top-level README progress bar advanced + status table B.4a row flipped ⏳ → ✅; ROADMAP B.4a entry flipped + status paragraph extended. |
-| 9 — NEXT_SESSION + handoff | (this commit) | This file + `docs/handoffs/2026-05-06-b4a-open-vault.md`. |
+| Brainstorm + design (B.4b spec) | `3093782` | New `docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md` (623 lines). Resolves the four NEXT_SESSION-baton open questions: (1) Hybrid Record projection — value-type metadata + opaque `FieldHandle` for secret payloads with explicit `expose_text()` / `expose_bytes()` boundary; (2) Free-function `bridge::read_block(&identity, &manifest, &[u8; 16])` shape (matches "free functions in reusable modules" preference); (3) 7-variant `FfiVaultError` with new `BlockNotFound { uuid_hex }`; decrypt + file-missing fold into `CorruptVault`; (4) Trash deferred to Sub-project C — `block_summaries()` filters trashed; `read_block(trashed_uuid)` returns `BlockNotFound`. Plus settled follow-ups: `OpenVaultManifestInner` gains `vault_folder: PathBuf` (bridge-internal, no B.4a public surface change); wrong-length-UUID raises `ValueError` / `IllegalArgumentException` (anti-conflation); `Record.unknown` / `RecordField.unknown` not surfaced; `Record.tombstone: bool` IS surfaced, `tombstoned_at_ms` is NOT; single-author-only block reading (multi-author deferred to B.4d). One in-scope hardening: extend `core/fuzz/fuzz_targets/record.rs` with a defense-in-depth Text-field UTF-8-validity assertion (rejects the alternative of surfacing a yet-another error variant on `expose_text`). |
+| ROADMAP refresh | `fc7e35d` | B.4b roadmap entry rewritten from the placeholder "main open design question" framing to a concrete summary of the resolved spec; added spec link. README unchanged (no test count / status changes). |
+| NEXT_SESSION + handoff | (this commit) | This file + `docs/handoffs/2026-05-09-b4b-spec.md`. |
 
-### Verification at session close
+### Verification at session close (no code changes; baseline check only)
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **522 passed + 9 ignored, 0 failed** (was 498 + 9 at branch start; +24 from B.4a cumulative: +20 in the bridge crate, +2 in uniffi from Task 6, +2 in uniffi regression tests for the zeroize fix-up `cc8bcba`) |
+| `cargo test --release --workspace` | **522 passed + 9 ignored, 0 failed** (unchanged from B.4a post-merge) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
-| `uv run --directory ffi/secretary-ffi-py pytest` | **30 passed** (was 22 — added 7 B.4a tests + 1 find_block boundary test) |
-| `uv run core/tests/python/conformance.py` | **PASS** |
-| `uv run core/tests/python/spec_test_name_freshness.py` | **PASS** |
-| `bash ffi/secretary-ffi-uniffi/tests/swift/run.sh` | **18/18 PASS** (was 15/15 — added 3 B.4a asserts) |
-| `bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh` | **19 PASS lines** (was 16 PASS lines — added 3 B.4a asserts) |
+| `uv run --directory ffi/secretary-ffi-py pytest` | **30 passed** (after applying the documented nuclear cache fix at session start) |
+| `uv run core/tests/python/conformance.py` | PASS |
+| `uv run core/tests/python/spec_test_name_freshness.py` | PASS |
+| Swift smoke | 18/18 PASS |
+| Kotlin smoke | 19 PASS lines |
 
-### Per-crate breakdown of the 522-test workspace
-
-- `secretary-core` — 448 (unchanged; +9 ignored)
-- `secretary-ffi-bridge` — **56** (was 36; +20 net: +9 unit tests in new `vault.rs` + error and vault type coverage + 2 find_block coverage tests from review fix-up)
-- `secretary-ffi-py` — 3 (unchanged Rust unit tests; the 30 pytest count is separate)
-- `secretary-ffi-uniffi` — **15** (was 11; +2 mapping/integration tests from Task 6 + 2 zeroize regression tests from `cc8bcba`)
-
-### Two-stage review caught real bugs (and confirmed real wins) — same shape as B.3a / B.3b
-
-The subagent-driven-development workflow's two-stage review (spec compliance → code quality) drove fix-up commits across the implementation tasks. Concrete examples:
-
-- **Task 1** (bridge FfiVaultError): Spec compliance review confirmed the `From<FfiUnlockError>` delegation arm correctly propagates all 5 unlock-class variant names without manual duplication; code quality review tightened doc comments in fix-up `d745f91`.
-- **Task 2** (bridge vault.rs): Code quality review flagged the `Cargo.toml` comment wording and the drop-order doc accuracy; corrected in `00e783d`. The `recipient_uuids` KAT pin was also tightened to a concrete expected value rather than a length check.
-- **Task 4** (PyO3 wrapper): Code quality review caught inconsistent `detail` field name in `ffi_vault_error_to_pyerr` mapping arms; corrected in `555c94c` before pytest was added.
-- **Tasks 7** (Swift/Kotlin smoke): Plan's UDL type projections aligned without mismatches — the B.3b lessons about `Data` vs `[UInt8]` and `ULong` vs `Long` carried forward correctly.
-
-The user's "fix every review issue before merging — no technical debt" preference held throughout. No issues filed for follow-up; everything in scope landed before the doc commit.
+(Per `feedback_python_uv` + the documented maturin/uv cache stickiness, the post-merge `pytest` invocation needs `rm -rf ffi/secretary-ffi-py/.venv && find ~/.cache/uv -name "*secretary*" -exec rm -rf {} + && uv sync --directory ffi/secretary-ffi-py && (cd ffi/secretary-ffi-py && uv run maturin develop --release --uv)` before pytest sees the new symbols. Already applied this session.)
 
 ## (2) What's next
 
-With B.4a done, the folder-based vault-open path is exposed at the FFI. The next step is B.4b — reading individual encrypted blocks from an open vault. Before writing a spec or plan for B.4b, a brainstorm session (via the `/brainstorm` skill) should resolve the following open design questions:
+The B.4b spec is approved. The next step is to **write the implementation plan** with the `superpowers:writing-plans` skill, then execute the plan with the `superpowers:subagent-driven-development` skill (same workflow as B.4a).
 
-- **Record type FFI projection.** How do `Record` / `RecordField` / `RecordFieldValue` (which use `SecretString` / `SecretBytes` zeroize-typed wrappers in Rust) project to Python `dataclass` / Swift `struct` / Kotlin `data class` while preserving zeroize-discipline on the foreign-language side? The "bytes not strings" discipline established in B.2 applies but record types are structurally recursive.
-- **Read-block API shape.** Does `read_block(block_uuid)` consume the `OpenVaultManifest` (one-shot access, simplest ownership) or take it by reference (allows multi-block sequential reads)? The `Mutex<Option<T>>` pattern enables both; the ergonomic tradeoff needs a decision before the UDL is written.
-- **Error variant for block-not-found.** Should `FfiVaultError` gain a 7th variant `BlockNotFound { uuid }`, or is "block UUID not found" folded into `CorruptVault` (vault integrity failure) or kept as a distinct `BlockNotFound` without growing the error enum? The B.3b pattern was "5-variant, add a 6th only when the user action is genuinely different"; `BlockNotFound` is arguably a different user action (retry / re-sync vs. re-open).
-- **Trash entries.** Still deferred to Sub-project C (sync) or surface in B.4b with a soft-delete flag on `BlockSummary`?
+### Concrete acceptance criteria for B.4b implementation
 
-The deferred-items section in [docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md](docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md) "Non-goals (YAGNI)" carries the carry-over context — read it before requesting the brainstorming skill.
+| Gate | Target |
+|---|---|
+| `cargo test --release --workspace` | **535+ passed + 9 ignored** (was 522 + 9; +12-14 new bridge-crate unit tests in `record.rs`) |
+| `cargo clippy --release --workspace -- -D warnings` | clean |
+| `cargo fmt --all -- --check` | OK |
+| `uv run --directory ffi/secretary-ffi-py pytest` | **40 passed** (was 30; +10 B.4b tests) |
+| Swift smoke | **22/22 PASS** (was 18/18; +4 B.4b asserts) |
+| Kotlin smoke | **23 PASS lines** (was 19; +4 B.4b asserts) |
+| `uv run core/tests/python/conformance.py` | PASS unchanged |
+| `uv run core/tests/python/spec_test_name_freshness.py` | PASS unchanged |
+| `cargo fuzz run record -- -runs=10000` (nightly; from `core/fuzz/`) | clean — no UTF-8-validity assertion failures |
+
+### Implementation task breakdown (rough — the writing-plans pass will refine)
+
+1. Bridge crate: extend `OpenVaultManifestInner` with `vault_folder: PathBuf`; thread it through `open_vault_with_password` / `open_vault_with_recovery` constructors. No public accessor change.
+2. Bridge crate: add 7th `FfiVaultError::BlockNotFound { uuid_hex }`; extend `From<core::VaultError>` mapping (file-missing → `CorruptVault`; decrypt failures → `CorruptVault`); add tripwire test for new variant's Display string.
+3. Bridge crate: NEW `ffi/secretary-ffi-bridge/src/record.rs` — `read_block` free fn + `BlockReadOutput` + `Record` + `FieldHandle` + 12-14 unit tests pinned against `golden_vault_001_inputs.json::block_plaintext`.
+4. Bridge crate: `lib.rs` re-exports + crate-doc update (7 → 8 entry points).
+5. Fuzz harness: extend `core/fuzz/fuzz_targets/record.rs` with the defense-in-depth UTF-8 assertion on `RecordFieldValue::Text` after successful decode; smoke-run with `-runs=10000` on nightly.
+6. PyO3 wrapper: `#[pyfunction] read_block`; 3 `#[pyclass]` (`BlockReadOutput`, `Record`, `FieldHandle`) with `__enter__`/`__exit__`; `create_exception!(VaultBlockNotFound)`; 7th arm in `ffi_vault_error_to_pyerr`.
+7. pytest: +10 tests covering shape, metadata, text-payload, bytes/text discrimination, BlockNotFound, ValueError on wrong-length UUID, context-manager wipe, Arc-clone wipe sharing.
+8. uniffi UDL + bridge crate impl: 1 namespace fn (`read_block`); 3 interfaces (`BlockReadOutput`, `Record`, `FieldHandle`); 1 new `[Error]` enum variant; uniffi 0.31 codegen renames documented in project memory still apply (`wipe → close` on Kotlin; `AutoCloseable` auto-generated).
+9. Swift smoke + Kotlin smoke: +4 asserts each.
+10. README + ROADMAP refresh; NEXT_SESSION + handoff.
+
+The two-stage review pattern from B.3a/B.3b/B.4a (spec compliance review → code quality review per task) carries forward.
 
 ## (3) Open decisions and risks
 
-### Decisions made and load-bearing for future sub-projects
+### Decisions made and load-bearing for B.4c+
 
-These are the B.4a decisions that constrain subsequent FFI work (B.4b/c/d):
+These B.4b spec decisions constrain subsequent FFI work:
 
-1. **Folder-IO ownership at the FFI established.** Rust core owns all reads and atomic writes through `secretary_core::vault`. Foreign callers pass a folder path string; the bridge translates to `PathBuf` and calls core. No foreign-side file I/O is ever expected.
-2. **Two-handle output struct pattern.** `OpenVaultOutput { identity: UnlockedIdentity, manifest: OpenVaultManifest }` gives the caller two independently-lifetimed opaque handles. Identity handle follows the existing B.2/B.3a pattern; manifest handle is new for B.4a. B.4b will extend the manifest handle's accessor surface without changing the output struct shape.
-3. **FfiVaultError 6-variant flat enum.** Mirrors `FfiUnlockError`'s 5 unlock-class variants byte-identically (same variant names + same Display strings) plus 1 new `FolderInvalid { detail }`. The private `From<FfiUnlockError>` delegation arm prevents unlock-class variant drift if `FfiUnlockError` is ever renamed. B.4b may grow this to 7 variants if `BlockNotFound` is approved in the design brainstorm.
-4. **OpenVaultManifest holds IBK + manifest + envelope + owner card internally.** All four are stored in the `Mutex<Option<T>>` newtype so B.4b can call `read_block` without re-opening the vault. B.4b extends with `read_block`; B.4c with `save_block` (mutation question still open — does saving a block require a new `OpenVaultManifest` constructor or a `&mut self` method?); B.4d with `share_block` (ContactCard surface).
-5. **`local_highest_clock` / rollback deferred to Sub-project C.** Both `open_vault_with_*` functions return `local_highest_clock: None` unconditionally. Sub-project C's sync orchestration layer will compute and act on the rollback signal; the FFI entry points should not change shape when that is implemented — only the `None` becomes `Some(u64)`.
-6. **Owner contact card not exposed.** `OpenVaultManifest` holds the verified owner contact card internally (used during manifest authentication) but does not expose it through any accessor. Accessor exposure is deferred to B.4d (sharing primitives / ContactCard surface).
+1. **`OpenVaultManifestInner.vault_folder: PathBuf` is the canonical "where this vault lives" handle** for B.4c (`save_block`) and B.4d (`share_block`). Both will reuse this for atomic-write paths. No need to re-thread the folder through future bridge entry points.
+2. **Hybrid Record projection is the canonical pattern for any future secret-payload-bearing value type.** Non-secret metadata is value-type; secret payload is opaque-handle with explicit `expose_*()` boundary. ContactCard's public-key accessors (B.4d) will follow the same shape — public keys are non-secret so projected as plain bytes.
+3. **`Record` / `FieldHandle` use `Arc<Mutex<Option<T>>>` not just `Mutex<Option<T>>`.** Because accessors return clones the foreign caller can store. `BlockReadOutput`, `OpenVaultManifest`, `UnlockedIdentity` keep the simpler `Mutex<Option<T>>` (no shared-clone access pattern).
+4. **Single-author block reading only in B.4b.** The bridge assumes `manifest.owner_card` is the sender card. B.4d's `share_block` flow will add `contacts/<author_uuid>.card` discovery and the multi-author read path.
+5. **Wrong-length UUID = `ValueError` / `IllegalArgumentException`, not `BlockNotFound`.** The same anti-conflation discipline applies to any future `&[u8; N]` parameter — wrong length is a programmer bug, not a data error.
+6. **Trash entries stay invisible at the FFI through B.4d.** Restore-from-trash is a Sub-project C / sync-orchestrator concern that needs vector-clock context. If a viewer UI needs "show deleted" before C ships, this decision is revisited.
 
-### Risks for future work
+### Risks for the B.4b implementation
 
-- **`BlockSummary.recipient_uuids` is the first multi-valued field in any FFI value type.** Swift projects it as `[String]`, Kotlin as `List<String>`. If B.4b adds block content, any field carrying `SecretBytes` will need the same careful bytes-vs-array treatment as mnemonic phrase bytes in B.3b.
-- **`OpenVaultManifest` wipe-then-access panic semantics.** The `Mutex<Option<T>>` newtype panics on access after `wipe()`. This is intentional and documented, but B.4b tests must cover the after-wipe error path via Python `RuntimeError` / Swift/Kotlin exception — not a crash.
-- **Maturin/uv cache stickiness** is well-documented in [`ffi/secretary-ffi-py/README.md`](ffi/secretary-ffi-py/README.md) and the project memory; expect to apply the documented nuclear fix after any branch-switch / squash-merge that touches PyO3 surface.
+- **Record/FieldHandle wipe ordering corner case.** `BlockReadOutput::wipe()` walks `records: Vec<Record>` and calls `wipe()` on each; each `Record::wipe()` walks `fields: Vec<FieldHandle>` similarly. If a foreign caller holds a clone of an inner `FieldHandle` and calls `wipe()` on it, then later calls `wipe()` on the parent `Record`, the second wipe should be idempotent (the inner Option is already None). Tests should cover both orderings.
+- **uniffi 0.31 + 3 new interfaces.** B.4a had 1 new interface (OpenVaultManifest) + 2 dictionaries; B.4b has 3 new interfaces (BlockReadOutput, Record, FieldHandle). The codegen-rename quirks may surface differently — particularly if Kotlin's `AutoCloseable` interaction with multiple wipe-able interfaces nests in unexpected ways. Mitigation: implement Task 8 before Task 9 and let the codegen run before writing smoke tests.
+- **Maturin / uv cache stickiness on PyO3 surface change.** Documented in project memory (`project_secretary_maturin_uv_cache`); B.4b adds substantial new symbols (`read_block` + `BlockReadOutput` + `Record` + `FieldHandle` + `VaultBlockNotFound`), so apply the nuclear fix proactively after Task 6 (PyO3 wrapper) before running pytest in Task 7.
 
 ### Pre-existing technical debt
 
-None outstanding from B.4a.
+None outstanding from B.4a. The B.4b spec inherits zero open items from B.4a beyond the standard "deferred to later sub-project" non-goals.
 
 ## (4) Exact commands to resume
 
@@ -92,7 +89,7 @@ cd /Users/hherb/src/secretary
 git checkout main
 git pull --ff-only
 
-# Verify the post-merge state on main:
+# Verify the post-session state on main:
 cargo test --release --workspace 2>&1 | grep -E "^test result:" | python3 -c "
 import sys, re
 p=f=i=0
@@ -103,11 +100,10 @@ print(f'TOTAL: {p} passed; {f} failed; {i} ignored')"
 cargo clippy --release --workspace -- -D warnings && echo "clippy OK"
 cargo fmt --all -- --check && echo "fmt OK"
 
-# IMPORTANT: re-build the maturin dylib BEFORE pytest. Post-merge cache
-# stickiness (documented in ffi/secretary-ffi-py/README.md) often
-# manifests as `module 'secretary_ffi_py' has no attribute 'open_vault_with_password'`.
-# If `maturin develop` alone doesn't pick up the new symbols, apply the
-# nuclear fix:
+# IMPORTANT: re-build the maturin dylib BEFORE pytest. Cache stickiness
+# (documented in ffi/secretary-ffi-py/README.md) often manifests as
+# `module 'secretary_ffi_py' has no attribute 'open_vault_with_password'`
+# or similar after a branch switch. Apply nuclear fix:
 #   rm -rf ffi/secretary-ffi-py/.venv
 #   find ~/.cache/uv -name "*secretary*" -exec rm -rf {} +
 #   uv sync --directory ffi/secretary-ffi-py
@@ -119,28 +115,34 @@ uv run core/tests/python/spec_test_name_freshness.py
 bash ffi/secretary-ffi-uniffi/tests/swift/run.sh
 bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
-# Expected: 522 passed + 9 ignored cargo; clippy clean; fmt OK; 30 pytest;
+# Expected baseline: 522 passed + 9 ignored cargo; clippy clean; fmt OK; 30 pytest;
 # PASS conformance + freshness; 18/18 Swift; 19 Kotlin PASS lines.
 
-# Begin Sub-project B.4b:
-# 1. Run the brainstorming skill first to resolve the 4 open design questions
-#    listed in section (2) above (record type FFI projection, read-block API
-#    shape, BlockNotFound error variant, trash entries).
-# 2. After brainstorm resolves the questions, use the writing-plans skill to
-#    produce docs/superpowers/specs/2026-05-XX-ffi-b4b-read-block-design.md.
-# 3. Then use the writing-plans skill to produce the implementation plan.
+# Begin Sub-project B.4b implementation:
+# 1. Read the approved spec:
+#      docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md
+# 2. Create a feature branch:
+#      git checkout -b feat/ffi-b4b-read-block
+# 3. Use the writing-plans skill to produce:
+#      docs/superpowers/plans/2026-05-XX-ffi-b4b-read-block-plan.md
+# 4. Use the subagent-driven-development skill to execute the plan task by task,
+#    with the two-stage review pattern (spec compliance → code quality) per task,
+#    landing each task as its own commit (no batched mega-commits — same shape as B.4a).
+# 5. Per project memory `feedback_next_session_in_pr`: update + commit NEXT_SESSION.md
+#    on the FEATURE BRANCH before pushing the PR (not after merge).
 ```
 
 ---
 
 ## Closing inventory
 
-- **Branch:** `feat/ffi-b4a-open-vault` (open PR; pending squash-merge to `main`)
-- **Total commits since branching from `main@85c95b4`:** 11 on the feature branch (8 task implementations + 2 review/style fix-ups + 1 doc/handoff). PR to be squash-merged.
-- **Workspace tests:** 520 + 9 ignored
-- **Pytest:** 29 (22 from B.1 + B.2 + B.3a + B.3b + 7 B.4a)
-- **Swift smoke:** 18/18 (15 from prior + 3 B.4a)
-- **Kotlin smoke:** 19 PASS lines (16 from prior + 3 B.4a)
-- **Bridge crate:** 54 unit tests (was 36; +18 net)
-- **uniffi crate:** 15 unit tests (was 11; +2 net from Task 6 + 2 regression tests added in `cc8bcba` for the zeroize-on-invalid-UTF-8-folder-path fix)
-- **PR:** [#28](https://github.com/hherb/secretary/pull/28) — open, pending squash-merge to `main`.
+- **Branch:** `main` (no feature branch this session — design-only work landed directly to `main` per the project's pattern of committing approved specs ahead of implementation).
+- **Total commits this session:** 3 on `main` (`3093782` spec + `fc7e35d` ROADMAP refresh + this commit's NEXT_SESSION + handoff).
+- **Workspace tests:** 522 + 9 ignored (unchanged).
+- **Pytest:** 30 (unchanged).
+- **Swift smoke:** 18/18 (unchanged).
+- **Kotlin smoke:** 19 PASS lines (unchanged).
+- **Bridge crate:** 56 unit tests (unchanged).
+- **uniffi crate:** 15 unit tests (unchanged).
+- **Spec doc:** [docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md](docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md) (623 lines; 9-decision log + in-scope fuzz hardening + deferred-items list).
+- **Handoff:** [docs/handoffs/2026-05-09-b4b-spec.md](docs/handoffs/2026-05-09-b4b-spec.md).
