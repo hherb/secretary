@@ -91,23 +91,30 @@ impl UnlockedIdentity {
     /// NOT exposed through PyO3 / uniffi — used only by
     /// `crate::record::read_block`.
     ///
-    /// Returns `None` if the handle has been closed. The returned
+    /// Returns a typed [`ReaderSecretKeysError`] so the orchestrator can
+    /// attach a non-misleading detail string for each failure mode (the
+    /// previous `Option<...>` return collapsed both modes into a single
+    /// "handle closed" message even when the actual failure was an
+    /// in-memory parse failure on already-validated bytes). The returned
     /// `(X25519Secret, MlKem768Secret)` tuple is `Sensitive`-wrapped on
     /// the `Sensitive::new` path; the caller drops it after the
     /// `decrypt_block` call returns and zeroize-on-drop takes care of
     /// the secret bytes.
     pub(crate) fn reader_secret_keys(
         &self,
-    ) -> Option<(
-        secretary_core::crypto::kem::X25519Secret,
-        secretary_core::crypto::kem::MlKem768Secret,
-    )> {
+    ) -> Result<
+        (
+            secretary_core::crypto::kem::X25519Secret,
+            secretary_core::crypto::kem::MlKem768Secret,
+        ),
+        ReaderSecretKeysError,
+    > {
         use secretary_core::crypto::kem;
         use secretary_core::crypto::secret::Sensitive;
         use zeroize::Zeroize as _;
 
         let guard = lock_or_recover(&self.inner);
-        let id = guard.as_ref()?;
+        let id = guard.as_ref().ok_or(ReaderSecretKeysError::HandleClosed)?;
 
         // X25519: copy the 32 bytes onto the stack, mint a Sensitive,
         // then zeroize the stack copy. Mirrors the same discipline as
@@ -118,14 +125,31 @@ impl UnlockedIdentity {
 
         // ML-KEM-768: from_bytes returns Result<_, KemError>. The bundle
         // was already validated at unlock-time (core::unlock checks the
-        // length on decode), so a failure here would be impossible
-        // unless the in-memory bundle was corrupted post-unlock — fold
-        // to None for parity with the close-state shape (read_block will
-        // surface this as CorruptVault upstream).
-        let pq_sk = kem::MlKem768Secret::from_bytes(id.identity.ml_kem_768_sk.expose()).ok()?;
+        // length on decode), so a failure here is structurally impossible
+        // unless the in-memory bundle was corrupted post-unlock. We
+        // surface this distinctly from the closed-handle case so the
+        // orchestrator's CorruptVault detail string isn't misleading.
+        let pq_sk = kem::MlKem768Secret::from_bytes(id.identity.ml_kem_768_sk.expose())
+            .map_err(|_| ReaderSecretKeysError::MlKem768ParseFailed)?;
 
-        Some((x_sk, pq_sk))
+        Ok((x_sk, pq_sk))
     }
+}
+
+/// Bridge-internal failure mode for [`UnlockedIdentity::reader_secret_keys`].
+/// Lets the orchestrator distinguish a closed handle (legitimate user
+/// action) from an in-memory ML-KEM-768 parse failure (structurally
+/// impossible — implies post-unlock memory corruption) when surfacing
+/// the failure as `FfiVaultError::CorruptVault`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReaderSecretKeysError {
+    /// The identity handle has been closed/wiped.
+    HandleClosed,
+    /// ML-KEM-768 secret key parse failed on bytes that were already
+    /// validated at unlock-time. Structurally impossible — surfacing
+    /// distinctly so the diagnostic string can flag the in-memory
+    /// corruption hypothesis to the foreign caller.
+    MlKem768ParseFailed,
 }
 
 #[cfg(test)]
@@ -178,6 +202,31 @@ mod tests {
         let id = fresh_unlocked_identity();
         id.close();
         assert_eq!(id.user_uuid(), vec![0u8; 16]);
+    }
+
+    #[test]
+    fn reader_secret_keys_after_close_returns_handle_closed() {
+        // Pin the typed-error contract: a closed handle surfaces as
+        // ReaderSecretKeysError::HandleClosed (not collapsed with the
+        // structurally-impossible MlKem768ParseFailed case). The
+        // orchestrator depends on this distinction to attach a
+        // non-misleading CorruptVault.detail.
+        let id = fresh_unlocked_identity();
+        id.close();
+        assert_eq!(
+            id.reader_secret_keys().err(),
+            Some(ReaderSecretKeysError::HandleClosed),
+        );
+    }
+
+    #[test]
+    fn reader_secret_keys_when_live_returns_ok_tuple() {
+        // Positive path: live handle returns Ok((X25519, MlKem768)). The
+        // bytes-equality check is intentionally NOT performed here — the
+        // returned types are Sensitive-wrapped and don't expose Eq; we
+        // only need to know the call succeeds.
+        let id = fresh_unlocked_identity();
+        assert!(id.reader_secret_keys().is_ok());
     }
 
     #[test]

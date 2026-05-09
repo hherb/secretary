@@ -14,7 +14,7 @@ use secretary_core::vault::record::Record as CoreRecord;
 
 use super::{BlockReadOutput, FieldHandle, Record};
 use crate::error::FfiVaultError;
-use crate::identity::UnlockedIdentity;
+use crate::identity::{ReaderSecretKeysError, UnlockedIdentity};
 use crate::vault::OpenVaultManifest;
 
 /// Decrypt and return all records in one block of an open vault.
@@ -106,13 +106,20 @@ pub fn read_block(
         }
     })?;
 
-    // Pull the reader's secret keys from the identity handle.
-    let (reader_x_sk, reader_pq_sk) =
-        identity
-            .reader_secret_keys()
-            .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".to_string(),
-            })?;
+    // Pull the reader's secret keys from the identity handle. The two
+    // failure modes (closed handle vs. structurally-impossible ML-KEM-768
+    // parse failure) get distinct detail strings so the foreign caller's
+    // CorruptVault.detail isn't misleading when the actual failure was
+    // post-unlock memory corruption rather than a deliberate close.
+    let (reader_x_sk, reader_pq_sk) = identity.reader_secret_keys().map_err(|e| match e {
+        ReaderSecretKeysError::HandleClosed => FfiVaultError::CorruptVault {
+            detail: "identity handle has been closed".to_string(),
+        },
+        ReaderSecretKeysError::MlKem768ParseFailed => FfiVaultError::CorruptVault {
+            detail: "identity ML-KEM-768 secret key parse failed (post-unlock memory corruption?)"
+                .to_string(),
+        },
+    })?;
 
     // Hybrid verify-then-decrypt. All BlockError variants fold into
     // CorruptVault per the anti-conflation discipline.
