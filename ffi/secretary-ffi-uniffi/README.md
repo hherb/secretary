@@ -492,3 +492,214 @@ Bridge-crate Rust tests: 54 (13 in the new `vault.rs` module for
 on top of the 30 prior tests growing to 41 with B.3b's create-path
 additions). uniffi-crate Rust tests: 13.
 
+## Block read (B.4b)
+
+UDL adds: 1 new namespace function
+`[Throws=VaultError] read_block(UnlockedIdentity identity,
+OpenVaultManifest manifest, bytes block_uuid) -> BlockReadOutput`,
+3 new opaque interfaces (`BlockReadOutput`, `Record`, `FieldHandle`),
+and 1 new variant on `[Error] interface VaultError`
+(`BlockNotFound(string uuid_hex)`). The new interfaces follow the
+established Mutex-Option-cascade-wipe pattern; `Record` and
+`FieldHandle` additionally use `Arc` internally so the foreign
+caller can store / share clones and wipes still cascade safely.
+
+### Codegen behaviour for the new interfaces (uniffi 0.31)
+
+For these B.4b interfaces, uniffi 0.31 generates **both** `wipe()`
+**and** `close()` as separate methods on Kotlin (this is **not** a
+rename — both methods coexist on the foreign side):
+
+- `wipe()` zeroizes the inner secret material via the Rust-side
+  `Mutex<Option<...>>::take()`, but **keeps the handle alive**.
+  Subsequent calls (e.g. `record_uuid()`) on a wiped handle return
+  empty / default values per the non-throwing-after-wipe pattern.
+- `close()` is `AutoCloseable.close()` (auto-generated on every
+  uniffi interface handle); it releases the Rust handle. After
+  `close()`, **subsequent method calls throw**
+  `IllegalStateException`.
+
+For the cascading-wipe Kotlin idiom — wipe-then-keep-alive — call
+`block.wipe()` **inside** `.use { }`. The B.2 / B.3a / B.3b / B.4a
+interfaces' UDL docs still describe the "renames to `close()`"
+behaviour from older codegen versions; that wording is stale for
+the B.4b interfaces and is being corrected in a follow-up pass.
+
+### Hybrid Record projection
+
+Records are projected under a hybrid shape — non-secret metadata is
+value-typed and cheap to call; secret payload requires going through
+the explicit `expose_*` accessors on `FieldHandle`:
+
+| UDL method | On | Returns | Notes |
+|---|---|---|---|
+| `record_uuid()` | `Record` | `bytes` (16) | non-secret |
+| `record_type()` | `Record` | `string` | non-secret |
+| `tags()` | `Record` | `sequence<string>` | non-secret |
+| `created_at_ms()` | `Record` | `u64` | non-secret |
+| `last_mod_ms()` | `Record` | `u64` | non-secret |
+| `tombstone()` | `Record` | `boolean` | non-secret |
+| `fields()` | `Record` | `sequence<FieldHandle>` | each `FieldHandle` is opaque |
+| `name()` | `FieldHandle` | `string` | non-secret |
+| `expose_text()` | `FieldHandle` | `string?` | **CLONES the secret out** |
+| `expose_bytes()` | `FieldHandle` | `sequence<u8>?` | **CLONES the secret out** |
+
+`expose_text()` returns `null` on a `Bytes`-discriminant field;
+`expose_bytes()` returns `null` on a `Text`-discriminant field.
+Wrong-discriminant access is **not an error** — it is the natural
+"this field is not text" / "this field is not bytes" signal in the
+foreign language's null-safety idiom (Swift `String?`, Kotlin `String?`).
+
+### Caller-clear contract on `expose_text` / `expose_bytes`
+
+Each `expose_*` call **clones** the secret out of the `FieldHandle`'s
+internal storage. The returned `String` / `Data` / `ByteArray` is
+owned by the foreign caller and outlives the `FieldHandle.wipe()`
+call. **The caller is responsible for clearing it once consumed.**
+
+### Swift idiom
+
+```swift
+import secretary
+
+let folderPath = "/path/to/vault".data(using: .utf8)!
+let password = "correct horse...".data(using: .utf8)!
+
+let output = try openVaultWithPassword(folderPath: folderPath, password: password)
+defer { output.identity.wipe() }
+defer { output.manifest.wipe() }
+
+var blockUuid = Data(repeating: 0x12, count: 16)
+
+do {
+    let block = try readBlock(
+        identity: output.identity,
+        manifest: output.manifest,
+        blockUuid: blockUuid,
+    )
+    defer { block.wipe() }    // cascades to Records → FieldHandles
+
+    for record in block.records() {
+        defer { record.wipe() }
+        print("\(record.recordType()) \(record.recordUuid().hexString)")
+
+        for field in record.fields() {
+            defer { field.wipe() }
+            if let text = field.exposeText() {
+                // Swift `String` ARC-deinits at scope exit; the buffer
+                // is freed eagerly. For long-lived secrets, prefer
+                // `[UInt8]` and `.replaceSubrange` zero out manually.
+                process(text)
+            } else if let bytes = field.exposeBytes() {
+                var mutable = [UInt8](bytes)
+                process(mutable)
+                mutable.withUnsafeMutableBufferPointer {
+                    $0.update(repeating: 0, count: $0.count)
+                }
+            }
+        }
+    }
+} catch let VaultError.BlockNotFound(uuidHex) {
+    print("Block not found: \(uuidHex)")
+} catch let VaultError.CorruptVault(detail) {
+    // file-missing, AEAD tag fail, or wrong content-key all fold here
+    print("Vault corrupt: \(detail)")
+}
+```
+
+### Kotlin idiom
+
+```kotlin
+import uniffi.secretary.*
+
+val folderPath = "/path/to/vault".toByteArray(Charsets.UTF_8)
+val password = "correct horse...".toByteArray(Charsets.UTF_8)
+
+val output = openVaultWithPassword(folderPath = folderPath, password = password)
+output.identity.use { identity ->
+    output.manifest.use { manifest ->
+        val blockUuid = ByteArray(16) { 0x12 }
+        try {
+            readBlock(
+                identity = identity,
+                manifest = manifest,
+                blockUuid = blockUuid,
+            ).use { block ->
+                // .use { } → AutoCloseable.close() at scope exit.
+                // For early zeroize-then-keep-alive, call block.wipe()
+                // explicitly inside the block.
+                for (record in block.records()) {
+                    record.use { rec ->
+                        println("${rec.recordType()} ${rec.recordUuid().contentToString()}")
+                        for (field in rec.fields()) {
+                            field.use { f ->
+                                val text = f.exposeText()
+                                if (text != null) {
+                                    process(text)
+                                    // Kotlin String is immutable JVM
+                                    // String — drop the reference and
+                                    // let GC reclaim. For hard zeroize
+                                    // discipline, prefer ByteArray.
+                                } else {
+                                    val bytes = f.exposeBytes()
+                                    if (bytes != null) {
+                                        try {
+                                            process(bytes)
+                                        } finally {
+                                            bytes.fill(0)   // zero before scope exit
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: VaultException.BlockNotFound) {
+            println("Block not found: ${e.uuidHex}")
+        } catch (e: VaultException.CorruptVault) {
+            println("Vault corrupt: ${e.detail}")
+        }
+    }
+}
+```
+
+`ByteArray.fill(0)` zeroes the buffer in place — Kotlin `String` is
+JVM `String`, which is immutable and not zero-able by definition.
+For hard zeroize requirements at the foreign layer, design the
+caller to consume `ByteArray` (i.e. design records with `Bytes`
+fields rather than `Text` fields for the most-sensitive material) so
+the buffer is mutable and can be zero-filled deterministically.
+
+### `BlockNotFound` — the new 7th `VaultError` variant
+
+| Variant | Trigger |
+|---|---|
+| ... existing 6 ... | (unchanged from B.4a) |
+| `BlockNotFound(string uuid_hex)` | Block UUID not present in the manifest's blocks table. The hex string is the lower-case hex encoding of the queried UUID. |
+
+Decrypt failures and file-missing failures both fold into
+`CorruptVault(detail)` per the §13 anti-conflation discipline — the
+foreign caller cannot tell whether the block file is missing,
+present-but-tampered-with, or the per-block content key is wrong.
+Recovery is the same in all three cases.
+
+Wrong-length `block_uuid` (anything other than exactly 16 bytes) is
+a programmer bug, not a vault-data error. The bridge surfaces it as
+a typed Rust-side validation failure that uniffi projects as a
+generic FFI error (Swift `UniffiInternalError` / Kotlin
+`InternalException`). It is **not** `BlockNotFound`.
+
+**Test coverage (post-B.4b):**
+
+22 Swift asserts (3 B.1.1 smoke + 5 B.2 password-unlock +
+4 B.3a recovery-unlock + 3 B.3b vault-creation + 3 B.4a folder-open
++ 4 B.4b read-block).
+23 Kotlin asserts (3 B.1.1.1 smoke + 5 B.2 password-unlock +
+4 B.3a recovery-unlock + 3 B.3b vault-creation + 4 B.4a folder-open
++ 4 B.4b read-block).
+Bridge-crate Rust tests grew to 81 (60 → 81; the new `record/`
+directory module split into 5 sub-files + `tests/read_block.rs`
+KAT-pinned integration suite). uniffi-crate Rust tests grew to 17
+(15 → 17).
+

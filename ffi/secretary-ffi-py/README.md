@@ -427,3 +427,152 @@ construction.
 recovery path success, wrong password, vault mismatch,
 folder-not-found, block summaries accessor, find_block accessor).
 
+## Block read (B.4b)
+
+Adds `read_block()` and three new `#[pyclass]` types
+(`BlockReadOutput`, `Record`, `FieldHandle`) plus a new exception
+class `VaultBlockNotFound` to the module surface.
+
+### Idiomatic usage
+
+```python
+import secretary_ffi_py as sfp
+
+with sfp.open_vault_with_password("/path/to/vault", b"correct horse...") as out:
+    with out.identity as identity, out.manifest as manifest:
+        block_uuid = bytes.fromhex("0123456789abcdef0123456789abcdef")
+
+        with sfp.read_block(identity, manifest, block_uuid) as block:
+            # `block` is a BlockReadOutput. It owns the decrypted Records
+            # internally; iterate them via .records().
+            for record in block.records():
+                # Non-secret metadata is value-typed (cheap to access).
+                print(f"  {record.record_type()}: {record.record_uuid().hex()}")
+                print(f"  tags={record.tags()}, tombstone={record.tombstone()}")
+
+                # Secret payload requires explicit exposure boundary.
+                for field in record.fields():
+                    print(f"    {field.name()}:", end=" ")
+                    text = field.expose_text()
+                    if text is not None:
+                        print(f"text={text!r}")
+                        del text   # Python idiom: drop the local name promptly.
+                    else:
+                        bytes_val = field.expose_bytes()
+                        if bytes_val is not None:
+                            print(f"bytes (len={len(bytes_val)})")
+                            del bytes_val
+        # `with` exit → block.wipe() → cascades to Records → FieldHandles.
+```
+
+### Hybrid Record projection
+
+Records are projected under a hybrid shape — non-secret metadata is
+value-typed and cheap to call; secret payload requires going through
+the explicit `expose_*` accessors on `FieldHandle`:
+
+| Method | On | Returns | Notes |
+|---|---|---|---|
+| `record_uuid()` | `Record` | `bytes` (16) | non-secret |
+| `record_type()` | `Record` | `str` | non-secret |
+| `tags()` | `Record` | `list[str]` | non-secret |
+| `created_at_ms()` | `Record` | `int` | non-secret |
+| `last_mod_ms()` | `Record` | `int` | non-secret |
+| `tombstone()` | `Record` | `bool` | non-secret |
+| `fields()` | `Record` | `list[FieldHandle]` | each `FieldHandle` is opaque |
+| `name()` | `FieldHandle` | `str` | non-secret |
+| `expose_text()` | `FieldHandle` | `str \| None` | **CLONES the secret out** |
+| `expose_bytes()` | `FieldHandle` | `bytes \| None` | **CLONES the secret out** |
+
+`expose_text()` returns `None` on a `Bytes`-discriminant field;
+`expose_bytes()` returns `None` on a `Text`-discriminant field.
+Wrong-discriminant access is **not an error** — it is a Pythonic
+"this field is not text" / "this field is not bytes" signal.
+
+`Record.unknown` and `RecordField.unknown` (forward-compat opaque
+CBOR roundtripping) are **not surfaced** through this API in B.4b.
+`tombstoned_at_ms` is also not surfaced — it is a CRDT-merge
+internal; the Python caller sees only the boolean `tombstone()`.
+
+### Caller-clear contract on `expose_text` / `expose_bytes`
+
+Each `expose_*` call **clones** the secret out of the `FieldHandle`'s
+internal storage. The returned `str` / `bytes` is owned by the
+foreign caller and outlives the `FieldHandle.wipe()` call. **The
+caller is responsible for clearing it once consumed.**
+
+The Python idiom is `del`:
+
+```python
+text = field.expose_text()
+process(text)
+del text   # drop the local name; Python may still cache the immutable
+           # str interned, but `del` shortens the window of exposure.
+```
+
+For longer-lived `bytes`, prefer `bytearray` (mutable) and zero it
+explicitly:
+
+```python
+bytes_val = field.expose_bytes()
+buf = bytearray(bytes_val)   # copy into mutable buffer
+del bytes_val                 # drop the immutable copy ASAP
+process(buf)
+for i in range(len(buf)):
+    buf[i] = 0
+```
+
+Python's `str` is immutable and not zero-able by definition (the
+underlying C buffer is an implementation detail of CPython). The
+`del` idiom is best-effort; for hard zeroize requirements at the
+Python layer, design the caller to keep `bytes` rather than `str`
+and zero a `bytearray` copy. The bridge crate cannot do this on the
+caller's behalf because the secret has already crossed the FFI
+boundary by the time the caller receives it.
+
+### Error handling
+
+```python
+try:
+    with sfp.read_block(identity, manifest, block_uuid) as block:
+        ...
+except sfp.VaultBlockNotFound as e:
+    # Block UUID not present in the manifest's blocks table (or the
+    # block is in trash; trash is invisible at the FFI through B.4d).
+    # str(e) carries the queried hex UUID for diagnostic logging.
+    print(f"Block not found: {e}")
+except sfp.VaultCorruptVault as e:
+    # blocks/<uuid>.cbor.enc is missing-on-disk OR the AEAD tag failed
+    # OR the per-block content key is wrong. All three fold here per
+    # the §13 anti-conflation discipline.
+    print(f"Vault corrupt: {e}")
+except ValueError:
+    # block_uuid was the wrong length (anything other than exactly 16
+    # bytes). Programmer bug; not a vault-data error.
+    raise
+```
+
+### Lifecycle (cascading wipe)
+
+`BlockReadOutput.wipe()` walks its records and calls `wipe()` on
+each; each `Record.wipe()` walks its fields and calls `wipe()` on
+each `FieldHandle`. All three handles support the context-manager
+protocol (`with ... as block:` / `with ... as record:` / `with ...
+as field:`) and explicit `close()` (alias for `wipe()`); use either
+discipline.
+
+`Record` and `FieldHandle` use `Arc<Mutex<Option<...>>>` internally
+(not just `Mutex<Option<...>>`), so the foreign caller can store
+clones and have wipes cascade safely. After a parent's wipe, child
+clones become inert — `expose_text()` / `expose_bytes()` return
+`None`; access is non-throwing.
+
+### Test coverage
+
+40 pytests total (`uv run --directory ffi/secretary-ffi-py pytest`):
+the 29 from B.4a plus 11 new B.4b tests covering shape /
+metadata-fields / text-payload / bytes-payload / wrong-discriminant
+return-`None` / `BlockNotFound` / wrong-length-UUID `ValueError` /
+context-manager wipe / explicit-`close()` wipe / Arc-clone-then-wipe
+visibility / multi-record block iteration.
+

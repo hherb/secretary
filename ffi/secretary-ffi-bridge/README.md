@@ -147,7 +147,7 @@ operations, not record-read-time), `RwLock` is a drop-in upgrade.
 cargo test --release -p secretary-ffi-bridge
 ```
 
-56 unit tests across four modules (post-B.4a):
+81 unit + integration tests across five modules (post-B.4b):
 
 - `error.rs` (14 tests) — `From<core::unlock::UnlockError>` mapping for
   every reachable variant + the defensive `WeakKdfParams` arm; the
@@ -169,6 +169,17 @@ cargo test --release -p secretary-ffi-bridge
   Display strings and `From` mapping for every `VaultError` and
   `UnlockError` variant; idempotent `wipe()` and use-after-wipe
   non-throwing semantics.
+- `record/` (5 sub-files, ~12 unit tests) — opaque-handle wipe
+  cascades (`BlockReadOutput → Record → FieldHandle`), `Arc`-clone
+  shared-wipe semantics on `Record` / `FieldHandle`, idempotent
+  `wipe()` on each handle, `expose_text` / `expose_bytes`
+  bytes-vs-text discrimination (text field returns `Some(String)` /
+  `None`-on-bytes; bytes field returns `Some(Vec<u8>)` / `None`-on-text).
+- `tests/read_block.rs` (13 KAT-pinned integration tests against
+  `golden_vault_001/`) — happy-path shape, metadata fields, text
+  payload exposure, bytes payload exposure, wrong-UUID
+  `BlockNotFound`, multi-record blocks, `Record::wipe()` then
+  parent-cascade idempotence, and the snapshot-accessor TOCTOU pin.
 
 Tests embed both `golden_vault_001/` and `golden_vault_002/` via
 `include_bytes!` so no runtime filesystem dependency. Pinned KAT
@@ -342,8 +353,121 @@ wildcard — a future core variant forces a compile error here.
 `CorruptVault` and `FolderInvalid` paths from the manifest-layer error
 surface.
 
+## B.4b — Block read
+
+Adds `read_block` as a free function on the bridge — the first
+mutation-free block-access entry point and the eighth `pub fn` on
+the bridge surface. The signature stays at the module root rather
+than as a method on `OpenVaultManifest`:
+
+```rust
+pub fn read_block(
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    block_uuid: &[u8; 16],
+) -> Result<BlockReadOutput, FfiVaultError>;
+```
+
+Per project policy (free functions in reusable modules; structs only
+for genuine state) the entry point is a free fn taking `&handle`
+references. The two handles supply the necessary keying material
+(IBK from `manifest`, reader secret keys from `identity`); no
+mutation occurs on either side.
+
+### Hybrid Record projection (decision §1)
+
+Records contain mixed-sensitivity data. The bridge projects them
+under a hybrid shape:
+
+- **Non-secret metadata** — `record_uuid: [u8; 16]`, `record_type:
+  String`, `tags: Vec<String>`, `created_at_ms: u64`, `last_mod_ms:
+  u64`, `tombstone: bool` — projected as **value types**. Cheap to
+  clone, no zeroize concerns.
+- **Secret payload** — record field values (`String` for `Text`,
+  `Vec<u8>` for `Bytes`) — projected through an **opaque
+  `FieldHandle`** with `expose_text() -> Option<String>` /
+  `expose_bytes() -> Option<Vec<u8>>` accessors. Each call CLONES
+  the inner secret out; the foreign caller is responsible for
+  zeroizing the returned value once consumed (Python `del s` /
+  Swift `String` deinit / Kotlin `ByteArray.fill(0)` idioms).
+
+`Record.unknown` and `RecordField.unknown` (forward-compat opaque
+CBOR roundtripping) are NOT surfaced through the FFI in B.4b;
+`tombstoned_at_ms` is also NOT surfaced (CRDT internal — the foreign
+caller sees only the `tombstone: bool`).
+
+### `BlockNotFound` — the new 7th `FfiVaultError` variant
+
+`FfiVaultError` grew from 6 → 7 variants:
+
+| Variant | Trigger |
+|---|---|
+| ... existing 6 ... | (unchanged from B.4a) |
+| `BlockNotFound { uuid_hex }` | The given UUID is not present in the manifest's `blocks` table (or its summary is filtered out by trash; trash entries are invisible at the FFI through B.4d). The hex string is the lower-case hex encoding of the queried UUID — **not** zero-padded by length, since the input is always exactly 16 bytes and a wrong-length UUID is rejected upstream as a programmer bug. |
+
+Decrypt failures (e.g. wrong content-encryption key, AEAD tag fail
+because the on-disk file was corrupted) and file-missing failures
+(the manifest references a UUID but `blocks/<uuid>.cbor.enc` is
+absent) **both fold into `CorruptVault { detail }`** per the §13
+anti-conflation discipline carried over from `open_vault_*`. A
+foreign caller cannot tell whether the file is missing, the file is
+present-but-tampered-with, or the per-block content key is wrong;
+recovery is the same in all three cases (restore from backup or
+re-share the block).
+
+### `OpenVaultManifestInner.vault_folder: PathBuf` (bridge-internal)
+
+To resolve `blocks/<uuid>.cbor.enc` from a UUID, the bridge needs
+the vault's folder path. B.4a's `OpenVaultManifestInner` did not
+carry this; B.4b extends it with `vault_folder: PathBuf` —
+populated at construction time inside both
+`open_vault_with_password` and `open_vault_with_recovery`. **No
+public B.4a surface change**: the field is `pub(crate)`, accessed
+only through new bridge-internal `pub(crate)` helpers
+(`vault_folder()`, `manifest_snapshot()`, `owner_card_clone()`),
+plus a snapshot accessor:
+
+```rust
+pub(crate) fn snapshot_for_read_block(
+    &self,
+) -> Option<(Manifest, ContactCard, PathBuf)>
+```
+
+`snapshot_for_read_block` folds three sequential `Mutex` acquires
+into one — closing a theoretical TOCTOU window between
+manifest-snapshot and folder-snapshot when a concurrent `wipe()` is
+racing the read.
+
+### v1 single-author scope (decision §9)
+
+`read_block` assumes `manifest.owner_card` is the block's signing
+identity. v1 vaults have a single author per vault by construction.
+B.4d's `share_block` flow will add `contacts/<author_uuid>.card`
+discovery and the multi-author read path; the B.4b code is
+structured so that adding a `senders: HashMap<Uuid, ContactCard>`
+parameter to the inner read path is mechanical.
+
+### `record/` directory module split
+
+The implementation lives in `ffi/secretary-ffi-bridge/src/record/`
+— a directory module split into five sub-files per the project's
+<500-line policy:
+
+| File | Role |
+|---|---|
+| `record/mod.rs` | Module root; re-exports + module-level docs |
+| `record/output.rs` | `BlockReadOutput` opaque handle (cascades `wipe()` to children) |
+| `record/handle.rs` | `Record` opaque handle (cascades `wipe()` to its `FieldHandle`s; uses `Arc<Mutex<Option<...>>>` for clone-safe sharing) |
+| `record/field.rs` | `FieldHandle` opaque handle (the `expose_text` / `expose_bytes` boundary) |
+| `record/orchestration.rs` | `read_block` free fn — file load → AEAD decrypt → record decode → wrap in handles |
+
+Integration tests are in `ffi/secretary-ffi-bridge/tests/read_block.rs`
+(13 KAT-pinned tests against `golden_vault_001/`).
+
 ## References
 
+- Spec (B.4b): [docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md](../../docs/superpowers/specs/2026-05-09-ffi-b4b-read-block-design.md)
+- Plan (B.4b): [docs/superpowers/plans/2026-05-09-ffi-b4b-read-block.md](../../docs/superpowers/plans/2026-05-09-ffi-b4b-read-block.md)
 - Spec (B.4a): [docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md](../../docs/superpowers/specs/2026-05-06-ffi-b4a-open-vault-design.md)
 - Plan (B.4a): [docs/superpowers/plans/2026-05-06-ffi-b4a-open-vault.md](../../docs/superpowers/plans/2026-05-06-ffi-b4a-open-vault.md)
 - Spec (B.3a): [docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md](../../docs/superpowers/specs/2026-05-04-ffi-b3a-recovery-unlock-design.md)
