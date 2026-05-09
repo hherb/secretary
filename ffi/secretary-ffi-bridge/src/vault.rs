@@ -670,7 +670,11 @@ mod tests {
             .manifest
             .manifest_body()
             .expect("Some(body) before wipe");
-        assert_eq!(body.vault_uuid, body.vault_uuid); // trivial; pins the type
+        assert_eq!(body.vault_uuid.len(), 16, "vault_uuid is 16 bytes");
+        assert!(
+            !body.blocks.is_empty(),
+            "golden_vault_001 must have at least one block",
+        );
         let _card = out.manifest.owner_card().expect("Some(card) before wipe");
         out.manifest.wipe();
         assert_eq!(out.manifest.manifest_body(), None);
