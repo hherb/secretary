@@ -112,6 +112,18 @@ VAULT_001_PASSWORD = b"correct horse battery staple"
 VAULT_001_OWNER_DISPLAY_NAME = "Owner"
 VAULT_001_OWNER_USER_UUID = bytes.fromhex("bf08a3300cd994b877e1a15baa28df35")
 
+# ---------------------------------------------------------------------------
+# B.4b: read_block KAT pins (source: golden_vault_001_inputs.json)
+# ---------------------------------------------------------------------------
+VAULT_001_BLOCK_UUID = bytes.fromhex("112233445566778899aabbccddeeff00")
+VAULT_001_BLOCK_UUID_HEX = "112233445566778899aabbccddeeff00"
+VAULT_001_BLOCK_NAME = "Personal logins"
+VAULT_001_RECORD_UUID = bytes.fromhex("33445566778899aabbccddeeff001122")
+VAULT_001_DEVICE_UUID = bytes.fromhex("2233445566778899aabbccddeeff0011")
+VAULT_001_TIMESTAMP_MS = 2_000_000_000_000
+VAULT_001_PASSWORD_VALUE = "hunter2"
+VAULT_001_USERNAME_VALUE = "owner@example.com"
+
 # Number of trailing bytes stripped to corrupt the TOML structurally.
 # Empirically large enough to break the document past any tolerant
 # parser; mirrors the bridge crate's unlock.rs negative-test value.
@@ -513,3 +525,158 @@ def test_with_block_double_close_invariants() -> None:
     assert manifest.vault_uuid() == bytes(16)
     assert manifest.block_count() == 0
     assert manifest.block_summaries() == []
+
+
+# =============================================================================
+# B.4b — read_block tests
+# =============================================================================
+
+
+def test_read_block_shape() -> None:
+    """Open + read; assert record_count == 1 and field_count == 2."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                assert block.record_count() == 1
+                assert block.block_name() == VAULT_001_BLOCK_NAME
+                assert bytes(block.block_uuid()) == VAULT_001_BLOCK_UUID
+                record = block.record_at(0)
+                assert record is not None
+                assert record.field_count() == 2
+
+
+def test_read_block_record_metadata() -> None:
+    """Pin record_uuid, record_type, tags, tombstone, timestamps."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record = block.record_at(0)
+                assert bytes(record.record_uuid()) == VAULT_001_RECORD_UUID
+                assert record.record_type() == "login"
+                assert record.tags() == ["work"]
+                assert record.tombstone() is False
+                assert record.created_at_ms() == VAULT_001_TIMESTAMP_MS
+                assert record.last_mod_ms() == VAULT_001_TIMESTAMP_MS
+
+
+def test_read_block_field_text_password() -> None:
+    """Password field exposes 'hunter2' via expose_text()."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record = block.record_at(0)
+                pw_field = record.field_by_name("password")
+                assert pw_field is not None
+                assert pw_field.is_text()
+                assert pw_field.expose_text() == VAULT_001_PASSWORD_VALUE
+
+
+def test_read_block_field_text_username() -> None:
+    """Username field exposes 'owner@example.com' via expose_text()."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record = block.record_at(0)
+                user_field = record.field_by_name("username")
+                assert user_field is not None
+                assert user_field.expose_text() == VAULT_001_USERNAME_VALUE
+
+
+def test_read_block_field_metadata() -> None:
+    """Field-level last_mod_ms + device_uuid match KAT for both fields."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record = block.record_at(0)
+                pw_field = record.field_by_name("password")
+                user_field = record.field_by_name("username")
+                assert pw_field.last_mod_ms() == VAULT_001_TIMESTAMP_MS
+                assert user_field.last_mod_ms() == VAULT_001_TIMESTAMP_MS
+                assert bytes(pw_field.device_uuid()) == VAULT_001_DEVICE_UUID
+                assert bytes(user_field.device_uuid()) == VAULT_001_DEVICE_UUID
+
+
+def test_read_block_unknown_uuid_raises_block_not_found() -> None:
+    """16 zero bytes is not a real block UUID → VaultBlockNotFound."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    unknown = bytes(16)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with pytest.raises(secretary_ffi_py.VaultBlockNotFound) as exc_info:
+                secretary_ffi_py.read_block(identity, manifest, unknown)
+            # The exception payload carries the uuid_hex string.
+            assert "00000000000000000000000000000000" in str(exc_info.value)
+
+
+def test_read_block_wrong_length_uuid_raises_value_error() -> None:
+    """15-byte UUID input → ValueError (NOT VaultBlockNotFound — distinct
+    error class for programmer errors vs. data errors)."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with pytest.raises(ValueError) as exc_info:
+                secretary_ffi_py.read_block(identity, manifest, bytes(15))
+            assert "16 bytes" in str(exc_info.value)
+            assert "got 15" in str(exc_info.value)
+
+
+def test_read_block_field_bytes_is_none_for_text_field() -> None:
+    """expose_bytes() on a text field returns None (not raises)."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record = block.record_at(0)
+                pw_field = record.field_by_name("password")
+                assert pw_field.expose_bytes() is None
+                assert pw_field.is_bytes() is False
+
+
+def test_block_read_output_context_manager_wipes() -> None:
+    """After exiting `with read_block(...) as block:`, accessors return
+    empty defaults (record_count == 0)."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            block = secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID)
+            assert block.record_count() == 1
+            with block:
+                pass  # __exit__ runs wipe()
+            assert block.record_count() == 0
+            assert block.record_at(0) is None
+
+
+def test_record_field_handles_share_state_after_wipe() -> None:
+    """Two foreign-side references to the same field handle: wipe one,
+    the other returns None. Pins the Arc<Mutex<Option<...>>> shared-
+    wipe contract through the PyO3 boundary."""
+    folder = _golden_vault_path(1)
+    out = secretary_ffi_py.open_vault_with_password(str(folder), b"correct horse battery staple")
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+                record_a = block.record_at(0)
+                record_b = block.record_at(0)
+                field_a = record_a.field_by_name("password")
+                field_b = record_b.field_by_name("password")
+                # Both clones live initially.
+                assert field_a.expose_text() == VAULT_001_PASSWORD_VALUE
+                assert field_b.expose_text() == VAULT_001_PASSWORD_VALUE
+                # Wipe one — the other reflects.
+                field_a.wipe()
+                assert field_a.expose_text() is None
+                assert field_b.expose_text() is None
