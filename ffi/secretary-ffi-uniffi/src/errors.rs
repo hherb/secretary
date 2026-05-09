@@ -297,4 +297,39 @@ mod tests {
         );
         assert!(rendered.contains("fnord"), "Display did not include detail");
     }
+
+    // -------------------------------------------------------------------
+    // B.4c: pin the SaveCryptoFailure variant translation.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vault_error_save_crypto_failure_maps_one_to_one() {
+        // Pin the 9th variant translation. A future rename or accidental
+        // remap to CorruptVault / FolderInvalid would fail here first.
+        let bridge_err = FfiVaultError::SaveCryptoFailure {
+            detail: "test detail".to_string(),
+        };
+        let uniffi_err = VaultError::from(bridge_err);
+        let VaultError::SaveCryptoFailure { detail } = uniffi_err else {
+            panic!("expected SaveCryptoFailure");
+        };
+        assert_eq!(detail, "test detail");
+    }
+
+    #[test]
+    fn save_crypto_failure_display_pins_detail_text() {
+        // Pin the Display contract — same rationale as
+        // invalid_argument_display_pins_detail_text. uniffi 0.31 codegen
+        // emits the #[error(...)] string into Swift / Kotlin error
+        // messages, so a wording change must be a deliberate decision.
+        let err = VaultError::SaveCryptoFailure {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("save-time crypto failure"),
+            "Display did not contain the SaveCryptoFailure prefix: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+    }
 }
