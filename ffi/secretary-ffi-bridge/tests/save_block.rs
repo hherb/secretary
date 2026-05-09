@@ -310,3 +310,76 @@ fn save_block_failure_leaves_in_memory_manifest_unchanged() {
         "the new block_uuid must not appear in the manifest after a failed save",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Property: arbitrary BlockInput shapes round-trip through save → read
+// ---------------------------------------------------------------------------
+
+/// Cases held low because each case opens a fresh writable vault (Argon2id
+/// at vault-creation strength, ~1s per case). 16 cases ≈ 16s of test time;
+/// raise to 64+ once the vault-open cost is amortizable across cases (e.g.
+/// shared fixture). Tracked alongside the manifest re-sign performance work
+/// in the B.4c open-issues list.
+const PROPTEST_CASES: u32 = 16;
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(PROPTEST_CASES))]
+
+    /// Property: any well-formed [`BlockInput`] saved via [`save_block`]
+    /// reads back through [`read_block`] with the same record count.
+    /// Exercises the full save → encrypt → atomic-write → re-open → decode →
+    /// decrypt path.
+    #[test]
+    fn block_input_round_trips_through_save_and_read(
+        block_uuid in proptest::prelude::any::<[u8; 16]>(),
+        block_name in "[a-z]{1,32}",
+        records in proptest::collection::vec(arb_record_input(), 0..4),
+    ) {
+        let (_tmp, identity, manifest) = fresh_writable_vault();
+        let record_count = records.len();
+        let input = BlockInput {
+            block_uuid,
+            block_name,
+            records,
+        };
+        save_block(&identity, &manifest, input, DEVICE_UUID, NOW_MS_BASE)
+            .map_err(|e| proptest::test_runner::TestCaseError::fail(format!("save failed: {e:?}")))?;
+
+        let output = read_block(&identity, &manifest, &block_uuid)
+            .map_err(|e| proptest::test_runner::TestCaseError::fail(format!("read failed: {e:?}")))?;
+        proptest::prop_assert_eq!(output.record_count() as usize, record_count);
+    }
+}
+
+/// Strategy: arbitrary [`FieldInput`]. Lowercase-letter names and printable
+/// ASCII text values keep generated inputs small and debuggable; the
+/// round-trip property does not depend on field-content domain.
+fn arb_field_input() -> impl proptest::strategy::Strategy<Value = FieldInput> {
+    use proptest::prelude::*;
+
+    let name = "[a-z]{1,16}";
+    let text_value = "[ -~]{0,64}";
+    let bytes_value = proptest::collection::vec(any::<u8>(), 0..64);
+    (
+        name.prop_map(String::from),
+        prop_oneof![
+            text_value.prop_map(|s| FieldInputValue::Text(SecretString::from(s))),
+            bytes_value.prop_map(|b| FieldInputValue::Bytes(SecretBytes::from(b))),
+        ],
+    )
+        .prop_map(|(name, value)| FieldInput { name, value })
+}
+
+/// Strategy: arbitrary [`RecordInput`] with 0..4 fields.
+fn arb_record_input() -> impl proptest::strategy::Strategy<Value = RecordInput> {
+    use proptest::prelude::*;
+
+    (
+        any::<[u8; 16]>(),
+        proptest::collection::vec(arb_field_input(), 0..4),
+    )
+        .prop_map(|(record_uuid, fields)| RecordInput {
+            record_uuid,
+            fields,
+        })
+}
