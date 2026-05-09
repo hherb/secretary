@@ -1,11 +1,11 @@
 # NEXT_SESSION.md
 
-**Session date:** 2026-05-09 (Sub-project B.4b — implementation)
-**Status:** B.4b implementation complete; PR pending review/merge.
+**Session date:** 2026-05-09 (Sub-project B.4b — implementation + PR review fixes)
+**Status:** B.4b implementation complete + PR #31 review feedback addressed; PR pending re-review/merge.
 
 ## (1) What we shipped this session
 
-24 commits on the feature branch `feat/ffi-b4b-read-block`:
+29 commits on the feature branch `feat/ffi-b4b-read-block` (24 task commits + 5 PR review-feedback commits):
 
 | Task | Commits | What landed |
 |---|---|---|
@@ -18,21 +18,27 @@
 | Task 7: pytest +10 tests | `d1a0a9a`, `f219fc6` | 10 KAT-pinned read_block tests + 4 cleanups (password constant reuse + redundant bytes() casts + unused constant + None-check defenses) |
 | Task 8: uniffi UDL + glue | `fff2647`, `9fa0fcd` | 3 UDL interfaces + read_block namespace fn + VaultError BlockNotFound 7th variant + UDL doc propagation of caller-clear contract — closes the workspace clippy gap from Task 1 |
 | Task 9: Swift + Kotlin smokes | `bda05b1`, `43abd13` | +4 asserts each in main.swift / Main.kt + UDL doc correction (Kotlin codegen does NOT rename wipe() → close(); both methods coexist) |
-| Task 10: README + ROADMAP + NEXT_SESSION | (this commit) | Docs refresh + this file + dated handoff |
+| Task 10: README + ROADMAP + NEXT_SESSION | `894e96a` | Docs refresh + this file + dated handoff |
+| PR review fix 1: typed reader-secret-keys error | `daa5d55` | `ReaderSecretKeysError` enum (`HandleClosed` / `MlKem768ParseFailed`) so the orchestrator's `CorruptVault.detail` is non-misleading on the structurally-impossible parse-failure path |
+| PR review fix 2: uniffi `InvalidArgument` | `7bb397c` | Wrong-length `block_uuid` no longer abuses `FolderInvalid`; new dedicated 8th uniffi-side variant. Bridge `FfiVaultError` stays at 7 (wrong-length is structurally impossible at the bridge boundary — the fn takes `&[u8; 16]`) |
+| PR review fix 4: heap-copy caveat | `6587969` | `expose_text` / `expose_bytes` rustdoc made honest about foreign-runtime un-zeroizability of Python `str`/`bytes` and Kotlin/Swift `String` (the bridge-side `wipe()` is the only authoritative cleanup) |
+| PR review fix 5: trash-filtering doc | `ec034f9` | `BlockNotFound` rustdoc tightened: `manifest.trash` is a separate list (not a filter); trashed UUIDs naturally fall through. Companion fix updates wrong-length-UUID prose to match issue 2 |
+| PR review fix 6: import unification | `49dc1fb` | `tests/read_block.rs` imports through the public re-export, matching downstream-crate consumption shape |
+| PR review fix 3 (deferred): orphan-rule housekeeping | (filed [#32](https://github.com/hherb/secretary/issues/32)) | Non-blocking refactor of `From<FfiUnlockError> for FfiVaultError` to push the arm into a private free function. Reachability through orphan rules is unchanged either way; tracked as tech-debt for a future cleanup pass |
 
 ### Verification at session close
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **549 passed + 9 ignored, 0 failed** (was 522) |
+| `cargo test --release --workspace` | **552 passed + 9 ignored, 0 failed** (522 baseline → 549 post-task → 552 post-review) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
-| `uv run --directory ffi/secretary-ffi-py pytest` | **40 passed** (was 30) |
+| `uv run --directory ffi/secretary-ffi-py pytest` | **40 passed** (review fixes were Rust-side only) |
 | `uv run core/tests/python/conformance.py` | PASS |
 | `uv run core/tests/python/spec_test_name_freshness.py` | PASS |
-| Swift smoke | **22/22 PASS** (was 18) |
-| Kotlin smoke | **23 PASS lines** (was 19) |
-| Fuzz target `record` smoke (10000 runs on pinned nightly) | clean |
+| Swift smoke | **22/22 PASS** |
+| Kotlin smoke | **23 PASS lines** |
+| Fuzz target `record` smoke (10000 runs on pinned nightly) | clean (pre-review; review fixes did not touch fuzz targets) |
 
 ### Significant findings during execution
 
