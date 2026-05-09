@@ -369,9 +369,14 @@ impl FieldHandle {
     fn wipe(&self) {
         self.0.wipe();
     }
+    /// Context-manager `__enter__`. Returns `self` so `with field as f`
+    /// binds the handle.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
+    /// Context-manager `__exit__`. Calls `wipe()` and returns `False` so
+    /// any exception raised inside the `with`-block propagates after wipe
+    /// runs.
     fn __exit__(
         &self,
         _exc_type: Option<&Bound<'_, PyType>>,
@@ -429,9 +434,14 @@ impl Record {
     fn wipe(&self) {
         self.0.wipe();
     }
+    /// Context-manager `__enter__`. Returns `self` so `with record as r`
+    /// binds the handle.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
+    /// Context-manager `__exit__`. Calls `wipe()` and returns `False` so
+    /// any exception raised inside the `with`-block propagates after wipe
+    /// runs.
     fn __exit__(
         &self,
         _exc_type: Option<&Bound<'_, PyType>>,
@@ -465,9 +475,14 @@ impl BlockReadOutput {
     fn wipe(&self) {
         self.0.wipe();
     }
+    /// Context-manager `__enter__`. Returns `self` so `with output as o`
+    /// binds the handle.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
+    /// Context-manager `__exit__`. Calls `wipe()` and returns `False` so
+    /// any exception raised inside the `with`-block propagates after wipe
+    /// runs.
     fn __exit__(
         &self,
         _exc_type: Option<&Bound<'_, PyType>>,
