@@ -118,7 +118,7 @@ pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
-pub use save::{BlockInput, FieldInput, FieldInputValue, RecordInput};
+pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use unlock::{open_with_password, open_with_recovery};
 pub use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
