@@ -671,7 +671,7 @@ mod tests {
         let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
         out.manifest.wipe();
         // Post-wipe, every accessor returns the empty default. Same
-        // contract as UnlockedIdentity post-close.
+        // contract as UnlockedIdentity post-wipe.
         assert_eq!(out.manifest.vault_uuid(), vec![0u8; 16]);
         assert_eq!(out.manifest.owner_user_uuid(), vec![0u8; 16]);
         assert_eq!(out.manifest.block_count(), 0);

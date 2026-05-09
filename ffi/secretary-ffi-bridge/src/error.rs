@@ -746,22 +746,35 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
     }
 }
 
+/// Bridge-internal translation of an unlock-class error into the vault-
+/// class error surface. Private free function so the bridge crate has a
+/// single place to evolve the mapping; the `pub` `From` impl below is a
+/// thin delegator.
+///
+/// The translation is one-to-one because every unlock-class variant maps
+/// to a name-identical vault-class variant (the vault-class enum is a
+/// strict superset of the unlock-class enum). Future variant additions
+/// belong here, not in the `From` impl body.
+fn unlock_err_to_vault_err(e: FfiUnlockError) -> FfiVaultError {
+    match e {
+        FfiUnlockError::WrongPasswordOrCorrupt => FfiVaultError::WrongPasswordOrCorrupt,
+        FfiUnlockError::WrongMnemonicOrCorrupt => FfiVaultError::WrongMnemonicOrCorrupt,
+        FfiUnlockError::InvalidMnemonic { detail } => FfiVaultError::InvalidMnemonic { detail },
+        FfiUnlockError::VaultMismatch => FfiVaultError::VaultMismatch,
+        FfiUnlockError::CorruptVault { detail } => FfiVaultError::CorruptVault { detail },
+    }
+}
+
 /// Bridge-internal conversion. This impl is necessarily `pub` (it
 /// implements the standard `From` trait, whose visibility cannot be
 /// restricted), but it is **not part of the stable FFI surface**. Do not
 /// use this arm directly from foreign-projection code — it would couple
 /// the binding-flavor crates (`secretary-ffi-py`, `secretary-ffi-uniffi`)
 /// to a private translation step. Foreign code goes through
-/// `From<core::vault::VaultError>`, which delegates to this arm internally
-/// for the unlock-class variants.
+/// `From<core::vault::VaultError>`, which delegates to
+/// `unlock_err_to_vault_err` internally for the unlock-class variants.
 impl From<FfiUnlockError> for FfiVaultError {
     fn from(e: FfiUnlockError) -> Self {
-        match e {
-            FfiUnlockError::WrongPasswordOrCorrupt => FfiVaultError::WrongPasswordOrCorrupt,
-            FfiUnlockError::WrongMnemonicOrCorrupt => FfiVaultError::WrongMnemonicOrCorrupt,
-            FfiUnlockError::InvalidMnemonic { detail } => FfiVaultError::InvalidMnemonic { detail },
-            FfiUnlockError::VaultMismatch => FfiVaultError::VaultMismatch,
-            FfiUnlockError::CorruptVault { detail } => FfiVaultError::CorruptVault { detail },
-        }
+        unlock_err_to_vault_err(e)
     }
 }

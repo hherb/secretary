@@ -12,7 +12,7 @@ Both binding-flavor crates need the same logic:
   9 reachable from `open_with_password` / `open_with_recovery` plus
   one defensively forward-compat for `create_vault`) to a thinned
   5-variant FFI surface
-- Wrap `core::UnlockedIdentity` in an opaque handle with explicit close
+- Wrap `core::UnlockedIdentity` in an opaque handle with explicit wipe
 - Forward `open_with_password` and `open_with_recovery` calls into core
 
 Without a shared crate, this logic would duplicate in both binding
@@ -29,7 +29,7 @@ macros.
   `CorruptVault { detail }`. Expresses user-actionable intent rather
   than mirroring core's internal enum structure.
 - `UnlockedIdentity` — opaque handle. Two non-secret accessors
-  (`display_name`, `user_uuid`) plus explicit `close()`. The wrapped
+  (`display_name`, `user_uuid`) plus explicit `wipe()`. The wrapped
   secret material stays Rust-side.
 - `open_with_password` — fallible operation: vault unlock by master
   password.
@@ -91,11 +91,11 @@ instead of silently mapping to a default.
 ### `Mutex<Option<...>>` inside `UnlockedIdentity`
 
 Provides:
-- **idempotent close** via `Option::take()` (multiple `close()` calls
+- **idempotent wipe** via `Option::take()` (multiple `wipe()` calls
   don't panic)
 - **thread-safe accessors** (sub-microsecond locks for cloning a
   `String` or copying 16 bytes)
-- **use-after-close non-throwing** semantics (`as_ref()` on `None`
+- **use-after-wipe non-throwing** semantics (`as_ref()` on `None`
   yields default values, matching the B.1 non-throwing accessor
   pattern)
 - **prompt zeroize** — `take()` consumes the inner Option, `Drop`
@@ -107,21 +107,24 @@ operations, not record-read-time), `RwLock` is a drop-in upgrade.
 
 ## Foreign-side projection notes
 
-- The PyO3 projection (`secretary-ffi-py`) renames nothing. Python sees
-  five exception classes: `WrongPasswordOrCorrupt`,
-  `WrongMnemonicOrCorrupt`, `InvalidMnemonic`, `VaultMismatch`,
-  `CorruptVault`. `str(e)` carries the inner detail string for the two
-  variants that have one; `UnlockedIdentity` exposes
-  `display_name() / user_uuid() / close()` and the `with` /
-  `__enter__` / `__exit__` context-manager protocol.
-- The uniffi projection (`secretary-ffi-uniffi`) renames one surface
-  element under uniffi 0.31's Kotlin codegen:
-  - `UnlockedIdentity::close()` → `UnlockedIdentity::wipe()` because
-    uniffi 0.31's Kotlin codegen auto-generates `AutoCloseable.close()`
-    on every interface handle (releases the Rust refcount). The bridge
-    crate's `close()` stays named `close()`; only the uniffi projection
-    renames it. See `secretary-ffi-uniffi/src/lib.rs` for the rationale
-    rustdoc.
+- The bridge crate names every handle's explicit-zeroize method `wipe()`
+  for vocabulary uniformity (`UnlockedIdentity`, `MnemonicOutput`,
+  `OpenVaultManifest`, `BlockReadOutput`, `Record`, `FieldHandle` all
+  expose `wipe()`).
+- The PyO3 projection (`secretary-ffi-py`) presents `UnlockedIdentity`
+  with `display_name() / user_uuid() / close()` plus the `with` /
+  `__enter__` / `__exit__` context-manager protocol — Python's idiomatic
+  destructor name is `close()`. PyO3 forwards Python's `close()` to the
+  bridge's `wipe()` internally. The five exception classes
+  (`WrongPasswordOrCorrupt`, `WrongMnemonicOrCorrupt`,
+  `InvalidMnemonic`, `VaultMismatch`, `CorruptVault`) are unchanged;
+  `str(e)` carries the inner detail string for the two variants that
+  have one.
+- The uniffi projection (`secretary-ffi-uniffi`) calls `wipe()` directly
+  through the UDL because uniffi 0.31's Kotlin codegen auto-generates
+  `AutoCloseable.close()` on every interface handle (releases the Rust
+  refcount), and a UDL-declared `close()` would collide. See
+  `secretary-ffi-uniffi/src/lib.rs` for the rationale rustdoc.
 
   The `CorruptVault.message` → `CorruptVault.detail` rename that B.2
   introduced uniffi-side has been propagated into the bridge crate
@@ -154,8 +157,8 @@ cargo test --release -p secretary-ffi-bridge
   Display format pin; the `CorruptVault.message → detail` rename
   regression pin; the four `InvalidMnemonic` triggers (wrong word
   count, unknown word, bad checksum, UTF-8 failure).
-- `identity.rs` (7 tests) — opaque-handle accessors, idempotent close,
-  use-after-close non-throwing semantics, Mutex poisoning fall-through.
+- `identity.rs` (7 tests) — opaque-handle accessors, idempotent wipe,
+  use-after-wipe non-throwing semantics, Mutex poisoning fall-through.
 - `unlock.rs` (9 tests) — both unlock paths against
   `golden_vault_001/` + `golden_vault_002/`: success, wrong key,
   vault mismatch, corrupt vault, plus B.3a's mnemonic-specific cases
