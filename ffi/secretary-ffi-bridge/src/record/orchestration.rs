@@ -129,7 +129,15 @@ pub fn read_block(
     .map_err(|e| FfiVaultError::CorruptVault {
         detail: format!("block decryption failed: {e}"),
     })?;
-    // reader_x_sk + reader_pq_sk dropped → ZeroizeOnDrop runs.
+    // Pin the drop point so the secret-key bytes are wiped HERE,
+    // not at end-of-function scope (the comment-only version was
+    // misleading because Rust 2021 NLL doesn't guarantee early drop
+    // for bindings that aren't moved). Both Sensitive<[u8;32]> and
+    // SecretBytes-wrapped MlKem768Secret implement ZeroizeOnDrop;
+    // these explicit drops trigger that wipe right after decrypt
+    // returns and BEFORE BlockReadOutput is constructed.
+    drop(reader_x_sk);
+    drop(reader_pq_sk);
 
     // Convert BlockPlaintext → BlockReadOutput. Preserve record order
     // (already canonical from decode_plaintext); within each record,
