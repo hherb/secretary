@@ -125,9 +125,11 @@ impl FieldHandle {
     /// field is text (caller should use [`Self::expose_text`]) or has
     /// been wiped.
     ///
-    /// Returns a fresh `Vec<u8>`; caller is responsible for clearing
-    /// it. The underlying `SecretBytes` in the `FieldHandle` is NOT
-    /// wiped by this call.
+    /// Returns a fresh `Vec<u8>` allocation; **caller is responsible
+    /// for clearing it** (e.g. Python `del` + `bytearray` overwrite,
+    /// Swift `[UInt8]` going out of scope, Kotlin GC). The underlying
+    /// `SecretBytes` in the `FieldHandle` is NOT wiped by this call —
+    /// call [`Self::wipe`] explicitly when done with the handle.
     pub fn expose_bytes(&self) -> Option<Vec<u8>> {
         lock_or_recover(&self.inner)
             .as_ref()
