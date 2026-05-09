@@ -38,6 +38,7 @@
 //!   returned by the folder-in open paths. Holds the IBK + manifest body
 //!   + manifest envelope + verified owner card internally; B.4a exposes
 //!     only read-only block-list accessors. See [`vault`] module docs.
+//!     Also borrowed by [`read_block`] to drive block decryption (B.4b).
 //! - [`BlockReadOutput`] — opaque handle for one block's decrypted
 //!   records. Returned by [`read_block`]. Holds owned [`Record`]s;
 //!   [`BlockReadOutput::wipe`] cascades wipe to every contained record
