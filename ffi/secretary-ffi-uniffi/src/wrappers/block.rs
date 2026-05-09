@@ -19,8 +19,14 @@ impl BlockReadOutput {
         self.0.record_count() as u64
     }
     pub fn record_at(&self, idx: u64) -> Option<std::sync::Arc<Record>> {
+        // u64 → usize CAN truncate on 32-bit targets; `idx as usize` would
+        // wrap a too-large `idx` to a smaller in-range value and return
+        // `Some(record)` instead of `None`. `try_from` short-circuits to
+        // `None` for any `idx` that doesn't fit, preserving "out-of-range
+        // index returns None" on every platform.
+        let idx = usize::try_from(idx).ok()?;
         self.0
-            .record_at(idx as usize)
+            .record_at(idx)
             .map(|r| std::sync::Arc::new(Record(r)))
     }
     pub fn wipe(&self) {
@@ -62,8 +68,12 @@ impl Record {
             .map(|f| std::sync::Arc::new(FieldHandle(f)))
     }
     pub fn field_at(&self, idx: u64) -> Option<std::sync::Arc<FieldHandle>> {
+        // See `BlockReadOutput::record_at` for the truncation rationale —
+        // `try_from` keeps "out-of-range index returns None" platform-
+        // independent on 32-bit targets where `idx as usize` could wrap.
+        let idx = usize::try_from(idx).ok()?;
         self.0
-            .field_at(idx as usize)
+            .field_at(idx)
             .map(|f| std::sync::Arc::new(FieldHandle(f)))
     }
     pub fn wipe(&self) {
