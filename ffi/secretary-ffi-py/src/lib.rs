@@ -481,10 +481,11 @@ impl BlockReadOutput {
 /// - `VaultCorruptVault` — block file missing/malformed/decryption failed.
 /// - `VaultFolderInvalid` — block file present but unreadable for non-NotFound IO reasons.
 #[pyfunction]
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for bytes ∪ bytearray accept
 fn read_block(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
-    block_uuid: &[u8],
+    block_uuid: Vec<u8>,
 ) -> PyResult<BlockReadOutput> {
     if block_uuid.len() != 16 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -493,7 +494,7 @@ fn read_block(
         )));
     }
     let mut uuid_array = [0u8; 16];
-    uuid_array.copy_from_slice(block_uuid);
+    uuid_array.copy_from_slice(&block_uuid);
     secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array)
         .map(BlockReadOutput)
         .map_err(ffi_vault_error_to_pyerr)
