@@ -234,7 +234,6 @@ impl OpenVaultManifest {
     /// through PyO3 / uniffi — used only by `crate::record::read_block`
     /// to resolve `blocks/<uuid>.cbor.enc`. Returns `None` if the handle
     /// has been wiped (then `read_block` falls through to a typed error).
-    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
     pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -249,7 +248,6 @@ impl OpenVaultManifest {
     /// Used by `crate::record::read_block` to look up the BlockEntry
     /// by UUID. The clone is cheap (block list is typically a handful
     /// of entries; KAT vault has 1).
-    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
     pub(crate) fn manifest_body(&self) -> Option<Manifest> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -263,7 +261,6 @@ impl OpenVaultManifest {
     /// Used by `crate::record::read_block` as both the sender card and
     /// the reader card (v1 single-author block reading; multi-author
     /// flow deferred to B.4d).
-    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
     pub(crate) fn owner_card(&self) -> Option<ContactCard> {
         lock_or_recover(&self.inner)
             .as_ref()

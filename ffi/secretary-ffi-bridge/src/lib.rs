@@ -83,6 +83,7 @@
 pub mod create;
 pub mod error;
 pub mod identity;
+pub mod record;
 mod sync_helpers;
 pub mod unlock;
 pub mod vault;

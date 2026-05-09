@@ -96,7 +96,6 @@ impl UnlockedIdentity {
     /// the `Sensitive::new` path; the caller drops it after the
     /// `decrypt_block` call returns and zeroize-on-drop takes care of
     /// the secret bytes.
-    #[allow(dead_code)] // B.4b Task 3 (record::read_block) will consume this
     pub(crate) fn reader_secret_keys(
         &self,
     ) -> Option<(
