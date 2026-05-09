@@ -224,6 +224,8 @@ pub enum VaultError {
     CorruptVault { detail: String },
     #[error("vault folder is not accessible: {detail}")]
     FolderInvalid { detail: String },
+    #[error("block not found in manifest: {uuid_hex}")]
+    BlockNotFound { uuid_hex: String },
 }
 
 impl From<secretary_ffi_bridge::FfiVaultError> for VaultError {
@@ -236,6 +238,7 @@ impl From<secretary_ffi_bridge::FfiVaultError> for VaultError {
             B::VaultMismatch => VaultError::VaultMismatch,
             B::CorruptVault { detail } => VaultError::CorruptVault { detail },
             B::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
+            B::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
         }
     }
 }
@@ -272,6 +275,109 @@ impl OpenVaultManifest {
         self.0.find_block(&block_uuid).map(BlockSummary::from)
     }
 
+    pub fn wipe(&self) {
+        self.0.wipe();
+    }
+}
+
+// =============================================================================
+// B.4b — BlockReadOutput / Record / FieldHandle wrappers
+// =============================================================================
+
+/// uniffi wrapper around secretary_ffi_bridge::BlockReadOutput. Newtype;
+/// methods are thin forwarders. Drops on foreign refcount → 0 (RAII safety
+/// net via uniffi-generated AutoCloseable.close() on Kotlin / deinit on
+/// Swift) or via explicit wipe().
+pub struct BlockReadOutput(secretary_ffi_bridge::BlockReadOutput);
+
+impl BlockReadOutput {
+    pub fn block_uuid(&self) -> Vec<u8> {
+        self.0.block_uuid().to_vec()
+    }
+    pub fn block_name(&self) -> String {
+        self.0.block_name()
+    }
+    pub fn record_count(&self) -> u64 {
+        self.0.record_count() as u64
+    }
+    pub fn record_at(&self, idx: u64) -> Option<std::sync::Arc<Record>> {
+        self.0
+            .record_at(idx as usize)
+            .map(|r| std::sync::Arc::new(Record(r)))
+    }
+    pub fn wipe(&self) {
+        self.0.wipe();
+    }
+}
+
+/// uniffi wrapper around secretary_ffi_bridge::Record.
+pub struct Record(secretary_ffi_bridge::Record);
+
+impl Record {
+    pub fn record_uuid(&self) -> Vec<u8> {
+        self.0.record_uuid().to_vec()
+    }
+    pub fn record_type(&self) -> String {
+        self.0.record_type()
+    }
+    pub fn tags(&self) -> Vec<String> {
+        self.0.tags()
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.0.created_at_ms()
+    }
+    pub fn last_mod_ms(&self) -> u64 {
+        self.0.last_mod_ms()
+    }
+    pub fn tombstone(&self) -> bool {
+        self.0.tombstone()
+    }
+    pub fn field_count(&self) -> u64 {
+        self.0.field_count() as u64
+    }
+    pub fn field_names(&self) -> Vec<String> {
+        self.0.field_names()
+    }
+    pub fn field_by_name(&self, name: String) -> Option<std::sync::Arc<FieldHandle>> {
+        self.0
+            .field_by_name(&name)
+            .map(|f| std::sync::Arc::new(FieldHandle(f)))
+    }
+    pub fn field_at(&self, idx: u64) -> Option<std::sync::Arc<FieldHandle>> {
+        self.0
+            .field_at(idx as usize)
+            .map(|f| std::sync::Arc::new(FieldHandle(f)))
+    }
+    pub fn wipe(&self) {
+        self.0.wipe();
+    }
+}
+
+/// uniffi wrapper around secretary_ffi_bridge::FieldHandle.
+pub struct FieldHandle(secretary_ffi_bridge::FieldHandle);
+
+impl FieldHandle {
+    pub fn name(&self) -> String {
+        self.0.name()
+    }
+    pub fn last_mod_ms(&self) -> u64 {
+        self.0.last_mod_ms()
+    }
+    pub fn device_uuid(&self) -> Vec<u8> {
+        self.0.device_uuid().to_vec()
+    }
+    pub fn is_text(&self) -> bool {
+        self.0.is_text()
+    }
+    pub fn is_bytes(&self) -> bool {
+        self.0.is_bytes()
+    }
+    pub fn expose_text(&self) -> Option<String> {
+        self.0.expose_text()
+    }
+    pub fn expose_bytes(&self) -> Option<Vec<u8>> {
+        self.0.expose_bytes()
+    }
     pub fn wipe(&self) {
         self.0.wipe();
     }
@@ -505,6 +611,37 @@ pub fn open_vault_with_recovery(
         identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
         manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
     })
+}
+
+/// Decrypt one block of an open vault and return its records. (B.4b)
+///
+/// `block_uuid` must be exactly 16 bytes; otherwise returns
+/// [`VaultError::FolderInvalid`] with detail mentioning the wrong length.
+/// (uniffi has no native ValueError equivalent at the namespace-fn
+/// level, so we surface the wrong-length case through the existing
+/// VaultError surface; foreign callers should pass exactly 16 bytes.)
+///
+/// # Errors
+///
+/// - [`VaultError::BlockNotFound`] — UUID not in manifest's live blocks list.
+/// - [`VaultError::CorruptVault`] — block file missing/malformed/decryption failed.
+/// - [`VaultError::FolderInvalid`] — wrong-length `block_uuid` OR block file
+///   present but unreadable for non-NotFound IO reasons.
+pub fn read_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+) -> Result<std::sync::Arc<BlockReadOutput>, VaultError> {
+    if block_uuid.len() != 16 {
+        return Err(VaultError::FolderInvalid {
+            detail: format!("block_uuid must be 16 bytes, got {}", block_uuid.len()),
+        });
+    }
+    let mut uuid_array = [0u8; 16];
+    uuid_array.copy_from_slice(&block_uuid);
+    secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array)
+        .map(|b| std::sync::Arc::new(BlockReadOutput(b)))
+        .map_err(VaultError::from)
 }
 
 #[cfg(test)]
@@ -755,6 +892,51 @@ mod tests {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),
             Ok(_) => panic!("expected Err for invalid UTF-8 path"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // B.4b: pin the BlockNotFound variant translation + the wrong-length
+    // block_uuid → FolderInvalid decision (uniffi has no native ValueError
+    // equivalent at the namespace-fn level; see read_block doc comment).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vault_error_block_not_found_maps_one_to_one() {
+        // Pin the 7th variant translation. A future rename would fail
+        // here first.
+        use secretary_ffi_bridge::FfiVaultError as B;
+        let bnf = VaultError::from(B::BlockNotFound {
+            uuid_hex: "abc123".to_string(),
+        });
+        let VaultError::BlockNotFound { uuid_hex } = bnf else {
+            panic!("expected BlockNotFound");
+        };
+        assert_eq!(uuid_hex, "abc123");
+    }
+
+    #[test]
+    fn read_block_wrong_length_returns_folder_invalid() {
+        // Pin the wrong-length-folds-to-FolderInvalid decision.
+        // Synthesize stub Arc<UnlockedIdentity> + Arc<OpenVaultManifest>
+        // by routing through the real open path against golden_vault_001.
+        // BlockReadOutput doesn't implement Debug (it holds zeroize-sensitive
+        // wrappers), so we match rather than calling unwrap_err() — same shape
+        // as open_vault_with_password_invalid_utf8_path_returns_folder_invalid.
+        let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../core/tests/data/golden_vault_001");
+        let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
+        let pwd = b"correct horse battery staple".to_vec();
+        let out = open_vault_with_password(folder_bytes, pwd).unwrap();
+        match read_block(out.identity, out.manifest, vec![0u8; 15]) {
+            Err(VaultError::FolderInvalid { detail }) => {
+                assert!(
+                    detail.contains("16 bytes") && detail.contains("got 15"),
+                    "detail did not mention length: {detail}",
+                );
+            }
+            Err(other) => panic!("expected FolderInvalid for wrong-length, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length block_uuid"),
         }
     }
 }
