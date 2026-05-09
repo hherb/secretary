@@ -29,6 +29,11 @@ fuzz_target!(|data: &[u8]| {
         // FieldHandle::expose_text() returns `Option<String>` (not
         // `Result<Option<String>, _>`) and would silently surface
         // invalid UTF-8 to the foreign caller without this fuzz check.
+        // Note: `SecretString::expose()` returns `&str` today, so the
+        // runtime check below is currently a tautology — the real
+        // enforcement is the Rust type system. The assertion becomes a
+        // live runtime check only if a future refactor changes the
+        // field's wrapper to return `&[u8]` instead of `&str`.
         for (_name, field) in &parsed.fields {
             if let RecordFieldValue::Text(secret_string) = &field.value {
                 let bytes = secret_string.expose().as_bytes();
