@@ -152,6 +152,45 @@ impl UnlockedIdentity {
         Ok((x_sk, pq_sk))
     }
 
+    /// Bridge-internal: produce an owned [`IdentityBundle`] copy so the
+    /// save orchestrator can construct a temporary `core::OpenVault`.
+    /// Returns `None` if the handle has been wiped.
+    ///
+    /// `IdentityBundle` deliberately does NOT derive `Clone` (secret
+    /// material should not be silently duplicated). This helper performs
+    /// the field-by-field copy explicitly, wrapping each secret in a
+    /// fresh `Sensitive` slot so the clone has its own zeroize-on-drop.
+    /// Total wall-clock exposure of the duplicated secret material is
+    /// the lifetime of one `save_block` call (~5ms) before the temp
+    /// `OpenVault` drops.
+    ///
+    /// NOT exposed through PyO3 / uniffi — used only by
+    /// `crate::save::save_block`.
+    #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
+    pub(crate) fn clone_inner_bundle(
+        &self,
+    ) -> Option<secretary_core::unlock::bundle::IdentityBundle> {
+        use secretary_core::crypto::secret::Sensitive;
+        use secretary_core::unlock::bundle::IdentityBundle;
+
+        let guard = lock_or_recover(&self.inner);
+        let id = guard.as_ref()?;
+        let b = &id.identity;
+        Some(IdentityBundle {
+            user_uuid: b.user_uuid,
+            display_name: b.display_name.clone(),
+            x25519_sk: Sensitive::new(*b.x25519_sk.expose()),
+            x25519_pk: b.x25519_pk,
+            ml_kem_768_sk: Sensitive::new(b.ml_kem_768_sk.expose().to_vec()),
+            ml_kem_768_pk: b.ml_kem_768_pk.clone(),
+            ed25519_sk: Sensitive::new(*b.ed25519_sk.expose()),
+            ed25519_pk: b.ed25519_pk,
+            ml_dsa_65_sk: Sensitive::new(b.ml_dsa_65_sk.expose().to_vec()),
+            ml_dsa_65_pk: b.ml_dsa_65_pk.clone(),
+            created_at_ms: b.created_at_ms,
+        })
+    }
+
     /// Bridge-internal accessor returning fresh clones of the Ed25519 +
     /// ML-DSA-65 signer secret keys for `core::vault::manifest::sign_manifest`
     /// and `core::vault::block::encrypt_block`. NOT exposed through PyO3 /

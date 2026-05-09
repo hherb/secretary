@@ -332,6 +332,27 @@ impl OpenVaultManifest {
     /// Returns `None` if the handle has been wiped before the lock was
     /// taken; the orchestrator falls through to a typed `CorruptVault`
     /// with the `"vault manifest handle has been closed"` detail.
+    /// Bridge-internal write-back used by `crate::save::save_block` after
+    /// `core::vault::orchestrators::save_block` returns Ok. Atomically
+    /// replaces the inner `manifest` body and `manifest_file` envelope
+    /// with the post-mutation values. Returns `Err(())` if the handle has
+    /// been wiped (the orchestrator surfaces this as `CorruptVault`).
+    ///
+    /// The IBK / `owner_card` / `vault_folder` fields are intentionally
+    /// NOT mutated — `save_block` only changes the manifest body
+    /// (`blocks`, `vector_clock`) and the envelope (re-signed header).
+    pub(crate) fn replace_manifest_and_file(
+        &self,
+        new_manifest: Manifest,
+        new_manifest_file: ManifestFile,
+    ) -> Result<(), ()> {
+        let mut guard = lock_or_recover(&self.inner);
+        let inner = guard.as_mut().ok_or(())?;
+        inner.manifest = new_manifest;
+        inner.manifest_file = new_manifest_file;
+        Ok(())
+    }
+
     // The 5-tuple return is local to this internal accessor; defining a
     // typedef just to placate clippy::type_complexity would add ceremony
     // without helping callers. The five fields are documented above.
