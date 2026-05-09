@@ -537,6 +537,47 @@ mod tests {
         let ffi: FfiVaultError = core_err.into();
         assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
     }
+
+    // =============================================================================
+    // FfiVaultError::BlockNotFound — new in B.4b (block lookup failure variant)
+    // =============================================================================
+
+    #[test]
+    fn vault_error_block_not_found_display_pins_uuid_hex() {
+        // Tripwire: the BlockNotFound variant's Display string must contain
+        // the uuid_hex verbatim. A future refactor that strips it (e.g.
+        // changes to a generic "block not found" message without the UUID)
+        // would degrade the foreign caller's debugging affordance and must
+        // be a deliberate decision rather than a silent regression.
+        let ffi = FfiVaultError::BlockNotFound {
+            uuid_hex: "112233445566778899aabbccddeeff00".to_string(),
+        };
+        let rendered = format!("{ffi}");
+        assert!(
+            rendered.contains("block not found"),
+            "Display did not contain the BlockNotFound text: {rendered}",
+        );
+        assert!(
+            rendered.contains("112233445566778899aabbccddeeff00"),
+            "Display did not include uuid_hex: {rendered}",
+        );
+    }
+
+    #[test]
+    fn vault_error_block_not_found_carries_uuid_hex_field() {
+        // Pin the field name + accessibility. The foreign callers
+        // (PyO3 + uniffi) destructure this variant to surface uuid_hex
+        // as a typed exception attribute; renaming the field would break
+        // both binding-flavor crates without a compile error if they
+        // stop using exhaustive `match`.
+        let ffi = FfiVaultError::BlockNotFound {
+            uuid_hex: "deadbeef".to_string(),
+        };
+        let FfiVaultError::BlockNotFound { uuid_hex } = ffi else {
+            panic!("expected BlockNotFound variant");
+        };
+        assert_eq!(uuid_hex, "deadbeef");
+    }
 }
 
 // =============================================================================
@@ -628,6 +669,31 @@ pub enum FfiVaultError {
         /// IO context string: which file we tried to read + the underlying
         /// `io::Error`'s Display.
         detail: String,
+    },
+
+    /// The requested block UUID does not appear in the manifest's live
+    /// blocks list. Trashed blocks are filtered out — they also surface
+    /// as `BlockNotFound` until Sub-project C adds the restore-from-trash
+    /// flow with full vector-clock context.
+    ///
+    /// `uuid_hex` is the 32-char lowercase hex of the requested UUID, e.g.
+    /// `"112233445566778899aabbccddeeff00"`. Stored as a `String` for
+    /// consistency with other variants' `detail: String` payloads; the
+    /// foreign caller can `bytes.fromhex(uuid_hex)` if needed.
+    ///
+    /// Distinct from `CorruptVault` — `BlockNotFound` means "the manifest
+    /// doesn't list this block" (legitimate caller error or stale UUID),
+    /// while `CorruptVault` means "the manifest lists it but the file is
+    /// missing or unreadable" (data integrity failure). The wrong-length
+    /// UUID case (≠16 bytes) does NOT fold here either — that's a
+    /// programmer error and surfaces as `ValueError` (PyO3) /
+    /// `IllegalArgumentException` (uniffi) at the binding layer; the
+    /// bridge function takes `&[u8; 16]` (compile-time enforced).
+    #[error("block not found in manifest: {uuid_hex}")]
+    BlockNotFound {
+        /// 32-char lowercase hex of the requested 16-byte block UUID.
+        /// See the variant-level doc for the contract + counter-cases.
+        uuid_hex: String,
     },
 }
 
