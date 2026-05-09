@@ -9,8 +9,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use secretary_ffi_bridge::record::read_block;
-use secretary_ffi_bridge::{open_vault_with_password, open_vault_with_recovery, FfiVaultError};
+use secretary_ffi_bridge::{
+    open_vault_with_password, open_vault_with_recovery, read_block, FfiVaultError,
+};
 
 /// Path to the golden_vault_NNN folder. CARGO_MANIFEST_DIR is
 /// ffi/secretary-ffi-bridge/, so we walk up to core/tests/data/.
