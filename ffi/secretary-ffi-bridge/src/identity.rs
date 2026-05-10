@@ -192,15 +192,27 @@ impl UnlockedIdentity {
     }
 
     /// Bridge-internal accessor returning fresh clones of the Ed25519 +
-    /// ML-DSA-65 signer secret keys for `core::vault::manifest::sign_manifest`
-    /// and `core::vault::block::encrypt_block`. NOT exposed through PyO3 /
-    /// uniffi — used only by `crate::save::save_block`.
+    /// ML-DSA-65 signer secret keys as standalone typed wrappers. NOT
+    /// exposed through PyO3 / uniffi.
+    ///
+    /// Currently unused by the bridge orchestrators: `save_block` derives
+    /// signing keys directly off the `IdentityBundle` clone returned by
+    /// `clone_inner_bundle`, and post-#42 the share_block path was
+    /// refactored to do the same (with explicit zeroize-on-clone of the
+    /// bundle's signer fields). Retained behind `#[allow(dead_code)]` for
+    /// forward-compat: future write paths whose core API takes signing
+    /// keys as standalone `&Ed25519Secret` / `&MlDsa65Secret` arguments
+    /// (rather than reading them off an `OpenVault`) can compose this
+    /// accessor without re-deriving the named-and-zeroized stack-buffer
+    /// discipline. Tests covering both the live and wiped arms are kept
+    /// to pin that discipline against future regressions. Revisit for
+    /// deletion if no Sub-project-C surface picks it up.
     ///
     /// Mirrors [`UnlockedIdentity::reader_secret_keys`] for the signing
     /// path. Distinct typed errors for handle-closed vs. post-unlock
-    /// parse failure so the orchestrator can attach a non-misleading
+    /// parse failure so a future caller can attach a non-misleading
     /// detail string for each failure mode.
-    #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
+    #[allow(dead_code)] // forward-compat; see docstring
     pub(crate) fn signer_secret_keys(
         &self,
     ) -> Result<

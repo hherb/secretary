@@ -101,13 +101,25 @@ pub fn share_block(
     // core::share_block; zero'ing them is a memory-hygiene refinement,
     // not a functional change. The author signature is produced from
     // `&sk_ed` / `&sk_pq` passed separately.
+    //
+    // The Ed25519 secret is materialized via a named-and-zeroized stack
+    // buffer (mirroring `UnlockedIdentity::signer_secret_keys`'s
+    // discipline) so that no unnamed transient `[u8; 32]` from the
+    // `*expose()` deref lingers in a stack slot the rest of the function
+    // can't reach. After the explicit `zeroize()` on `sk_ed_bytes`, the
+    // only live Ed25519 secret in scope is the `Sensitive`-wrapped one
+    // inside `sk_ed` (zeroize-on-drop). For ML-DSA-65, `from_bytes` reads
+    // the bytes through a borrowed slice and copies internally — no
+    // intermediate stack buffer to clean up on the bridge side.
     let mut identity_clone =
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
                 detail: "identity handle has been closed".into(),
             })?;
-    let sk_ed: Ed25519Secret = Sensitive::new(*identity_clone.ed25519_sk.expose());
+    let mut sk_ed_bytes: [u8; 32] = *identity_clone.ed25519_sk.expose();
+    let sk_ed: Ed25519Secret = Sensitive::new(sk_ed_bytes);
+    sk_ed_bytes.zeroize();
     let sk_pq = MlDsa65Secret::from_bytes(identity_clone.ml_dsa_65_sk.expose()).map_err(|e| {
         FfiVaultError::CorruptVault {
             detail: format!("identity ML-DSA-65 secret parse failed: {e:?}"),
