@@ -316,6 +316,98 @@ impl OpenVaultManifest {
             )
         })
     }
+
+    /// Bridge-internal write-back used by `crate::save::save_block` after
+    /// `core::vault::orchestrators::save_block` returns Ok. Atomically
+    /// replaces the inner `manifest` body and `manifest_file` envelope
+    /// with the post-mutation values. Returns
+    /// [`ReplaceManifestError::HandleWiped`] if the handle has been wiped
+    /// (the orchestrator surfaces this as `CorruptVault`).
+    ///
+    /// The IBK / `owner_card` / `vault_folder` fields are intentionally
+    /// NOT mutated — `save_block` only changes the manifest body
+    /// (`blocks`, `vector_clock`) and the envelope (re-signed header).
+    pub(crate) fn replace_manifest_and_file(
+        &self,
+        new_manifest: Manifest,
+        new_manifest_file: ManifestFile,
+    ) -> Result<(), ReplaceManifestError> {
+        let mut guard = lock_or_recover(&self.inner);
+        let inner = guard.as_mut().ok_or(ReplaceManifestError::HandleWiped)?;
+        inner.manifest = new_manifest;
+        inner.manifest_file = new_manifest_file;
+        Ok(())
+    }
+
+    /// Bridge-internal atomic snapshot of the five pieces
+    /// `crate::save::save_block` needs in one shot: the manifest body,
+    /// the on-disk manifest envelope (for re-sign chaining), the
+    /// verified owner contact card, a fresh clone of the IBK
+    /// (`Sensitive::new` on a new slot), and the vault folder path.
+    /// NOT exposed through PyO3 / uniffi.
+    ///
+    /// Folds the five sequential `lock_or_recover` calls in `save_block`
+    /// into a single critical section, closing the same theoretical
+    /// TOCTOU window [`OpenVaultManifest::snapshot_for_read_block`]
+    /// closes for the read path.
+    ///
+    /// Returns `None` if the handle has been wiped before the lock was
+    /// taken; the orchestrator falls through to a typed `CorruptVault`
+    /// with the `"vault manifest handle has been closed"` detail.
+    //
+    // The 5-tuple return is local to this internal accessor; defining a
+    // typedef just to placate clippy::type_complexity would add ceremony
+    // without helping callers. The five fields are documented above.
+    #[allow(clippy::type_complexity)]
+    #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
+    pub(crate) fn snapshot_for_save_block(
+        &self,
+    ) -> Option<(
+        Manifest,
+        ManifestFile,
+        ContactCard,
+        Sensitive<[u8; 32]>,
+        std::path::PathBuf,
+    )> {
+        lock_or_recover(&self.inner).as_ref().map(|i| {
+            // Clone the IBK by copying its 32 bytes into a fresh
+            // Sensitive slot. The `*expose()` deref produces a temporary
+            // [u8; 32] that's immediately moved into Sensitive::new; the
+            // source slot's bytes stay live and zeroize on its own drop.
+            let ibk = Sensitive::new(*i.identity_block_key.expose());
+            (
+                i.manifest.clone(),
+                i.manifest_file.clone(),
+                i.owner_card.clone(),
+                ibk,
+                i.vault_folder.clone(),
+            )
+        })
+    }
+}
+
+/// Bridge-internal failure mode for
+/// [`OpenVaultManifest::replace_manifest_and_file`]. Mirrors the
+/// `HandleClosed` variant on [`crate::identity::ReaderSecretKeysError`] /
+/// [`crate::identity::SignerSecretKeysError`] so the orchestrator can
+/// translate the failure to a `CorruptVault` with a non-misleading detail
+/// string via `Display`. Single-variant for now; new variants belong here
+/// rather than being multiplexed onto `HandleWiped`'s detail string.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplaceManifestError {
+    /// The manifest handle was wiped between snapshot acquisition and
+    /// write-back (concurrent-wipe race). The on-disk write may have
+    /// already succeeded; the bridge's in-memory state is no longer
+    /// authoritative.
+    HandleWiped,
+}
+
+impl std::fmt::Display for ReplaceManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HandleWiped => f.write_str("vault manifest handle has been closed during save"),
+        }
+    }
 }
 
 /// Internal projection: `core::BlockEntry` → `BlockSummary` (drops
@@ -758,5 +850,77 @@ mod tests {
             out.manifest.snapshot_for_read_block().is_none(),
             "snapshot_for_read_block must return None after wipe",
         );
+    }
+
+    #[test]
+    fn snapshot_for_save_block_returns_some_quintuple_when_live_and_none_when_wiped() {
+        // Pin the single-lock atomic snapshot accessor used by
+        // save::save_block. Mirrors snapshot_for_read_block's TOCTOU
+        // closure for the save path's five-field surface (manifest +
+        // manifest_file + owner_card + IBK clone + vault folder).
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let (body, manifest_file, card, _ibk, returned_folder) = out
+            .manifest
+            .snapshot_for_save_block()
+            .expect("Some(quintuple) before wipe");
+        assert_eq!(body.vault_uuid.len(), 16, "vault_uuid is 16 bytes");
+        assert!(
+            !body.blocks.is_empty(),
+            "golden_vault_001 must have at least one block",
+        );
+        // ManifestFile carries the on-disk header for re-sign chaining;
+        // structural sanity is enough here (the full re-sign pipeline is
+        // exercised by save_block tests in Task 2).
+        assert_eq!(
+            manifest_file.header.vault_uuid, body.vault_uuid,
+            "manifest envelope vault_uuid must match body vault_uuid",
+        );
+        assert_eq!(card.contact_uuid.len(), 16, "card contact_uuid is 16 bytes");
+        assert_eq!(
+            returned_folder, folder,
+            "snapshot folder must match open_vault_with_password input",
+        );
+        // _ibk is Sensitive<[u8; 32]> — drop on scope exit zeroizes it.
+        out.manifest.wipe();
+        assert!(
+            out.manifest.snapshot_for_save_block().is_none(),
+            "snapshot_for_save_block must return None after wipe",
+        );
+    }
+
+    #[test]
+    fn replace_manifest_and_file_on_wiped_handle_returns_handle_wiped() {
+        // Pin the typed-error contract: a wiped handle surfaces as
+        // ReplaceManifestError::HandleWiped (not the previous Err(())
+        // unit-typed sentinel). The orchestrator depends on this typed
+        // error to attach a non-misleading CorruptVault.detail via Display.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let (body, manifest_file, ..) = out
+            .manifest
+            .snapshot_for_save_block()
+            .expect("snapshot before wipe");
+        out.manifest.wipe();
+        assert_eq!(
+            out.manifest.replace_manifest_and_file(body, manifest_file),
+            Err(ReplaceManifestError::HandleWiped),
+        );
+    }
+
+    #[test]
+    fn replace_manifest_error_handle_wiped_display_pins_text() {
+        // Tripwire: the orchestrator stringifies this Display into the
+        // CorruptVault.detail surfaced through PyO3 / uniffi. The
+        // tests/save_block.rs wiped-manifest assertions key on the word
+        // "manifest" appearing in the detail; pin both the verbatim text
+        // and the substring contract here so a future rename is a
+        // deliberate decision.
+        let rendered = ReplaceManifestError::HandleWiped.to_string();
+        assert_eq!(
+            rendered,
+            "vault manifest handle has been closed during save",
+        );
+        assert!(rendered.contains("manifest"));
     }
 }

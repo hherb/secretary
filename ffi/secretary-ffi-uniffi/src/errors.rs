@@ -78,11 +78,11 @@ impl From<FfiUnlockError> for UnlockError {
 }
 
 // =============================================================================
-// VaultError (mirrors FfiVaultError 7 variants + uniffi-only InvalidArgument)
+// VaultError (mirrors FfiVaultError 8 variants + uniffi-only InvalidArgument)
 // =============================================================================
 
 /// uniffi projection of FfiVaultError + one extra variant for FFI input-
-/// shape errors (`InvalidArgument`). Eight flat variants matching the UDL
+/// shape errors (`InvalidArgument`). Nine flat variants matching the UDL
 /// declaration.
 ///
 /// The structured-field rename rationale is the same as UnlockError's:
@@ -116,6 +116,8 @@ pub enum VaultError {
     BlockNotFound { uuid_hex: String },
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
+    #[error("save-time crypto failure: {detail}")]
+    SaveCryptoFailure { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -128,6 +130,7 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::CorruptVault { detail } => VaultError::CorruptVault { detail },
             FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
             FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
+            FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure { detail },
         }
     }
 }
@@ -291,6 +294,41 @@ mod tests {
         assert!(
             rendered.contains("invalid argument"),
             "Display did not contain the InvalidArgument prefix: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
+    }
+
+    // -------------------------------------------------------------------
+    // B.4c: pin the SaveCryptoFailure variant translation.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vault_error_save_crypto_failure_maps_one_to_one() {
+        // Pin the 9th variant translation. A future rename or accidental
+        // remap to CorruptVault / FolderInvalid would fail here first.
+        let bridge_err = FfiVaultError::SaveCryptoFailure {
+            detail: "test detail".to_string(),
+        };
+        let uniffi_err = VaultError::from(bridge_err);
+        let VaultError::SaveCryptoFailure { detail } = uniffi_err else {
+            panic!("expected SaveCryptoFailure");
+        };
+        assert_eq!(detail, "test detail");
+    }
+
+    #[test]
+    fn save_crypto_failure_display_pins_detail_text() {
+        // Pin the Display contract — same rationale as
+        // invalid_argument_display_pins_detail_text. uniffi 0.31 codegen
+        // emits the #[error(...)] string into Swift / Kotlin error
+        // messages, so a wording change must be a deliberate decision.
+        let err = VaultError::SaveCryptoFailure {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("save-time crypto failure"),
+            "Display did not contain the SaveCryptoFailure prefix: {rendered}",
         );
         assert!(rendered.contains("fnord"), "Display did not include detail");
     }

@@ -4,6 +4,7 @@
 //! - [`identity`] — `UnlockedIdentity`, `MnemonicOutput`, `CreateVaultOutput`
 //! - [`vault`] — `OpenVaultManifest`, `OpenVaultOutput`, `BlockSummary`
 //! - [`block`] — `BlockReadOutput`, `Record`, `FieldHandle`
+//! - [`save`] — `BlockInput`, `RecordInput`, `FieldInput`, `FieldInputValue`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
 //! All the actual logic lives in `secretary-ffi-bridge`; this layer exists
@@ -12,4 +13,5 @@
 
 pub mod block;
 pub mod identity;
+pub mod save;
 pub mod vault;

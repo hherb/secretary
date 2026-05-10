@@ -151,6 +151,87 @@ impl UnlockedIdentity {
 
         Ok((x_sk, pq_sk))
     }
+
+    /// Bridge-internal: produce an owned [`IdentityBundle`] copy so the
+    /// save orchestrator can construct a temporary `core::OpenVault`.
+    /// Returns `None` if the handle has been wiped.
+    ///
+    /// `IdentityBundle` deliberately does NOT derive `Clone` (secret
+    /// material should not be silently duplicated). This helper performs
+    /// the field-by-field copy explicitly, wrapping each secret in a
+    /// fresh `Sensitive` slot so the clone has its own zeroize-on-drop.
+    /// Total wall-clock exposure of the duplicated secret material is
+    /// the lifetime of one `save_block` call (~5ms) before the temp
+    /// `OpenVault` drops.
+    ///
+    /// NOT exposed through PyO3 / uniffi — used only by
+    /// `crate::save::save_block`.
+    #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
+    pub(crate) fn clone_inner_bundle(
+        &self,
+    ) -> Option<secretary_core::unlock::bundle::IdentityBundle> {
+        use secretary_core::crypto::secret::Sensitive;
+        use secretary_core::unlock::bundle::IdentityBundle;
+
+        let guard = lock_or_recover(&self.inner);
+        let id = guard.as_ref()?;
+        let b = &id.identity;
+        Some(IdentityBundle {
+            user_uuid: b.user_uuid,
+            display_name: b.display_name.clone(),
+            x25519_sk: Sensitive::new(*b.x25519_sk.expose()),
+            x25519_pk: b.x25519_pk,
+            ml_kem_768_sk: Sensitive::new(b.ml_kem_768_sk.expose().to_vec()),
+            ml_kem_768_pk: b.ml_kem_768_pk.clone(),
+            ed25519_sk: Sensitive::new(*b.ed25519_sk.expose()),
+            ed25519_pk: b.ed25519_pk,
+            ml_dsa_65_sk: Sensitive::new(b.ml_dsa_65_sk.expose().to_vec()),
+            ml_dsa_65_pk: b.ml_dsa_65_pk.clone(),
+            created_at_ms: b.created_at_ms,
+        })
+    }
+
+    /// Bridge-internal accessor returning fresh clones of the Ed25519 +
+    /// ML-DSA-65 signer secret keys for `core::vault::manifest::sign_manifest`
+    /// and `core::vault::block::encrypt_block`. NOT exposed through PyO3 /
+    /// uniffi — used only by `crate::save::save_block`.
+    ///
+    /// Mirrors [`UnlockedIdentity::reader_secret_keys`] for the signing
+    /// path. Distinct typed errors for handle-closed vs. post-unlock
+    /// parse failure so the orchestrator can attach a non-misleading
+    /// detail string for each failure mode.
+    #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
+    pub(crate) fn signer_secret_keys(
+        &self,
+    ) -> Result<
+        (
+            secretary_core::crypto::sig::Ed25519Secret,
+            secretary_core::crypto::sig::MlDsa65Secret,
+        ),
+        SignerSecretKeysError,
+    > {
+        use secretary_core::crypto::secret::Sensitive;
+        use secretary_core::crypto::sig;
+        use zeroize::Zeroize as _;
+
+        let guard = lock_or_recover(&self.inner);
+        let id = guard.as_ref().ok_or(SignerSecretKeysError::HandleClosed)?;
+
+        // Ed25519: copy the 32 bytes onto the stack, mint a Sensitive,
+        // zeroize the stack copy. Mirrors the same discipline as
+        // reader_secret_keys for x25519_sk.
+        let mut ed_sk_bytes: [u8; 32] = *id.identity.ed25519_sk.expose();
+        let ed_sk: sig::Ed25519Secret = Sensitive::new(ed_sk_bytes);
+        ed_sk_bytes.zeroize();
+
+        // ML-DSA-65: from_bytes returns Result<_, SigError>. Bundle was
+        // already validated at unlock-time; failure here implies
+        // post-unlock memory corruption — surface distinctly.
+        let pq_sk = sig::MlDsa65Secret::from_bytes(id.identity.ml_dsa_65_sk.expose())
+            .map_err(|_| SignerSecretKeysError::MlDsa65ParseFailed)?;
+
+        Ok((ed_sk, pq_sk))
+    }
 }
 
 /// Bridge-internal failure mode for [`UnlockedIdentity::reader_secret_keys`].
@@ -169,6 +250,19 @@ pub(crate) enum ReaderSecretKeysError {
     /// distinctly so the diagnostic string can flag the in-memory
     /// corruption hypothesis to the foreign caller.
     MlKem768ParseFailed,
+}
+
+/// Bridge-internal failure mode for [`UnlockedIdentity::signer_secret_keys`].
+/// Mirrors [`ReaderSecretKeysError`] semantics for the signing-key path
+/// used by `crate::save::save_block` (Ed25519 + ML-DSA-65 secret keys).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SignerSecretKeysError {
+    /// The identity handle has been wiped.
+    HandleClosed,
+    /// ML-DSA-65 secret key parse failed on bytes that were already
+    /// validated at unlock-time. Structurally impossible — implies
+    /// post-unlock memory corruption.
+    MlDsa65ParseFailed,
 }
 
 #[cfg(test)]
@@ -246,6 +340,28 @@ mod tests {
         // only need to know the call succeeds.
         let id = fresh_unlocked_identity();
         assert!(id.reader_secret_keys().is_ok());
+    }
+
+    #[test]
+    fn signer_secret_keys_after_wipe_returns_handle_closed() {
+        // Mirror of reader_secret_keys_after_wipe — the signer-side
+        // accessor returns the same HandleClosed sentinel via its own
+        // typed error enum so the save_block orchestrator can attach
+        // a non-misleading CorruptVault.detail.
+        let id = fresh_unlocked_identity();
+        id.wipe();
+        assert_eq!(
+            id.signer_secret_keys().err(),
+            Some(SignerSecretKeysError::HandleClosed),
+        );
+    }
+
+    #[test]
+    fn signer_secret_keys_when_live_returns_ok_tuple() {
+        // Positive path: live handle returns Ok((Ed25519, MlDsa65)). Same
+        // no-Eq rationale as reader_secret_keys_when_live.
+        let id = fresh_unlocked_identity();
+        assert!(id.signer_secret_keys().is_ok());
     }
 
     #[test]

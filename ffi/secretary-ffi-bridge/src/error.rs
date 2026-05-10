@@ -2,7 +2,7 @@
 //!
 //! [`FfiUnlockError`] — 5-variant thinned error for the **bytes-in** unlock
 //! entry points (`open_with_password`, `open_with_recovery`, `create_vault`).
-//! [`FfiVaultError`] — 6-variant **folder-in** error type. Mirrors
+//! [`FfiVaultError`] — 8-variant **folder-in** error type. Mirrors
 //! `FfiUnlockError`'s 5 unlock-class variants byte-identically (variant
 //! name + Display string) plus a new `FolderInvalid { detail }` for missing
 //! or inaccessible vault folders. Returned by `open_vault_with_password` /
@@ -428,6 +428,22 @@ mod tests {
     }
 
     #[test]
+    fn vault_error_save_crypto_failure_display_uses_dedicated_text() {
+        let ffi = FfiVaultError::SaveCryptoFailure {
+            detail: "encrypt_block aborted: pq sig generation failed".to_string(),
+        };
+        let rendered = format!("{ffi}");
+        assert!(
+            rendered.contains("save-time crypto failure"),
+            "Display did not contain the dedicated SaveCryptoFailure text: {rendered}",
+        );
+        assert!(
+            rendered.contains("encrypt_block aborted"),
+            "Display did not include detail: {rendered}",
+        );
+    }
+
+    #[test]
     fn from_ffi_unlock_error_translates_each_variant_one_to_one() {
         // The private bridge-internal From<FfiUnlockError> arm. This is
         // reachable from FfiVaultError::from(VaultError::Unlock(...)) but
@@ -699,6 +715,31 @@ pub enum FfiVaultError {
         /// 32-char lowercase hex of the requested 16-byte block UUID.
         /// See the variant-level doc for the contract + counter-cases.
         uuid_hex: String,
+    },
+
+    /// Save-time crypto failure on already-validated inputs. Distinguished
+    /// from `CorruptVault` (which means on-disk bytes failed verification)
+    /// because save failures here originate from in-memory state that
+    /// passed `open_vault` checks, so the failure mode is post-unlock
+    /// corruption / structural-impossibility rather than an on-disk corrupt
+    /// envelope.
+    ///
+    /// Mapped from: `tick_clock` saturation, `MlKem768Public::from_bytes`
+    /// failures on the owner card, canonical-CBOR encode failures,
+    /// `encrypt_block` / `sign_manifest` / `encode_block_file` /
+    /// `encode_manifest_file` failures, and post-unlock identity-bundle
+    /// in-memory parse failures (see `SignerSecretKeysError::MlDsa65ParseFailed`).
+    ///
+    /// Constructed directly by `crate::save::save_block`'s error-mapping
+    /// helper — NOT reachable through `From<core::VaultError>` (the read
+    /// path's existing mapping correctly folds `core::VaultError` crypto
+    /// failures onto `CorruptVault`, since for the read path the input is
+    /// on-disk bytes).
+    #[error("save-time crypto failure: {detail}")]
+    SaveCryptoFailure {
+        /// Diagnostic text describing which save-step failed. Free-form;
+        /// not part of the API contract.
+        detail: String,
     },
 }
 
