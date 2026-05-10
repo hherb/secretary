@@ -21,10 +21,6 @@ use secretary_core::crypto::secret::SecretString;
 use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::unlock::bundle::{generate as generate_bundle, IdentityBundle};
-// FfiVaultError is unused in Task-4's happy-path test but is consumed by
-// the failure-mode tests added in subsequent tasks (NotAuthor, etc.).
-// `#[allow]` keeps the import stable across the in-flight test growth.
-#[allow(unused_imports)]
 use secretary_ffi_bridge::{
     open_vault_with_password, save_block, share_block, BlockInput, FfiVaultError, FieldInput,
     FieldInputValue, OpenVaultManifest, RecordInput, UnlockedIdentity,
