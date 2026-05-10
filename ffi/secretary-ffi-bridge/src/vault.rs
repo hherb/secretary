@@ -317,21 +317,6 @@ impl OpenVaultManifest {
         })
     }
 
-    /// Bridge-internal atomic snapshot of the five pieces
-    /// `crate::save::save_block` needs in one shot: the manifest body,
-    /// the on-disk manifest envelope (for re-sign chaining), the
-    /// verified owner contact card, a fresh clone of the IBK
-    /// (`Sensitive::new` on a new slot), and the vault folder path.
-    /// NOT exposed through PyO3 / uniffi.
-    ///
-    /// Folds the five sequential `lock_or_recover` calls in `save_block`
-    /// into a single critical section, closing the same theoretical
-    /// TOCTOU window [`OpenVaultManifest::snapshot_for_read_block`]
-    /// closes for the read path.
-    ///
-    /// Returns `None` if the handle has been wiped before the lock was
-    /// taken; the orchestrator falls through to a typed `CorruptVault`
-    /// with the `"vault manifest handle has been closed"` detail.
     /// Bridge-internal write-back used by `crate::save::save_block` after
     /// `core::vault::orchestrators::save_block` returns Ok. Atomically
     /// replaces the inner `manifest` body and `manifest_file` envelope
@@ -353,6 +338,22 @@ impl OpenVaultManifest {
         Ok(())
     }
 
+    /// Bridge-internal atomic snapshot of the five pieces
+    /// `crate::save::save_block` needs in one shot: the manifest body,
+    /// the on-disk manifest envelope (for re-sign chaining), the
+    /// verified owner contact card, a fresh clone of the IBK
+    /// (`Sensitive::new` on a new slot), and the vault folder path.
+    /// NOT exposed through PyO3 / uniffi.
+    ///
+    /// Folds the five sequential `lock_or_recover` calls in `save_block`
+    /// into a single critical section, closing the same theoretical
+    /// TOCTOU window [`OpenVaultManifest::snapshot_for_read_block`]
+    /// closes for the read path.
+    ///
+    /// Returns `None` if the handle has been wiped before the lock was
+    /// taken; the orchestrator falls through to a typed `CorruptVault`
+    /// with the `"vault manifest handle has been closed"` detail.
+    //
     // The 5-tuple return is local to this internal accessor; defining a
     // typedef just to placate clippy::type_complexity would add ceremony
     // without helping callers. The five fields are documented above.
