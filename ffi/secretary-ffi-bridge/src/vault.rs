@@ -285,6 +285,28 @@ impl OpenVaultManifest {
             .map(|i| i.owner_card.clone())
     }
 
+    /// Canonical-CBOR bytes of the vault's `owner_card`. Returns the same
+    /// byte sequence as the on-disk `<vault>/contacts/<owner_uuid>.card`
+    /// content. Use as the only element of `existing_recipient_cards`
+    /// when calling [`crate::share_block`] on a v1 owner-only block, or
+    /// as the first element when sharing with multiple recipients.
+    ///
+    /// Returns `None` iff the manifest handle has been wiped.
+    ///
+    /// Encodes on demand via `ContactCard::to_canonical_cbor`. The
+    /// `.expect()` is justified by the open-vault invariant: the card was
+    /// decoded + verified during `open_vault` and lives behind an
+    /// immutable handle, so re-encoding a previously-validated card
+    /// cannot fail (no IO; deterministic encoder over fixed inputs).
+    /// New in B.4d.
+    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
+        lock_or_recover(&self.inner).as_ref().map(|i| {
+            i.owner_card
+                .to_canonical_cbor()
+                .expect("re-encoding a verified card cannot fail")
+        })
+    }
+
     /// Bridge-internal atomic snapshot of the three pieces
     /// `crate::record::read_block` needs in one shot: the manifest
     /// body, the verified owner contact card, and the vault folder
@@ -795,6 +817,47 @@ mod tests {
             None,
             "vault_folder() must return None after wipe",
         );
+    }
+
+    #[test]
+    fn owner_card_bytes_returns_canonical_cbor_round_tripping_to_owner_card() {
+        // Pin the new B.4d accessor. owner_card_bytes() must encode on
+        // demand to a byte sequence that decodes back to the same
+        // ContactCard returned by owner_card(). This is the round-trip
+        // contract that share_block's foreign callers rely on when they
+        // pass `manifest.owner_card_bytes()` as the first element of
+        // existing_recipient_cards.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let bytes = out
+            .manifest
+            .owner_card_bytes()
+            .expect("Some(bytes) before wipe");
+        let card_from_bytes = ContactCard::from_canonical_cbor(&bytes).expect("decode round-trips");
+        let card_direct = out.manifest.owner_card().expect("Some(card) before wipe");
+        assert_eq!(
+            card_from_bytes, card_direct,
+            "owner_card_bytes() must decode back to the live ContactCard",
+        );
+        // And the canonical re-encoding of the decoded card is byte-equal
+        // to the accessor output (idempotent).
+        assert_eq!(
+            card_from_bytes.to_canonical_cbor().expect("re-encode"),
+            bytes,
+            "canonical re-encoding must be idempotent",
+        );
+    }
+
+    #[test]
+    fn owner_card_bytes_returns_none_after_wipe() {
+        // Pin the wipe contract for the new accessor. After wipe() the
+        // accessor returns None, matching the existing owner_card() and
+        // manifest_body() shapes.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        assert!(out.manifest.owner_card_bytes().is_some());
+        out.manifest.wipe();
+        assert!(out.manifest.owner_card_bytes().is_none());
     }
 
     #[test]

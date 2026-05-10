@@ -594,6 +594,100 @@ mod tests {
         };
         assert_eq!(uuid_hex, "deadbeef");
     }
+
+    // =============================================================================
+    // FfiVaultError::{NotAuthor, RecipientAlreadyPresent, MissingRecipientCard,
+    //                 CardDecodeFailure} — new in B.4d (share_block error surface)
+    // =============================================================================
+
+    #[test]
+    fn vault_error_not_author_display_pins_string() {
+        let e = FfiVaultError::NotAuthor {
+            expected_fingerprint_hex: "aa".repeat(16),
+            got_fingerprint_hex: "bb".repeat(16),
+        };
+        assert_eq!(e.to_string(), "only the block author can share this block");
+    }
+
+    #[test]
+    fn vault_error_not_author_from_core_preserves_fingerprints_as_hex() {
+        use secretary_core::vault::VaultError as VE;
+        let core_err = VE::NotAuthor {
+            expected: [0xaa; 16],
+            got: [0xbb; 16],
+        };
+        let ffi: FfiVaultError = core_err.into();
+        match ffi {
+            FfiVaultError::NotAuthor {
+                expected_fingerprint_hex,
+                got_fingerprint_hex,
+            } => {
+                assert_eq!(expected_fingerprint_hex, "aa".repeat(16));
+                assert_eq!(got_fingerprint_hex, "bb".repeat(16));
+            }
+            other => panic!("expected NotAuthor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vault_error_recipient_already_present_display_pins_string() {
+        let e = FfiVaultError::RecipientAlreadyPresent;
+        assert_eq!(
+            e.to_string(),
+            "recipient is already present in the block's recipient set",
+        );
+    }
+
+    #[test]
+    fn vault_error_recipient_already_present_from_core_preserves_variant() {
+        use secretary_core::vault::VaultError as VE;
+        let ffi: FfiVaultError = VE::RecipientAlreadyPresent.into();
+        assert!(matches!(ffi, FfiVaultError::RecipientAlreadyPresent));
+    }
+
+    #[test]
+    fn vault_error_missing_recipient_card_display_pins_hex() {
+        let e = FfiVaultError::MissingRecipientCard {
+            recipient_fingerprint_hex: "cc".repeat(16),
+        };
+        let rendered = e.to_string();
+        assert!(
+            rendered.contains("missing contact card for recipient"),
+            "Display did not contain the MissingRecipientCard text: {rendered}",
+        );
+        assert!(
+            rendered.contains(&"cc".repeat(16)),
+            "Display did not include recipient_fingerprint_hex: {rendered}",
+        );
+    }
+
+    #[test]
+    fn vault_error_missing_recipient_card_from_core_preserves_fingerprint_as_hex() {
+        use secretary_core::vault::VaultError as VE;
+        let ffi: FfiVaultError = VE::MissingRecipientCard {
+            fingerprint: [0xcc; 16],
+        }
+        .into();
+        match ffi {
+            FfiVaultError::MissingRecipientCard {
+                recipient_fingerprint_hex,
+            } => assert_eq!(recipient_fingerprint_hex, "cc".repeat(16)),
+            other => panic!("expected MissingRecipientCard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vault_error_card_decode_failure_display_pins_string() {
+        // CardDecodeFailure is bridge-internal; never reachable through
+        // From<core::VaultError>. Pin Display + field accessibility only.
+        let e = FfiVaultError::CardDecodeFailure {
+            detail: "malformed CBOR".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "failed to decode contact card: malformed CBOR"
+        );
+    }
 }
 
 // =============================================================================
@@ -741,6 +835,56 @@ pub enum FfiVaultError {
         /// not part of the API contract.
         detail: String,
     },
+
+    /// Block-share authorization failure: the calling identity's
+    /// `user_uuid` does not match the block's recorded `author_fingerprint`,
+    /// OR the supplied `author_card`'s `contact_uuid` does not match the
+    /// vault owner's `user_uuid`. v1 single-author: only the vault owner
+    /// can share blocks they authored. The future "share-as-fork" path
+    /// will lift this restriction; B.4d cements the v1 semantics.
+    ///
+    /// `expected_fingerprint_hex` is the 32-char lowercase hex of the
+    /// fingerprint stored on disk in the block file's `author_fingerprint`
+    /// field. `got_fingerprint_hex` is the 32-char lowercase hex of
+    /// `fingerprint(author_card.to_canonical_cbor())`. Foreign callers can
+    /// `bytes.fromhex(...)` either if needed.
+    #[error("only the block author can share this block")]
+    NotAuthor {
+        /// 32-char lowercase hex of the on-disk author fingerprint.
+        expected_fingerprint_hex: String,
+        /// 32-char lowercase hex of the supplied author-card fingerprint.
+        got_fingerprint_hex: String,
+    },
+
+    /// The supplied `new_recipient` is already in the block's wire-level
+    /// recipient table (deduplication check performed by core, keyed on
+    /// fingerprint). Foreign UX: idempotent — the recipient already has
+    /// access; no further action needed.
+    #[error("recipient is already present in the block's recipient set")]
+    RecipientAlreadyPresent,
+
+    /// The caller's `existing_recipient_cards` did not cover every
+    /// recipient currently in the block's wire-level recipient table.
+    /// `recipient_fingerprint_hex` is the 32-char lowercase hex of the
+    /// missing recipient's fingerprint; foreign callers can use it to
+    /// look up the contact card in their address book / contacts dir.
+    #[error("missing contact card for recipient: {recipient_fingerprint_hex}")]
+    MissingRecipientCard {
+        /// 32-char lowercase hex of the missing recipient's fingerprint.
+        recipient_fingerprint_hex: String,
+    },
+
+    /// One of the canonical-CBOR `ContactCard` byte slices passed to
+    /// [`crate::share::share_block`] failed to decode via
+    /// `ContactCard::from_canonical_cbor`. Constructed directly inside the
+    /// bridge — NOT reachable through `From<core::VaultError>` (mirrors
+    /// [`Self::SaveCryptoFailure`]'s bridge-internal pattern).
+    #[error("failed to decode contact card: {detail}")]
+    CardDecodeFailure {
+        /// Diagnostic text from the inner `CardError` variant's `Display`
+        /// impl. Free-form; not part of the API contract.
+        detail: String,
+    },
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
@@ -773,6 +917,38 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                     detail: format!("{context}: {source}"),
                 }
             }
+
+            // Block-lookup failure (the manifest does not list this UUID).
+            // core::read_block + core::share_block + core::save_block all
+            // surface this; folding to CorruptVault would mask a benign
+            // "stale UUID" / "trashed block" caller mistake as a data-
+            // integrity failure.
+            VE::BlockNotFound { block_uuid } => FfiVaultError::BlockNotFound {
+                uuid_hex: hex::encode(block_uuid),
+            },
+
+            // Block-share authorization failure: caller's identity is not
+            // the author. Both fingerprints are public material (BLAKE3 of
+            // a non-secret contact card); rendering as hex preserves the
+            // foreign-side debugging affordance without leaking secrets.
+            VE::NotAuthor { expected, got } => FfiVaultError::NotAuthor {
+                expected_fingerprint_hex: hex::encode(expected),
+                got_fingerprint_hex: hex::encode(got),
+            },
+
+            // Block-share dedup failure: caller is trying to add a recipient
+            // that already has access. Foreign UX: idempotent.
+            VE::RecipientAlreadyPresent => FfiVaultError::RecipientAlreadyPresent,
+
+            // Block-share input shape failure: caller's
+            // `existing_recipient_cards` did not cover every recipient on
+            // disk. The caller can recover by fetching the missing card
+            // (e.g. from their contacts dir) and retrying. The core
+            // variant's field is `fingerprint`; the FFI variant adds the
+            // `recipient_` prefix for clarity at the foreign-API boundary.
+            VE::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {
+                recipient_fingerprint_hex: hex::encode(fingerprint),
+            },
 
             // Post-unlock integrity failures and unexpected IO kinds: fold
             // into CorruptVault catchall. These cannot leak unlock-secret

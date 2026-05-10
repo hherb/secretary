@@ -32,6 +32,12 @@ impl OpenVaultManifest {
         self.0.find_block(&block_uuid).map(BlockSummary::from)
     }
 
+    /// Canonical-CBOR bytes of the vault's owner contact card. New in B.4d.
+    /// Returns `None` if wiped.
+    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
+        self.0.owner_card_bytes()
+    }
+
     pub fn wipe(&self) {
         self.0.wipe();
     }

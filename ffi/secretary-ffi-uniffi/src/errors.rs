@@ -118,6 +118,25 @@ pub enum VaultError {
     InvalidArgument { detail: String },
     #[error("save-time crypto failure: {detail}")]
     SaveCryptoFailure { detail: String },
+    /// Block-share authorization failure: only the block author can share.
+    /// Mirrors `FfiVaultError::NotAuthor`.
+    #[error("only the block author can share this block")]
+    NotAuthor {
+        expected_fingerprint_hex: String,
+        got_fingerprint_hex: String,
+    },
+    /// Block-share dedup: caller's `new_recipient` is already in the
+    /// block's recipient table. Mirrors `FfiVaultError::RecipientAlreadyPresent`.
+    #[error("recipient is already present in the block's recipient set")]
+    RecipientAlreadyPresent,
+    /// Caller's `existing_recipient_cards` is missing a card whose
+    /// fingerprint appears on disk. Mirrors `FfiVaultError::MissingRecipientCard`.
+    #[error("missing contact card for recipient: {recipient_fingerprint_hex}")]
+    MissingRecipientCard { recipient_fingerprint_hex: String },
+    /// Caller-supplied ContactCard bytes are not valid canonical CBOR.
+    /// Mirrors `FfiVaultError::CardDecodeFailure`.
+    #[error("failed to decode contact card: {detail}")]
+    CardDecodeFailure { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -131,6 +150,20 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
             FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
             FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure { detail },
+            FfiVaultError::NotAuthor {
+                expected_fingerprint_hex,
+                got_fingerprint_hex,
+            } => VaultError::NotAuthor {
+                expected_fingerprint_hex,
+                got_fingerprint_hex,
+            },
+            FfiVaultError::RecipientAlreadyPresent => VaultError::RecipientAlreadyPresent,
+            FfiVaultError::MissingRecipientCard {
+                recipient_fingerprint_hex,
+            } => VaultError::MissingRecipientCard {
+                recipient_fingerprint_hex,
+            },
+            FfiVaultError::CardDecodeFailure { detail } => VaultError::CardDecodeFailure { detail },
         }
     }
 }
@@ -331,5 +364,116 @@ mod tests {
             "Display did not contain the SaveCryptoFailure prefix: {rendered}",
         );
         assert!(rendered.contains("fnord"), "Display did not include detail");
+    }
+
+    // -------------------------------------------------------------------
+    // B.4d: pin the 4 new share_block variants — Display + From mapping.
+    // Same pattern as B.4c's SaveCryptoFailure pair (a31e6e6).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vault_error_not_author_maps_one_to_one() {
+        let bridge_err = FfiVaultError::NotAuthor {
+            expected_fingerprint_hex: "aa".repeat(16),
+            got_fingerprint_hex: "bb".repeat(16),
+        };
+        match VaultError::from(bridge_err) {
+            VaultError::NotAuthor {
+                expected_fingerprint_hex,
+                got_fingerprint_hex,
+            } => {
+                assert_eq!(expected_fingerprint_hex, "aa".repeat(16));
+                assert_eq!(got_fingerprint_hex, "bb".repeat(16));
+            }
+            other => panic!("expected NotAuthor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn not_author_display_pins_text() {
+        let err = VaultError::NotAuthor {
+            expected_fingerprint_hex: "aa".repeat(16),
+            got_fingerprint_hex: "bb".repeat(16),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("only the block author can share this block"),
+            "Display did not contain the NotAuthor text: {rendered}",
+        );
+    }
+
+    #[test]
+    fn vault_error_recipient_already_present_maps_one_to_one() {
+        let bridge_err = FfiVaultError::RecipientAlreadyPresent;
+        assert!(matches!(
+            VaultError::from(bridge_err),
+            VaultError::RecipientAlreadyPresent
+        ));
+    }
+
+    #[test]
+    fn recipient_already_present_display_pins_text() {
+        let err = VaultError::RecipientAlreadyPresent;
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("recipient is already present in the block's recipient set"),
+            "Display did not contain the RecipientAlreadyPresent text: {rendered}",
+        );
+    }
+
+    #[test]
+    fn vault_error_missing_recipient_card_maps_one_to_one() {
+        let bridge_err = FfiVaultError::MissingRecipientCard {
+            recipient_fingerprint_hex: "cc".repeat(16),
+        };
+        match VaultError::from(bridge_err) {
+            VaultError::MissingRecipientCard {
+                recipient_fingerprint_hex,
+            } => assert_eq!(recipient_fingerprint_hex, "cc".repeat(16)),
+            other => panic!("expected MissingRecipientCard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_recipient_card_display_pins_hex() {
+        let err = VaultError::MissingRecipientCard {
+            recipient_fingerprint_hex: "cc".repeat(16),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("missing contact card for recipient"),
+            "Display did not contain the MissingRecipientCard prefix: {rendered}",
+        );
+        assert!(
+            rendered.contains(&"cc".repeat(16)),
+            "Display did not include recipient_fingerprint_hex: {rendered}",
+        );
+    }
+
+    #[test]
+    fn vault_error_card_decode_failure_maps_one_to_one() {
+        let bridge_err = FfiVaultError::CardDecodeFailure {
+            detail: "bad CBOR".into(),
+        };
+        match VaultError::from(bridge_err) {
+            VaultError::CardDecodeFailure { detail } => assert_eq!(detail, "bad CBOR"),
+            other => panic!("expected CardDecodeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_decode_failure_display_pins_detail() {
+        let err = VaultError::CardDecodeFailure {
+            detail: "bad CBOR".into(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("failed to decode contact card"),
+            "Display did not contain the CardDecodeFailure prefix: {rendered}",
+        );
+        assert!(
+            rendered.contains("bad CBOR"),
+            "Display did not include detail"
+        );
     }
 }

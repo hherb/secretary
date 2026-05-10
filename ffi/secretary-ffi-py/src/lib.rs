@@ -132,6 +132,12 @@ create_exception!(secretary_ffi_py, VaultCorruptVault, PyException);
 create_exception!(secretary_ffi_py, VaultFolderInvalid, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotFound, PyException);
 create_exception!(secretary_ffi_py, VaultSaveCryptoFailure, PyException);
+// B.4d share_block error surface — 4 typed exception classes mirroring
+// the bridge's FfiVaultError variants.
+create_exception!(secretary_ffi_py, VaultNotAuthor, PyException);
+create_exception!(secretary_ffi_py, VaultRecipientAlreadyPresent, PyException);
+create_exception!(secretary_ffi_py, VaultMissingRecipientCard, PyException);
+create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -174,6 +180,23 @@ fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultBlockNotFound::new_err(uuid_hex)
         }
         FfiVaultError::SaveCryptoFailure { detail } => VaultSaveCryptoFailure::new_err(detail),
+        // B.4d share_block error surface — same args[0] contract as the
+        // existing variants: the exception payload carries the most
+        // diagnostic-relevant field so foreign callers can pull it via
+        // `except VaultX as e: e.args[0]`.
+        FfiVaultError::NotAuthor {
+            expected_fingerprint_hex,
+            got_fingerprint_hex,
+        } => VaultNotAuthor::new_err(format!(
+            "expected={expected_fingerprint_hex}, got={got_fingerprint_hex}",
+        )),
+        FfiVaultError::RecipientAlreadyPresent => {
+            VaultRecipientAlreadyPresent::new_err(e.to_string())
+        }
+        FfiVaultError::MissingRecipientCard {
+            recipient_fingerprint_hex,
+        } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex),
+        FfiVaultError::CardDecodeFailure { detail } => VaultCardDecodeFailure::new_err(detail),
     }
 }
 
@@ -584,6 +607,15 @@ impl OpenVaultManifest {
     /// UDL `bytes` → `Vec<u8>` projection are worth it.
     pub fn find_block(&self, block_uuid: Vec<u8>) -> Option<BlockSummary> {
         self.0.find_block(&block_uuid).map(BlockSummary::from)
+    }
+
+    /// Canonical-CBOR bytes of the vault's owner contact card. Suitable
+    /// as the only element of `existing_recipient_cards` when calling
+    /// `share_block` on a v1 owner-only block, or as the first element
+    /// when sharing with multiple recipients. Returns `None` if wiped.
+    /// New in B.4d.
+    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
+        self.0.owner_card_bytes()
     }
 
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this
@@ -1157,6 +1189,47 @@ fn save_block(
         .map_err(ffi_vault_error_to_pyerr)
 }
 
+/// Append one new recipient to an existing block. v1 single-author: only
+/// the vault owner can share blocks they authored.
+///
+/// `block_uuid` and `device_uuid` must each be exactly 16 bytes;
+/// otherwise raises `ValueError` (mirrors `save_block` and `read_block`).
+/// Caller-supplied `existing_recipient_cards` and `new_recipient` are
+/// canonical-CBOR-encoded `ContactCard` byte sequences (same shape as
+/// `manifest.owner_card_bytes()` returns); decode failures raise
+/// `VaultCardDecodeFailure`.
+///
+/// `existing_recipient_cards` must cover every recipient currently in
+/// the block's wire-level recipient table. For a freshly-saved v1 block
+/// this is `[manifest.owner_card_bytes()]`. After the first share, the
+/// caller is responsible for tracking the growing recipient list (no
+/// bridge-side registry).
+#[pyfunction]
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> for bytes ∪ bytearray accept
+#[allow(clippy::too_many_arguments)]
+fn share_block(
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    block_uuid: Vec<u8>,
+    existing_recipient_cards: Vec<Vec<u8>>,
+    new_recipient: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> PyResult<()> {
+    let block_uuid = uuid_array_or_value_error(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::share_block(
+        &identity.0,
+        &manifest.0,
+        block_uuid,
+        &existing_recipient_cards,
+        &new_recipient,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(ffi_vault_error_to_pyerr)
+}
+
 /// `#[pymodule]` entrypoint. The function name (`secretary_ffi_py`) is the
 /// Python module name that `import` looks up; it must match the wheel name
 /// declared in `pyproject.toml` (`[tool.maturin] module-name`).
@@ -1228,6 +1301,22 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RecordInput>()?;
     m.add_class::<BlockInput>()?;
     m.add_function(wrap_pyfunction!(save_block, m)?)?;
+
+    // B.4d surface — share_block pyfunction + 4 typed exception classes.
+    m.add_function(wrap_pyfunction!(share_block, m)?)?;
+    m.add("VaultNotAuthor", py.get_type::<VaultNotAuthor>())?;
+    m.add(
+        "VaultRecipientAlreadyPresent",
+        py.get_type::<VaultRecipientAlreadyPresent>(),
+    )?;
+    m.add(
+        "VaultMissingRecipientCard",
+        py.get_type::<VaultMissingRecipientCard>(),
+    )?;
+    m.add(
+        "VaultCardDecodeFailure",
+        py.get_type::<VaultCardDecodeFailure>(),
+    )?;
 
     Ok(())
 }

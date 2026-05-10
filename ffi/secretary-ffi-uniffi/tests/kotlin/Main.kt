@@ -21,6 +21,7 @@ import uniffi.secretary.openWithRecovery
 import uniffi.secretary.readBlock
 import uniffi.secretary.RecordInput
 import uniffi.secretary.saveBlock
+import uniffi.secretary.shareBlock
 import uniffi.secretary.UnlockException
 import uniffi.secretary.VaultException
 import uniffi.secretary.version
@@ -111,6 +112,7 @@ fun main() {
         exitProcess(1)
     }
     val password001 = "correct horse battery staple".toByteArray(Charsets.UTF_8)
+    val password002 = "correct horse battery staple two".toByteArray(Charsets.UTF_8)
 
     // B.3a: extract recovery_mnemonic_phrase from golden_vault_NNN_inputs.json.
     //
@@ -830,8 +832,202 @@ fun main() {
         saveTmp?.let { cleanupTempVault(it) }
     }
 
+    // =========================================================================
+    // B.4d — share_block asserts
+    // =========================================================================
+    //
+    // share_block extends a block's recipient list. Same NotAuthor
+    // exclusion rationale as the Swift smoke runner — cross-vault
+    // manifest staging is impractical at this layer.
+
+    fun aliceCardBytes(): ByteArray {
+        val tmp = java.nio.file.Files.createTempDirectory("secretary_b4d_kotlin_alice_")
+        try {
+            java.nio.file.Files.walk(vault002Path).use { stream ->
+                stream.forEach { src ->
+                    val rel = vault002Path.relativize(src)
+                    val dst = tmp.resolve(rel.toString())
+                    if (java.nio.file.Files.isDirectory(src)) {
+                        java.nio.file.Files.createDirectories(dst)
+                    } else {
+                        java.nio.file.Files.copy(
+                            src, dst,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    }
+                }
+            }
+            val folderPathBytes = tmp.toString().toByteArray(Charsets.UTF_8)
+            val out = openVaultWithPassword(folderPathBytes, password002)
+            out.identity.use {
+                out.manifest.use { mf ->
+                    return mf.ownerCardBytes()
+                        ?: throw AssertionError("vault_002 owner_card_bytes returned null")
+                }
+            }
+        } finally {
+            cleanupTempVault(tmp)
+        }
+    }
+
+    val shareBlockBlockUuid = ByteArray(16) { 0xAB.toByte() }
+    val shareBlockRecordUuid = ByteArray(16) { 0xCD.toByte() }
+    val shareBlockDeviceUuid = ByteArray(16) { 0x07.toByte() }
+
+    // Assert 28: share_block happy path — owner saves, owner shares with
+    // alice, manifest entry grows from 1 to 2 recipients.
+    var shareTmp: java.nio.file.Path? = null
+    try {
+        val aliceBytes = aliceCardBytes()
+        val (out, tmp) = freshWritableVault()
+        shareTmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(
+                        blockUuid = shareBlockBlockUuid,
+                        blockName = "shared",
+                        records = listOf(
+                            RecordInput(
+                                shareBlockRecordUuid,
+                                listOf(FieldInput("k", FieldInputValue.Text("v"))),
+                            ),
+                        ),
+                    ),
+                    shareBlockDeviceUuid, 1_000UL,
+                )
+                val ownerBytes = mf.ownerCardBytes()!!
+                shareBlock(
+                    id, mf, shareBlockBlockUuid,
+                    listOf(ownerBytes), aliceBytes,
+                    shareBlockDeviceUuid, 2_000UL,
+                )
+                val summary = mf.findBlock(shareBlockBlockUuid)
+                check(
+                    summary?.recipientUuids?.size == 2,
+                    "share_block insert → manifest grows to 2 recipients (got ${summary?.recipientUuids?.size})",
+                )
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "share_block happy path threw $e, expected to succeed")
+    } finally {
+        shareTmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 29: duplicate share → RecipientAlreadyPresent.
+    shareTmp = null
+    try {
+        val aliceBytes = aliceCardBytes()
+        val (out, tmp) = freshWritableVault()
+        shareTmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(shareBlockBlockUuid, "x", emptyList()),
+                    shareBlockDeviceUuid, 1_000UL,
+                )
+                val ownerBytes = mf.ownerCardBytes()!!
+                shareBlock(
+                    id, mf, shareBlockBlockUuid,
+                    listOf(ownerBytes), aliceBytes,
+                    shareBlockDeviceUuid, 2_000UL,
+                )
+                try {
+                    shareBlock(
+                        id, mf, shareBlockBlockUuid,
+                        listOf(ownerBytes, aliceBytes), aliceBytes,
+                        shareBlockDeviceUuid, 3_000UL,
+                    )
+                    check(false, "duplicate share should have thrown RecipientAlreadyPresent")
+                } catch (e: VaultException.RecipientAlreadyPresent) {
+                    check(true, "share_block duplicate alice → RecipientAlreadyPresent")
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        // Re-raise unless already handled by the inner check().
+        if (e !is VaultException.RecipientAlreadyPresent) {
+            check(false, "share_block duplicate-recipient setup threw $e")
+        }
+    } finally {
+        shareTmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 30: empty existing list → MissingRecipientCard.
+    shareTmp = null
+    try {
+        val aliceBytes = aliceCardBytes()
+        val (out, tmp) = freshWritableVault()
+        shareTmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(shareBlockBlockUuid, "x", emptyList()),
+                    shareBlockDeviceUuid, 1_000UL,
+                )
+                try {
+                    shareBlock(
+                        id, mf, shareBlockBlockUuid,
+                        emptyList(), aliceBytes,
+                        shareBlockDeviceUuid, 2_000UL,
+                    )
+                    check(false, "empty existing list should have thrown MissingRecipientCard")
+                } catch (e: VaultException.MissingRecipientCard) {
+                    check(
+                        e.recipientFingerprintHex.length == 32,
+                        "share_block missing card → MissingRecipientCard(${e.recipientFingerprintHex})",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        if (e !is VaultException.MissingRecipientCard) {
+            check(false, "share_block missing-existing-card setup threw $e")
+        }
+    } finally {
+        shareTmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 31: garbage card bytes → CardDecodeFailure.
+    shareTmp = null
+    try {
+        val aliceBytes = aliceCardBytes()
+        val (out, tmp) = freshWritableVault()
+        shareTmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(shareBlockBlockUuid, "x", emptyList()),
+                    shareBlockDeviceUuid, 1_000UL,
+                )
+                val garbage = ByteArray(8) { 0xff.toByte() }
+                try {
+                    shareBlock(
+                        id, mf, shareBlockBlockUuid,
+                        listOf(garbage), aliceBytes,
+                        shareBlockDeviceUuid, 2_000UL,
+                    )
+                    check(false, "garbage existing should have thrown CardDecodeFailure")
+                } catch (e: VaultException.CardDecodeFailure) {
+                    check(true, "share_block garbage existing → CardDecodeFailure")
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        if (e !is VaultException.CardDecodeFailure) {
+            check(false, "share_block card-decode-failure setup threw $e")
+        }
+    } finally {
+        shareTmp?.let { cleanupTempVault(it) }
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 27 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 31 assertion(s) failed")
         exitProcess(1)
     }
 
