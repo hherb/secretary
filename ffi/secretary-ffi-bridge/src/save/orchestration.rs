@@ -120,8 +120,8 @@ pub fn save_block(
             // authoritative; surface as CorruptVault.
             manifest
                 .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
-                .map_err(|()| FfiVaultError::CorruptVault {
-                    detail: "vault manifest handle has been closed during save".into(),
+                .map_err(|e| FfiVaultError::CorruptVault {
+                    detail: e.to_string(),
                 })
             // open_vault has been consumed by replace_manifest_and_file
             // (manifest + manifest_file moved out). The remaining fields

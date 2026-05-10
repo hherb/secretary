@@ -320,8 +320,9 @@ impl OpenVaultManifest {
     /// Bridge-internal write-back used by `crate::save::save_block` after
     /// `core::vault::orchestrators::save_block` returns Ok. Atomically
     /// replaces the inner `manifest` body and `manifest_file` envelope
-    /// with the post-mutation values. Returns `Err(())` if the handle has
-    /// been wiped (the orchestrator surfaces this as `CorruptVault`).
+    /// with the post-mutation values. Returns
+    /// [`ReplaceManifestError::HandleWiped`] if the handle has been wiped
+    /// (the orchestrator surfaces this as `CorruptVault`).
     ///
     /// The IBK / `owner_card` / `vault_folder` fields are intentionally
     /// NOT mutated — `save_block` only changes the manifest body
@@ -330,9 +331,9 @@ impl OpenVaultManifest {
         &self,
         new_manifest: Manifest,
         new_manifest_file: ManifestFile,
-    ) -> Result<(), ()> {
+    ) -> Result<(), ReplaceManifestError> {
         let mut guard = lock_or_recover(&self.inner);
-        let inner = guard.as_mut().ok_or(())?;
+        let inner = guard.as_mut().ok_or(ReplaceManifestError::HandleWiped)?;
         inner.manifest = new_manifest;
         inner.manifest_file = new_manifest_file;
         Ok(())
@@ -382,6 +383,30 @@ impl OpenVaultManifest {
                 i.vault_folder.clone(),
             )
         })
+    }
+}
+
+/// Bridge-internal failure mode for
+/// [`OpenVaultManifest::replace_manifest_and_file`]. Mirrors the
+/// `HandleClosed` variant on [`crate::identity::ReaderSecretKeysError`] /
+/// [`crate::identity::SignerSecretKeysError`] so the orchestrator can
+/// translate the failure to a `CorruptVault` with a non-misleading detail
+/// string via `Display`. Single-variant for now; new variants belong here
+/// rather than being multiplexed onto `HandleWiped`'s detail string.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplaceManifestError {
+    /// The manifest handle was wiped between snapshot acquisition and
+    /// write-back (concurrent-wipe race). The on-disk write may have
+    /// already succeeded; the bridge's in-memory state is no longer
+    /// authoritative.
+    HandleWiped,
+}
+
+impl std::fmt::Display for ReplaceManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HandleWiped => f.write_str("vault manifest handle has been closed during save"),
+        }
     }
 }
 
@@ -862,5 +887,40 @@ mod tests {
             out.manifest.snapshot_for_save_block().is_none(),
             "snapshot_for_save_block must return None after wipe",
         );
+    }
+
+    #[test]
+    fn replace_manifest_and_file_on_wiped_handle_returns_handle_wiped() {
+        // Pin the typed-error contract: a wiped handle surfaces as
+        // ReplaceManifestError::HandleWiped (not the previous Err(())
+        // unit-typed sentinel). The orchestrator depends on this typed
+        // error to attach a non-misleading CorruptVault.detail via Display.
+        let folder = fixture_folder("golden_vault_001");
+        let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+        let (body, manifest_file, ..) = out
+            .manifest
+            .snapshot_for_save_block()
+            .expect("snapshot before wipe");
+        out.manifest.wipe();
+        assert_eq!(
+            out.manifest.replace_manifest_and_file(body, manifest_file),
+            Err(ReplaceManifestError::HandleWiped),
+        );
+    }
+
+    #[test]
+    fn replace_manifest_error_handle_wiped_display_pins_text() {
+        // Tripwire: the orchestrator stringifies this Display into the
+        // CorruptVault.detail surfaced through PyO3 / uniffi. The
+        // tests/save_block.rs wiped-manifest assertions key on the word
+        // "manifest" appearing in the detail; pin both the verbatim text
+        // and the substring contract here so a future rename is a
+        // deliberate decision.
+        let rendered = ReplaceManifestError::HandleWiped.to_string();
+        assert_eq!(
+            rendered,
+            "vault manifest handle has been closed during save",
+        );
+        assert!(rendered.contains("manifest"));
     }
 }
