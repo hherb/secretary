@@ -313,6 +313,7 @@ fn owner_card_bytes_returns_canonical_cbor_round_tripping_to_owner_card() {
     let bytes = out
         .manifest
         .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
         .expect("Some(bytes) before wipe");
     let card_from_bytes = ContactCard::from_canonical_cbor(&bytes).expect("decode round-trips");
     let card_direct = out.manifest.owner_card().expect("Some(card) before wipe");
@@ -330,15 +331,25 @@ fn owner_card_bytes_returns_canonical_cbor_round_tripping_to_owner_card() {
 }
 
 #[test]
-fn owner_card_bytes_returns_none_after_wipe() {
+fn owner_card_bytes_returns_ok_none_after_wipe() {
     // Pin the wipe contract for the new accessor. After wipe() the
-    // accessor returns None, matching the existing owner_card() and
-    // manifest_body() shapes.
+    // accessor returns Ok(None), matching the existing owner_card() and
+    // manifest_body() shapes' "None on wiped handle" semantics. The
+    // outer Result is Ok in both live and wiped states; only encode
+    // failure on a live handle yields Err (issue #41).
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    assert!(out.manifest.owner_card_bytes().is_some());
+    assert!(out
+        .manifest
+        .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
+        .is_some());
     out.manifest.wipe();
-    assert!(out.manifest.owner_card_bytes().is_none());
+    let after = out
+        .manifest
+        .owner_card_bytes()
+        .expect("Ok(None) on wiped handle, not Err");
+    assert!(after.is_none(), "wipe contract: Ok(None), not Err");
 }
 
 #[test]

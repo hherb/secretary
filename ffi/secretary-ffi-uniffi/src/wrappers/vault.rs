@@ -33,9 +33,14 @@ impl OpenVaultManifest {
     }
 
     /// Canonical-CBOR bytes of the vault's owner contact card. New in B.4d.
-    /// Returns `None` if wiped.
-    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
-        self.0.owner_card_bytes()
+    /// Returns `Ok(None)` if wiped; `Err(VaultError::CorruptVault)` if
+    /// canonical-CBOR re-encode fails (practically unreachable on the v1
+    /// invariant — see the bridge accessor's docstring). The `Result`
+    /// widening lands as part of issue #41.
+    pub fn owner_card_bytes(&self) -> Result<Option<Vec<u8>>, crate::errors::VaultError> {
+        self.0
+            .owner_card_bytes()
+            .map_err(crate::errors::VaultError::from)
     }
 
     pub fn wipe(&self) {

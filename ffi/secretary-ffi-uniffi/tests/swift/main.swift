@@ -767,7 +767,7 @@ func _aliceCardBytes() throws -> Data {
     let out = try openVaultWithPassword(folderPath: folderPath, password: password002)
     defer { out.identity.wipe() }
     defer { out.manifest.wipe() }
-    guard let bytes = out.manifest.ownerCardBytes() else {
+    guard let bytes = try out.manifest.ownerCardBytes() else {
         throw NSError(domain: "secretary-test", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "vault_002 owner_card_bytes returned nil",
         ])
@@ -804,7 +804,7 @@ do {
         deviceUuid: shareBlockDeviceUuid,
         nowMs: 1_000
     )
-    guard let ownerBytes = manifest.ownerCardBytes() else {
+    guard let ownerBytes = try manifest.ownerCardBytes() else {
         check(false, "owner card bytes nil before share")
         exit(1)
     }
@@ -843,7 +843,7 @@ do {
         deviceUuid: shareBlockDeviceUuid,
         nowMs: 1_000
     )
-    let ownerBytes = manifest.ownerCardBytes()!
+    let ownerBytes = try manifest.ownerCardBytes()!
     try shareBlock(
         identity: identity,
         manifest: manifest,

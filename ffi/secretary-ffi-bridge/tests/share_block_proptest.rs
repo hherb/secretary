@@ -54,8 +54,10 @@ proptest::proptest! {
             .collect();
 
         // existing_recipient_cards grows by one element per iteration.
-        let mut existing: Vec<Vec<u8>> =
-            vec![manifest.owner_card_bytes().expect("owner card present")];
+        let mut existing: Vec<Vec<u8>> = vec![manifest
+            .owner_card_bytes()
+            .expect("encode succeeds on a verified card")
+            .expect("owner card present")];
         for (i, (_bundle, card_bytes)) in recipients.iter().enumerate() {
             share_block(
                 &identity,

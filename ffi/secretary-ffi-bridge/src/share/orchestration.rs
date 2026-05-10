@@ -26,7 +26,8 @@ use crate::vault::OpenVaultManifest;
 /// - `existing_recipient_cards`: canonical-CBOR bytes for EVERY recipient
 ///   currently in the block's wire-level recipient table, including the
 ///   author if the author is also a recipient. For a freshly-saved v1
-///   block this is `[manifest.owner_card_bytes().unwrap()]`.
+///   block this is `[manifest.owner_card_bytes()??]` (outer `?` for the
+///   `Result`; inner `?` for the `Option`).
 /// - `new_recipient`: canonical-CBOR bytes of the contact card being
 ///   added. Must NOT already appear in the existing list (per fingerprint).
 ///
