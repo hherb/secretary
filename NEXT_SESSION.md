@@ -19,7 +19,7 @@ Fourteen commits on the feature branch `feat/ffi-b4d-share-block` (1 spec + 1 pl
 | Bridge proptest | `4e00872` | 16-case round-trip proptest: share to N ∈ [1..4] recipients sequentially, recipient list grows correctly. Held to 16 cases per #38 |
 | uniffi | `f5552b0` | uniffi `share_block` namespace fn + UDL declaration. Length-validates UUIDs namespace-side via existing `uuid_from_vec` helper; errors translate via existing `From<FfiVaultError>` impl |
 | PyO3 | `902688c` | PyO3 `share_block` `#[pyfunction]` + module registration. Uses existing `uuid_array_or_value_error` for length validation; errors translate via existing `ffi_vault_error_to_pyerr` (extended in commit `54cc8ca`) |
-| pytest | `256174e` | 8 pytest tests covering happy path, sequential growth, wrong-length UUID validation (block + device), the 4 typed exception classes (RecipientAlreadyPresent / MissingRecipientCard / CardDecodeFailure / smoke for NotAuthor + sibling distinctness). Helper `_alice_card_bytes(tmp_path)` opens `golden_vault_002` to extract Alice's card bytes |
+| pytest | `256174e` | 7 pytest tests covering happy path, wrong-length UUID validation (block + device), the 4 typed exception classes (RecipientAlreadyPresent / MissingRecipientCard / CardDecodeFailure / smoke for NotAuthor + sibling distinctness). Helper `_alice_card_bytes(tmp_path)` opens `golden_vault_002` to extract Alice's card bytes. Originally 8 tests; one (`test_share_block_then_share_to_third_recipient_grows_existing_list`) was deleted post-review as misleading dead code (claimed 3-recipient coverage but `bob_bytes` collapsed to `alice_bytes`; the proptest at the bridge layer covers N=1..4 with distinct identities) |
 | Swift smoke | `dbc0537` | 4 Swift smoke tests (asserts 27-30): happy path, RecipientAlreadyPresent, MissingRecipientCard, CardDecodeFailure. `_aliceCardBytes()` helper |
 | Kotlin smoke | `65f01e8` | 4 Kotlin smoke tests (asserts 28-31): same 4 cases. `aliceCardBytes()` helper |
 | Docs | `092c5b8` | README + ROADMAP updated to mark B.4d shipped; counts synchronized |
@@ -31,7 +31,7 @@ Fourteen commits on the feature branch `feat/ffi-b4d-share-block` (1 spec + 1 pl
 | `cargo test --release --workspace` | **599 passed + 9 ignored, 0 failed** (was 574 + 9; +25 from this session: 7 bridge unit + 2 accessor unit + 7 integration + 1 proptest + 8 uniffi pin) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
-| `uv run --directory ffi/secretary-ffi-py pytest` | **58 passed** (was 50; +8) |
+| `uv run --directory ffi/secretary-ffi-py pytest` | **57 passed** (was 50; +7 — originally +8, one redundant test cut post-review) |
 | `uv run core/tests/python/conformance.py` | PASS (no normative-spec change in B.4d) |
 | `uv run core/tests/python/spec_test_name_freshness.py` | PASS |
 | Swift smoke (`tests/swift/run.sh`) | **30/30 PASS** (was 26; +4) |
@@ -41,7 +41,7 @@ Fourteen commits on the feature branch `feat/ffi-b4d-share-block` (1 spec + 1 pl
 
 - secretary-core: 448 + 9 ignored (unchanged)
 - secretary-ffi-bridge: 100 unit + 8 integration + 1 proptest = ~109 tests in the crate (was 91; +9 unit: 7 error-mapping + 2 accessor; the 7 new integration tests + 1 proptest are in `tests/share_block.rs`)
-- secretary-ffi-py: 3 (unchanged Rust unit tests; pytest layer separate at 58)
+- secretary-ffi-py: 3 (unchanged Rust unit tests; pytest layer separate at 57)
 - secretary-ffi-uniffi: 28 (was 20; +8 = 2 pin tests per new variant × 4 variants)
 
 ### Deferred-cleanup state at session close
@@ -49,7 +49,7 @@ Fourteen commits on the feature branch `feat/ffi-b4d-share-block` (1 spec + 1 pl
 - `ffi/secretary-ffi-bridge/src/error.rs` (~890 lines after the 4 new variants + 7 unit tests) — see issue #36.
 - `ffi/secretary-ffi-bridge/src/vault.rs` (~960 lines after the new accessor + 2 tests) — see issue #36.
 - `ffi/secretary-ffi-py/src/lib.rs` (~1320 lines after the share_block pyfunction + 4 exception classes + owner_card_bytes method) — see issue #36.
-- `ffi/secretary-ffi-py/tests/test_smoke.py` (~1200 lines after 8 share_block tests) — could split into `test_b2.py` / `test_b3.py` / `test_b4.py` after a future cleanup pass.
+- `ffi/secretary-ffi-py/tests/test_smoke.py` (~1200 lines after 7 share_block tests) — could split into `test_b2.py` / `test_b3.py` / `test_b4.py` after a future cleanup pass.
 - `ffi/secretary-ffi-bridge/tests/share_block.rs` (~530 lines including the proptest) — slightly over the 500-line threshold; minor.
 
 ### Open issues from B.4c (carried forward, NOT blocking B.4e/B.5)
@@ -58,6 +58,12 @@ Fourteen commits on the feature branch `feat/ffi-b4d-share-block` (1 spec + 1 pl
 - #36 — split files exceeding 500-line threshold (`error.rs`, `vault.rs`, PyO3 `lib.rs`, plus the new `share_block.rs` integration test file at ~530 lines).
 - #37 — Sub-project C must explicitly state the orphan-block contract.
 - #38 — raise `save_block` proptest case count via shared fixture (now also applies to `share_block` proptest).
+
+### Open issues from B.4d post-review (filed against PR #39, NOT blocking B.4e/B.5)
+
+- #40 — two error-mapping paths between `core::VaultError` and `FfiVaultError` (the dedicated `map_core_vault_error_share` + the `From` impl) can drift when a new core variant is added. Replace `_ =>` with explicit per-variant arms so adding a variant breaks the build.
+- #41 — `OpenVaultManifest::owner_card_bytes()` calls `.expect()` on `to_canonical_cbor()`; a panic across PyO3/uniffi is an abort. Currently safe per invariants; consider returning `Result<Option<Vec<u8>>>`.
+- #42 — `share_block` orchestration holds two zeroize-on-drop copies of the signing keys in scope (the cloned `IdentityBundle` + `signer_secret_keys()` output). Bounded by drop semantics; tracked under memory-hygiene audit.
 
 ## (2) What's next
 
@@ -126,7 +132,7 @@ rm -rf ffi/secretary-ffi-py/.venv
 find ~/.cache/uv -name "*secretary*" -exec rm -rf {} + 2>/dev/null
 ( cd ffi/secretary-ffi-py && uv sync && uv run maturin develop --release --uv )
 uv run --directory ffi/secretary-ffi-py pytest
-# Expect: 58 passed
+# Expect: 57 passed
 
 # Smoke runners:
 ffi/secretary-ffi-uniffi/tests/swift/run.sh   # Expect: 30/30 PASS
@@ -148,10 +154,10 @@ ffi/secretary-ffi-uniffi/tests/kotlin/run.sh  # Expect: 31/31 PASS
 - **Branch:** `feat/ffi-b4d-share-block`.
 - **Total commits since branch base:** 14 (1 spec + 1 plan + 12 code/test/docs).
 - **Workspace tests:** 599 + 9 ignored (was 574 + 9; +25 = 9 bridge unit + 7 bridge integration + 1 bridge proptest + 8 uniffi pin).
-- **Pytest:** 58 (was 50; +8).
+- **Pytest:** 57 (was 50; +7 — see issues #40/#41/#42 for review-surfaced follow-ups deferred from B.4d).
 - **Swift smoke:** 30/30 PASS (was 26).
 - **Kotlin smoke:** 31/31 PASS (was 27).
 - **Bridge crate Rust tests:** 100 unit (was 91) + 8 integration tests in `tests/share_block.rs` + 1 proptest.
 - **uniffi crate Rust tests:** 28 (was 20).
 - **Files created:** `ffi/secretary-ffi-bridge/src/share/{mod,orchestration}.rs`, `ffi/secretary-ffi-bridge/tests/share_block.rs`, `docs/superpowers/specs/2026-05-10-ffi-b4d-share-block-design.md`, `docs/superpowers/plans/2026-05-10-ffi-b4d-share-block.md`, `docs/handoffs/2026-05-10-b4d-share-block.md`.
-- **Files modified:** bridge `error.rs` (+4 variants + 4 From arms + 7 unit tests), `vault.rs` (+1 accessor + 2 unit tests), `lib.rs` (+1 module + 1 re-export); uniffi `errors.rs` (+4 variants + 4 From arms + 8 pin tests), `secretary.udl` (+4 enum variants + 1 namespace fn + 1 interface method), `namespace.rs` (+1 fn), `wrappers/vault.rs` (+1 method), `lib.rs` (+1 namespace re-export); PyO3 `lib.rs` (+1 pyfunction + 4 exception classes + 1 method + 4 module registrations + 4 From arms); pytest `tests/test_smoke.py` (+8 tests + 2 helpers); Swift `tests/swift/main.swift` (+4 asserts + 1 helper + 1 password constant); Kotlin `tests/kotlin/Main.kt` (+4 asserts + 1 helper + 1 password constant + 1 import); README.md + ROADMAP.md.
+- **Files modified:** bridge `error.rs` (+4 variants + 4 From arms + 7 unit tests), `vault.rs` (+1 accessor + 2 unit tests), `lib.rs` (+1 module + 1 re-export); uniffi `errors.rs` (+4 variants + 4 From arms + 8 pin tests), `secretary.udl` (+4 enum variants + 1 namespace fn + 1 interface method), `namespace.rs` (+1 fn), `wrappers/vault.rs` (+1 method), `lib.rs` (+1 namespace re-export); PyO3 `lib.rs` (+1 pyfunction + 4 exception classes + 1 method + 4 module registrations + 4 From arms); pytest `tests/test_smoke.py` (+7 tests + 2 helpers — originally +8; one redundant test cut post-review); Swift `tests/swift/main.swift` (+4 asserts + 1 helper + 1 password constant); Kotlin `tests/kotlin/Main.kt` (+4 asserts + 1 helper + 1 password constant + 1 import); README.md + ROADMAP.md.
