@@ -31,7 +31,7 @@ Seventeen commits on the feature branch `feat/ffi-b4c-save-block` (10 from earli
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace` | **572 passed + 9 ignored, 0 failed** (was 569 + 9; +3 from this session: 1 proptest + 2 uniffi pin tests) |
+| `cargo test --release --workspace` | **574 passed + 9 ignored, 0 failed** (was 569 + 9; +5 from this session: 1 proptest + 2 uniffi pin tests + 2 ReplaceManifestError tests from the post-review fix) |
 | `cargo clippy --release --workspace -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
 | `uv run --directory ffi/secretary-ffi-py pytest` | **50 passed** (was 40; +10) |
@@ -43,17 +43,24 @@ Seventeen commits on the feature branch `feat/ffi-b4c-save-block` (10 from earli
 ### Per-crate test counts (post-B.4c)
 
 - secretary-core: 448 + 9 ignored (unchanged)
-- secretary-ffi-bridge: 91 (was 83 from the cleanup pass; +8 from this session: 1 SaveCryptoFailure pin + 6 input-types + 2 signer_secret_keys + 1 snapshot_for_save_block + 7 in `tests/save_block.rs` + 1 round-trip proptest, minus the prior bridge baseline)
+- secretary-ffi-bridge: 93 (was 83 from the cleanup pass; +10 from this session: 1 SaveCryptoFailure pin + 6 input-types + 2 signer_secret_keys + 1 snapshot_for_save_block + 7 in `tests/save_block.rs` + 1 round-trip proptest + 2 ReplaceManifestError post-review-fix tests, minus the prior bridge baseline)
 - secretary-ffi-py: 3 (unchanged Rust unit tests; pytest layer separate at 50)
 - secretary-ffi-uniffi: 20 (was 18; +2 SaveCryptoFailure pin tests)
 
 ### Deferred-cleanup state at session close
 
-- `ffi/secretary-ffi-bridge/src/error.rs` (~770 lines, gained ~3 from issue #32 in the prior cleanup pass) — could split tests into `tests/error_tests.rs` after B.4d.
-- `ffi/secretary-ffi-bridge/src/vault.rs` (~770 lines plus B.4c's `replace_manifest_and_file` helper) — could split into `vault/{handle.rs, accessors.rs, snapshots.rs}` after B.4d.
-- `ffi/secretary-ffi-py/src/lib.rs` (~1240 lines after B.4c's input pyclasses + save_block pyfunction) — could split per-class.
+- `ffi/secretary-ffi-bridge/src/error.rs` (~822 lines) — see issue #36.
+- `ffi/secretary-ffi-bridge/src/vault.rs` (~895 lines after the post-review `ReplaceManifestError` typed-error addition) — see issue #36.
+- `ffi/secretary-ffi-py/src/lib.rs` (~1260 lines after B.4c's input pyclasses + save_block pyfunction) — see issue #36.
 - `ffi/secretary-ffi-py/tests/test_smoke.py` (~930 lines) — could split into `test_b2.py` / `test_b3.py` / `test_b4.py` after B.4d.
 - `ffi/secretary-ffi-bridge/tests/save_block.rs` (~390 lines) — close to but under the 500-line threshold.
+
+### Open issues from the PR #34 review
+
+- #35 — exercise mid-call wipe race in `save_block` (P2, deferred from review; documented + handled in code, missing only the regression test).
+- #36 — split files exceeding the 500-line threshold (`error.rs`, `vault.rs`, PyO3 `lib.rs`).
+- #37 — Sub-project C must explicitly state the orphan-block contract (manifest-authoritative vs. filesystem-authoritative).
+- #38 — raise `save_block` proptest case count via shared fixture (held to 16 today by Argon2id-per-case cost).
 
 ## (2) What's next
 
@@ -63,7 +70,7 @@ Seventeen commits on the feature branch `feat/ffi-b4c-save-block` (10 from earli
 
 | Gate | Target |
 |---|---|
-| `cargo test --release --workspace` | 590+ passed + 9 ignored (B.4c baseline 572 + ~18 from B.4d additions) |
+| `cargo test --release --workspace` | 592+ passed + 9 ignored (B.4c baseline 574 + ~18 from B.4d additions) |
 | `cargo clippy + fmt` | clean / OK |
 | `pytest` | 60+ passed (was 50) |
 | Swift / Kotlin smokes | 30+ / 31+ (each +4) |
@@ -111,7 +118,7 @@ for line in sys.stdin:
     m = re.search(r'(\d+) passed.*?(\d+) failed.*?(\d+) ignored', line)
     if m: p+=int(m.group(1)); f+=int(m.group(2)); i+=int(m.group(3))
 print(f'TOTAL: {p} passed; {f} failed; {i} ignored')"
-# Expect: TOTAL: 572 passed; 0 failed; 9 ignored
+# Expect: TOTAL: 574 passed; 0 failed; 9 ignored
 
 # Apply maturin/uv nuclear cache fix proactively (preserved from previous baton —
 # B.4c added input pyclasses + save_block pyfunction; the cache stickiness
@@ -139,13 +146,14 @@ ffi/secretary-ffi-uniffi/tests/kotlin/run.sh  # Expect: 27/27 PASS
 
 ## Closing inventory (B.4c)
 
-- **Branch:** `feat/ffi-b4c-save-block` (push + PR pending).
-- **Total commits since branch base:** 17 (2 docs + 14 code/test commits + 1 mid-session handoff).
-- **Workspace tests:** 572 + 9 ignored (was 552 + 9; +20 from this session: 17 in bridge + 3 across uniffi/pyo3 — bridge tests grew 83 → 91, uniffi 18 → 20, plus 7 integration tests in `tests/save_block.rs` and 1 proptest).
+- **Branch:** `feat/ffi-b4c-save-block` (PR #34 open, post-review fixes pending push).
+- **Total commits since branch base:** 19 (2 docs + 14 code/test commits + 1 mid-session handoff + 2 post-review fixes: doc-ordering correction + `ReplaceManifestError` typed-error).
+- **Workspace tests:** 574 + 9 ignored (was 552 + 9; +22 from this session: 17 in bridge + 3 across uniffi/pyo3 + 2 post-review-fix bridge tests — bridge tests grew 83 → 93, uniffi 18 → 20, plus 7 integration tests in `tests/save_block.rs` and 1 proptest).
 - **Pytest:** 50 (was 40; +10).
 - **Swift smoke:** 26/26 PASS (was 22).
 - **Kotlin smoke:** 27/27 PASS (was 23).
-- **Bridge crate:** 91 unit + integration tests.
+- **Bridge crate:** 93 unit + integration tests.
 - **uniffi crate:** 20 unit tests.
+- **Post-review fixes (PR #34):** doc-ordering bug in `OpenVaultManifest` corrected (`snapshot_for_save_block`'s rustdoc was concatenated with `replace_manifest_and_file`'s); `replace_manifest_and_file` now returns typed `Result<(), ReplaceManifestError>` instead of `Result<(), ()>`. Four follow-up issues filed: #35 (mid-call wipe race test), #36 (file-size splits), #37 (Sub-project C orphan-block contract), #38 (proptest case count).
 - **Files created:** `ffi/secretary-ffi-bridge/src/save/{mod,input,orchestration}.rs`, `ffi/secretary-ffi-bridge/tests/save_block.rs`, `ffi/secretary-ffi-uniffi/src/wrappers/save.rs`, `docs/superpowers/specs/2026-05-09-ffi-b4c-save-block-design.md`, `docs/superpowers/plans/2026-05-09-ffi-b4c-save-block.md`, `docs/handoffs/2026-05-10-b4c-bridge-mid-session.md`, `docs/handoffs/2026-05-10-b4c-save-block.md`.
 - **Files modified:** bridge `error.rs` (variant + Display) + `identity.rs` (signer_secret_keys + clone_inner_bundle) + `vault.rs` (snapshot + replace) + `lib.rs` (re-exports) + `Cargo.toml` (proptest); uniffi `errors.rs` (variant + 2 pin tests) + `secretary.udl` (variant mirror + namespace fn + 4 dictionaries) + `namespace.rs` (save_block fn) + `lib.rs` (re-exports) + `wrappers/mod.rs`; PyO3 `lib.rs` (exception class + 4 input pyclasses + save_block pyfunction); Swift `tests/swift/main.swift` (4 asserts); Kotlin `tests/kotlin/Main.kt` (4 asserts); pytest `tests/test_smoke.py` (10 tests); README.md + ROADMAP.md.
