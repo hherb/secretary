@@ -1017,44 +1017,6 @@ def test_share_block_owner_to_alice_appends_recipient_to_manifest(tmp_path: Path
             assert len(summary.recipient_uuids) == 2
 
 
-def test_share_block_then_share_to_third_recipient_grows_existing_list(tmp_path: Path) -> None:
-    """Caller-side recipient tracking: existing_recipient_cards grows by
-    one element per share. After share-to-alice, sharing to Alice again
-    requires passing both [owner, alice] to satisfy the spec §12 caller
-    contract."""
-    alice_bytes = _alice_card_bytes(tmp_path / "alice")
-    bob_bytes = _alice_card_bytes(tmp_path / "bob")  # second copy of vault_002 acts as bob
-    # Note: alice_bytes and bob_bytes are byte-identical (both vault_002 owner)
-    # which would trigger RecipientAlreadyPresent below. Skip the test and
-    # mark with an inline comment if true; we work around by using
-    # vault_001's first block's pre-existing recipient as a mock "bob"...
-    # Actually simpler: test only the 2-step grow with alice. The plan's
-    # third-recipient assertion was idealistic; the spec §12 contract is
-    # adequately pinned by the mid-test recipient-list rebuild here.
-    out, _dst = _fresh_writable_vault(tmp_path)
-    with out as vault:
-        with vault.identity as identity, vault.manifest as manifest:
-            _save_one_record_block(
-                identity, manifest, SHARE_BLOCK_BLOCK_UUID, SHARE_BLOCK_RECORD_UUID,
-                "k", "v",
-            )
-            owner_bytes = manifest.owner_card_bytes()
-            # Step 1: share to alice (existing = [owner]).
-            secretary_ffi_py.share_block(
-                identity, manifest, SHARE_BLOCK_BLOCK_UUID,
-                [owner_bytes], alice_bytes,
-                SHARE_BLOCK_DEVICE_UUID, SHARE_BLOCK_NOW_MS_BASE + 1_000,
-            )
-            summary = manifest.find_block(SHARE_BLOCK_BLOCK_UUID)
-            assert len(summary.recipient_uuids) == 2
-
-    # Suppress the unused-after-block warning: bob_bytes is intentionally
-    # held but not exercised. The sequential-grow contract is pinned by
-    # the bridge crate's proptest; this pytest test focuses on the
-    # foreign-caller observability of recipient_uuids growth.
-    assert bob_bytes is not None and len(bob_bytes) > 0
-
-
 def test_share_block_wrong_length_block_uuid_raises_value_error(tmp_path: Path) -> None:
     """`share_block(block_uuid=...)` length validation fires at the
     pyfunction boundary."""
