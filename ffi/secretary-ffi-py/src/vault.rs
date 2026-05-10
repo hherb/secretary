@@ -103,9 +103,15 @@ impl OpenVaultManifest {
     /// as the only element of `existing_recipient_cards` when calling
     /// `share_block` on a v1 owner-only block, or as the first element
     /// when sharing with multiple recipients. Returns `None` if wiped.
+    ///
+    /// Encodes on demand: encode failure (practically unreachable on the
+    /// v1 invariant; see the bridge accessor's docstring) raises
+    /// `VaultCorruptVault`. The widening from `Option[bytes]` to
+    /// `bytes | None | raise` lands as part of issue #41 — replaces a
+    /// `.expect()` panic-across-FFI with a recoverable typed exception.
     /// New in B.4d.
-    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
-        self.0.owner_card_bytes()
+    pub fn owner_card_bytes(&self) -> PyResult<Option<Vec<u8>>> {
+        self.0.owner_card_bytes().map_err(ffi_vault_error_to_pyerr)
     }
 
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this

@@ -264,14 +264,32 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 recipient_fingerprint_hex: hex::encode(fingerprint),
             },
 
-            // Post-unlock integrity failures and unexpected IO kinds: fold
-            // into CorruptVault catchall. These cannot leak unlock-secret
-            // information (the IBK was already recovered when they fire).
-            // Manifest decode, owner-card verification, UUID mismatches,
-            // KDF-params mismatch, vector-clock overflow, signature
-            // primitive failure, etc. all land here.
-            other => FfiVaultError::CorruptVault {
-                detail: format!("{other}"),
+            // Post-unlock integrity / structural failures and IO kinds the
+            // guarded `Io` arm above did not catch: fold to `CorruptVault`.
+            // These cannot leak unlock-secret information (the IBK was
+            // already recovered when they fire).
+            //
+            // Listed explicitly (no `_ =>` catchall) so adding a new
+            // `core::VaultError` variant becomes a *compile* error here
+            // rather than a silent fold to `CorruptVault` — issue #40 made
+            // this drift surface explicit. Any future variant must make a
+            // deliberate routing decision (typed FFI variant, fold to
+            // CorruptVault, or fold to a new bucket); the compiler refuses
+            // to let it slip through unnoticed.
+            e @ (VE::Io { .. }
+            | VE::Record(_)
+            | VE::Block(_)
+            | VE::Manifest(_)
+            | VE::Conflict(_)
+            | VE::Rollback { .. }
+            | VE::Card(_)
+            | VE::Sig(_)
+            | VE::OwnerUuidMismatch { .. }
+            | VE::ManifestAuthorMismatch
+            | VE::ManifestVaultUuidMismatch { .. }
+            | VE::KdfParamsMismatch
+            | VE::ClockOverflow { .. }) => FfiVaultError::CorruptVault {
+                detail: format!("{e}"),
             },
         }
     }
@@ -384,6 +402,58 @@ mod tests {
         use secretary_core::vault::VaultError;
         let core_err = VaultError::KdfParamsMismatch;
         let ffi: FfiVaultError = core_err.into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_manifest_author_mismatch_maps_to_corrupt_vault() {
+        // Issue #40 explicit-arm pin: post-unlock structural mismatch
+        // between manifest header `author_fingerprint` and owner card
+        // fingerprint folds to CorruptVault.
+        use secretary_core::vault::VaultError;
+        let ffi: FfiVaultError = VaultError::ManifestAuthorMismatch.into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_manifest_vault_uuid_mismatch_maps_to_corrupt_vault() {
+        // Issue #40 explicit-arm pin: §4.3 step-5 cross-check failure
+        // (manifest header vs body vault_uuid disagreement) folds to
+        // CorruptVault.
+        use secretary_core::vault::VaultError;
+        let ffi: FfiVaultError = VaultError::ManifestVaultUuidMismatch {
+            header: [0u8; 16],
+            body: [1u8; 16],
+        }
+        .into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_clock_overflow_maps_to_corrupt_vault() {
+        // Issue #40 explicit-arm pin: vector-clock saturation (a
+        // post-unlock structural failure) folds to CorruptVault.
+        use secretary_core::vault::VaultError;
+        let ffi: FfiVaultError = VaultError::ClockOverflow {
+            device_uuid: [0xee; 16],
+        }
+        .into();
+        assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn from_core_vault_error_rollback_maps_to_corrupt_vault() {
+        // Issue #40 explicit-arm pin: §10 rollback-resistance rejection
+        // currently folds to CorruptVault. (Future UI work may want a
+        // dedicated typed variant so the foreign side can show a
+        // "restoring from backup; accept anyway" affordance — until
+        // then, drift-prevention tests pin the current routing.)
+        use secretary_core::vault::VaultError;
+        let ffi: FfiVaultError = VaultError::Rollback {
+            local_clock: vec![],
+            incoming_clock: vec![],
+        }
+        .into();
         assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
     }
 

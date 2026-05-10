@@ -53,6 +53,7 @@ fn share_block_owner_to_alice_appends_recipient_to_manifest() {
 
     let owner_card_bytes = manifest
         .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
         .expect("owner card bytes from live handle");
     let (alice_bundle, alice_card_bytes) = mint_external_card(0xB1, "Alice");
 
@@ -105,7 +106,10 @@ fn share_block_with_duplicate_recipient_returns_already_present() {
         "v",
         NOW_MS_BASE,
     );
-    let owner_card_bytes = manifest.owner_card_bytes().expect("owner card present");
+    let owner_card_bytes = manifest
+        .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
+        .expect("owner card present");
     let (_alice_bundle, alice_card_bytes) = mint_external_card(0xB1, "Alice");
 
     // First share: ok.
@@ -232,7 +236,10 @@ fn share_block_with_malformed_new_recipient_bytes_returns_card_decode_failure() 
         "v",
         NOW_MS_BASE,
     );
-    let owner_card_bytes = manifest.owner_card_bytes().expect("owner card present");
+    let owner_card_bytes = manifest
+        .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
+        .expect("owner card present");
     let garbage_new = vec![0xFFu8; 8];
     let err = share_block(
         &identity,
@@ -266,7 +273,10 @@ fn share_block_on_wiped_manifest_returns_corrupt_vault() {
         "v",
         NOW_MS_BASE,
     );
-    let owner_card_bytes = manifest.owner_card_bytes().expect("owner card present");
+    let owner_card_bytes = manifest
+        .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
+        .expect("owner card present");
     let (_alice_bundle, alice_card_bytes) = mint_external_card(0xB1, "Alice");
     manifest.wipe();
     let err = share_block(
@@ -302,7 +312,10 @@ fn share_block_on_wiped_identity_returns_corrupt_vault() {
         "v",
         NOW_MS_BASE,
     );
-    let owner_card_bytes = manifest.owner_card_bytes().expect("owner card present");
+    let owner_card_bytes = manifest
+        .owner_card_bytes()
+        .expect("encode succeeds on a verified card")
+        .expect("owner card present");
     let (_alice_bundle, alice_card_bytes) = mint_external_card(0xB1, "Alice");
     identity.wipe();
     let err = share_block(

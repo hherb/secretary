@@ -7,6 +7,7 @@ use secretary_core::crypto::secret::Sensitive;
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::{Manifest, ManifestFile};
 
+use crate::error::FfiVaultError;
 use crate::sync_helpers::lock_or_recover;
 
 use super::inner::{BlockSummary, OpenVaultManifestInner};
@@ -183,20 +184,38 @@ impl OpenVaultManifest {
     /// when calling [`crate::share_block`] on a v1 owner-only block, or
     /// as the first element when sharing with multiple recipients.
     ///
-    /// Returns `None` iff the manifest handle has been wiped.
+    /// Returns `Ok(None)` iff the manifest handle has been wiped — same
+    /// `None`-on-wipe contract as the other accessors.
     ///
-    /// Encodes on demand via `ContactCard::to_canonical_cbor`. The
-    /// `.expect()` is justified by the open-vault invariant: the card was
-    /// decoded + verified during `open_vault` and lives behind an
-    /// immutable handle, so re-encoding a previously-validated card
-    /// cannot fail (no IO; deterministic encoder over fixed inputs).
-    /// New in B.4d.
-    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
-        lock_or_recover(&self.inner).as_ref().map(|i| {
-            i.owner_card
-                .to_canonical_cbor()
-                .expect("re-encoding a verified card cannot fail")
-        })
+    /// Encodes on demand via `ContactCard::to_canonical_cbor`. Encode
+    /// failure surfaces as [`FfiVaultError::CorruptVault`] rather than
+    /// panicking; a panic across the PyO3 / uniffi FFI boundary aborts
+    /// the foreign caller without a chance to recover (issue #41).
+    ///
+    /// On the v1 invariant the encode cannot legitimately fail: the card
+    /// was decoded + verified during `open_vault` and lives behind an
+    /// immutable handle, so re-encoding a previously-validated card is
+    /// deterministic over fixed inputs (no IO). The `Result` return
+    /// preserves recoverability if a future encoder version grows a
+    /// non-trivial failure mode (e.g. internal allocator failure on a
+    /// memory-constrained platform); current callers should treat the
+    /// `Err` arm as practically unreachable but propagate it cleanly
+    /// rather than `.expect()`-ing.
+    ///
+    /// New in B.4d; signature widened to `Result` in B.4d-cleanup
+    /// (issue #41).
+    pub fn owner_card_bytes(&self) -> Result<Option<Vec<u8>>, FfiVaultError> {
+        let guard = lock_or_recover(&self.inner);
+        let Some(inner) = guard.as_ref() else {
+            return Ok(None);
+        };
+        inner
+            .owner_card
+            .to_canonical_cbor()
+            .map(Some)
+            .map_err(|e| FfiVaultError::CorruptVault {
+                detail: format!("owner card re-encode failed: {e}"),
+            })
     }
 
     /// Bridge-internal atomic snapshot of the three pieces
