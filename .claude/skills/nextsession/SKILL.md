@@ -11,7 +11,7 @@ Remember our general coding principles:
 - no magic numbers
 - prefer pure functions in reusable modules over complex code
 - proper inline documentation and unit tests mandatory
-- try and keep code files under 500 lines where reasonably 
+- try and keep code files under 500 lines where reasonably possible, refactor when files grow to big where reasonable
 Once you have completed yor tasks, check
 (a) does README.md need updating because of the changes made in this session? If so, update README.md
 (b) does ROADMAP.md need updating because of the changes made in this session? If so, update ROADMAP.md
@@ -20,4 +20,4 @@ Before we end, update or create NEXT_SESSION.md containing:
 (2) what's next with concrete acceptance criteria, 
 (3) any open decisions or risks, 
 (4) the exact commands needed to resume (cd, branch, test command). 
-(5) Save a copy to docs/handoffs/ with a timstamp as filename so that we can follow the time line historically.
+(5) Save an EXACT copy of NEXT_SESSION.md to docs/handoffs/ with a timestamp as filename — same content, just a frozen archive for audit/learning. Do not author the handoff separately; NEXT_SESSION.md is the live ephemeral version and the handoff is its timestamped snapshot.
