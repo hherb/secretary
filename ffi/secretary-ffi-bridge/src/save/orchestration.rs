@@ -137,12 +137,39 @@ pub fn save_block(
 /// else folds to `SaveCryptoFailure` (since for save these are by
 /// construction in-memory failures on already-validated inputs, not
 /// on-disk corruption).
+///
+/// Per-variant arms (no `_ =>` catchall) per issue #40: adding a new
+/// `core::VaultError` variant becomes a *compile* error here rather than
+/// silently folding to `SaveCryptoFailure`, forcing a deliberate routing
+/// decision at the save-mapper boundary. The share-validation variants
+/// (`NotAuthor` / `RecipientAlreadyPresent` / `MissingRecipientCard` /
+/// `BlockNotFound`) are unreachable from `core::save_block` today but are
+/// listed explicitly to keep the match exhaustive across the full
+/// `VaultError` surface; if they did fire they would represent a
+/// programmer error from the save path's perspective and folding to
+/// `SaveCryptoFailure` is the right surface.
 fn map_core_vault_error(e: VaultError) -> FfiVaultError {
     match &e {
         VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
             detail: format!("{context}: {source}"),
         },
-        _ => FfiVaultError::SaveCryptoFailure {
+        VaultError::Record(_)
+        | VaultError::Block(_)
+        | VaultError::Manifest(_)
+        | VaultError::Conflict(_)
+        | VaultError::Rollback { .. }
+        | VaultError::Unlock(_)
+        | VaultError::Card(_)
+        | VaultError::Sig(_)
+        | VaultError::OwnerUuidMismatch { .. }
+        | VaultError::ManifestAuthorMismatch
+        | VaultError::ManifestVaultUuidMismatch { .. }
+        | VaultError::KdfParamsMismatch
+        | VaultError::ClockOverflow { .. }
+        | VaultError::NotAuthor { .. }
+        | VaultError::BlockNotFound { .. }
+        | VaultError::RecipientAlreadyPresent
+        | VaultError::MissingRecipientCard { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }

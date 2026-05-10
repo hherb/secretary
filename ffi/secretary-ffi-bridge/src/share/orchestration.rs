@@ -149,8 +149,14 @@ pub fn share_block(
 /// `CorruptVault`. NotAuthor / RecipientAlreadyPresent /
 /// MissingRecipientCard / BlockNotFound delegate to the existing
 /// `From<core::VaultError>` impl in [`crate::error`], which maps them to
-/// the matching typed FFI variants. Anything else (typed crypto / encoder
-/// failures on already-validated inputs) folds to `SaveCryptoFailure`.
+/// the matching typed FFI variants. Everything else (typed crypto /
+/// encoder failures on already-validated inputs) folds to
+/// `SaveCryptoFailure`.
+///
+/// Per-variant arms (no `_ =>` catchall) per issue #40: adding a new
+/// `core::VaultError` variant becomes a *compile* error here rather than
+/// silently folding to `SaveCryptoFailure`, forcing a deliberate routing
+/// decision at the share-mapper boundary.
 fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
     match &e {
         VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
@@ -164,7 +170,21 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         | VaultError::RecipientAlreadyPresent
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockNotFound { .. } => e.into(),
-        _ => FfiVaultError::SaveCryptoFailure {
+        // Crypto / encoding / structural failures on already-validated
+        // inputs. Listed explicitly so a new core variant cannot land
+        // here without a compile-time choice.
+        VaultError::Record(_)
+        | VaultError::Manifest(_)
+        | VaultError::Conflict(_)
+        | VaultError::Rollback { .. }
+        | VaultError::Unlock(_)
+        | VaultError::Card(_)
+        | VaultError::Sig(_)
+        | VaultError::OwnerUuidMismatch { .. }
+        | VaultError::ManifestAuthorMismatch
+        | VaultError::ManifestVaultUuidMismatch { .. }
+        | VaultError::KdfParamsMismatch
+        | VaultError::ClockOverflow { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }
