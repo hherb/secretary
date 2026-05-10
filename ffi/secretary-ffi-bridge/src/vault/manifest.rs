@@ -121,12 +121,15 @@ impl OpenVaultManifest {
     /// wiped.
     ///
     /// Originally consumed by `crate::record::read_block`; B.4b's
-    /// `snapshot_for_read_block` superseded the per-field call site
-    /// to fold 3 lock acquisitions into 1. This accessor is retained
-    /// for forward-compat — B.4c (write_block) and B.4d (share_block)
-    /// will need vault folder access without necessarily wanting the
-    /// manifest body + owner card together. Marked
-    /// `#[allow(dead_code)]` until the next downstream caller lands.
+    /// `snapshot_for_read_block` superseded the per-field call site to
+    /// fold 3 lock acquisitions into 1. B.4c (`save_block`) and B.4d
+    /// (`share_block`) ultimately landed using `snapshot_for_save_block`
+    /// for the same single-lock atomicity, so this per-field accessor
+    /// has no live caller today — only the post-wipe contract test in
+    /// the sibling `tests` module references it. Retained for
+    /// forward-compat with Sub-project C (sync orchestration may need
+    /// the folder path without the manifest body); revisit for deletion
+    /// when C's surface stabilizes (issue #45).
     #[allow(dead_code)]
     pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
         lock_or_recover(&self.inner)
@@ -140,12 +143,14 @@ impl OpenVaultManifest {
     /// if the handle has been wiped.
     ///
     /// Originally consumed by `crate::record::read_block`; B.4b's
-    /// `snapshot_for_read_block` superseded the per-field call site
-    /// to fold 3 lock acquisitions into 1. This accessor is retained
-    /// for forward-compat — B.4c (write_block) will need to inspect
-    /// the manifest body to allocate a fresh block UUID and append
-    /// to `blocks`. Marked `#[allow(dead_code)]` until the next
-    /// downstream caller lands.
+    /// `snapshot_for_read_block` superseded the per-field call site to
+    /// fold 3 lock acquisitions into 1. B.4c (`save_block`) ultimately
+    /// landed using `snapshot_for_save_block` instead, so this per-field
+    /// accessor has no live caller today — only the post-wipe contract
+    /// test in the sibling `tests` module references it. Retained for
+    /// forward-compat with Sub-project C (vector-clock comparison may
+    /// want the manifest body without the owner card); revisit for
+    /// deletion when C's surface stabilizes (issue #45).
     #[allow(dead_code)]
     pub(crate) fn manifest_body(&self) -> Option<Manifest> {
         lock_or_recover(&self.inner)
@@ -158,12 +163,13 @@ impl OpenVaultManifest {
     /// handle has been wiped.
     ///
     /// Originally consumed by `crate::record::read_block`; B.4b's
-    /// `snapshot_for_read_block` superseded the per-field call site
-    /// to fold 3 lock acquisitions into 1. This accessor is retained
-    /// for forward-compat — B.4d (share_block) will need the owner
-    /// card without the manifest body to encrypt to additional
-    /// recipients. Marked `#[allow(dead_code)]` until the next
-    /// downstream caller lands.
+    /// `snapshot_for_read_block` superseded the per-field call site to
+    /// fold 3 lock acquisitions into 1. B.4d (`share_block`) ultimately
+    /// landed using `snapshot_for_save_block` instead, so this per-field
+    /// accessor has no live caller today — only the post-wipe contract
+    /// test in the sibling `tests` module references it. Retained for
+    /// forward-compat with Sub-project C; revisit for deletion when C's
+    /// surface stabilizes (issue #45).
     #[allow(dead_code)]
     pub(crate) fn owner_card(&self) -> Option<ContactCard> {
         lock_or_recover(&self.inner)
