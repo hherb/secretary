@@ -279,6 +279,55 @@ pub fn save_block(
         .map_err(VaultError::from)
 }
 
+/// Append one new recipient to an existing block — uniffi namespace fn
+/// projection of [`secretary_ffi_bridge::share_block`].
+///
+/// Length-validates `block_uuid` and `device_uuid` namespace-side (16
+/// bytes each); wrong lengths surface as
+/// [`VaultError::InvalidArgument`] (mirrors `save_block`). All other
+/// errors translate via the existing `From<FfiVaultError>` impl on
+/// `VaultError`.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` or
+///   `device_uuid`.
+/// - [`VaultError::CardDecodeFailure`] — caller-supplied ContactCard
+///   bytes failed canonical-CBOR decode.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::FolderInvalid`] — IO failure during atomic write.
+/// - [`VaultError::BlockNotFound`] — `block_uuid` not in manifest.
+/// - [`VaultError::NotAuthor`] — calling identity is not the block's author.
+/// - [`VaultError::RecipientAlreadyPresent`] — `new_recipient` is already
+///   in the block's recipient table.
+/// - [`VaultError::MissingRecipientCard`] — `existing_recipient_cards`
+///   missing a card whose fingerprint appears on disk.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn share_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+    existing_recipient_cards: Vec<Vec<u8>>,
+    new_recipient: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<(), VaultError> {
+    let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::share_block(
+        &identity.0,
+        &manifest.0,
+        block_uuid,
+        &existing_recipient_cards,
+        &new_recipient,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(VaultError::from)
+}
+
 /// Validate a 16-byte UUID slice; surface wrong length as
 /// [`VaultError::InvalidArgument`] with the field name in the detail.
 fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
