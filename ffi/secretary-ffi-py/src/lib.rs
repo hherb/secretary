@@ -132,6 +132,12 @@ create_exception!(secretary_ffi_py, VaultCorruptVault, PyException);
 create_exception!(secretary_ffi_py, VaultFolderInvalid, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotFound, PyException);
 create_exception!(secretary_ffi_py, VaultSaveCryptoFailure, PyException);
+// B.4d share_block error surface — 4 typed exception classes mirroring
+// the bridge's FfiVaultError variants.
+create_exception!(secretary_ffi_py, VaultNotAuthor, PyException);
+create_exception!(secretary_ffi_py, VaultRecipientAlreadyPresent, PyException);
+create_exception!(secretary_ffi_py, VaultMissingRecipientCard, PyException);
+create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -174,6 +180,23 @@ fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultBlockNotFound::new_err(uuid_hex)
         }
         FfiVaultError::SaveCryptoFailure { detail } => VaultSaveCryptoFailure::new_err(detail),
+        // B.4d share_block error surface — same args[0] contract as the
+        // existing variants: the exception payload carries the most
+        // diagnostic-relevant field so foreign callers can pull it via
+        // `except VaultX as e: e.args[0]`.
+        FfiVaultError::NotAuthor {
+            expected_fingerprint_hex,
+            got_fingerprint_hex,
+        } => VaultNotAuthor::new_err(format!(
+            "expected={expected_fingerprint_hex}, got={got_fingerprint_hex}",
+        )),
+        FfiVaultError::RecipientAlreadyPresent => {
+            VaultRecipientAlreadyPresent::new_err(e.to_string())
+        }
+        FfiVaultError::MissingRecipientCard {
+            recipient_fingerprint_hex,
+        } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex),
+        FfiVaultError::CardDecodeFailure { detail } => VaultCardDecodeFailure::new_err(detail),
     }
 }
 
@@ -1228,6 +1251,21 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RecordInput>()?;
     m.add_class::<BlockInput>()?;
     m.add_function(wrap_pyfunction!(save_block, m)?)?;
+
+    // B.4d surface — 4 typed exception classes for share_block error modes.
+    m.add("VaultNotAuthor", py.get_type::<VaultNotAuthor>())?;
+    m.add(
+        "VaultRecipientAlreadyPresent",
+        py.get_type::<VaultRecipientAlreadyPresent>(),
+    )?;
+    m.add(
+        "VaultMissingRecipientCard",
+        py.get_type::<VaultMissingRecipientCard>(),
+    )?;
+    m.add(
+        "VaultCardDecodeFailure",
+        py.get_type::<VaultCardDecodeFailure>(),
+    )?;
 
     Ok(())
 }
