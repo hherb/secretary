@@ -11,114 +11,19 @@
 //! covered by `core/tests/share_block.rs::share_block_round_trip` at the
 //! crypto core level; the bridge tests here verify the FFI surface +
 //! manifest-state mutations end-to-end.
+//!
+//! The N-recipient sequential-share property test lives in the sibling
+//! `share_block_proptest.rs` integration-test bin so its case-budget is
+//! independent of these failure-mode tests.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+mod share_block_helpers;
 
-use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+use secretary_ffi_bridge::{share_block, FfiVaultError};
 
-use secretary_core::crypto::secret::SecretString;
-use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
-use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
-use secretary_core::unlock::bundle::{generate as generate_bundle, IdentityBundle};
-use secretary_ffi_bridge::{
-    open_vault_with_password, save_block, share_block, BlockInput, FfiVaultError, FieldInput,
-    FieldInputValue, OpenVaultManifest, RecordInput, UnlockedIdentity,
+use share_block_helpers::{
+    fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
+    NEW_RECORD_UUID, NOW_MS_BASE,
 };
-
-// ---------------------------------------------------------------------------
-// Test fixture: writable golden_vault_001 copy
-// ---------------------------------------------------------------------------
-
-fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
-}
-
-const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
-
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&from, &to);
-        } else {
-            fs::copy(&from, &to).unwrap();
-        }
-    }
-}
-
-fn fresh_writable_vault() -> (tempfile::TempDir, UnlockedIdentity, OpenVaultManifest) {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::tempdir().expect("tempdir");
-    copy_dir_recursive(&src, tmp.path());
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
-        .expect("open writable copy of golden_vault_001");
-    (tmp, out.identity, out.manifest)
-}
-
-const NEW_BLOCK_UUID: [u8; 16] = [0xAB; 16];
-const NEW_RECORD_UUID: [u8; 16] = [0xCD; 16];
-const DEVICE_UUID: [u8; 16] = [0x07; 16];
-const NOW_MS_BASE: u64 = 1_715_000_000_000;
-
-// ---------------------------------------------------------------------------
-// External-identity helpers (mint a ContactCard without spinning up a vault)
-// ---------------------------------------------------------------------------
-
-/// Mint an external identity from a deterministic seed and return its
-/// canonical-CBOR-encoded self-signed ContactCard alongside the
-/// IdentityBundle (kept in case future tests need to decrypt as that
-/// identity).
-fn mint_external_card(seed: u8, display_name: &str) -> (IdentityBundle, Vec<u8>) {
-    let mut rng = ChaCha20Rng::from_seed([seed; 32]);
-    let bundle = generate_bundle(display_name, 1_714_060_800_000, &mut rng);
-    let pq_sk = MlDsa65Secret::from_bytes(bundle.ml_dsa_65_sk.expose()).unwrap();
-    let mut card = ContactCard {
-        card_version: CARD_VERSION_V1,
-        contact_uuid: bundle.user_uuid,
-        display_name: bundle.display_name.clone(),
-        x25519_pk: bundle.x25519_pk,
-        ml_kem_768_pk: bundle.ml_kem_768_pk.clone(),
-        ed25519_pk: bundle.ed25519_pk,
-        ml_dsa_65_pk: bundle.ml_dsa_65_pk.clone(),
-        created_at_ms: bundle.created_at_ms,
-        self_sig_ed: [0u8; ED25519_SIG_LEN],
-        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
-    };
-    card.sign(&bundle.ed25519_sk, &pq_sk).unwrap();
-    let bytes = card.to_canonical_cbor().unwrap();
-    (bundle, bytes)
-}
-
-/// Save a one-record block with a single text field. Returns nothing —
-/// just panics on failure. Mirrors save_block.rs's inline pattern.
-fn save_one_record_block(
-    identity: &UnlockedIdentity,
-    manifest: &OpenVaultManifest,
-    block_uuid: [u8; 16],
-    record_uuid: [u8; 16],
-    field_name: &str,
-    field_value: &str,
-    now_ms: u64,
-) {
-    let input = BlockInput {
-        block_uuid,
-        block_name: "shared".to_string(),
-        records: vec![RecordInput {
-            record_uuid,
-            fields: vec![FieldInput {
-                name: field_name.to_string(),
-                value: FieldInputValue::Text(SecretString::from(field_value)),
-            }],
-        }],
-    };
-    save_block(identity, manifest, input, DEVICE_UUID, now_ms).expect("save_block");
-}
 
 // ---------------------------------------------------------------------------
 // Happy path: owner saves a block, owner shares with Alice, manifest's
@@ -422,90 +327,6 @@ fn share_block_on_wiped_identity_returns_corrupt_vault() {
 }
 
 // ---------------------------------------------------------------------------
-// Property: share_block to N ∈ [1..4] recipients sequentially preserves the
-// growing recipient list end-to-end.
-// ---------------------------------------------------------------------------
-
-/// Cases held low because each case opens a fresh writable vault (Argon2id
-/// at vault-creation strength, ~1s per case). 16 cases ≈ 16s of test time;
-/// raise once the vault-open cost is amortizable across cases (issue #38).
-const PROPTEST_CASES: u32 = 16;
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(PROPTEST_CASES))]
-
-    /// Property: starting from a freshly-saved owner-only block, sharing
-    /// sequentially with N freshly-minted recipient identities produces a
-    /// manifest entry whose `recipient_uuids` contains the owner + every
-    /// recipient. Exercises the share orchestration's atomicity: each
-    /// share's existing_recipient_cards list grows by one element, and
-    /// every iteration must succeed without rolling back the prior shares.
-    #[test]
-    fn share_block_to_n_recipients_grows_recipient_list_atomically(
-        n in 1usize..=4usize,
-        seed in proptest::prelude::any::<[u8; 4]>(),
-    ) {
-        let (_tmp, identity, manifest) = fresh_writable_vault();
-        save_one_record_block(
-            &identity,
-            &manifest,
-            NEW_BLOCK_UUID,
-            NEW_RECORD_UUID,
-            "k",
-            "v",
-            NOW_MS_BASE,
-        );
-
-        // Mint N recipient identities with deterministic-but-distinct seeds.
-        // Seed-mix uses the proptest-supplied `seed` plus the recipient
-        // index so every case generates fresh UUIDs.
-        let recipients: Vec<(IdentityBundle, Vec<u8>)> = (0..n)
-            .map(|i| mint_external_card(seed[0].wrapping_add(i as u8), &format!("R{i}")))
-            .collect();
-
-        // existing_recipient_cards grows by one element per iteration.
-        let mut existing: Vec<Vec<u8>> =
-            vec![manifest.owner_card_bytes().expect("owner card present")];
-        for (i, (_bundle, card_bytes)) in recipients.iter().enumerate() {
-            share_block(
-                &identity,
-                &manifest,
-                NEW_BLOCK_UUID,
-                &existing,
-                card_bytes,
-                DEVICE_UUID,
-                NOW_MS_BASE + 1_000 + (i as u64) * 1_000,
-            )
-            .map_err(|e| {
-                proptest::test_runner::TestCaseError::fail(format!(
-                    "share #{i} failed: {e:?}",
-                ))
-            })?;
-            existing.push(card_bytes.clone());
-        }
-
-        // Manifest entry must list owner + every recipient (1 + n total).
-        let post = manifest
-            .find_block(&NEW_BLOCK_UUID)
-            .expect("block findable after share");
-        proptest::prop_assert_eq!(
-            post.recipient_uuids.len(),
-            1 + n,
-            "expected {} recipients on manifest entry, got {}",
-            1 + n,
-            post.recipient_uuids.len(),
-        );
-        for (bundle, _) in &recipients {
-            proptest::prop_assert!(
-                post.recipient_uuids.contains(&bundle.user_uuid),
-                "recipient {} missing from post-share manifest entry",
-                hex::encode(bundle.user_uuid),
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // NotAuthor — NOT pinned at this layer
 //
 // Reaching FfiVaultError::NotAuthor from the bridge integration layer
@@ -516,7 +337,7 @@ proptest::proptest! {
 // rejected before share_block is called.
 //
 // The variant is pinned at:
-// 1. Bridge unit level: src/error.rs's
+// 1. Bridge unit level: src/error/vault.rs's
 //    `vault_error_not_author_from_core_preserves_fingerprints_as_hex`
 //    (covers the From<core::VaultError> mapping).
 // 2. Core integration level:
