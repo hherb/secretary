@@ -609,6 +609,15 @@ impl OpenVaultManifest {
         self.0.find_block(&block_uuid).map(BlockSummary::from)
     }
 
+    /// Canonical-CBOR bytes of the vault's owner contact card. Suitable
+    /// as the only element of `existing_recipient_cards` when calling
+    /// `share_block` on a v1 owner-only block, or as the first element
+    /// when sharing with multiple recipients. Returns `None` if wiped.
+    /// New in B.4d.
+    pub fn owner_card_bytes(&self) -> Option<Vec<u8>> {
+        self.0.owner_card_bytes()
+    }
+
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this
     /// moment. Idempotent.
     pub fn wipe(&self) {
