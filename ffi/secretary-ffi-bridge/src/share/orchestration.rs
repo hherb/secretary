@@ -11,8 +11,11 @@
 //! Rationale: docs/superpowers/specs/2026-05-10-ffi-b4d-share-block-design.md.
 
 use rand_core::OsRng;
+use secretary_core::crypto::secret::Sensitive;
+use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::{OpenVault, VaultError};
+use zeroize::Zeroize as _;
 
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
@@ -86,21 +89,32 @@ pub fn share_block(
 
     // Step 2: snapshot identity. core::share_block takes the signing keys
     // as separate &Ed25519Secret + &MlDsa65Secret arguments (unlike
-    // save_block, which derives them from open_vault.identity), so we
-    // pull them via signer_secret_keys() in addition to cloning the
-    // bundle for OpenVault construction.
-    let identity_clone =
+    // save_block, which derives them from open_vault.identity). We clone
+    // the bundle once for OpenVault construction, derive the typed
+    // signing-key wrappers from that clone, then zeroize the clone's
+    // signing-key fields in place so only one zeroize-on-drop copy of
+    // each signing key is live for the rest of the function (issue #42).
+    //
+    // core::share_block reads only the *reader* fields
+    // (`x25519_sk` / `ml_kem_768_sk`) off `open.identity` — for the §7
+    // decrypt path. The signer fields on the bundle are not consumed by
+    // core::share_block; zero'ing them is a memory-hygiene refinement,
+    // not a functional change. The author signature is produced from
+    // `&sk_ed` / `&sk_pq` passed separately.
+    let mut identity_clone =
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
                 detail: "identity handle has been closed".into(),
             })?;
-    let (sk_ed, sk_pq) =
-        identity
-            .signer_secret_keys()
-            .map_err(|e| FfiVaultError::CorruptVault {
-                detail: format!("identity signer keys: {e:?}"),
-            })?;
+    let sk_ed: Ed25519Secret = Sensitive::new(*identity_clone.ed25519_sk.expose());
+    let sk_pq = MlDsa65Secret::from_bytes(identity_clone.ml_dsa_65_sk.expose()).map_err(|e| {
+        FfiVaultError::CorruptVault {
+            detail: format!("identity ML-DSA-65 secret parse failed: {e:?}"),
+        }
+    })?;
+    identity_clone.ed25519_sk.zeroize();
+    identity_clone.ml_dsa_65_sk.zeroize();
 
     // Step 3: build temporary OpenVault. owner_card serves as both the
     // OpenVault.owner_card field AND (cloned) the author_card argument
