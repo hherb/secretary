@@ -31,7 +31,7 @@ Five commits on the feature branch `chore/b4d-deferred-cleanup`:
 ### Final file-size landscape (≤500-line policy)
 
 Bridge `src/`:
-- 524 — `error/vault.rs` ← only file still over threshold; tests dominate (~250 LOC tightly coupled to the `FfiVaultError` type). Splitting tests into a sibling `error/vault_tests.rs` would require nesting `error/vault/` as a directory, which over-deepens for marginal LOC savings. Documented exception.
+- 524 — `error/vault.rs` ← only file still over threshold; tests dominate (~250 LOC tightly coupled to the `FfiVaultError` type). Splitting tests into a sibling `error/vault_tests.rs` would require nesting `error/vault/` as a directory, which over-deepens for marginal LOC savings. Documented exception, tracked in issue #44.
 - 462 — `vault/tests.rs` (pure test code; integration suite for the vault subsystem)
 - 433 — `identity.rs` (untouched this session; pre-existing)
 - 355 — `create.rs` (untouched)
@@ -90,7 +90,9 @@ Larger scope; standalone design pass. Bigger jump than B.5 but unblocks the desk
 
 ## (3) Open decisions and risks
 
-- **`error/vault.rs` is 524 LOC**, 24 over the policy threshold. Test density is intrinsic to the type; splitting tests would over-deepen the directory. Keep as a documented exception unless additional `FfiVaultError` variants land (B.5 will likely add 1-2; revisit then).
+- **`error/vault.rs` is 524 LOC**, 24 over the policy threshold. Test density is intrinsic to the type; splitting tests would over-deepen the directory. Keep as a documented exception unless additional `FfiVaultError` variants land (B.5 will likely add 1-2; revisit then). Tracked as issue #44.
+- **Three `pub(crate)` `#[allow(dead_code)]` accessors on `OpenVaultManifest`** — `vault_folder()`, `manifest_body()`, `owner_card()` — have no live caller (B.4b/c/d all landed using `snapshot_for_*`). Comments updated to reflect reality; retained for forward-compat with Sub-project C. Tracked as issue #45 (revisit for deletion when C's surface stabilizes).
+- **CodeQL critical alert** on `vault/tests.rs:71` (hard-coded test password) was a false positive on a moved file — fixed in this session by deriving the wrong password from `VAULT_001_PASSWORD` via `wrapping_add(1)`, eliminating the static byte literal that triggered the heuristic.
 - **Issue #38 still open** — the `share_block` and `save_block` proptests are at 16 cases each because per-case Argon2id-protected vault open dominates wall-clock time. The sibling-bin split this session does NOT address this; raising case counts requires a shared writable-vault fixture.
 - **The 4 split commits each pass `cargo test --release` independently** — the branch is bisect-friendly. The docs commit is the only non-pure-refactor change in the branch and is functionally independent.
 
