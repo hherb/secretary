@@ -21,8 +21,8 @@ This was a maintenance / housekeeping session on `main` after PR #47 (B.5) merge
 
 | Commit | Type | What landed |
 |---|---|---|
-| `<sha>` | docs(hygiene) | README + ROADMAP test counts re-synced **639 → 642** to reflect the 3 review-fix tests that landed on PR #47 *after* the originally-merged `c5bbf16` doc-update commit (`0e0ccad` orphan-trash-file rejection, `ee5417a` contact-card self-verify on contacts/ scan, `15d81ae` non-canonical trash-suffix skipping). Also re-syncs the B.5 narrative ("36 new tests" → "39 net tests including +3 PR #47 review-fix tests"). |
-| `<sha>` | docs(hygiene) | NEXT_SESSION.md + handoff snapshot for this session. |
+| `e0074ab` | docs(hygiene) | README + ROADMAP test counts re-synced **639 → 642** to reflect the 3 review-fix tests that landed on PR #47 *after* the originally-merged `c5bbf16` doc-update commit (`0e0ccad` orphan-trash-file rejection, `ee5417a` contact-card self-verify on contacts/ scan, `15d81ae` non-canonical trash-suffix skipping). Also re-syncs the B.5 narrative ("36 new tests" → "39 net tests including +3 PR #47 review-fix tests"). |
+| _this commit_ | docs(hygiene) | NEXT_SESSION.md + handoff snapshot for this session. SHA backfilled in a small follow-up. |
 
 ### Verification at session close (on `main` after the cleanup)
 
@@ -128,7 +128,7 @@ gh issue view 44      # error/vault.rs 500-line split (medium)
 ## Closing inventory
 
 - **Branch state:** only `main`. No worktrees besides primary. No stale `[gone]` tracking. No untracked cruft (`.DS_Store` removed).
-- **Total commits this session:** 2 on `chore/hygiene-post-b5-merge` (README+ROADMAP test count fix; this NEXT_SESSION + handoff).
+- **Total commits this session:** 3 on `chore/hygiene-post-b5-merge` (`e0074ab` README+ROADMAP test count fix; the NEXT_SESSION + handoff commit; and a small SHA-backfill follow-up so the table above carries the real SHA of the doc-count fix).
 - **Workspace tests:** **642 cargo + 9 ignored** (was 639 at PR #47 c5bbf16 doc commit time; +3 from the three PR #47 review-fix commits that landed mid-flight). Other test surfaces unchanged from B.5 close (68 pytest, 34 Swift PASS, 35 Kotlin PASS).
 - **README:** test count line updated (639 → 642 + B.5 narrative re-synced).
 - **ROADMAP:** test count line + B.5 entry test-count footnote updated.
