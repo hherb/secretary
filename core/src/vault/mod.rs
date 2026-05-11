@@ -47,7 +47,8 @@ pub use manifest::{
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second
 // re-export here — the type is already re-exported above via block.rs.
 pub use orchestrators::{
-    create_vault, open_vault, save_block, share_block, trash_block, OpenVault, Unlocker,
+    create_vault, open_vault, restore_block, save_block, share_block, trash_block, OpenVault,
+    Unlocker,
 };
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 

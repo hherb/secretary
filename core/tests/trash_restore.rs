@@ -1,10 +1,13 @@
 //! Integration tests for `secretary_core::vault::trash_block` and
-//! (in a later commit) `secretary_core::vault::restore_block` — Task B.5
-//! of PR-B. The trash side moves a live block file into `trash/` with a
-//! tombstone timestamp in the filename, removes the matching `BlockEntry`
-//! from `manifest.blocks`, appends a `TrashEntry` to `manifest.trash`,
-//! and re-signs the manifest. The §7 file-renaming semantics are atomic
-//! per POSIX `rename(2)`.
+//! `secretary_core::vault::restore_block` — Task B.5 of PR-B. The trash
+//! side moves a live block file into `trash/` with a tombstone timestamp
+//! in the filename, removes the matching `BlockEntry` from
+//! `manifest.blocks`, appends a `TrashEntry` to `manifest.trash`, and
+//! re-signs the manifest. The restore side reverses the move: scans
+//! `trash/<uuid>.cbor.enc.*`, picks the largest-timestamp file,
+//! decrypts + hybrid-verifies, renames into `blocks/`, purges older
+//! copies, and re-signs the manifest. The §7 / §7.1 file-renaming
+//! semantics are atomic per POSIX `rename(2)`.
 //!
 //! NOTE: deviation from plan §2.1/2.5/2.6 — the plan called for inline
 //! `#[cfg(test)] mod tests` unit tests in `orchestrators.rs`. We pivot
@@ -29,8 +32,8 @@ use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
-    encode_manifest_file, open_vault, save_block, sign_manifest, trash_block, BlockPlaintext,
-    KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
+    encode_manifest_file, open_vault, restore_block, save_block, sign_manifest, trash_block,
+    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -358,5 +361,395 @@ fn trash_block_then_reopen_round_trip() {
             .iter()
             .any(|t| t.block_uuid == block_uuid && t.tombstoned_at_ms == 2_000),
         "TrashEntry must persist on disk through manifest re-sign"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — happy path: trash → restore round-trip
+// ---------------------------------------------------------------------------
+
+/// `restore_block` is the inverse of `trash_block` over a single
+/// trashed copy: after restore, the block file is back in `blocks/`,
+/// the `BlockEntry` is back in `manifest.blocks`, and the matching
+/// `TrashEntry` is gone.
+#[test]
+fn restore_block_round_trip_after_single_trash() {
+    let (dir, _mnemonic, pw) = make_fast_vault(5, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc5; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd5; 16];
+    let block_uuid = [0xb5; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "restore-round-trip");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng).unwrap();
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    assert!(
+        folder
+            .join("blocks")
+            .join(format!("{uuid_hex}.cbor.enc"))
+            .exists(),
+        "block file should be back in blocks/ after restore"
+    );
+    assert!(
+        open.manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry should be back in manifest.blocks"
+    );
+    assert!(
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry should be gone from manifest.trash"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — multi-copy purge: newest restored, older copies removed
+// ---------------------------------------------------------------------------
+
+/// When multiple files match `<uuid>.cbor.enc.*` (the same block was
+/// trashed → restored → re-trashed, or an older copy was manually
+/// preserved), `restore_block` picks the newest timestamp and physically
+/// removes the older copies.
+#[test]
+fn restore_block_purges_older_copies() {
+    let (dir, _mnemonic, pw) = make_fast_vault(6, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc6; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd6; 16];
+    let block_uuid = [0xb6; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "multi-trash");
+    let recipients = vec![open.owner_card.clone()];
+
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 4_000, &mut rng).unwrap();
+
+    // Plant an older trashed copy by hand-copying the newest. Simulates
+    // a leftover from a prior trash-restore-trash cycle inside the
+    // retention window.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_dir = folder.join("trash");
+    let newest = trash_dir.join(format!("{uuid_hex}.cbor.enc.4000"));
+    let older = trash_dir.join(format!("{uuid_hex}.cbor.enc.3500"));
+    fs::copy(&newest, &older).unwrap();
+    assert!(older.exists());
+
+    restore_block(folder, &mut open, block_uuid, device_uuid, 5_000, &mut rng).unwrap();
+
+    // Newest moved to blocks/, older purged.
+    assert!(
+        folder
+            .join("blocks")
+            .join(format!("{uuid_hex}.cbor.enc"))
+            .exists(),
+        "newest trashed copy should be restored to blocks/"
+    );
+    assert!(!older.exists(), "older trashed copy should be purged");
+    assert!(!newest.exists(), "newest moved out of trash/");
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — preserves block-level vector clock (sync correctness)
+// ---------------------------------------------------------------------------
+
+/// `restore_block` rebuilds the `BlockEntry` from the on-disk file's
+/// header — the per-block `vector_clock_summary` is preserved verbatim,
+/// because the block's *content* did not change between trash and
+/// restore (rename is a move, not a rewrite). This is the sync-
+/// correctness invariant that makes restore a continuation, not a
+/// fork.
+#[test]
+fn restore_block_preserves_block_vector_clock() {
+    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd7; 16];
+    let block_uuid = [0xb7; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "clock-continuity");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let block_clock_before = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .vector_clock_summary
+        .clone();
+
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+    restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng).unwrap();
+
+    let block_clock_after = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .vector_clock_summary
+        .clone();
+    assert_eq!(
+        block_clock_before, block_clock_after,
+        "block-level vector clock must be preserved across trash/restore"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — rejection: BlockUuidAlreadyLive
+// ---------------------------------------------------------------------------
+
+/// `restore_block` must reject when the UUID is currently live (both in
+/// `manifest.blocks` and somehow also in `trash/`). The spec requires
+/// the caller to trash the live copy first. The manifest must not be
+/// mutated.
+#[test]
+fn restore_block_rejects_live_uuid_collision() {
+    let (dir, _mnemonic, pw) = make_fast_vault(8, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc8; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd8; 16];
+    let block_uuid = [0xb8; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "collision");
+    let recipients = vec![open.owner_card.clone()];
+
+    // Save → trash → re-save: now the block is live AND a trash file
+    // exists (planted by the trash_block call before re-save). To
+    // simulate the collision: trash, re-create the block on disk while
+    // keeping the trash file around.
+    save_block(
+        folder,
+        &mut open,
+        plaintext.clone(),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let blocks_count_before = open.manifest.blocks.len();
+    let result = restore_block(folder, &mut open, block_uuid, device_uuid, 4_000, &mut rng);
+    match result {
+        Err(VaultError::BlockUuidAlreadyLive {
+            block_uuid: returned,
+        }) => assert_eq!(returned, block_uuid),
+        other => panic!("expected BlockUuidAlreadyLive, got {other:?}"),
+    }
+    // Manifest unmodified — no half-applied restore.
+    assert_eq!(open.manifest.blocks.len(), blocks_count_before);
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — rejection: BlockNotInTrash
+// ---------------------------------------------------------------------------
+
+/// `restore_block` surfaces `VaultError::BlockNotInTrash` when neither
+/// a trash file nor a `TrashEntry` exists for the requested UUID. The
+/// manifest is left untouched.
+#[test]
+fn restore_block_rejects_when_not_in_trash() {
+    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd9; 16];
+    let unknown_uuid = [0xee; 16];
+
+    let result = restore_block(
+        folder,
+        &mut open,
+        unknown_uuid,
+        device_uuid,
+        1_000,
+        &mut rng,
+    );
+    match result {
+        Err(VaultError::BlockNotInTrash {
+            block_uuid: returned,
+        }) => assert_eq!(returned, unknown_uuid),
+        other => panic!("expected BlockNotInTrash, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — rejection: RestoreVerificationFailed (tampered file)
+// ---------------------------------------------------------------------------
+
+/// If an attacker (or a disk fault) corrupts the bytes of the trashed
+/// file, `restore_block` must reject the file before mutating the
+/// manifest. The trash file and `TrashEntry` are preserved so the
+/// caller can decide between purge-without-restore and forensic
+/// capture.
+#[test]
+fn restore_block_rejects_tampered_file() {
+    let (dir, _mnemonic, pw) = make_fast_vault(10, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xca; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xda; 16];
+    let block_uuid = [0xba; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "tampered");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    // Tamper: flip a byte in the middle of the trash file. The §6.1
+    // hybrid signature will reject the file regardless of where the
+    // bit lands (header, recipient table, AEAD payload — all are
+    // inside the signed range).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_path = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
+    let mut bytes = fs::read(&trash_path).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    fs::write(&trash_path, &bytes).unwrap();
+
+    let result = restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng);
+    match result {
+        Err(VaultError::RestoreVerificationFailed {
+            block_uuid: returned,
+            ..
+        }) => assert_eq!(returned, block_uuid),
+        other => panic!("expected RestoreVerificationFailed, got {other:?}"),
+    }
+    // Trash file still present (caller decides what to do with it).
+    assert!(
+        trash_path.exists(),
+        "trash file must persist after a rejected restore"
+    );
+    // TrashEntry still in manifest.
+    assert!(
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must persist after a rejected restore"
+    );
+    // Manifest.blocks unchanged.
+    assert!(
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry must not be added after a rejected restore"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — re-open round-trip: on-disk state matches in-memory
+// ---------------------------------------------------------------------------
+
+/// After `restore_block` re-signs the manifest and atomic-writes it,
+/// `open_vault` on the same folder sees the restored block. Verifies
+/// the on-disk manifest is authoritative.
+#[test]
+fn restore_block_then_reopen_round_trip() {
+    let (dir, _mnemonic, pw) = make_fast_vault(11, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xdb; 16];
+    let block_uuid = [0xbb; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "reopen");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+    restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng).unwrap();
+    drop(open);
+
+    let reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(
+        reopened
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry must persist on disk after restore_block manifest re-sign"
+    );
+    assert!(
+        !reopened
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must be gone on disk after restore_block manifest re-sign"
     );
 }

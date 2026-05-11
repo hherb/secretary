@@ -413,6 +413,36 @@ The trash filename grammar is `<block-uuid-hyphenated>.cbor.enc.<unix-millis>` w
 
 The "Move" in step 1 is `rename(2)` semantics — atomic on a single filesystem. An attempt to trash a block whose `blocks/` directory and `trash/` directory live on different filesystems (e.g., one is a cloud-folder mount-point and the other is local) is a configuration error and surfaces as an I/O failure (`EXDEV`). Recovery: re-locate the vault on a single filesystem.
 
+### 7.1 Restoring a block
+
+Restoring a block reverses the §7 deletion sequence. The trash retention window (default 90 days) makes restore meaningful: until physical purge, the encrypted block file is still on disk in `trash/`.
+
+**Preconditions:**
+
+- The `block_uuid` MUST have a corresponding `TrashEntry` in `manifest.trash` AND at least one file in `trash/` matching `<block-uuid>.cbor.enc.*`. A disagreement between the two (file without manifest entry, or vice versa) is an integrity failure and surfaces as a typed error.
+- The `block_uuid` MUST NOT appear in `manifest.blocks`. A live-and-trashed UUID cannot be restored — the caller must first trash the live copy.
+
+**Sequence:**
+
+1. Scan `trash/` for files matching `<block-uuid>.cbor.enc.*`. Parse each suffix as a u64 of decimal unix millis. Reject ill-formed suffixes (non-numeric, overflowing u64) as integrity failures.
+2. Pick the file with the **largest** suffix as the *restore target*. All other matching files are *purge targets*.
+3. Read the restore-target's bytes. Decode + AEAD-decrypt + §6.1 hybrid-verify (Ed25519 ∧ ML-DSA-65; **both** halves must verify) the file against the owner's contact-card pubkeys. Failure halts restore — the manifest is NOT modified and `trash/` is NOT modified.
+4. Map each `recipient_fingerprint` in the decrypted block file's §6.2 recipient table to a `contact_uuid` by: (a) matching against the owner card's fingerprint (already in memory), and (b) for any unmatched fingerprint, scanning `contacts/*.card`, decoding each card, and computing its fingerprint until a match is found. Any unresolved fingerprint halts restore — the trash file and manifest are still untouched at this point.
+5. `rename(2)` the restore target to `blocks/<block-uuid>.cbor.enc`. Atomic per §9.
+6. Physically remove every purge target via `fs::remove_file`. Best-effort: individual failures here are swallowed — the block is already live; a leftover older copy is only a retention-window cleanup item.
+7. Build the `BlockEntry` from the decrypted block file:
+    - `block_uuid`, `block_name` (from plaintext), `suite_id`, `created_at_ms`, and `vector_clock_summary` from the file's §6.1 header. **Block-level vector clock is preserved verbatim** — restore does not tick the per-block clock because the block's *content* did not change.
+    - `fingerprint` = BLAKE3-256 of the restored file's bytes (matches the bytes that just passed verification; `rename(2)` is a move, not a rewrite).
+    - `recipients` = the resolved `contact_uuid`s from step 4.
+    - `last_mod_ms` = now (the restoring write's wall-clock).
+8. Append the new `BlockEntry` to `manifest.blocks`; remove the matching `TrashEntry` from `manifest.trash`.
+9. Tick the manifest-level vector clock for the restoring `device_uuid` (the manifest *did* change — its block set moved).
+10. Re-sign the manifest with a fresh AEAD nonce; atomic-write per §9.
+
+Atomic-write ordering mirrors §9: file move first (step 5), manifest write second (step 10). A crash between leaves the block live-on-disk but absent from the manifest — recoverable on next open by re-attempting the restore.
+
+Restore preserves the block-level vector clock so that a sync of the restored block to another device is treated as a continuation, not a fork: the receiving device will see a block with the same `block_uuid` and a `vector_clock_summary` greater-or-equal to what it last observed, and will merge accordingly.
+
 Deleting a record (within a block) sets `tombstone: true` on the record, updates `last_mod_ms`, and sets `tombstoned_at_ms = last_mod_ms`. The record's `fields` may be cleared on tombstoning (recommended) or kept for undelete; a tombstoned record is invisible to UI but its presence prevents resurrection on merge from a device that hadn't seen the deletion.
 
 `tombstoned_at_ms` is the high-water mark of every tombstone observation this record has been part of. It is preserved (not reset) across merges and across resurrection: a record that was tombstoned at T1 and later resurrected by a live edit at T2 > T1 carries `tombstone = false`, `last_mod_ms = T2`, `tombstoned_at_ms = T1`. The merge primitive uses this field to drop fields whose `last_mod` is at or below the death-clock — see crypto-design §11.3 for the staleness filter that keeps merge associative under arbitrary tombstone histories.
