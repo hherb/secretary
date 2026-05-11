@@ -199,6 +199,27 @@ pub enum FfiVaultError {
         /// impl. Free-form; not part of the API contract.
         detail: String,
     },
+
+    /// `restore_block`: the UUID has both a `TrashEntry` and a live
+    /// `BlockEntry`. The caller must first trash the live copy before
+    /// restoring. Folder-in counterpart to
+    /// [`secretary_core::vault::VaultError::BlockUuidAlreadyLive`].
+    #[error("block is currently live and trashed: {detail}")]
+    BlockUuidAlreadyLive {
+        /// Diagnostic text including the UUID. Free-form; not part of
+        /// the API contract.
+        detail: String,
+    },
+
+    /// `restore_block`: no file matched `trash/<uuid>.cbor.enc.*` and
+    /// no `TrashEntry` exists for this UUID. Folder-in counterpart to
+    /// [`secretary_core::vault::VaultError::BlockNotInTrash`].
+    #[error("block is not in trash: {detail}")]
+    BlockNotInTrash {
+        /// Diagnostic text including the UUID. Free-form; not part of
+        /// the API contract.
+        detail: String,
+    },
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
@@ -262,6 +283,33 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // `recipient_` prefix for clarity at the foreign-API boundary.
             VE::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {
                 recipient_fingerprint_hex: hex::encode(fingerprint),
+            },
+
+            // trash/restore precondition: caller asked to restore a UUID
+            // that is currently live. Typed surface so the foreign caller
+            // can recover by trashing the live copy first. Hex-encoded
+            // for parity with `BlockNotFound { uuid_hex }`.
+            VE::BlockUuidAlreadyLive { block_uuid } => FfiVaultError::BlockUuidAlreadyLive {
+                detail: hex::encode(block_uuid),
+            },
+
+            // trash/restore precondition: caller asked to restore a UUID
+            // that isn't in the trash. Typed surface so foreign callers
+            // can distinguish "already restored" from "data corruption".
+            // Hex-encoded for parity with `BlockNotFound { uuid_hex }`.
+            VE::BlockNotInTrash { block_uuid } => FfiVaultError::BlockNotInTrash {
+                detail: hex::encode(block_uuid),
+            },
+
+            // restore_block: the trashed file failed hybrid sig / AEAD
+            // verification — exactly the "data on disk doesn't match what
+            // we signed" contract, so fold to CorruptVault. Hex-encoded
+            // for parity with the other UUID renderings.
+            VE::RestoreVerificationFailed { block_uuid, detail } => FfiVaultError::CorruptVault {
+                detail: format!(
+                    "trashed block {} failed verification: {detail}",
+                    hex::encode(block_uuid),
+                ),
             },
 
             // Post-unlock integrity / structural failures and IO kinds the
@@ -590,5 +638,65 @@ mod tests {
             e.to_string(),
             "failed to decode contact card: malformed CBOR"
         );
+    }
+
+    #[test]
+    fn from_core_block_uuid_already_live_routes_to_block_uuid_already_live() {
+        use secretary_core::vault::VaultError as VE;
+        let core_err = VE::BlockUuidAlreadyLive {
+            block_uuid: [0xaa; 16],
+        };
+        let ffi: FfiVaultError = core_err.into();
+        let FfiVaultError::BlockUuidAlreadyLive { detail } = ffi else {
+            panic!("expected BlockUuidAlreadyLive");
+        };
+        assert!(detail.contains("aa"));
+    }
+
+    #[test]
+    fn from_core_block_not_in_trash_routes_to_block_not_in_trash() {
+        use secretary_core::vault::VaultError as VE;
+        let core_err = VE::BlockNotInTrash {
+            block_uuid: [0xbb; 16],
+        };
+        let ffi: FfiVaultError = core_err.into();
+        let FfiVaultError::BlockNotInTrash { detail } = ffi else {
+            panic!("expected BlockNotInTrash");
+        };
+        assert!(detail.contains("bb"));
+    }
+
+    #[test]
+    fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
+        use secretary_core::vault::VaultError as VE;
+        let core_err = VE::RestoreVerificationFailed {
+            block_uuid: [0xcc; 16],
+            detail: "sig mismatch".into(),
+        };
+        let ffi: FfiVaultError = core_err.into();
+        let FfiVaultError::CorruptVault { detail } = ffi else {
+            panic!("expected CorruptVault");
+        };
+        assert!(detail.contains("sig mismatch"));
+        assert!(detail.contains("verification"));
+    }
+
+    #[test]
+    fn block_uuid_already_live_display_format() {
+        let e = FfiVaultError::BlockUuidAlreadyLive {
+            detail: "[1, 2, 3]".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "block is currently live and trashed: [1, 2, 3]"
+        );
+    }
+
+    #[test]
+    fn block_not_in_trash_display_format() {
+        let e = FfiVaultError::BlockNotInTrash {
+            detail: "[4, 5, 6]".into(),
+        };
+        assert_eq!(e.to_string(), "block is not in trash: [4, 5, 6]");
     }
 }

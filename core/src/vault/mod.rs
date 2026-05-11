@@ -46,7 +46,10 @@ pub use manifest::{
 // NOTE: VectorClockEntry is re-used from block.rs by manifest.rs (re-exported
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second
 // re-export here — the type is already re-exported above via block.rs.
-pub use orchestrators::{create_vault, open_vault, save_block, share_block, OpenVault, Unlocker};
+pub use orchestrators::{
+    create_vault, open_vault, restore_block, save_block, share_block, trash_block, OpenVault,
+    Unlocker,
+};
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
 /// Umbrella error type for the vault format layer.
@@ -230,5 +233,35 @@ pub enum VaultError {
     #[error("share_block: existing recipient with fingerprint {fingerprint:?} is missing from the supplied recipient cards list")]
     MissingRecipientCard {
         fingerprint: crate::identity::fingerprint::Fingerprint,
+    },
+
+    /// trash_block / restore_block precondition: the requested
+    /// `block_uuid` exists in `manifest.trash` but also exists in
+    /// `manifest.blocks`. Restore would produce a duplicate entry. The
+    /// caller MUST trash the live copy first, then restore the trashed
+    /// one. See `docs/vault-format.md` §7.1 "Restoring a block".
+    #[error(
+        "block {block_uuid:?} is currently live and trashed; trash the live copy before restoring"
+    )]
+    BlockUuidAlreadyLive { block_uuid: [u8; 16] },
+
+    /// `restore_block` precondition: no file matching
+    /// `trash/<uuid>.cbor.enc.*` was found AND no `TrashEntry` exists in
+    /// `manifest.trash` for this UUID. (Both conditions are required —
+    /// the spec keeps the file and the manifest entry paired; one
+    /// without the other is also a `BlockNotInTrash`.)
+    #[error("block {block_uuid:?} is not in trash")]
+    BlockNotInTrash { block_uuid: [u8; 16] },
+
+    /// `restore_block` step 3: the trashed block file failed §6.1 hybrid
+    /// signature verification or AEAD decrypt. An attacker with write
+    /// access to `trash/` planted a corrupt or forged file. The
+    /// manifest is NOT modified and `trash/` is NOT modified — the
+    /// caller can decide between purge-without-restore and forensic
+    /// capture.
+    #[error("trashed block {block_uuid:?} failed verification: {detail}")]
+    RestoreVerificationFailed {
+        block_uuid: [u8; 16],
+        detail: String,
     },
 }

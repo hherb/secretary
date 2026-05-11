@@ -42,6 +42,10 @@ create_exception!(secretary_ffi_py, VaultNotAuthor, PyException);
 create_exception!(secretary_ffi_py, VaultRecipientAlreadyPresent, PyException);
 create_exception!(secretary_ffi_py, VaultMissingRecipientCard, PyException);
 create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
+// B.5 trash_block / restore_block error surface — 2 typed exception
+// classes mirroring the bridge's new FfiVaultError variants.
+create_exception!(secretary_ffi_py, VaultBlockUuidAlreadyLive, PyException);
+create_exception!(secretary_ffi_py, VaultBlockNotInTrash, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -101,6 +105,11 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             recipient_fingerprint_hex,
         } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex),
         FfiVaultError::CardDecodeFailure { detail } => VaultCardDecodeFailure::new_err(detail),
+        // B.5 trash_block / restore_block error surface.
+        FfiVaultError::BlockUuidAlreadyLive { detail } => {
+            VaultBlockUuidAlreadyLive::new_err(detail)
+        }
+        FfiVaultError::BlockNotInTrash { detail } => VaultBlockNotInTrash::new_err(detail),
     }
 }
 

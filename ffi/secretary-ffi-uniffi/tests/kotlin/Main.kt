@@ -20,8 +20,10 @@ import uniffi.secretary.openWithPassword
 import uniffi.secretary.openWithRecovery
 import uniffi.secretary.readBlock
 import uniffi.secretary.RecordInput
+import uniffi.secretary.restoreBlock
 import uniffi.secretary.saveBlock
 import uniffi.secretary.shareBlock
+import uniffi.secretary.trashBlock
 import uniffi.secretary.UnlockException
 import uniffi.secretary.VaultException
 import uniffi.secretary.version
@@ -1026,8 +1028,141 @@ fun main() {
         shareTmp?.let { cleanupTempVault(it) }
     }
 
+    // =========================================================================
+    // B.5 — trash_block + restore_block asserts
+    // =========================================================================
+
+    val b5BlockUuid = ByteArray(16) { 0xBB.toByte() }
+    val b5RecordUuid = ByteArray(16) { 0xCC.toByte() }
+    val b5DeviceUuid = ByteArray(16) { 0x07.toByte() }
+    var b5Tmp: java.nio.file.Path? = null
+
+    // Assert 32: trash → restore round-trip preserves the block.
+    b5Tmp = null
+    try {
+        val (out, tmp) = freshWritableVault()
+        b5Tmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(
+                        b5BlockUuid,
+                        "B.5 round-trip",
+                        listOf(
+                            RecordInput(
+                                b5RecordUuid,
+                                listOf(FieldInput("title", FieldInputValue.Text("secret"))),
+                            ),
+                        ),
+                    ),
+                    b5DeviceUuid, 1_000UL,
+                )
+                trashBlock(id, mf, b5BlockUuid, b5DeviceUuid, 2_000UL)
+                check(
+                    mf.findBlock(b5BlockUuid) == null,
+                    "trash_block: BlockEntry dropped from manifest",
+                )
+                restoreBlock(id, mf, b5BlockUuid, b5DeviceUuid, 3_000UL)
+                readBlock(id, mf, b5BlockUuid).use { block ->
+                    check(
+                        block.recordCount() == 1UL,
+                        "restore_block: record preserved (got ${block.recordCount()})",
+                    )
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        check(false, "B.5 round-trip threw $e")
+    } finally {
+        b5Tmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 33: trash_block(unknown_uuid) → VaultException.BlockNotFound.
+    b5Tmp = null
+    try {
+        val (out, tmp) = freshWritableVault()
+        b5Tmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                val unknownUuid = ByteArray(16) { 0xFF.toByte() }
+                try {
+                    trashBlock(id, mf, unknownUuid, b5DeviceUuid, 1_000UL)
+                    check(false, "trash_block(unknown) should have thrown BlockNotFound")
+                } catch (e: VaultException.BlockNotFound) {
+                    check(true, "trash_block unknown → VaultException.BlockNotFound")
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        if (e !is VaultException.BlockNotFound) {
+            check(false, "trash_block unknown setup threw $e")
+        }
+    } finally {
+        b5Tmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 34: restore_block on never-trashed UUID → VaultException.BlockNotInTrash.
+    b5Tmp = null
+    try {
+        val (out, tmp) = freshWritableVault()
+        b5Tmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                val neverTrashedUuid = ByteArray(16) { 0xEE.toByte() }
+                try {
+                    restoreBlock(id, mf, neverTrashedUuid, b5DeviceUuid, 1_000UL)
+                    check(false, "restore_block(never-trashed) should have thrown BlockNotInTrash")
+                } catch (e: VaultException.BlockNotInTrash) {
+                    check(true, "restore_block never-trashed → VaultException.BlockNotInTrash")
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        if (e !is VaultException.BlockNotInTrash) {
+            check(false, "restore_block never-trashed setup threw $e")
+        }
+    } finally {
+        b5Tmp?.let { cleanupTempVault(it) }
+    }
+
+    // Assert 35: restore_block on live UUID (trashed → re-saved) →
+    // VaultException.BlockUuidAlreadyLive.
+    b5Tmp = null
+    try {
+        val (out, tmp) = freshWritableVault()
+        b5Tmp = tmp
+        out.identity.use { id ->
+            out.manifest.use { mf ->
+                saveBlock(
+                    id, mf,
+                    BlockInput(b5BlockUuid, "v1", emptyList()),
+                    b5DeviceUuid, 1_000UL,
+                )
+                trashBlock(id, mf, b5BlockUuid, b5DeviceUuid, 2_000UL)
+                saveBlock(
+                    id, mf,
+                    BlockInput(b5BlockUuid, "v2", emptyList()),
+                    b5DeviceUuid, 3_000UL,
+                )
+                try {
+                    restoreBlock(id, mf, b5BlockUuid, b5DeviceUuid, 4_000UL)
+                    check(false, "restore_block live-collision should have thrown BlockUuidAlreadyLive")
+                } catch (e: VaultException.BlockUuidAlreadyLive) {
+                    check(true, "restore_block live-collision → VaultException.BlockUuidAlreadyLive")
+                }
+            }
+        }
+    } catch (e: Throwable) {
+        if (e !is VaultException.BlockUuidAlreadyLive) {
+            check(false, "restore_block live-collision setup threw $e")
+        }
+    } finally {
+        b5Tmp?.let { cleanupTempVault(it) }
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 31 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of 35 assertion(s) failed")
         exitProcess(1)
     }
 

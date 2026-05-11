@@ -211,7 +211,10 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         | VaultError::ManifestAuthorMismatch
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
-        | VaultError::ClockOverflow { .. } => FfiVaultError::SaveCryptoFailure {
+        | VaultError::ClockOverflow { .. }
+        | VaultError::BlockUuidAlreadyLive { .. }
+        | VaultError::BlockNotInTrash { .. }
+        | VaultError::RestoreVerificationFailed { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }

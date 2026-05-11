@@ -109,9 +109,11 @@ pub mod create;
 pub mod error;
 pub mod identity;
 pub mod record;
+pub mod restore;
 pub mod save;
 pub mod share;
 mod sync_helpers;
+pub mod trash;
 pub mod unlock;
 pub mod vault;
 
@@ -119,8 +121,10 @@ pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
+pub use restore::restore_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use share::share_block;
+pub use trash::trash_block;
 pub use unlock::{open_with_password, open_with_recovery};
 pub use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
