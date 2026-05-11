@@ -40,7 +40,7 @@ use crate::unlock::{self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml
 use super::{block, io, manifest};
 use super::{
     BlockEntry, BlockHeader, BlockPlaintext, KdfParamsRef, Manifest, ManifestFile, ManifestHeader,
-    RecipientPublicKeys, VaultError, VectorClockEntry,
+    RecipientPublicKeys, TrashEntry, VaultError, VectorClockEntry,
 };
 
 /// Filename of the cleartext metadata file (§2 / vault-format.md §1).
@@ -1320,6 +1320,136 @@ pub fn share_block(
     })?;
 
     // Step 18: refresh the in-memory manifest envelope.
+    open.manifest_file = new_manifest_file;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// trash_block — B.5 lifecycle pair (with restore_block below)
+// ---------------------------------------------------------------------------
+
+/// Subdirectory holding tombstoned block files (vault-format.md §7).
+/// Created lazily on first `trash_block` call.
+const TRASH_SUBDIR: &str = "trash";
+
+/// Move a live block into trash. `docs/vault-format.md` §7 deletion sequence.
+///
+/// Sequence:
+///
+/// 1. Find the block in `open.manifest.blocks`; surfaces
+///    [`VaultError::BlockNotFound`] if absent. Lookup is by `block_uuid`.
+/// 2. Ensure `folder/trash/` exists (lazy mkdir, mirroring `save_block`'s
+///    `blocks/` create).
+/// 3. `std::fs::rename(blocks/<uuid>.cbor.enc, trash/<uuid>.cbor.enc.<now_ms>)`
+///    — atomic per POSIX `rename(2)` within a single filesystem. Cross-
+///    filesystem (`EXDEV`) surfaces as [`VaultError::Io`].
+/// 4. Remove the matching [`BlockEntry`] from `open.manifest.blocks`.
+/// 5. Append a [`TrashEntry`] `{ block_uuid, tombstoned_at_ms: now_ms,
+///    tombstoned_by: device_uuid }` to `open.manifest.trash`.
+/// 6. Tick `open.manifest.vector_clock` for `device_uuid`. The per-block
+///    clock is NOT ticked — the block's *content* did not change.
+/// 7. Re-sign the manifest with a fresh AEAD nonce; atomic-write per §9.
+///    Mirrors `save_block` steps 11–14.
+/// 8. Refresh `open.manifest_file` in place.
+///
+/// On `Err`: `open.manifest` and `open.manifest_file` are NOT modified.
+/// The filesystem MAY have a partial move (block file in `trash/`, manifest
+/// still pointing at `blocks/`) which is harmless because `open_vault`
+/// reads only entries listed in the manifest — the trashed file is then
+/// detectable as an orphan and the operation can be retried.
+pub fn trash_block(
+    folder: &Path,
+    open: &mut OpenVault,
+    block_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    now_ms: u64,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<(), VaultError> {
+    // Step 1: locate the block.
+    let entry_idx = open
+        .manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == block_uuid)
+        .ok_or(VaultError::BlockNotFound { block_uuid })?;
+
+    // Step 2: lazy mkdir for trash/.
+    let trash_dir = folder.join(TRASH_SUBDIR);
+    std::fs::create_dir_all(&trash_dir).map_err(|e| VaultError::Io {
+        context: "trash_block: failed to create trash/ subdirectory",
+        source: e,
+    })?;
+
+    // Step 3: rename blocks/<uuid>.cbor.enc → trash/<uuid>.cbor.enc.<now_ms>.
+    // POSIX rename(2) is atomic within a single filesystem; EXDEV (cross-FS)
+    // surfaces here as a typed Io error so the caller knows the vault is
+    // mis-configured rather than the block being half-trashed.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let src = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}.cbor.enc"));
+    let dst = trash_dir.join(format!("{uuid_hex}.cbor.enc.{now_ms}"));
+    std::fs::rename(&src, &dst).map_err(|e| VaultError::Io {
+        context: "trash_block: rename blocks/ → trash/",
+        source: e,
+    })?;
+
+    // Step 4: drop the BlockEntry. The manifest encoder re-sorts on emit,
+    // so order-preserving `remove` and order-shuffling `swap_remove` are
+    // both correct; pick `remove` for clearer intent.
+    open.manifest.blocks.remove(entry_idx);
+
+    // Step 5: append the TrashEntry. The spec's §7.1 "Restoring" path
+    // matches on (block_uuid, tombstoned_at_ms) so older tombstones —
+    // surviving as files but not in the manifest — never collide with
+    // a fresh trash event for the same UUID.
+    open.manifest.trash.push(TrashEntry {
+        block_uuid,
+        tombstoned_at_ms: now_ms,
+        tombstoned_by: device_uuid,
+        unknown: std::collections::BTreeMap::new(),
+    });
+
+    // Step 6: tick the manifest-level (vault-level) vector clock. The
+    // per-block clock is NOT touched — the block's *content* did not
+    // change, only its life-cycle state.
+    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
+
+    // Step 7: refresh manifest header → fresh AEAD nonce → re-sign →
+    // atomic-write. Mirrors `save_block` steps 11-13. Owner secret keys
+    // are re-wrapped from the bundle's raw seeds into the typed
+    // Ed25519Secret / MlDsa65Secret holders that `sign_manifest`
+    // expects; the intermediate stack copy is zeroized before sign.
+    let new_header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: now_ms,
+    };
+    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
+    ed_sk_bytes.zeroize();
+    let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
+    let mut aead_nonce = [0u8; 24];
+    rng.fill_bytes(&mut aead_nonce);
+    let new_manifest_file = manifest::sign_manifest(
+        new_header,
+        &open.manifest,
+        &open.identity_block_key,
+        &aead_nonce,
+        open.manifest_file.author_fingerprint,
+        &owner_ed_sk,
+        &owner_pq_sk,
+    )?;
+    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
+    let manifest_path = folder.join(MANIFEST_FILENAME);
+    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
+        context: "trash_block: failed to write manifest.cbor.enc",
+        source: e,
+    })?;
+
+    // Step 8: refresh the in-memory envelope so subsequent operations
+    // chain off the new clock + new signature.
     open.manifest_file = new_manifest_file;
 
     Ok(())

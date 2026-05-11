@@ -409,6 +409,10 @@ Deleting a block:
 
 The tombstone entry in the manifest must persist for at least the retention window so that all syncing devices have a chance to observe the deletion.
 
+The trash filename grammar is `<block-uuid-hyphenated>.cbor.enc.<unix-millis>` where `<unix-millis>` is the decimal ASCII representation of the deletion's `tombstoned_at_ms` (matches the manifest's `TrashEntry.tombstoned_at_ms`). Multiple files matching `<block-uuid-hyphenated>.cbor.enc.*` may co-exist when the same `block_uuid` is trashed → restored → re-trashed within the retention window. The filename is the canonical record of when a particular trashing happened; the manifest's `TrashEntry` carries the **most recent** `tombstoned_at_ms` only (older tombstone times are not tracked in the manifest).
+
+The "Move" in step 1 is `rename(2)` semantics — atomic on a single filesystem. An attempt to trash a block whose `blocks/` directory and `trash/` directory live on different filesystems (e.g., one is a cloud-folder mount-point and the other is local) is a configuration error and surfaces as an I/O failure (`EXDEV`). Recovery: re-locate the vault on a single filesystem.
+
 Deleting a record (within a block) sets `tombstone: true` on the record, updates `last_mod_ms`, and sets `tombstoned_at_ms = last_mod_ms`. The record's `fields` may be cleared on tombstoning (recommended) or kept for undelete; a tombstoned record is invisible to UI but its presence prevents resurrection on merge from a device that hadn't seen the deletion.
 
 `tombstoned_at_ms` is the high-water mark of every tombstone observation this record has been part of. It is preserved (not reset) across merges and across resurrection: a record that was tombstoned at T1 and later resurrected by a live edit at T2 > T1 carries `tombstone = false`, `last_mod_ms = T2`, `tombstoned_at_ms = T1`. The merge primitive uses this field to drop fields whose `last_mod` is at or below the death-clock — see crypto-design §11.3 for the staleness filter that keeps merge associative under arbitrary tombstone histories.

@@ -46,7 +46,9 @@ pub use manifest::{
 // NOTE: VectorClockEntry is re-used from block.rs by manifest.rs (re-exported
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second
 // re-export here — the type is already re-exported above via block.rs.
-pub use orchestrators::{create_vault, open_vault, save_block, share_block, OpenVault, Unlocker};
+pub use orchestrators::{
+    create_vault, open_vault, save_block, share_block, trash_block, OpenVault, Unlocker,
+};
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
 /// Umbrella error type for the vault format layer.
