@@ -626,6 +626,73 @@ fn restore_block_rejects_when_not_in_trash() {
     }
 }
 
+/// `restore_block` surfaces `VaultError::BlockNotInTrash` when a trash
+/// *file* exists for the requested UUID but the manifest has no
+/// matching `TrashEntry`. The §7.1 contract is strict: file and
+/// manifest entry MUST be paired, and a one-sided disagreement is an
+/// integrity failure. Without this rejection, an attacker with write
+/// access to `trash/` could plant a forged file; defense-in-depth
+/// (§6.1 hybrid-verify) would still catch a forgery, but we reject
+/// earlier and with a typed error rather than relying on later
+/// verification to cover for the missing pre-check.
+#[test]
+fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
+    let (dir, _mnemonic, pw) = make_fast_vault(28, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xd1; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xe1; 16];
+    let block_uuid = [0xb1; 16];
+
+    // Plant a syntactically well-formed trash file (any bytes — the
+    // §6.1 hybrid-verify will never fire because we reject first on
+    // the manifest-entry pre-check) without a matching TrashEntry in
+    // `manifest.trash`. The `trash/` directory must exist; we use the
+    // canonical `<uuid>.cbor.enc.<unix-millis>` filename.
+    let trash_dir = folder.join("trash");
+    fs::create_dir_all(&trash_dir).unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let orphan_path = trash_dir.join(format!("{uuid_hex}.cbor.enc.5000"));
+    fs::write(&orphan_path, b"orphan-bytes").unwrap();
+
+    // No TrashEntry was appended to `manifest.trash`, so the §7.1
+    // pairing contract is violated.
+    assert!(
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "fixture: manifest must NOT have a TrashEntry for this UUID"
+    );
+
+    let result = restore_block(folder, &mut open, block_uuid, device_uuid, 6_000, &mut rng);
+    match result {
+        Err(VaultError::BlockNotInTrash {
+            block_uuid: returned,
+        }) => assert_eq!(returned, block_uuid),
+        other => panic!("expected BlockNotInTrash, got {other:?}"),
+    }
+
+    // The orphan trash file is preserved — the caller decides between
+    // purge-without-restore and forensic capture (same contract as
+    // tampered-file rejection).
+    assert!(
+        orphan_path.exists(),
+        "orphan trash file must persist after a rejected restore"
+    );
+    // Manifest is untouched on either side.
+    assert!(
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry must not be added after a rejected restore"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // restore_block — rejection: RestoreVerificationFailed (tampered file)
 // ---------------------------------------------------------------------------

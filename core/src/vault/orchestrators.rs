@@ -1552,13 +1552,19 @@ pub fn restore_block(
         .iter()
         .any(|t| t.block_uuid == block_uuid);
 
-    // Step 3: pick restore target + purge targets. Both "no file AND
-    // no manifest entry" and "manifest entry but no file" surface the
-    // same BlockNotInTrash variant — they're indistinguishable from
-    // the caller's perspective, and chasing the distinction would
-    // require a second error variant for an exceedingly rare race.
-    if matches.is_empty() {
-        let _ = trash_entry_present; // explicit no-branch on this side
+    // Step 3: pick restore target + purge targets. The §7.1 contract is
+    // strict: the file and the manifest entry MUST be paired. A
+    // disagreement in *either* direction (file without manifest entry,
+    // or manifest entry without file) is an integrity failure and
+    // surfaces as `BlockNotInTrash` — `VaultError::BlockNotInTrash`'s
+    // own doc-string lists both halves of the pair as required.
+    //
+    // The "file without manifest entry" half is defense-in-depth: an
+    // attacker with write access to `trash/` could plant a forged file,
+    // and the §6.1 hybrid-verify at step 4 would still reject it. But
+    // we reject earlier and with a typed error rather than relying on
+    // verification to cover for a missing spec check.
+    if matches.is_empty() || !trash_entry_present {
         return Err(VaultError::BlockNotInTrash { block_uuid });
     }
     matches.sort_by_key(|(ts, _)| *ts);
