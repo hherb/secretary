@@ -328,6 +328,65 @@ pub fn share_block(
     .map_err(VaultError::from)
 }
 
+/// Move a live block into trash — uniffi namespace fn projection of
+/// [`secretary_ffi_bridge::trash_block`]. See `docs/vault-format.md`
+/// §7 for the normative sequence.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` or
+///   `device_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::BlockNotFound`] — `block_uuid` not in
+///   `manifest.blocks`.
+/// - [`VaultError::FolderInvalid`] — IO failure during the rename
+///   or manifest atomic-write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure
+///   on already-validated inputs.
+pub fn trash_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<(), VaultError> {
+    let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::trash_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map_err(VaultError::from)
+}
+
+/// Restore the most recent trashed copy of a block — uniffi namespace
+/// fn projection of [`secretary_ffi_bridge::restore_block`]. See
+/// `docs/vault-format.md` §7.1 for the normative sequence.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` or
+///   `device_uuid`.
+/// - [`VaultError::BlockUuidAlreadyLive`] — `block_uuid` is currently
+///   live; the caller must trash the live copy first.
+/// - [`VaultError::BlockNotInTrash`] — no matching file in
+///   `trash/<uuid>.cbor.enc.*` and no matching `TrashEntry`.
+/// - [`VaultError::CorruptVault`] — the trashed file failed §6.1
+///   hybrid-signature verification (folded from
+///   `RestoreVerificationFailed`).
+/// - [`VaultError::MissingRecipientCard`] — a wrap recipient cannot
+///   be resolved to a `contact_uuid` via the contacts/-scan.
+/// - [`VaultError::FolderInvalid`] — IO failure.
+pub fn restore_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<(), VaultError> {
+    let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::restore_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map_err(VaultError::from)
+}
+
 /// Validate a 16-byte UUID slice; surface wrong length as
 /// [`VaultError::InvalidArgument`] with the field name in the detail.
 fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
