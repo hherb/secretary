@@ -30,7 +30,9 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
-use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
+use secretary_core::unlock::{
+    self, bundle::IdentityBundle, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
+};
 use secretary_core::vault::{
     encode_manifest_file, open_vault, restore_block, save_block, sign_manifest, trash_block,
     BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
@@ -143,6 +145,28 @@ fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
         s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
+}
+
+/// Build a co-recipient contact card from a freshly-generated identity
+/// bundle. Mirrors `core/tests/save_block.rs::make_signed_card` — kept
+/// local to avoid a shared test-helper crate for the only test that
+/// needs it.
+fn make_signed_card(id: &IdentityBundle) -> ContactCard {
+    let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: id.user_uuid,
+        display_name: id.display_name.clone(),
+        x25519_pk: id.x25519_pk,
+        ml_kem_768_pk: id.ml_kem_768_pk.clone(),
+        ed25519_pk: id.ed25519_pk,
+        ml_dsa_65_pk: id.ml_dsa_65_pk.clone(),
+        created_at_ms: id.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&id.ed25519_sk, &pq_sk).unwrap();
+    card
 }
 
 fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlaintext {
@@ -690,6 +714,108 @@ fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
             .iter()
             .any(|b| b.block_uuid == block_uuid),
         "BlockEntry must not be added after a rejected restore"
+    );
+}
+
+/// `restore_block`'s step-4 contacts/ scan MUST verify each card's
+/// Ed25519 ∧ ML-DSA-65 self-signature before trusting its
+/// `contact_uuid` for the manifest's recipient table. Cards that
+/// parse but fail self-verify are skipped — they cannot mint a
+/// `contact_uuid` into a signed manifest.
+///
+/// Setup: a block is saved with both the owner AND a co-recipient
+/// "Bob" (whose card is planted in `contacts/`). The block is then
+/// trashed. Before restore, we tamper Bob's on-disk card so its
+/// self-signature no longer verifies. The wrap for Bob in the trashed
+/// block must then fail to resolve — `MissingRecipientCard` is the
+/// typed surface, and the manifest stays untouched (the rename step
+/// has not yet run when step 5's wrap-resolution loop bails).
+#[test]
+fn restore_block_skips_contact_cards_failing_self_verify() {
+    let (dir, _mnemonic, pw) = make_fast_vault(29, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xd2; 32]);
+
+    // Build Bob's identity + valid card and plant it in contacts/.
+    let mut bob_rng = ChaCha20Rng::from_seed([0xc2; 32]);
+    let bob_id = unlock::bundle::generate("Bob", 1_714_060_800_000, &mut bob_rng);
+    let bob_card = make_signed_card(&bob_id);
+    let bob_card_bytes = bob_card.to_canonical_cbor().unwrap();
+    let bob_uuid_hex = format_uuid_hyphenated(&bob_id.user_uuid);
+    let contacts_dir = folder.join("contacts");
+    let bob_card_path = contacts_dir.join(format!("{bob_uuid_hex}.card"));
+    fs::write(&bob_card_path, &bob_card_bytes).unwrap();
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xe2; 16];
+    let block_uuid = [0xb2; 16];
+
+    // Save with two recipients: owner + Bob. The block's §6.2 wrap
+    // table will have entries for both fingerprints, so step-4's
+    // contacts/ scan WILL be triggered (the owner-only short-circuit
+    // does not apply).
+    let plaintext = make_simple_plaintext(block_uuid, "shared-with-bob");
+    let recipients = vec![open.owner_card.clone(), bob_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    // Tamper Bob's card: flip a bit of `self_sig_ed`. `verify_self`
+    // checks Ed25519 ∧ ML-DSA-65 — failing either half is enough.
+    // `from_canonical_cbor` will still parse the tampered bytes.
+    let mut tampered = bob_card_bytes.clone();
+    // The Ed25519 sig is 64 bytes inside the card's CBOR; flipping
+    // *any* byte inside the structurally valid sig field defeats
+    // verify_self without breaking the parse. We locate the sig by
+    // searching for its known prefix and flip the next byte.
+    let sig_first_byte = bob_card.self_sig_ed[0];
+    let idx = tampered
+        .iter()
+        .position(|&b| b == sig_first_byte)
+        .expect("bob's self_sig_ed first byte must appear in canonical-cbor bytes");
+    tampered[idx] ^= 0xff;
+    fs::write(&bob_card_path, &tampered).unwrap();
+
+    // Restore: the trashed block decrypts + hybrid-verifies fine
+    // (the block file is untouched), but Bob's wrap cannot resolve
+    // to a `contact_uuid` because the only candidate card on disk
+    // now fails `verify_self()` and is skipped. The typed surface
+    // is `MissingRecipientCard`.
+    let result = restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng);
+    let bob_card_fp = fingerprint(&bob_card_bytes);
+    match result {
+        Err(VaultError::MissingRecipientCard { fingerprint: fp }) => {
+            assert_eq!(
+                fp, bob_card_fp,
+                "the missing fingerprint must be Bob's, since the owner is resolved in-memory"
+            );
+        }
+        other => panic!("expected MissingRecipientCard, got {other:?}"),
+    }
+
+    // Manifest is untouched on either side.
+    assert!(
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry must not be added after a rejected restore"
+    );
+    assert!(
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must persist after a rejected restore"
     );
 }
 

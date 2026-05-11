@@ -1670,6 +1670,30 @@ pub fn restore_block(
                 let Ok(card) = ContactCard::from_canonical_cbor(&card_bytes) else {
                     continue;
                 };
+                // Self-signature verification is REQUIRED before we trust
+                // the card's `contact_uuid` for the manifest's recipient
+                // table. `from_canonical_cbor` only parses; it does not
+                // verify the embedded Ed25519 ∧ ML-DSA-65 self-signature
+                // (see card.rs::verify_self). Without this check, an
+                // attacker with write access to `contacts/` could plant a
+                // forged card matching a wrap's fingerprint and mint a
+                // `contact_uuid` of their choice into the manifest. The
+                // block plaintext is still gated by the §6.1 hybrid
+                // verify on the trashed file itself, but the manifest's
+                // `BlockEntry.recipients` is load-bearing for share /
+                // sync logic and must not carry un-attested UUIDs.
+                //
+                // We `continue` past an unverifiable card rather than
+                // hard-failing so a single corrupt or malicious card in
+                // `contacts/` cannot wedge restore for every block — the
+                // legitimate cards alongside it still resolve. If no
+                // verified card matches a given fingerprint, the loop
+                // at step 5's wrap-resolution surfaces
+                // `MissingRecipientCard` and the manifest stays
+                // untouched.
+                if card.verify_self().is_err() {
+                    continue;
+                }
                 let fp = fingerprint(&card.to_canonical_cbor()?);
                 fp_to_uuid.insert(fp, card.contact_uuid);
             }
