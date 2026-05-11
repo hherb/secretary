@@ -169,7 +169,10 @@ fn map_core_vault_error(e: VaultError) -> FfiVaultError {
         | VaultError::NotAuthor { .. }
         | VaultError::BlockNotFound { .. }
         | VaultError::RecipientAlreadyPresent
-        | VaultError::MissingRecipientCard { .. } => FfiVaultError::SaveCryptoFailure {
+        | VaultError::MissingRecipientCard { .. }
+        | VaultError::BlockUuidAlreadyLive { .. }
+        | VaultError::BlockNotInTrash { .. }
+        | VaultError::RestoreVerificationFailed { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }

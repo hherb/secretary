@@ -137,6 +137,15 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::CardDecodeFailure`.
     #[error("failed to decode contact card: {detail}")]
     CardDecodeFailure { detail: String },
+    /// Mirrors `FfiVaultError::BlockUuidAlreadyLive`. Restore was
+    /// requested on a UUID that exists both in trash and live in
+    /// `manifest.blocks`.
+    #[error("block is currently live and trashed: {detail}")]
+    BlockUuidAlreadyLive { detail: String },
+    /// Mirrors `FfiVaultError::BlockNotInTrash`. Restore was requested
+    /// on a UUID with no `TrashEntry` and no matching trash file.
+    #[error("block is not in trash: {detail}")]
+    BlockNotInTrash { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -164,6 +173,10 @@ impl From<FfiVaultError> for VaultError {
                 recipient_fingerprint_hex,
             },
             FfiVaultError::CardDecodeFailure { detail } => VaultError::CardDecodeFailure { detail },
+            FfiVaultError::BlockUuidAlreadyLive { detail } => {
+                VaultError::BlockUuidAlreadyLive { detail }
+            }
+            FfiVaultError::BlockNotInTrash { detail } => VaultError::BlockNotInTrash { detail },
         }
     }
 }
@@ -475,5 +488,45 @@ mod tests {
             rendered.contains("bad CBOR"),
             "Display did not include detail"
         );
+    }
+
+    #[test]
+    fn ffi_to_uniffi_block_uuid_already_live() {
+        let ffi = FfiVaultError::BlockUuidAlreadyLive {
+            detail: "[1,2,3]".into(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::BlockUuidAlreadyLive { detail } = uniffi else {
+            panic!("expected BlockUuidAlreadyLive");
+        };
+        assert_eq!(detail, "[1,2,3]");
+    }
+
+    #[test]
+    fn ffi_to_uniffi_block_not_in_trash() {
+        let ffi = FfiVaultError::BlockNotInTrash {
+            detail: "[4,5,6]".into(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::BlockNotInTrash { detail } = uniffi else {
+            panic!("expected BlockNotInTrash");
+        };
+        assert_eq!(detail, "[4,5,6]");
+    }
+
+    #[test]
+    fn uniffi_block_uuid_already_live_display() {
+        let e = VaultError::BlockUuidAlreadyLive {
+            detail: "abc".into(),
+        };
+        assert_eq!(e.to_string(), "block is currently live and trashed: abc");
+    }
+
+    #[test]
+    fn uniffi_block_not_in_trash_display() {
+        let e = VaultError::BlockNotInTrash {
+            detail: "xyz".into(),
+        };
+        assert_eq!(e.to_string(), "block is not in trash: xyz");
     }
 }

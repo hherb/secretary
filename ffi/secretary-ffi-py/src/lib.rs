@@ -56,11 +56,12 @@ mod unlock;
 mod vault;
 
 use errors::{
-    CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultCardDecodeFailure, VaultCorruptVault,
-    VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
-    VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
-    VaultSaveCryptoFailure, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
+    VaultBlockUuidAlreadyLive, VaultCardDecodeFailure, VaultCorruptVault, VaultFolderInvalid,
+    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
+    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultSaveCryptoFailure,
+    VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
+    WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -186,6 +187,17 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultCardDecodeFailure",
         py.get_type::<VaultCardDecodeFailure>(),
+    )?;
+
+    // B.5 trash_block / restore_block error surface — 2 typed exception
+    // classes mirroring the bridge's FfiVaultError variants.
+    m.add(
+        "VaultBlockUuidAlreadyLive",
+        py.get_type::<VaultBlockUuidAlreadyLive>(),
+    )?;
+    m.add(
+        "VaultBlockNotInTrash",
+        py.get_type::<VaultBlockNotInTrash>(),
     )?;
 
     Ok(())
