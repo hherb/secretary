@@ -50,8 +50,10 @@ use pyo3::prelude::*;
 mod errors;
 mod identity;
 mod record;
+mod restore;
 mod save;
 mod share;
+mod trash;
 mod unlock;
 mod vault;
 
@@ -65,8 +67,10 @@ use errors::{
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
+use restore::restore_block;
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
+use trash::trash_block;
 use unlock::{
     create_vault, open_with_password, open_with_recovery, CreateVaultOutput, MnemonicOutput,
 };
@@ -175,6 +179,11 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // B.4d surface — share_block pyfunction + 4 typed exception classes.
     m.add_function(wrap_pyfunction!(share_block, m)?)?;
+
+    // B.5 surface — trash_block + restore_block pyfunctions + 2 typed
+    // exception classes (registered below in the existing block).
+    m.add_function(wrap_pyfunction!(trash_block, m)?)?;
+    m.add_function(wrap_pyfunction!(restore_block, m)?)?;
     m.add("VaultNotAuthor", py.get_type::<VaultNotAuthor>())?;
     m.add(
         "VaultRecipientAlreadyPresent",
