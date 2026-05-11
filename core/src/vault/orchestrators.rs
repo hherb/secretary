@@ -1750,6 +1750,22 @@ pub fn restore_block(
     // Step 8: build the new BlockEntry. fingerprint is BLAKE3-256 of
     // the bytes we just verified (and which match the on-disk file
     // after rename, since rename is a move not a rewrite).
+    //
+    // `unknown` is reset to empty. This is intentional but not
+    // free-of-tradeoff: the project's CBOR "unknown-keys" forward-
+    // compat invariant says decoders preserve unrecognized keys on
+    // round-trip — yet on restore we have no source of unknown keys
+    // to preserve. The trashed-block side carries nothing into
+    // `TrashEntry` (which is a fixed-shape tombstone, not a BlockEntry
+    // archive), and we cannot reconstruct the pre-trash
+    // `BlockEntry.unknown` from the encrypted block file alone (the
+    // block file does not duplicate the manifest's BlockEntry
+    // fields). A future v2 client that wrote signed-metadata unknowns
+    // onto BlockEntry would see those unknowns lost across a v1
+    // trash → restore cycle — acceptable for v1 because v1 does not
+    // populate this map in any code path, and the spec explicitly
+    // documents trash → restore as a continuation of the block's
+    // *content* lineage, not of its manifest-side metadata.
     let block_fp: [u8; 32] = *blake3_hash(&bytes).as_bytes();
     let new_entry = BlockEntry {
         block_uuid,
