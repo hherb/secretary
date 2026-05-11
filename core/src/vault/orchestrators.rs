@@ -1536,13 +1536,27 @@ pub fn restore_block(
             let Some(suffix) = name.strip_prefix(&prefix) else {
                 continue;
             };
-            let ts: u64 = suffix.parse().map_err(|_| VaultError::Io {
-                context: "restore_block: ill-formed trash filename suffix",
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("not a u64: {suffix}"),
-                ),
-            })?;
+            // Spec §7 grammar: `<unix-millis>` is the canonical decimal
+            // ASCII representation of a u64 (no leading `+`, no leading
+            // zeros except for `0` itself). We `continue` rather than
+            // error on non-canonical entries so a single junk filename
+            // alongside a valid one cannot wedge restore (DoS
+            // resistance — a buggy peer client or filesystem cruft on a
+            // shared sync folder must not deny the legitimate
+            // restore). Correctness is still gated by the §6.1 hybrid
+            // verify on the largest-canonical-timestamp match in
+            // step 4.
+            //
+            // Note: `u64::from_str` already rejects `+`-prefixed and
+            // sign-bearing forms, but accepts leading-zero forms
+            // (`"007"` → 7). The `to_string() == suffix` check pins
+            // canonical decimal form.
+            let Ok(ts) = suffix.parse::<u64>() else {
+                continue;
+            };
+            if ts.to_string() != suffix {
+                continue;
+            }
             matches.push((ts, path));
         }
     }

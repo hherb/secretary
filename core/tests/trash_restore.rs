@@ -819,6 +819,104 @@ fn restore_block_skips_contact_cards_failing_self_verify() {
     );
 }
 
+/// `restore_block`'s scan in step 2 MUST tolerate non-canonical
+/// suffixes by skipping them rather than hard-failing. A buggy peer
+/// client (or filesystem cruft on a shared sync folder) that drops
+/// `<uuid>.cbor.enc.abc` or `<uuid>.cbor.enc.007` next to a valid
+/// `<uuid>.cbor.enc.<canonical>` must not wedge restore — only the
+/// canonical-suffix match is the trusted record of when the trashing
+/// happened, and the §6.1 hybrid verify still gates correctness on
+/// that file's contents.
+#[test]
+fn restore_block_skips_noncanonical_trash_suffixes() {
+    let (dir, _mnemonic, pw) = make_fast_vault(30, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xd3; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xe3; 16];
+    let block_uuid = [0xb3; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "needs-cleanup");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let trash_now_ms = 2_000u64;
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_now_ms,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Plant three noise files alongside the legitimate trash file:
+    //   1. Non-numeric suffix (`abc`).
+    //   2. Leading-zero suffix (`007` — parses to 7 but is not
+    //      canonical decimal).
+    //   3. `+`-prefixed suffix (`+5` — `u64::from_str` rejects, but
+    //      the strict-fail-on-any-junk variant would still surface
+    //      an Io error before we get to a legitimate match).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_dir = folder.join("trash");
+    fs::write(trash_dir.join(format!("{uuid_hex}.cbor.enc.abc")), b"junk1").unwrap();
+    fs::write(trash_dir.join(format!("{uuid_hex}.cbor.enc.007")), b"junk2").unwrap();
+    fs::write(trash_dir.join(format!("{uuid_hex}.cbor.enc.+5")), b"junk3").unwrap();
+
+    // Restore must succeed despite the cruft — the canonical
+    // `<uuid>.cbor.enc.2000` match is picked, verified, and renamed
+    // into blocks/.
+    let restore_now_ms = 3_000u64;
+    restore_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        restore_now_ms,
+        &mut rng,
+    )
+    .unwrap();
+
+    assert!(
+        open.manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry must be appended after a successful restore"
+    );
+    assert!(
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must be removed after a successful restore"
+    );
+
+    // The cruft files are left in place. They are not the project's
+    // problem to clean up — the user-facing "trash purge after
+    // retention window" pass deals with leftover files. We assert
+    // they survive to document the expected behaviour: skip-and-
+    // ignore, not skip-and-delete.
+    assert!(
+        trash_dir.join(format!("{uuid_hex}.cbor.enc.abc")).exists(),
+        "non-numeric cruft file must be left in place"
+    );
+    assert!(
+        trash_dir.join(format!("{uuid_hex}.cbor.enc.007")).exists(),
+        "leading-zero cruft file must be left in place"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // restore_block — rejection: RestoreVerificationFailed (tampered file)
 // ---------------------------------------------------------------------------
