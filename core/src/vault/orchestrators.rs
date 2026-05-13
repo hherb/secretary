@@ -1609,14 +1609,9 @@ pub fn restore_block(
     // the owner card / owner identity.
     let owner_pk_bundle = open.owner_card.pk_bundle_bytes()?;
     let owner_fp = fingerprint(&open.owner_card.to_canonical_cbor()?);
-    // These two parses operate on the *unlocked owner's own keys* —
-    // already verified in `open_vault` (owner card) and AEAD-decrypted
-    // out of the identity bundle (ml_kem_768_sk). A failure here is an
-    // internal-state inconsistency, NOT a property of the trashed file,
-    // so route via the standard typed surfaces (`VaultError::Sig`,
-    // `VaultError::Block(BlockError::Kem(..))`) rather than
-    // `RestoreVerificationFailed { block_uuid, .. }` which would
-    // mislead the operator into inspecting the trashed file.
+    // Owner's *own* keys, not trashed-file bytes — internal-state parse
+    // failure routes via `VaultError::Sig` / `VaultError::Block(BlockError::Kem(..))`,
+    // not `RestoreVerificationFailed` (which would mislead operators to inspect the file).
     let owner_pq_pk = MlDsa65Public::from_bytes(&open.owner_card.ml_dsa_65_pk)?;
     let mut x_sk_bytes = *open.identity.x25519_sk.expose();
     let owner_x_sk: kem::X25519Secret = Sensitive::new(x_sk_bytes);
