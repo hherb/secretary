@@ -1609,20 +1609,15 @@ pub fn restore_block(
     // the owner card / owner identity.
     let owner_pk_bundle = open.owner_card.pk_bundle_bytes()?;
     let owner_fp = fingerprint(&open.owner_card.to_canonical_cbor()?);
-    let owner_pq_pk = MlDsa65Public::from_bytes(&open.owner_card.ml_dsa_65_pk).map_err(|e| {
-        VaultError::RestoreVerificationFailed {
-            block_uuid,
-            detail: format!("ml-dsa pk: {e}"),
-        }
-    })?;
+    // Owner's *own* keys, not trashed-file bytes — internal-state parse
+    // failure routes via `VaultError::Sig` / `VaultError::Block(BlockError::Kem(..))`,
+    // not `RestoreVerificationFailed` (which would mislead operators to inspect the file).
+    let owner_pq_pk = MlDsa65Public::from_bytes(&open.owner_card.ml_dsa_65_pk)?;
     let mut x_sk_bytes = *open.identity.x25519_sk.expose();
     let owner_x_sk: kem::X25519Secret = Sensitive::new(x_sk_bytes);
     x_sk_bytes.zeroize();
     let owner_pq_sk_reader = MlKem768Secret::from_bytes(open.identity.ml_kem_768_sk.expose())
-        .map_err(|e| VaultError::RestoreVerificationFailed {
-            block_uuid,
-            detail: format!("ml-kem sk: {e}"),
-        })?;
+        .map_err(block::BlockError::from)?;
     let plaintext = block::decrypt_block(
         &block_file,
         &owner_fp,
