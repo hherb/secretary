@@ -136,7 +136,8 @@ pub enum FfiVaultError {
     /// failures on the owner card, canonical-CBOR encode failures,
     /// `encrypt_block` / `sign_manifest` / `encode_block_file` /
     /// `encode_manifest_file` failures, and post-unlock identity-bundle
-    /// in-memory parse failures (see `SignerSecretKeysError::MlDsa65ParseFailed`).
+    /// in-memory parse failures (e.g. `MlDsa65Secret::from_bytes` on
+    /// already-validated bundle bytes).
     ///
     /// Constructed directly by `crate::save::save_block`'s error-mapping
     /// helper — NOT reachable through `From<core::VaultError>` (the read
