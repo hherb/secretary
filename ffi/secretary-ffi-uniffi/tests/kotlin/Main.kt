@@ -60,8 +60,10 @@ private val BIP39_PHRASE_SHAPE: Regex = Regex("^[a-z]+( [a-z]+){23}$")
 // is small now but grows in B.2+; aggregating from the start avoids
 // the painful "fix one assertion, re-run, find another" loop.
 private val failures: MutableList<String> = mutableListOf()
+private var assertsRun: Int = 0
 
 private fun check(condition: Boolean, message: String) {
+    assertsRun++
     if (condition) {
         println("PASS: $message")
     } else {
@@ -1219,7 +1221,7 @@ fun main() {
     }
 
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 38 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of $assertsRun assertion(s) failed")
         exitProcess(1)
     }
 

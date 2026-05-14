@@ -21,8 +21,10 @@ let EXPECTED_FORMAT_VERSION: UInt16 = 1
 // is small now but grows in B.2+; aggregating from the start avoids
 // the painful "fix one assertion, re-run, find another" loop.
 var failures: [String] = []
+var assertsRun: Int = 0
 
 func check(_ condition: Bool, _ message: String) {
+    assertsRun += 1
     if condition {
         print("PASS: \(message)")
     } else {
@@ -1191,7 +1193,7 @@ do {
 
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 37 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of \(assertsRun) assertion(s) failed\n".utf8)
     )
     exit(1)
 }
