@@ -1,0 +1,144 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this project is
+
+**Secretary** is a multi-platform, client-only secrets manager. The repository is currently in **Sub-project A** — the Rust cryptographic core and on-disk vault format. There is no usable application yet. The FFI bindings (Sub-project B), sync orchestration (Sub-project C), and platform UIs (Sub-project D) are downstream phases; their directories (`ffi/*`, `desktop/`, `ios/`, `android/`) currently hold stubs or README placeholders.
+
+The cryptographic design and on-disk format are **frozen for v1** because vaults written today must remain readable by clients written decades from now. Treat anything in `docs/crypto-design.md`, `docs/vault-format.md`, and `docs/threat-model.md` as the source of truth — the Rust code implements those, not the other way around.
+
+## Layout
+
+```
+core/                Rust crate `secretary-core` — the only thing that matters today
+core/src/{crypto,identity,unlock,vault}/   — module per spec section
+core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
+core/tests/python/conformance.py           — stdlib-only clean-room verifier; proves the spec
+                                             is implementable from `docs/` alone
+core/fuzz/           — `cargo-fuzz` harness, EXCLUDED from the workspace; nightly toolchain
+docs/                — normative specs (see "Spec is normative" below)
+docs/adr/            — architecture decision records, numbered 0001..0006
+ffi/secretary-ffi-py, ffi/secretary-ffi-uniffi  — placeholder PyO3 / uniffi binding crates
+```
+
+## Working directory discipline
+
+Sessions in this repo routinely span multiple `git worktree` checkouts (see [.worktrees/](.worktrees/)) and parallel Claude windows can switch branches under each other. Before running any path-sensitive command (`cargo`, `git push`, `git commit`, `uv run`, fuzz invocations), verify where you are:
+
+```bash
+pwd && git branch --show-current && git worktree list
+```
+
+- **Shell state does not persist between Bash tool calls.** `cd foo` followed by a separate `cargo test` call runs `cargo test` in the *previous* directory. Either chain in one call (`cd core/fuzz && cargo fuzz run vault_toml`) or use absolute paths.
+- **Never run `cargo` / `git push` from the main repo when the work is in a worktree.** A pushed commit on the wrong branch is recoverable but wastes a cycle; an overwritten unstaged edit (parallel session switched branches) needs `git reflog` recovery.
+- **If `git status` shows unexpected state** (unfamiliar branch, untracked files you didn't create, missing edits you remember making), stop and investigate before any destructive op — it's almost always a parallel-session collision, not a bug.
+
+## Commands
+
+The workspace uses **stable Rust** ([rust-toolchain.toml](rust-toolchain.toml)). Only `core/fuzz/` uses nightly (separate `rust-toolchain.toml` inside that directory).
+
+```bash
+# Build / test the whole workspace (always --release; the crypto crates are slow in debug)
+cargo test --release --workspace
+
+# Run one integration test file
+cargo test --release --workspace --test fuzz_regressions
+cargo test --release --workspace --test conflict
+
+# Cross-language differential replay (requires `uv`; opt-in via Cargo feature)
+cargo test --release --workspace --features differential-replay
+
+# Lint — must stay clean with -D warnings
+cargo clippy --release --workspace -- -D warnings
+
+# Format
+cargo fmt --all
+```
+
+### Python paths
+
+This repo uses `uv` exclusively — **never `pip` / `pip3` / `python -m pip`**.
+
+```bash
+# Run the conformance script (proves docs/ alone is sufficient to decrypt the golden vault)
+uv run core/tests/python/conformance.py
+
+# Detect drift between docs/*.md test-name citations and core/ Rust code
+# (use --self-test to validate the script's own heuristics; --audit-allowlist to
+# flag allowlist entries whose underlying citation now resolves)
+uv run core/tests/python/spec_test_name_freshness.py
+
+# Run the fuzz monitor's pytest suite
+cd core/fuzz && uv run --with pytest pytest test_monitor.py -v
+
+# Launch the NiceGUI fuzz dashboard at http://localhost:8080
+uv run core/fuzz/monitor.py
+```
+
+### Fuzz harness (`core/fuzz/`)
+
+Has its own `Cargo.toml` and **is excluded from the workspace** (see `[workspace] exclude = ["core/fuzz"]` in the root manifest). Needs a path-scoped nightly toolchain — Homebrew's cargo on macOS will mask rustup's nightly, prepend explicitly:
+
+```bash
+cd core/fuzz
+PATH="$HOME/.rustup/toolchains/nightly-2026-04-29-aarch64-apple-darwin/bin:$PATH" cargo fuzz run <target>
+```
+
+Six targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_file`, `block_file`. Promotion workflow (crash → minimize → durable regression KAT) is in [core/fuzz/README.md](core/fuzz/README.md). Promoted regressions live under `core/tests/data/fuzz_regressions/` and replay through the regular `cargo test` run (no nightly required).
+
+## Architecture you can't get from grepping
+
+### Spec is normative; code implements the spec
+
+`docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is **enforced every CI run** by `core/tests/python/conformance.py`, which uses only the Python standard library to:
+
+1. Decap + AEAD-decrypt + hybrid-verify the `core/tests/data/golden_vault_001/` reference vault.
+2. Replay 11 CRDT merge KATs from `core/tests/data/conflict_kat.json` cross-language.
+3. Run the `--diff-replay` mode used by the fuzz harness for decoder-agreement checks.
+
+Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
+
+### Crypto layering
+
+Each `core/src/{crypto,identity,unlock,vault}` module corresponds to a section of the spec. Hybrid constructions are intentional and live throughout:
+
+- KEM = X25519 ⊕ ML-KEM-768 (both must work for an attacker to recover plaintext).
+- Signatures = Ed25519 ∧ ML-DSA-65 (**both** must verify, AND not OR; this is checked at every signature-verification call site).
+- Argon2id v1 default is m=256 MiB, t=3, p=1 (`Argon2idParams::V1_DEFAULT`); v1 floor below which `open_with_password` errors is m=64 MiB (`V1_MIN_MEMORY_KIB`), iter ≥ 1, par ≥ 1. The floor is enforced as a **typed error** (`UnlockError::WeakKdfParams`), not a silent downgrade.
+
+Whenever you touch a verification or KDF site, preserve the "both halves" property. Past review feedback caught a near-miss where ML-DSA verification failures were being swallowed at the call site; security-critical code reviews must prove enforcement, not assume it.
+
+### CRDT merge: vector clocks + record-level death clock
+
+`core/src/vault/conflict.rs` is the merge layer. The non-obvious bit is `tombstoned_at_ms` — a record-level death clock that closes the associativity gap that naive tombstone-on-tie semantics leave open. Four `proptest` properties (commutativity, associativity, idempotence, well-formedness) hold over the full record domain, including arbitrary tombstone-and-resurrection histories and arbitrary `unknown` keys. The Python clean-room equivalent lives in `conformance.py` as `py_merge_record` / `py_merge_unknown_map`.
+
+If a CRDT change requires the proptests to weaken, that's a design problem. Push back; don't relax the property.
+
+### Atomic-write contract
+
+`core/src/vault/io.rs::write_atomic` uses `tempfile::NamedTempFile::persist` for `rename(2)` / `MoveFileExW` semantics under the manifest and block writes. The `tempfile` dependency is **pinned to an exact version** (`=3.27.0` in [core/Cargo.toml](core/Cargo.toml)) — not a caret range — so any patch / minor / major bump requires a deliberate edit + changelog review. This is intentional: a regression in `persist` semantics (e.g. silent fallback to a non-atomic copy) would weaken the §9 atomicity guarantee that orchestrator crash-recovery relies on, and Cargo's default `"3"` shorthand would let `cargo update` move the resolved version inside the 3.x range without anyone noticing.
+
+When adding any other dependency on a security-critical path, follow the same pattern (exact pin + a comment explaining why).
+
+### Workspace-wide invariants
+
+- `#![forbid(unsafe_code)]` is set in the root workspace lints — do not introduce `unsafe`. If a primitive truly needs FFI, isolate it in its own crate behind a reviewed boundary.
+- Clippy must stay clean with `-D warnings`. Don't ship a PR with new warnings expecting them to be cleaned up later.
+- KATs in `core/tests/data/*.json` are pinned against published vectors (NIST FIPS 203 / 204, RFC 8032 / 7748 / 5869 / 9106, BIP-39 Trezor canonical). When upgrading a primitive crate, re-run KATs explicitly — a passing test suite is necessary but not sufficient.
+
+### Memory hygiene: zeroize discipline
+
+Every secret-bearing byte string is wrapped in `Sensitive<T>` or `SecretBytes` ([core/src/crypto/secret.rs](core/src/crypto/secret.rs)) — both derive `Zeroize, ZeroizeOnDrop`. Composite types (`IdentityBundle`, `UnlockedIdentity`, `Mnemonic`) drop their secret fields in source order. Any time you `Sensitive::new(stack_var)` where `stack_var: [u8; N]`, follow with `stack_var.zeroize()` to overwrite the source slot — the move copies (`[u8; N]: Copy`) and the bytes linger otherwise. The pattern lives in `crypto::kem::derive_wrap_key`, `crypto::kdf::derive_master_kek`/`derive_recovery_kek`, `crypto::sig::generate_ed25519`, etc.
+
+**`RecordFieldValue` is zeroize-typed** as of PR #16: `Text(SecretString)` and `Bytes(SecretBytes)` (both `Zeroize, ZeroizeOnDrop`). The previously-unzeroized `Text(String) / Bytes(Vec<u8>)` form has been retired. Don't add new secret-bearing fields to `Record` / `RecordField` without thinking about whether they should be zeroize-typed — and don't widen the existing fields' lifetimes (e.g. by stashing them in caches, hash maps, or async closures) without weighing the same tradeoff.
+
+### Internal audit memos
+
+Phase A.7's internal hardening track produced three contributor-facing memos in [docs/manual/contributors/](docs/manual/contributors/):
+
+- [`differential-replay-protocol.md`](docs/manual/contributors/differential-replay-protocol.md) — cross-language decoder-agreement contract used by the fuzz harness.
+- [`side-channel-audit-internal.md`](docs/manual/contributors/side-channel-audit-internal.md) — constant-time-sensitive call sites + upstream-crate assumptions for the paid external reviewer.
+- [`memory-hygiene-audit-internal.md`](docs/manual/contributors/memory-hygiene-audit-internal.md) — wrapper discipline + drop ordering + the twelve stack-residue gaps fixed in commit `6054185`.
+
+Together these are the **principal handoff documents** for the paid external review. When you change a secret-handling code site or a constant-time-sensitive comparison, re-read the relevant memo's section first to make sure the change preserves the documented invariants.
