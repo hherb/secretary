@@ -190,60 +190,6 @@ impl UnlockedIdentity {
             created_at_ms: b.created_at_ms,
         })
     }
-
-    /// Bridge-internal accessor returning fresh clones of the Ed25519 +
-    /// ML-DSA-65 signer secret keys as standalone typed wrappers. NOT
-    /// exposed through PyO3 / uniffi.
-    ///
-    /// Currently unused by the bridge orchestrators: `save_block` derives
-    /// signing keys directly off the `IdentityBundle` clone returned by
-    /// `clone_inner_bundle`, and post-#42 the share_block path was
-    /// refactored to do the same (with explicit zeroize-on-clone of the
-    /// bundle's signer fields). Retained behind `#[allow(dead_code)]` for
-    /// forward-compat: future write paths whose core API takes signing
-    /// keys as standalone `&Ed25519Secret` / `&MlDsa65Secret` arguments
-    /// (rather than reading them off an `OpenVault`) can compose this
-    /// accessor without re-deriving the named-and-zeroized stack-buffer
-    /// discipline. Tests covering both the live and wiped arms are kept
-    /// to pin that discipline against future regressions. Revisit for
-    /// deletion if no Sub-project-C surface picks it up.
-    ///
-    /// Mirrors [`UnlockedIdentity::reader_secret_keys`] for the signing
-    /// path. Distinct typed errors for handle-closed vs. post-unlock
-    /// parse failure so a future caller can attach a non-misleading
-    /// detail string for each failure mode.
-    #[allow(dead_code)] // forward-compat; see docstring
-    pub(crate) fn signer_secret_keys(
-        &self,
-    ) -> Result<
-        (
-            secretary_core::crypto::sig::Ed25519Secret,
-            secretary_core::crypto::sig::MlDsa65Secret,
-        ),
-        SignerSecretKeysError,
-    > {
-        use secretary_core::crypto::secret::Sensitive;
-        use secretary_core::crypto::sig;
-        use zeroize::Zeroize as _;
-
-        let guard = lock_or_recover(&self.inner);
-        let id = guard.as_ref().ok_or(SignerSecretKeysError::HandleClosed)?;
-
-        // Ed25519: copy the 32 bytes onto the stack, mint a Sensitive,
-        // zeroize the stack copy. Mirrors the same discipline as
-        // reader_secret_keys for x25519_sk.
-        let mut ed_sk_bytes: [u8; 32] = *id.identity.ed25519_sk.expose();
-        let ed_sk: sig::Ed25519Secret = Sensitive::new(ed_sk_bytes);
-        ed_sk_bytes.zeroize();
-
-        // ML-DSA-65: from_bytes returns Result<_, SigError>. Bundle was
-        // already validated at unlock-time; failure here implies
-        // post-unlock memory corruption — surface distinctly.
-        let pq_sk = sig::MlDsa65Secret::from_bytes(id.identity.ml_dsa_65_sk.expose())
-            .map_err(|_| SignerSecretKeysError::MlDsa65ParseFailed)?;
-
-        Ok((ed_sk, pq_sk))
-    }
 }
 
 /// Bridge-internal failure mode for [`UnlockedIdentity::reader_secret_keys`].
@@ -262,19 +208,6 @@ pub(crate) enum ReaderSecretKeysError {
     /// distinctly so the diagnostic string can flag the in-memory
     /// corruption hypothesis to the foreign caller.
     MlKem768ParseFailed,
-}
-
-/// Bridge-internal failure mode for [`UnlockedIdentity::signer_secret_keys`].
-/// Mirrors [`ReaderSecretKeysError`] semantics for the signing-key path
-/// used by `crate::save::save_block` (Ed25519 + ML-DSA-65 secret keys).
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SignerSecretKeysError {
-    /// The identity handle has been wiped.
-    HandleClosed,
-    /// ML-DSA-65 secret key parse failed on bytes that were already
-    /// validated at unlock-time. Structurally impossible — implies
-    /// post-unlock memory corruption.
-    MlDsa65ParseFailed,
 }
 
 #[cfg(test)]
@@ -352,28 +285,6 @@ mod tests {
         // only need to know the call succeeds.
         let id = fresh_unlocked_identity();
         assert!(id.reader_secret_keys().is_ok());
-    }
-
-    #[test]
-    fn signer_secret_keys_after_wipe_returns_handle_closed() {
-        // Mirror of reader_secret_keys_after_wipe — the signer-side
-        // accessor returns the same HandleClosed sentinel via its own
-        // typed error enum so the save_block orchestrator can attach
-        // a non-misleading CorruptVault.detail.
-        let id = fresh_unlocked_identity();
-        id.wipe();
-        assert_eq!(
-            id.signer_secret_keys().err(),
-            Some(SignerSecretKeysError::HandleClosed),
-        );
-    }
-
-    #[test]
-    fn signer_secret_keys_when_live_returns_ok_tuple() {
-        // Positive path: live handle returns Ok((Ed25519, MlDsa65)). Same
-        // no-Eq rationale as reader_secret_keys_when_live.
-        let id = fresh_unlocked_identity();
-        assert!(id.signer_secret_keys().is_ok());
     }
 
     #[test]

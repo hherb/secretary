@@ -321,11 +321,11 @@ impl OpenVaultManifest {
 
 /// Bridge-internal failure mode for
 /// [`OpenVaultManifest::replace_manifest_and_file`]. Mirrors the
-/// `HandleClosed` variant on [`crate::identity::ReaderSecretKeysError`] /
-/// [`crate::identity::SignerSecretKeysError`] so the orchestrator can
-/// translate the failure to a `CorruptVault` with a non-misleading detail
-/// string via `Display`. Single-variant for now; new variants belong here
-/// rather than being multiplexed onto `HandleWiped`'s detail string.
+/// `HandleClosed` variant on [`crate::identity::ReaderSecretKeysError`]
+/// so the orchestrator can translate the failure to a `CorruptVault`
+/// with a non-misleading detail string via `Display`. Single-variant
+/// for now; new variants belong here rather than being multiplexed onto
+/// `HandleWiped`'s detail string.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ReplaceManifestError {
     /// The manifest handle was wiped between snapshot acquisition and

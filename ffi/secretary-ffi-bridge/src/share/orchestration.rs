@@ -103,13 +103,12 @@ pub fn share_block(
     // `&sk_ed` / `&sk_pq` passed separately.
     //
     // The Ed25519 secret is materialized via a named-and-zeroized stack
-    // buffer (mirroring `UnlockedIdentity::signer_secret_keys`'s
-    // discipline) so that no unnamed transient `[u8; 32]` from the
-    // `*expose()` deref lingers in a stack slot the rest of the function
-    // can't reach. After the explicit `zeroize()` on `sk_ed_bytes`, the
-    // only live Ed25519 secret in scope is the `Sensitive`-wrapped one
-    // inside `sk_ed` (zeroize-on-drop). For ML-DSA-65, `from_bytes` reads
-    // the bytes through a borrowed slice and copies internally — no
+    // buffer so that no unnamed transient `[u8; 32]` from the `*expose()`
+    // deref lingers in a stack slot the rest of the function can't reach.
+    // After the explicit `zeroize()` on `sk_ed_bytes`, the only live
+    // Ed25519 secret in scope is the `Sensitive`-wrapped one inside
+    // `sk_ed` (zeroize-on-drop). For ML-DSA-65, `from_bytes` reads the
+    // bytes through a borrowed slice and copies internally — no
     // intermediate stack buffer to clean up on the bridge side.
     let mut identity_clone =
         identity
