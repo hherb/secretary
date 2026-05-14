@@ -8,6 +8,8 @@
 //! #44) only to keep the parent module under the 500-LOC threshold.
 
 use super::*;
+use secretary_core::unlock::UnlockError;
+use secretary_core::vault::VaultError;
 
 #[test]
 fn vault_error_folder_invalid_display_uses_dedicated_text() {
@@ -42,8 +44,6 @@ fn vault_error_save_crypto_failure_display_uses_dedicated_text() {
 fn from_core_vault_error_unlock_arm_delegates_through_ffi_unlock_error() {
     // VaultError::Unlock(WrongPasswordOrCorrupt) → FfiVaultError::WrongPasswordOrCorrupt
     // via the FfiUnlockError translation. Test the full delegation path.
-    use secretary_core::unlock::UnlockError;
-    use secretary_core::vault::VaultError;
     let core_err = VaultError::Unlock(UnlockError::WrongPasswordOrCorrupt);
     let ffi: FfiVaultError = core_err.into();
     assert!(matches!(ffi, FfiVaultError::WrongPasswordOrCorrupt));
@@ -51,7 +51,6 @@ fn from_core_vault_error_unlock_arm_delegates_through_ffi_unlock_error() {
 
 #[test]
 fn from_core_vault_error_io_not_found_maps_to_folder_invalid() {
-    use secretary_core::vault::VaultError;
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
     let core_err = VaultError::Io {
         context: "failed to read vault.toml",
@@ -69,7 +68,6 @@ fn from_core_vault_error_io_not_found_maps_to_folder_invalid() {
 
 #[test]
 fn from_core_vault_error_io_permission_denied_maps_to_folder_invalid() {
-    use secretary_core::vault::VaultError;
     let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
     let core_err = VaultError::Io {
         context: "failed to read identity.bundle.enc",
@@ -83,7 +81,6 @@ fn from_core_vault_error_io_permission_denied_maps_to_folder_invalid() {
 fn from_core_vault_error_io_other_kind_falls_through_to_corrupt_vault() {
     // Kinds other than NotFound / PermissionDenied are not foreign-
     // caller-actionable as "your path is wrong" — fold to CorruptVault.
-    use secretary_core::vault::VaultError;
     let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, "bad data");
     let core_err = VaultError::Io {
         context: "failed to parse manifest.cbor.enc",
@@ -96,7 +93,6 @@ fn from_core_vault_error_io_other_kind_falls_through_to_corrupt_vault() {
 #[test]
 fn from_core_vault_error_owner_uuid_mismatch_maps_to_corrupt_vault() {
     // Post-unlock integrity failure folds into CorruptVault catchall.
-    use secretary_core::vault::VaultError;
     let core_err = VaultError::OwnerUuidMismatch {
         vault: [0u8; 16],
         found: [1u8; 16],
@@ -109,7 +105,6 @@ fn from_core_vault_error_owner_uuid_mismatch_maps_to_corrupt_vault() {
 fn from_core_vault_error_kdf_params_mismatch_maps_to_corrupt_vault() {
     // Post-unlock integrity failure pinned to CorruptVault.
     // Note: the variant in core is `KdfParamsMismatch` (not `ManifestKdfParamsMismatch`).
-    use secretary_core::vault::VaultError;
     let core_err = VaultError::KdfParamsMismatch;
     let ffi: FfiVaultError = core_err.into();
     assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
@@ -120,7 +115,6 @@ fn from_core_vault_error_manifest_author_mismatch_maps_to_corrupt_vault() {
     // Issue #40 explicit-arm pin: post-unlock structural mismatch
     // between manifest header `author_fingerprint` and owner card
     // fingerprint folds to CorruptVault.
-    use secretary_core::vault::VaultError;
     let ffi: FfiVaultError = VaultError::ManifestAuthorMismatch.into();
     assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
 }
@@ -130,7 +124,6 @@ fn from_core_vault_error_manifest_vault_uuid_mismatch_maps_to_corrupt_vault() {
     // Issue #40 explicit-arm pin: §4.3 step-5 cross-check failure
     // (manifest header vs body vault_uuid disagreement) folds to
     // CorruptVault.
-    use secretary_core::vault::VaultError;
     let ffi: FfiVaultError = VaultError::ManifestVaultUuidMismatch {
         header: [0u8; 16],
         body: [1u8; 16],
@@ -143,7 +136,6 @@ fn from_core_vault_error_manifest_vault_uuid_mismatch_maps_to_corrupt_vault() {
 fn from_core_vault_error_clock_overflow_maps_to_corrupt_vault() {
     // Issue #40 explicit-arm pin: vector-clock saturation (a
     // post-unlock structural failure) folds to CorruptVault.
-    use secretary_core::vault::VaultError;
     let ffi: FfiVaultError = VaultError::ClockOverflow {
         device_uuid: [0xee; 16],
     }
@@ -158,7 +150,6 @@ fn from_core_vault_error_rollback_maps_to_corrupt_vault() {
     // dedicated typed variant so the foreign side can show a
     // "restoring from backup; accept anyway" affordance — until
     // then, drift-prevention tests pin the current routing.)
-    use secretary_core::vault::VaultError;
     let ffi: FfiVaultError = VaultError::Rollback {
         local_clock: vec![],
         incoming_clock: vec![],
@@ -224,8 +215,7 @@ fn vault_error_not_author_display_pins_string() {
 
 #[test]
 fn vault_error_not_author_from_core_preserves_fingerprints_as_hex() {
-    use secretary_core::vault::VaultError as VE;
-    let core_err = VE::NotAuthor {
+    let core_err = VaultError::NotAuthor {
         expected: [0xaa; 16],
         got: [0xbb; 16],
     };
@@ -253,8 +243,7 @@ fn vault_error_recipient_already_present_display_pins_string() {
 
 #[test]
 fn vault_error_recipient_already_present_from_core_preserves_variant() {
-    use secretary_core::vault::VaultError as VE;
-    let ffi: FfiVaultError = VE::RecipientAlreadyPresent.into();
+    let ffi: FfiVaultError = VaultError::RecipientAlreadyPresent.into();
     assert!(matches!(ffi, FfiVaultError::RecipientAlreadyPresent));
 }
 
@@ -276,8 +265,7 @@ fn vault_error_missing_recipient_card_display_pins_hex() {
 
 #[test]
 fn vault_error_missing_recipient_card_from_core_preserves_fingerprint_as_hex() {
-    use secretary_core::vault::VaultError as VE;
-    let ffi: FfiVaultError = VE::MissingRecipientCard {
+    let ffi: FfiVaultError = VaultError::MissingRecipientCard {
         fingerprint: [0xcc; 16],
     }
     .into();
@@ -304,8 +292,7 @@ fn vault_error_card_decode_failure_display_pins_string() {
 
 #[test]
 fn from_core_block_uuid_already_live_routes_to_block_uuid_already_live() {
-    use secretary_core::vault::VaultError as VE;
-    let core_err = VE::BlockUuidAlreadyLive {
+    let core_err = VaultError::BlockUuidAlreadyLive {
         block_uuid: [0xaa; 16],
     };
     let ffi: FfiVaultError = core_err.into();
@@ -317,8 +304,7 @@ fn from_core_block_uuid_already_live_routes_to_block_uuid_already_live() {
 
 #[test]
 fn from_core_block_not_in_trash_routes_to_block_not_in_trash() {
-    use secretary_core::vault::VaultError as VE;
-    let core_err = VE::BlockNotInTrash {
+    let core_err = VaultError::BlockNotInTrash {
         block_uuid: [0xbb; 16],
     };
     let ffi: FfiVaultError = core_err.into();
@@ -330,8 +316,7 @@ fn from_core_block_not_in_trash_routes_to_block_not_in_trash() {
 
 #[test]
 fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
-    use secretary_core::vault::VaultError as VE;
-    let core_err = VE::RestoreVerificationFailed {
+    let core_err = VaultError::RestoreVerificationFailed {
         block_uuid: [0xcc; 16],
         detail: "sig mismatch".into(),
     };
