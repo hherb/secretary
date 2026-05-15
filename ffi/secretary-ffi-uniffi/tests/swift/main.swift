@@ -21,8 +21,10 @@ let EXPECTED_FORMAT_VERSION: UInt16 = 1
 // is small now but grows in B.2+; aggregating from the start avoids
 // the painful "fix one assertion, re-run, find another" loop.
 var failures: [String] = []
+var assertsRun: Int = 0
 
 func check(_ condition: Bool, _ message: String) {
+    assertsRun += 1
     if condition {
         print("PASS: \(message)")
     } else {
@@ -1132,9 +1134,66 @@ do {
     check(false, "restore_block live-collision setup threw \(error)")
 }
 
+// =============================================================================
+// Issue #30 follow-up — folder-in open_vault_with_recovery asserts
+// =============================================================================
+//
+// Mirrors asserts 16-18 (folder-in password) but exercises the recovery
+// path through the folder-in entry point. The bytes-in
+// `open_with_recovery` surface is already covered by asserts 9-12 above;
+// the folder-in `open_vault_with_recovery` counterpart was missing.
+// Pinned KAT inputs come from `golden_vault_001_inputs.json` via
+// `_phraseFromInputs`, same as asserts 9-12.
+
+// Assert 35: open_vault_with_recovery success — identity + manifest both populated.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let out = try openVaultWithRecovery(folderPath: folderPath, mnemonic: phrase001)
+    defer { out.identity.wipe() }
+    defer { out.manifest.wipe() }
+    let displayName = out.identity.displayName()
+    let blockCount = out.manifest.blockCount()
+    check(
+        displayName == expectedDisplayName && blockCount > 0,
+        "open_vault_with_recovery success → displayName=\"\(displayName)\", blockCount=\(blockCount)"
+    )
+} catch {
+    check(false, "open_vault_with_recovery success threw \(error), expected to succeed")
+}
+
+// Assert 36: open_vault_with_recovery 3-word phrase → VaultError.InvalidMnemonic(detail).
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    let bad = Data("only three words".utf8)
+    _ = try openVaultWithRecovery(folderPath: folderPath, mnemonic: bad)
+    check(false, "3-word phrase should have thrown VaultError.InvalidMnemonic")
+} catch let e as VaultError {
+    if case let .InvalidMnemonic(detail) = e {
+        check(
+            detail.contains("got 3"),
+            "open_vault_with_recovery 3-word → VaultError.InvalidMnemonic(detail=\"\(detail)\") mentions `got 3`"
+        )
+    } else {
+        check(false, "3-word phrase threw wrong VaultError variant: \(e)")
+    }
+} catch {
+    check(false, "3-word phrase threw \(error), expected VaultError.InvalidMnemonic")
+}
+
+// Assert 37: open_vault_with_recovery vault_002 phrase against vault_001 folder → WrongMnemonicOrCorrupt.
+do {
+    let folderPath = Data(vault001Url.path.utf8)
+    _ = try openVaultWithRecovery(folderPath: folderPath, mnemonic: phrase002)
+    check(false, "vault_002 phrase against vault_001 folder should have thrown VaultError.WrongMnemonicOrCorrupt")
+} catch VaultError.WrongMnemonicOrCorrupt {
+    check(true, "open_vault_with_recovery wrong-vault phrase → VaultError.WrongMnemonicOrCorrupt")
+} catch {
+    check(false, "wrong-vault phrase threw \(error), expected VaultError.WrongMnemonicOrCorrupt")
+}
+
 if !failures.isEmpty {
     FileHandle.standardError.write(
-        Data("FAIL: \(failures.count) of 34 assertion(s) failed\n".utf8)
+        Data("FAIL: \(failures.count) of \(assertsRun) assertion(s) failed\n".utf8)
     )
     exit(1)
 }

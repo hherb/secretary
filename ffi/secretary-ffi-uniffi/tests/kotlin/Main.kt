@@ -60,8 +60,10 @@ private val BIP39_PHRASE_SHAPE: Regex = Regex("^[a-z]+( [a-z]+){23}$")
 // is small now but grows in B.2+; aggregating from the start avoids
 // the painful "fix one assertion, re-run, find another" loop.
 private val failures: MutableList<String> = mutableListOf()
+private var assertsRun: Int = 0
 
 private fun check(condition: Boolean, message: String) {
+    assertsRun++
     if (condition) {
         println("PASS: $message")
     } else {
@@ -1161,8 +1163,65 @@ fun main() {
         b5Tmp?.let { cleanupTempVault(it) }
     }
 
+    // =============================================================================
+    // Issue #30 follow-up — folder-in open_vault_with_recovery asserts
+    // =============================================================================
+    //
+    // Mirrors asserts 16-18 (folder-in password) but exercises the
+    // recovery path through the folder-in entry point. The bytes-in
+    // `open_with_recovery` surface is already covered by asserts 9-12
+    // above; the folder-in `open_vault_with_recovery` counterpart was
+    // missing. Pinned KAT inputs come from `golden_vault_001_inputs.json`
+    // via `phraseFromInputs`, same as asserts 9-12.
+
+    // Assert 36: open_vault_with_recovery success — identity + manifest both populated.
+    try {
+        val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
+        val out = openVaultWithRecovery(folderPath, phrase001)
+        val identity = out.identity
+        val manifest = out.manifest
+        val displayName = identity.displayName()
+        val blockCount = manifest.blockCount()
+        check(
+            displayName == expectedDisplayName && blockCount > 0UL,
+            "open_vault_with_recovery success → displayName=\"$displayName\", blockCount=$blockCount",
+        )
+        identity.wipe()
+        manifest.wipe()
+        identity.close()
+        manifest.close()
+    } catch (e: Throwable) {
+        check(false, "open_vault_with_recovery success threw $e, expected to succeed")
+    }
+
+    // Assert 37: open_vault_with_recovery 3-word phrase → VaultException.InvalidMnemonic(detail).
+    try {
+        val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
+        val bad = "only three words".toByteArray(Charsets.UTF_8)
+        openVaultWithRecovery(folderPath, bad)
+        check(false, "3-word phrase should have thrown VaultException.InvalidMnemonic")
+    } catch (e: VaultException.InvalidMnemonic) {
+        check(
+            e.detail.contains("got 3"),
+            "open_vault_with_recovery 3-word → VaultException.InvalidMnemonic(detail=\"${e.detail}\") mentions `got 3`",
+        )
+    } catch (e: Throwable) {
+        check(false, "3-word phrase threw $e, expected VaultException.InvalidMnemonic")
+    }
+
+    // Assert 38: open_vault_with_recovery vault_002 phrase against vault_001 folder → WrongMnemonicOrCorrupt.
+    try {
+        val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
+        openVaultWithRecovery(folderPath, phrase002)
+        check(false, "vault_002 phrase against vault_001 folder should have thrown VaultException.WrongMnemonicOrCorrupt")
+    } catch (e: VaultException.WrongMnemonicOrCorrupt) {
+        check(true, "open_vault_with_recovery wrong-vault phrase → VaultException.WrongMnemonicOrCorrupt")
+    } catch (e: Throwable) {
+        check(false, "wrong-vault phrase threw $e, expected VaultException.WrongMnemonicOrCorrupt")
+    }
+
     if (failures.isNotEmpty()) {
-        System.err.println("FAIL: ${failures.size} of 35 assertion(s) failed")
+        System.err.println("FAIL: ${failures.size} of $assertsRun assertion(s) failed")
         exitProcess(1)
     }
 
