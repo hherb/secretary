@@ -136,8 +136,11 @@ tempCodeRunnerFile.py
 /ffi/secretary-ffi-uniffi/bindings/
 /ffi/secretary-ffi-uniffi/tests/swift/secretary_smoke
 /ffi/secretary-ffi-uniffi/tests/swift/secretary_smoke.dSYM/
+/ffi/secretary-ffi-uniffi/tests/swift/secretary_conformance
+/ffi/secretary-ffi-uniffi/tests/swift/secretary_conformance.dSYM/
 /ffi/secretary-ffi-uniffi/tests/kotlin/lib/
 /ffi/secretary-ffi-uniffi/tests/kotlin/secretary_smoke.jar
+/ffi/secretary-ffi-uniffi/tests/kotlin/secretary_conformance.jar
 
 # Claude Code per-user state (settings, generated skills). Project-level
 # Claude config (.claude/CLAUDE.md, .claude/agents/, etc.) may be
