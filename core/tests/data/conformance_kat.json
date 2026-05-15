@@ -84,6 +84,65 @@
         "variant": "InvalidMnemonic",
         "detail_contains": "got 3"
       }
+    },
+    {
+      "name": "read_block_happy",
+      "description": "read_block on golden_vault_001's sole block (the 'Personal logins' block). Record list populated by the generator; see core/tests/data/golden_vault_001_inputs.json for the source-of-truth plaintext.",
+      "operation": "read_block",
+      "after": "open_password_happy",
+      "inputs": {
+        "block_uuid_hex": "112233445566778899aabbccddeeff00"
+      },
+      "expected": {
+        "kind": "ok",
+        "records": [
+          {
+            "record_uuid_hex": "33445566778899aabbccddeeff001122",
+            "record_type": "login",
+            "tags": [
+              "work"
+            ],
+            "fields": [
+              {
+                "name": "password",
+                "type": "text",
+                "value_utf8": "hunter2"
+              },
+              {
+                "name": "username",
+                "type": "text",
+                "value_utf8": "owner@example.com"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "read_block_unknown_uuid",
+      "description": "read_block with a UUID not present in the manifest → typed VaultError.BlockNotFound.",
+      "operation": "read_block",
+      "after": "open_password_happy",
+      "inputs": {
+        "block_uuid_hex": "00000000000000000000000000000000"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "BlockNotFound"
+      }
+    },
+    {
+      "name": "read_block_wrong_length_uuid",
+      "description": "read_block with a non-16-byte block_uuid → synthesized InvalidArgument at the replay layer (FfiVaultError doesn't expose this variant; it lives on the uniffi-projected VaultError only). Each replay engine emits its host's analogue.",
+      "operation": "read_block",
+      "after": "open_password_happy",
+      "inputs": {
+        "block_uuid_bytes_hex": "1122"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "InvalidArgument"
+      }
     }
   ]
 }
