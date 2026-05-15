@@ -49,8 +49,8 @@ cargo test --release --workspace --test conflict
 # Cross-language differential replay (requires `uv`; opt-in via Cargo feature)
 cargo test --release --workspace --features differential-replay
 
-# Lint — must stay clean with -D warnings
-cargo clippy --release --workspace -- -D warnings
+# Lint — must stay clean with -D warnings (covers both lib + test targets)
+cargo clippy --release --workspace --tests -- -D warnings
 
 # Format
 cargo fmt --all

@@ -1103,7 +1103,7 @@ mod tests {
         // Output may be re-sorted vs input; sort the input the same way
         // before comparing so we test "merge yields the canonical form".
         let mut a_sorted = a.clone();
-        a_sorted.sort_by(|x, y| x.device_uuid.cmp(&y.device_uuid));
+        a_sorted.sort_by_key(|x| x.device_uuid);
         assert_eq!(merge_vector_clocks(&a, &a), a_sorted);
     }
 

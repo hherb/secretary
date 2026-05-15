@@ -1556,14 +1556,14 @@ mod manifest_props {
             let mut m_sorted = m.clone();
             m_sorted
                 .vector_clock
-                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-            m_sorted.blocks.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+                .sort_by_key(|a| a.device_uuid);
+            m_sorted.blocks.sort_by_key(|a| a.block_uuid);
             for blk in &mut m_sorted.blocks {
                 blk.recipients.sort();
                 blk.vector_clock_summary
-                    .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+                    .sort_by_key(|a| a.device_uuid);
             }
-            m_sorted.trash.sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+            m_sorted.trash.sort_by_key(|a| a.block_uuid);
 
             prop_assert_eq!(&parsed, &m_sorted);
 
