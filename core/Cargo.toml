@@ -65,6 +65,10 @@ serde_json = "1"
 # unlike the bridge crate's runtime-path use of the same crate at the
 # same major.minor.
 hex = "0.4"
+# Conformance KAT replay (core/tests/conformance_kat.rs) drives the bridge
+# crate directly so the Rust-side replay is structurally identical to the
+# Swift / Kotlin replays. Test-only; excluded from the runtime dependency tree.
+secretary-ffi-bridge = { path = "../ffi/secretary-ffi-bridge" }
 
 [lints]
 workspace = true
