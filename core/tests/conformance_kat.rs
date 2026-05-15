@@ -249,7 +249,9 @@ fn assert_open_ok(
         );
     }
     if let Some(hex_str) = &expected.block_uuid_hex {
-        let expected_uuid = hex::decode(hex_str).expect("block_uuid_hex must be valid hex");
+        // Validate format up front; decode result discarded — we compare lowercase
+        // hex strings, which is what hex::encode emits.
+        hex::decode(hex_str).expect("block_uuid_hex must be valid hex");
         let summaries = output.manifest.block_summaries();
         assert!(
             !summaries.is_empty(),
@@ -258,7 +260,7 @@ fn assert_open_ok(
         let actual_hex = hex::encode(summaries[0].block_uuid);
         assert_eq!(
             actual_hex,
-            hex::encode(&expected_uuid),
+            hex_str.to_lowercase(),
             "{label}: block_uuid mismatch"
         );
     }
@@ -270,7 +272,7 @@ fn assert_err(label: &str, actual_variant: &str, actual_detail: Option<&str>, ex
         detail_contains,
     } = expected
     else {
-        panic!("{label}: expected Ok but operation returned Err");
+        panic!("{label}: assert_err called but vector.expected is Ok — programmer error in caller");
     };
     assert_eq!(actual_variant, variant, "{label}: variant mismatch");
     if let Some(needle) = detail_contains {
