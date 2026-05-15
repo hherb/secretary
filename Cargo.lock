@@ -1220,6 +1220,7 @@ dependencies = [
  "chacha20poly1305",
  "ciborium",
  "ed25519-dalek",
+ "hex",
  "hkdf",
  "ml-dsa",
  "ml-kem",

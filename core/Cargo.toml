@@ -59,6 +59,10 @@ differential-replay = []
 proptest = "1"
 rand_chacha = "0.3"
 serde_json = "1"
+# Used by core/tests/conformance_kat.rs to decode UUID-hex / bytes-hex
+# fields in the KAT into the [u8; 16] / Vec<u8> shapes the bridge crate
+# accepts. Matches the version pinned in ffi/secretary-ffi-bridge/Cargo.toml.
+hex = "0.4"
 
 [lints]
 workspace = true
