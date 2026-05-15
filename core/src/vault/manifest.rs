@@ -1927,20 +1927,13 @@ mod tests {
         // order. After encode-then-decode they come back sorted. So we
         // sort `m`'s arrays the same way before comparing.
         let mut m_sorted = m.clone();
-        m_sorted
-            .vector_clock
-            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-        m_sorted
-            .blocks
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted.vector_clock.sort_by_key(|a| a.device_uuid);
+        m_sorted.blocks.sort_by_key(|a| a.block_uuid);
         for blk in &mut m_sorted.blocks {
             blk.recipients.sort();
-            blk.vector_clock_summary
-                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+            blk.vector_clock_summary.sort_by_key(|a| a.device_uuid);
         }
-        m_sorted
-            .trash
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted.trash.sort_by_key(|a| a.block_uuid);
         assert_eq!(parsed, m_sorted);
 
         let bytes_again = encode_manifest(&parsed).expect("re-encode populated");
@@ -2719,20 +2712,13 @@ mod tests {
         // decoded copy is in canonical order. Use the same sort-then-compare
         // discipline as the existing `roundtrip_populated_manifest` test.
         let mut m_sorted = m.clone();
-        m_sorted
-            .vector_clock
-            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-        m_sorted
-            .blocks
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted.vector_clock.sort_by_key(|a| a.device_uuid);
+        m_sorted.blocks.sort_by_key(|a| a.block_uuid);
         for blk in &mut m_sorted.blocks {
             blk.recipients.sort();
-            blk.vector_clock_summary
-                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+            blk.vector_clock_summary.sort_by_key(|a| a.device_uuid);
         }
-        m_sorted
-            .trash
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        m_sorted.trash.sort_by_key(|a| a.block_uuid);
         assert_eq!(recovered, m_sorted, "decrypted manifest matches original");
     }
 
@@ -3243,20 +3229,13 @@ mod tests {
         // decoded copy is in canonical order. Use the same sort-then-compare
         // discipline as the existing `roundtrip_populated_manifest` test.
         let mut body_sorted = body.clone();
-        body_sorted
-            .vector_clock
-            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
-        body_sorted
-            .blocks
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        body_sorted.vector_clock.sort_by_key(|a| a.device_uuid);
+        body_sorted.blocks.sort_by_key(|a| a.block_uuid);
         for blk in &mut body_sorted.blocks {
             blk.recipients.sort();
-            blk.vector_clock_summary
-                .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+            blk.vector_clock_summary.sort_by_key(|a| a.device_uuid);
         }
-        body_sorted
-            .trash
-            .sort_by(|a, b| a.block_uuid.cmp(&b.block_uuid));
+        body_sorted.trash.sort_by_key(|a| a.block_uuid);
         assert_eq!(
             recovered, body_sorted,
             "decrypted manifest matches original"

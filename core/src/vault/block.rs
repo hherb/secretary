@@ -1842,9 +1842,7 @@ mod tests {
         // sorted order. Build the expected post-sort header for the
         // equality check.
         let mut expected_header = header.clone();
-        expected_header
-            .vector_clock
-            .sort_by(|a, b| a.device_uuid.cmp(&b.device_uuid));
+        expected_header.vector_clock.sort_by_key(|a| a.device_uuid);
         assert_eq!(decoded_header, expected_header);
 
         // ---- Plaintext ----------------------------------------------
