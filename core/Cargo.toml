@@ -61,7 +61,9 @@ rand_chacha = "0.3"
 serde_json = "1"
 # Used by core/tests/conformance_kat.rs to decode UUID-hex / bytes-hex
 # fields in the KAT into the [u8; 16] / Vec<u8> shapes the bridge crate
-# accepts. Matches the version pinned in ffi/secretary-ffi-bridge/Cargo.toml.
+# accepts. Caret-range "0.4" is fine here — this is a test-only dev-dep,
+# unlike the bridge crate's runtime-path use of the same crate at the
+# same major.minor.
 hex = "0.4"
 
 [lints]

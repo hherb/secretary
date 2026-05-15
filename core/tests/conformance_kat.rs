@@ -8,16 +8,16 @@
 //!
 //! Two entry points:
 //!
-//! - [`replay_conformance_kat`] — runs on every `cargo test` and
+//! - `replay_conformance_kat` — runs on every `cargo test` and
 //!   gates protocol changes.
-//! - [`generate_conformance_kat`] — `#[ignore]`-marked; runs the
+//! - `generate_conformance_kat` — `#[ignore]`-marked; runs the
 //!   bridge crate against `golden_vault_001` and emits the JSON.
 //!   Manually triggered on intentional protocol change; the diff
 //!   is human-reviewed before commit.
 
 #![forbid(unsafe_code)]
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::PathBuf;
 
 fn kat_path() -> PathBuf {
@@ -27,20 +27,22 @@ fn kat_path() -> PathBuf {
         .join("conformance_kat.json")
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct Kat {
     version: u32,
     #[serde(default)]
     #[allow(dead_code)] // documentation field; the replay does not read it.
     comment: String,
+    #[allow(dead_code)] // scaffold field; Task 2/3 will iterate over vectors.
     vectors: Vec<Vector>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct Vector {
+    #[allow(dead_code)] // scaffold field; Task 2/3 will match on name.
     name: String,
     #[serde(default)]
-    #[allow(dead_code)] // documentation field.
+    #[allow(dead_code)] // documentation field; the replay does not read it.
     description: String,
 }
 
