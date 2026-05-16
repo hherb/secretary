@@ -136,21 +136,30 @@ func handleOpenOk(
         _ = check(false, name, "expected err, got ok")
         return
     }
+    // Aggregate sub-check results so we only cache on full success.
+    // Matches the Rust replay (assert_open_ok panics on mismatch and
+    // cache.insert never runs) — chained read_block vectors then
+    // report "predecessor did not produce a cacheable Ok" instead of
+    // running against a vault whose pinned metadata didn't match.
+    var allOk = true
     if let display = expected["display_name"] as? String {
-        _ = check(out.identity.displayName() == display, name, "display_name mismatch")
+        if !check(out.identity.displayName() == display, name, "display_name mismatch") { allOk = false }
     }
     if let bc = expected["block_count"] as? Int {
-        _ = check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch")
+        if !check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch") { allOk = false }
     }
     if let bu = expected["block_uuid_hex"] as? String {
         let summaries = out.manifest.blockSummaries()
         if !summaries.isEmpty {
-            _ = check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch")
+            if !check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch") { allOk = false }
         } else {
             _ = check(false, name, "manifest has no blocks but block_uuid pinned")
+            allOk = false
         }
     }
-    cache[name] = out
+    if allOk {
+        cache[name] = out
+    }
 }
 
 func handleVaultError(

@@ -159,25 +159,40 @@ private fun handleOpenOk(
         check(false, name, "expected err, got ok")
         return
     }
+    // Aggregate sub-check results so we only cache on full success.
+    // Matches the Rust replay (assert_open_ok panics on mismatch and
+    // cache.insert never runs) — chained read_block vectors then
+    // report "predecessor did not produce a cacheable Ok" instead of
+    // running against a vault whose pinned metadata didn't match.
+    var allOk = true
     expected.optString("display_name", null)?.let { wantDisplay ->
-        check(out.identity.displayName() == wantDisplay, name,
-            "display_name mismatch (got '${out.identity.displayName()}', want '$wantDisplay')")
+        if (!check(out.identity.displayName() == wantDisplay, name,
+                "display_name mismatch (got '${out.identity.displayName()}', want '$wantDisplay')")) {
+            allOk = false
+        }
     }
     if (expected.has("block_count")) {
         val wantBc = expected.getInt("block_count")
-        check(out.manifest.blockCount().toInt() == wantBc, name,
-            "block_count mismatch (got ${out.manifest.blockCount()}, want $wantBc)")
+        if (!check(out.manifest.blockCount().toInt() == wantBc, name,
+                "block_count mismatch (got ${out.manifest.blockCount()}, want $wantBc)")) {
+            allOk = false
+        }
     }
     expected.optString("block_uuid_hex", null)?.let { wantUuid ->
         val summaries = out.manifest.blockSummaries()
         if (summaries.isNotEmpty()) {
-            check(encodeHex(summaries[0].blockUuid) == wantUuid, name,
-                "block_uuid mismatch (got '${encodeHex(summaries[0].blockUuid)}', want '$wantUuid')")
+            if (!check(encodeHex(summaries[0].blockUuid) == wantUuid, name,
+                    "block_uuid mismatch (got '${encodeHex(summaries[0].blockUuid)}', want '$wantUuid')")) {
+                allOk = false
+            }
         } else {
             check(false, name, "manifest has no blocks but block_uuid_hex pinned")
+            allOk = false
         }
     }
-    cache[name] = out
+    if (allOk) {
+        cache[name] = out
+    }
 }
 
 private fun handleVaultError(
