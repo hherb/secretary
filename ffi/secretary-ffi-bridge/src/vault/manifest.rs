@@ -133,6 +133,12 @@ impl OpenVaultManifest {
 
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this
     /// moment. **Idempotent** — multiple calls do not panic.
+    ///
+    /// Does **not** clear `mid_call_hook` — the hook lives in a
+    /// separate `Mutex` and is test-only state. Production code never
+    /// installs a hook, so this is moot in production; tests that
+    /// install-then-wipe-then-call-an-orchestrator-again must reinstall
+    /// (or accept the prior closure firing on the next call).
     pub fn wipe(&self) {
         let _drop = lock_or_recover(&self.inner).take();
         // _drop goes out of scope here → OpenVaultManifestInner drops in
@@ -180,6 +186,18 @@ impl OpenVaultManifest {
     /// keeps it out of generated rustdoc, and the method does not
     /// auto-cross the PyO3 / uniffi FFI boundary (those layers require
     /// explicit `#[pyo3]` / `#[uniffi::export]` annotations).
+    ///
+    /// The closure bound is `Fn()` (re-callable). The bundled
+    /// `MidCallRace` test helper is intentionally *single-shot* — its
+    /// `sync_channel(0)` ends drop when the helper is consumed by
+    /// `release_worker`, so a second call to an orchestrator that
+    /// invokes the hook would panic inside the closure (`send`/`recv`
+    /// on a dropped peer). Tests that need multi-shot semantics must
+    /// either reinstall between calls or build a helper that doesn't
+    /// own one-shot channel ends. A closure panic poisons the
+    /// `mid_call_hook` mutex; both call sites recover via
+    /// `unwrap_or_else(|p| p.into_inner())`, so the prior closure
+    /// remains installed for the next access.
     #[doc(hidden)]
     pub fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
         *self.mid_call_hook.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(f));
