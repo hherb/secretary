@@ -1220,12 +1220,14 @@ dependencies = [
  "chacha20poly1305",
  "ciborium",
  "ed25519-dalek",
+ "hex",
  "hkdf",
  "ml-dsa",
  "ml-kem",
  "proptest",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "secretary-ffi-bridge",
  "serde",
  "serde_json",
  "sha2",
@@ -1322,6 +1324,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

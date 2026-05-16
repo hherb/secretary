@@ -74,6 +74,18 @@ cd core/fuzz && uv run --with pytest pytest test_monitor.py -v
 
 # Launch the NiceGUI fuzz dashboard at http://localhost:8080
 uv run core/fuzz/monitor.py
+
+# Cross-language conformance KAT replay (B.6 v1; read-only FFI surface).
+# Each runner loads core/tests/data/conformance_kat.json and asserts the
+# Swift / Kotlin uniffi binding produces the same observable output as
+# the Rust bridge replay (which runs every cargo test).
+bash ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh
+bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh
+
+# Regenerate conformance_kat.json after an intentional protocol change
+# (diff is human-reviewed before commit; expected diff is scoped to
+# read_block_happy.expected.records and nothing else):
+cargo test --release --workspace -- --ignored generate_conformance_kat --nocapture
 ```
 
 ### Fuzz harness (`core/fuzz/`)

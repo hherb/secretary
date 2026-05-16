@@ -58,7 +58,22 @@ differential-replay = []
 [dev-dependencies]
 proptest = "1"
 rand_chacha = "0.3"
-serde_json = "1"
+# `preserve_order` keeps serde_json::Value backed by IndexMap instead of
+# BTreeMap so the conformance KAT generator (core/tests/conformance_kat.rs)
+# round-trips the file without alphabetising every key. Without this, every
+# regenerated KAT diff looks like a full rewrite and obscures the actual
+# semantic change.
+serde_json = { version = "1", features = ["preserve_order"] }
+# Used by core/tests/conformance_kat.rs to decode UUID-hex / bytes-hex
+# fields in the KAT into the [u8; 16] / Vec<u8> shapes the bridge crate
+# accepts. Caret-range "0.4" is fine here — this is a test-only dev-dep,
+# unlike the bridge crate's runtime-path use of the same crate at the
+# same major.minor.
+hex = "0.4"
+# Conformance KAT replay (core/tests/conformance_kat.rs) drives the bridge
+# crate directly so the Rust-side replay is structurally identical to the
+# Swift / Kotlin replays. Test-only; excluded from the runtime dependency tree.
+secretary-ffi-bridge = { path = "../ffi/secretary-ffi-bridge" }
 
 [lints]
 workspace = true
