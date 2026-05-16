@@ -237,10 +237,12 @@ fun main() {
     val failures: MutableList<String> = mutableListOf()
     var vectorsRun: Int = 0
     // Cache: vector name → OpenVaultOutput for chained read_block vectors.
-    // Values are held alive for the lifetime of the runner; the JVM GC
-    // will release them on exit (uniffi's Cleaner thread handles the Rust
-    // handle release). If a source vector fails, its key is absent from the
-    // map and chained vectors report "predecessor did not produce a cacheable Ok".
+    // Drained explicitly at end-of-main before exitProcess (see below) —
+    // calls each cached value's .destroy() so the Rust-side handle is
+    // released deterministically rather than waiting for the JVM Cleaner
+    // thread. If a source vector fails, its key is absent from the map
+    // and chained vectors report "predecessor did not produce a cacheable
+    // Ok".
     val cache: MutableMap<String, OpenVaultOutput> = mutableMapOf()
 
     fun check(ok: Boolean, vectorName: String, message: String): Boolean {
@@ -418,6 +420,14 @@ fun main() {
             println("PASS: $name")
         }
     }
+
+    // Drain cached OpenVaultOutput handles deterministically.
+    // The JVM Cleaner thread would release them eventually, but a future
+    // second-pass replay (B.6 v2) could re-enter main and the handles
+    // would pin Rust-side allocations for that duration. Explicit drain
+    // releases them at end-of-run — see issue #63.
+    cache.values.forEach { it.destroy() }
+    cache.clear()
 
     // --- Summary ---
     if (failures.isEmpty()) {
