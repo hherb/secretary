@@ -187,6 +187,15 @@ struct ConformanceRunner {
             }
             let after = vec["after"] as? String
 
+            // Snapshot the failure count so we can decide whether this
+            // vector produced any sub-check failures. A single PASS line
+            // is emitted at the bottom of the loop iff `failures.count`
+            // is unchanged — otherwise the per-vector FAIL lines from
+            // `check(...)` already went to stderr and we stay silent on
+            // stdout. This prevents the misleading "FAIL: ... / PASS: ..."
+            // pair for the same vector.
+            let preFailureCount = failures.count
+
             switch (operation, after) {
             case ("open_vault_with_password", nil):
                 let vaultDir = resolveVaultDir(inputs, goldenVaultDir: goldenVaultDir)
@@ -209,7 +218,6 @@ struct ConformanceRunner {
                         }
                     }
                     cache[name] = out
-                    print("PASS: \(name)")
                 } catch let e as VaultError {
                     if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
                     let want = expected["variant"] as? String ?? ""
@@ -218,7 +226,6 @@ struct ConformanceRunner {
                         let detail = vaultErrorDetail(e) ?? ""
                         _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
                     }
-                    print("PASS: \(name)")
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -244,7 +251,6 @@ struct ConformanceRunner {
                         }
                     }
                     cache[name] = out
-                    print("PASS: \(name)")
                 } catch let e as VaultError {
                     if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
                     let want = expected["variant"] as? String ?? ""
@@ -253,7 +259,6 @@ struct ConformanceRunner {
                         let detail = vaultErrorDetail(e) ?? ""
                         _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
                     }
-                    print("PASS: \(name)")
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -319,7 +324,6 @@ struct ConformanceRunner {
                             }
                         }
                     }
-                    print("PASS: \(name)")
                 } catch let e as VaultError {
                     if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
                     let want = expected["variant"] as? String ?? ""
@@ -328,13 +332,18 @@ struct ConformanceRunner {
                         let detail = vaultErrorDetail(e) ?? ""
                         _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
                     }
-                    print("PASS: \(name)")
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
 
             default:
                 _ = check(false, name, "unhandled operation '\(operation)' with after=\(String(describing: after))")
+            }
+
+            // Gated success print: only emit PASS if this vector added no
+            // failures (see preFailureCount snapshot above).
+            if failures.count == preFailureCount {
+                print("PASS: \(name)")
             }
         }
 
