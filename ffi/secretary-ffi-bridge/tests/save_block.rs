@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::{
@@ -382,4 +383,112 @@ fn arb_record_input() -> impl proptest::strategy::Strategy<Value = RecordInput> 
             record_uuid,
             fields,
         })
+}
+
+// ---------------------------------------------------------------------------
+// Mid-call wipe race (issue #35)
+// ---------------------------------------------------------------------------
+
+/// Test-only handshake helper that exposes the orchestrator's mid-call
+/// hook to a parallel test thread. The worker thread running `save_block`
+/// (or any other op that calls `manifest.run_mid_call_hook()`) blocks
+/// at the hook until `release_worker` is called from the main thread.
+/// In between, the main thread performs the racing action — typically
+/// `manifest.wipe()`.
+///
+/// Single-use: `release_worker(self)` consumes the helper. Forgetting to
+/// release the worker causes a `thread::scope` join to block on the
+/// still-parked worker (the channel ends owned by `Self` live until end
+/// of scope) — the test would hang, surfacing as a CI-job-level timeout
+/// rather than a panic. Keep the test body between
+/// `wait_for_worker_at_hook` and `release_worker` linear and short.
+struct MidCallRace {
+    rx_ready: Receiver<()>,
+    tx_go: SyncSender<()>,
+}
+
+impl MidCallRace {
+    fn install_on(manifest: &OpenVaultManifest) -> Self {
+        let (tx_ready, rx_ready) = sync_channel::<()>(0);
+        let (tx_go, rx_go) = sync_channel::<()>(0);
+        manifest.install_mid_call_hook(move || {
+            tx_ready
+                .send(())
+                .expect("test main thread still waiting on ready");
+            rx_go
+                .recv()
+                .expect("test main thread dropped tx_go before signaling");
+        });
+        Self { rx_ready, tx_go }
+    }
+
+    fn wait_for_worker_at_hook(&self) {
+        self.rx_ready
+            .recv()
+            .expect("worker never reached the mid-call hook");
+    }
+
+    fn release_worker(self) {
+        self.tx_go
+            .send(())
+            .expect("worker no longer waiting on go signal");
+    }
+}
+
+#[test]
+fn save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk() {
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    let race = MidCallRace::install_on(&manifest);
+
+    let input = BlockInput {
+        block_uuid: NEW_BLOCK_UUID,
+        block_name: "raced".to_string(),
+        records: vec![RecordInput {
+            record_uuid: NEW_RECORD_UUID,
+            fields: vec![FieldInput {
+                name: "k".to_string(),
+                value: FieldInputValue::Text(SecretString::from("v")),
+            }],
+        }],
+    };
+
+    let result = std::thread::scope(|s| {
+        let worker = s.spawn(|| save_block(&identity, &manifest, input, DEVICE_UUID, NOW_MS_BASE));
+        race.wait_for_worker_at_hook();
+        manifest.wipe();
+        race.release_worker();
+        worker.join().expect("worker panicked")
+    });
+
+    // (1) Mid-call wipe surfaces as the documented typed error.
+    match result {
+        Err(FfiVaultError::CorruptVault { detail }) => {
+            assert!(
+                detail.contains("closed during save"),
+                "expected mid-call detail per ReplaceManifestError::HandleWiped \
+                 Display impl; got: {detail}",
+            );
+        }
+        other => panic!("expected CorruptVault from mid-call wipe, got: {other:?}",),
+    }
+
+    // (2) Documented partial-success-mid-race contract: on-disk state
+    //     is updated even though the bridge handle is gone. Re-opening
+    //     the vault decodes the re-signed manifest, lists the new
+    //     block, and the block file decrypts back to the original input.
+    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+        .expect("re-open after mid-call race");
+    let summary = out
+        .manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("new block visible on re-open after mid-call race");
+    assert_eq!(summary.block_name, "raced");
+    let output = read_block(&out.identity, &out.manifest, &NEW_BLOCK_UUID)
+        .expect("read_block decrypts the persisted block");
+    let r = output.record_at(0).expect("record present");
+    assert_eq!(
+        r.field_by_name("k").unwrap().expose_text().as_deref(),
+        Some("v"),
+        "field value survives the mid-call race round-trip",
+    );
 }

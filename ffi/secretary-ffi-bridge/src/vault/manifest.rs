@@ -27,6 +27,29 @@ use super::inner::{BlockSummary, OpenVaultManifestInner};
 /// Rust-side `Drop` cascade still runs.
 pub struct OpenVaultManifest {
     inner: Mutex<Option<OpenVaultManifestInner>>,
+    /// Test-only hook fired between `core::*` and
+    /// `replace_manifest_and_file` in the save / trash / restore
+    /// orchestrators. Exposes the documented concurrent-wipe race
+    /// window to integration tests.
+    ///
+    /// Field is always present (a `cfg(test)` gate would not reach
+    /// integration tests in `tests/*.rs` — `--cfg test` is not
+    /// propagated to dependencies). Default is `None`; production code
+    /// never calls [`Self::install_mid_call_hook`], so production
+    /// builds pay only one `Mutex` lock + `Option::is_none` check per
+    /// `save_block` call. The installer is `pub` with `#[doc(hidden)]`
+    /// so integration tests can reach it but it is invisible in
+    /// generated docs and does not auto-cross the PyO3 / uniffi FFI
+    /// boundary (which require explicit `#[pyo3]` / `#[uniffi::export]`
+    /// annotations).
+    ///
+    /// Bound is `Fn() + Send` (no `+ Sync`): closures installed by
+    /// tests typically capture `mpsc::Receiver<()>`, which is `Send`
+    /// but not `Sync`. The wrapping `Mutex` already provides outer
+    /// `Sync` for the field, so `+ Sync` on the closure itself is
+    /// neither needed nor possible without forcing tests to use
+    /// awkward `Arc<Condvar>` shapes.
+    mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 /// Redacted Debug: never leak secret material through fmt.
@@ -46,6 +69,7 @@ impl OpenVaultManifest {
     pub(crate) fn new(inner: OpenVaultManifestInner) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
+            mid_call_hook: Mutex::new(None),
         }
     }
 
@@ -109,12 +133,74 @@ impl OpenVaultManifest {
 
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this
     /// moment. **Idempotent** — multiple calls do not panic.
+    ///
+    /// Does **not** clear `mid_call_hook` — the hook lives in a
+    /// separate `Mutex` and is test-only state. Production code never
+    /// installs a hook, so this is moot in production; tests that
+    /// install-then-wipe-then-call-an-orchestrator-again must reinstall
+    /// (or accept the prior closure firing on the next call).
     pub fn wipe(&self) {
         let _drop = lock_or_recover(&self.inner).take();
         // _drop goes out of scope here → OpenVaultManifestInner drops in
         // field-declaration order: identity_block_key (Sensitive<[u8; 32]>
         // — IBK zeroized first via ZeroizeOnDrop), then manifest,
         // manifest_file, owner_card.
+    }
+
+    /// Fire the mid-call test hook if one is installed. Called by
+    /// orchestrators between `core::*` and `replace_manifest_and_file`
+    /// to expose the concurrent-wipe race window to integration tests.
+    ///
+    /// Production builds pay one `Mutex` lock + `Option::is_none` check
+    /// per call (the hook is `None` unless
+    /// [`Self::install_mid_call_hook`] has been called, and production
+    /// code never calls that). Orchestrators opt into testability by
+    /// adding a single `manifest.run_mid_call_hook();` call between the
+    /// core invocation and the write-back. Today only
+    /// `save::save_block` opts in; trash and restore can adopt the same
+    /// shape in a follow-up.
+    ///
+    /// The hook closure must not recursively call `run_mid_call_hook`
+    /// on the same `OpenVaultManifest` — the `mid_call_hook` mutex is
+    /// held across the closure call and would deadlock. Test-only
+    /// closures we install today only touch `mpsc` channel ends.
+    #[inline]
+    pub(crate) fn run_mid_call_hook(&self) {
+        if let Some(f) = self
+            .mid_call_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            f();
+        }
+    }
+
+    /// Install a closure fired by [`Self::run_mid_call_hook`].
+    /// **Test-only — do not use in production.** Overwrites any
+    /// previously-installed hook.
+    ///
+    /// `pub` so it is reachable from integration tests in `tests/*.rs`
+    /// (where `--cfg test` is not propagated to dependencies, so a
+    /// `#[cfg(test)]` gate would hide the method). `#[doc(hidden)]`
+    /// keeps it out of generated rustdoc, and the method does not
+    /// auto-cross the PyO3 / uniffi FFI boundary (those layers require
+    /// explicit `#[pyo3]` / `#[uniffi::export]` annotations).
+    ///
+    /// The closure bound is `Fn()` (re-callable). The bundled
+    /// `MidCallRace` test helper is intentionally *single-shot* — its
+    /// `sync_channel(0)` ends drop when the helper is consumed by
+    /// `release_worker`, so a second call to an orchestrator that
+    /// invokes the hook would panic inside the closure (`send`/`recv`
+    /// on a dropped peer). Tests that need multi-shot semantics must
+    /// either reinstall between calls or build a helper that doesn't
+    /// own one-shot channel ends. A closure panic poisons the
+    /// `mid_call_hook` mutex; both call sites recover via
+    /// `unwrap_or_else(|p| p.into_inner())`, so the prior closure
+    /// remains installed for the next access.
+    #[doc(hidden)]
+    pub fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
+        *self.mid_call_hook.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(f));
     }
 
     /// Bridge-internal accessor for the vault folder path. NOT exposed
