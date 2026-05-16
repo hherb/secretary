@@ -114,11 +114,15 @@ func encodeHex(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
 }
 
-// --- Open-result helpers (factored from open_vault_with_password / open_vault_with_recovery arms) ---
+// --- Result-arm helpers ---
 //
-// Symmetric with the Kotlin runner's handleOpenOk / handleOpenError.
+// Symmetric with the Kotlin runner's handleOpenOk / handleVaultError.
 // Same parameter order, same assertion order. The cache is `inout`
-// so the helper can insert on success.
+// so handleOpenOk can insert on success.
+//
+// `handleVaultError` is shared by every op that throws a `VaultError`
+// (open_vault_with_password, open_vault_with_recovery, read_block) —
+// the variant + detail_contains contract is uniform across them.
 
 func handleOpenOk(
     out: OpenVaultOutput,
@@ -149,7 +153,7 @@ func handleOpenOk(
     cache[name] = out
 }
 
-func handleOpenError(
+func handleVaultError(
     e: VaultError,
     expected: [String: Any],
     name: String,
@@ -258,7 +262,7 @@ struct ConformanceRunner {
                     let out = try openVaultWithPassword(folderPath: vaultDir, password: password)
                     handleOpenOk(out: out, expected: expected, name: name, kind: kind, cache: &cache, check: check)
                 } catch let e as VaultError {
-                    handleOpenError(e: e, expected: expected, name: name, kind: kind, check: check)
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -270,7 +274,7 @@ struct ConformanceRunner {
                     let out = try openVaultWithRecovery(folderPath: vaultDir, mnemonic: mnemonic)
                     handleOpenOk(out: out, expected: expected, name: name, kind: kind, cache: &cache, check: check)
                 } catch let e as VaultError {
-                    handleOpenError(e: e, expected: expected, name: name, kind: kind, check: check)
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -337,13 +341,7 @@ struct ConformanceRunner {
                         }
                     }
                 } catch let e as VaultError {
-                    if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
-                    let want = expected["variant"] as? String ?? ""
-                    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
-                    if let needle = expected["detail_contains"] as? String {
-                        let detail = vaultErrorDetail(e) ?? ""
-                        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
-                    }
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }

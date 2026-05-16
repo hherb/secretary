@@ -137,11 +137,15 @@ private fun decodeHex(s: String): ByteArray {
 private fun encodeHex(bytes: ByteArray): String =
     bytes.joinToString("") { "%02x".format(it) }
 
-// --- Open-result helpers (factored from open_vault_with_password / open_vault_with_recovery branches) ---
+// --- Result-arm helpers ---
 //
-// Symmetric with the Swift runner's handleOpenOk / handleOpenError.
+// Symmetric with the Swift runner's handleOpenOk / handleVaultError.
 // Same parameter order, same assertion order. The cache is a mutable
 // reference (Kotlin maps are reference types — no inout marker needed).
+//
+// `handleVaultError` is shared by every op that throws a `VaultException`
+// (openVaultWithPassword, openVaultWithRecovery, readBlock) — the
+// variant + detail_contains contract is uniform across them.
 
 private fun handleOpenOk(
     out: OpenVaultOutput,
@@ -176,7 +180,7 @@ private fun handleOpenOk(
     cache[name] = out
 }
 
-private fun handleOpenError(
+private fun handleVaultError(
     e: VaultException,
     expected: JSONObject,
     name: String,
@@ -289,7 +293,7 @@ fun main() {
                     val out = openVaultWithPassword(vaultDir, password)
                     handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
-                    handleOpenError(e, expected, name, kind, ::check)
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -302,7 +306,7 @@ fun main() {
                     val out = openVaultWithRecovery(vaultDir, mnemonic)
                     handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
-                    handleOpenError(e, expected, name, kind, ::check)
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -393,17 +397,7 @@ fun main() {
                     }
                     block.destroy()
                 } catch (e: VaultException) {
-                    if (kind != "err") {
-                        check(false, name, "expected ok, got err: $e")
-                        continue
-                    }
-                    val wantVariant = expected.optString("variant", "")
-                    val gotVariant = vaultExceptionVariantName(e)
-                    check(gotVariant == wantVariant, name, "variant mismatch (got $gotVariant, expected $wantVariant)")
-                    expected.optString("detail_contains", null)?.let { needle ->
-                        val detail = vaultExceptionDetail(e) ?: ""
-                        check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
-                    }
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
