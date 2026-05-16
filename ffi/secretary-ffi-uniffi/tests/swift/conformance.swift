@@ -114,6 +114,73 @@ func encodeHex(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
 }
 
+// --- Result-arm helpers ---
+//
+// Symmetric with the Kotlin runner's handleOpenOk / handleVaultError.
+// Same parameter order, same assertion order. The cache is `inout`
+// so handleOpenOk can insert on success.
+//
+// `handleVaultError` is shared by every op that throws a `VaultError`
+// (open_vault_with_password, open_vault_with_recovery, read_block) —
+// the variant + detail_contains contract is uniform across them.
+
+func handleOpenOk(
+    out: OpenVaultOutput,
+    expected: [String: Any],
+    name: String,
+    kind: String,
+    cache: inout [String: OpenVaultOutput],
+    check: (Bool, String, String) -> Bool
+) {
+    if kind != "ok" {
+        _ = check(false, name, "expected err, got ok")
+        return
+    }
+    // Aggregate sub-check results so we only cache on full success.
+    // Matches the Rust replay (assert_open_ok panics on mismatch and
+    // cache.insert never runs) — chained read_block vectors then
+    // report "predecessor did not produce a cacheable Ok" instead of
+    // running against a vault whose pinned metadata didn't match.
+    var allOk = true
+    if let display = expected["display_name"] as? String {
+        if !check(out.identity.displayName() == display, name, "display_name mismatch") { allOk = false }
+    }
+    if let bc = expected["block_count"] as? Int {
+        if !check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch") { allOk = false }
+    }
+    if let bu = expected["block_uuid_hex"] as? String {
+        let summaries = out.manifest.blockSummaries()
+        if !summaries.isEmpty {
+            if !check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch") { allOk = false }
+        } else {
+            _ = check(false, name, "manifest has no blocks but block_uuid pinned")
+            allOk = false
+        }
+    }
+    if allOk {
+        cache[name] = out
+    }
+}
+
+func handleVaultError(
+    e: VaultError,
+    expected: [String: Any],
+    name: String,
+    kind: String,
+    check: (Bool, String, String) -> Bool
+) {
+    if kind != "err" {
+        _ = check(false, name, "expected ok, got err: \(e)")
+        return
+    }
+    let want = expected["variant"] as? String ?? ""
+    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
+    if let needle = expected["detail_contains"] as? String {
+        let detail = vaultErrorDetail(e) ?? ""
+        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
+    }
+}
+
 // --- Main entry point ---
 //
 // @main provides the binary entry point and keeps all executable
@@ -202,30 +269,9 @@ struct ConformanceRunner {
                 let password = resolvePassword(inputs, goldenVaultDir: goldenVaultDir)
                 do {
                     let out = try openVaultWithPassword(folderPath: vaultDir, password: password)
-                    if kind != "ok" { _ = check(false, name, "expected err, got ok"); continue }
-                    if let display = expected["display_name"] as? String {
-                        _ = check(out.identity.displayName() == display, name, "display_name mismatch")
-                    }
-                    if let bc = expected["block_count"] as? Int {
-                        _ = check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch")
-                    }
-                    if let bu = expected["block_uuid_hex"] as? String {
-                        let summaries = out.manifest.blockSummaries()
-                        if !summaries.isEmpty {
-                            _ = check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch")
-                        } else {
-                            _ = check(false, name, "manifest has no blocks but block_uuid pinned")
-                        }
-                    }
-                    cache[name] = out
+                    handleOpenOk(out: out, expected: expected, name: name, kind: kind, cache: &cache, check: check)
                 } catch let e as VaultError {
-                    if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
-                    let want = expected["variant"] as? String ?? ""
-                    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
-                    if let needle = expected["detail_contains"] as? String {
-                        let detail = vaultErrorDetail(e) ?? ""
-                        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
-                    }
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -235,30 +281,9 @@ struct ConformanceRunner {
                 let mnemonic = resolveMnemonic(inputs, goldenVaultDir: goldenVaultDir)
                 do {
                     let out = try openVaultWithRecovery(folderPath: vaultDir, mnemonic: mnemonic)
-                    if kind != "ok" { _ = check(false, name, "expected err, got ok"); continue }
-                    if let display = expected["display_name"] as? String {
-                        _ = check(out.identity.displayName() == display, name, "display_name mismatch")
-                    }
-                    if let bc = expected["block_count"] as? Int {
-                        _ = check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch")
-                    }
-                    if let bu = expected["block_uuid_hex"] as? String {
-                        let summaries = out.manifest.blockSummaries()
-                        if !summaries.isEmpty {
-                            _ = check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch")
-                        } else {
-                            _ = check(false, name, "manifest has no blocks but block_uuid pinned")
-                        }
-                    }
-                    cache[name] = out
+                    handleOpenOk(out: out, expected: expected, name: name, kind: kind, cache: &cache, check: check)
                 } catch let e as VaultError {
-                    if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
-                    let want = expected["variant"] as? String ?? ""
-                    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
-                    if let needle = expected["detail_contains"] as? String {
-                        let detail = vaultErrorDetail(e) ?? ""
-                        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
-                    }
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -325,13 +350,7 @@ struct ConformanceRunner {
                         }
                     }
                 } catch let e as VaultError {
-                    if kind != "err" { _ = check(false, name, "expected ok, got err: \(e)"); continue }
-                    let want = expected["variant"] as? String ?? ""
-                    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
-                    if let needle = expected["detail_contains"] as? String {
-                        let detail = vaultErrorDetail(e) ?? ""
-                        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
-                    }
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
                 } catch {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
@@ -346,6 +365,16 @@ struct ConformanceRunner {
                 print("PASS: \(name)")
             }
         }
+
+        // Drop cached OpenVaultOutput references so ARC releases the
+        // contained UnlockedIdentity / OpenVaultManifest class instances
+        // (each has a deinit that frees the Rust-side handle). `exit()`
+        // below skips scope unwinding, so without this assignment the
+        // class refs would linger until process termination — fine for
+        // single-pass but matters for B.6 v2 second-pass replays.
+        // Symmetric with the Kotlin runner's
+        // `cache.values.forEach { it.destroy() }; cache.clear()`.
+        cache.removeAll()
 
         if failures.isEmpty {
             print("OK: secretary uniffi Swift conformance — all \(vectorsRun)/\(vectorsRun) vectors passed.")

@@ -11,10 +11,7 @@
 
 import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.secretary.BlockReadOutput
-import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
-import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
@@ -137,6 +134,84 @@ private fun decodeHex(s: String): ByteArray {
 private fun encodeHex(bytes: ByteArray): String =
     bytes.joinToString("") { "%02x".format(it) }
 
+// --- Result-arm helpers ---
+//
+// Symmetric with the Swift runner's handleOpenOk / handleVaultError.
+// Same parameter order, same assertion order. The cache is a mutable
+// reference (Kotlin maps are reference types — no inout marker needed).
+//
+// `handleVaultError` is shared by every op that throws a `VaultException`
+// (openVaultWithPassword, openVaultWithRecovery, readBlock) — the
+// variant + detail_contains contract is uniform across them.
+
+private fun handleOpenOk(
+    out: OpenVaultOutput,
+    expected: JSONObject,
+    name: String,
+    kind: String,
+    cache: MutableMap<String, OpenVaultOutput>,
+    check: (Boolean, String, String) -> Boolean,
+) {
+    if (kind != "ok") {
+        check(false, name, "expected err, got ok")
+        return
+    }
+    // Aggregate sub-check results so we only cache on full success.
+    // Matches the Rust replay (assert_open_ok panics on mismatch and
+    // cache.insert never runs) — chained read_block vectors then
+    // report "predecessor did not produce a cacheable Ok" instead of
+    // running against a vault whose pinned metadata didn't match.
+    var allOk = true
+    expected.optString("display_name", null)?.let { wantDisplay ->
+        if (!check(out.identity.displayName() == wantDisplay, name,
+                "display_name mismatch (got '${out.identity.displayName()}', want '$wantDisplay')")) {
+            allOk = false
+        }
+    }
+    if (expected.has("block_count")) {
+        val wantBc = expected.getInt("block_count")
+        if (!check(out.manifest.blockCount().toInt() == wantBc, name,
+                "block_count mismatch (got ${out.manifest.blockCount()}, want $wantBc)")) {
+            allOk = false
+        }
+    }
+    expected.optString("block_uuid_hex", null)?.let { wantUuid ->
+        val summaries = out.manifest.blockSummaries()
+        if (summaries.isNotEmpty()) {
+            if (!check(encodeHex(summaries[0].blockUuid) == wantUuid, name,
+                    "block_uuid mismatch (got '${encodeHex(summaries[0].blockUuid)}', want '$wantUuid')")) {
+                allOk = false
+            }
+        } else {
+            check(false, name, "manifest has no blocks but block_uuid_hex pinned")
+            allOk = false
+        }
+    }
+    if (allOk) {
+        cache[name] = out
+    }
+}
+
+private fun handleVaultError(
+    e: VaultException,
+    expected: JSONObject,
+    name: String,
+    kind: String,
+    check: (Boolean, String, String) -> Boolean,
+) {
+    if (kind != "err") {
+        check(false, name, "expected ok, got err: $e")
+        return
+    }
+    val wantVariant = expected.optString("variant", "")
+    val gotVariant = vaultExceptionVariantName(e)
+    check(gotVariant == wantVariant, name, "variant mismatch (got $gotVariant, expected $wantVariant)")
+    expected.optString("detail_contains", null)?.let { needle ->
+        val detail = vaultExceptionDetail(e) ?: ""
+        check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
+    }
+}
+
 // --- Main ---
 
 fun main() {
@@ -178,10 +253,12 @@ fun main() {
     val failures: MutableList<String> = mutableListOf()
     var vectorsRun: Int = 0
     // Cache: vector name → OpenVaultOutput for chained read_block vectors.
-    // Values are held alive for the lifetime of the runner; the JVM GC
-    // will release them on exit (uniffi's Cleaner thread handles the Rust
-    // handle release). If a source vector fails, its key is absent from the
-    // map and chained vectors report "predecessor did not produce a cacheable Ok".
+    // Drained explicitly at end-of-main before exitProcess (see below) —
+    // calls each cached value's .destroy() so the Rust-side handle is
+    // released deterministically rather than waiting for the JVM Cleaner
+    // thread. If a source vector fails, its key is absent from the map
+    // and chained vectors report "predecessor did not produce a cacheable
+    // Ok".
     val cache: MutableMap<String, OpenVaultOutput> = mutableMapOf()
 
     fun check(ok: Boolean, vectorName: String, message: String): Boolean {
@@ -226,38 +303,9 @@ fun main() {
                 val password = resolvePassword(inputs, goldenVaultDir)
                 try {
                     val out = openVaultWithPassword(vaultDir, password)
-                    if (kind != "ok") {
-                        check(false, name, "expected err, got ok")
-                        continue
-                    }
-                    expected.optString("display_name", null)?.let { wantDisplay ->
-                        check(out.identity.displayName() == wantDisplay, name, "display_name mismatch (got '${out.identity.displayName()}', want '$wantDisplay')")
-                    }
-                    if (expected.has("block_count")) {
-                        val wantBc = expected.getInt("block_count")
-                        check(out.manifest.blockCount().toInt() == wantBc, name, "block_count mismatch (got ${out.manifest.blockCount()}, want $wantBc)")
-                    }
-                    expected.optString("block_uuid_hex", null)?.let { wantUuid ->
-                        val summaries = out.manifest.blockSummaries()
-                        if (summaries.isNotEmpty()) {
-                            check(encodeHex(summaries[0].blockUuid) == wantUuid, name, "block_uuid mismatch (got '${encodeHex(summaries[0].blockUuid)}', want '$wantUuid')")
-                        } else {
-                            check(false, name, "manifest has no blocks but block_uuid_hex pinned")
-                        }
-                    }
-                    cache[name] = out
+                    handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
-                    if (kind != "err") {
-                        check(false, name, "expected ok, got err: $e")
-                        continue
-                    }
-                    val wantVariant = expected.optString("variant", "")
-                    val gotVariant = vaultExceptionVariantName(e)
-                    check(gotVariant == wantVariant, name, "variant mismatch (got $gotVariant, expected $wantVariant)")
-                    expected.optString("detail_contains", null)?.let { needle ->
-                        val detail = vaultExceptionDetail(e) ?: ""
-                        check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
-                    }
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -268,38 +316,9 @@ fun main() {
                 val mnemonic = resolveMnemonic(inputs, goldenVaultDir)
                 try {
                     val out = openVaultWithRecovery(vaultDir, mnemonic)
-                    if (kind != "ok") {
-                        check(false, name, "expected err, got ok")
-                        continue
-                    }
-                    expected.optString("display_name", null)?.let { wantDisplay ->
-                        check(out.identity.displayName() == wantDisplay, name, "display_name mismatch (got '${out.identity.displayName()}', want '$wantDisplay')")
-                    }
-                    if (expected.has("block_count")) {
-                        val wantBc = expected.getInt("block_count")
-                        check(out.manifest.blockCount().toInt() == wantBc, name, "block_count mismatch (got ${out.manifest.blockCount()}, want $wantBc)")
-                    }
-                    expected.optString("block_uuid_hex", null)?.let { wantUuid ->
-                        val summaries = out.manifest.blockSummaries()
-                        if (summaries.isNotEmpty()) {
-                            check(encodeHex(summaries[0].blockUuid) == wantUuid, name, "block_uuid mismatch (got '${encodeHex(summaries[0].blockUuid)}', want '$wantUuid')")
-                        } else {
-                            check(false, name, "manifest has no blocks but block_uuid_hex pinned")
-                        }
-                    }
-                    cache[name] = out
+                    handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
-                    if (kind != "err") {
-                        check(false, name, "expected ok, got err: $e")
-                        continue
-                    }
-                    val wantVariant = expected.optString("variant", "")
-                    val gotVariant = vaultExceptionVariantName(e)
-                    check(gotVariant == wantVariant, name, "variant mismatch (got $gotVariant, expected $wantVariant)")
-                    expected.optString("detail_contains", null)?.let { needle ->
-                        val detail = vaultExceptionDetail(e) ?: ""
-                        check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
-                    }
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -390,17 +409,7 @@ fun main() {
                     }
                     block.destroy()
                 } catch (e: VaultException) {
-                    if (kind != "err") {
-                        check(false, name, "expected ok, got err: $e")
-                        continue
-                    }
-                    val wantVariant = expected.optString("variant", "")
-                    val gotVariant = vaultExceptionVariantName(e)
-                    check(gotVariant == wantVariant, name, "variant mismatch (got $gotVariant, expected $wantVariant)")
-                    expected.optString("detail_contains", null)?.let { needle ->
-                        val detail = vaultExceptionDetail(e) ?: ""
-                        check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
-                    }
+                    handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -417,6 +426,14 @@ fun main() {
             println("PASS: $name")
         }
     }
+
+    // Drain cached OpenVaultOutput handles deterministically.
+    // The JVM Cleaner thread would release them eventually, but a future
+    // second-pass replay (B.6 v2) could re-enter main and the handles
+    // would pin Rust-side allocations for that duration. Explicit drain
+    // releases them at end-of-run — see issue #63.
+    cache.values.forEach { it.destroy() }
+    cache.clear()
 
     // --- Summary ---
     if (failures.isEmpty()) {
