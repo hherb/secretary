@@ -132,12 +132,38 @@
       }
     },
     {
+      "name": "read_block_oversize_uuid",
+      "description": "read_block with a 17-byte block_uuid (one byte too many) → synthesized InvalidArgument at the replay layer; uniffi binding rejects with VaultError.InvalidArgument on Swift + Kotlin.",
+      "operation": "read_block",
+      "after": "open_password_happy",
+      "inputs": {
+        "block_uuid_bytes_hex": "112233445566778899aabbccddeeff0011"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "InvalidArgument"
+      }
+    },
+    {
       "name": "read_block_wrong_length_uuid",
       "description": "read_block with a non-16-byte block_uuid → synthesized InvalidArgument at the replay layer (FfiVaultError doesn't expose this variant; it lives on the uniffi-projected VaultError only). Each replay engine emits its host's analogue.",
       "operation": "read_block",
       "after": "open_password_happy",
       "inputs": {
         "block_uuid_bytes_hex": "1122"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "InvalidArgument"
+      }
+    },
+    {
+      "name": "read_block_zero_length_uuid",
+      "description": "read_block with an empty block_uuid (0 bytes) → synthesized InvalidArgument at the replay layer; uniffi binding rejects with VaultError.InvalidArgument on Swift + Kotlin.",
+      "operation": "read_block",
+      "after": "open_password_happy",
+      "inputs": {
+        "block_uuid_bytes_hex": ""
       },
       "expected": {
         "kind": "err",
