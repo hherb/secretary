@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-16 (issue #35 mid-call wipe race test)
-**Status:** Branch `test/issue-35-save-block-mid-call-wipe-race` carries four commits on top of `1b4a529` (PR #64 merge). PR open against `main`. Gauntlet green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance + freshness PASS (96 / 0 / 2) / Swift smoke 38 / Swift conformance 11/11 / Kotlin smoke 39 / Kotlin conformance 11/11.
+**Status:** Branch `test/issue-35-save-block-mid-call-wipe-race` carries five commits on top of `1b4a529` (PR #64 merge). PR open against `main`. Gauntlet green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance + freshness PASS (96 / 0 / 2) / Swift smoke 38 / Swift conformance 11/11 / Kotlin smoke 39 / Kotlin conformance 11/11.
 
 ## (1) What we shipped this session
 
@@ -11,6 +11,7 @@
 | `97c5b91` | docs(plans) | Implementation plan at [docs/superpowers/plans/2026-05-16-issue-35-save-block-mid-call-wipe-race.md](docs/superpowers/plans/2026-05-16-issue-35-save-block-mid-call-wipe-race.md). 8 tasks (3 implementation file edits + verification gauntlet + commit + README/ROADMAP check + handoff + push/PR). Production-side first (manifest + orchestrator) before test, contra the spec's TDD-staged "test first" suggestion — the intermediate state would hang rather than fail cleanly. Updated in `04af895` for the same visibility-blocker decision. |
 | `04af895` | test(ffi-bridge) | Issue #35 closure. `mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>` field on `OpenVaultManifest` + `pub(crate) fn run_mid_call_hook` caller (one line in the `save_block` orchestrator's `Ok` arm) + `#[doc(hidden)] pub fn install_mid_call_hook` installer. New test `save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk` in `tests/save_block.rs` uses a `MidCallRace` helper (two `sync_channel(0)` rendezvous handshakes) to drive a deterministic mid-call wipe, asserting (a) `CorruptVault` with the documented "closed during save" detail and (b) the partial-success-mid-race contract — re-open + `find_block` + `read_block` round-trip on the post-race on-disk state. **5 files changed** because the spec + plan got synced in-commit to reflect the `#[doc(hidden)] pub` outcome below. Cargo test count: 641 + 10 → 642 + 10. |
 | `cbc0913` | docs(roadmap) | ROADMAP line 34 cargo-count bump (641 → 642) + one-clause #35 mention. |
+| `d7be4ca` | docs(ffi-bridge) | PR #65 self-review followup. Three doc-comment edits, no executable code changes: (a) [ffi/secretary-ffi-bridge/src/save/orchestration.rs](ffi/secretary-ffi-bridge/src/save/orchestration.rs) inline comment fix — replace misleading "Empty body in release builds" with accurate "Always present in all builds — pays one uncontended Mutex lock + Option::is_none check per call". (b) `OpenVaultManifest::wipe` doc gains a paragraph noting `wipe()` does NOT clear `mid_call_hook` (separate Mutex; test-only state). (c) `install_mid_call_hook` doc gains paragraphs on the bundled `MidCallRace` helper's single-shot semantics + closure-panic recovery contract. Gauntlet re-run: 642 + 10 / clippy clean / fmt OK / Python + Swift + Kotlin conformance unchanged. |
 
 ### Visibility blocker mid-execution (worth remembering)
 
