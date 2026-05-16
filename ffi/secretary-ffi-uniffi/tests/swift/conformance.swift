@@ -359,6 +359,16 @@ struct ConformanceRunner {
             }
         }
 
+        // Drop cached OpenVaultOutput references so ARC releases the
+        // contained UnlockedIdentity / OpenVaultManifest class instances
+        // (each has a deinit that frees the Rust-side handle). `exit()`
+        // below skips scope unwinding, so without this assignment the
+        // class refs would linger until process termination — fine for
+        // single-pass but matters for B.6 v2 second-pass replays.
+        // Symmetric with the Kotlin runner's
+        // `cache.values.forEach { it.destroy() }; cache.clear()`.
+        cache.removeAll()
+
         if failures.isEmpty {
             print("OK: secretary uniffi Swift conformance — all \(vectorsRun)/\(vectorsRun) vectors passed.")
             exit(0)
