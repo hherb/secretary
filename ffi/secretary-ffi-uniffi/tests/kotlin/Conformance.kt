@@ -212,6 +212,14 @@ fun main() {
         // "after" is absent on source vectors; present on read_block vectors.
         val after: String? = if (vec.has("after")) vec.getString("after") else null
 
+        // Snapshot the failure count so we can decide whether this vector
+        // produced any sub-check failures. A single PASS line is emitted
+        // at the bottom of the loop iff `failures.size` is unchanged —
+        // otherwise the per-vector FAIL lines from `check(...)` already
+        // went to stderr and we stay silent on stdout. This prevents the
+        // misleading "FAIL: ... / PASS: ..." pair for the same vector.
+        val preFailureCount = failures.size
+
         when {
             operation == "open_vault_with_password" && after == null -> {
                 val vaultDir = resolveVaultDir(inputs, goldenVaultDir)
@@ -238,7 +246,6 @@ fun main() {
                         }
                     }
                     cache[name] = out
-                    println("PASS: $name")
                 } catch (e: VaultException) {
                     if (kind != "err") {
                         check(false, name, "expected ok, got err: $e")
@@ -251,7 +258,6 @@ fun main() {
                         val detail = vaultExceptionDetail(e) ?: ""
                         check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
                     }
-                    println("PASS: $name")
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -282,7 +288,6 @@ fun main() {
                         }
                     }
                     cache[name] = out
-                    println("PASS: $name")
                 } catch (e: VaultException) {
                     if (kind != "err") {
                         check(false, name, "expected ok, got err: $e")
@@ -295,7 +300,6 @@ fun main() {
                         val detail = vaultExceptionDetail(e) ?: ""
                         check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
                     }
-                    println("PASS: $name")
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -385,7 +389,6 @@ fun main() {
                         }
                     }
                     block.destroy()
-                    println("PASS: $name")
                 } catch (e: VaultException) {
                     if (kind != "err") {
                         check(false, name, "expected ok, got err: $e")
@@ -398,7 +401,6 @@ fun main() {
                         val detail = vaultExceptionDetail(e) ?: ""
                         check(detail.contains(needle), name, "detail '$detail' missing '$needle'")
                     }
-                    println("PASS: $name")
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
                 }
@@ -407,6 +409,12 @@ fun main() {
             else -> {
                 check(false, name, "unhandled operation '$operation' with after=${after?.let { "'$it'" } ?: "null"}")
             }
+        }
+
+        // Gated success print: only emit PASS if this vector added no
+        // failures (see preFailureCount snapshot above).
+        if (failures.size == preFailureCount) {
+            println("PASS: $name")
         }
     }
 
