@@ -297,7 +297,6 @@ enum BridgeOrSyntheticErr {
     Bridge(secretary_ffi_bridge::error::FfiVaultError),
     Synthetic {
         variant: &'static str,
-        #[allow(dead_code)] // surfaced via read_block_err_detail helper below.
         detail: String,
     },
 }
