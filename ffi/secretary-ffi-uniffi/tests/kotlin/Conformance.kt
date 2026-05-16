@@ -11,10 +11,7 @@
 
 import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.secretary.BlockReadOutput
-import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
-import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
