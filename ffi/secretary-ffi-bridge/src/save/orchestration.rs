@@ -113,6 +113,14 @@ pub fn save_block(
     // because the bridge state is no longer authoritative.
     match result {
         Ok(()) => {
+            // Test-only hook: exposes the concurrent-wipe race window
+            // (lock NOT held between `core::save_block` succeeding and
+            // `replace_manifest_and_file` taking the write-back lock) to
+            // integration tests. Empty body in release builds; no-op in
+            // test builds unless a hook was explicitly installed via
+            // `OpenVaultManifest::install_mid_call_hook`. See issue #35
+            // and tests::save_block::save_block_wipe_during_call_*.
+            manifest.run_mid_call_hook();
             // Atomic write-back of the mutated manifest body and envelope.
             // The handle could have been wiped between Step 1 and now in a
             // theoretical concurrent-wipe race — if so, the on-disk write

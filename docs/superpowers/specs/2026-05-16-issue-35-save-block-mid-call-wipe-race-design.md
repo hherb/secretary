@@ -19,13 +19,15 @@ The existing [save_block_on_wiped_manifest_returns_corrupt_vault](../../ffi/secr
 - **No `loom` model.** The issue notes `loom` as an alternative; `loom` exhaustively searches the interleaving space, which over-shoots a test that pins one specific documented interleaving. Plain `std::sync::mpsc::sync_channel` deterministic handshake suffices.
 - **No trash / restore race tests in this PR.** The same race window exists in [trash/orchestration.rs](../../ffi/secretary-ffi-bridge/src/trash/orchestration.rs) and [restore/orchestration.rs](../../ffi/secretary-ffi-bridge/src/restore/orchestration.rs) (both use `snapshot_for_save_block` + `replace_manifest_and_file`). The hook is **designed to be reusable** for them, but adding those tests is a follow-up. Issue #35 names `save_block` specifically; YAGNI for now.
 - **No new dependencies.** All synchronization uses `std::sync::mpsc`, `std::sync::Mutex`, and `std::thread::scope` (stable since Rust 1.63).
-- **No changes to FFI surface.** PyO3 and uniffi bindings are unchanged. `mid_call_hook` field and `install_mid_call_hook` method are `#[cfg(test)] pub(crate)`, never crossing the FFI boundary.
+- **No changes to FFI surface.** PyO3 and uniffi bindings are unchanged. `install_mid_call_hook` is `#[doc(hidden)] pub` on the bridge crate (required because `--cfg test` is not propagated to dependencies; see §3.1) but the FFI layers do not auto-expose Rust methods — they require explicit `#[pyo3]` / `#[uniffi::export]` annotations, which this method does not have. The hook never crosses the foreign-language boundary.
 
 ## 3. Design
 
 ### 3.1 Hook on `OpenVaultManifest`
 
-Add a test-only field carrying an optional closure, plus a release-mode-no-op caller and a test-only installer. The pattern intentionally puts the call site in production code as a single unconditional method call — the `#[cfg(test)]` gate lives inside the method body, not at every call site. This keeps the three orchestrators (save / trash / restore) uniform and makes adding a fourth (whatever sub-project C produces) a one-line addition with no `#[cfg(test)]` block scattered into business logic.
+Add a field carrying an optional closure, plus an unconditional caller (`pub(crate)`) and a `#[doc(hidden)] pub` installer. The pattern intentionally puts the call site in production code as a single unconditional method call. This keeps the three orchestrators (save / trash / restore) uniform and makes adding a fourth (whatever sub-project C produces) a one-line addition with no `#[cfg(...)]` block scattered into business logic.
+
+**Why `#[doc(hidden)] pub` instead of `#[cfg(test)] pub(crate)`:** `--cfg test` is **not** propagated to dependencies — when the integration test binary at `tests/save_block.rs` compiles, it links against `secretary-ffi-bridge` compiled **without** `cfg(test)`, so `#[cfg(test)]` items in the lib would be invisible to it. `#[doc(hidden)] pub` is the standard workaround (used by `tokio`, `hyper`, `tracing` for analogous test hooks): the item is `pub` so integration tests can reach it, but `#[doc(hidden)]` hides it from generated rustdoc, and the method does not auto-cross the PyO3 / uniffi FFI boundary (those layers require explicit `#[pyo3]` / `#[uniffi::export]` annotations).
 
 ```rust
 // ffi/secretary-ffi-bridge/src/vault/manifest.rs
@@ -37,8 +39,17 @@ pub struct OpenVaultManifest {
     /// Test-only hook fired between `core::*` and
     /// `replace_manifest_and_file` in the save / trash / restore
     /// orchestrators. Exposes the documented concurrent-wipe race
-    /// window to integration tests. Compiles away entirely in release
-    /// builds — the field exists only under `cfg(test)`.
+    /// window to integration tests.
+    ///
+    /// Field is always present (a `cfg(test)` gate would not reach
+    /// integration tests in `tests/*.rs` — `--cfg test` is not
+    /// propagated to dependencies). Default is `None`; production code
+    /// never calls `install_mid_call_hook`, so production builds pay
+    /// only one `Mutex` lock + `Option::is_none` check per
+    /// `save_block` call. The installer is `pub` with `#[doc(hidden)]`
+    /// so integration tests can reach it but it is invisible in
+    /// generated docs and does not auto-cross the PyO3 / uniffi FFI
+    /// boundary.
     ///
     /// Bound is `Fn() + Send` (no `+ Sync`): closures installed by
     /// tests typically capture `mpsc::Receiver<()>`, which is `Send`
@@ -46,7 +57,6 @@ pub struct OpenVaultManifest {
     /// `Sync` for the field, so `+ Sync` on the closure itself is
     /// neither needed nor possible without forcing tests to use
     /// awkward `Arc<Condvar>` shapes.
-    #[cfg(test)]
     mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
@@ -54,26 +64,19 @@ impl OpenVaultManifest {
     pub(crate) fn new(inner: OpenVaultManifestInner) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
-            #[cfg(test)]
             mid_call_hook: Mutex::new(None),
         }
     }
 
-    /// Fire the mid-call test hook if one is installed.
-    /// **Empty body in release builds** (the `cfg(test)` inner block is
-    /// the only body). Called by orchestrators between `core::*` and
-    /// `replace_manifest_and_file` to expose the concurrent-wipe race
-    /// window to integration tests.
+    /// Fire the mid-call test hook if one is installed. Called by
+    /// orchestrators between `core::*` and `replace_manifest_and_file`
+    /// to expose the concurrent-wipe race window to integration tests.
     ///
-    /// New orchestrators that follow the same snapshot / write-back
-    /// pattern (`snapshot_for_save_block` → `core::*` →
-    /// `replace_manifest_and_file`) opt into testability by adding a
-    /// single `manifest.run_mid_call_hook();` call between the core
-    /// invocation and the write-back. No `#[cfg(test)]` needed at the
-    /// call site.
+    /// Production builds pay one `Mutex` lock + `Option::is_none` check
+    /// per call (the hook is `None` unless `install_mid_call_hook` has
+    /// been called, and production code never calls that).
     #[inline]
     pub(crate) fn run_mid_call_hook(&self) {
-        #[cfg(test)]
         if let Some(f) = self
             .mid_call_hook
             .lock()
@@ -84,11 +87,17 @@ impl OpenVaultManifest {
         }
     }
 
-    /// Install a closure fired by `run_mid_call_hook`. Test-only.
-    /// Overwrites any previously-installed hook. No-op in release
-    /// builds (the method itself does not exist outside `cfg(test)`).
-    #[cfg(test)]
-    pub(crate) fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
+    /// Install a closure fired by `run_mid_call_hook`.
+    /// **Test-only — do not use in production.** Overwrites any
+    /// previously-installed hook.
+    ///
+    /// `pub` so it is reachable from integration tests in `tests/*.rs`
+    /// (where `--cfg test` is not propagated to dependencies, so a
+    /// `#[cfg(test)]` gate would hide the method). `#[doc(hidden)]`
+    /// keeps it out of generated rustdoc, and the method does not
+    /// auto-cross the PyO3 / uniffi FFI boundary.
+    #[doc(hidden)]
+    pub fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
         *self.mid_call_hook.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(Box::new(f));
     }
@@ -101,7 +110,7 @@ impl OpenVaultManifest {
 - The closure cannot recursively call `run_mid_call_hook` on the same manifest (it would deadlock on the hook mutex). The test-only closures we install only touch channel ends, never the manifest.
 - Holding the hook mutex across the closure call means we cannot install a *new* hook while the current one is running; tests don't do this.
 
-**Public-API surface.** `mid_call_hook` is a private field; `run_mid_call_hook` is `pub(crate)`; `install_mid_call_hook` is `#[cfg(test)] pub(crate)`. Nothing leaks across the FFI boundary or out of the bridge crate.
+**Public-API surface.** `mid_call_hook` is a private field; `run_mid_call_hook` is `pub(crate)` (only called from same-crate orchestrators); `install_mid_call_hook` is `#[doc(hidden)] pub` so integration tests can reach it. It is invisible to rustdoc and does not cross the PyO3 / uniffi FFI boundary (those bindings require explicit annotations on every exposed method).
 
 ### 3.2 Call-site addition in `save_block` orchestrator
 
@@ -294,13 +303,14 @@ The PyO3 and uniffi bindings expose `save_block` (and `wipe`) to foreign callers
 
 ## 5. Risks
 
-### 5.1 `OpenVaultManifest` struct layout differs in `cfg(test)` vs release
+### 5.1 `mid_call_hook` field is always present (mild production overhead)
 
-The `#[cfg(test)]`-gated field changes the struct's memory layout between test and release builds. This is a non-issue because:
+The field exists in production builds (a `cfg(test)` gate would not reach integration tests; see §3.1). Costs:
 
-- `#![forbid(unsafe_code)]` is set workspace-wide; nothing reads the struct as raw bytes.
-- `OpenVaultManifest` is heap-allocated through PyO3 / uniffi handles; size is not pinned by an `Abi` trait or similar.
-- No FFI binding (PyO3 / uniffi) is compiled in `cfg(test)` of the bridge crate, so the cross-FFI ABI is unaffected.
+- ~24 bytes per `OpenVaultManifest` instance (a `Mutex<Option<Box<dyn Fn() + Send>>>`).
+- One additional `Mutex` lock + `Option::is_none` check per `save_block` call (in `run_mid_call_hook`).
+
+Both costs are negligible for the application's domain (one-or-few open vaults per process; `save_block` is not a hot path). Workspace-wide `#![forbid(unsafe_code)]` is unaffected (no raw-pointer reads of the struct), and the bridge type is heap-allocated through PyO3 / uniffi handles so the struct size is not pinned by any ABI trait.
 
 ### 5.2 Hook locked across closure call could deadlock if misused
 

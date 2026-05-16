@@ -4,7 +4,7 @@
 
 **Goal:** Add a deterministic integration test that exercises the documented post-`core::save_block` / pre-`replace_manifest_and_file` concurrent-wipe race in [ffi/secretary-ffi-bridge/src/save/orchestration.rs:114-125](../../ffi/secretary-ffi-bridge/src/save/orchestration.rs#L114-L125), proving (a) the typed `CorruptVault` surface with the documented detail and (b) the partial-success-mid-race contract (on-disk state is updated and remains decodable).
 
-**Architecture:** Add a test-only `mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>` field on `OpenVaultManifest` and an always-present `run_mid_call_hook()` caller (empty body in release builds). The `save_block` orchestrator gains one unconditional `manifest.run_mid_call_hook();` line between `core::save_block` succeeding and `replace_manifest_and_file`. A test-only `MidCallRace` helper (two `sync_channel(0)` rendezvous handshakes) hides the worker→main / main→worker signalling so the test reads as plain English.
+**Architecture:** Add a `mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>` field on `OpenVaultManifest` (always present — `--cfg test` is not propagated to dependencies, so `#[cfg(test)]` would hide the installer from integration tests in `tests/*.rs`). The orchestrator unconditionally calls `manifest.run_mid_call_hook()` between `core::save_block` and `replace_manifest_and_file` — a one-`Mutex`-lock no-op in production (hook is `None` unless `install_mid_call_hook` is called, which production code never does). `install_mid_call_hook` is `#[doc(hidden)] pub` so integration tests can reach it but it stays hidden from rustdoc and does not auto-cross the PyO3 / uniffi FFI boundary. A test-only `MidCallRace` helper (two `sync_channel(0)` rendezvous handshakes) hides the worker→main / main→worker signalling so the test reads as plain English.
 
 **Tech Stack:** Rust 2024, `std::sync::Mutex`, `std::sync::mpsc::sync_channel`, `std::thread::scope`. No new dependencies.
 
@@ -20,7 +20,7 @@ All edits land in `ffi/secretary-ffi-bridge/`:
 
 | File | Action | Purpose |
 |---|---|---|
-| `src/vault/manifest.rs` | Modify | Add `mid_call_hook` field + initializer in `Self::new`; add `run_mid_call_hook` (empty in release) + `install_mid_call_hook` (test-only) methods |
+| `src/vault/manifest.rs` | Modify | Add always-present `mid_call_hook` field + initializer in `Self::new`; add `pub(crate) run_mid_call_hook` caller + `#[doc(hidden)] pub install_mid_call_hook` installer |
 | `src/save/orchestration.rs` | Modify | Add one-line `manifest.run_mid_call_hook();` between `Ok(())` arm and `replace_manifest_and_file` |
 | `tests/save_block.rs` | Modify | Add `use std::sync::mpsc::*` imports, `MidCallRace` helper, one new `#[test]` |
 | `NEXT_SESSION.md` | Modify | Roll the handoff forward |
@@ -58,7 +58,7 @@ If status is not clean or branch is not `test/issue-35-save-block-mid-call-wipe-
 **Files:**
 - Modify: `ffi/secretary-ffi-bridge/src/vault/manifest.rs`
 
-**Rationale:** The hook field exists only under `cfg(test)`. The `run_mid_call_hook` caller is always present so production orchestrators have a uniform call shape (no `#[cfg(test)]` blocks scattered into business logic), but its body collapses to nothing in release builds.
+**Rationale:** The hook field is always present (`--cfg test` is not propagated to dependencies; a `#[cfg(test)]` gate would hide the installer from integration tests). Production code never calls `install_mid_call_hook`, so the hook is always `None` and `run_mid_call_hook` is a one-`Mutex`-lock no-op. `install_mid_call_hook` is `#[doc(hidden)] pub` so it stays out of generated rustdoc and does not cross the PyO3 / uniffi FFI boundary.
 
 ### Step 1.1: Add the test-only field to the struct definition
 
@@ -80,8 +80,18 @@ pub struct OpenVaultManifest {
     /// Test-only hook fired between `core::*` and
     /// `replace_manifest_and_file` in the save / trash / restore
     /// orchestrators. Exposes the documented concurrent-wipe race
-    /// window to integration tests. Compiles away entirely in release
-    /// builds — the field exists only under `cfg(test)`.
+    /// window to integration tests.
+    ///
+    /// Field is always present (a `cfg(test)` gate would not reach
+    /// integration tests in `tests/*.rs` — `--cfg test` is not
+    /// propagated to dependencies). Default is `None`; production code
+    /// never calls [`Self::install_mid_call_hook`], so production
+    /// builds pay only one `Mutex` lock + `Option::is_none` check per
+    /// `save_block` call. The installer is `pub` with `#[doc(hidden)]`
+    /// so integration tests can reach it but it is invisible in
+    /// generated docs and does not auto-cross the PyO3 / uniffi FFI
+    /// boundary (which require explicit `#[pyo3]` / `#[uniffi::export]`
+    /// annotations).
     ///
     /// Bound is `Fn() + Send` (no `+ Sync`): closures installed by
     /// tests typically capture `mpsc::Receiver<()>`, which is `Send`
@@ -89,7 +99,6 @@ pub struct OpenVaultManifest {
     /// `Sync` for the field, so `+ Sync` on the closure itself is
     /// neither needed nor possible without forcing tests to use
     /// awkward `Arc<Condvar>` shapes.
-    #[cfg(test)]
     mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 ```
@@ -112,7 +121,6 @@ Replace with:
     pub(crate) fn new(inner: OpenVaultManifestInner) -> Self {
         Self {
             inner: Mutex::new(Some(inner)),
-            #[cfg(test)]
             mid_call_hook: Mutex::new(None),
         }
     }
@@ -139,16 +147,16 @@ Immediately AFTER the closing `}` of `wipe` (i.e. before the next method `vault_
 
 ```rust
 
-    /// Fire the mid-call test hook if one is installed.
-    /// **Empty body in release builds** (the `cfg(test)` inner block is
-    /// the only body). Called by orchestrators between `core::*` and
-    /// `replace_manifest_and_file` to expose the concurrent-wipe race
-    /// window to integration tests.
+    /// Fire the mid-call test hook if one is installed. Called by
+    /// orchestrators between `core::*` and `replace_manifest_and_file`
+    /// to expose the concurrent-wipe race window to integration tests.
     ///
-    /// Orchestrators opt into testability by adding a single
-    /// `manifest.run_mid_call_hook();` call between the core invocation
-    /// and the write-back. No `#[cfg(test)]` needed at the call site;
-    /// the gate lives inside this method body. Today only
+    /// Production builds pay one `Mutex` lock + `Option::is_none` check
+    /// per call (the hook is `None` unless
+    /// [`Self::install_mid_call_hook`] has been called, and production
+    /// code never calls that). Orchestrators opt into testability by
+    /// adding a single `manifest.run_mid_call_hook();` call between the
+    /// core invocation and the write-back. Today only
     /// `save::save_block` opts in; trash and restore can adopt the same
     /// shape in a follow-up.
     ///
@@ -158,7 +166,6 @@ Immediately AFTER the closing `}` of `wipe` (i.e. before the next method `vault_
     /// closures we install today only touch `mpsc` channel ends.
     #[inline]
     pub(crate) fn run_mid_call_hook(&self) {
-        #[cfg(test)]
         if let Some(f) = self
             .mid_call_hook
             .lock()
@@ -169,11 +176,18 @@ Immediately AFTER the closing `}` of `wipe` (i.e. before the next method `vault_
         }
     }
 
-    /// Install a closure fired by [`Self::run_mid_call_hook`]. Test-only.
-    /// Overwrites any previously-installed hook. The method does not
-    /// exist outside `cfg(test)`.
-    #[cfg(test)]
-    pub(crate) fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
+    /// Install a closure fired by [`Self::run_mid_call_hook`].
+    /// **Test-only — do not use in production.** Overwrites any
+    /// previously-installed hook.
+    ///
+    /// `pub` so it is reachable from integration tests in `tests/*.rs`
+    /// (where `--cfg test` is not propagated to dependencies, so a
+    /// `#[cfg(test)]` gate would hide the method). `#[doc(hidden)]`
+    /// keeps it out of generated rustdoc, and the method does not
+    /// auto-cross the PyO3 / uniffi FFI boundary (those layers require
+    /// explicit `#[pyo3]` / `#[uniffi::export]` annotations).
+    #[doc(hidden)]
+    pub fn install_mid_call_hook<F: Fn() + Send + 'static>(&self, f: F) {
         *self.mid_call_hook.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(Box::new(f));
     }
@@ -188,7 +202,7 @@ Run:
 cargo build --release --workspace --tests
 ```
 
-Expected: clean build, no warnings, no errors. (`#[cfg(test)] pub(crate) fn install_mid_call_hook` is compiled under `--tests` but no caller exists yet — Rust does **not** warn `dead_code` for `#[cfg(test)] pub(crate)` items in integration test compilation because the function is visible to potential test consumers; if a warning fires anyway, proceed — Task 3 adds the caller.)
+Expected: clean build. **Two `dead_code` warnings are expected at this intermediate state** — `mid_call_hook` field is never read and `run_mid_call_hook` is never called (Task 2 adds the orchestrator call). `install_mid_call_hook` is also flagged (Task 3 adds the caller). Both go away after Tasks 2 + 3. Clippy with `-D warnings` would FAIL here; we only run it at step 3.6 once all three pieces are in place.
 
 - [ ] **Step 1.5: Existing tests pass**
 
@@ -265,7 +279,7 @@ Run:
 cargo build --release --workspace --tests
 ```
 
-Expected: clean build, no warnings, no errors.
+Expected: clean build. **One `dead_code` warning remains** — `install_mid_call_hook` is never used; Task 3 adds the caller via the `MidCallRace` helper. The `run_mid_call_hook` and `mid_call_hook` warnings from step 1.4 are gone (orchestrator now calls them).
 
 - [ ] **Step 2.3: Existing tests still pass**
 
