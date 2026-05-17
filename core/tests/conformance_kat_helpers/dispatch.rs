@@ -94,6 +94,16 @@ pub fn assert_read_block_ok(
         // Vector pinned only the success shape; nothing more to check.
         return;
     };
+    assert_read_block_records(label, output, records);
+}
+
+use super::types::ExpectedRecord;
+
+pub fn assert_read_block_records(
+    label: &str,
+    output: &secretary_ffi_bridge::record::BlockReadOutput,
+    records: &[ExpectedRecord],
+) {
     assert_eq!(
         output.record_count(),
         records.len(),
@@ -478,4 +488,102 @@ pub fn run_restore_block(
         now_ms,
     )
     .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+// ── v2 post_state assertion helper ───────────────────────────────────────────
+
+use super::types::PostState;
+
+/// Assert all pinned post_state fields against the post-call manifest.
+/// `cached` is the same OpenVaultOutput the write op mutated in place
+/// (the bridge's OpenVaultManifest uses interior mutability).
+///
+/// For `read_block` round-trip assertions, the engine calls
+/// `secretary_ffi_bridge::record::read_block` against the cached
+/// manifest using the pinned `find_block_uuid_hex` as the lookup key
+/// (the same uuid the save op just inserted).
+#[allow(dead_code)]
+pub fn assert_post_state(
+    label: &str,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+    pinned: &PostState,
+) {
+    if let Some(count) = pinned.block_count {
+        assert_eq!(
+            cached.manifest.block_count(),
+            count,
+            "{label}: post_state.block_count mismatch"
+        );
+    }
+    let mut round_trip_uuid: Option<[u8; 16]> = None;
+    if let Some(maybe_hex) = &pinned.find_block_uuid_hex {
+        match maybe_hex {
+            None => {
+                // pinned as JSON null → assert absent.
+                // The pin doesn't carry which uuid to check, so the
+                // calling vector MUST also pin the uuid via the vector's
+                // own `inputs.block_uuid_hex`. We re-extract it from the
+                // most recently dispatched op via the cached manifest's
+                // block list (trash_block sets find_block to null for
+                // the just-trashed uuid; this assertion catches a
+                // regression where the bridge keeps it findable).
+                // For null assertion we don't need the uuid — we just
+                // check no block currently lives under any of the
+                // post_state.find_block_uuid_hex inputs. But since this
+                // is a singleton field, the trash/restore vectors
+                // *explicitly* re-read the uuid from inputs. Implement
+                // that here:
+                panic!(
+                    "{label}: post_state.find_block_uuid_hex=null requires the calling vector \
+                     to supply the uuid via inputs.block_uuid_hex; the engine asserts this in \
+                     the dispatch arm, not here."
+                );
+            }
+            Some(hex_str) => {
+                let bytes = hex::decode(hex_str)
+                    .unwrap_or_else(|e| panic!("{label}: find_block_uuid_hex decode: {e}"));
+                assert_eq!(bytes.len(), 16, "{label}: find_block_uuid_hex must be 16 bytes");
+                let mut uuid = [0u8; 16];
+                uuid.copy_from_slice(&bytes);
+                let summary = cached.manifest.find_block(&uuid).unwrap_or_else(|| {
+                    panic!(
+                        "{label}: post_state.find_block_uuid_hex={hex_str} not in manifest"
+                    )
+                });
+                assert_eq!(
+                    hex::encode(summary.block_uuid),
+                    hex_str.to_lowercase(),
+                    "{label}: find_block returned wrong uuid"
+                );
+                round_trip_uuid = Some(uuid);
+            }
+        }
+    }
+    if let Some(rc) = pinned.recipient_count {
+        let uuid = round_trip_uuid.expect(
+            "post_state.recipient_count requires post_state.find_block_uuid_hex to be set so \
+             the engine knows which block to inspect",
+        );
+        let summary = cached
+            .manifest
+            .find_block(&uuid)
+            .expect("recipient_count: block must be findable");
+        assert_eq!(
+            summary.recipient_uuids.len() as u64,
+            rc,
+            "{label}: post_state.recipient_count mismatch"
+        );
+    }
+    if let Some(read_pin) = &pinned.read_block {
+        let uuid = round_trip_uuid.expect(
+            "post_state.read_block requires post_state.find_block_uuid_hex to be set",
+        );
+        let output = secretary_ffi_bridge::record::read_block(
+            &cached.identity,
+            &cached.manifest,
+            &uuid,
+        )
+        .unwrap_or_else(|e| panic!("{label}: round-trip read_block failed: {e:?}"));
+        assert_read_block_records(label, &output, &read_pin.records);
+    }
 }
