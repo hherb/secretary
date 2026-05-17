@@ -1,0 +1,161 @@
+// Result-arm + post_state assertion helpers.
+//
+// `handleOpenOk` / `handleVaultError` are symmetric with the Kotlin runner's
+// equivalents. The `check` closure is the caller's failure aggregator —
+// returns false on mismatch and appends to the runner's failures list.
+//
+// `assertPostState` mirrors assert_post_state in core/tests/conformance_kat_helpers/dispatch/lifecycle.rs.
+
+import Foundation
+
+// `handleVaultError` is shared by every op that throws a `VaultError`
+// (open_vault_with_password, open_vault_with_recovery, read_block) —
+// the variant + detail_contains contract is uniform across them.
+
+func handleOpenOk(
+    out: OpenVaultOutput,
+    expected: [String: Any],
+    name: String,
+    kind: String,
+    cache: inout [String: OpenVaultOutput],
+    check: (Bool, String, String) -> Bool
+) {
+    if kind != "ok" {
+        _ = check(false, name, "expected err, got ok")
+        return
+    }
+    // Aggregate sub-check results so we only cache on full success.
+    // Matches the Rust replay (assert_open_ok panics on mismatch and
+    // cache.insert never runs) — chained read_block vectors then
+    // report "predecessor did not produce a cacheable Ok" instead of
+    // running against a vault whose pinned metadata didn't match.
+    var allOk = true
+    if let display = expected["display_name"] as? String {
+        if !check(out.identity.displayName() == display, name, "display_name mismatch") { allOk = false }
+    }
+    if let bc = expected["block_count"] as? Int {
+        if !check(Int(out.manifest.blockCount()) == bc, name, "block_count mismatch") { allOk = false }
+    }
+    if let bu = expected["block_uuid_hex"] as? String {
+        let summaries = out.manifest.blockSummaries()
+        if !summaries.isEmpty {
+            if !check(encodeHex(Data(summaries[0].blockUuid)) == bu, name, "block_uuid mismatch") { allOk = false }
+        } else {
+            _ = check(false, name, "manifest has no blocks but block_uuid pinned")
+            allOk = false
+        }
+    }
+    if allOk {
+        cache[name] = out
+    }
+}
+
+func handleVaultError(
+    e: VaultError,
+    expected: [String: Any],
+    name: String,
+    kind: String,
+    check: (Bool, String, String) -> Bool
+) {
+    if kind != "err" {
+        _ = check(false, name, "expected ok, got err: \(e)")
+        return
+    }
+    let want = expected["variant"] as? String ?? ""
+    _ = check(vaultErrorName(e) == want, name, "variant mismatch (got \(vaultErrorName(e)), expected \(want))")
+    if let needle = expected["detail_contains"] as? String {
+        let detail = vaultErrorDetail(e) ?? ""
+        _ = check(detail.contains(needle), name, "detail '\(detail)' missing '\(needle)'")
+    }
+}
+
+/// Assert post_state shape against the post-call manifest. Mirrors
+/// assert_post_state in core/tests/conformance_kat_helpers/dispatch/lifecycle.rs.
+func assertPostState(
+    name: String,
+    identity: UnlockedIdentity,
+    manifest: OpenVaultManifest,
+    expected: [String: Any],
+    check: (Bool, String, String) -> Bool
+) {
+    guard let postState = expected["post_state"] as? [String: Any] else { return }
+    if let bc = postState["block_count"] as? Int {
+        _ = check(Int(manifest.blockCount()) == bc, name, "post_state.block_count mismatch (got \(manifest.blockCount()), want \(bc))")
+    }
+    var roundTripUuid: Data? = nil
+    if let hexStr = postState["find_block_uuid_hex"] as? String {
+        let uuidData = decodeHex(hexStr)
+        if let summary = manifest.findBlock(blockUuid: uuidData) {
+            _ = check(Data(summary.blockUuid) == uuidData, name, "post_state.find_block returned wrong uuid")
+            roundTripUuid = uuidData
+        } else {
+            _ = check(false, name, "post_state.find_block_uuid_hex=\(hexStr) not in manifest")
+        }
+    }
+    if let rc = postState["recipient_count"] as? Int {
+        guard let uuid = roundTripUuid else {
+            _ = check(false, name, "post_state.recipient_count requires find_block_uuid_hex")
+            return
+        }
+        guard let summary = manifest.findBlock(blockUuid: uuid) else {
+            _ = check(false, name, "recipient_count: block not findable")
+            return
+        }
+        _ = check(summary.recipientUuids.count == rc, name, "post_state.recipient_count mismatch (got \(summary.recipientUuids.count), want \(rc))")
+    }
+    if let readPin = postState["read_block"] as? [String: Any],
+       let pinnedRecords = readPin["records"] as? [[String: Any]]
+    {
+        guard let uuid = roundTripUuid else {
+            _ = check(false, name, "post_state.read_block requires find_block_uuid_hex")
+            return
+        }
+        do {
+            let output = try readBlock(identity: identity, manifest: manifest, blockUuid: uuid)
+            _ = check(Int(output.recordCount()) == pinnedRecords.count, name, "post_state.read_block.record_count mismatch")
+            for (i, expRec) in pinnedRecords.enumerated() {
+                guard let rec = output.recordAt(idx: UInt64(i)) else {
+                    _ = check(false, name, "post_state.read_block.record_at(\(i)) nil")
+                    continue
+                }
+                if let uhex = expRec["record_uuid_hex"] as? String {
+                    _ = check(encodeHex(Data(rec.recordUuid())) == uhex, name, "records[\(i)].record_uuid mismatch")
+                }
+                if let rtype = expRec["record_type"] as? String {
+                    _ = check(rec.recordType() == rtype, name, "records[\(i)].record_type mismatch")
+                }
+                if let tags = expRec["tags"] as? [String] {
+                    _ = check(rec.tags() == tags, name, "records[\(i)].tags mismatch")
+                }
+                if let fields = expRec["fields"] as? [[String: Any]] {
+                    _ = check(Int(rec.fieldCount()) == fields.count, name, "records[\(i)].field_count mismatch")
+                    for (j, expF) in fields.enumerated() {
+                        guard let fh = rec.fieldAt(idx: UInt64(j)) else {
+                            _ = check(false, name, "records[\(i)].field_at(\(j)) nil")
+                            continue
+                        }
+                        if let fname = expF["name"] as? String {
+                            _ = check(fh.name() == fname, name, "records[\(i)].fields[\(j)].name mismatch")
+                        }
+                        if let ftype = expF["type"] as? String {
+                            if ftype == "text" {
+                                _ = check(fh.isText(), name, "records[\(i)].fields[\(j)] expected text")
+                                if let ev = expF["value_utf8"] as? String {
+                                    _ = check(fh.exposeText() == ev, name, "records[\(i)].fields[\(j)].value_utf8 mismatch")
+                                }
+                            } else if ftype == "bytes" {
+                                _ = check(fh.isBytes(), name, "records[\(i)].fields[\(j)] expected bytes")
+                                if let ev = expF["value_hex"] as? String {
+                                    let actual = encodeHex(fh.exposeBytes() ?? Data())
+                                    _ = check(actual == ev, name, "records[\(i)].fields[\(j)].value_hex mismatch")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            _ = check(false, name, "post_state.read_block threw \(error)")
+        }
+    }
+}

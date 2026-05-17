@@ -59,6 +59,9 @@ mkdir -p "$BINDINGS_DIR"
 # - `-fmodule-map-file` registers the generated modulemap as a Clang
 #   module so `import secretaryFFI` in the bindings resolves.
 # - `-L`/`-lsecretary_ffi_uniffi` links the cdylib at compile time.
+# - The Conformance* sibling files were split out per issue #67 to keep
+#   each file under the 500-LOC guideline. Order is irrelevant — Swift
+#   compiles all source files as a single module.
 echo "==> swiftc conformance runner"
 swiftc \
     -O \
@@ -67,6 +70,10 @@ swiftc \
     -lsecretary_ffi_uniffi \
     -Xcc -fmodule-map-file="$BINDINGS_DIR/secretaryFFI.modulemap" \
     "$BINDINGS_DIR/secretary.swift" \
+    "$SCRIPT_DIR/ConformanceErrors.swift" \
+    "$SCRIPT_DIR/ConformanceHelpers.swift" \
+    "$SCRIPT_DIR/ConformanceInputs.swift" \
+    "$SCRIPT_DIR/ConformanceAssertions.swift" \
     "$SCRIPT_DIR/conformance.swift" \
     -o "$BIN_OUT"
 
