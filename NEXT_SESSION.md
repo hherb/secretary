@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-17 (Option C — close issue #72, smoke-runner splits)
-**Status:** PR pending on branch `refactor/issue-72-split-smoke-runners` at refactor commit `5990b4e` (this baton commit pushed separately so the live baton rides inside the PR per [`feedback_next_session_in_pr`](memory)). Closes issue [#72](https://github.com/hherb/secretary/issues/72) on merge. Remaining open issues are the three C-blocked items ([#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45)). Gauntlet on this branch green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance PASS / freshness 96/0/2 / Swift smoke **38/38** / Kotlin smoke **39/39** / Swift conformance **22/22** / Kotlin conformance **22/22**.
+**Status:** PR [#73](https://github.com/hherb/secretary/pull/73) **open** on branch `refactor/issue-72-split-smoke-runners` at refactor commit `5990b4e` (this baton commit pushed separately so the live baton rides inside the PR per [`feedback_next_session_in_pr`](memory)). Closes issue [#72](https://github.com/hherb/secretary/issues/72) on merge. Remaining open issues are the three C-blocked items ([#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45)). Gauntlet on this branch green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance PASS / freshness 96/0/2 / Swift smoke **38/38** / Kotlin smoke **39/39** / Swift conformance **22/22** / Kotlin conformance **22/22**.
 
 ## (1) What we shipped this session
 
@@ -181,4 +181,4 @@ gh issue list --state open
 - **Files created this session:** 7 Swift + 7 Kotlin sibling files (14 total), plus this `NEXT_SESSION.md` (overwritten) and its frozen handoff snapshot at [`docs/handoffs/2026-05-17-issue-72-smoke-runner-splits.md`](docs/handoffs/2026-05-17-issue-72-smoke-runner-splits.md).
 - **Files modified this session:** `ffi/secretary-ffi-uniffi/tests/swift/main.swift` (shrunk to entry-only), `ffi/secretary-ffi-uniffi/tests/kotlin/Main.kt` (shrunk to entry-only), both `run.sh` scripts (updated to pass sibling file lists), `ROADMAP.md` (+1 sentence in the B.6 paragraph).
 - **Issues open at session close:** [#37](https://github.com/hherb/secretary/issues/37), [#38](https://github.com/hherb/secretary/issues/38), [#45](https://github.com/hherb/secretary/issues/45) (all C-blocked).
-- **Open PRs:** this one — awaiting CI + review.
+- **Open PRs:** [#73](https://github.com/hherb/secretary/pull/73) (this one — awaiting CI + review).
