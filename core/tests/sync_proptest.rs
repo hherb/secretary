@@ -38,22 +38,52 @@ proptest! {
         prop_assert_eq!(first, second);
     }
 
-    /// After `AppliedAutomatically`, re-running the dispatch with the
-    /// returned new_state and the same disk_clock yields `NothingToDo`.
+    /// `AppliedAutomatically` produces a `new_state` that is a fixpoint:
+    /// re-dispatching with the same `disk_clock` yields `NothingToDo`.
+    ///
+    /// Input construction guarantees `AppliedAutomatically` — disk strictly
+    /// dominates state by appending a fresh device with a non-zero counter
+    /// (the fresh device is constructed to be distinct from all state
+    /// entries). Without this construction, naive random `(state, disk)`
+    /// pairs over the 128-bit device-uuid space would mostly produce
+    /// `ForkDetected`, and the property would silently no-op for 3 of 4
+    /// outcomes — diluting its value as evidence of the fixpoint.
     #[test]
     fn prop_applied_then_nothing_to_do(
         vault_uuid in any::<[u8; 16]>(),
         state_clock in canonical_clock_strategy(),
-        disk_clock in canonical_clock_strategy(),
+        seed_device in any::<[u8; 16]>(),
+        new_counter in 1u64..u64::MAX,
     ) {
-        let state = SyncState::new(vault_uuid, state_clock).unwrap();
-        if let SyncOutcome::AppliedAutomatically { new_state } =
-            __test_dispatch(disk_clock.clone(), &state).unwrap()
-        {
-            let second = __test_dispatch(disk_clock, &new_state).unwrap();
-            prop_assert_eq!(second, SyncOutcome::NothingToDo);
+        // Find a device that isn't already in state. Worst case loops 256
+        // times (state has ≤ 6 entries, so collisions are rare on a 128-bit
+        // space and the high-byte bump exhausts the namespace deterministically).
+        let mut fresh_device = seed_device;
+        let mut bumps = 0u32;
+        while state_clock.iter().any(|e| e.device_uuid == fresh_device) {
+            fresh_device[0] = fresh_device[0].wrapping_add(1);
+            bumps += 1;
+            prop_assert!(bumps < 256, "could not find a fresh device uuid");
         }
-        // Other outcomes — nothing to assert for this property.
+
+        let mut disk_clock = state_clock.clone();
+        disk_clock.push(VectorClockEntry { device_uuid: fresh_device, counter: new_counter });
+        disk_clock.sort_by_key(|e| e.device_uuid);
+
+        let state = SyncState::new(vault_uuid, state_clock).unwrap();
+        let new_state = match __test_dispatch(disk_clock.clone(), &state).unwrap() {
+            SyncOutcome::AppliedAutomatically { new_state } => new_state,
+            other => {
+                prop_assert!(
+                    false,
+                    "constructed input must yield AppliedAutomatically, got {:?}",
+                    other,
+                );
+                unreachable!()
+            }
+        };
+        let second = __test_dispatch(disk_clock, &new_state).unwrap();
+        prop_assert_eq!(second, SyncOutcome::NothingToDo);
     }
 
     /// Branch coverage is disjoint: exactly one of the four variants
