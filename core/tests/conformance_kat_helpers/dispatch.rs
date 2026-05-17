@@ -227,19 +227,20 @@ fn uuid_from_inputs(
 /// `type` (`"text"` or `"bytes"`), and a value (`value_utf8` or
 /// `value_hex`). The bridge's `RecordInput` does not carry `record_type`
 /// or `tags` (both default to empty inside `into_core_record`).
-fn block_input_from_inputs(inputs: &serde_json::Value) -> BlockInput {
-    let block_uuid_hex = inputs
-        .get("block_uuid_hex")
-        .and_then(|v| v.as_str())
-        .expect("save_block inputs need block_uuid_hex");
-    let block_uuid_bytes = hex::decode(block_uuid_hex).expect("block_uuid hex decode");
-    assert_eq!(
-        block_uuid_bytes.len(),
-        16,
-        "save_block.block_uuid must be 16 bytes (use save_block_invalid_input with block_uuid_bytes_hex for the wrong-length path)"
-    );
-    let mut block_uuid = [0u8; 16];
-    block_uuid.copy_from_slice(&block_uuid_bytes);
+///
+/// Wrong-length `block_uuid_*` or `record_uuid_*` inputs synthesize
+/// `BridgeOrSyntheticErr::Synthetic { variant: "InvalidArgument" }`
+/// symmetrically with `uuid_from_inputs` — this is the surface that
+/// matches the uniffi namespace-layer `uuid_from_vec` length check
+/// on Swift / Kotlin, where the bridge's `[u8; 16]` parameters are
+/// type-bounded so wrong-length never reaches the bridge.
+fn block_input_from_inputs(inputs: &serde_json::Value) -> Result<BlockInput, BridgeOrSyntheticErr> {
+    let block_uuid = uuid_from_inputs(
+        inputs,
+        "block_uuid_hex",
+        "block_uuid_bytes_hex",
+        "input.block_uuid",
+    )?;
 
     let block_name = inputs
         .get("block_name")
@@ -247,20 +248,16 @@ fn block_input_from_inputs(inputs: &serde_json::Value) -> BlockInput {
         .unwrap_or("")
         .to_string();
 
-    let records: Vec<RecordInput> = inputs
-        .get("records")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
+    let records: Vec<RecordInput> =
+        if let Some(arr) = inputs.get("records").and_then(|v| v.as_array()) {
             arr.iter()
-                .map(|rec| {
-                    let record_uuid_hex = rec
-                        .get("record_uuid_hex")
-                        .and_then(|v| v.as_str())
-                        .expect("record needs record_uuid_hex");
-                    let mut record_uuid = [0u8; 16];
-                    record_uuid.copy_from_slice(
-                        &hex::decode(record_uuid_hex).expect("record_uuid hex decode"),
-                    );
+                .map(|rec| -> Result<RecordInput, BridgeOrSyntheticErr> {
+                    let record_uuid = uuid_from_inputs(
+                        rec,
+                        "record_uuid_hex",
+                        "record_uuid_bytes_hex",
+                        "record.record_uuid",
+                    )?;
                     let fields: Vec<FieldInput> = rec
                         .get("fields")
                         .and_then(|v| v.as_array())
@@ -298,20 +295,21 @@ fn block_input_from_inputs(inputs: &serde_json::Value) -> BlockInput {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    RecordInput {
+                    Ok(RecordInput {
                         record_uuid,
                         fields,
-                    }
+                    })
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
 
-    BlockInput {
+    Ok(BlockInput {
         block_uuid,
         block_name,
         records,
-    }
+    })
 }
 
 /// Extract `now_ms` (required for all v2 write ops).
@@ -360,31 +358,16 @@ pub fn run_save_block(
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
 ) -> Result<(), BridgeOrSyntheticErr> {
     // Length-check device_uuid first (uniffi checks this before
-    // building the BlockInput). block_uuid is checked inside
-    // block_input_from_inputs via uuid_from_inputs if we go through
-    // the bytes_hex path; the happy-path uses block_uuid_hex (validated
-    // to 16 bytes by block_input_from_inputs).
+    // building the BlockInput). block_uuid + record_uuid lengths are
+    // validated inside `block_input_from_inputs`, which synthesizes
+    // `InvalidArgument` symmetrically for either path.
     let device_uuid = uuid_from_inputs(
         inputs,
         "device_uuid_hex",
         "device_uuid_bytes_hex",
         "device_uuid",
     )?;
-    // If the vector pinned block_uuid_bytes_hex (wrong-length test),
-    // synthesize InvalidArgument before building the BlockInput.
-    if let Some(raw) = inputs.get("block_uuid_bytes_hex").and_then(|v| v.as_str()) {
-        let bytes = hex::decode(raw).expect("block_uuid_bytes_hex decode");
-        if bytes.len() != 16 {
-            return Err(BridgeOrSyntheticErr::Synthetic {
-                variant: "InvalidArgument",
-                detail: format!(
-                    "input.block_uuid must be exactly 16 bytes, got {}",
-                    bytes.len()
-                ),
-            });
-        }
-    }
-    let input = block_input_from_inputs(inputs);
+    let input = block_input_from_inputs(inputs)?;
     let now_ms = now_ms_from_inputs(inputs);
     secretary_ffi_bridge::save_block(
         &cached.identity,
