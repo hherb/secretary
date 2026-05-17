@@ -3,7 +3,7 @@
 **Session date:** 2026-05-17 (C.1 phase 1 sync detection — implementation + PR #74 review cleanup)
 **Status:** `feature/c1-sync-detection` branch carries the full C.1 implementation plus PR-#74 review cleanup commits. The 15-task plan executed cleanly through all five phases; four review issues (#1, #2, #4, #7) fixed in-PR, two (#3, #5) filed as tracking issues [#75](https://github.com/hherb/secretary/issues/75) (test surface hardening) and [#76](https://github.com/hherb/secretary/issues/76) (Python KAT replay for C.4). Gauntlet on this branch green.
 
-## (1) What we shipped this session
+## Where the actual work-in-progress baton lives
 
 ### PR-#74 review cleanup commits (on top of the implementation series)
 
@@ -148,6 +148,17 @@ Risks/decisions for the next planning session:
 - **Issue [#76](https://github.com/hherb/secretary/issues/76)** — add Python clean-room replay of `sync_kat.json` (currently Rust-only). C.4 work item.
 
 ## (4) Exact commands to resume
+The C.1 implementation work — 15 TDD tasks, ~1-3 sessions of coding — is captured on branch [`feature/c1-sync-detection`](https://github.com/hherb/secretary/tree/feature/c1-sync-detection) at three commits ahead of main:
+
+| SHA | Subject |
+|---|---|
+| `ff05335` | `docs(c1): design spec — sync rollback + fork detection (phase 1)` |
+| `8d685f0` | `docs(c1): implementation plan — 15 TDD tasks across 5 phases` |
+| `7b8ab6e` | `docs: pre-implementation baton — C.1 spec + plan on feature/c1-sync-detection` |
+
+**Read the baton on that branch** (`NEXT_SESSION.md` at commit `7b8ab6e`) for the full handoff: brainstorm decisions D1-D4, plan corrections applied during self-review, open implementation-handoff items (two `todo!()` placeholders in Task 9), acceptance criteria for the eventual PR, and exact resume commands.
+
+## Exact commands to resume
 
 ```bash
 cd /Users/hherb/src/secretary
@@ -195,9 +206,7 @@ git log --oneline main..test/issue-35-save-block-mid-call-wipe-race
 # If a branch is fully ancestral to main, safe to `git branch -D <name>`.
 ```
 
----
-
-## Closing inventory
+## Closing inventory on main
 
 - **Branch state on close:** `feature/c1-sync-detection` at `b71cbdc` (or this baton commit's SHA after this commit lands), 18 commits ahead of main. PR opens via `gh pr create` after this baton commit.
 - **Workspace tests:** **682 passed + 10 ignored** under `cargo test --release --workspace` (642 → 682, +40 across SyncError / SyncState / SyncOutcome / sync_once unit + integration + proptest + KAT).
