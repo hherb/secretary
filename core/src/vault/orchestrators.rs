@@ -35,7 +35,7 @@ use crate::crypto::sig::{
 };
 use crate::identity::card::{ContactCard, CARD_VERSION_V1};
 use crate::identity::fingerprint::fingerprint;
-use crate::unlock::{self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml};
+use crate::unlock::{self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity};
 
 use super::{block, io, manifest};
 use super::{
@@ -485,6 +485,88 @@ pub fn open_vault(
         }
     };
 
+    // Steps 3-8: read manifest envelope, load + verify owner card,
+    // verify + decrypt manifest, sanity-check body↔envelope and
+    // body↔vault.toml, optional rollback check. Shared with
+    // `read_vault_manifest` so a caller that already holds an
+    // UnlockedIdentity does not re-run Argon2 just to inspect the
+    // manifest body.
+    let (owner_card, manifest_body, manifest_file) = read_and_verify_manifest(
+        folder,
+        &vault_toml_bytes,
+        &unlocked,
+        local_highest_clock,
+    )?;
+
+    Ok(OpenVault {
+        identity_block_key: unlocked.identity_block_key,
+        identity: unlocked.identity,
+        owner_card,
+        manifest: manifest_body,
+        manifest_file,
+    })
+}
+
+/// Read, verify, and decrypt the vault manifest using a caller-held
+/// `UnlockedIdentity`. Returns just the decrypted [`Manifest`] body —
+/// the caller retains ownership of the identity (no `IdentityBundle`
+/// clone is performed, consistent with the bundle's no-Clone safety
+/// policy).
+///
+/// The entry point used by [`core::sync::sync_once`] so a sync poll
+/// runs in milliseconds (file read + signature verify + AEAD decrypt)
+/// rather than seconds (Argon2id derivation + bundle unwrap).
+///
+/// Performs the same verify-then-decrypt + cross-checks as
+/// [`open_vault`] — owner card sanity, manifest signature verify, AEAD
+/// decrypt, body↔envelope vault_uuid match, KDF params match, optional
+/// §10 rollback check.
+///
+/// [`core::sync::sync_once`]: crate::sync::sync_once
+pub fn read_vault_manifest(
+    folder: &Path,
+    identity: &UnlockedIdentity,
+    local_highest_clock: Option<&[VectorClockEntry]>,
+) -> Result<Manifest, VaultError> {
+    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
+    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
+        context: "failed to read vault.toml",
+        source: e,
+    })?;
+    let (_owner_card, manifest_body, _manifest_file) =
+        read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)?;
+    Ok(manifest_body)
+}
+
+/// Shared helper for [`open_vault`] and [`read_vault_manifest`].
+///
+/// Inputs: the vault folder, pre-read `vault.toml` bytes, the unlocked
+/// identity (by reference — no ownership transfer), and an optional
+/// `local_highest_clock` for §10 rollback resistance.
+///
+/// Performs §1 read-order steps 3-8 of `docs/vault-format.md`:
+///   - Read + decode the §4.1 manifest envelope.
+///   - Load + self-verify the owner contact card; cross-check its
+///     `contact_uuid` against the unlocked identity, and the manifest
+///     envelope's `author_fingerprint` against the loaded card.
+///   - Verify-then-decrypt: §8 hybrid signature on the envelope under
+///     the owner card's keys; AEAD-decrypt the manifest body using the
+///     caller's Identity Block Key.
+///   - Cross-check the body's `owner_user_uuid`, `vault_uuid`, and
+///     `kdf_params` against the unlocked identity, the envelope header,
+///     and the parsed `vault.toml` respectively.
+///   - Optional §10 rollback check against `local_highest_clock`.
+///
+/// Returns the (owner_card, manifest_body, manifest_file) triple.
+/// [`open_vault`] additionally moves `unlocked` into the returned
+/// [`OpenVault`]; [`read_vault_manifest`] discards the owner_card and
+/// envelope and returns just the body.
+fn read_and_verify_manifest(
+    folder: &Path,
+    vault_toml_bytes: &[u8],
+    unlocked: &UnlockedIdentity,
+    local_highest_clock: Option<&[VectorClockEntry]>,
+) -> Result<(ContactCard, Manifest, ManifestFile), VaultError> {
     // Step 3-4: read + decode the §4.1 manifest envelope.
     let manifest_path = folder.join(MANIFEST_FILENAME);
     let manifest_file_bytes = std::fs::read(&manifest_path).map_err(|e| VaultError::Io {
@@ -494,8 +576,8 @@ pub fn open_vault(
     let manifest_file = manifest::decode_manifest_file(&manifest_file_bytes)?;
 
     // Step 5: load + self-verify the owner contact card. The owner
-    // UUID lives inside the IdentityBundle (which we have from step
-    // 2); using it here avoids a chicken-and-egg with the still-
+    // UUID lives inside the IdentityBundle (which the caller already
+    // has); using it here avoids a chicken-and-egg with the still-
     // encrypted manifest body.
     let owner_uuid_hex = format_uuid_hyphenated(&unlocked.identity.user_uuid);
     let owner_card_path = folder
@@ -508,9 +590,7 @@ pub fn open_vault(
     let owner_card = ContactCard::from_canonical_cbor(&owner_card_bytes)?;
     owner_card.verify_self()?;
 
-    // Sanity: owner card's UUID matches the IdentityBundle. The
-    // filename uses the same UUID, so a mismatch here would only fire
-    // on a deliberately-mis-named card placed in `contacts/`.
+    // Sanity: owner card's UUID matches the IdentityBundle.
     if owner_card.contact_uuid != unlocked.identity.user_uuid {
         return Err(VaultError::OwnerUuidMismatch {
             vault: unlocked.identity.user_uuid,
@@ -519,28 +599,17 @@ pub fn open_vault(
     }
 
     // Sanity: manifest envelope's author_fingerprint matches the
-    // computed fingerprint of the loaded owner card. The manifest
-    // signature verifies under the card's public keys (next step), but
-    // a successful verify against a *different* card whose keys
-    // happened to match would still leave this guard firing — and the
-    // common-case failure is a folder assembled from mismatched
-    // pieces, which we want to flag loudly.
+    // computed fingerprint of the loaded owner card.
     let owner_fp = fingerprint(&owner_card_bytes);
     if manifest_file.author_fingerprint != owner_fp {
         return Err(VaultError::ManifestAuthorMismatch);
     }
 
-    // Step 6: verify-then-decrypt. Verify the §8 hybrid signature on
-    // the envelope using the owner card's two public keys. If this
-    // rejects, we bail without attempting AEAD decrypt — the security
-    // discipline is "verify before decrypt" so a tampered ciphertext
-    // never reaches the primitive.
+    // Step 6: verify-then-decrypt.
     let pk_pq = MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk)?;
     manifest::verify_manifest(&manifest_file, &owner_card.ed25519_pk, &pk_pq)?;
 
-    // Step 7: AEAD-decrypt the manifest body. Reassemble (ct || tag)
-    // from the split fields in the on-disk envelope; that's the wire
-    // shape decrypt_manifest_body expects.
+    // Step 7: AEAD-decrypt the manifest body.
     let mut ct_with_tag = Vec::with_capacity(manifest_file.aead_ct.len() + AEAD_TAG_LEN);
     ct_with_tag.extend_from_slice(&manifest_file.aead_ct);
     ct_with_tag.extend_from_slice(&manifest_file.aead_tag);
@@ -552,12 +621,7 @@ pub fn open_vault(
     )?;
 
     // Sanity: manifest body's owner_user_uuid matches the unlocked
-    // identity. The signature already commits to the body, so this is
-    // belt-and-braces against a pathological key reuse where two
-    // identities accidentally produced verifying signatures over
-    // different bodies — but it costs one comparison and removes a
-    // class of "looked OK to crypto, but is not this user's vault"
-    // surprises at higher layers.
+    // identity.
     if manifest_body.owner_user_uuid != unlocked.identity.user_uuid {
         return Err(VaultError::OwnerUuidMismatch {
             vault: unlocked.identity.user_uuid,
@@ -565,12 +629,7 @@ pub fn open_vault(
         });
     }
 
-    // §4.3 step 5 cross-check: the encrypted body's vault_uuid must
-    // equal the (AAD-bound) header's vault_uuid. AEAD AAD already
-    // binds the header to the body, so a successful decrypt implies
-    // the AAD-as-encrypted equals the header bytes we passed; this
-    // explicit equality is defence-in-depth for a future v2 layout
-    // that could decouple AAD from header.
+    // §4.3 step 5 cross-check: body.vault_uuid == header.vault_uuid.
     if manifest_body.vault_uuid != manifest_file.header.vault_uuid {
         return Err(VaultError::ManifestVaultUuidMismatch {
             header: manifest_file.header.vault_uuid,
@@ -578,16 +637,8 @@ pub fn open_vault(
         });
     }
 
-    // §4.3 step 6 cross-check: the manifest body carries a duplicate
-    // copy of vault.toml's [kdf] block precisely so the manifest
-    // signature attests to the parameters used to derive master_kek
-    // (§4.2 line 205). Without this comparison a malicious cloud host
-    // could swap memory_kib (DoS), iterations, parallelism, or salt in
-    // vault.toml and the user would derive a different — but
-    // signature-valid — manifest with no warning. Re-parse vault.toml
-    // here rather than threading the parsed form through unlock to
-    // keep the check local and unambiguous.
-    let vt_str = std::str::from_utf8(&vault_toml_bytes).map_err(|_| {
+    // §4.3 step 6 cross-check: body.kdf_params == vault.toml [kdf].
+    let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| {
         VaultError::Unlock(crate::unlock::UnlockError::MalformedVaultToml(
             crate::unlock::vault_toml::VaultTomlError::MalformedToml(
                 "vault.toml is not valid UTF-8".to_string(),
@@ -606,10 +657,7 @@ pub fn open_vault(
         return Err(VaultError::KdfParamsMismatch);
     }
 
-    // Step 8: §10 rollback resistance. The OS-keystore layer holds the
-    // per-vault highest-seen clock; this function is agnostic about
-    // where it comes from. Pass `None` to skip the check (no clock
-    // recorded yet).
+    // Step 8: §10 rollback resistance.
     if let Some(local) = local_highest_clock {
         if manifest::is_rollback(local, &manifest_body.vector_clock) {
             return Err(VaultError::Rollback {
@@ -619,13 +667,7 @@ pub fn open_vault(
         }
     }
 
-    Ok(OpenVault {
-        identity_block_key: unlocked.identity_block_key,
-        identity: unlocked.identity,
-        owner_card,
-        manifest: manifest_body,
-        manifest_file,
-    })
+    Ok((owner_card, manifest_body, manifest_file))
 }
 
 // ---------------------------------------------------------------------------
