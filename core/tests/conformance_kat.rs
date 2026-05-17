@@ -104,6 +104,17 @@ fn replay_conformance_kat() {
             (Operation::OpenVaultWithPassword | Operation::OpenVaultWithRecovery, Some(_)) => {
                 panic!("{label}: open_vault_* vectors must not specify `after:`")
             }
+            // v2 lifecycle ops — not yet wired in the replay loop (Tasks 7+).
+            (
+                Operation::OpenVaultWithPasswordWritable
+                | Operation::SaveBlock
+                | Operation::ShareBlock
+                | Operation::TrashBlock
+                | Operation::RestoreBlock,
+                _,
+            ) => {
+                panic!("{label}: v2 lifecycle op not yet implemented in replay")
+            }
         }
     }
 }
