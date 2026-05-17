@@ -160,13 +160,20 @@ verify_sha256 "$JSON_JAR" "$JSON_SHA256" "org.json"
 # --- Step 5: kotlinc the bindings + conformance runner ---
 # `-include-runtime` bundles the Kotlin stdlib into the jar so we don't
 # need to put kotlin-stdlib.jar on the runtime classpath. Both JNA and
-# org.json are compile-time + runtime deps.
+# org.json are compile-time + runtime deps. The Conformance* sibling
+# files were split out per issue #67 to keep each file under the
+# 500-LOC guideline; Kotlin compiles all source files together as a
+# single module so order is irrelevant.
 echo "==> kotlinc conformance runner"
 kotlinc \
     -classpath "$JNA_JAR:$JSON_JAR" \
     -include-runtime \
     -d "$JAR_OUT" \
     "$GENERATED_KT" \
+    "$SCRIPT_DIR/ConformanceErrors.kt" \
+    "$SCRIPT_DIR/ConformanceHelpers.kt" \
+    "$SCRIPT_DIR/ConformanceInputs.kt" \
+    "$SCRIPT_DIR/ConformanceAssertions.kt" \
     "$SCRIPT_DIR/Conformance.kt"
 
 # --- Step 6: execute ---
