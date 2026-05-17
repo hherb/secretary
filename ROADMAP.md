@@ -27,7 +27,7 @@ PR #10 (earlier, 2026-05-01) added a thirteen-chapter [cryptography primer](docs
 ```
 [================================================================] Sub-project A — Rust core (feature-complete; A.7 internal track closed; external review pending)
 [=====================================                           ] Sub-project B — FFI bindings (B.1 Python ✅; B.1.1 Swift ✅; B.1.1.1 Kotlin ✅; B.2 password unlock ✅; B.3a recovery unlock ✅; B.3b create_vault ✅; B.4a open_vault ✅; B.4b read_block ✅; B.4c save_block ✅; B.4d share_block ✅; B.5 trash + restore ✅; B.6 v1 conformance KAT — read-only ✅; B.6 v2 conformance KAT — lifecycle ✅)
-[                                                                ] Sub-project C — Sync orchestration
+[========                                                        ] Sub-project C — Sync orchestration (C.1 phase 1 sync detection ✅)
 [                                                                ] Sub-project D — Platform UIs
 ```
 
@@ -161,6 +161,7 @@ Scope:
 Phase plan:
 
 - **C.1 — Sync state machine in pure Rust**. No OS dependencies. Inputs: manifest-changed event, peer-manifest-fingerprint event. Outputs: merge-needed, persist-merged-manifest, conflict-needs-user. Property-tested for convergence under random event interleavings.
+  - **C.1 phase 1 (sync detection)** ✅ — `core::sync::sync_once(folder, &UnlockedIdentity, &SyncState, now_ms)` exposes the §10 rollback-and-fork-detection algorithm as a pure-function dispatch over `clock_relation`. Returns `SyncOutcome::{NothingToDo, AppliedAutomatically { new_state }, ForkDetected, RollbackRejected}`. State is a caller-persisted `SyncState` value (canonical-CBOR encoded for OS-keystore persistence; sorted/deduped clock invariant validated symmetrically by constructor and decoder). A new `core::vault::read_vault_manifest(folder, &UnlockedIdentity, ...)` entry point lets a sync poll reuse a pre-unlocked identity without re-running Argon2 — extracted as a private `read_and_verify_manifest` helper shared with `open_vault`, respecting `IdentityBundle`'s deliberate no-Clone safety policy. Spec at [docs/superpowers/specs/2026-05-17-c1-sync-detection-design.md](docs/superpowers/specs/2026-05-17-c1-sync-detection-design.md); plan at [docs/superpowers/plans/2026-05-17-c1-sync-detection.md](docs/superpowers/plans/2026-05-17-c1-sync-detection.md). Conflict-copy ingestion, automatic merge, and veto-on-tombstone are scoped to **C.1.1**.
 - **C.2 — Headless `secretary sync` CLI (desktop)**. Wraps the state machine + the `notify` crate + Sub-project A core. Doubles as the reference consumer for testing and as a real user-facing tool for headless deployments (NAS, server). Two-instance tests run two CLIs against a shared temp directory and assert convergence.
 - **C.3 — Mobile sync adapters**. iOS adapter using `NSFilePresenter` / `NSMetadataQuery`, exposed via uniffi-bound state machine. Android adapter using the Storage Access Framework + `WorkManager`, exposed via uniffi-bound state machine.
 - **C.4 — Cross-device convergence conformance**. Two simulated devices (or two real CLIs) edit `golden_vault_001/` concurrently through a shared folder; both converge to the same merged manifest fingerprint with no data loss across power-cycle, network-partition, and clock-skew scenarios.
