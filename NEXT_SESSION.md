@@ -10,7 +10,7 @@ PR [#70](https://github.com/hherb/secretary/pull/70) on branch `test/issue-69-ka
 | SHA | Subject | Notes |
 |---|---|---|
 | `6e1414d` | `test(conformance-kat): add 2 missing error-path vectors (closes #69)` | Adds `restore_block_already_live` + `save_block_invalid_record_uuid` to the conformance KAT (20 → 22 vectors). Updates Swift + Kotlin `blockInputFromInputs` to accept `record_uuid_bytes_hex` so wrong-length record_uuid passes through to uniffi's `convert_record_input`, which surfaces `VaultException.InvalidArgument` symmetrically with the existing `device_uuid_bytes_hex` pattern. ROADMAP §B.6-paragraph counts updated 20 → 22. |
-| `<TBD>` | `docs: pre-merge baton — issue #69 KAT vectors (PR #70 open)` | This file + its frozen handoff snapshot at [`docs/handoffs/2026-05-17-issue-69-kat-vectors.md`](docs/handoffs/2026-05-17-issue-69-kat-vectors.md). |
+| `be0e8d3` | `docs: pre-merge baton — issue #69 KAT vectors (PR #70 open)` | This file + its frozen handoff snapshot at [`docs/handoffs/2026-05-17-issue-69-kat-vectors.md`](docs/handoffs/2026-05-17-issue-69-kat-vectors.md). |
 
 ### Vector summary
 
@@ -151,7 +151,7 @@ gh issue list --state open
 
 ## Closing inventory
 
-- **Branch state on close:** `test/issue-69-kat-vectors` at `6e1414d` + the baton commit (`<TBD>`) pushed to `origin`. PR #70 open. No untracked files outside the worktree.
+- **Branch state on close:** `test/issue-69-kat-vectors` at `6e1414d` + the baton commit (`be0e8d3`) + this SHA-fixup commit pushed to `origin`. PR #70 open. No untracked files outside the worktree.
 - **Workspace tests:** **642 cargo + 10 ignored**, unchanged across this PR (the KAT generator + replay are one `#[test]` + one `#[ignore]` regardless of vector count).
 - **Per-binding conformance counts:** Swift `22/22 PASS`, Kotlin `22/22 PASS`, Rust `replay_conformance_kat ... ok`.
 - **README:** unchanged — no specific KAT counts surfaced there; the high-level B.6 line at §144 still reads true.
