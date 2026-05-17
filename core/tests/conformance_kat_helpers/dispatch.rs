@@ -175,3 +175,307 @@ pub fn assert_read_block_ok(
         }
     }
 }
+
+// ── v2 input-parsing helpers ─────────────────────────────────────────────────
+
+use secretary_core::crypto::secret::{SecretBytes, SecretString};
+use secretary_ffi_bridge::{BlockInput, FieldInput, FieldInputValue, RecordInput};
+
+/// Parse a `*_hex` or `*_bytes_hex` input field into a `[u8; 16]`.
+/// Returns `Err(BridgeOrSyntheticErr::Synthetic{"InvalidArgument"})`
+/// for any non-16-byte input — matches the uniffi-layer
+/// `uuid_from_vec` behavior so Swift/Kotlin get a real
+/// VaultError.InvalidArgument while Rust gets the synthesized analogue.
+fn uuid_from_inputs(
+    inputs: &serde_json::Value,
+    primary_field: &str,
+    bytes_field: &str,
+    label: &str,
+) -> Result<[u8; 16], BridgeOrSyntheticErr> {
+    let raw = inputs
+        .get(primary_field)
+        .or_else(|| inputs.get(bytes_field))
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            panic!("inputs need {primary_field} or {bytes_field} (vector dispatch error)")
+        });
+    let bytes = hex::decode(raw)
+        .unwrap_or_else(|e| panic!("{label}: {primary_field} hex decode: {e}"));
+    if bytes.len() != 16 {
+        return Err(BridgeOrSyntheticErr::Synthetic {
+            variant: "InvalidArgument",
+            detail: format!("{label} must be exactly 16 bytes, got {}", bytes.len()),
+        });
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Build a `BlockInput` from the JSON `inputs.records` array. Each
+/// record has `record_uuid_hex` + `fields[]`; each field has `name`,
+/// `type` (`"text"` or `"bytes"`), and a value (`value_utf8` or
+/// `value_hex`). The bridge's `RecordInput` does not carry `record_type`
+/// or `tags` (both default to empty inside `into_core_record`).
+fn block_input_from_inputs(inputs: &serde_json::Value) -> BlockInput {
+    let block_uuid_hex = inputs
+        .get("block_uuid_hex")
+        .and_then(|v| v.as_str())
+        .expect("save_block inputs need block_uuid_hex");
+    let block_uuid_bytes = hex::decode(block_uuid_hex).expect("block_uuid hex decode");
+    assert_eq!(
+        block_uuid_bytes.len(),
+        16,
+        "save_block.block_uuid must be 16 bytes (use save_block_invalid_input with block_uuid_bytes_hex for the wrong-length path)"
+    );
+    let mut block_uuid = [0u8; 16];
+    block_uuid.copy_from_slice(&block_uuid_bytes);
+
+    let block_name = inputs
+        .get("block_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let records: Vec<RecordInput> = inputs
+        .get("records")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|rec| {
+                    let record_uuid_hex = rec
+                        .get("record_uuid_hex")
+                        .and_then(|v| v.as_str())
+                        .expect("record needs record_uuid_hex");
+                    let mut record_uuid = [0u8; 16];
+                    record_uuid.copy_from_slice(
+                        &hex::decode(record_uuid_hex).expect("record_uuid hex decode"),
+                    );
+                    let fields: Vec<FieldInput> = rec
+                        .get("fields")
+                        .and_then(|v| v.as_array())
+                        .map(|fs| {
+                            fs.iter()
+                                .map(|f| {
+                                    let name = f
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .expect("field needs name")
+                                        .to_string();
+                                    let ftype = f
+                                        .get("type")
+                                        .and_then(|v| v.as_str())
+                                        .expect("field needs type");
+                                    let value = match ftype {
+                                        "text" => FieldInputValue::Text(SecretString::from(
+                                            f.get("value_utf8")
+                                                .and_then(|v| v.as_str())
+                                                .expect("text field needs value_utf8")
+                                                .to_string(),
+                                        )),
+                                        "bytes" => FieldInputValue::Bytes(SecretBytes::from(
+                                            hex::decode(
+                                                f.get("value_hex")
+                                                    .and_then(|v| v.as_str())
+                                                    .expect("bytes field needs value_hex"),
+                                            )
+                                            .expect("value_hex decode"),
+                                        )),
+                                        other => panic!("unknown field type {other}"),
+                                    };
+                                    FieldInput { name, value }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    RecordInput { record_uuid, fields }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    BlockInput {
+        block_uuid,
+        block_name,
+        records,
+    }
+}
+
+/// Extract `now_ms` (required for all v2 write ops).
+fn now_ms_from_inputs(inputs: &serde_json::Value) -> u64 {
+    inputs
+        .get("now_ms")
+        .and_then(|v| v.as_u64())
+        .expect("v2 write-op vector needs now_ms")
+}
+
+// ── v2 run_* dispatch helpers ─────────────────────────────────────────────────
+
+use super::fixtures::copy_vault_to_tempdir;
+
+/// Copies the named fixture vault to a fresh tempdir, opens the copy
+/// with the resolved password, and returns the open output paired with
+/// the TempDir handle. The caller is responsible for holding the TempDir
+/// alongside the cached OpenVaultOutput so the dir survives until replay
+/// completes.
+#[allow(dead_code)]
+pub fn run_open_writable(
+    inputs: &serde_json::Value,
+) -> Result<
+    (
+        secretary_ffi_bridge::vault::OpenVaultOutput,
+        tempfile::TempDir,
+    ),
+    secretary_ffi_bridge::error::FfiVaultError,
+> {
+    let vault_name = inputs
+        .get("vault_dir")
+        .and_then(|v| v.as_str())
+        .expect("open_vault_with_password_writable needs vault_dir (fixture-relative)");
+    let tmp = copy_vault_to_tempdir(vault_name);
+    let password = super::fixtures::resolve_password(inputs);
+    let out = secretary_ffi_bridge::vault::open_vault_with_password(tmp.path(), &password)?;
+    Ok((out, tmp))
+}
+
+/// Dispatch save_block. Returns the BridgeOrSyntheticErr wrapper so
+/// non-16-byte block_uuid / device_uuid synthesize `InvalidArgument`
+/// at the test layer (matching the uniffi-layer length checks; the
+/// bridge's `[u8; 16]` parameters are type-bounded so the bridge itself
+/// can't surface that variant).
+#[allow(dead_code)]
+pub fn run_save_block(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) -> Result<(), BridgeOrSyntheticErr> {
+    // Length-check device_uuid first (uniffi checks this before
+    // building the BlockInput). block_uuid is checked inside
+    // block_input_from_inputs via uuid_from_inputs if we go through
+    // the bytes_hex path; the happy-path uses block_uuid_hex (validated
+    // to 16 bytes by block_input_from_inputs).
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
+    // If the vector pinned block_uuid_bytes_hex (wrong-length test),
+    // synthesize InvalidArgument before building the BlockInput.
+    if let Some(raw) = inputs
+        .get("block_uuid_bytes_hex")
+        .and_then(|v| v.as_str())
+    {
+        let bytes = hex::decode(raw).expect("block_uuid_bytes_hex decode");
+        if bytes.len() != 16 {
+            return Err(BridgeOrSyntheticErr::Synthetic {
+                variant: "InvalidArgument",
+                detail: format!("input.block_uuid must be exactly 16 bytes, got {}", bytes.len()),
+            });
+        }
+    }
+    let input = block_input_from_inputs(inputs);
+    let now_ms = now_ms_from_inputs(inputs);
+    secretary_ffi_bridge::save_block(
+        &cached.identity,
+        &cached.manifest,
+        input,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+use super::fixtures::read_contact_card_bytes;
+
+/// Dispatch share_block. Reads existing_recipient_cards from the
+/// manifest (`owner_card_bytes()`) augmented by the
+/// `existing_recipient_uuid_hexes` JSON array (each entry is a
+/// 32-char user_uuid_hex of a contact card already in
+/// <writable_vault>/contacts/). new_recipient is read from
+/// `<writable_vault>/contacts/<new_recipient_user_uuid_hex>.card`.
+#[allow(dead_code)]
+pub fn run_share_block(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+    writable_vault_dir: &std::path::Path,
+) -> Result<(), BridgeOrSyntheticErr> {
+    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
+    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let now_ms = now_ms_from_inputs(inputs);
+
+    // existing_recipient_cards: start with the manifest's owner card,
+    // then append any extras listed in inputs.existing_recipient_uuid_hexes
+    // (used for the duplicate-share case where the existing list must
+    // include alice's card from the previous share_block_happy).
+    let mut existing_recipient_cards: Vec<Vec<u8>> = Vec::new();
+    let owner_bytes = cached
+        .manifest
+        .owner_card_bytes()
+        .expect("owner_card_bytes I/O")
+        .expect("owner_card_bytes returned None — manifest wiped?");
+    existing_recipient_cards.push(owner_bytes);
+    if let Some(extras) = inputs
+        .get("existing_recipient_uuid_hexes")
+        .and_then(|v| v.as_array())
+    {
+        for hex_val in extras {
+            let h = hex_val
+                .as_str()
+                .expect("existing_recipient_uuid_hexes entry must be string");
+            existing_recipient_cards.push(read_contact_card_bytes(writable_vault_dir, h));
+        }
+    }
+
+    let new_recipient_hex = inputs
+        .get("new_recipient_user_uuid_hex")
+        .and_then(|v| v.as_str())
+        .expect("share_block inputs need new_recipient_user_uuid_hex");
+    let new_recipient = read_contact_card_bytes(writable_vault_dir, new_recipient_hex);
+
+    secretary_ffi_bridge::share_block(
+        &cached.identity,
+        &cached.manifest,
+        block_uuid,
+        &existing_recipient_cards,
+        &new_recipient,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+#[allow(dead_code)]
+pub fn run_trash_block(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) -> Result<(), BridgeOrSyntheticErr> {
+    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
+    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let now_ms = now_ms_from_inputs(inputs);
+    secretary_ffi_bridge::trash_block(
+        &cached.identity,
+        &cached.manifest,
+        block_uuid,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+#[allow(dead_code)]
+pub fn run_restore_block(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) -> Result<(), BridgeOrSyntheticErr> {
+    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
+    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let now_ms = now_ms_from_inputs(inputs);
+    secretary_ffi_bridge::restore_block(
+        &cached.identity,
+        &cached.manifest,
+        block_uuid,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(BridgeOrSyntheticErr::Bridge)
+}
