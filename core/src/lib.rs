@@ -4,6 +4,7 @@
 pub mod crypto;
 pub mod error;
 pub mod identity;
+pub mod sync;
 pub mod unlock;
 pub mod vault;
 pub mod version;
