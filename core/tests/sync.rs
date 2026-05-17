@@ -178,3 +178,43 @@ fn extract_golden_vault_uuid() -> [u8; 16] {
     let vt = secretary_core::unlock::vault_toml::decode(&s).unwrap();
     vt.vault_uuid
 }
+
+#[test]
+fn sync_once_missing_vault_toml_yields_io_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    // No vault.toml in tmp.path() — should fire Io.
+    let password = fixtures::golden_vault_001_password();
+    let identity = {
+        let vt = std::fs::read("tests/data/golden_vault_001/vault.toml").unwrap();
+        let bundle = std::fs::read("tests/data/golden_vault_001/identity.bundle.enc").unwrap();
+        open_with_password(&vt, &bundle, &password).unwrap()
+    };
+    let state = SyncState::empty([0u8; 16]);
+    let err = sync_once(tmp.path(), &identity, &state, 0u64).unwrap_err();
+    assert!(matches!(err, SyncError::Io { .. }));
+    if let SyncError::Io { context, .. } = err {
+        assert_eq!(context, "failed to read vault.toml");
+    }
+}
+
+#[test]
+fn sync_once_corrupted_manifest_yields_vault_error() {
+    use sync_helpers::fresh_vault_with_clock;
+    let (folder, _tmp) = fresh_vault_with_clock(vec![entry(1, 5)]);
+
+    // Flip a byte in the middle of the manifest to corrupt it.
+    let manifest_path = folder.join("manifest.cbor.enc");
+    let mut manifest_bytes = std::fs::read(&manifest_path).unwrap();
+    let mid = manifest_bytes.len() / 2;
+    manifest_bytes[mid] ^= 0xFF;
+    std::fs::write(&manifest_path, &manifest_bytes).unwrap();
+
+    let password = fixtures::golden_vault_001_password();
+    let vt = std::fs::read("tests/data/golden_vault_001/vault.toml").unwrap();
+    let bundle = std::fs::read("tests/data/golden_vault_001/identity.bundle.enc").unwrap();
+    let identity = open_with_password(&vt, &bundle, &password).unwrap();
+
+    let state = SyncState::empty(extract_golden_vault_uuid());
+    let err = sync_once(&folder, &identity, &state, 0u64).unwrap_err();
+    assert!(matches!(err, SyncError::Vault(_)));
+}
