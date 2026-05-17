@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-17 (Option A — close issue #67)
-**Status:** PR open on branch `refactor/issue-67-split-conformance-helpers` at refactor commit `d947371` (this baton commit pushed separately so the live baton rides inside the PR per [`feedback_next_session_in_pr`](memory)). Closes issue [#67](https://github.com/hherb/secretary/issues/67) on merge. Remaining open issues are the three C-blocked items ([#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45)). Gauntlet on this branch green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance PASS / freshness 96/0/2 / Swift conformance **22/22** / Kotlin conformance **22/22**.
+**Status:** PR [#71](https://github.com/hherb/secretary/pull/71) **open** on branch `refactor/issue-67-split-conformance-helpers` at refactor commit `d947371` (this baton commit pushed separately so the live baton rides inside the PR per [`feedback_next_session_in_pr`](memory)). Closes issue [#67](https://github.com/hherb/secretary/issues/67) on merge. Remaining open issues are the three C-blocked items ([#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45)). Gauntlet on this branch green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance PASS / freshness 96/0/2 / Swift conformance **22/22** / Kotlin conformance **22/22**.
 
 ## (1) What we shipped this session
 
@@ -188,4 +188,4 @@ gh issue list --state open
 - **Files deleted this session:** `core/tests/conformance_kat_helpers/dispatch.rs` (replaced by directory module).
 - **Files modified this session:** `ffi/secretary-ffi-uniffi/tests/swift/conformance.swift` (shrunk to @main-only), `ffi/secretary-ffi-uniffi/tests/kotlin/Conformance.kt` (shrunk to main+dispatch), both `run_conformance.sh` scripts (updated to pass sibling file lists), `ROADMAP.md` (+1 sentence in the B.6 paragraph).
 - **Issues open at session close:** [#37](https://github.com/hherb/secretary/issues/37), [#38](https://github.com/hherb/secretary/issues/38), [#45](https://github.com/hherb/secretary/issues/45) (all C-blocked).
-- **Open PRs:** This branch (awaiting CI + review).
+- **Open PRs:** [#71](https://github.com/hherb/secretary/pull/71) (this one — awaiting CI + review).
