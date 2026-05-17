@@ -1,4 +1,4 @@
-// JVM-host Kotlin conformance KAT replay (B.6 v1).
+// JVM-host Kotlin conformance KAT replay (B.6 v1 + v2).
 //
 // Parallels the Rust replay in core/tests/conformance_kat.rs and the
 // Swift replay in tests/swift/conformance.swift. Loads
@@ -11,11 +11,21 @@
 
 import org.json.JSONArray
 import org.json.JSONObject
+import uniffi.secretary.BlockInput
+import uniffi.secretary.FieldInput
+import uniffi.secretary.FieldInputValue
+import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
+import uniffi.secretary.RecordInput
+import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.readBlock
+import uniffi.secretary.restoreBlock
+import uniffi.secretary.saveBlock
+import uniffi.secretary.shareBlock
+import uniffi.secretary.trashBlock
 import kotlin.system.exitProcess
 
 // --- Error variant name helper (mirrors the Swift vaultErrorName helper) ---
@@ -212,6 +222,234 @@ private fun handleVaultError(
     }
 }
 
+// --- v2 lifecycle helpers ---
+
+private fun recursiveCopy(src: java.nio.file.Path, dst: java.nio.file.Path) {
+    java.nio.file.Files.walk(src).use { stream ->
+        stream.forEach { entry ->
+            val rel = src.relativize(entry)
+            val target = dst.resolve(rel.toString())
+            if (java.nio.file.Files.isDirectory(entry)) {
+                java.nio.file.Files.createDirectories(target)
+            } else {
+                java.nio.file.Files.copy(entry, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+    }
+}
+
+private fun cleanupTempVault(tmp: java.nio.file.Path) {
+    if (!java.nio.file.Files.exists(tmp)) return
+    java.nio.file.Files.walk(tmp).use { stream ->
+        stream.sorted(java.util.Comparator.reverseOrder()).forEach {
+            try {
+                java.nio.file.Files.deleteIfExists(it)
+            } catch (_: java.io.IOException) { /* best-effort */ }
+        }
+    }
+}
+
+private fun readContactCardBytes(vaultDir: java.nio.file.Path, userUuidHex: String): ByteArray {
+    require(userUuidHex.length == 32) { "userUuidHex must be 32 chars" }
+    val h = userUuidHex
+    val hyphenated = "${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20, 32)}.card"
+    val path = vaultDir.resolve("contacts").resolve(hyphenated)
+    return java.nio.file.Files.readAllBytes(path)
+}
+
+private fun findWritableDir(
+    start: String,
+    writableVaultDirs: Map<String, java.nio.file.Path>,
+    vectors: JSONArray,
+): java.nio.file.Path? {
+    var current = start
+    while (true) {
+        writableVaultDirs[current]?.let { return it }
+        var parentAfter: String? = null
+        for (i in 0 until vectors.length()) {
+            val v = vectors.getJSONObject(i)
+            if (v.optString("name", null) == current) {
+                parentAfter = if (v.has("after")) v.getString("after") else null
+                break
+            }
+        }
+        current = parentAfter ?: return null
+    }
+}
+
+private fun findCacheAncestorName(
+    start: String,
+    cache: Map<String, OpenVaultOutput>,
+    vectors: JSONArray,
+): String? {
+    var current = start
+    while (true) {
+        if (cache.containsKey(current)) return current
+        var parentAfter: String? = null
+        for (i in 0 until vectors.length()) {
+            val v = vectors.getJSONObject(i)
+            if (v.optString("name", null) == current) {
+                parentAfter = if (v.has("after")) v.getString("after") else null
+                break
+            }
+        }
+        current = parentAfter ?: return null
+    }
+}
+
+private fun blockInputFromInputs(inputs: JSONObject): BlockInput {
+    val blockUuidHex = inputs.getString("block_uuid_hex")
+    val blockName = if (inputs.has("block_name")) inputs.getString("block_name") else ""
+    val recordsArr = if (inputs.has("records")) inputs.getJSONArray("records") else JSONArray()
+    val records = (0 until recordsArr.length()).map { i ->
+        val rec = recordsArr.getJSONObject(i)
+        val recordUuidHex = rec.getString("record_uuid_hex")
+        val fieldsArr = if (rec.has("fields")) rec.getJSONArray("fields") else JSONArray()
+        val fields = (0 until fieldsArr.length()).map { j ->
+            val f = fieldsArr.getJSONObject(j)
+            val fname = f.getString("name")
+            val ftype = f.getString("type")
+            val value: FieldInputValue = when (ftype) {
+                "text" -> FieldInputValue.Text(f.getString("value_utf8"))
+                "bytes" -> FieldInputValue.Bytes(decodeHex(f.getString("value_hex")))
+                else -> error("unknown field type: $ftype")
+            }
+            FieldInput(fname, value)
+        }
+        RecordInput(decodeHex(recordUuidHex), fields)
+    }
+    return BlockInput(decodeHex(blockUuidHex), blockName, records)
+}
+
+// Returns 16-byte UUID or null if input is the wrong length / missing.
+private fun uuidFromInputs(inputs: JSONObject, primary: String, bytes: String): ByteArray? {
+    val raw = when {
+        inputs.has(primary) -> inputs.getString(primary)
+        inputs.has(bytes) -> inputs.getString(bytes)
+        else -> return null
+    }
+    val data = decodeHex(raw)
+    return if (data.size == 16) data else null
+}
+
+private fun assertPostState(
+    name: String,
+    identity: UnlockedIdentity,
+    manifest: OpenVaultManifest,
+    expected: JSONObject,
+    check: (Boolean, String, String) -> Boolean,
+) {
+    val postState = expected.optJSONObject("post_state") ?: return
+    if (postState.has("block_count")) {
+        val bc = postState.getInt("block_count")
+        check(manifest.blockCount().toInt() == bc, name, "post_state.block_count mismatch (got ${manifest.blockCount()}, want $bc)")
+    }
+    var roundTripUuid: ByteArray? = null
+    if (postState.has("find_block_uuid_hex") && !postState.isNull("find_block_uuid_hex")) {
+        val hexStr = postState.getString("find_block_uuid_hex")
+        val uuidData = decodeHex(hexStr)
+        val summary = manifest.findBlock(uuidData)
+        if (summary == null) {
+            check(false, name, "post_state.find_block_uuid_hex=$hexStr not in manifest")
+        } else {
+            check(summary.blockUuid.contentEquals(uuidData), name, "post_state.find_block returned wrong uuid")
+            roundTripUuid = uuidData
+        }
+    }
+    if (postState.has("recipient_count")) {
+        val rc = postState.getInt("recipient_count")
+        val uuid = roundTripUuid
+        if (uuid == null) {
+            check(false, name, "post_state.recipient_count requires find_block_uuid_hex")
+            return
+        }
+        val summary = manifest.findBlock(uuid)
+        if (summary == null) {
+            check(false, name, "recipient_count: block not findable")
+            return
+        }
+        check(summary.recipientUuids.size == rc, name, "post_state.recipient_count mismatch (got ${summary.recipientUuids.size}, want $rc)")
+    }
+    if (postState.has("read_block")) {
+        val readPin = postState.getJSONObject("read_block")
+        val pinnedRecords = readPin.getJSONArray("records")
+        val uuid = roundTripUuid
+        if (uuid == null) {
+            check(false, name, "post_state.read_block requires find_block_uuid_hex")
+            return
+        }
+        try {
+            val output = readBlock(identity, manifest, uuid)
+            try {
+                check(output.recordCount().toInt() == pinnedRecords.length(), name, "post_state.read_block.record_count mismatch")
+                for (ri in 0 until pinnedRecords.length()) {
+                    val expRec = pinnedRecords.getJSONObject(ri)
+                    val rec = output.recordAt(ri.toULong())
+                    if (rec == null) {
+                        check(false, name, "post_state.read_block.record_at($ri) returned null")
+                        continue
+                    }
+                    try {
+                        expRec.optString("record_uuid_hex", null)?.let { wantUuid ->
+                            check(encodeHex(rec.recordUuid()) == wantUuid, name, "records[$ri].record_uuid mismatch")
+                        }
+                        expRec.optString("record_type", null)?.let { wantType ->
+                            check(rec.recordType() == wantType, name, "records[$ri].record_type mismatch")
+                        }
+                        if (expRec.has("tags")) {
+                            val expTags = expRec.getJSONArray("tags")
+                            val expTagsList = (0 until expTags.length()).map { expTags.getString(it) }
+                            check(rec.tags() == expTagsList, name, "records[$ri].tags mismatch")
+                        }
+                        if (expRec.has("fields")) {
+                            val expFields = expRec.getJSONArray("fields")
+                            check(rec.fieldCount().toInt() == expFields.length(), name, "records[$ri].field_count mismatch")
+                            for (fi in 0 until expFields.length()) {
+                                val expF = expFields.getJSONObject(fi)
+                                val fh = rec.fieldAt(fi.toULong())
+                                if (fh == null) {
+                                    check(false, name, "records[$ri].field_at($fi) returned null")
+                                    continue
+                                }
+                                try {
+                                    expF.optString("name", null)?.let { wantName ->
+                                        check(fh.name() == wantName, name, "records[$ri].fields[$fi].name mismatch")
+                                    }
+                                    expF.optString("type", null)?.let { ftype ->
+                                        when (ftype) {
+                                            "text" -> {
+                                                check(fh.isText(), name, "records[$ri].fields[$fi] expected text")
+                                                expF.optString("value_utf8", null)?.let { wantVal ->
+                                                    check(fh.exposeText() == wantVal, name, "records[$ri].fields[$fi].value_utf8 mismatch")
+                                                }
+                                            }
+                                            "bytes" -> {
+                                                check(fh.isBytes(), name, "records[$ri].fields[$fi] expected bytes")
+                                                expF.optString("value_hex", null)?.let { wantHex ->
+                                                    val actual = encodeHex(fh.exposeBytes() ?: ByteArray(0))
+                                                    check(actual == wantHex, name, "records[$ri].fields[$fi].value_hex mismatch")
+                                                }
+                                            }
+                                        }
+                                    }
+                                } finally {
+                                    fh.destroy()
+                                }
+                            }
+                        }
+                    } finally {
+                        rec.destroy()
+                    }
+                }
+            } finally {
+                output.destroy()
+            }
+        } catch (e: Throwable) {
+            check(false, name, "post_state.read_block threw $e")
+        }
+    }
+}
+
 // --- Main ---
 
 fun main() {
@@ -239,8 +477,9 @@ fun main() {
         exitProcess(1)
     }
 
-    if (kat.optInt("version", -1) != 1) {
-        System.err.println("error: KAT version must be 1 (got ${kat.opt("version")})")
+    val version = kat.optInt("version", -1)
+    if (version != 1 && version != 2) {
+        System.err.println("error: KAT version must be 1 or 2 (got ${kat.opt("version")})")
         exitProcess(1)
     }
 
@@ -260,6 +499,8 @@ fun main() {
     // and chained vectors report "predecessor did not produce a cacheable
     // Ok".
     val cache: MutableMap<String, OpenVaultOutput> = mutableMapOf()
+    val tempdirs: MutableList<java.nio.file.Path> = mutableListOf()
+    val writableVaultDirs: MutableMap<String, java.nio.file.Path> = mutableMapOf()
 
     fun check(ok: Boolean, vectorName: String, message: String): Boolean {
         if (ok) return true
@@ -415,6 +656,194 @@ fun main() {
                 }
             }
 
+            operation == "open_vault_with_password_writable" && after == null -> {
+                val vaultName = inputs.getString("vault_dir")
+                val src = java.nio.file.Paths.get(goldenVaultDir, vaultName)
+                val tmp = java.nio.file.Files.createTempDirectory("secretary_conf_v2_")
+                try {
+                    recursiveCopy(src, tmp)
+                } catch (e: Throwable) {
+                    check(false, name, "recursive copy failed: $e")
+                    cleanupTempVault(tmp)
+                    continue
+                }
+                tempdirs.add(tmp)
+                writableVaultDirs[name] = tmp
+                val password = resolvePassword(inputs, goldenVaultDir)
+                val folderPath = tmp.toString().toByteArray(Charsets.UTF_8)
+                try {
+                    val out = openVaultWithPassword(folderPath, password)
+                    handleOpenOk(out, expected, name, kind, cache, ::check)
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "save_block" && after != null -> {
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                // Synthesize InvalidArgument for non-16-byte device_uuid (matches uniffi behavior).
+                if (inputs.has("device_uuid_bytes_hex")) {
+                    val raw = decodeHex(inputs.getString("device_uuid_bytes_hex"))
+                    if (raw.size != 16) {
+                        if (kind != "err") {
+                            check(false, name, "expected err, got synthesized InvalidArgument")
+                        } else {
+                            val want = expected.optString("variant", "")
+                            check(want == "InvalidArgument", name, "variant mismatch (got InvalidArgument, expected $want)")
+                        }
+                        continue
+                    }
+                }
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (deviceUuid == null) {
+                    check(false, name, "device_uuid resolution failed")
+                    continue
+                }
+                val input = blockInputFromInputs(inputs)
+                val nowMs = inputs.getLong("now_ms").toULong()
+                try {
+                    saveBlock(cached.identity, cached.manifest, input, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "share_block" && after != null -> {
+                val writableDir = findWritableDir(after, writableVaultDirs, vectors)
+                if (writableDir == null) {
+                    check(false, name, "cannot find writable vault dir along after-chain from $after")
+                    continue
+                }
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                val blockUuid = uuidFromInputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex")
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (blockUuid == null || deviceUuid == null) {
+                    check(false, name, "uuid resolution failed")
+                    continue
+                }
+                val nowMs = inputs.getLong("now_ms").toULong()
+                val newRecipientHex = inputs.getString("new_recipient_user_uuid_hex")
+                val newRecipient = try {
+                    readContactCardBytes(writableDir, newRecipientHex)
+                } catch (e: Throwable) {
+                    check(false, name, "read new_recipient card failed: $e")
+                    continue
+                }
+                val existingCards = mutableListOf<ByteArray>()
+                val ownerBytes = try {
+                    cached.manifest.ownerCardBytes()
+                } catch (e: Throwable) {
+                    check(false, name, "owner_card_bytes threw $e")
+                    continue
+                }
+                if (ownerBytes == null) {
+                    check(false, name, "owner_card_bytes returned null")
+                    continue
+                }
+                existingCards.add(ownerBytes)
+                var extrasOk = true
+                if (inputs.has("existing_recipient_uuid_hexes")) {
+                    val extras = inputs.getJSONArray("existing_recipient_uuid_hexes")
+                    for (ei in 0 until extras.length()) {
+                        try {
+                            existingCards.add(readContactCardBytes(writableDir, extras.getString(ei)))
+                        } catch (e: Throwable) {
+                            check(false, name, "read extra existing-recipient card failed: $e")
+                            extrasOk = false
+                            break
+                        }
+                    }
+                }
+                if (!extrasOk) continue
+                try {
+                    shareBlock(cached.identity, cached.manifest, blockUuid, existingCards, newRecipient, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "trash_block" && after != null -> {
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                val blockUuid = uuidFromInputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex")
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (blockUuid == null || deviceUuid == null) {
+                    check(false, name, "uuid resolution failed")
+                    continue
+                }
+                val nowMs = inputs.getLong("now_ms").toULong()
+                try {
+                    trashBlock(cached.identity, cached.manifest, blockUuid, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "restore_block" && after != null -> {
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                val blockUuid = uuidFromInputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex")
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (blockUuid == null || deviceUuid == null) {
+                    check(false, name, "uuid resolution failed")
+                    continue
+                }
+                val nowMs = inputs.getLong("now_ms").toULong()
+                try {
+                    restoreBlock(cached.identity, cached.manifest, blockUuid, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
             else -> {
                 check(false, name, "unhandled operation '$operation' with after=${after?.let { "'$it'" } ?: "null"}")
             }
@@ -434,6 +863,10 @@ fun main() {
     // releases them at end-of-run — see issue #63.
     cache.values.forEach { it.destroy() }
     cache.clear()
+    for (tmp in tempdirs) {
+        cleanupTempVault(tmp)
+    }
+    tempdirs.clear()
 
     // --- Summary ---
     if (failures.isEmpty()) {
