@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "description": "C.1 sync dispatch KAT. Inputs: state_vault_uuid + state_highest_vector_clock + disk_vector_clock. Output: enum variant name + (where applicable) the new_state's highest_vector_clock_seen. Python clean-room replay scheduled for C.4 (cross-device convergence conformance).",
+  "vectors": [
+    {
+      "name": "equal_clocks_nothing_to_do",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "expected_outcome": "NothingToDo"
+    },
+    {
+      "name": "empty_state_empty_disk_nothing_to_do",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [],
+      "disk_vector_clock": [],
+      "expected_outcome": "NothingToDo"
+    },
+    {
+      "name": "empty_state_disk_present_applied_automatically",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 1 }
+      ],
+      "expected_outcome": "AppliedAutomatically",
+      "expected_new_state_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 1 }
+      ]
+    },
+    {
+      "name": "disk_strictly_ahead_applied_automatically",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 7 }
+      ],
+      "expected_outcome": "AppliedAutomatically",
+      "expected_new_state_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 7 }
+      ]
+    },
+    {
+      "name": "disk_adds_new_device_applied_automatically",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
+        { "device_uuid": "02020202020202020202020202020202", "counter": 3 }
+      ],
+      "expected_outcome": "AppliedAutomatically",
+      "expected_new_state_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
+        { "device_uuid": "02020202020202020202020202020202", "counter": 3 }
+      ]
+    },
+    {
+      "name": "disk_strictly_behind_rollback_rejected",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 9 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "expected_outcome": "RollbackRejected"
+    },
+    {
+      "name": "disk_missing_seen_device_rollback_rejected",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
+        { "device_uuid": "02020202020202020202020202020202", "counter": 3 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "expected_outcome": "RollbackRejected"
+    },
+    {
+      "name": "concurrent_disjoint_devices_fork_detected",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "02020202020202020202020202020202", "counter": 3 }
+      ],
+      "expected_outcome": "ForkDetected"
+    },
+    {
+      "name": "concurrent_overlapping_devices_fork_detected",
+      "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
+      "state_highest_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
+        { "device_uuid": "02020202020202020202020202020202", "counter": 7 }
+      ],
+      "disk_vector_clock": [
+        { "device_uuid": "01010101010101010101010101010101", "counter": 8 },
+        { "device_uuid": "02020202020202020202020202020202", "counter": 4 }
+      ],
+      "expected_outcome": "ForkDetected"
+    }
+  ]
+}
