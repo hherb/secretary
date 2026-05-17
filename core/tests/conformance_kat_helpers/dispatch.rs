@@ -209,8 +209,8 @@ fn uuid_from_inputs(
         .unwrap_or_else(|| {
             panic!("inputs need {primary_field} or {bytes_field} (vector dispatch error)")
         });
-    let bytes = hex::decode(raw)
-        .unwrap_or_else(|e| panic!("{label}: {primary_field} hex decode: {e}"));
+    let bytes =
+        hex::decode(raw).unwrap_or_else(|e| panic!("{label}: {primary_field} hex decode: {e}"));
     if bytes.len() != 16 {
         return Err(BridgeOrSyntheticErr::Synthetic {
             variant: "InvalidArgument",
@@ -298,7 +298,10 @@ fn block_input_from_inputs(inputs: &serde_json::Value) -> BlockInput {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    RecordInput { record_uuid, fields }
+                    RecordInput {
+                        record_uuid,
+                        fields,
+                    }
                 })
                 .collect()
         })
@@ -369,15 +372,15 @@ pub fn run_save_block(
     )?;
     // If the vector pinned block_uuid_bytes_hex (wrong-length test),
     // synthesize InvalidArgument before building the BlockInput.
-    if let Some(raw) = inputs
-        .get("block_uuid_bytes_hex")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(raw) = inputs.get("block_uuid_bytes_hex").and_then(|v| v.as_str()) {
         let bytes = hex::decode(raw).expect("block_uuid_bytes_hex decode");
         if bytes.len() != 16 {
             return Err(BridgeOrSyntheticErr::Synthetic {
                 variant: "InvalidArgument",
-                detail: format!("input.block_uuid must be exactly 16 bytes, got {}", bytes.len()),
+                detail: format!(
+                    "input.block_uuid must be exactly 16 bytes, got {}",
+                    bytes.len()
+                ),
             });
         }
     }
@@ -406,8 +409,18 @@ pub fn run_share_block(
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
     writable_vault_dir: &std::path::Path,
 ) -> Result<(), BridgeOrSyntheticErr> {
-    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
-    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let block_uuid = uuid_from_inputs(
+        inputs,
+        "block_uuid_hex",
+        "block_uuid_bytes_hex",
+        "block_uuid",
+    )?;
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
     let now_ms = now_ms_from_inputs(inputs);
 
     // existing_recipient_cards: start with the manifest's owner card,
@@ -455,8 +468,18 @@ pub fn run_trash_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
 ) -> Result<(), BridgeOrSyntheticErr> {
-    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
-    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let block_uuid = uuid_from_inputs(
+        inputs,
+        "block_uuid_hex",
+        "block_uuid_bytes_hex",
+        "block_uuid",
+    )?;
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
     let now_ms = now_ms_from_inputs(inputs);
     secretary_ffi_bridge::trash_block(
         &cached.identity,
@@ -472,8 +495,18 @@ pub fn run_restore_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
 ) -> Result<(), BridgeOrSyntheticErr> {
-    let block_uuid = uuid_from_inputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex", "block_uuid")?;
-    let device_uuid = uuid_from_inputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex", "device_uuid")?;
+    let block_uuid = uuid_from_inputs(
+        inputs,
+        "block_uuid_hex",
+        "block_uuid_bytes_hex",
+        "block_uuid",
+    )?;
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
     let now_ms = now_ms_from_inputs(inputs);
     secretary_ffi_bridge::restore_block(
         &cached.identity,
@@ -536,13 +569,15 @@ pub fn assert_post_state(
             Some(hex_str) => {
                 let bytes = hex::decode(hex_str)
                     .unwrap_or_else(|e| panic!("{label}: find_block_uuid_hex decode: {e}"));
-                assert_eq!(bytes.len(), 16, "{label}: find_block_uuid_hex must be 16 bytes");
+                assert_eq!(
+                    bytes.len(),
+                    16,
+                    "{label}: find_block_uuid_hex must be 16 bytes"
+                );
                 let mut uuid = [0u8; 16];
                 uuid.copy_from_slice(&bytes);
                 let summary = cached.manifest.find_block(&uuid).unwrap_or_else(|| {
-                    panic!(
-                        "{label}: post_state.find_block_uuid_hex={hex_str} not in manifest"
-                    )
+                    panic!("{label}: post_state.find_block_uuid_hex={hex_str} not in manifest")
                 });
                 assert_eq!(
                     hex::encode(summary.block_uuid),
@@ -569,15 +604,11 @@ pub fn assert_post_state(
         );
     }
     if let Some(read_pin) = &pinned.read_block {
-        let uuid = round_trip_uuid.expect(
-            "post_state.read_block requires post_state.find_block_uuid_hex to be set",
-        );
-        let output = secretary_ffi_bridge::record::read_block(
-            &cached.identity,
-            &cached.manifest,
-            &uuid,
-        )
-        .unwrap_or_else(|e| panic!("{label}: round-trip read_block failed: {e:?}"));
+        let uuid = round_trip_uuid
+            .expect("post_state.read_block requires post_state.find_block_uuid_hex to be set");
+        let output =
+            secretary_ffi_bridge::record::read_block(&cached.identity, &cached.manifest, &uuid)
+                .unwrap_or_else(|e| panic!("{label}: round-trip read_block failed: {e:?}"));
         assert_read_block_records(label, &output, &read_pin.records);
     }
 }

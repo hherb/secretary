@@ -74,12 +74,8 @@ use std::path::Path;
 /// Recursively copy `src` into `dst`. Mirrors the established pattern
 /// in `ffi/secretary-ffi-bridge/tests/save_block.rs` (`copy_dir_recursive`).
 fn copy_dir_recursive(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap_or_else(|e| {
-        panic!(
-            "failed to create dst dir {}: {e}",
-            dst.display()
-        )
-    });
+    std::fs::create_dir_all(dst)
+        .unwrap_or_else(|e| panic!("failed to create dst dir {}: {e}", dst.display()));
     for entry in std::fs::read_dir(src)
         .unwrap_or_else(|e| panic!("failed to read src dir {}: {e}", src.display()))
     {
@@ -91,11 +87,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
             copy_dir_recursive(&from, &to);
         } else {
             std::fs::copy(&from, &to).unwrap_or_else(|e| {
-                panic!(
-                    "failed to copy {} → {}: {e}",
-                    from.display(),
-                    to.display()
-                )
+                panic!("failed to copy {} → {}: {e}", from.display(), to.display())
             });
         }
     }
@@ -136,10 +128,6 @@ pub fn read_contact_card_bytes(vault_dir: &Path, user_uuid_hex: &str) -> Vec<u8>
         &h[20..32]
     );
     let path = vault_dir.join("contacts").join(&hyphenated);
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read contact card {}: {e}",
-            path.display()
-        )
-    })
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("failed to read contact card {}: {e}", path.display()))
 }
