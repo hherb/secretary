@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-17 (B.6 v2 lifecycle conformance KAT)
-**Status:** Branch `design/b6-v2-lifecycle-conformance-kat` carries 12 commits on top of `4e8f7fa` (PR #65 merge). Gauntlet all green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance + freshness PASS (96 / 0 / 2) / Swift smoke 38 / **Swift conformance 20/20** / Kotlin smoke 39 / **Kotlin conformance 20/20**. PR not yet opened — Task 16 is the next action.
+**Status:** PR [#66](https://github.com/hherb/secretary/pull/66) open against `main`. Branch `design/b6-v2-lifecycle-conformance-kat` carries **14 commits** on top of `4e8f7fa` (PR #65 merge) — 13 from the v2 design + plan + implementation, plus 1 post-review fix commit `22d5ff2` covering I1 + I2 + M2 from the final code review. Two follow-up issues filed (#67 for M3 file-size drift, #68 for M4 record_uuid panic-on-wrong-length). Gauntlet all green: 642 cargo + 10 ignored / clippy clean / fmt OK / Python conformance + freshness PASS (96 / 0 / 2) / Swift smoke 38 / **Swift conformance 20/20** / Kotlin smoke 39 / **Kotlin conformance 20/20**.
 
 ## (1) What we shipped this session
 
@@ -19,6 +19,8 @@
 | `d843ee0` | test(conformance-kat) | Swift conformance runner extended with 5 new dispatch cases + `recursiveCopy` + `readContactCardBytes` + `assertPostState` + chain-walkers. Version check bumped to `(1, 2).contains()`. Implementer caught a `break`-out-of-`for`-vs-`switch` bug in the plan's `existing_recipient_uuid_hexes` loop. **Swift conformance: 20/20 PASS.** |
 | `9b7c808` | test(conformance-kat) | Kotlin conformance runner extended with the same shape, using `java.nio.file.Files.walk` + `Path` + `JSONObject.getLong("now_ms")`. **Kotlin conformance: 20/20 PASS.** |
 | `3f6ade1` | docs(roadmap) | ROADMAP: Sub-project B progress line gains `B.6 v2 conformance KAT — lifecycle ✅`. Line 34 paragraph rewritten to reflect v2 closure + the determinism reframing (cross-language parity doesn't require AEAD-nonce byte pinning since all three host runners share the same Rust bridge). |
+| `8637a49` | docs | NEXT_SESSION.md + frozen handoff snapshot, committed inside the PR per the standing rule. |
+| `22d5ff2` | fix(conformance-kat) | Post-review fixes from the final full-PR code-quality review. **I1**: Swift + Kotlin runners no longer short-circuit `save_block_invalid_input` — they now pass the 1-byte device_uuid through to `saveBlock()` so the real uniffi-namespace `VaultException.InvalidArgument` fires (which is exactly the surface the vector exists to pin). **I2**: dropped the unimplemented "find_block_uuid_hex: null asserts absent" capability — it was documented in spec §§4.2/8 but never wired (Rust panicked, Swift/Kotlin silently skipped); the `block_count` assertion already covers absence-after-trash (trash_block_happy pins 2→1, which is only reachable if find_block returns None). `PostState.find_block_uuid_hex: Option<Option<String>>` → `Option<String>`. Spec doc §§2/4.2/5.3/8 updated. **M2**: cycle-guards on `find_writable_dir` and `find_cache_ancestor_name` in all three runners — bounded by `vectors.len()` so an authoring-error `after:` cycle fails loudly instead of hanging CI. Final gauntlet still 20/20 on Swift + Kotlin. |
 
 ### Headline design decision: shape + round-trip, not bytes
 
@@ -53,36 +55,16 @@ Calibration: full subagent-driven (implementer + spec + quality per task) would 
 
 ## (2) What's next
 
-### Task 16 — push branch + open PR (THIS IS THE OUTSTANDING IMMEDIATE ACTION)
+### Wait for PR #66 review + merge
 
-Branch is `design/b6-v2-lifecycle-conformance-kat`, 12 commits ahead of main. Not yet pushed. PR title: `test(conformance-kat): B.6 v2 lifecycle KAT (closes #59)`. The PR body template is in the implementation plan's Task 16 section.
+PR [#66](https://github.com/hherb/secretary/pull/66) is open against `main` with 14 commits. CI gates (CodeQL) should pass; the local gauntlet is green. Once merged, run the standard cleanup:
 
 ```bash
 cd /Users/hherb/src/secretary
-git push -u origin design/b6-v2-lifecycle-conformance-kat
-gh pr create --base main --head design/b6-v2-lifecycle-conformance-kat \
-  --title "test(conformance-kat): B.6 v2 lifecycle KAT (closes #59)" \
-  --body "$(cat <<'EOF'
-## Summary
-
-Extends `core/tests/data/conformance_kat.json` (v1, 11 read-only vectors) with 9 lifecycle vectors covering `save_block` / `share_block` / `trash_block` / `restore_block`. Each replay engine (Rust bridge, Swift uniffi, Kotlin uniffi) gains dispatch for the 5 new operations + shape + round-trip assertions. Closes #59.
-
-### Headline design decision: shape + round-trip, no byte-level pinning
-
-All three host runners share the same Rust bridge crate, so AEAD nonce bytes cannot diverge by binding — cross-language parity does not require pinning on-disk bytes. The replay pins typed Ok/Err + post-call manifest shape (`block_count`, `find_block`, `recipient_count` from `BlockSummary.recipient_uuids.len()`) + round-trip read after `save_block_insert`. **No bridge crate changes; v2 is replay-side-only.** See the design doc §1.1.
-
-## Test plan
-
-- [x] `cargo test --release --workspace --no-fail-fast` → 642 + 10 (unchanged; one `#[test]` runs all 20 vectors)
-- [x] `cargo clippy --release --workspace --tests -- -D warnings` → clean
-- [x] `cargo fmt --all -- --check` → OK
-- [x] `uv run core/tests/python/conformance.py` → PASS
-- [x] `bash ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh` → 20/20 PASS
-- [x] `bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh` → 20/20 PASS
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
+git checkout main
+git pull --ff-only origin main
+git fetch --prune origin
+git branch -D design/b6-v2-lifecycle-conformance-kat   # local cleanup after [gone] on remote
 ```
 
 ### After PR merges — Sub-project C kickoff
@@ -109,7 +91,12 @@ B.6 design arc closes when this PR merges. Next forward-progress chunk is **Sub-
 - **Issue #37** — design discipline reminder for Sub-project C; not actionable until C starts.
 - **Issue #38** — proptest case budget (shared writable-vault fixture); not actionable until C.
 - **Issue #45** — three `pub(crate) #[allow(dead_code)]` accessors on `OpenVaultManifest`; revisit when C starts.
-- **Issue #59** — closed by this session's PR when it merges.
+- **Issue #59** — closed by this session's PR #66 when it merges.
+
+### Issues filed this session (B.6 v2 follow-ups)
+
+- **Issue [#67](https://github.com/hherb/secretary/issues/67)** — split conformance KAT helper files past 500-LOC threshold. Three files affected: `core/tests/conformance_kat_helpers/dispatch.rs` (615 lines), `ffi/secretary-ffi-uniffi/tests/swift/conformance.swift` (~766), `ffi/secretary-ffi-uniffi/tests/kotlin/Conformance.kt` (~880). Not blocking; pick up before the next test-infrastructure expansion.
+- **Issue [#68](https://github.com/hherb/secretary/issues/68)** — `block_input_from_inputs` panics on wrong-length `record_uuid_hex`. No vector exercises this path today, but a future v3 negative-path vector would crash instead of synthesizing `InvalidArgument`. Defensive fix: replace inline `copy_from_slice` with a `uuid_from_inputs`-style helper.
 
 ## (4) Exact commands to resume
 
@@ -158,7 +145,7 @@ gh issue list --state open
 
 ## Closing inventory
 
-- **Branch state on close:** `design/b6-v2-lifecycle-conformance-kat` carries 12 commits on top of `4e8f7fa` — 3 docs (spec + UUID fix + plan) + 9 implementation/test commits. PR not yet opened.
+- **Branch state on close:** `design/b6-v2-lifecycle-conformance-kat` carries **14 commits** on top of `4e8f7fa` — 3 docs (spec + UUID fix + plan) + 9 implementation/test commits + 1 handoff commit (`8637a49`) + 1 post-review fix commit (`22d5ff2`). PR [#66](https://github.com/hherb/secretary/pull/66) open against `main`.
 - **Workspace tests:** **642 cargo + 10 ignored** (unchanged — `replay_conformance_kat` is one `#[test]` running 20 vectors internally; the new vectors don't add `#[test]` entries).
 - **Per-binding conformance counts:** Swift `20/20 PASS` (was 11/11), Kotlin `20/20 PASS` (was 11/11), Rust `replay_conformance_kat ... ok`.
 - **README:** unchanged (B.6 is a test harness, not a new FFI surface — same convention as B.6 v1).
@@ -166,5 +153,5 @@ gh issue list --state open
 - **CLAUDE.md:** unchanged (the run_conformance.sh entries already documented are unchanged; same shell entry points, new vectors).
 - **Files created this session:** [`docs/superpowers/specs/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat-design.md`](docs/superpowers/specs/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat-design.md), [`docs/superpowers/plans/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat.md`](docs/superpowers/plans/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat.md), [`NEXT_SESSION.md`](NEXT_SESSION.md) (this file, overwritten), [`docs/handoffs/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat.md`](docs/handoffs/2026-05-17-ffi-b6-v2-lifecycle-conformance-kat.md) (frozen archive of this file).
 - **Files modified this session:** [`core/tests/data/conformance_kat.json`](core/tests/data/conformance_kat.json) (v1→v2 + 9 vectors), [`core/tests/conformance_kat.rs`](core/tests/conformance_kat.rs) (replay loop + generator + helpers), [`core/tests/conformance_kat_helpers/types.rs`](core/tests/conformance_kat_helpers/types.rs) (Operation+5, PostState, ExpectedReadBlock), [`core/tests/conformance_kat_helpers/dispatch.rs`](core/tests/conformance_kat_helpers/dispatch.rs) (5 run_*, assert_post_state, factored records check), [`core/tests/conformance_kat_helpers/fixtures.rs`](core/tests/conformance_kat_helpers/fixtures.rs) (tempdir copy + contact-card reader), [`ffi/secretary-ffi-uniffi/tests/swift/conformance.swift`](ffi/secretary-ffi-uniffi/tests/swift/conformance.swift) (5 dispatch cases + helpers), [`ffi/secretary-ffi-uniffi/tests/kotlin/Conformance.kt`](ffi/secretary-ffi-uniffi/tests/kotlin/Conformance.kt) (5 dispatch cases + helpers), [`ROADMAP.md`](ROADMAP.md) (B.6 v2 ✅ + paragraph).
-- **Issues filed this session:** none.
-- **PR to open:** `test(conformance-kat): B.6 v2 lifecycle KAT (closes #59)` against `main`.
+- **Issues filed this session:** [#67](https://github.com/hherb/secretary/issues/67) (file-size threshold drift on conformance helper files); [#68](https://github.com/hherb/secretary/issues/68) (`block_input_from_inputs` panic on wrong-length `record_uuid_hex`). Both are non-blocking follow-ups surfaced by the post-implementation code review.
+- **PR open:** [#66 `test(conformance-kat): B.6 v2 lifecycle KAT (closes #59)`](https://github.com/hherb/secretary/pull/66) against `main`. 14 commits.
