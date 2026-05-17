@@ -352,6 +352,49 @@
         "kind": "err",
         "variant": "BlockNotInTrash"
       }
+    },
+    {
+      "name": "restore_block_already_live",
+      "description": "Re-restores the same uuid that was just restored by restore_block_happy. The block is currently live in the manifest, so the bridge returns BlockUuidAlreadyLive (live-collision path). Chains after restore_block_not_in_trash (error vector — state unchanged from restore_block_happy: block_count=2, abababab... live) to keep the lifecycle chain linear.",
+      "operation": "restore_block",
+      "after": "restore_block_not_in_trash",
+      "inputs": {
+        "block_uuid_hex": "abababababababababababababababab",
+        "device_uuid_hex": "07070707070707070707070707070707",
+        "now_ms": 1715000007000
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "BlockUuidAlreadyLive"
+      }
+    },
+    {
+      "name": "save_block_invalid_record_uuid",
+      "description": "save_block with a 1-byte record_uuid (must be 16). Rust dispatch synthesizes InvalidArgument at the test layer (the bridge crate's RecordInput is type-bounded to [u8; 16] so wrong length never reaches it); Swift + Kotlin pass the raw bytes through and uniffi's namespace-layer convert_record_input surfaces real VaultError.InvalidArgument. Symmetric with save_block_invalid_input (which exercises the device_uuid length-check path). Chains after open_writable_happy; pre-mutation error means downstream-chain state is unaffected.",
+      "operation": "save_block",
+      "after": "open_writable_happy",
+      "inputs": {
+        "block_uuid_hex": "cccccccccccccccccccccccccccccccc",
+        "block_name": "x",
+        "device_uuid_hex": "07070707070707070707070707070707",
+        "now_ms": 1715000008000,
+        "records": [
+          {
+            "record_uuid_bytes_hex": "cd",
+            "fields": [
+              {
+                "name": "title",
+                "type": "text",
+                "value_utf8": "irrelevant — error fires before save_block is invoked"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "InvalidArgument"
+      }
     }
   ]
 }
