@@ -30,6 +30,12 @@ pub enum Operation {
     OpenVaultWithPassword,
     OpenVaultWithRecovery,
     ReadBlock,
+    // v2 lifecycle ops — issue #59.
+    OpenVaultWithPasswordWritable,
+    SaveBlock,
+    ShareBlock,
+    TrashBlock,
+    RestoreBlock,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +61,9 @@ pub struct OkPayload {
     // read_block records:
     #[serde(default)]
     pub records: Option<Vec<ExpectedRecord>>,
+    // v2 lifecycle ops:
+    #[serde(default)]
+    pub post_state: Option<PostState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +83,37 @@ pub struct ExpectedField {
     pub value_utf8: Option<String>,
     #[serde(default)]
     pub value_hex: Option<String>,
+}
+
+/// Post-call manifest-shape assertions for v2 write ops. All fields
+/// optional; the replay engine asserts only what the vector pins.
+#[derive(Debug, Deserialize, Default)]
+pub struct PostState {
+    /// Required on every v2 Ok post_state. Pins `manifest.block_count()`.
+    #[serde(default)]
+    pub block_count: Option<u64>,
+    /// `"<hex>"` asserts `manifest.find_block(hex).is_some()` and
+    /// hex-equals the returned summary's `block_uuid`. Absent / JSON null
+    /// asserts nothing — absence-after-trash is already covered by
+    /// `block_count` (e.g. trash_block_happy pins block_count 2→1; the
+    /// only way to reach block_count==1 is for find_block(new_uuid) to
+    /// be None).
+    #[serde(default)]
+    pub find_block_uuid_hex: Option<String>,
+    /// share_block only. Pins `manifest.find_block(uuid).recipient_uuids.len()`.
+    #[serde(default)]
+    pub recipient_count: Option<u64>,
+    /// save_block_*_happy only. Triggers a chained `read_block(uuid)`
+    /// after the op and asserts records bit-for-bit.
+    #[serde(default)]
+    pub read_block: Option<ExpectedReadBlock>,
+}
+
+/// The round-trip read_block payload pinned post-save. Same `records`
+/// shape that v1's `OkPayload::records` carries.
+#[derive(Debug, Deserialize)]
+pub struct ExpectedReadBlock {
+    pub records: Vec<ExpectedRecord>,
 }
 
 /// Internal wrapper letting `run_read_block` surface either a real
