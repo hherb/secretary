@@ -47,9 +47,7 @@ impl SyncState {
 
 /// Shared validator used by `SyncState::new` and the CBOR decoder.
 /// Returns `InvalidArgument` if entries are unsorted or duplicated.
-pub(crate) fn validate_clock_canonical(
-    entries: &[VectorClockEntry],
-) -> Result<(), SyncError> {
+pub(crate) fn validate_clock_canonical(entries: &[VectorClockEntry]) -> Result<(), SyncError> {
     for pair in entries.windows(2) {
         match pair[0].device_uuid.cmp(&pair[1].device_uuid) {
             std::cmp::Ordering::Less => continue,
@@ -60,9 +58,8 @@ pub(crate) fn validate_clock_canonical(
             }
             std::cmp::Ordering::Greater => {
                 return Err(SyncError::InvalidArgument {
-                    detail:
-                        "highest_vector_clock_seen entries not sorted ascending by device_uuid"
-                            .into(),
+                    detail: "highest_vector_clock_seen entries not sorted ascending by device_uuid"
+                        .into(),
                 });
             }
         }
@@ -106,11 +103,10 @@ impl SyncState {
                         Value::Integer(e.counter.into()),
                     ),
                 ];
-                let sorted = canonical_sort_entries(&inner).map_err(|err| {
-                    SyncError::StateEncodeFailed {
+                let sorted =
+                    canonical_sort_entries(&inner).map_err(|err| SyncError::StateEncodeFailed {
                         detail: format!("{err}"),
-                    }
-                })?;
+                    })?;
                 Ok(Value::Map(sorted))
             })
             .collect();
@@ -136,11 +132,10 @@ impl SyncState {
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SyncError> {
         use ciborium::value::Value;
 
-        let value: Value = ciborium::de::from_reader(bytes).map_err(|e| {
-            SyncError::StateDecodeFailed {
+        let value: Value =
+            ciborium::de::from_reader(bytes).map_err(|e| SyncError::StateDecodeFailed {
                 detail: format!("CBOR parse: {e}"),
-            }
-        })?;
+            })?;
         let map = match value {
             Value::Map(m) => m,
             _ => {
@@ -211,9 +206,7 @@ impl SyncState {
     }
 }
 
-fn decode_vector_clock_entry(
-    value: ciborium::value::Value,
-) -> Result<VectorClockEntry, SyncError> {
+fn decode_vector_clock_entry(value: ciborium::value::Value) -> Result<VectorClockEntry, SyncError> {
     use ciborium::value::Value;
 
     let map = match value {
@@ -257,9 +250,11 @@ fn decode_vector_clock_entry(
             }
             VECTOR_CLOCK_ENTRY_KEY_COUNTER => {
                 let n: u64 = match v {
-                    Value::Integer(i) => i.try_into().map_err(|_| SyncError::StateDecodeFailed {
-                        detail: "counter does not fit in u64".into(),
-                    })?,
+                    Value::Integer(i) => {
+                        i.try_into().map_err(|_| SyncError::StateDecodeFailed {
+                            detail: "counter does not fit in u64".into(),
+                        })?
+                    }
                     _ => {
                         return Err(SyncError::StateDecodeFailed {
                             detail: "counter is not a CBOR integer".into(),

@@ -36,9 +36,7 @@ const REWRITE_NONCE_STEM: [u8; AEAD_NONCE_LEN] = [
 ///
 /// Returns the temp folder path; the caller is responsible for keeping
 /// the `tempfile::TempDir` alive for the duration of the test.
-pub fn fresh_vault_with_clock(
-    new_clock: Vec<VectorClockEntry>,
-) -> (PathBuf, tempfile::TempDir) {
+pub fn fresh_vault_with_clock(new_clock: Vec<VectorClockEntry>) -> (PathBuf, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let dest = tmp.path().to_path_buf();
     recursive_copy(Path::new(GOLDEN_VAULT_FOLDER), &dest);

@@ -91,10 +91,9 @@ fn replay_sync_kat() {
             }
             ("ForkDetected", SyncOutcome::ForkDetected { .. }) => {}
             ("RollbackRejected", SyncOutcome::RollbackRejected(RollbackEvidence { .. })) => {}
-            (expected, actual) => panic!(
-                "vector {} expected {} got {:?}",
-                v.name, expected, actual
-            ),
+            (expected, actual) => {
+                panic!("vector {} expected {} got {:?}", v.name, expected, actual)
+            }
         }
     }
 

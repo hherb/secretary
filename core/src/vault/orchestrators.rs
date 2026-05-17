@@ -35,7 +35,9 @@ use crate::crypto::sig::{
 };
 use crate::identity::card::{ContactCard, CARD_VERSION_V1};
 use crate::identity::fingerprint::fingerprint;
-use crate::unlock::{self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity};
+use crate::unlock::{
+    self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity,
+};
 
 use super::{block, io, manifest};
 use super::{
@@ -491,12 +493,8 @@ pub fn open_vault(
     // `read_vault_manifest` so a caller that already holds an
     // UnlockedIdentity does not re-run Argon2 just to inspect the
     // manifest body.
-    let (owner_card, manifest_body, manifest_file) = read_and_verify_manifest(
-        folder,
-        &vault_toml_bytes,
-        &unlocked,
-        local_highest_clock,
-    )?;
+    let (owner_card, manifest_body, manifest_file) =
+        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
 
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,

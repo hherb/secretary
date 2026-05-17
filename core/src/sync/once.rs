@@ -38,12 +38,11 @@ pub fn sync_once(
 ) -> Result<SyncOutcome, SyncError> {
     // Step 1: vault.toml UUID cross-check.
     let vault_toml_path = vault_folder.join(VAULT_TOML_FILENAME);
-    let vault_toml_string = std::fs::read_to_string(&vault_toml_path).map_err(|e| {
-        SyncError::Io {
+    let vault_toml_string =
+        std::fs::read_to_string(&vault_toml_path).map_err(|e| SyncError::Io {
             context: "failed to read vault.toml",
             source: e,
-        }
-    })?;
+        })?;
     // Fold path: VaultTomlError → UnlockError::MalformedVaultToml → VaultError::Unlock
     // → SyncError::Vault. The chain preserves the typed error at the umbrella surface
     // (anti-conflation discipline — see core/src/unlock/mod.rs:UnlockError).

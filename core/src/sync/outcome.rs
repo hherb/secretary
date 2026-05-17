@@ -49,7 +49,9 @@ mod tests {
     fn applied_automatically_eq_when_new_state_matches() {
         let s = SyncState::empty([1u8; 16]);
         assert_eq!(
-            SyncOutcome::AppliedAutomatically { new_state: s.clone() },
+            SyncOutcome::AppliedAutomatically {
+                new_state: s.clone()
+            },
             SyncOutcome::AppliedAutomatically { new_state: s },
         );
     }

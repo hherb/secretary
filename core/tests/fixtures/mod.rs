@@ -27,8 +27,8 @@ fn inputs_path() -> PathBuf {
 /// Loads the fixture password from `golden_vault_001_inputs.json` and
 /// wraps it in a `SecretBytes` for `open_with_password`.
 pub fn golden_vault_001_password() -> SecretBytes {
-    let raw = std::fs::read_to_string(inputs_path())
-        .expect("golden_vault_001_inputs.json must exist");
+    let raw =
+        std::fs::read_to_string(inputs_path()).expect("golden_vault_001_inputs.json must exist");
     let inputs: Inputs =
         serde_json::from_str(&raw).expect("golden_vault_001_inputs.json must be valid JSON");
     SecretBytes::new(inputs.password.into_bytes())

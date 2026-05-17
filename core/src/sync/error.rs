@@ -55,7 +55,10 @@ mod tests {
         let err = SyncError::StateDecodeFailed {
             detail: "trailing bytes".into(),
         };
-        assert_eq!(format!("{err}"), "SyncState CBOR decode failed: trailing bytes");
+        assert_eq!(
+            format!("{err}"),
+            "SyncState CBOR decode failed: trailing bytes"
+        );
     }
 
     #[test]
