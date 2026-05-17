@@ -21,21 +21,22 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // =============================================================================
 
     // Assertion 16: open_vault_with_password success — identity + manifest both populated.
+    // Chained .use { } cleanup matches the bytes-in idiom (SmokeBytesIn.kt:41-56)
+    // and guarantees both handles close even if displayName() / blockCount() / check()
+    // throws — the prior sequential-cleanup pattern leaked both handles on exception.
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
         val out = openVaultWithPassword(folderPath, env.password001)
-        val identity = out.identity
-        val manifest = out.manifest
-        val displayName = identity.displayName()
-        val blockCount = manifest.blockCount()
-        check(
-            displayName == EXPECTED_DISPLAY_NAME && blockCount > 0UL,
-            "open_vault_with_password success → displayName=\"$displayName\", blockCount=$blockCount",
-        )
-        identity.wipe()
-        manifest.wipe()
-        identity.close()
-        manifest.close()
+        out.identity.use { identity ->
+            out.manifest.use { manifest ->
+                val displayName = identity.displayName()
+                val blockCount = manifest.blockCount()
+                check(
+                    displayName == EXPECTED_DISPLAY_NAME && blockCount > 0UL,
+                    "open_vault_with_password success → displayName=\"$displayName\", blockCount=$blockCount",
+                )
+            }
+        }
     } catch (e: Throwable) {
         check(false, "open_vault_with_password success threw $e, expected to succeed")
     }
@@ -79,21 +80,20 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // `golden_vault_001_inputs.json` via `phraseFromInputs`.
 
     // Assert 36: open_vault_with_recovery success — identity + manifest both populated.
+    // Same chained-.use { } cleanup as assert 16 above — see that comment.
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
         val out = openVaultWithRecovery(folderPath, env.phrase001)
-        val identity = out.identity
-        val manifest = out.manifest
-        val displayName = identity.displayName()
-        val blockCount = manifest.blockCount()
-        check(
-            displayName == EXPECTED_DISPLAY_NAME && blockCount > 0UL,
-            "open_vault_with_recovery success → displayName=\"$displayName\", blockCount=$blockCount",
-        )
-        identity.wipe()
-        manifest.wipe()
-        identity.close()
-        manifest.close()
+        out.identity.use { identity ->
+            out.manifest.use { manifest ->
+                val displayName = identity.displayName()
+                val blockCount = manifest.blockCount()
+                check(
+                    displayName == EXPECTED_DISPLAY_NAME && blockCount > 0UL,
+                    "open_vault_with_recovery success → displayName=\"$displayName\", blockCount=$blockCount",
+                )
+            }
+        }
     } catch (e: Throwable) {
         check(false, "open_vault_with_recovery success threw $e, expected to succeed")
     }
