@@ -6,28 +6,30 @@ use std::path::Path;
 use crate::sync::error::SyncError;
 use crate::sync::outcome::{RollbackEvidence, SyncOutcome};
 use crate::sync::state::SyncState;
-use crate::unlock::{vault_toml, UnlockedIdentity};
+use crate::unlock::UnlockedIdentity;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::conflict::{clock_relation, ClockRelation};
 use crate::vault::read_vault_manifest;
-
-const VAULT_TOML_FILENAME: &str = "vault.toml";
 
 /// Reconcile one local vault folder against caller-persisted state.
 ///
 /// See `docs/superpowers/specs/2026-05-17-c1-sync-detection-design.md`.
 ///
-/// 1. Reads `<folder>/vault.toml` and cross-checks its `vault_uuid`
-///    against `state.vault_uuid`. Mismatch → [`SyncError::VaultUuidMismatch`]
-///    before any unlock work.
-/// 2. Calls [`crate::vault::read_vault_manifest`] with the caller-held
+/// 1. Calls [`crate::vault::read_vault_manifest`] with the caller-held
 ///    `&UnlockedIdentity` to read + verify-and-decrypt the manifest
-///    body without re-running Argon2.
+///    body without re-running Argon2. The body's `vault_uuid` is bound
+///    to the §4 manifest header (AEAD-AAD + §8 hybrid signature) and the
+///    body↔`vault.toml` `[kdf]` cross-check inside `read_vault_manifest`
+///    transitively authenticates `vault.toml`'s `vault_uuid` against the
+///    same signed envelope, so a single authenticated reading is enough.
+/// 2. Cross-checks the authenticated `manifest.vault_uuid` against
+///    `state.vault_uuid`. Mismatch → [`SyncError::VaultUuidMismatch`].
 /// 3. Computes the [`ClockRelation`] between `state.highest_vector_clock_seen`
 ///    and the disk manifest's `vector_clock`, then dispatches to the
 ///    matching [`SyncOutcome`] variant.
 ///
-/// `_now_ms` is unused in C.1 phase 1; the parameter is reserved for
+/// `_now_ms` is **currently unused** in C.1 phase 1 — pass any `u64`
+/// (callers conventionally pass `0`). The parameter is reserved for
 /// C.1.1's merge timestamps so callers can wire the value through
 /// without an API break later.
 pub fn sync_once(
@@ -36,34 +38,26 @@ pub fn sync_once(
     state: &SyncState,
     _now_ms: u64,
 ) -> Result<SyncOutcome, SyncError> {
-    // Step 1: vault.toml UUID cross-check.
-    let vault_toml_path = vault_folder.join(VAULT_TOML_FILENAME);
-    let vault_toml_string =
-        std::fs::read_to_string(&vault_toml_path).map_err(|e| SyncError::Io {
-            context: "failed to read vault.toml",
-            source: e,
-        })?;
-    // Fold path: VaultTomlError → UnlockError::MalformedVaultToml → VaultError::Unlock
-    // → SyncError::Vault. The chain preserves the typed error at the umbrella surface
-    // (anti-conflation discipline — see core/src/unlock/mod.rs:UnlockError).
-    let vt = vault_toml::decode(&vault_toml_string).map_err(|e| {
-        SyncError::Vault(crate::vault::VaultError::Unlock(
-            crate::unlock::UnlockError::MalformedVaultToml(e),
-        ))
-    })?;
-    if vt.vault_uuid != state.vault_uuid {
+    // Step 1: read + verify + AEAD-decrypt the manifest body via the
+    // caller-held UnlockedIdentity. `local_highest_clock = None` so
+    // read_vault_manifest skips its own §10 check; sync_once does its
+    // own ClockRelation dispatch below and surfaces the typed
+    // SyncOutcome::RollbackRejected variant instead of VaultError::Rollback.
+    let manifest = read_vault_manifest(vault_folder, identity, None)?;
+
+    // Step 2: state ↔ authenticated manifest body vault_uuid check.
+    // The body's vault_uuid is bound by the §8 hybrid signature; an
+    // attacker swapping vault.toml or the manifest envelope alone cannot
+    // forge a body whose vault_uuid matches state.vault_uuid without
+    // breaking the signature.
+    if manifest.vault_uuid != state.vault_uuid {
         return Err(SyncError::VaultUuidMismatch {
             state_vault_uuid: state.vault_uuid,
-            folder_vault_uuid: vt.vault_uuid,
+            folder_vault_uuid: manifest.vault_uuid,
         });
     }
 
-    // Step 2: read manifest body using the caller-held UnlockedIdentity.
-    // Skip the §10 rollback check at this layer — sync_once does its own
-    // ClockRelation dispatch below.
-    let manifest = read_vault_manifest(vault_folder, identity, None)?;
-
-    // Step 3-4: extract disk vector clock and dispatch.
+    // Step 3: extract disk vector clock and dispatch.
     let disk_clock: Vec<VectorClockEntry> = manifest.vector_clock.clone();
     dispatch(disk_clock, state)
 }

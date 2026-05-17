@@ -182,7 +182,9 @@ fn extract_golden_vault_uuid() -> [u8; 16] {
 #[test]
 fn sync_once_missing_vault_toml_yields_io_error() {
     let tmp = tempfile::tempdir().unwrap();
-    // No vault.toml in tmp.path() — should fire Io.
+    // No vault.toml in tmp.path() — should fire VaultError::Io (forwarded
+    // through SyncError::Vault) since read_vault_manifest is the first I/O
+    // path now that the redundant pre-read was removed.
     let password = fixtures::golden_vault_001_password();
     let identity = {
         let vt = std::fs::read("tests/data/golden_vault_001/vault.toml").unwrap();
@@ -191,9 +193,11 @@ fn sync_once_missing_vault_toml_yields_io_error() {
     };
     let state = SyncState::empty([0u8; 16]);
     let err = sync_once(tmp.path(), &identity, &state, 0u64).unwrap_err();
-    assert!(matches!(err, SyncError::Io { .. }));
-    if let SyncError::Io { context, .. } = err {
-        assert_eq!(context, "failed to read vault.toml");
+    match err {
+        SyncError::Vault(secretary_core::vault::VaultError::Io { context, .. }) => {
+            assert_eq!(context, "failed to read vault.toml");
+        }
+        other => panic!("expected SyncError::Vault(VaultError::Io), got {other:?}"),
     }
 }
 

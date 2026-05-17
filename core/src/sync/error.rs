@@ -8,7 +8,7 @@ use crate::vault::VaultError;
 pub enum SyncError {
     #[error(
         "vault_uuid in SyncState ({state_vault_uuid:?}) does not match \
-         vault.toml ({folder_vault_uuid:?})"
+         vault manifest ({folder_vault_uuid:?})"
     )]
     VaultUuidMismatch {
         state_vault_uuid: [u8; 16],
@@ -23,13 +23,6 @@ pub enum SyncError {
 
     #[error(transparent)]
     Vault(#[from] VaultError),
-
-    #[error("I/O failure: {context}")]
-    Io {
-        context: &'static str,
-        #[source]
-        source: std::io::Error,
-    },
 
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -47,7 +40,7 @@ mod tests {
         };
         let s = format!("{err}");
         assert!(s.contains("vault_uuid in SyncState"));
-        assert!(s.contains("does not match vault.toml"));
+        assert!(s.contains("does not match vault manifest"));
     }
 
     #[test]
@@ -70,17 +63,6 @@ mod tests {
             format!("{err}"),
             "SyncState CBOR encode failed: encoder primitive error"
         );
-    }
-
-    #[test]
-    fn io_display_is_stable_and_carries_context() {
-        let err = SyncError::Io {
-            context: "failed to read vault.toml",
-            source: std::io::Error::from(std::io::ErrorKind::NotFound),
-        };
-        let s = format!("{err}");
-        assert!(s.contains("I/O failure"));
-        assert!(s.contains("failed to read vault.toml"));
     }
 
     #[test]
