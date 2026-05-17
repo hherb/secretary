@@ -155,12 +155,22 @@ fi
 # `-include-runtime` bundles the Kotlin stdlib into the jar so we don't
 # need to put kotlin-stdlib.jar on the runtime classpath. The bindings
 # only `import com.sun.jna.*`, so JNA is the sole compile-time dep.
+# The Smoke* sibling files were split out per issue #72 to keep each
+# file under the 500-LOC guideline; Kotlin compiles all source files
+# together as a single module so order is irrelevant.
 echo "==> kotlinc smoke runner"
 kotlinc \
     -classpath "$JNA_JAR" \
     -include-runtime \
     -d "$JAR_OUT" \
     "$GENERATED_KT" \
+    "$SCRIPT_DIR/SmokeHelpers.kt" \
+    "$SCRIPT_DIR/SmokeBytesIn.kt" \
+    "$SCRIPT_DIR/SmokeFolderIn.kt" \
+    "$SCRIPT_DIR/SmokeReadBlock.kt" \
+    "$SCRIPT_DIR/SmokeSaveBlock.kt" \
+    "$SCRIPT_DIR/SmokeShareBlock.kt" \
+    "$SCRIPT_DIR/SmokeTrashRestore.kt" \
     "$SCRIPT_DIR/Main.kt"
 
 # --- Step 5: execute ---
