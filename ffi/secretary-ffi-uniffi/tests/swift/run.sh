@@ -68,6 +68,9 @@ mkdir -p "$BINDINGS_DIR"
 # - `-rpath @loader_path/...` would let the binary find the dylib at
 #   runtime without DYLD_LIBRARY_PATH, but for a smoke runner we just
 #   set the env var below and keep the link line simple.
+# - The Smoke* sibling files were split out per issue #72 to keep each
+#   file under the 500-LOC guideline. Order is irrelevant — Swift
+#   compiles all source files as a single module.
 echo "==> swiftc smoke runner"
 swiftc \
     -O \
@@ -76,6 +79,13 @@ swiftc \
     -lsecretary_ffi_uniffi \
     -Xcc -fmodule-map-file="$BINDINGS_DIR/secretaryFFI.modulemap" \
     "$BINDINGS_DIR/secretary.swift" \
+    "$SCRIPT_DIR/SmokeHelpers.swift" \
+    "$SCRIPT_DIR/SmokeBytesIn.swift" \
+    "$SCRIPT_DIR/SmokeFolderIn.swift" \
+    "$SCRIPT_DIR/SmokeReadBlock.swift" \
+    "$SCRIPT_DIR/SmokeSaveBlock.swift" \
+    "$SCRIPT_DIR/SmokeShareBlock.swift" \
+    "$SCRIPT_DIR/SmokeTrashRestore.swift" \
     "$SCRIPT_DIR/main.swift" \
     -o "$BIN_OUT"
 
