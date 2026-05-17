@@ -97,3 +97,84 @@ fn dispatch_both_empty_yields_nothing_to_do() {
     let outcome = __test_dispatch(vec![], &state).unwrap();
     assert_eq!(outcome, SyncOutcome::NothingToDo);
 }
+
+mod sync_helpers;
+
+#[test]
+fn sync_once_empty_state_accepts_golden_disk() {
+    let folder = std::path::Path::new("tests/data/golden_vault_001");
+    let password = fixtures::golden_vault_001_password();
+    let identity = {
+        let vt = std::fs::read(folder.join("vault.toml")).unwrap();
+        let bundle = std::fs::read(folder.join("identity.bundle.enc")).unwrap();
+        open_with_password(&vt, &bundle, &password).unwrap()
+    };
+    let golden_vault_uuid = extract_golden_vault_uuid();
+    let state = SyncState::empty(golden_vault_uuid);
+
+    let outcome = sync_once(folder, &identity, &state, 0u64).unwrap();
+    assert!(matches!(outcome, SyncOutcome::AppliedAutomatically { .. }));
+}
+
+#[test]
+fn sync_once_unchanged_disk_after_apply_yields_nothing_to_do() {
+    let folder = std::path::Path::new("tests/data/golden_vault_001");
+    let password = fixtures::golden_vault_001_password();
+    let identity = {
+        let vt = std::fs::read(folder.join("vault.toml")).unwrap();
+        let bundle = std::fs::read(folder.join("identity.bundle.enc")).unwrap();
+        open_with_password(&vt, &bundle, &password).unwrap()
+    };
+    let golden_vault_uuid = extract_golden_vault_uuid();
+    let initial = SyncState::empty(golden_vault_uuid);
+    let first = sync_once(folder, &identity, &initial, 0u64).unwrap();
+    let new_state = match first {
+        SyncOutcome::AppliedAutomatically { new_state } => new_state,
+        other => panic!("first run must be AppliedAutomatically, got {other:?}"),
+    };
+    let second = sync_once(folder, &identity, &new_state, 0u64).unwrap();
+    assert_eq!(second, SyncOutcome::NothingToDo);
+}
+
+#[test]
+fn sync_once_disk_strictly_behind_rejects_rollback() {
+    use sync_helpers::fresh_vault_with_clock;
+    let (folder, _tmp) = fresh_vault_with_clock(vec![entry(1, 1)]);
+
+    let password = fixtures::golden_vault_001_password();
+    let vt = std::fs::read(folder.join("vault.toml")).unwrap();
+    let bundle = std::fs::read(folder.join("identity.bundle.enc")).unwrap();
+    let identity = open_with_password(&vt, &bundle, &password).unwrap();
+
+    let golden_vault_uuid = extract_golden_vault_uuid();
+    // State is at counter=9 for device 1; disk we just rewrote is at 1.
+    let state = SyncState::new(golden_vault_uuid, vec![entry(1, 9)]).unwrap();
+    let outcome = sync_once(&folder, &identity, &state, 0u64).unwrap();
+    assert!(matches!(outcome, SyncOutcome::RollbackRejected(_)));
+}
+
+#[test]
+fn sync_once_concurrent_disk_detects_fork() {
+    use sync_helpers::fresh_vault_with_clock;
+    // Disk has device 2 only; state has device 1 only → concurrent.
+    let (folder, _tmp) = fresh_vault_with_clock(vec![entry(2, 5)]);
+
+    let password = fixtures::golden_vault_001_password();
+    let vt = std::fs::read(folder.join("vault.toml")).unwrap();
+    let bundle = std::fs::read(folder.join("identity.bundle.enc")).unwrap();
+    let identity = open_with_password(&vt, &bundle, &password).unwrap();
+
+    let golden_vault_uuid = extract_golden_vault_uuid();
+    let state = SyncState::new(golden_vault_uuid, vec![entry(1, 7)]).unwrap();
+    let outcome = sync_once(&folder, &identity, &state, 0u64).unwrap();
+    assert!(matches!(outcome, SyncOutcome::ForkDetected { .. }));
+}
+
+/// Helper: extract the golden vault's vault_uuid from its vault.toml
+/// so we don't hard-code the value here — it's pinned in the fixture
+/// builder and any drift would surface as a vault.toml decode failure.
+fn extract_golden_vault_uuid() -> [u8; 16] {
+    let s = std::fs::read_to_string("tests/data/golden_vault_001/vault.toml").unwrap();
+    let vt = secretary_core::unlock::vault_toml::decode(&s).unwrap();
+    vt.vault_uuid
+}
