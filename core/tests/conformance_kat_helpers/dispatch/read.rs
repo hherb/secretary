@@ -44,7 +44,7 @@ pub fn assert_read_block_ok(
     assert_read_block_records(label, output, records);
 }
 
-pub fn assert_read_block_records(
+pub(super) fn assert_read_block_records(
     label: &str,
     output: &secretary_ffi_bridge::record::BlockReadOutput,
     records: &[ExpectedRecord],

@@ -23,7 +23,7 @@ Issue #67 was reported as **CLOSED-COMPLETED** at the moment PR #70 merged (2026
 |---|---|---|
 | `dispatch/mod.rs` | 28 | Re-exports `run_*` + `assert_*` from sibling modules so callers' `use conformance_kat_helpers::dispatch::{...}` paths stay unchanged. |
 | `dispatch/open.rs` | 84 | `run_open_password` / `run_open_recovery` / `run_open_writable` + `assert_open_ok`. |
-| `dispatch/read.rs` | 132 | `run_read_block` + `assert_read_block_ok` + `assert_read_block_records` (public so `lifecycle::assert_post_state` can call it). |
+| `dispatch/read.rs` | 132 | `run_read_block` + `assert_read_block_ok` + `assert_read_block_records` (`pub(super)` — only `lifecycle::assert_post_state` reaches it via `super::read::`). |
 | `dispatch/inputs.rs` | 144 | `uuid_from_inputs` / `block_input_from_inputs` / `now_ms_from_inputs` (kept `pub(super)` — sibling-module only). |
 | `dispatch/lifecycle.rs` | 229 | v2 write ops (`run_save_block` / `run_share_block` / `run_trash_block` / `run_restore_block`) + `assert_post_state`. |
 
