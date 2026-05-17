@@ -238,11 +238,20 @@ func findCacheAncestorName(_ start: String, cache: [String: OpenVaultOutput], ve
 
 /// Build a BlockInput from the JSON `inputs` dict. Mirrors block_input_from_inputs
 /// in core/tests/conformance_kat_helpers/dispatch.rs.
+///
+/// `record_uuid_hex` is the happy-path key (always 16 bytes); a vector may
+/// instead provide `record_uuid_bytes_hex` with a wrong-length value to
+/// exercise uniffi's namespace-layer `uuid_from_vec` length check (the
+/// bridge's `RecordInput.record_uuid` is type-bounded to `[u8; 16]` in
+/// Rust, but on the uniffi side it's a `Data`/`ByteArray` whose length
+/// is validated inside `convert_record_input`, surfacing
+/// `VaultError.InvalidArgument` symmetrically with wrong-length
+/// device_uuid / block_uuid).
 func blockInputFromInputs(_ inputs: [String: Any]) -> BlockInput {
     let blockUuidHex = inputs["block_uuid_hex"] as! String
     let blockName = (inputs["block_name"] as? String) ?? ""
     let records: [RecordInput] = (inputs["records"] as? [[String: Any]] ?? []).map { rec in
-        let recordUuidHex = rec["record_uuid_hex"] as! String
+        let recordUuidHex = (rec["record_uuid_hex"] as? String) ?? (rec["record_uuid_bytes_hex"] as! String)
         let fields: [FieldInput] = (rec["fields"] as? [[String: Any]] ?? []).map { f in
             let fname = f["name"] as! String
             let ftype = f["type"] as! String
