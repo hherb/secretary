@@ -302,15 +302,17 @@ private fun findCacheAncestorName(
     error("after-chain cycle detected starting at '$start' (depth exceeded vectors.length())")
 }
 
-/// Build a BlockInput from the JSON `inputs` dict. Mirrors
-/// `block_input_from_inputs` in core/tests/conformance_kat_helpers/dispatch.rs
-/// and `blockInputFromInputs` in the Swift runner.
-///
-/// `record_uuid_hex` is the happy-path key (always 16 bytes); a vector may
-/// instead provide `record_uuid_bytes_hex` with a wrong-length value to
-/// exercise uniffi's namespace-layer length check inside
-/// `convert_record_input`, which surfaces `VaultException.InvalidArgument`
-/// symmetrically with the wrong-length device_uuid / block_uuid paths.
+/**
+ * Build a BlockInput from the JSON `inputs` dict. Mirrors
+ * `block_input_from_inputs` in core/tests/conformance_kat_helpers/dispatch.rs
+ * and `blockInputFromInputs` in the Swift runner.
+ *
+ * `record_uuid_hex` is the happy-path key (always 16 bytes); a vector may
+ * instead provide `record_uuid_bytes_hex` with a wrong-length value to
+ * exercise uniffi's namespace-layer length check inside
+ * `convert_record_input`, which surfaces `VaultException.InvalidArgument`
+ * symmetrically with the wrong-length device_uuid / block_uuid paths.
+ */
 private fun blockInputFromInputs(inputs: JSONObject): BlockInput {
     val blockUuidHex = inputs.getString("block_uuid_hex")
     val blockName = if (inputs.has("block_name")) inputs.getString("block_name") else ""
