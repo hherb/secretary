@@ -105,7 +105,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 /// and return the TempDir handle. The caller MUST hold the TempDir for
 /// the duration of any subsequent operations against the copy — dropping
 /// it removes the directory.
-#[allow(dead_code)]
 pub fn copy_vault_to_tempdir(vault_name: &str) -> tempfile::TempDir {
     let src = fixtures_dir().join(vault_name);
     let tmp = tempfile::tempdir().expect("tempdir for writable vault");
@@ -118,7 +117,6 @@ pub fn copy_vault_to_tempdir(vault_name: &str) -> tempfile::TempDir {
 /// (no separators). The card filename on disk is the uuid in 8-4-4-4-12
 /// hyphenated form (matches `tempfile::TempDir`'s contents copied from
 /// `golden_vault_001/contacts/`).
-#[allow(dead_code)]
 pub fn read_contact_card_bytes(vault_dir: &Path, user_uuid_hex: &str) -> Vec<u8> {
     assert_eq!(
         user_uuid_hex.len(),

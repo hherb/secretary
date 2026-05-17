@@ -328,7 +328,6 @@ use super::fixtures::copy_vault_to_tempdir;
 /// the TempDir handle. The caller is responsible for holding the TempDir
 /// alongside the cached OpenVaultOutput so the dir survives until replay
 /// completes.
-#[allow(dead_code)]
 pub fn run_open_writable(
     inputs: &serde_json::Value,
 ) -> Result<
@@ -353,7 +352,6 @@ pub fn run_open_writable(
 /// at the test layer (matching the uniffi-layer length checks; the
 /// bridge's `[u8; 16]` parameters are type-bounded so the bridge itself
 /// can't surface that variant).
-#[allow(dead_code)]
 pub fn run_save_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
@@ -403,7 +401,6 @@ use super::fixtures::read_contact_card_bytes;
 /// 32-char user_uuid_hex of a contact card already in
 /// <writable_vault>/contacts/). new_recipient is read from
 /// `<writable_vault>/contacts/<new_recipient_user_uuid_hex>.card`.
-#[allow(dead_code)]
 pub fn run_share_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
@@ -454,7 +451,6 @@ pub fn run_share_block(
     .map_err(BridgeOrSyntheticErr::Bridge)
 }
 
-#[allow(dead_code)]
 pub fn run_trash_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
@@ -472,7 +468,6 @@ pub fn run_trash_block(
     .map_err(BridgeOrSyntheticErr::Bridge)
 }
 
-#[allow(dead_code)]
 pub fn run_restore_block(
     inputs: &serde_json::Value,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
@@ -502,7 +497,6 @@ use super::types::PostState;
 /// `secretary_ffi_bridge::record::read_block` against the cached
 /// manifest using the pinned `find_block_uuid_hex` as the lookup key
 /// (the same uuid the save op just inserted).
-#[allow(dead_code)]
 pub fn assert_post_state(
     label: &str,
     cached: &secretary_ffi_bridge::vault::OpenVaultOutput,

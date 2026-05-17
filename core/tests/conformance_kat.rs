@@ -23,7 +23,9 @@
 mod conformance_kat_helpers;
 
 use conformance_kat_helpers::dispatch::{
-    assert_open_ok, assert_read_block_ok, run_open_password, run_open_recovery, run_read_block,
+    assert_open_ok, assert_post_state, assert_read_block_ok, run_open_password, run_open_recovery,
+    run_open_writable, run_read_block, run_restore_block, run_save_block, run_share_block,
+    run_trash_block,
 };
 use conformance_kat_helpers::errors::{
     assert_err, read_block_err_detail, read_block_err_variant, variant_name_vault,
@@ -41,6 +43,8 @@ fn replay_conformance_kat() {
     assert_eq!(kat.version, 1, "KAT version must be 1");
 
     let mut cache: HashMap<String, secretary_ffi_bridge::vault::OpenVaultOutput> = HashMap::new();
+    let mut tempdirs: Vec<tempfile::TempDir> = Vec::new();
+    let mut writable_vault_dirs: HashMap<String, std::path::PathBuf> = HashMap::new();
 
     for vector in &kat.vectors {
         let label = &vector.name;
@@ -98,22 +102,76 @@ fn replay_conformance_kat() {
                     (Expected::Err { .. }, Ok(_)) => panic!("{label}: expected Err, got Ok"),
                 }
             }
+            (Operation::OpenVaultWithPasswordWritable, None) => {
+                let result = run_open_writable(&vector.inputs);
+                match (&vector.expected, result) {
+                    (Expected::Ok(payload), Ok((out, tmp))) => {
+                        assert_open_ok(label, &out, payload);
+                        writable_vault_dirs.insert(label.clone(), tmp.path().to_path_buf());
+                        tempdirs.push(tmp);
+                        cache.insert(label.clone(), out);
+                    }
+                    (Expected::Err { .. }, Err(e)) => {
+                        let v = variant_name_vault(&e);
+                        let d = vault_error_detail(&e);
+                        assert_err(label, v, d, &vector.expected);
+                    }
+                    (Expected::Ok(_), Err(e)) => panic!("{label}: expected Ok, got Err {e:?}"),
+                    (Expected::Err { .. }, Ok(_)) => panic!("{label}: expected Err, got Ok"),
+                }
+            }
+            (Operation::SaveBlock, Some(predecessor)) => {
+                let cached = cache.get(predecessor).unwrap_or_else(|| {
+                    panic!("{label}: predecessor '{predecessor}' missing from cache")
+                });
+                let result = run_save_block(&vector.inputs, cached);
+                handle_write_op_result(label, &vector.expected, result, cached);
+            }
+            (Operation::ShareBlock, Some(predecessor)) => {
+                let writable_dir =
+                    find_writable_dir(predecessor, &writable_vault_dirs, &kat.vectors)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{label}: cannot find writable vault dir along after-chain from {predecessor}"
+                            )
+                        });
+                let cached = cache.get(predecessor).unwrap_or_else(|| {
+                    panic!("{label}: predecessor '{predecessor}' missing from cache")
+                });
+                let result = run_share_block(&vector.inputs, cached, &writable_dir);
+                handle_write_op_result(label, &vector.expected, result, cached);
+            }
+            (Operation::TrashBlock, Some(predecessor)) => {
+                let cached = cache.get(predecessor).unwrap_or_else(|| {
+                    panic!("{label}: predecessor '{predecessor}' missing from cache")
+                });
+                let result = run_trash_block(&vector.inputs, cached);
+                handle_write_op_result(label, &vector.expected, result, cached);
+            }
+            (Operation::RestoreBlock, Some(predecessor)) => {
+                let cached = cache.get(predecessor).unwrap_or_else(|| {
+                    panic!("{label}: predecessor '{predecessor}' missing from cache")
+                });
+                let result = run_restore_block(&vector.inputs, cached);
+                handle_write_op_result(label, &vector.expected, result, cached);
+            }
             (Operation::ReadBlock, None) => {
                 panic!("{label}: ReadBlock vectors must specify `after:`")
             }
             (Operation::OpenVaultWithPassword | Operation::OpenVaultWithRecovery, Some(_)) => {
                 panic!("{label}: open_vault_* vectors must not specify `after:`")
             }
-            // v2 lifecycle ops — not yet wired in the replay loop (Tasks 7+).
+            (Operation::OpenVaultWithPasswordWritable, Some(_)) => {
+                panic!("{label}: open_vault_with_password_writable must not specify `after:`")
+            }
             (
-                Operation::OpenVaultWithPasswordWritable
-                | Operation::SaveBlock
+                Operation::SaveBlock
                 | Operation::ShareBlock
                 | Operation::TrashBlock
                 | Operation::RestoreBlock,
-                _,
+                None,
             ) => {
-                panic!("{label}: v2 lifecycle op not yet implemented in replay")
+                panic!("{label}: write-op vectors must specify `after:`")
             }
         }
     }
@@ -202,4 +260,56 @@ fn generate_conformance_kat() {
         kat_path().display(),
         read.record_count()
     );
+}
+
+/// Walk the `after:` chain from `start` back to the first vector whose
+/// name appears in `writable_vault_dirs`. Returns that vector's tempdir
+/// path. Returns `None` if no writable-open vector is upstream — which
+/// is a vector-authoring error (every share_block needs a writable
+/// vault upstream for the contact-card read).
+fn find_writable_dir(
+    start: &str,
+    writable_vault_dirs: &HashMap<String, std::path::PathBuf>,
+    vectors: &[conformance_kat_helpers::types::Vector],
+) -> Option<std::path::PathBuf> {
+    let mut current = start.to_string();
+    loop {
+        if let Some(dir) = writable_vault_dirs.get(&current) {
+            return Some(dir.clone());
+        }
+        let parent = vectors
+            .iter()
+            .find(|v| v.name == current)
+            .and_then(|v| v.after.clone());
+        match parent {
+            Some(p) => current = p,
+            None => return None,
+        }
+    }
+}
+
+fn handle_write_op_result(
+    label: &str,
+    expected: &conformance_kat_helpers::types::Expected,
+    result: Result<(), conformance_kat_helpers::types::BridgeOrSyntheticErr>,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) {
+    use conformance_kat_helpers::types::Expected;
+    match (expected, result) {
+        (Expected::Ok(payload), Ok(())) => {
+            if let Some(ps) = &payload.post_state {
+                assert_post_state(label, cached, ps);
+            }
+        }
+        (Expected::Err { .. }, Err(e)) => {
+            let v = read_block_err_variant(&e);
+            let d = read_block_err_detail(&e);
+            assert_err(label, v, d, expected);
+        }
+        (Expected::Ok(_), Err(e)) => panic!(
+            "{label}: expected Ok, got Err {}",
+            read_block_err_variant(&e)
+        ),
+        (Expected::Err { .. }, Ok(())) => panic!("{label}: expected Err, got Ok"),
+    }
 }

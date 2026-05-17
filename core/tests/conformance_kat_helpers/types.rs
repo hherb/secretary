@@ -63,7 +63,6 @@ pub struct OkPayload {
     pub records: Option<Vec<ExpectedRecord>>,
     // v2 lifecycle ops:
     #[serde(default)]
-    #[allow(dead_code)] // wired in Tasks 7+ when replay handles v2 ops.
     pub post_state: Option<PostState>,
 }
 
@@ -89,7 +88,6 @@ pub struct ExpectedField {
 /// Post-call manifest-shape assertions for v2 write ops. All fields
 /// optional; the replay engine asserts only what the vector pins.
 #[derive(Debug, Deserialize, Default)]
-#[allow(dead_code)] // fields wired in Tasks 7+ when replay handles v2 ops.
 pub struct PostState {
     /// Required on every v2 Ok post_state. Pins `manifest.block_count()`.
     #[serde(default)]
@@ -111,7 +109,6 @@ pub struct PostState {
 /// The round-trip read_block payload pinned post-save. Same `records`
 /// shape that v1's `OkPayload::records` carries.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // field wired in Tasks 7+ when replay handles v2 ops.
 pub struct ExpectedReadBlock {
     pub records: Vec<ExpectedRecord>,
 }
