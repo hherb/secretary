@@ -1,9 +1,21 @@
 # NEXT_SESSION.md
 
-**Session date:** 2026-05-17 (C.1 phase 1 sync detection — implementation landed; PR opening on this branch)
-**Status:** `feature/c1-sync-detection` branch carries the full C.1 implementation, ready to open as a PR. The 15-task plan executed cleanly through all five phases; gauntlet matches the plan's acceptance criteria. Pre-implementation baton (PR-less docs commit at `7b8ab6e`) is preserved below; this file overwrites it now that the implementation is on the same branch.
+**Session date:** 2026-05-17 (C.1 phase 1 sync detection — implementation + PR #74 review cleanup)
+**Status:** `feature/c1-sync-detection` branch carries the full C.1 implementation plus PR-#74 review cleanup commits. The 15-task plan executed cleanly through all five phases; four review issues (#1, #2, #4, #7) fixed in-PR, two (#3, #5) filed as tracking issues [#75](https://github.com/hherb/secretary/issues/75) (test surface hardening) and [#76](https://github.com/hherb/secretary/issues/76) (Python KAT replay for C.4). Gauntlet on this branch green.
 
 ## (1) What we shipped this session
+
+### PR-#74 review cleanup commits (on top of the implementation series)
+
+| SHA | Subject |
+|---|---|
+| `d3ac942` | docs(sync): clarify §10 spec citation — primitive vs orchestration layer (review #7) |
+| `7efcbd1` | test(sync): make prop_applied_then_nothing_to_do exercise the fixpoint every run (review #4) |
+| `779d3fe` | refactor(sync): drop redundant vault.toml pre-read in sync_once (review #1 + #2; removes dead SyncError::Io variant as side-effect) |
+
+Review issues #2 (`_now_ms` doc clarity) was subsumed by #1's doc rewrite. Reviews #3 and #5 filed as GitHub issues #75 and #76 for follow-up rather than fixed in-PR (one is a test-surface hardening for B.7+, the other is C.4's planned Python replay).
+
+### Original implementation commits
 
 | SHA | Subject |
 |---|---|
@@ -31,15 +43,15 @@
 - **`core::sync::sync_once(folder, &UnlockedIdentity, &SyncState, now_ms)`** — pure-function reconcile of one vault folder against caller-persisted state. Dispatches `ClockRelation` between the disk manifest's vector clock and the caller's `highest_vector_clock_seen` to one of `SyncOutcome::{NothingToDo, AppliedAutomatically { new_state }, ForkDetected, RollbackRejected}`. No disk writes, no merge — phase 1 is detection only.
 - **`core::sync::SyncState`** — caller-persisted `(vault_uuid, highest_vector_clock_seen)` value. Sorted/deduped clock invariant enforced symmetrically by `SyncState::new` and the `from_canonical_cbor` decoder via a shared `validate_clock_canonical` helper. Canonical-CBOR encode/decode uses the same `core::vault::canonical::{encode_canonical_map, canonical_sort_entries}` helpers Manifest/Record/Card use — no parallel CBOR layer.
 - **`core::sync::SyncOutcome` + `RollbackEvidence`** — 4-variant typed enum mapping `clock_relation` outputs onto §10 terminal states. `RollbackEvidence` surfaces both the disk and local clocks so a caller's "restoring from backup, accept anyway" UX can render the divergence.
-- **`core::sync::SyncError`** — 6 typed variants: `VaultUuidMismatch`, `StateDecodeFailed`, `StateEncodeFailed`, `Vault(#[from] VaultError)`, `Io { context, source }`, `InvalidArgument`. Anti-conflation discipline preserved at the umbrella surface.
+- **`core::sync::SyncError`** — 5 typed variants: `VaultUuidMismatch`, `StateDecodeFailed`, `StateEncodeFailed`, `Vault(#[from] VaultError)`, `InvalidArgument`. (PR-#74 review #1 removed the dead `Io` variant — after dropping the redundant vault.toml pre-read, all I/O paths now flow through `SyncError::Vault` via `read_vault_manifest`.) Anti-conflation discipline preserved at the umbrella surface.
 - **`core::vault::read_vault_manifest(folder, &UnlockedIdentity, local_highest_clock)`** — new public entry point. Reads/verifies/decrypts the manifest body using a caller-held identity, returns just the `Manifest`. Used by `sync_once` so a poll runs in milliseconds (file read + signature verify + AEAD decrypt), no Argon2. Built by extracting a private `read_and_verify_manifest` helper from `open_vault` — both share the §1 read-order steps 3-8 logic bit-for-bit, so the 642 existing tests pass byte-identically.
 - **Pivot from `Unlocker::Bundle(&UnlockedIdentity)`** — the plan's original approach would have required cloning `IdentityBundle`, which deliberately does NOT derive Clone (cloning would silently duplicate secret material per the bundle's struct docstring safety policy). The `read_vault_manifest` parallel-entry-point design respects that policy.
 
-### Test additions: 40 new tests on top of the 642 baseline
+### Test additions: 39 new tests on top of the 642 baseline (40 originally; review-#1 cleanup removed the `io_display` unit test for the deleted `SyncError::Io` variant)
 
 | Layer | Count | Files |
 |---|---|---|
-| `core::sync::error` unit tests | 6 | inline in `core/src/sync/error.rs` |
+| `core::sync::error` unit tests | 5 | inline in `core/src/sync/error.rs` |
 | `core::sync::state` invariant unit tests | 5 | inline in `core/src/sync/state.rs` |
 | `core::sync::state::cbor_tests` | 7 | inline in `core/src/sync/state.rs` |
 | `core::sync::outcome` unit tests | 3 | inline in `core/src/sync/outcome.rs` |
@@ -52,7 +64,7 @@
 
 | Check | Result |
 |---|---|
-| `cargo test --release --workspace --no-fail-fast` | **682 passed; 0 failed; 10 ignored** (642 → 682) |
+| `cargo test --release --workspace --no-fail-fast` | **681 passed; 0 failed; 10 ignored** (642 → 681; one unit test deleted with the dead `SyncError::Io` variant in review-#1 cleanup) |
 | `cargo clippy --release --workspace --tests -- -D warnings` | clean |
 | `cargo fmt --all -- --check` | OK |
 | `uv run core/tests/python/conformance.py` | PASS |
@@ -129,6 +141,11 @@ Risks/decisions for the next planning session:
 - **Issue [#37](https://github.com/hherb/secretary/issues/37)** — design discipline reminder for Sub-project C; C.1 phase 1 partially addresses it but the umbrella stays open for C.1.1 / C.2 / C.3 / C.4.
 - **Issue [#38](https://github.com/hherb/secretary/issues/38)** — `save_block` proptest case-count budget; design space depends on C.1.1's vault-lifecycle decisions.
 - **Issue [#45](https://github.com/hherb/secretary/issues/45)** — three `pub(crate) #[allow(dead_code)]` accessors on `OpenVaultManifest`; revisit when C-side consumers materialise via the bridge.
+
+### Issues filed during PR #74 review cleanup
+
+- **Issue [#75](https://github.com/hherb/secretary/issues/75)** — replace `#[doc(hidden)] pub __test_dispatch` with `pub(crate)` helper + lib-internal tests. Low priority; revisit before B.7 widens the FFI public surface.
+- **Issue [#76](https://github.com/hherb/secretary/issues/76)** — add Python clean-room replay of `sync_kat.json` (currently Rust-only). C.4 work item.
 
 ## (4) Exact commands to resume
 
