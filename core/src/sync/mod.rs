@@ -23,5 +23,8 @@ pub mod outcome;
 pub mod state;
 
 pub use error::SyncError;
+#[doc(hidden)]
+pub use once::__test_dispatch;
+pub use once::sync_once;
 pub use outcome::{RollbackEvidence, SyncOutcome};
 pub use state::SyncState;
