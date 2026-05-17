@@ -93,10 +93,13 @@ pub struct PostState {
     #[serde(default)]
     pub block_count: Option<u64>,
     /// `"<hex>"` asserts `manifest.find_block(hex).is_some()` and
-    /// hex-equals the returned summary's `block_uuid`. `null` asserts
-    /// `is_none()`. Absent (`Option::None`) asserts nothing.
-    #[serde(default, deserialize_with = "deserialize_optional_string_or_null")]
-    pub find_block_uuid_hex: Option<Option<String>>,
+    /// hex-equals the returned summary's `block_uuid`. Absent / JSON null
+    /// asserts nothing — absence-after-trash is already covered by
+    /// `block_count` (e.g. trash_block_happy pins block_count 2→1; the
+    /// only way to reach block_count==1 is for find_block(new_uuid) to
+    /// be None).
+    #[serde(default)]
+    pub find_block_uuid_hex: Option<String>,
     /// share_block only. Pins `manifest.find_block(uuid).recipient_uuids.len()`.
     #[serde(default)]
     pub recipient_count: Option<u64>,
@@ -111,19 +114,6 @@ pub struct PostState {
 #[derive(Debug, Deserialize)]
 pub struct ExpectedReadBlock {
     pub records: Vec<ExpectedRecord>,
-}
-
-/// Distinguishes "field absent" from "field present and null" so the
-/// replay can tell `find_block_uuid_hex: null` (asserts is_none) from
-/// `find_block_uuid_hex` omitted (asserts nothing).
-fn deserialize_optional_string_or_null<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 /// Internal wrapper letting `run_read_block` surface either a real

@@ -263,7 +263,9 @@ private fun findWritableDir(
     vectors: JSONArray,
 ): java.nio.file.Path? {
     var current = start
-    while (true) {
+    // Bounded by vectors.length() — an authoring-error `after:` cycle would
+    // otherwise hang. Fail loudly so the cycle is fixable, not silent.
+    for (step in 0..vectors.length()) {
         writableVaultDirs[current]?.let { return it }
         var parentAfter: String? = null
         for (i in 0 until vectors.length()) {
@@ -275,6 +277,7 @@ private fun findWritableDir(
         }
         current = parentAfter ?: return null
     }
+    error("after-chain cycle detected starting at '$start' (depth exceeded vectors.length())")
 }
 
 private fun findCacheAncestorName(
@@ -283,7 +286,8 @@ private fun findCacheAncestorName(
     vectors: JSONArray,
 ): String? {
     var current = start
-    while (true) {
+    // Cycle guard: see findWritableDir.
+    for (step in 0..vectors.length()) {
         if (cache.containsKey(current)) return current
         var parentAfter: String? = null
         for (i in 0 until vectors.length()) {
@@ -295,6 +299,7 @@ private fun findCacheAncestorName(
         }
         current = parentAfter ?: return null
     }
+    error("after-chain cycle detected starting at '$start' (depth exceeded vectors.length())")
 }
 
 private fun blockInputFromInputs(inputs: JSONObject): BlockInput {
@@ -688,23 +693,19 @@ fun main() {
                     check(false, name, "no cached ancestor along after-chain from $after")
                     continue
                 }
-                // Synthesize InvalidArgument for non-16-byte device_uuid (matches uniffi behavior).
-                if (inputs.has("device_uuid_bytes_hex")) {
-                    val raw = decodeHex(inputs.getString("device_uuid_bytes_hex"))
-                    if (raw.size != 16) {
-                        if (kind != "err") {
-                            check(false, name, "expected err, got synthesized InvalidArgument")
-                        } else {
-                            val want = expected.optString("variant", "")
-                            check(want == "InvalidArgument", name, "variant mismatch (got InvalidArgument, expected $want)")
+                // For wrong-length device_uuid, pass the bytes through to the
+                // uniffi binding layer — uniffi's namespace-layer uuid_from_vec
+                // check (ffi/secretary-ffi-uniffi/src/namespace.rs) is exactly
+                // the surface this vector exists to pin. Do NOT short-circuit
+                // here: a regression in uuid_from_vec (silent accept, rename)
+                // must surface as a vector failure.
+                val deviceUuid: ByteArray = when {
+                    inputs.has("device_uuid_bytes_hex") -> decodeHex(inputs.getString("device_uuid_bytes_hex"))
+                    else -> uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                        ?: run {
+                            check(false, name, "device_uuid resolution failed")
+                            continue
                         }
-                        continue
-                    }
-                }
-                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
-                if (deviceUuid == null) {
-                    check(false, name, "device_uuid resolution failed")
-                    continue
                 }
                 val input = blockInputFromInputs(inputs)
                 val nowMs = inputs.getLong("now_ms").toULong()

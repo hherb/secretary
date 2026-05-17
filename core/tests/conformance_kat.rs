@@ -384,7 +384,9 @@ fn find_writable_dir(
     vectors: &[conformance_kat_helpers::types::Vector],
 ) -> Option<std::path::PathBuf> {
     let mut current = start.to_string();
-    loop {
+    // Bounded by vectors.len() — an authoring-error `after:` cycle would
+    // otherwise hang CI. Panic loudly so the cycle is fixable, not silent.
+    for _ in 0..=vectors.len() {
         if let Some(dir) = writable_vault_dirs.get(&current) {
             return Some(dir.clone());
         }
@@ -397,6 +399,7 @@ fn find_writable_dir(
             None => return None,
         }
     }
+    panic!("after-chain cycle detected starting at '{start}' (depth exceeded vectors.len())");
 }
 
 /// Walk the `after:` chain from `start` back to the first vector whose
@@ -410,7 +413,8 @@ fn find_cache_ancestor_name(
     vectors: &[conformance_kat_helpers::types::Vector],
 ) -> Option<String> {
     let mut current = start.to_string();
-    loop {
+    // Cycle guard: see find_writable_dir.
+    for _ in 0..=vectors.len() {
         if cache.contains_key(&current) {
             return Some(current);
         }
@@ -423,6 +427,7 @@ fn find_cache_ancestor_name(
             None => return None,
         }
     }
+    panic!("after-chain cycle detected starting at '{start}' (depth exceeded vectors.len())");
 }
 
 fn handle_write_op_result(

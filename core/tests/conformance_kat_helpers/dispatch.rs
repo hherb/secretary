@@ -543,50 +543,25 @@ pub fn assert_post_state(
         );
     }
     let mut round_trip_uuid: Option<[u8; 16]> = None;
-    if let Some(maybe_hex) = &pinned.find_block_uuid_hex {
-        match maybe_hex {
-            None => {
-                // pinned as JSON null → assert absent.
-                // The pin doesn't carry which uuid to check, so the
-                // calling vector MUST also pin the uuid via the vector's
-                // own `inputs.block_uuid_hex`. We re-extract it from the
-                // most recently dispatched op via the cached manifest's
-                // block list (trash_block sets find_block to null for
-                // the just-trashed uuid; this assertion catches a
-                // regression where the bridge keeps it findable).
-                // For null assertion we don't need the uuid — we just
-                // check no block currently lives under any of the
-                // post_state.find_block_uuid_hex inputs. But since this
-                // is a singleton field, the trash/restore vectors
-                // *explicitly* re-read the uuid from inputs. Implement
-                // that here:
-                panic!(
-                    "{label}: post_state.find_block_uuid_hex=null requires the calling vector \
-                     to supply the uuid via inputs.block_uuid_hex; the engine asserts this in \
-                     the dispatch arm, not here."
-                );
-            }
-            Some(hex_str) => {
-                let bytes = hex::decode(hex_str)
-                    .unwrap_or_else(|e| panic!("{label}: find_block_uuid_hex decode: {e}"));
-                assert_eq!(
-                    bytes.len(),
-                    16,
-                    "{label}: find_block_uuid_hex must be 16 bytes"
-                );
-                let mut uuid = [0u8; 16];
-                uuid.copy_from_slice(&bytes);
-                let summary = cached.manifest.find_block(&uuid).unwrap_or_else(|| {
-                    panic!("{label}: post_state.find_block_uuid_hex={hex_str} not in manifest")
-                });
-                assert_eq!(
-                    hex::encode(summary.block_uuid),
-                    hex_str.to_lowercase(),
-                    "{label}: find_block returned wrong uuid"
-                );
-                round_trip_uuid = Some(uuid);
-            }
-        }
+    if let Some(hex_str) = &pinned.find_block_uuid_hex {
+        let bytes = hex::decode(hex_str)
+            .unwrap_or_else(|e| panic!("{label}: find_block_uuid_hex decode: {e}"));
+        assert_eq!(
+            bytes.len(),
+            16,
+            "{label}: find_block_uuid_hex must be 16 bytes"
+        );
+        let mut uuid = [0u8; 16];
+        uuid.copy_from_slice(&bytes);
+        let summary = cached.manifest.find_block(&uuid).unwrap_or_else(|| {
+            panic!("{label}: post_state.find_block_uuid_hex={hex_str} not in manifest")
+        });
+        assert_eq!(
+            hex::encode(summary.block_uuid),
+            hex_str.to_lowercase(),
+            "{label}: find_block returned wrong uuid"
+        );
+        round_trip_uuid = Some(uuid);
     }
     if let Some(rc) = pinned.recipient_count {
         let uuid = round_trip_uuid.expect(

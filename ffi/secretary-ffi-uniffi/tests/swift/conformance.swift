@@ -211,24 +211,29 @@ func readContactCardBytes(_ vaultDir: URL, _ userUuidHex: String) throws -> Data
 
 func findWritableDir(_ start: String, writableVaultDirs: [String: URL], vectors: [[String: Any]]) -> URL? {
     var current = start
-    while true {
+    // Bounded by vectors.count — an authoring-error `after:` cycle would
+    // otherwise hang. Fail loudly so the cycle is fixable, not silent.
+    for _ in 0...vectors.count {
         if let url = writableVaultDirs[current] { return url }
         guard let parentAfter = vectors.first(where: { ($0["name"] as? String) == current })?["after"] as? String else {
             return nil
         }
         current = parentAfter
     }
+    fatalError("after-chain cycle detected starting at '\(start)' (depth exceeded vectors.count)")
 }
 
 func findCacheAncestorName(_ start: String, cache: [String: OpenVaultOutput], vectors: [[String: Any]]) -> String? {
     var current = start
-    while true {
+    // Cycle guard: see findWritableDir.
+    for _ in 0...vectors.count {
         if cache[current] != nil { return current }
         guard let parentAfter = vectors.first(where: { ($0["name"] as? String) == current })?["after"] as? String else {
             return nil
         }
         current = parentAfter
     }
+    fatalError("after-chain cycle detected starting at '\(start)' (depth exceeded vectors.count)")
 }
 
 /// Build a BlockInput from the JSON `inputs` dict. Mirrors block_input_from_inputs
@@ -571,21 +576,18 @@ struct ConformanceRunner {
                     _ = check(false, name, "no cached ancestor along after-chain from \(predecessor)")
                     break
                 }
-                // Synthesize InvalidArgument for non-16-byte device_uuid (matches uniffi).
+                // For wrong-length device_uuid, pass the bytes through to the
+                // uniffi binding layer — uniffi's namespace-layer uuid_from_vec
+                // check (ffi/secretary-ffi-uniffi/src/namespace.rs) is exactly
+                // the surface this vector exists to pin. Do NOT short-circuit
+                // here: a regression in uuid_from_vec (silent accept, rename)
+                // must surface as a vector failure.
+                let deviceUuid: Data
                 if let bytes = inputs["device_uuid_bytes_hex"] as? String {
-                    let raw = decodeHex(bytes)
-                    if raw.count != 16 {
-                        // The uniffi binding will throw InvalidArgument. We mirror that.
-                        if kind != "err" {
-                            _ = check(false, name, "expected err, got synthesized InvalidArgument")
-                        } else {
-                            let want = expected["variant"] as? String ?? ""
-                            _ = check(want == "InvalidArgument", name, "variant mismatch (got InvalidArgument, expected \(want))")
-                        }
-                        break
-                    }
-                }
-                guard let deviceUuid = uuidFromInputs(inputs, primary: "device_uuid_hex", bytes: "device_uuid_bytes_hex") else {
+                    deviceUuid = decodeHex(bytes)
+                } else if let dh = uuidFromInputs(inputs, primary: "device_uuid_hex", bytes: "device_uuid_bytes_hex") {
+                    deviceUuid = dh
+                } else {
                     _ = check(false, name, "device_uuid resolution failed")
                     break
                 }
