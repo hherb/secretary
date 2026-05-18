@@ -196,6 +196,73 @@ pub(crate) fn enumerate_manifest_siblings(folder: &Path) -> Result<Vec<PathBuf>,
     Ok(out)
 }
 
+/// DoS bound for one candidate manifest envelope. Real-world
+/// manifests on `golden_vault_001` are KB-scale; this 1 MiB ceiling
+/// is ~1000× slack. Any file above this limit is silently skipped at
+/// the scan layer — a malicious cloud-folder host can't pivot a
+/// gigabyte file into the decoder.
+const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
+
+/// Compose [`enumerate_manifest_siblings`] +
+/// [`authenticate_manifest_envelope`]: scan the vault folder for
+/// sibling manifest files and return only those that authenticate.
+///
+/// Read I/O on individual sibling files is downgraded to a debug log
+/// rather than a hard error so one un-readable entry can't fail the
+/// whole scan. The initial `read_dir` failure IS propagated — a
+/// missing folder is a programmer/integration error, not a runtime
+/// silent-reject case.
+///
+/// Per-file authentication failures are silently dropped (spec
+/// §1a-D3). The "silently ignore" disposition is only safe because
+/// `authenticate_manifest_envelope` enforces all five §1a-D4 MUSTs.
+#[allow(dead_code)]
+pub(crate) fn ingest_manifest_copies(
+    folder: &Path,
+    canonical_vault_uuid: [u8; 16],
+    canonical_owner_fp: Fingerprint,
+    owner_ed25519_pk: &Ed25519Public,
+    owner_ml_dsa_65_pk: &MlDsa65Public,
+    ibk: &AeadKey,
+) -> Result<Vec<ManifestSnapshot>, std::io::Error> {
+    let sibling_paths = enumerate_manifest_siblings(folder)?;
+    let mut copies: Vec<ManifestSnapshot> = Vec::with_capacity(sibling_paths.len());
+
+    for path in sibling_paths {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %err,
+                    "conflict-copy skipped: read error"
+                );
+                continue;
+            }
+        };
+        if bytes.is_empty() || bytes.len() > MAX_MANIFEST_SIZE {
+            tracing::debug!(
+                path = %path.display(),
+                size = bytes.len(),
+                "conflict-copy skipped: size out of bounds"
+            );
+            continue;
+        }
+        if let Some(snapshot) = authenticate_manifest_envelope(
+            &bytes,
+            path.clone(),
+            canonical_vault_uuid,
+            canonical_owner_fp,
+            owner_ed25519_pk,
+            owner_ml_dsa_65_pk,
+            ibk,
+        ) {
+            copies.push(snapshot);
+        }
+    }
+    Ok(copies)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +353,53 @@ mod tests {
 
         let siblings = enumerate_manifest_siblings(folder).expect("scan");
         assert!(siblings.is_empty(), "no siblings expected");
+    }
+
+    #[test]
+    fn ingest_manifest_copies_empty_folder_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path();
+        std::fs::write(folder.join("manifest.cbor.enc"), b"canonical").unwrap();
+
+        let (ed, pq) = dummy_owner_keys();
+        let ibk = dummy_ibk();
+        let copies =
+            ingest_manifest_copies(folder, [0u8; 16], [0u8; 16], &ed, &pq, &ibk).expect("scan ok");
+        assert!(copies.is_empty(), "no siblings → no copies");
+    }
+
+    #[test]
+    fn ingest_manifest_copies_silently_drops_junk_siblings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path();
+        std::fs::write(folder.join("manifest.cbor.enc"), b"canonical").unwrap();
+        std::fs::write(folder.join("manifest.cbor.enc.junk-1"), b"not a manifest").unwrap();
+        std::fs::write(folder.join("manifest.cbor.enc.junk-2"), vec![0xFF; 200]).unwrap();
+
+        let (ed, pq) = dummy_owner_keys();
+        let ibk = dummy_ibk();
+        let copies =
+            ingest_manifest_copies(folder, [0u8; 16], [0u8; 16], &ed, &pq, &ibk).expect("scan ok");
+        assert!(copies.is_empty(), "junk siblings must not authenticate");
+    }
+
+    #[test]
+    fn ingest_manifest_copies_skips_oversize_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path();
+        std::fs::write(folder.join("manifest.cbor.enc"), b"canonical").unwrap();
+        // 2 MiB > MAX_MANIFEST_SIZE — write efficiently via Vec::with_capacity.
+        let oversize: Vec<u8> = vec![0xAA; 2 * 1024 * 1024];
+        std::fs::write(folder.join("manifest.cbor.enc.oversize"), &oversize).unwrap();
+
+        let (ed, pq) = dummy_owner_keys();
+        let ibk = dummy_ibk();
+        let copies =
+            ingest_manifest_copies(folder, [0u8; 16], [0u8; 16], &ed, &pq, &ibk).expect("scan ok");
+        assert!(
+            copies.is_empty(),
+            "oversize file must be skipped pre-decode"
+        );
     }
 
     #[test]
