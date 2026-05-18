@@ -191,6 +191,65 @@ fn sync_once_concurrent_disk_yields_concurrent_detected() {
     }
 }
 
+#[test]
+fn sync_once_concurrent_manifest_hash_matches_bundle_envelope_bytes() {
+    // Regression test for #80: the `manifest_hash` carried in
+    // `ConcurrentDetected` must be the BLAKE3 of the SAME envelope
+    // bytes carried in `bundle.canonical.raw_envelope_bytes`.
+    //
+    // Before the #80 fix, sync_once performed two reads of
+    // `manifest.cbor.enc` — one inside `read_vault_manifest_full` for
+    // verify+decrypt, and a second `std::fs::read` to feed the hash +
+    // the bundle. A concurrent writer between the two reads would
+    // leave the bundle carrying inconsistent data (body authenticated
+    // from read 1; bytes-and-hash from read 2). After the fix, a
+    // single read feeds verify+decrypt, hash, and bundle — so the
+    // bundle bytes ALWAYS round-trip to the manifest_hash.
+    //
+    // The assertion below documents the invariant. In quiet test envs
+    // it would pass even pre-fix (both reads return identical bytes),
+    // so this test is a contract / regression guard rather than a
+    // race demonstrator — the architectural fix (single read) is what
+    // makes the invariant hold under concurrent writers.
+    use secretary_core::sync::bundle::compute_manifest_hash;
+    use sync_helpers::fresh_vault_with_clock;
+
+    let (folder, _tmp) = fresh_vault_with_clock(vec![entry(2, 5)]);
+
+    let password = fixtures::golden_vault_001_password();
+    let vt = std::fs::read(folder.join("vault.toml")).unwrap();
+    let bundle_bytes = std::fs::read(folder.join("identity.bundle.enc")).unwrap();
+    let identity = open_with_password(&vt, &bundle_bytes, &password).unwrap();
+
+    let golden_vault_uuid = extract_golden_vault_uuid();
+    let state = SyncState::new(golden_vault_uuid, vec![entry(1, 7)]).unwrap();
+    let outcome = sync_once(&folder, &identity, &state, 0u64).unwrap();
+
+    match outcome {
+        SyncOutcome::ConcurrentDetected {
+            bundle,
+            manifest_hash,
+            ..
+        } => {
+            let recomputed = compute_manifest_hash(&bundle.canonical.raw_envelope_bytes);
+            assert_eq!(
+                recomputed, manifest_hash,
+                "ConcurrentDetected.manifest_hash must equal BLAKE3 of bundle.canonical.raw_envelope_bytes — single-read invariant from #80 fix"
+            );
+
+            // Sanity: the bytes carried in the bundle ARE the on-disk
+            // envelope bytes (i.e., they came from a real read of the
+            // manifest file, not from re-encoding the decoded body).
+            let on_disk = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+            assert_eq!(
+                bundle.canonical.raw_envelope_bytes, on_disk,
+                "bundle.canonical.raw_envelope_bytes must equal the on-disk manifest.cbor.enc bytes"
+            );
+        }
+        other => panic!("expected ConcurrentDetected, got {other:?}"),
+    }
+}
+
 /// Helper: extract the golden vault's vault_uuid from its vault.toml
 /// so we don't hard-code the value here — it's pinned in the fixture
 /// builder and any drift would surface as a vault.toml decode failure.
