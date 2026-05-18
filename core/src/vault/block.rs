@@ -831,8 +831,9 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
             got: available,
         });
     }
-    let mut out = [0u8; N];
-    out.copy_from_slice(&bytes[*pos..*pos + N]);
+    let out: [u8; N] = bytes[*pos..*pos + N]
+        .try_into()
+        .expect("bounds check above guarantees N bytes");
     *pos += N;
     Ok(out)
 }
@@ -1669,8 +1670,7 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     }
 
     // Step 4: fresh AEAD nonce.
-    let mut aead_nonce: AeadNonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce: AeadNonce = aead::random_nonce(rng);
 
     // Step 5: canonical-CBOR plaintext.
     let pt_bytes = encode_plaintext(plaintext)?;

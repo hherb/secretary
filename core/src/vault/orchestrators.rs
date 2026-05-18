@@ -25,7 +25,7 @@ use rand_core::{CryptoRng, RngCore};
 
 use zeroize::Zeroize as _;
 
-use crate::crypto::aead::AEAD_TAG_LEN;
+use crate::crypto::aead::{self, AEAD_TAG_LEN};
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kdf::Argon2idParams;
 use crate::crypto::kem::{self, MlKem768Public, MlKem768Secret};
@@ -286,8 +286,7 @@ pub fn create_vault(
     // from the same RNG `unlock::create_vault` consumed; tests pin
     // determinism via a seeded ChaCha20Rng so this nonce is stable
     // across re-runs of the same seed.
-    let mut aead_nonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce = aead::random_nonce(rng);
 
     // Step 8: reconstruct the typed ML-DSA-65 secret-key wrapper for
     // signing. `card.sign` and `sign_manifest` both consume the
@@ -929,8 +928,7 @@ pub fn save_block(
     // Step 12: fresh AEAD nonce + re-sign the manifest. `sign_manifest`
     // canonical-encodes the body, AEAD-encrypts with the IBK (header AAD),
     // and produces both halves of the §8 hybrid signature.
-    let mut aead_nonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_header,
         &open.manifest,
@@ -1374,8 +1372,7 @@ pub fn share_block(
     // same identity that authored the block — for a single-owner
     // vault these are the same key pair). The manifest's IBK is
     // unchanged; we draw a fresh AEAD nonce.
-    let mut manifest_aead_nonce = [0u8; 24];
-    rng.fill_bytes(&mut manifest_aead_nonce);
+    let manifest_aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_manifest_header,
         &open.manifest,
@@ -1506,8 +1503,7 @@ pub fn trash_block(
     let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
     ed_sk_bytes.zeroize();
     let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
-    let mut aead_nonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_header,
         &open.manifest,
@@ -1871,8 +1867,7 @@ pub fn restore_block(
     let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
     ed_sk_bytes.zeroize();
     let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
-    let mut aead_nonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_header,
         &open.manifest,

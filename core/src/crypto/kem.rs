@@ -396,8 +396,7 @@ pub fn encap<R: RngCore + CryptoRng>(
     );
 
     // --- AEAD wrap of the Block Content Key (§7 steps 6–7). ---
-    let mut nonce_w: AeadNonce = [0u8; 24];
-    rng.fill_bytes(&mut nonce_w);
+    let nonce_w: AeadNonce = aead::random_nonce(rng);
     let aad = build_aead_aad(block_uuid, &t);
     let ct_w = aead::encrypt(&wrap_key, &nonce_w, &aad, block_content_key.expose())?;
 

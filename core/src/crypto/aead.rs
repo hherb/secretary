@@ -24,23 +24,21 @@
 //!
 //! ## Caller-side nonce generation idiom
 //!
-//! Every production call site that draws a fresh nonce uses this exact
-//! two-line pattern:
+//! Every production call site that draws a fresh nonce calls the
+//! [`random_nonce`] helper:
 //!
 //! ```ignore
-//! let mut aead_nonce = [0u8; 24];
-//! rng.fill_bytes(&mut aead_nonce);
+//! let aead_nonce = aead::random_nonce(rng);
 //! aead::encrypt(&key, &aead_nonce, &aad, plaintext)?;
 //! ```
 //!
-//! The `[0u8; 24]` literal is **buffer allocation, not a hardcoded value**.
-//! Rust requires stack arrays to be initialised before the borrow checker
-//! will let `rng.fill_bytes` write into them; the zeros are placeholders
-//! that exist for one source line and are overwritten by the CSPRNG before
-//! any cryptographic primitive observes the buffer. Open-sourcing this
-//! pattern is safe because what an attacker reading the source learns is
-//! "the nonce buffer is 24 bytes and is filled by `rng.fill_bytes`" — both
-//! of which are also stated in the format spec.
+//! Centralising the `[0u8; 24]; rng.fill_bytes(...)` pattern keeps the
+//! buffer-allocation literal out of every call site, both for readability
+//! and because static analyzers (e.g. CodeQL's
+//! `rust/hard-coded-cryptographic-value`) pattern-match the literal as a
+//! suspected hardcoded nonce when it appears next to a `nonce` identifier
+//! — even though the bytes are overwritten by the CSPRNG before any
+//! cryptographic primitive observes the buffer.
 //!
 //! Nonces are public values by design (they ride along with the ciphertext
 //! on disk and over the wire). Their only security requirement is "never
@@ -50,25 +48,25 @@
 //!
 //! What WOULD be a bug, by contrast:
 //!
-//! - `aead::encrypt(&key, &[0u8; 24], …)` — passing the literal zero-nonce
-//!   directly to `encrypt` (or any path where the buffer reaches `encrypt`
-//!   *before* `rng.fill_bytes` runs). That's a constant nonce reused across
-//!   calls, which collapses XChaCha20-Poly1305's confidentiality and
-//!   integrity guarantees on the second call under the same key.
+//! - `aead::encrypt(&key, &[0u8; 24], …)` — passing a literal zero-nonce
+//!   directly to `encrypt`. That's a constant nonce reused across calls,
+//!   which collapses XChaCha20-Poly1305's confidentiality and integrity
+//!   guarantees on the second call under the same key.
 //! - A nonce drawn from a *deterministic* RNG outside `#[cfg(test)]` —
 //!   tests use `ChaCha20Rng::from_seed([0u8; 32])` for reproducibility, but
-//!   production paths must take `&mut (impl RngCore + CryptoRng)` (which
-//!   in production is `OsRng`).
+//!   production paths must call [`random_nonce`] with `OsRng`.
 //!
-//! Audit recipe: `rg -B0 -A2 '\[0u8;' core/src/ --type rust` — every match
-//! whose next line is `rng.fill_bytes(&mut …)` or `copy_from_slice(…)` (a
-//! decoder reading the nonce out of an on-disk envelope) is fine; a buffer
-//! that flows directly into a crypto call without one of those is a bug.
+//! Audit recipe: `rg 'aead::encrypt|aead::decrypt' core/src/ --type rust`
+//! and confirm every encrypt call site sources its nonce from
+//! `aead::random_nonce`. Decoder paths use `try_into()` to extract the
+//! nonce from on-disk envelope bytes; that's not a nonce *generation* call
+//! site and the input is bounded by an explicit length check above.
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
 };
+use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::secret::{SecretBytes, Sensitive};
 
@@ -82,6 +80,25 @@ pub type AeadNonce = [u8; 24];
 /// Poly1305 authentication tag length, in bytes. The tag is appended to the
 /// ciphertext by [`encrypt`].
 pub const AEAD_TAG_LEN: usize = 16;
+
+/// Draw a fresh 24-byte XChaCha20 nonce from a cryptographic RNG.
+///
+/// This is the **sole** production source of AEAD nonces. Centralising the
+/// pattern keeps the `[0u8; 24]` stack-buffer literal out of every encrypt
+/// call site — both for readability and because static analyzers (e.g.
+/// CodeQL's `rust/hard-coded-cryptographic-value`) flag the literal as a
+/// suspected hardcoded nonce when it appears next to a `nonce` identifier,
+/// even though the bytes are overwritten by `fill_bytes` before return.
+///
+/// The caller is responsible for never reusing a returned nonce with the
+/// same key — `OsRng` makes accidental reuse astronomically unlikely
+/// (24-byte random nonce → 2^96 collisions before expected reuse).
+#[must_use]
+pub fn random_nonce(rng: &mut (impl RngCore + CryptoRng)) -> AeadNonce {
+    let mut nonce: AeadNonce = [0u8; 24];
+    rng.fill_bytes(&mut nonce);
+    nonce
+}
 
 /// Errors returned by AEAD operations.
 ///
