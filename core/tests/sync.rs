@@ -35,14 +35,14 @@ fn entry(b: u8, c: u64) -> VectorClockEntry {
 #[test]
 fn dispatch_equal_clocks_yields_nothing_to_do() {
     let state = SyncState::new([0x42; 16], vec![entry(1, 5)]).unwrap();
-    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap();
+    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap().unwrap();
     assert_eq!(outcome, SyncOutcome::NothingToDo);
 }
 
 #[test]
 fn dispatch_disk_strictly_ahead_yields_applied_automatically() {
     let state = SyncState::new([0x42; 16], vec![entry(1, 5)]).unwrap();
-    let outcome = __test_dispatch(vec![entry(1, 7)], &state).unwrap();
+    let outcome = __test_dispatch(vec![entry(1, 7)], &state).unwrap().unwrap();
     match outcome {
         SyncOutcome::AppliedAutomatically { new_state } => {
             assert_eq!(new_state.vault_uuid, [0x42; 16]);
@@ -55,7 +55,7 @@ fn dispatch_disk_strictly_ahead_yields_applied_automatically() {
 #[test]
 fn dispatch_disk_strictly_behind_yields_rollback_rejected() {
     let state = SyncState::new([0x42; 16], vec![entry(1, 9)]).unwrap();
-    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap();
+    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap().unwrap();
     match outcome {
         SyncOutcome::RollbackRejected(RollbackEvidence {
             disk_vector_clock,
@@ -69,32 +69,30 @@ fn dispatch_disk_strictly_behind_yields_rollback_rejected() {
 }
 
 #[test]
-fn dispatch_concurrent_clocks_yields_fork_detected() {
+fn dispatch_concurrent_clocks_signals_none() {
+    // The clock-only dispatch helper returns None on Concurrent;
+    // the integration test below (sync_once_concurrent_disk_yields_concurrent_detected)
+    // exercises the bundle-carrying ConcurrentDetected variant
+    // through the real sync_once + folder I/O path.
     let state = SyncState::new([0x42; 16], vec![entry(1, 5), entry(2, 3)]).unwrap();
     let outcome = __test_dispatch(vec![entry(1, 3), entry(2, 5)], &state).unwrap();
-    match outcome {
-        SyncOutcome::ForkDetected {
-            disk_vector_clock,
-            local_highest_seen,
-        } => {
-            assert_eq!(disk_vector_clock, vec![entry(1, 3), entry(2, 5)]);
-            assert_eq!(local_highest_seen, vec![entry(1, 5), entry(2, 3)]);
-        }
-        other => panic!("expected ForkDetected, got {other:?}"),
-    }
+    assert!(
+        outcome.is_none(),
+        "clock-only dispatch must return None on Concurrent, got {outcome:?}"
+    );
 }
 
 #[test]
 fn dispatch_empty_state_disk_present_yields_applied_automatically() {
     let state = SyncState::empty([0x42; 16]);
-    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap();
+    let outcome = __test_dispatch(vec![entry(1, 5)], &state).unwrap().unwrap();
     assert!(matches!(outcome, SyncOutcome::AppliedAutomatically { .. }));
 }
 
 #[test]
 fn dispatch_both_empty_yields_nothing_to_do() {
     let state = SyncState::empty([0x42; 16]);
-    let outcome = __test_dispatch(vec![], &state).unwrap();
+    let outcome = __test_dispatch(vec![], &state).unwrap().unwrap();
     assert_eq!(outcome, SyncOutcome::NothingToDo);
 }
 
@@ -154,7 +152,7 @@ fn sync_once_disk_strictly_behind_rejects_rollback() {
 }
 
 #[test]
-fn sync_once_concurrent_disk_detects_fork() {
+fn sync_once_concurrent_disk_yields_concurrent_detected() {
     use sync_helpers::fresh_vault_with_clock;
     // Disk has device 2 only; state has device 1 only → concurrent.
     let (folder, _tmp) = fresh_vault_with_clock(vec![entry(2, 5)]);
@@ -167,7 +165,30 @@ fn sync_once_concurrent_disk_detects_fork() {
     let golden_vault_uuid = extract_golden_vault_uuid();
     let state = SyncState::new(golden_vault_uuid, vec![entry(1, 7)]).unwrap();
     let outcome = sync_once(&folder, &identity, &state, 0u64).unwrap();
-    assert!(matches!(outcome, SyncOutcome::ForkDetected { .. }));
+    match outcome {
+        SyncOutcome::ConcurrentDetected {
+            bundle,
+            plan,
+            disk_vector_clock,
+            local_highest_seen,
+            ..
+        } => {
+            // Golden vault has no sibling files; bundle.copies must be empty.
+            assert!(
+                bundle.copies.is_empty(),
+                "no sibling manifests expected in golden_vault_001"
+            );
+            // No diverging blocks since no conflict-copy manifests exist
+            // to disagree with the canonical on any block.
+            assert!(
+                plan.diverging_blocks.is_empty(),
+                "no diverging blocks expected without conflict-copies"
+            );
+            assert_eq!(disk_vector_clock, vec![entry(2, 5)]);
+            assert_eq!(local_highest_seen, vec![entry(1, 7)]);
+        }
+        other => panic!("expected ConcurrentDetected, got {other:?}"),
+    }
 }
 
 /// Helper: extract the golden vault's vault_uuid from its vault.toml

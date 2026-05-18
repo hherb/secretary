@@ -72,10 +72,23 @@ fn replay_sync_kat() {
         let disk_clock = entries_from_json(&v.disk_vector_clock);
         let state = SyncState::new(hex_to_uuid(&v.state_vault_uuid), state_clock)
             .unwrap_or_else(|e| panic!("vector {} state invalid: {e}", v.name));
-        let outcome = __test_dispatch(disk_clock.clone(), &state)
+        let outcome_opt = __test_dispatch(disk_clock.clone(), &state)
             .unwrap_or_else(|e| panic!("vector {} dispatch failed: {e}", v.name));
 
-        match (v.expected_outcome.as_str(), &outcome) {
+        // ConcurrentDetected is signalled by `None` from the clock-only
+        // dispatch helper (the bundle-carrying outcome requires folder
+        // I/O the helper deliberately avoids). All other outcomes
+        // arrive as Some(_).
+        let outcome = match (&outcome_opt, v.expected_outcome.as_str()) {
+            (None, "ConcurrentDetected" | "ForkDetected") => continue,
+            (None, other) => panic!(
+                "vector {} expected {other} but dispatch signalled Concurrent (None)",
+                v.name
+            ),
+            (Some(o), _) => o,
+        };
+
+        match (v.expected_outcome.as_str(), outcome) {
             ("NothingToDo", SyncOutcome::NothingToDo) => {}
             ("AppliedAutomatically", SyncOutcome::AppliedAutomatically { new_state }) => {
                 let expected = entries_from_json(
@@ -89,7 +102,6 @@ fn replay_sync_kat() {
                     v.name
                 );
             }
-            ("ForkDetected", SyncOutcome::ForkDetected { .. }) => {}
             ("RollbackRejected", SyncOutcome::RollbackRejected(RollbackEvidence { .. })) => {}
             (expected, actual) => {
                 panic!("vector {} expected {} got {:?}", v.name, expected, actual)

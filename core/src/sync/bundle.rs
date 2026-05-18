@@ -34,7 +34,7 @@ pub struct ManifestHash(pub [u8; 32]);
 /// not secret material, matching the precedent of
 /// `crate::vault::OpenVault::manifest`. The `source_path` field is
 /// also skipped — file paths are diagnostic, not secrets.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct ManifestSnapshot {
     #[zeroize(skip)]
     pub manifest: Manifest,
@@ -50,7 +50,7 @@ pub struct ManifestSnapshot {
 /// envelope bytes are still zeroized on drop as defense-in-depth: a
 /// ciphertext is not plaintext, but key+nonce+ciphertext recovery
 /// would be a more dangerous corpus to leak than necessary.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct BlockEnvelope {
     pub bytes: Vec<u8>,
     #[zeroize(skip)]
@@ -63,7 +63,7 @@ pub struct BlockEnvelope {
 /// between the canonical manifest and at least one conflict-copy
 /// manifest. Blocks that aren't in this map are not in conflict and
 /// the canonical envelope is the authoritative value.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct BlockDivergence {
     pub canonical_envelope: BlockEnvelope,
     pub copy_envelopes: Vec<BlockEnvelope>,
@@ -78,7 +78,7 @@ pub struct BlockDivergence {
 /// provide a blanket `Zeroize` impl for `BTreeMap`; each
 /// `BlockDivergence` value is independently zeroized on drop via its
 /// own `ZeroizeOnDrop` impl when the map drops.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct VaultBundle {
     pub canonical: ManifestSnapshot,
     pub copies: Vec<ManifestSnapshot>,

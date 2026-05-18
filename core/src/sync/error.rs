@@ -26,6 +26,25 @@ pub enum SyncError {
 
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
+
+    /// I/O failure while enumerating sibling files during conflict-copy
+    /// ingestion. Per-file decode / authentication failures are
+    /// silently dropped per spec §1a-D3 — this variant only fires for
+    /// folder-level errors (e.g. read_dir on a missing/unreadable
+    /// folder, or read_dir on the blocks/ subdirectory).
+    #[error("conflict-copy scan failed: failed to enumerate folder: {source}")]
+    ConflictCopyScanIoFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Defensive invariant: the BLAKE3-256 hash of the canonical
+    /// manifest envelope bytes failed during freshness-anchor
+    /// computation. Should be unreachable — BLAKE3 is infallible —
+    /// but the variant is reserved so callers don't need to panic on
+    /// what is theoretically a typed result.
+    #[error("internal invariant: canonical manifest envelope failed BLAKE3 hash")]
+    CanonicalHashInternal,
 }
 
 #[cfg(test)]

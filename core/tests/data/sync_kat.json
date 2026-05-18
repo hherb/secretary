@@ -86,7 +86,7 @@
       "expected_outcome": "RollbackRejected"
     },
     {
-      "name": "concurrent_disjoint_devices_fork_detected",
+      "name": "concurrent_disjoint_devices_concurrent_detected",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
@@ -94,10 +94,10 @@
       "disk_vector_clock": [
         { "device_uuid": "02020202020202020202020202020202", "counter": 3 }
       ],
-      "expected_outcome": "ForkDetected"
+      "expected_outcome": "ConcurrentDetected"
     },
     {
-      "name": "concurrent_overlapping_devices_fork_detected",
+      "name": "concurrent_overlapping_devices_concurrent_detected",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
@@ -107,7 +107,7 @@
         { "device_uuid": "01010101010101010101010101010101", "counter": 8 },
         { "device_uuid": "02020202020202020202020202020202", "counter": 4 }
       ],
-      "expected_outcome": "ForkDetected"
+      "expected_outcome": "ConcurrentDetected"
     }
   ]
 }

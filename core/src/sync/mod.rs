@@ -18,16 +18,17 @@
 //! - `NothingToDo` — disk has nothing new since last sync (Equal clocks).
 //! - `AppliedAutomatically { new_state }` — disk strictly dominates local
 //!   state; caller persists `new_state` and proceeds.
-//! - `ForkDetected` — disk and local state are concurrent. Per
-//!   `docs/threat-model.md` §4 limit 3, detection is sufficient at this
-//!   layer; C.1.1 will extend this branch with §10's automatic merge.
+//! - `ConcurrentDetected` — disk and local state are concurrent.
+//!   C.1.1a's conflict-copy ingestion runs here: sibling manifest +
+//!   block envelopes are authenticated against the canonical owner
+//!   identity (§1a-D4) and packaged into a `VaultBundle` for
+//!   C.1.1b's merge layer to consume.
 //! - `RollbackRejected` — disk is strictly older than local state per §10.
 //!
 //! The four-outcome enum is orchestration-layer (it widens §10's tri-state
 //! into a typed result for caller dispatch); the cryptographic primitives
-//! it dispatches on are spec-frozen. Automatic merge of concurrent states,
-//! veto-on-tombstone, and conflict-copy file ingestion are scoped to a
-//! separate C.1.1 slice with its own design.
+//! it dispatches on are spec-frozen. Automatic merge of concurrent states
+//! and veto-on-tombstone are scoped to C.1.1b.
 
 pub mod bundle;
 pub mod error;
@@ -41,5 +42,5 @@ pub use error::SyncError;
 #[doc(hidden)]
 pub use once::__test_dispatch;
 pub use once::sync_once;
-pub use outcome::{RollbackEvidence, SyncOutcome};
+pub use outcome::{DiffPlan, RollbackEvidence, SyncOutcome};
 pub use state::SyncState;

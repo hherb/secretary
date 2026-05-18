@@ -548,6 +548,30 @@ pub fn read_vault_manifest(
     Ok(manifest_body)
 }
 
+/// Like [`read_vault_manifest`] but returns the verified owner contact
+/// card and the on-disk envelope alongside the decrypted manifest body.
+///
+/// `pub(crate)` because the C.1.1a Concurrent dispatch path
+/// ([`crate::sync::sync_once`]) needs the owner card (for owner
+/// fingerprint + Ed25519/ML-DSA-65 public keys to authenticate
+/// conflict-copies) and the envelope (for the BLAKE3 TOCTOU
+/// freshness anchor in `SyncOutcome::ConcurrentDetected`). Doing this
+/// from outside the orchestrators module would require duplicating
+/// the load + self-verify + AEAD-decrypt + cross-checks already
+/// performed once by `read_and_verify_manifest`.
+pub(crate) fn read_vault_manifest_full(
+    folder: &Path,
+    identity: &UnlockedIdentity,
+    local_highest_clock: Option<&[VectorClockEntry]>,
+) -> Result<(ContactCard, Manifest, ManifestFile), VaultError> {
+    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
+    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
+        context: "failed to read vault.toml",
+        source: e,
+    })?;
+    read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)
+}
+
 /// Shared helper for [`open_vault`] and [`read_vault_manifest`].
 ///
 /// Inputs: the vault folder, pre-read `vault.toml` bytes, the unlocked
