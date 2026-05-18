@@ -20,8 +20,11 @@ use std::path::{Path, PathBuf};
 use crate::crypto::aead::AeadKey;
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
-use crate::sync::bundle::ManifestSnapshot;
-use crate::vault::{decode_manifest_file, decrypt_manifest_body, verify_manifest};
+use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot};
+use crate::vault::{
+    decode_block_file, decode_manifest_file, decrypt_manifest_body, verify_block_signature,
+    verify_manifest,
+};
 
 /// The canonical manifest filename on disk. Conflict-copy siblings
 /// are recognised by starting with this prefix and not matching it
@@ -203,6 +206,15 @@ pub(crate) fn enumerate_manifest_siblings(folder: &Path) -> Result<Vec<PathBuf>,
 /// gigabyte file into the decoder.
 const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
 
+/// DoS bound for one candidate block envelope. Block files carry
+/// AEAD-encrypted record payloads plus a per-recipient KEM wrap
+/// table; the 16 MiB ceiling is well above any reasonable single
+/// block (record payloads are bounded by the §6 record schema; the
+/// recipient table is capped at `u16::MAX` entries). Same rationale
+/// as [`MAX_MANIFEST_SIZE`] — silent skip pre-decode.
+#[allow(dead_code)]
+const MAX_BLOCK_FILE_SIZE: usize = 16 * 1024 * 1024;
+
 /// Compose [`enumerate_manifest_siblings`] +
 /// [`authenticate_manifest_envelope`]: scan the vault folder for
 /// sibling manifest files and return only those that authenticate.
@@ -261,6 +273,74 @@ pub(crate) fn ingest_manifest_copies(
         }
     }
     Ok(copies)
+}
+
+/// Attempt to decode + authenticate one candidate block envelope
+/// against the canonical owner identity. Returns `Some(envelope)` if
+/// ALL THREE block-side MUST rules hold; returns `None` otherwise.
+///
+/// Block-side authentication reduces to three MUSTs (vs. five for
+/// manifests) — the manifest layer's vault_uuid binding and AEAD
+/// decrypt are inherited transitively: a block_uuid only enters the
+/// ingestion pipeline because its parent manifest already
+/// authenticated and named it as a divergent block. The three
+/// block-side rules:
+///
+///   1. Bytes decode as a `BlockFile` envelope.
+///   2. The envelope's `author_fingerprint` matches the canonical
+///      vault owner.
+///   3. §8 hybrid Ed25519 ∧ ML-DSA-65 signature verifies under the
+///      canonical owner's public keys.
+///
+/// The encrypted body is held verbatim inside [`BlockEnvelope.bytes`]
+/// — C.1.1b's `prepare_merge` is responsible for AEAD-decrypting on
+/// demand. Pure function — performs no I/O.
+#[allow(dead_code)]
+#[must_use]
+pub(crate) fn authenticate_block_envelope(
+    candidate_bytes: &[u8],
+    candidate_source_path: PathBuf,
+    expected_author_fp: Fingerprint,
+    owner_ed25519_pk: &Ed25519Public,
+    owner_ml_dsa_65_pk: &MlDsa65Public,
+) -> Option<BlockEnvelope> {
+    // Rule 1: decode envelope.
+    let block_file = match decode_block_file(candidate_bytes) {
+        Ok(bf) => bf,
+        Err(err) => {
+            tracing::debug!(
+                path = %candidate_source_path.display(),
+                error = %err,
+                "block conflict-copy rejected: decode failed"
+            );
+            return None;
+        }
+    };
+
+    // Rule 2: author_fingerprint matches canonical owner.
+    if block_file.author_fingerprint != expected_author_fp {
+        tracing::debug!(
+            path = %candidate_source_path.display(),
+            "block conflict-copy rejected: author_fingerprint mismatch"
+        );
+        return None;
+    }
+
+    // Rule 3: §8 hybrid signature verifies. verify_block_signature
+    // returns Err on EITHER Ed25519 or ML-DSA-65 half failing.
+    if let Err(err) = verify_block_signature(&block_file, owner_ed25519_pk, owner_ml_dsa_65_pk) {
+        tracing::debug!(
+            path = %candidate_source_path.display(),
+            error = %err,
+            "block conflict-copy rejected: hybrid signature verification failed"
+        );
+        return None;
+    }
+
+    Some(BlockEnvelope {
+        bytes: candidate_bytes.to_vec(),
+        source_path: candidate_source_path,
+    })
 }
 
 #[cfg(test)]
@@ -353,6 +433,32 @@ mod tests {
 
         let siblings = enumerate_manifest_siblings(folder).expect("scan");
         assert!(siblings.is_empty(), "no siblings expected");
+    }
+
+    #[test]
+    fn authenticate_block_envelope_rejects_garbage_bytes() {
+        let (ed, pq) = dummy_owner_keys();
+        let result = authenticate_block_envelope(
+            b"not a block envelope",
+            PathBuf::from("/tmp/garbage.cbor.enc"),
+            [0u8; 16],
+            &ed,
+            &pq,
+        );
+        assert!(result.is_none(), "garbage bytes must not authenticate");
+    }
+
+    #[test]
+    fn authenticate_block_envelope_rejects_empty_bytes() {
+        let (ed, pq) = dummy_owner_keys();
+        let result = authenticate_block_envelope(
+            &[],
+            PathBuf::from("/tmp/empty.cbor.enc"),
+            [0u8; 16],
+            &ed,
+            &pq,
+        );
+        assert!(result.is_none(), "empty bytes must not authenticate");
     }
 
     #[test]

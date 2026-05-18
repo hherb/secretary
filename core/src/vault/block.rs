@@ -1502,6 +1502,32 @@ pub fn decode_block_file(bytes: &[u8]) -> Result<BlockFile, BlockError> {
     })
 }
 
+/// Verify the §8 hybrid Ed25519 ∧ ML-DSA-65 signature on a
+/// [`BlockFile`] without decapsulating any recipient or AEAD-decrypting
+/// the body. Useful for callers that only need authentication
+/// (conflict-copy ingest in [`crate::sync::ingest`]) and don't have or
+/// don't need the recipient/reader keys.
+///
+/// Returns `Ok(())` only if BOTH signature halves verify — there is no
+/// OR-short-circuit. A failure of either Ed25519 or ML-DSA-65 yields
+/// [`BlockError::Signature`] (or its inner variants), matching the
+/// same enforcement as [`decrypt_block`] step 2.
+pub fn verify_block_signature(
+    block: &BlockFile,
+    sender_ed_pk: &Ed25519Public,
+    sender_pq_pk: &MlDsa65Public,
+) -> Result<(), BlockError> {
+    let m = signed_message_bytes(
+        &block.header,
+        &block.recipients,
+        &block.aead_nonce,
+        &block.aead_ct,
+        &block.aead_tag,
+    )?;
+    sig::verify(SigRole::Block, &m, &block.sig, sender_ed_pk, sender_pq_pk)?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrators: encrypt_block / decrypt_block (§6.4 / §6.5)
 // ---------------------------------------------------------------------------
