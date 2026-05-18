@@ -70,8 +70,7 @@ pub fn sync_once(
     // its own ClockRelation dispatch below and surfaces the typed
     // SyncOutcome::RollbackRejected variant instead of
     // VaultError::Rollback.
-    let (owner_card, manifest, _manifest_file) =
-        read_vault_manifest_full(vault_folder, identity, None)?;
+    let (owner_card, manifest) = read_vault_manifest_full(vault_folder, identity, None)?;
 
     // Step 2: state ↔ authenticated manifest body vault_uuid check.
     if manifest.vault_uuid != state.vault_uuid {

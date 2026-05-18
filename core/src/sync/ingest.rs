@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::crypto::aead::AeadKey;
+use crate::crypto::aead::{AeadKey, AEAD_TAG_LEN};
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, BlockEnvelope, ManifestSnapshot, VaultBundle};
@@ -31,10 +31,6 @@ use crate::vault::{
 /// are recognised by starting with this prefix and not matching it
 /// exactly.
 const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
-
-/// Length of the AEAD tag appended to the manifest body ciphertext.
-/// Mirrors the constant in `crate::vault::manifest`.
-const AEAD_TAG_LEN: usize = 16;
 
 /// Attempt to decode + authenticate one candidate manifest envelope
 /// against the canonical owner identity. Returns `Some(snapshot)` if
@@ -60,11 +56,6 @@ const AEAD_TAG_LEN: usize = 16;
 /// poisoning path (spec §1a-D4).
 ///
 /// Pure function — performs no I/O, no environment access.
-///
-/// `#[allow(dead_code)]` until Task 6's `ingest_manifest_copies`
-/// wires this helper into the top-level scan; removed when the
-/// integration arrives.
-#[allow(dead_code)]
 #[must_use]
 pub(crate) fn authenticate_manifest_envelope(
     candidate_bytes: &[u8],
@@ -175,7 +166,6 @@ pub(crate) fn authenticate_manifest_envelope(
 /// `manifest.cbor.enc.sync-conflict-…`, etc. The filter is the
 /// heuristic discovery hook — authentication is the security
 /// boundary (spec §1a-D3).
-#[allow(dead_code)]
 pub(crate) fn enumerate_manifest_siblings(folder: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut out: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(folder)? {
@@ -213,7 +203,6 @@ const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
 /// block (record payloads are bounded by the §6 record schema; the
 /// recipient table is capped at `u16::MAX` entries). Same rationale
 /// as [`MAX_MANIFEST_SIZE`] — silent skip pre-decode.
-#[allow(dead_code)]
 const MAX_BLOCK_FILE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Compose [`enumerate_manifest_siblings`] +
@@ -229,7 +218,6 @@ const MAX_BLOCK_FILE_SIZE: usize = 16 * 1024 * 1024;
 /// Per-file authentication failures are silently dropped (spec
 /// §1a-D3). The "silently ignore" disposition is only safe because
 /// `authenticate_manifest_envelope` enforces all five §1a-D4 MUSTs.
-#[allow(dead_code)]
 pub(crate) fn ingest_manifest_copies(
     folder: &Path,
     canonical_vault_uuid: [u8; 16],
@@ -296,7 +284,6 @@ pub(crate) fn ingest_manifest_copies(
 /// The encrypted body is held verbatim inside [`BlockEnvelope.bytes`]
 /// — C.1.1b's `prepare_merge` is responsible for AEAD-decrypting on
 /// demand. Pure function — performs no I/O.
-#[allow(dead_code)]
 #[must_use]
 pub(crate) fn authenticate_block_envelope(
     candidate_bytes: &[u8],
@@ -363,7 +350,6 @@ pub(crate) fn authenticate_block_envelope(
 /// that block (the C.1.1b merge layer handles fully-missing blocks
 /// in its own pass). I/O errors during sibling enumeration ARE
 /// propagated because they indicate a folder-level problem.
-#[allow(dead_code)]
 pub(crate) fn ingest_block_divergence(
     folder: &Path,
     canonical: &Manifest,
@@ -473,7 +459,6 @@ pub(crate) fn ingest_block_divergence(
 /// `prepare_merge`. Pure function over the `BTreeMap` keys; the order
 /// is already canonical-ascending because `BTreeMap::keys()` iterates
 /// in sort order.
-#[allow(dead_code)]
 #[must_use]
 pub(crate) fn compute_diff_plan(bundle: &VaultBundle) -> Vec<[u8; 16]> {
     bundle.diverging_blocks.keys().copied().collect()
@@ -495,7 +480,7 @@ pub(crate) fn compute_diff_plan(bundle: &VaultBundle) -> Vec<[u8; 16]> {
 /// envelope bytes, source path, owner fp, owner ed pk, owner pq pk,
 /// IBK) and bundling them into an opaque context struct would just
 /// move the complexity behind a single import.
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_conflict_copies(
     folder: &Path,
     canonical: &Manifest,
@@ -547,7 +532,6 @@ pub(crate) fn ingest_conflict_copies(
 ///
 /// Returns `Ok(Vec::new())` if the blocks subdirectory doesn't exist
 /// (a fresh vault with no blocks yet is a legitimate state).
-#[allow(dead_code)]
 pub(crate) fn enumerate_block_siblings(
     folder: &Path,
     block_uuid: &[u8; 16],

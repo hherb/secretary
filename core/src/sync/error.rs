@@ -37,14 +37,6 @@ pub enum SyncError {
         #[source]
         source: std::io::Error,
     },
-
-    /// Defensive invariant: the BLAKE3-256 hash of the canonical
-    /// manifest envelope bytes failed during freshness-anchor
-    /// computation. Should be unreachable — BLAKE3 is infallible —
-    /// but the variant is reserved so callers don't need to panic on
-    /// what is theoretically a typed result.
-    #[error("internal invariant: canonical manifest envelope failed BLAKE3 hash")]
-    CanonicalHashInternal,
 }
 
 #[cfg(test)]
