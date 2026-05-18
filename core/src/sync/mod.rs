@@ -29,11 +29,13 @@
 //! veto-on-tombstone, and conflict-copy file ingestion are scoped to a
 //! separate C.1.1 slice with its own design.
 
+pub mod bundle;
 pub mod error;
 pub mod once;
 pub mod outcome;
 pub mod state;
 
+pub use bundle::{BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot, VaultBundle};
 pub use error::SyncError;
 #[doc(hidden)]
 pub use once::__test_dispatch;
