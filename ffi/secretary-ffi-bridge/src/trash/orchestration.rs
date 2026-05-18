@@ -129,7 +129,12 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }
-        | VaultError::RestoreVerificationFailed { .. } => FfiVaultError::SaveCryptoFailure {
+        | VaultError::RestoreVerificationFailed { .. }
+        // Unreachable from trash_block (open_vault always precedes and
+        // would have surfaced this earlier), but listed for exhaustiveness
+        // per issue #40. The generic `From<VaultError>` impl routes this
+        // to `CorruptVault` on the read path.
+        | VaultError::BlockFingerprintMismatch { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }

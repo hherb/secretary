@@ -264,4 +264,52 @@ pub enum VaultError {
         block_uuid: [u8; 16],
         detail: String,
     },
+
+    /// Added in C.1.1b: per-block fingerprint check inside
+    /// [`open_vault`] detected that an on-disk block file's bytes do
+    /// not BLAKE3-256-hash to the value committed in the manifest's
+    /// `BlockEntry.fingerprint`. The manifest's own hybrid signature
+    /// has already verified by the time this fires, so the disagreement
+    /// is between the (signed) manifest and the (unsigned-at-the-
+    /// envelope-level) block file.
+    ///
+    /// The most common cause is a crash between the block-file write
+    /// and the manifest write inside `commit_with_decisions` (a partial
+    /// commit). Recovery: re-run the three-step
+    /// `sync_once → prepare_merge → commit_with_decisions` flow; CRDT
+    /// idempotence guarantees the same final state once both writes
+    /// land. The less-common cause is tamper / on-disk corruption — in
+    /// either case the error is loud rather than silent.
+    #[error(
+        "block {block_uuid:02x?} fingerprint mismatch: manifest expected {expected:02x?}, \
+         disk has {got:02x?}"
+    )]
+    BlockFingerprintMismatch {
+        block_uuid: [u8; 16],
+        expected: [u8; 32],
+        got: [u8; 32],
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_fingerprint_mismatch_display_is_stable() {
+        let err = VaultError::BlockFingerprintMismatch {
+            block_uuid: [0x01; 16],
+            expected: [0x02; 32],
+            got: [0x03; 32],
+        };
+        let s = format!("{err}");
+        // Tag the substrings we want long-term consumers (logs, CLIs) to
+        // be able to grep for. Avoid pinning the exact concatenation so
+        // a future cosmetic tweak of the message body does not turn
+        // into a breaking API change.
+        assert!(s.contains("fingerprint mismatch"));
+        assert!(s.contains("01"));
+        assert!(s.contains("02"));
+        assert!(s.contains("03"));
+    }
 }

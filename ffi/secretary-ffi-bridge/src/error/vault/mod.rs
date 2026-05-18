@@ -337,7 +337,13 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             | VE::ManifestAuthorMismatch
             | VE::ManifestVaultUuidMismatch { .. }
             | VE::KdfParamsMismatch
-            | VE::ClockOverflow { .. }) => FfiVaultError::CorruptVault {
+            | VE::ClockOverflow { .. }
+            // C.1.1b: open_vault surfaces this when an on-disk block's
+            // bytes do not BLAKE3-hash to the manifest's committed
+            // fingerprint. Same "data on disk doesn't match what we
+            // signed" semantic as RestoreVerificationFailed → fold to
+            // CorruptVault.
+            | VE::BlockFingerprintMismatch { .. }) => FfiVaultError::CorruptVault {
                 detail: format!("{e}"),
             },
         }

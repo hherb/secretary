@@ -140,7 +140,12 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         | VaultError::ClockOverflow { .. }
         | VaultError::NotAuthor { .. }
         | VaultError::BlockNotFound { .. }
-        | VaultError::RecipientAlreadyPresent => FfiVaultError::SaveCryptoFailure {
+        | VaultError::RecipientAlreadyPresent
+        // Unreachable from restore_block (open_vault always precedes
+        // and would have surfaced this earlier), but listed for
+        // exhaustiveness per issue #40. The generic `From<VaultError>`
+        // impl routes this to `CorruptVault` on the read path.
+        | VaultError::BlockFingerprintMismatch { .. } => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }
