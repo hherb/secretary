@@ -71,7 +71,10 @@ proptest! {
         disk_clock.sort_by_key(|e| e.device_uuid);
 
         let state = SyncState::new(vault_uuid, state_clock).unwrap();
-        let new_state = match __test_dispatch(disk_clock.clone(), &state).unwrap() {
+        let new_state = match __test_dispatch(disk_clock.clone(), &state)
+            .unwrap()
+            .expect("constructed input must yield Some(AppliedAutomatically)")
+        {
             SyncOutcome::AppliedAutomatically { new_state } => new_state,
             other => {
                 prop_assert!(
@@ -82,7 +85,9 @@ proptest! {
                 unreachable!()
             }
         };
-        let second = __test_dispatch(disk_clock, &new_state).unwrap();
+        let second = __test_dispatch(disk_clock, &new_state)
+            .unwrap()
+            .expect("re-dispatch on fixpoint must yield Some(NothingToDo)");
         prop_assert_eq!(second, SyncOutcome::NothingToDo);
     }
 
@@ -95,13 +100,17 @@ proptest! {
         disk_clock in canonical_clock_strategy(),
     ) {
         let state = SyncState::new(vault_uuid, state_clock).unwrap();
-        let outcome = __test_dispatch(disk_clock, &state).unwrap();
-        // Pattern coverage — any future variant addition compile-errors here.
-        let _classified: u8 = match outcome {
-            SyncOutcome::NothingToDo => 0,
-            SyncOutcome::AppliedAutomatically { .. } => 1,
-            SyncOutcome::ForkDetected { .. } => 2,
-            SyncOutcome::RollbackRejected(RollbackEvidence { .. }) => 3,
+        let outcome_opt = __test_dispatch(disk_clock, &state).unwrap();
+        // The clock-only dispatch helper returns Ok(None) on Concurrent
+        // (the full ConcurrentDetected variant requires folder I/O).
+        // Pattern coverage on the inner outcome — any future variant
+        // addition compile-errors here.
+        let _classified: u8 = match outcome_opt {
+            None => 2, // signals Concurrent → bundle-carrying outcome
+            Some(SyncOutcome::NothingToDo) => 0,
+            Some(SyncOutcome::AppliedAutomatically { .. }) => 1,
+            Some(SyncOutcome::ConcurrentDetected { .. }) => 2,
+            Some(SyncOutcome::RollbackRejected(RollbackEvidence { .. })) => 3,
         };
     }
 }

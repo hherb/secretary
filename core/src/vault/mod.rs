@@ -25,13 +25,13 @@ pub(crate) mod canonical;
 pub mod conflict;
 pub(crate) mod io;
 pub mod manifest;
-mod orchestrators;
+pub(crate) mod orchestrators;
 pub mod record;
 
 pub use block::{
-    decode_block_file, decrypt_block, encode_block_file, encrypt_block, BlockError, BlockFile,
-    BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap, VectorClockEntry,
-    FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
+    decode_block_file, decrypt_block, encode_block_file, encrypt_block, verify_block_signature,
+    BlockError, BlockFile, BlockHeader, BlockPlaintext, RecipientPublicKeys, RecipientWrap,
+    VectorClockEntry, FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
 };
 pub use conflict::{
     clock_relation, merge_block, merge_record, merge_vector_clocks, ClockRelation, ConflictError,

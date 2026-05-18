@@ -60,8 +60,14 @@ const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 const CONTACTS_SUBDIR: &str = "contacts";
 
 /// Subdirectory holding encrypted block files
-/// (vault-format.md §1, §6.1).
-const BLOCKS_SUBDIR: &str = "blocks";
+/// (vault-format.md §1, §6.1). `pub(crate)` so the C.1.1a
+/// conflict-copy scanner can address the same path.
+pub(crate) const BLOCKS_SUBDIR: &str = "blocks";
+
+/// Filename extension for block envelopes on disk: every block file
+/// is `<uuid-hyphenated>.cbor.enc`. Re-exported `pub(crate)` for the
+/// same reason as [`BLOCKS_SUBDIR`].
+pub(crate) const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 
 /// Format a 16-byte UUID as canonical lowercase 8-4-4-4-12 hex
 /// (`docs/vault-format.md` §1).
@@ -69,7 +75,13 @@ const BLOCKS_SUBDIR: &str = "blocks";
 /// Pure helper; no allocation other than the returned `String`. The
 /// dashed grouping is normative for `<contact-uuid>.card` and
 /// `<block-uuid>.cbor.enc` filenames.
-fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
+///
+/// `pub(crate)` so the C.1.1a conflict-copy scanner
+/// (`crate::sync::ingest::enumerate_block_siblings`) can derive
+/// canonical block filenames from a `block_uuid` without
+/// re-implementing — keeping the on-disk filename format pinned to a
+/// single source of truth.
+pub(crate) fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
     let mut s = String::with_capacity(36);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for (i, b) in uuid.iter().enumerate() {
@@ -534,6 +546,30 @@ pub fn read_vault_manifest(
     let (_owner_card, manifest_body, _manifest_file) =
         read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)?;
     Ok(manifest_body)
+}
+
+/// Like [`read_vault_manifest`] but returns the verified owner contact
+/// card alongside the decrypted manifest body.
+///
+/// `pub(crate)` because the C.1.1a Concurrent dispatch path
+/// ([`crate::sync::sync_once`]) needs the owner card (for owner
+/// fingerprint + Ed25519/ML-DSA-65 public keys to authenticate
+/// conflict-copies). Doing this from outside the orchestrators module
+/// would require duplicating the load + self-verify + AEAD-decrypt +
+/// cross-checks already performed once by `read_and_verify_manifest`.
+pub(crate) fn read_vault_manifest_full(
+    folder: &Path,
+    identity: &UnlockedIdentity,
+    local_highest_clock: Option<&[VectorClockEntry]>,
+) -> Result<(ContactCard, Manifest), VaultError> {
+    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
+    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
+        context: "failed to read vault.toml",
+        source: e,
+    })?;
+    let (owner_card, manifest, _envelope) =
+        read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)?;
+    Ok((owner_card, manifest))
 }
 
 /// Shared helper for [`open_vault`] and [`read_vault_manifest`].
