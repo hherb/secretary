@@ -401,6 +401,14 @@ pub fn rewrite_block_with_records(
         unknown: std::collections::BTreeMap::new(),
     };
 
+    // `ChaCha20Rng::from_seed` takes a 32-byte seed; the BLOCK_NONCE_*
+    // constants are 24 bytes (the AEAD-nonce length). Copy them into
+    // the first 24 bytes of the seed and leave the trailing 8 bytes
+    // zero — distinct callers must pass nonces that differ in the
+    // first 24 bytes, which all three BLOCK_NONCE_E/F/G do. Don't
+    // "fix" the trailing zeros by injecting randomness here: that
+    // would break determinism, which the `distinct_seeds_produce_
+    // distinct_ciphertexts` invariant depends on.
     let mut seed = [0u8; 32];
     seed[..AEAD_NONCE_LEN].copy_from_slice(aead_nonce);
     let mut rng = ChaCha20Rng::from_seed(seed);
