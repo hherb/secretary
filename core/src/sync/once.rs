@@ -36,23 +36,23 @@ const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 ///   1. Calls [`crate::vault::orchestrators::read_vault_manifest_full`]
 ///      with the caller-held `&UnlockedIdentity` to read + verify-and-
 ///      decrypt the manifest body without re-running Argon2, AND
-///      surface the verified owner contact card + on-disk envelope.
+///      surface the verified owner contact card + raw on-disk envelope
+///      bytes (single read; closes the issue #80 TOCTOU window where a
+///      concurrent writer could rewrite `manifest.cbor.enc` between
+///      the verify-decrypt read and a follow-up hash read).
 ///   2. Cross-checks the authenticated `manifest.vault_uuid` against
 ///      `state.vault_uuid`. Mismatch → [`SyncError::VaultUuidMismatch`].
-///   3. Re-reads the canonical envelope bytes for the BLAKE3
-///      [`ManifestHash`] (TOCTOU freshness anchor for C.1.1b's
-///      commit path). Cheap re-read of a small file; the alternative
-///      (extending the loader to also return bytes) would couple the
-///      hash computation to a now-stable byte-format function.
-///   4. Computes the [`ClockRelation`] between
+///   3. Computes the [`ClockRelation`] between
 ///      `state.highest_vector_clock_seen` and the disk manifest's
 ///      `vector_clock`, then dispatches to the matching
 ///      [`SyncOutcome`] variant.
-///   5. On `Concurrent`, calls
-///      [`crate::sync::ingest::ingest_conflict_copies`] with the
-///      pre-derived owner public keys + IBK to assemble the
-///      [`VaultBundle`], then computes a [`DiffPlan`] from its
-///      diverging blocks.
+///   4. On `Concurrent`, BLAKE3-hashes the envelope bytes from step 1
+///      to produce the freshness [`ManifestHash`] (TOCTOU anchor for
+///      C.1.1b's commit path), then calls
+///      [`crate::sync::ingest::ingest_conflict_copies`] with the same
+///      bytes + the pre-derived owner public keys + IBK to assemble
+///      the [`VaultBundle`], and finally computes a [`DiffPlan`] from
+///      its diverging blocks.
 ///
 /// `_now_ms` is **currently unused** in C.1 phase 1 + 1a — pass any
 /// `u64` (callers conventionally pass `0`). Reserved for C.1.1b's
@@ -65,12 +65,17 @@ pub fn sync_once(
     _now_ms: u64,
 ) -> Result<SyncOutcome, SyncError> {
     // Step 1: read + verify + AEAD-decrypt the manifest body via the
-    // caller-held UnlockedIdentity. `local_highest_clock = None` so
+    // caller-held UnlockedIdentity, and capture the raw on-disk
+    // envelope bytes for the Concurrent-arm freshness hash. A single
+    // read keeps the bytes-used-for-verify identical to the bytes-
+    // used-for-hash and to the bytes carried in `VaultBundle.canonical`
+    // (closes #80). `local_highest_clock = None` so
     // read_vault_manifest_full skips its own §10 check; sync_once does
     // its own ClockRelation dispatch below and surfaces the typed
     // SyncOutcome::RollbackRejected variant instead of
     // VaultError::Rollback.
-    let (owner_card, manifest) = read_vault_manifest_full(vault_folder, identity, None)?;
+    let (owner_card, manifest, canonical_envelope_bytes) =
+        read_vault_manifest_full(vault_folder, identity, None)?;
 
     // Step 2: state ↔ authenticated manifest body vault_uuid check.
     if manifest.vault_uuid != state.vault_uuid {
@@ -101,17 +106,21 @@ pub fn sync_once(
             identity,
             &owner_card,
             &manifest,
+            &canonical_envelope_bytes,
             disk_clock,
             state.highest_vector_clock_seen.clone(),
         ),
     }
 }
 
-/// Build the `ConcurrentDetected` outcome by reading the canonical
-/// envelope bytes, computing the freshness anchor, deriving owner
-/// public keys, and invoking
+/// Build the `ConcurrentDetected` outcome from the already-read +
+/// verified canonical envelope bytes: compute the freshness anchor,
+/// derive owner public keys, and invoke
 /// [`crate::sync::ingest::ingest_conflict_copies`].
 ///
+/// `canonical_envelope_bytes` is borrowed from [`sync_once`]'s single
+/// manifest read — re-reading here would re-open the issue #80 TOCTOU
+/// window where the bytes hashed differ from the bytes verified.
 /// Factored out for readability — the work isn't independently
 /// testable without the same orchestrator-level fixture that
 /// integration tests use, so the function stays private to this
@@ -121,13 +130,12 @@ fn assemble_concurrent_outcome(
     identity: &UnlockedIdentity,
     owner_card: &ContactCard,
     manifest: &crate::vault::Manifest,
+    canonical_envelope_bytes: &[u8],
     disk_clock: Vec<VectorClockEntry>,
     local_highest_seen: Vec<VectorClockEntry>,
 ) -> Result<SyncOutcome, SyncError> {
     let canonical_path: PathBuf = vault_folder.join(CANONICAL_MANIFEST_FILENAME);
-    let canonical_envelope_bytes = std::fs::read(&canonical_path)
-        .map_err(|e| SyncError::ConflictCopyScanIoFailed { source: e })?;
-    let manifest_hash: ManifestHash = compute_manifest_hash(&canonical_envelope_bytes);
+    let manifest_hash: ManifestHash = compute_manifest_hash(canonical_envelope_bytes);
 
     let owner_card_bytes = owner_card
         .to_canonical_cbor()
@@ -139,7 +147,7 @@ fn assemble_concurrent_outcome(
     let bundle: VaultBundle = ingest_conflict_copies(
         vault_folder,
         manifest,
-        &canonical_envelope_bytes,
+        canonical_envelope_bytes,
         canonical_path,
         owner_fp,
         &owner_card.ed25519_pk,

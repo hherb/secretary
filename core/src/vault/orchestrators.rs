@@ -504,7 +504,13 @@ pub fn open_vault(
     // `read_vault_manifest` so a caller that already holds an
     // UnlockedIdentity does not re-run Argon2 just to inspect the
     // manifest body.
-    let (owner_card, manifest_body, manifest_file) =
+    //
+    // `_manifest_envelope_bytes` (raw on-disk bytes of `manifest.cbor.enc`)
+    // is discarded here — `open_vault` doesn't need them. The C.1.1a
+    // sync_once Concurrent path uses them via `read_vault_manifest_full`
+    // to compute the freshness `ManifestHash` without re-reading the file
+    // (see #80).
+    let (owner_card, manifest_body, manifest_file, _manifest_envelope_bytes) =
         read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
 
     Ok(OpenVault {
@@ -542,33 +548,44 @@ pub fn read_vault_manifest(
         context: "failed to read vault.toml",
         source: e,
     })?;
-    let (_owner_card, manifest_body, _manifest_file) =
+    let (_owner_card, manifest_body, _manifest_file, _manifest_envelope_bytes) =
         read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)?;
     Ok(manifest_body)
 }
 
 /// Like [`read_vault_manifest`] but returns the verified owner contact
-/// card alongside the decrypted manifest body.
+/// card AND the raw manifest envelope bytes alongside the decrypted
+/// manifest body.
 ///
 /// `pub(crate)` because the C.1.1a Concurrent dispatch path
 /// ([`crate::sync::sync_once`]) needs the owner card (for owner
 /// fingerprint + Ed25519/ML-DSA-65 public keys to authenticate
-/// conflict-copies). Doing this from outside the orchestrators module
-/// would require duplicating the load + self-verify + AEAD-decrypt +
-/// cross-checks already performed once by `read_and_verify_manifest`.
+/// conflict-copies) AND the envelope bytes (for the BLAKE3
+/// [`crate::sync::ManifestHash`] freshness anchor consumed by
+/// C.1.1b's commit path). Returning both from one call closes the
+/// previous double-read TOCTOU window where a concurrent writer could
+/// rewrite `manifest.cbor.enc` between the verify-decrypt read and a
+/// follow-up hash read (issue #80). Doing this from outside the
+/// orchestrators module would require duplicating the load + self-
+/// verify + AEAD-decrypt + cross-checks already performed once by
+/// `read_and_verify_manifest`.
+///
+/// The returned bytes are the on-disk envelope as read — no
+/// canonicalisation — so callers can BLAKE3 them directly to obtain
+/// the same value the verifier saw.
 pub(crate) fn read_vault_manifest_full(
     folder: &Path,
     identity: &UnlockedIdentity,
     local_highest_clock: Option<&[VectorClockEntry]>,
-) -> Result<(ContactCard, Manifest), VaultError> {
+) -> Result<(ContactCard, Manifest, Vec<u8>), VaultError> {
     let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
     let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
         context: "failed to read vault.toml",
         source: e,
     })?;
-    let (owner_card, manifest, _envelope) =
+    let (owner_card, manifest, _envelope, manifest_envelope_bytes) =
         read_and_verify_manifest(folder, &vault_toml_bytes, identity, local_highest_clock)?;
-    Ok((owner_card, manifest))
+    Ok((owner_card, manifest, manifest_envelope_bytes))
 }
 
 /// Shared helper for [`open_vault`] and [`read_vault_manifest`].
@@ -590,16 +607,23 @@ pub(crate) fn read_vault_manifest_full(
 ///     and the parsed `vault.toml` respectively.
 ///   - Optional §10 rollback check against `local_highest_clock`.
 ///
-/// Returns the (owner_card, manifest_body, manifest_file) triple.
-/// [`open_vault`] additionally moves `unlocked` into the returned
-/// [`OpenVault`]; [`read_vault_manifest`] discards the owner_card and
-/// envelope and returns just the body.
+/// Returns the
+/// `(owner_card, manifest_body, manifest_file, manifest_envelope_bytes)`
+/// 4-tuple. The trailing `Vec<u8>` is the raw on-disk envelope bytes
+/// of `manifest.cbor.enc` as read for decode + verify — callers that
+/// need a hash of the verified-on-disk manifest (e.g. C.1.1a's
+/// sync_once Concurrent path computing a `ManifestHash` freshness
+/// anchor) consume them without re-reading the file. Closing this
+/// double-read window prevents a TOCTOU race where a concurrent writer
+/// could rewrite the manifest between the verify-decrypt read and a
+/// follow-up hash read (issue #80). [`open_vault`] and
+/// [`read_vault_manifest`] discard the bytes.
 fn read_and_verify_manifest(
     folder: &Path,
     vault_toml_bytes: &[u8],
     unlocked: &UnlockedIdentity,
     local_highest_clock: Option<&[VectorClockEntry]>,
-) -> Result<(ContactCard, Manifest, ManifestFile), VaultError> {
+) -> Result<(ContactCard, Manifest, ManifestFile, Vec<u8>), VaultError> {
     // Step 3-4: read + decode the §4.1 manifest envelope.
     let manifest_path = folder.join(MANIFEST_FILENAME);
     let manifest_file_bytes = std::fs::read(&manifest_path).map_err(|e| VaultError::Io {
@@ -700,7 +724,12 @@ fn read_and_verify_manifest(
         }
     }
 
-    Ok((owner_card, manifest_body, manifest_file))
+    Ok((
+        owner_card,
+        manifest_body,
+        manifest_file,
+        manifest_file_bytes,
+    ))
 }
 
 // ---------------------------------------------------------------------------
