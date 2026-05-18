@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-18 (post-merge follow-up — fixed #80 surfaced during PR #77 review)
-**Status:** PRs **#77 (C.1.1a)** and **#82 (AEAD nonce centralisation)** both merged to `main` since the previous baton was written. Two follow-up issues surfaced during the PR #77 review — **#80** (manifest double-read TOCTOU window in `sync_once`) and **#81** (`MAX_BLOCK_FILE_SIZE` undocumented vs format-max recipient table). This session fixed **#80** as a small dedicated PR; **#81** is documentation-only and deferred. C.1.1b plan authoring is the next session's first task.
+**Status:** PRs **#77 (C.1.1a)** and **#82 (AEAD nonce centralisation)** both merged to `main` since the previous baton was written. Two follow-up issues surfaced during the PR #77 review — **#80** (manifest double-read TOCTOU window in `sync_once`) and **#81** (`MAX_BLOCK_FILE_SIZE` undocumented vs format-max recipient table). This session fixed **#80** as **[PR #83](https://github.com/hherb/secretary/pull/83)** (open, awaiting review); **#81** is documentation-only and deferred. C.1.1b plan authoring is the next session's first task.
 
 ## (1) What we shipped this session
 
@@ -11,7 +11,7 @@
 | Fixed **#80**: single-read of `manifest.cbor.enc` in `sync_once`'s Concurrent path | `read_and_verify_manifest` now returns the raw envelope bytes alongside the decoded body + envelope + owner card; `read_vault_manifest_full` forwards them; `sync_once` consumes them to compute `ManifestHash` AND to feed `ingest_conflict_copies` — closing the TOCTOU window where a concurrent writer between the two old reads would leave the bundle body authenticated from read 1 but the hash + bundle bytes from read 2. |
 | Added regression test `sync_once_concurrent_manifest_hash_matches_bundle_envelope_bytes` in `core/tests/sync.rs` | Asserts the invariant `BLAKE3(bundle.canonical.raw_envelope_bytes) == manifest_hash` AND `bundle.canonical.raw_envelope_bytes == on-disk manifest.cbor.enc`. Passes by construction post-fix (single read); was a coincidence pre-fix. |
 | Gauntlet on `fix/80-manifest-double-read` (cargo test/clippy/fmt + conformance + spec-name-freshness) | 713 / 0 / 10 (= 712 + new regression test); clippy clean with `-D warnings`; fmt clean; conformance PASS; spec-name-freshness PASS (96 resolved, 0 unresolved). |
-| Pushed branch + opened PR | Branch + PR pending push at the end of this session — see "Open PRs at close" below. |
+| Pushed branch + opened **[PR #83](https://github.com/hherb/secretary/pull/83)** | `fix/80-manifest-double-read` pushed to origin; PR #83 open, closes #80. |
 | This baton update + handoff snapshot | Commit on `fix/80-manifest-double-read`; rides in the PR per `feedback_next_session_in_pr.md`. |
 
 **Files touched:**
@@ -29,9 +29,9 @@
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/fix-80-manifest-double-read
-gh pr view <PR# from push> --comments     # check for review comments
+gh pr view 83 --comments                  # check for review comments
 # Address any feedback on this branch and push, or merge if clean.
-gh pr merge <PR#> --squash                # per user preference
+gh pr merge 83 --squash                   # per user preference
 ```
 
 After merge:
@@ -97,7 +97,7 @@ cd .worktrees/c1-1b-sync-merge
 
 ### Open PRs at close
 
-- **fix/80-manifest-double-read** — pushed at the end of this session; PR number assigned on push. Closes #80.
+- **[PR #83](https://github.com/hherb/secretary/pull/83)** — `fix/80-manifest-double-read`; closes #80; awaiting review.
 
 ## (4) Exact commands to resume
 
@@ -112,8 +112,7 @@ cd .worktrees/fix-80-manifest-double-read
 pwd                                                             # confirm worktree
 git branch --show-current                                       # → fix/80-manifest-double-read
 git log --oneline -5
-gh pr list --state open                                         # find PR#
-gh pr view <PR#> --comments                                     # read review feedback
+gh pr view 83 --comments                                        # read review feedback
 
 # Sanity-check gauntlet (expect stable at 713 / 0 / 10):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:"
@@ -144,6 +143,6 @@ cd .worktrees/c1-1b-sync-merge
 - **ROADMAP.md:** unchanged this session (small follow-up PR; tracked in PR description, not the roadmap).
 - **CLAUDE.md:** unchanged.
 - **Open issues:** [#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45) / [#75](https://github.com/hherb/secretary/issues/75) / [#76](https://github.com/hherb/secretary/issues/76) / [#78](https://github.com/hherb/secretary/issues/78) / [#79](https://github.com/hherb/secretary/issues/79) / [#81](https://github.com/hherb/secretary/issues/81). #80 will close on PR merge.
-- **Open PRs:** **fix/80-manifest-double-read** (this branch) — PR# assigned on push.
+- **Open PRs:** **[PR #83](https://github.com/hherb/secretary/pull/83)** — `fix/80-manifest-double-read`; closes #80.
 - **Worktrees on disk:** `main` + `.worktrees/fix-80-manifest-double-read`.
 - **Frozen baton snapshot:** [`docs/handoffs/2026-05-18-2119-fix-80-manifest-double-read.md`](docs/handoffs/2026-05-18-2119-fix-80-manifest-double-read.md) — exact copy of this file for audit/learning.
