@@ -86,6 +86,20 @@ pub struct VaultBundle {
     pub diverging_blocks: BTreeMap<[u8; 16], BlockDivergence>,
 }
 
+/// Compute the BLAKE3-256 hash of the canonical manifest envelope
+/// bytes. Used as the freshness anchor in
+/// [`crate::sync::SyncOutcome::ConcurrentDetected`] so C.1.1b's
+/// `commit_with_decisions` can verify the manifest hasn't changed
+/// between prepare and commit (TOCTOU close).
+///
+/// Pure function. Inputs the on-disk envelope bytes exactly as read
+/// (no canonicalisation); output is 32 bytes.
+#[must_use]
+pub fn compute_manifest_hash(envelope_bytes: &[u8]) -> ManifestHash {
+    let digest = crate::crypto::hash::hash(envelope_bytes);
+    ManifestHash(*digest.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +122,20 @@ mod tests {
         assert_eq!(envelope.bytes[0], 0xAB);
         envelope.zeroize();
         assert!(envelope.bytes.iter().all(|&b| b == 0), "bytes not zeroized");
+    }
+
+    #[test]
+    fn compute_manifest_hash_matches_blake3_of_input_bytes() {
+        let bytes = b"the quick brown fox jumps over the lazy dog";
+        let got = compute_manifest_hash(bytes);
+        let expected = crate::crypto::hash::hash(bytes);
+        assert_eq!(got.0, *expected.as_bytes());
+    }
+
+    #[test]
+    fn compute_manifest_hash_empty_input() {
+        let got = compute_manifest_hash(b"");
+        let expected = crate::crypto::hash::hash(b"");
+        assert_eq!(got.0, *expected.as_bytes());
     }
 }
