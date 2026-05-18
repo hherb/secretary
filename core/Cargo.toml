@@ -51,6 +51,13 @@ rand_core = "0.6"
 # `cargo update` silently move the resolved version within the 3.x
 # range; that auto-bump is exactly what we don't want here.
 tempfile = "=3.27.0"
+# `tracing` is used by `sync::ingest` to log silent-rejection
+# diagnostics at `tracing::debug!` when a candidate conflict-copy
+# fails one of the five MUST authentication rules. Caret-range pin is
+# acceptable here: tracing is a logging facade, not on the
+# security-critical path (the on-disk byte format and crypto
+# primitives are unchanged whether logs are captured or not).
+tracing = "0.1"
 
 [features]
 differential-replay = []

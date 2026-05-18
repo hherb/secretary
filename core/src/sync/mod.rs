@@ -31,6 +31,7 @@
 
 pub mod bundle;
 pub mod error;
+pub mod ingest;
 pub mod once;
 pub mod outcome;
 pub mod state;
