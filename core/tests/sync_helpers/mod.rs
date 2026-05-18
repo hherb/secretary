@@ -241,27 +241,14 @@ pub fn golden_vault_001_first_block_uuid(folder: &Path) -> [u8; SYNC_HELPERS_UUI
 
 /// Canonical block file path inside the vault folder. Mirrors the
 /// on-disk layout written by [`secretary_core::vault::save_block`]:
-/// `blocks/<uuid-hyphenated>.cbor.enc`.
+/// `blocks/<uuid-hyphenated>.cbor.enc`. Uses the core's
+/// `format_uuid_hyphenated` (re-exported `#[doc(hidden)] pub`) so the
+/// on-disk filename format is single-sourced — production code, the
+/// sync layer, and these test helpers all go through one formatter.
 #[allow(dead_code)]
 pub fn block_file_path(folder: &Path, block_uuid: &[u8; SYNC_HELPERS_UUID_LEN]) -> PathBuf {
-    let uuid_hex = format_uuid_for_filename(block_uuid);
+    let uuid_hex = secretary_core::vault::format_uuid_hyphenated(block_uuid);
     folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"))
-}
-
-/// Format a UUID as canonical lowercase 8-4-4-4-12 hex. Mirrors
-/// `core::vault::orchestrators::format_uuid_hyphenated`; replicated
-/// here because that helper is `pub(crate)`.
-fn format_uuid_for_filename(uuid: &[u8; SYNC_HELPERS_UUID_LEN]) -> String {
-    let mut s = String::with_capacity(36);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for (i, b) in uuid.iter().enumerate() {
-        if matches!(i, 4 | 6 | 8 | 10) {
-            s.push('-');
-        }
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
 }
 
 /// Decrypt a block envelope using the open vault's owner identity.

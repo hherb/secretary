@@ -50,6 +50,15 @@ pub use orchestrators::{
     create_vault, open_vault, read_vault_manifest, restore_block, save_block, share_block,
     trash_block, OpenVault, Unlocker,
 };
+// Cross-target test-hook re-export: integration tests in `tests/*.rs`
+// reuse the canonical UUID-to-filename formatter (the same one
+// `save_block` writes block files with) so on-disk filename format
+// stays single-sourced. `#[doc(hidden)]` keeps it out of the rendered
+// public API. See the docstring on `format_uuid_hyphenated` for the
+// full rationale, and `crate::sync::__test_dispatch` for the same
+// pattern.
+#[doc(hidden)]
+pub use orchestrators::format_uuid_hyphenated;
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
 /// Umbrella error type for the vault format layer.
