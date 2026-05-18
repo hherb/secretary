@@ -37,6 +37,35 @@ pub enum SyncError {
         #[source]
         source: std::io::Error,
     },
+
+    /// The on-disk canonical manifest envelope hash differs from
+    /// `draft.manifest_hash` recorded by `prepare_merge`. A concurrent
+    /// writer modified the manifest between `prepare_merge` and
+    /// `commit_with_decisions`. The commit is aborted with zero disk
+    /// writes; the caller retries from `sync_once`.
+    #[error("manifest changed on disk between prepare_merge and commit_with_decisions")]
+    EvidenceStale,
+
+    /// The caller passed a `VetoDecision` whose `record_id` is not in
+    /// the `DraftMerge.vetoes` set. Decisions and vetoes must be a
+    /// bijection (design doc D5).
+    #[error("decision references unknown veto record_id: {record_id:02x?}")]
+    UnknownVetoDecision { record_id: [u8; 16] },
+
+    /// The caller did not supply a `VetoDecision` for a `record_id`
+    /// present in `DraftMerge.vetoes`. Bijection check, mirror of
+    /// [`SyncError::UnknownVetoDecision`].
+    #[error("decision missing for tombstone veto record_id: {record_id:02x?}")]
+    MissingVetoDecision { record_id: [u8; 16] },
+
+    /// Defensive: a merge produced no `merged_records` but populated
+    /// `vetoes`. Currently unreachable because every veto's `record_id`
+    /// is also present in `merged_records` (vetoes are derived per-
+    /// record from the merged set). Surfaced as a typed variant so a
+    /// future change that breaks this invariant fails loudly instead
+    /// of silently dropping records.
+    #[error("merge produced no draft records but vetoes are non-empty (internal invariant)")]
+    EmptyDraftWithVetoes,
 }
 
 #[cfg(test)]
@@ -96,5 +125,44 @@ mod tests {
         };
         let outer: SyncError = inner.into();
         assert!(matches!(outer, SyncError::Vault(_)));
+    }
+
+    #[test]
+    fn evidence_stale_display_is_stable() {
+        let err = SyncError::EvidenceStale;
+        assert_eq!(
+            format!("{err}"),
+            "manifest changed on disk between prepare_merge and commit_with_decisions",
+        );
+    }
+
+    #[test]
+    fn unknown_veto_decision_display_includes_record_id() {
+        let err = SyncError::UnknownVetoDecision {
+            record_id: [0xAB; 16],
+        };
+        let s = format!("{err}");
+        assert!(s.contains("decision references unknown veto record_id"));
+        // `{:02x?}` Debug-formats the slice as `[ab, ab, ...]`.
+        assert!(s.contains("ab"));
+    }
+
+    #[test]
+    fn missing_veto_decision_display_includes_record_id() {
+        let err = SyncError::MissingVetoDecision {
+            record_id: [0xCD; 16],
+        };
+        let s = format!("{err}");
+        assert!(s.contains("decision missing for tombstone veto record_id"));
+        assert!(s.contains("cd"));
+    }
+
+    #[test]
+    fn empty_draft_with_vetoes_display_is_stable() {
+        let err = SyncError::EmptyDraftWithVetoes;
+        assert_eq!(
+            format!("{err}"),
+            "merge produced no draft records but vetoes are non-empty (internal invariant)",
+        );
     }
 }
