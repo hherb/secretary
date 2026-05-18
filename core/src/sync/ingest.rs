@@ -15,15 +15,16 @@
 //!
 //! See `docs/superpowers/specs/2026-05-18-c1-1a-conflict-copy-ingestion-design.md`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::crypto::aead::AeadKey;
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
-use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot};
+use crate::sync::bundle::{BlockDivergence, BlockEnvelope, ManifestSnapshot, VaultBundle};
 use crate::vault::{
-    decode_block_file, decode_manifest_file, decrypt_manifest_body, verify_block_signature,
-    verify_manifest,
+    clock_relation, decode_block_file, decode_manifest_file, decrypt_manifest_body,
+    verify_block_signature, verify_manifest, ClockRelation, Manifest,
 };
 
 /// The canonical manifest filename on disk. Conflict-copy siblings
@@ -343,6 +344,197 @@ pub(crate) fn authenticate_block_envelope(
     })
 }
 
+/// For each block_uuid present in the canonical manifest, determine
+/// whether any authenticated conflict-copy manifest carries a
+/// divergent `vector_clock_summary` for the same block. If yes, read
+/// the canonical block envelope, scan + authenticate sibling block
+/// files for that block_uuid, and emit a [`BlockDivergence`].
+///
+/// "Divergent" means [`clock_relation`] returns anything other than
+/// [`ClockRelation::Equal`] or [`ClockRelation::IncomingDominated`] —
+/// i.e. either the copy strictly dominates (the copy has newer
+/// per-device state that the canonical lacks), or the two are
+/// concurrent (divergent histories). Non-divergent blocks are absent
+/// from the returned map.
+///
+/// I/O errors during the canonical-block read are downgraded to a
+/// `tracing::warn!` and the block is skipped — a corrupt or missing
+/// canonical block file is recoverable by skipping divergence for
+/// that block (the C.1.1b merge layer handles fully-missing blocks
+/// in its own pass). I/O errors during sibling enumeration ARE
+/// propagated because they indicate a folder-level problem.
+#[allow(dead_code)]
+pub(crate) fn ingest_block_divergence(
+    folder: &Path,
+    canonical: &Manifest,
+    copies: &[ManifestSnapshot],
+    canonical_owner_fp: Fingerprint,
+    owner_ed25519_pk: &Ed25519Public,
+    owner_ml_dsa_65_pk: &MlDsa65Public,
+) -> Result<BTreeMap<[u8; 16], BlockDivergence>, std::io::Error> {
+    let mut out: BTreeMap<[u8; 16], BlockDivergence> = BTreeMap::new();
+
+    for canonical_entry in &canonical.blocks {
+        let block_uuid = canonical_entry.block_uuid;
+
+        let mut diverges = false;
+        for copy in copies {
+            let copy_entry = match copy
+                .manifest
+                .blocks
+                .iter()
+                .find(|e| e.block_uuid == block_uuid)
+            {
+                Some(e) => e,
+                None => continue,
+            };
+            let rel = clock_relation(
+                &canonical_entry.vector_clock_summary,
+                &copy_entry.vector_clock_summary,
+            );
+            if !matches!(rel, ClockRelation::Equal | ClockRelation::IncomingDominated) {
+                diverges = true;
+                break;
+            }
+        }
+        if !diverges {
+            continue;
+        }
+
+        let canonical_block_path = folder
+            .join(crate::vault::orchestrators::BLOCKS_SUBDIR)
+            .join(
+                crate::vault::orchestrators::format_uuid_hyphenated(&block_uuid)
+                    + crate::vault::orchestrators::BLOCK_FILE_EXTENSION,
+            );
+        let canonical_bytes = match std::fs::read(&canonical_block_path) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(
+                    path = %canonical_block_path.display(),
+                    error = %err,
+                    "canonical block file unreadable; skipping divergence ingest for this uuid"
+                );
+                continue;
+            }
+        };
+        let canonical_envelope = BlockEnvelope {
+            bytes: canonical_bytes,
+            source_path: canonical_block_path,
+        };
+
+        let sibling_paths = enumerate_block_siblings(folder, &block_uuid)?;
+        let mut copy_envelopes: Vec<BlockEnvelope> = Vec::with_capacity(sibling_paths.len());
+        for path in sibling_paths {
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(err) => {
+                    tracing::debug!(
+                        path = %path.display(),
+                        error = %err,
+                        "block conflict-copy skipped: read error"
+                    );
+                    continue;
+                }
+            };
+            if bytes.is_empty() || bytes.len() > MAX_BLOCK_FILE_SIZE {
+                tracing::debug!(
+                    path = %path.display(),
+                    size = bytes.len(),
+                    "block conflict-copy skipped: size out of bounds"
+                );
+                continue;
+            }
+            if let Some(envelope) = authenticate_block_envelope(
+                &bytes,
+                path,
+                canonical_owner_fp,
+                owner_ed25519_pk,
+                owner_ml_dsa_65_pk,
+            ) {
+                copy_envelopes.push(envelope);
+            }
+        }
+
+        out.insert(
+            block_uuid,
+            BlockDivergence {
+                canonical_envelope,
+                copy_envelopes,
+            },
+        );
+    }
+
+    Ok(out)
+}
+
+/// Extract sorted block UUIDs from the bundle's `diverging_blocks`
+/// map — the set of blocks that need merging in C.1.1b's
+/// `prepare_merge`. Pure function over the `BTreeMap` keys; the order
+/// is already canonical-ascending because `BTreeMap::keys()` iterates
+/// in sort order.
+#[allow(dead_code)]
+#[must_use]
+pub(crate) fn compute_diff_plan(bundle: &VaultBundle) -> Vec<[u8; 16]> {
+    bundle.diverging_blocks.keys().copied().collect()
+}
+
+/// Top-level conflict-copy ingestion: assemble a [`VaultBundle`] from
+/// a vault folder plus a canonical (already-authenticated) manifest.
+/// Called by [`crate::sync::sync_once`] only on the Concurrent
+/// dispatch path. Returns canonical + 0..N authenticated copies +
+/// per-block divergence in one structure.
+///
+/// All five §1a-D4 MUSTs run inside the manifest-level + block-level
+/// authenticators; per-file failures silently drop (spec §1a-D3).
+/// I/O errors at the folder-scan level propagate.
+///
+/// The argument count exceeds the default clippy limit; the
+/// `#[allow(clippy::too_many_arguments)]` is justified because every
+/// argument is independent pre-derived input (folder, manifest body,
+/// envelope bytes, source path, owner fp, owner ed pk, owner pq pk,
+/// IBK) and bundling them into an opaque context struct would just
+/// move the complexity behind a single import.
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(crate) fn ingest_conflict_copies(
+    folder: &Path,
+    canonical: &Manifest,
+    canonical_envelope_bytes: &[u8],
+    canonical_source_path: PathBuf,
+    canonical_owner_fp: Fingerprint,
+    owner_ed25519_pk: &Ed25519Public,
+    owner_ml_dsa_65_pk: &MlDsa65Public,
+    ibk: &AeadKey,
+) -> Result<VaultBundle, std::io::Error> {
+    let copies = ingest_manifest_copies(
+        folder,
+        canonical.vault_uuid,
+        canonical_owner_fp,
+        owner_ed25519_pk,
+        owner_ml_dsa_65_pk,
+        ibk,
+    )?;
+
+    let diverging_blocks = ingest_block_divergence(
+        folder,
+        canonical,
+        &copies,
+        canonical_owner_fp,
+        owner_ed25519_pk,
+        owner_ml_dsa_65_pk,
+    )?;
+
+    Ok(VaultBundle {
+        canonical: ManifestSnapshot {
+            manifest: canonical.clone(),
+            raw_envelope_bytes: canonical_envelope_bytes.to_vec(),
+            source_path: canonical_source_path,
+        },
+        copies,
+        diverging_blocks,
+    })
+}
+
 /// Enumerate sibling files for `blocks/<uuid>.cbor.enc` in `folder`
 /// — any file in the blocks subdirectory whose name starts with the
 /// hyphenated UUID + `.cbor.enc` and is NOT exactly the canonical
@@ -481,6 +673,80 @@ mod tests {
 
         let siblings = enumerate_manifest_siblings(folder).expect("scan");
         assert!(siblings.is_empty(), "no siblings expected");
+    }
+
+    #[test]
+    fn compute_diff_plan_empty_bundle_returns_empty_vec() {
+        let bundle = VaultBundle {
+            canonical: ManifestSnapshot {
+                manifest: empty_manifest(),
+                raw_envelope_bytes: vec![0xCA, 0xFE],
+                source_path: PathBuf::from("/tmp/canonical.cbor.enc"),
+            },
+            copies: vec![],
+            diverging_blocks: BTreeMap::new(),
+        };
+        let plan = compute_diff_plan(&bundle);
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn compute_diff_plan_returns_keys_in_ascending_order() {
+        let mut diverging: BTreeMap<[u8; 16], BlockDivergence> = BTreeMap::new();
+        diverging.insert(
+            [0xBB; 16],
+            BlockDivergence {
+                canonical_envelope: BlockEnvelope {
+                    bytes: vec![],
+                    source_path: PathBuf::new(),
+                },
+                copy_envelopes: vec![],
+            },
+        );
+        diverging.insert(
+            [0xAA; 16],
+            BlockDivergence {
+                canonical_envelope: BlockEnvelope {
+                    bytes: vec![],
+                    source_path: PathBuf::new(),
+                },
+                copy_envelopes: vec![],
+            },
+        );
+        let bundle = VaultBundle {
+            canonical: ManifestSnapshot {
+                manifest: empty_manifest(),
+                raw_envelope_bytes: vec![],
+                source_path: PathBuf::new(),
+            },
+            copies: vec![],
+            diverging_blocks: diverging,
+        };
+        let plan = compute_diff_plan(&bundle);
+        assert_eq!(plan, vec![[0xAA; 16], [0xBB; 16]]);
+    }
+
+    /// Construct a minimal Manifest for unit tests. Empty arrays are
+    /// trivially-sorted under the canonical-CBOR discipline.
+    fn empty_manifest() -> Manifest {
+        use crate::vault::{KdfParamsRef, Manifest as M};
+        M {
+            manifest_version: 1,
+            vault_uuid: [0u8; 16],
+            format_version: 1,
+            suite_id: 1,
+            owner_user_uuid: [0u8; 16],
+            kdf_params: KdfParamsRef {
+                memory_kib: 262_144,
+                iterations: 3,
+                parallelism: 1,
+                salt: [0u8; 32],
+            },
+            vector_clock: vec![],
+            blocks: vec![],
+            trash: vec![],
+            unknown: std::collections::BTreeMap::new(),
+        }
     }
 
     #[test]
