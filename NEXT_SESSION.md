@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
-**Session date:** 2026-05-19 (implementation session — C.1.1b Tasks 1-3 of 17 shipped)
-**Status:** `feature/c1-1b-sync-merge` advanced by 3 commits (test helpers + 4 new SyncError variants + new VaultError variant with full FFI-bridge exhaustive-match wiring). `main` at `98d8a8a` (unchanged). PR opens at the end of this session covering the three shipped commits; remaining 14 tasks layer on the same branch.
+**Session date:** 2026-05-19 (implementation session — C.1.1b Tasks 1-3 of 17 shipped, two PR-review fix-ups landed)
+**Status:** `feature/c1-1b-sync-merge` advanced by 3 task commits + 2 PR-review fix-ups (test helpers + 4 new SyncError variants + new VaultError variant with full FFI-bridge exhaustive-match wiring + seed-padding annotation + `format_uuid_hyphenated` dedup). `main` at `98d8a8a` (unchanged). PR #84 open and tracking; remaining 14 tasks layer on the same branch.
 
 ## (1) What we shipped this session
 
@@ -10,8 +10,10 @@
 | [`67567c7`](https://github.com/hherb/secretary/commit/67567c7) | Task 1 | `core/tests/sync_helpers/mod.rs`: per-block rewrite helper `rewrite_block_with_records`, `decrypt_block_using_open` round-trip helper, `block_file_path` / `golden_vault_001_first_block_uuid` path helpers, three new `BLOCK_NONCE_E/F/G` constants. Two inline helper tests prove wire-format round-trip + AEAD-uniqueness across distinct seeds. **Plan deviation:** the plan's `DeterministicNonceRng` would have collapsed BCK + AEAD body nonce to all-zeros across rewrites (caught by the new `distinct_seeds_produce_distinct_ciphertexts` test); replaced with `ChaCha20Rng::from_seed(...)` so each rewrite genuinely uses distinct entropy. `rand_chacha = "0.3"` was already a workspace dep — no new dependency. |
 | [`7fa201b`](https://github.com/hherb/secretary/commit/7fa201b) | Task 2 | `core/src/sync/error.rs`: four new `SyncError` variants — `EvidenceStale`, `UnknownVetoDecision { record_id }`, `MissingVetoDecision { record_id }`, `EmptyDraftWithVetoes`. All wired with stable Display strings + per-variant unit tests; not yet consumed by any call site (Tasks 8-11 wire them). |
 | [`dcaed3a`](https://github.com/hherb/secretary/commit/dcaed3a) | Task 3 | `core/src/vault/mod.rs`: new `VaultError::BlockFingerprintMismatch { block_uuid, expected, got }` variant (D6 partial-commit detection). Plus the routing decision propagated into all **five** exhaustive `VaultError → FfiVaultError` matchers in `secretary-ffi-bridge` (per issue #40 these are intentionally exhaustive — adding a new core variant is a compile error). Routing: generic `From<VaultError>` impl folds to `CorruptVault` (the read path that `open_vault?` uses, same semantic as `RestoreVerificationFailed`); trash / save / restore / share orchestrator-specific mappers list in the `SaveCryptoFailure` bucket for exhaustiveness (unreachable because `open_vault` always precedes them). |
+| `7633deb` | PR-review fix | `core/tests/sync_helpers/mod.rs`: comment block on `ChaCha20Rng::from_seed` seed construction explaining why the trailing 8 bytes are zero (the BLOCK_NONCE_E/F/G constants are 24-byte AEAD nonces being used as 32-byte seeds; distinct across the first 24 bytes is sufficient for distinct seeds, and injecting randomness would break the determinism the `distinct_seeds_produce_distinct_ciphertexts` invariant depends on). Pure comment; no behaviour change. |
+| `acc5085` | PR-review fix | `core/src/vault/{orchestrators.rs,mod.rs}` + `core/tests/sync_helpers/mod.rs`: promote `format_uuid_hyphenated` from `pub(crate)` to `#[doc(hidden)] pub` and re-export from `vault/mod.rs`, mirroring the `__test_dispatch` cross-target test-hook pattern. The duplicate `format_uuid_for_filename` in `sync_helpers` is gone; `block_file_path` now calls the canonical core helper. On-disk filename format is now single-sourced across production code, sync layer, and test helpers. |
 
-**Gauntlet progression:** 713 (baseline) → 719 (+6 helper tests × 3 including crates) → 723 (+4 sync::error) → 724 (+1 vault::tests). Clippy + fmt + Python conformance + spec-citation freshness all clean at every commit.
+**Gauntlet progression:** 713 (baseline) → 719 (+6 helper tests × 3 including crates) → 723 (+4 sync::error) → 724 (+1 vault::tests). Test count unchanged across the two PR-review fix commits (both are non-test refactors). Clippy + fmt + Python conformance + spec-citation freshness all clean at every commit.
 
 ## (2) What's next — execute Task 4 first
 
@@ -62,6 +64,7 @@ Per `feedback_stay_in_inner_loop`, continue the one-task-one-commit-one-review c
 - [ ] Bijection: `MissingVetoDecision` + `UnknownVetoDecision` typed errors fire on every non-bijective `(vetoes, decisions)` pair
 - [ ] Crash-recovery test (Task 14) proves CRDT-idempotent reconvergence after partial commit
 - [ ] All four CRDT proptests (commutativity, associativity, idempotence, well-formedness) still pass — **must not weaken**
+- [ ] **Before merging Task 17:** grep every `#[allow(dead_code)]` introduced in Tasks 1-3 (`BLOCK_NONCE_E/F/G`, `golden_vault_001_first_block_uuid`, `block_file_path`, `rewrite_block_with_records`, `decrypt_block_using_open`, `fresh_vault_two_concurrent_manifests`, `fresh_vault_four_concurrent_manifests`, `SIBLING_NONCE_C/D`, plus the four new `SyncError` variants: `EvidenceStale`, `UnknownVetoDecision`, `MissingVetoDecision`, `EmptyDraftWithVetoes`) and confirm each has at least one real consumer in Tasks 4-16. Stale `#[allow(dead_code)]` markers must be removed (zero in the final PR — they exist only as a per-task TDD-cadence shim).
 
 ## (3) Open decisions and risks
 
@@ -125,8 +128,8 @@ $EDITOR docs/superpowers/specs/2026-05-18-c1-1b-sync-merge-design.md
 
 ## Closing inventory
 
-- **Branch state on close:** `main` at `98d8a8a` (unchanged this session). `feature/c1-1b-sync-merge` advanced 4 commits past the plan-authored `c925a57` baseline: `67567c7` → `7fa201b` → `dcaed3a` → this baton.
-- **Workspace tests on `feature/c1-1b-sync-merge`:** 724 passed + 10 ignored (713 baseline + 11 new across Tasks 1-3). Clippy + fmt + Python conformance + spec-citation freshness all clean.
+- **Branch state on close:** `main` at `98d8a8a` (unchanged this session). `feature/c1-1b-sync-merge` advanced 6 commits past the plan-authored `c925a57` baseline: `67567c7` → `7fa201b` → `dcaed3a` → prior baton → `7633deb` → `acc5085` → this baton.
+- **Workspace tests on `feature/c1-1b-sync-merge`:** 724 passed + 10 ignored (713 baseline + 11 new across Tasks 1-3; unchanged across the two PR-review fix-ups). Clippy + fmt + Python conformance + spec-citation freshness all clean.
 - **README.md:** unchanged this session. Per plan Task 17, updates land at end of C.1.1b.
 - **ROADMAP.md:** unchanged this session. Per plan Task 17, updates land at end of C.1.1b.
 - **CLAUDE.md:** unchanged.
