@@ -12,7 +12,7 @@ use rand_core::{CryptoRng, RngCore};
 
 use zeroize::Zeroize as _;
 
-use crate::crypto::aead::{decrypt, encrypt};
+use crate::crypto::aead::{decrypt, encrypt, random_nonce};
 use crate::crypto::kdf::{
     derive_master_kek, derive_recovery_kek, Argon2idParams, KdfError, TAG_ID_BUNDLE,
     TAG_ID_WRAP_PW, TAG_ID_WRAP_REC,
@@ -196,12 +196,9 @@ pub fn create_vault_unchecked(
     // Each key (IBK, master_kek, recovery_kek) is used exactly once, but
     // independent draws make the "never reuse nonce+key" §13 mandate visible
     // rather than implicit, and survive future refactors that might share keys.
-    let mut nonce_id = [0u8; 24];
-    rng.fill_bytes(&mut nonce_id);
-    let mut nonce_pw = [0u8; 24];
-    rng.fill_bytes(&mut nonce_pw);
-    let mut nonce_rec = [0u8; 24];
-    rng.fill_bytes(&mut nonce_rec);
+    let nonce_id = random_nonce(rng);
+    let nonce_pw = random_nonce(rng);
+    let nonce_rec = random_nonce(rng);
 
     // Step 7: AEAD-encrypt bundle under IBK.
     // identity_block_key: Sensitive<[u8;32]> == AeadKey, pass by reference.

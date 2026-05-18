@@ -831,8 +831,9 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
             got: available,
         });
     }
-    let mut out = [0u8; N];
-    out.copy_from_slice(&bytes[*pos..*pos + N]);
+    let out: [u8; N] = bytes[*pos..*pos + N]
+        .try_into()
+        .expect("bounds check above guarantees N bytes");
     *pos += N;
     Ok(out)
 }
