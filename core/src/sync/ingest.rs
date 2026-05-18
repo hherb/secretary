@@ -15,13 +15,18 @@
 //!
 //! See `docs/superpowers/specs/2026-05-18-c1-1a-conflict-copy-ingestion-design.md`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::crypto::aead::AeadKey;
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::ManifestSnapshot;
 use crate::vault::{decode_manifest_file, decrypt_manifest_body, verify_manifest};
+
+/// The canonical manifest filename on disk. Conflict-copy siblings
+/// are recognised by starting with this prefix and not matching it
+/// exactly.
+const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 
 /// Length of the AEAD tag appended to the manifest body ciphertext.
 /// Mirrors the constant in `crate::vault::manifest`.
@@ -149,6 +154,48 @@ pub(crate) fn authenticate_manifest_envelope(
     })
 }
 
+/// Enumerate files in `folder` that are candidate manifest
+/// conflict-copies — i.e. files whose name STARTS with the canonical
+/// manifest filename (`manifest.cbor.enc`) and is not identical to
+/// it. Returns sorted by path for deterministic test output.
+///
+/// I/O failure (folder missing, permission denied) returns the
+/// wrapped `std::io::Error`. Per-entry failures (e.g. transient
+/// read-dir hiccups on a symlink loop) are silently skipped so one
+/// poison entry can't deny-of-service the whole scan.
+///
+/// The `starts_with(CANONICAL_MANIFEST_FILENAME)` filter covers all
+/// observed cloud-sync naming conventions: Dropbox
+/// `manifest.cbor.enc (conflicted copy …)`, iCloud
+/// `manifest.cbor.enc 2`, Syncthing
+/// `manifest.cbor.enc.sync-conflict-…`, etc. The filter is the
+/// heuristic discovery hook — authentication is the security
+/// boundary (spec §1a-D3).
+#[allow(dead_code)]
+pub(crate) fn enumerate_manifest_siblings(folder: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if name == CANONICAL_MANIFEST_FILENAME {
+            continue;
+        }
+        if !name.starts_with(CANONICAL_MANIFEST_FILENAME) {
+            continue;
+        }
+        out.push(path);
+    }
+    out.sort();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +246,54 @@ mod tests {
             &ibk,
         );
         assert!(result.is_none(), "garbage bytes must not authenticate");
+    }
+
+    #[test]
+    fn enumerate_manifest_siblings_returns_non_canonical_prefix_matches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path();
+
+        std::fs::write(folder.join("manifest.cbor.enc"), b"canonical").unwrap();
+        std::fs::write(folder.join("manifest.cbor.enc.sibling-1"), b"sibling").unwrap();
+        std::fs::write(
+            folder.join("manifest.cbor.enc (conflicted copy 2026-05-15)"),
+            b"dropbox-style",
+        )
+        .unwrap();
+        std::fs::write(folder.join("vault.toml"), b"unrelated").unwrap();
+        std::fs::write(folder.join("identity_bundle.cbor.enc"), b"also-unrelated").unwrap();
+
+        let siblings = enumerate_manifest_siblings(folder).expect("scan");
+        let names: Vec<String> = siblings
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(siblings.len(), 2, "exactly 2 sibling matches");
+        assert!(names.contains(&"manifest.cbor.enc.sibling-1".to_string()));
+        assert!(names.contains(&"manifest.cbor.enc (conflicted copy 2026-05-15)".to_string()));
+        assert!(!names.contains(&"manifest.cbor.enc".to_string()));
+        assert!(!names.contains(&"vault.toml".to_string()));
+        assert!(!names.contains(&"identity_bundle.cbor.enc".to_string()));
+    }
+
+    #[test]
+    fn enumerate_manifest_siblings_returns_empty_on_canonical_only_folder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path();
+        std::fs::write(folder.join("manifest.cbor.enc"), b"canonical").unwrap();
+        std::fs::write(folder.join("vault.toml"), b"vault-config").unwrap();
+
+        let siblings = enumerate_manifest_siblings(folder).expect("scan");
+        assert!(siblings.is_empty(), "no siblings expected");
+    }
+
+    #[test]
+    fn enumerate_manifest_siblings_errors_when_folder_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("does-not-exist");
+        let result = enumerate_manifest_siblings(&missing);
+        assert!(result.is_err(), "missing folder should yield io::Error");
     }
 
     #[test]
