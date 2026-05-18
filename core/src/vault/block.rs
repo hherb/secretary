@@ -1643,8 +1643,7 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     }
 
     // Step 4: fresh AEAD nonce.
-    let mut aead_nonce: AeadNonce = [0u8; 24];
-    rng.fill_bytes(&mut aead_nonce);
+    let aead_nonce: AeadNonce = aead::random_nonce(rng);
 
     // Step 5: canonical-CBOR plaintext.
     let pt_bytes = encode_plaintext(plaintext)?;

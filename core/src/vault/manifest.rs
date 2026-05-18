@@ -1523,8 +1523,12 @@ pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError>
             got: rest.len().saturating_sub(pos),
         });
     }
-    let mut aead_nonce = [0u8; 24];
-    aead_nonce.copy_from_slice(&rest[pos..pos + 24]);
+    // `try_into` avoids the `let mut nonce = [0u8; 24]; copy_from_slice(...)`
+    // pattern that CodeQL's `rust/hard-coded-cryptographic-value` rule
+    // pattern-matches as a suspected hardcoded nonce literal.
+    let aead_nonce: [u8; 24] = rest[pos..pos + 24]
+        .try_into()
+        .expect("bounds check above guarantees 24 bytes");
     pos += 24;
 
     // Step 3: aead_ct_len (u32 BE).
