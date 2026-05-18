@@ -25,7 +25,7 @@ pub(crate) mod canonical;
 pub mod conflict;
 pub(crate) mod io;
 pub mod manifest;
-mod orchestrators;
+pub(crate) mod orchestrators;
 pub mod record;
 
 pub use block::{

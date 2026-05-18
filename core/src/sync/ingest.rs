@@ -343,6 +343,54 @@ pub(crate) fn authenticate_block_envelope(
     })
 }
 
+/// Enumerate sibling files for `blocks/<uuid>.cbor.enc` in `folder`
+/// — any file in the blocks subdirectory whose name starts with the
+/// hyphenated UUID + `.cbor.enc` and is NOT exactly the canonical
+/// filename. Returns sorted by path.
+///
+/// Reuses [`crate::vault::orchestrators::format_uuid_hyphenated`] +
+/// [`crate::vault::orchestrators::BLOCKS_SUBDIR`] so the canonical
+/// filename format stays pinned to the same source of truth as
+/// `save_block` writes (vault-format.md §1).
+///
+/// Returns `Ok(Vec::new())` if the blocks subdirectory doesn't exist
+/// (a fresh vault with no blocks yet is a legitimate state).
+#[allow(dead_code)]
+pub(crate) fn enumerate_block_siblings(
+    folder: &Path,
+    block_uuid: &[u8; 16],
+) -> Result<Vec<PathBuf>, std::io::Error> {
+    let canonical_stem = crate::vault::orchestrators::format_uuid_hyphenated(block_uuid)
+        + crate::vault::orchestrators::BLOCK_FILE_EXTENSION;
+    let blocks_dir = folder.join(crate::vault::orchestrators::BLOCKS_SUBDIR);
+
+    if !blocks_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&blocks_dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if name == canonical_stem {
+            continue;
+        }
+        if !name.starts_with(&canonical_stem) {
+            continue;
+        }
+        out.push(path);
+    }
+    out.sort();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +481,42 @@ mod tests {
 
         let siblings = enumerate_manifest_siblings(folder).expect("scan");
         assert!(siblings.is_empty(), "no siblings expected");
+    }
+
+    #[test]
+    fn enumerate_block_siblings_returns_uuid_prefix_matches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocks_dir = tmp.path().join("blocks");
+        std::fs::create_dir(&blocks_dir).unwrap();
+
+        let uuid_a = [0xAA; 16];
+        let uuid_b = [0xBB; 16];
+        let hex_a = crate::vault::orchestrators::format_uuid_hyphenated(&uuid_a);
+        let hex_b = crate::vault::orchestrators::format_uuid_hyphenated(&uuid_b);
+
+        let canonical_a = blocks_dir.join(format!("{hex_a}.cbor.enc"));
+        let sibling_a1 = blocks_dir.join(format!("{hex_a}.cbor.enc.sibling-1"));
+        let sibling_a2 = blocks_dir.join(format!("{hex_a}.cbor.enc (conflicted copy 2026-05-01)"));
+        let canonical_b = blocks_dir.join(format!("{hex_b}.cbor.enc"));
+        std::fs::write(&canonical_a, b"canonical-a").unwrap();
+        std::fs::write(&sibling_a1, b"sibling-a-1").unwrap();
+        std::fs::write(&sibling_a2, b"sibling-a-2").unwrap();
+        std::fs::write(&canonical_b, b"canonical-b").unwrap();
+
+        let siblings_a = enumerate_block_siblings(tmp.path(), &uuid_a).expect("scan");
+        assert_eq!(siblings_a.len(), 2);
+        assert!(siblings_a.contains(&sibling_a1));
+        assert!(siblings_a.contains(&sibling_a2));
+        assert!(!siblings_a.contains(&canonical_a));
+        assert!(!siblings_a.contains(&canonical_b));
+    }
+
+    #[test]
+    fn enumerate_block_siblings_missing_blocks_dir_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Intentionally do NOT create blocks/ subdir.
+        let result = enumerate_block_siblings(tmp.path(), &[0xAA; 16]).expect("missing dir is OK");
+        assert!(result.is_empty());
     }
 
     #[test]

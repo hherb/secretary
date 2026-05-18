@@ -60,8 +60,14 @@ const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 const CONTACTS_SUBDIR: &str = "contacts";
 
 /// Subdirectory holding encrypted block files
-/// (vault-format.md §1, §6.1).
-const BLOCKS_SUBDIR: &str = "blocks";
+/// (vault-format.md §1, §6.1). `pub(crate)` so the C.1.1a
+/// conflict-copy scanner can address the same path.
+pub(crate) const BLOCKS_SUBDIR: &str = "blocks";
+
+/// Filename extension for block envelopes on disk: every block file
+/// is `<uuid-hyphenated>.cbor.enc`. Re-exported `pub(crate)` for the
+/// same reason as [`BLOCKS_SUBDIR`].
+pub(crate) const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 
 /// Format a 16-byte UUID as canonical lowercase 8-4-4-4-12 hex
 /// (`docs/vault-format.md` §1).
@@ -69,7 +75,13 @@ const BLOCKS_SUBDIR: &str = "blocks";
 /// Pure helper; no allocation other than the returned `String`. The
 /// dashed grouping is normative for `<contact-uuid>.card` and
 /// `<block-uuid>.cbor.enc` filenames.
-fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
+///
+/// `pub(crate)` so the C.1.1a conflict-copy scanner
+/// (`crate::sync::ingest::enumerate_block_siblings`) can derive
+/// canonical block filenames from a `block_uuid` without
+/// re-implementing — keeping the on-disk filename format pinned to a
+/// single source of truth.
+pub(crate) fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
     let mut s = String::with_capacity(36);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for (i, b) in uuid.iter().enumerate() {
