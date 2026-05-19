@@ -202,7 +202,7 @@ mod tests {
     /// edit drops the skip annotation, these post-zeroize equality
     /// checks fail, catching the regression at test time.
     #[test]
-    fn record_tombstone_veto_zeroize_clears_local_state() {
+    fn record_tombstone_veto_zeroize_preserves_local_state() {
         let r = dummy_record(0xAA, 1_000);
         let mut veto = RecordTombstoneVeto {
             record_id: [0xAA; 16],
