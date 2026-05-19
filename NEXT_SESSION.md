@@ -136,4 +136,6 @@ $EDITOR docs/superpowers/specs/2026-05-18-c1-1b-sync-merge-design.md
 - **Open issues:** [#37](https://github.com/hherb/secretary/issues/37) / [#38](https://github.com/hherb/secretary/issues/38) / [#45](https://github.com/hherb/secretary/issues/45) / [#75](https://github.com/hherb/secretary/issues/75) / [#76](https://github.com/hherb/secretary/issues/76) / [#78](https://github.com/hherb/secretary/issues/78) / [#79](https://github.com/hherb/secretary/issues/79) / [#81](https://github.com/hherb/secretary/issues/81).
 - **Open PRs:** one to be opened at end of this session covering Tasks 1-3.
 - **Worktrees on disk:** `main` + `.worktrees/c1-1b-sync-merge`.
-- **Frozen baton snapshot:** [`docs/handoffs/2026-05-19-c1-1b-tasks-1-3-shipped.md`](docs/handoffs/2026-05-19-c1-1b-tasks-1-3-shipped.md) — exact copy of this file for audit/learning.
+- **Frozen baton snapshots:**
+  - [`docs/handoffs/2026-05-19-c1-1b-tasks-1-3-shipped.md`](docs/handoffs/2026-05-19-c1-1b-tasks-1-3-shipped.md) — Tasks 1-3 close snapshot (pre-review).
+  - [`docs/handoffs/2026-05-19-c1-1b-pr-84-review-fixes.md`](docs/handoffs/2026-05-19-c1-1b-pr-84-review-fixes.md) — PR #84 review-fix cycle snapshot with explicit per-issue disposition (3 fixed in-scope, 2 deferred with rationale).
