@@ -198,6 +198,11 @@ mod tests {
     /// covered by the inner types' own `ZeroizeOnDrop` impls — this
     /// test asserts the wrapper's discipline holds, not that the
     /// `Record` was wiped.
+    ///
+    /// Also pins the `#[zeroize(skip)]` semantics on the framing
+    /// fields (`record_id`, `block_id`, `local_state`): if a future
+    /// edit drops the skip annotation, these post-zeroize equality
+    /// checks fail, catching the regression at test time.
     #[test]
     fn record_tombstone_veto_zeroize_clears_local_state() {
         let r = dummy_record(0xAA, 1_000);
@@ -212,6 +217,10 @@ mod tests {
         veto.zeroize();
         assert_eq!(veto.disk_tombstone_at_ms, 0);
         assert_eq!(veto.disk_tombstoner_device, [0u8; 16]);
+        // Skip-annotated framing fields must survive zeroize().
+        assert_eq!(veto.record_id, [0xAA; 16]);
+        assert_eq!(veto.block_id, [0xBB; 16]);
+        assert_eq!(veto.local_state.record_type, "kv");
     }
 
     /// [`VetoDecision`] equality is structural over the variant
