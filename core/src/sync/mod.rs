@@ -36,6 +36,7 @@ pub mod error;
 pub mod ingest;
 pub mod once;
 pub mod outcome;
+pub mod prepare;
 pub mod state;
 
 pub use bundle::{BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot, VaultBundle};
