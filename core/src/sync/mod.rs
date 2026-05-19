@@ -31,6 +31,7 @@
 //! and veto-on-tombstone are scoped to C.1.1b.
 
 pub mod bundle;
+pub mod draft;
 pub mod error;
 pub mod ingest;
 pub mod once;
@@ -38,6 +39,7 @@ pub mod outcome;
 pub mod state;
 
 pub use bundle::{BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot, VaultBundle};
+pub use draft::{BlockId, DraftMerge, RecordId, RecordTombstoneVeto, VetoDecision};
 pub use error::SyncError;
 #[doc(hidden)]
 pub use once::__test_dispatch;
