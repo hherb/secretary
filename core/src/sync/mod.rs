@@ -31,6 +31,7 @@
 //! and veto-on-tombstone are scoped to C.1.1b.
 
 pub mod bundle;
+pub mod commit;
 pub mod draft;
 pub mod error;
 pub mod ingest;
