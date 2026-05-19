@@ -7,8 +7,6 @@
 //! vetoes, no merged records, and a manifest-level vector clock equal
 //! to the component-wise max of the canonical and copy clocks.
 
-#![forbid(unsafe_code)]
-
 use std::path::Path;
 
 use secretary_core::sync::{prepare_merge, sync_once, SyncOutcome, SyncState};
