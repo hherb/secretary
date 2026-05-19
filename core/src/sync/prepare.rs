@@ -14,11 +14,12 @@ use std::path::Path;
 
 use zeroize::Zeroize;
 
+use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::{MlKem768Secret, X25519Secret};
 use crate::crypto::secret::Sensitive;
 use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
-use crate::sync::bundle::{compute_manifest_hash, VaultBundle};
+use crate::sync::bundle::{compute_manifest_hash, ManifestSnapshot, VaultBundle};
 use crate::sync::draft::{BlockId, DraftMerge, RecordTombstoneVeto};
 use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
@@ -216,6 +217,11 @@ fn decrypt_block_envelope(
 /// `diverging_blocks` map references a block that doesn't exist on the
 /// referenced manifest, which is a structural bundle bug (1a ingestion
 /// only inserts block_uuids present on both sides).
+///
+/// Linear scan over `manifest.blocks` (O(N) per lookup); acceptable at
+/// v1 scale (handful of blocks per manifest). If Task 15's property
+/// tests show this in a hot path, consider a `BTreeMap` keyed lookup
+/// or memoising on the snapshot.
 fn block_clock_on_manifest(
     manifest: &crate::vault::Manifest,
     block_uuid: &[u8; 16],
@@ -229,6 +235,67 @@ fn block_clock_on_manifest(
         .ok_or_else(|| SyncError::InvalidArgument {
             detail: format!("{context} manifest missing block {block_uuid:02x?}"),
         })
+}
+
+/// Pair a copy block envelope with its parent manifest's
+/// `vector_clock_summary` by matching the envelope's BLAKE3-256
+/// fingerprint against `BlockEntry::fingerprint` on each copy manifest.
+///
+/// **Why fingerprint matching rather than positional index:** the 1a
+/// ingestion layer populates `bundle.copies` (via
+/// [`crate::sync::ingest::ingest_manifest_copies`]) and
+/// `divergence.copy_envelopes` (via
+/// [`crate::sync::ingest::ingest_block_divergence`]) from two
+/// independent filesystem scans — sibling manifest files in the vault
+/// root vs. sibling block files in `blocks/`. The two slices have no
+/// enforced 1:1 positional alignment: a manifest sibling may not have
+/// rewritten this particular block; a block sibling may be an orphan
+/// left by a sync tool whose matching manifest sibling was cleaned up.
+/// Pairing by positional index would silently fold the wrong vector
+/// clock into `merge_block`, producing a structurally wrong merge
+/// without any signal.
+///
+/// `BlockEntry::fingerprint` is the BLAKE3-256 of the complete block
+/// file bytes (the same value `verify_block_fingerprints` checks at
+/// `open_vault` time), so a fingerprint match uniquely identifies the
+/// manifest that authored this envelope.
+///
+/// # Errors
+///
+/// - [`SyncError::InvalidArgument`] if no manifest in `copies` has a
+///   `BlockEntry` for `block_uuid` whose `fingerprint` equals the
+///   envelope's. This is an "orphan block sibling" condition:
+///   structurally, the envelope authenticated through 1a (signed by the
+///   canonical owner) but no authenticated copy manifest references it.
+///   Surfacing the error rather than silently skipping or guessing a
+///   clock keeps the merge result trustworthy — the user can clean
+///   stale block siblings or report a 1a-ingest bug.
+///
+/// # Cost
+///
+/// One BLAKE3-256 of `envelope_bytes` (already verified by 1a on
+/// ingest; redoing it here costs O(envelope size)) plus a linear scan
+/// over `copies × blocks_per_manifest`. Acceptable at v1 scale.
+fn parent_block_clock(
+    envelope_bytes: &[u8],
+    block_uuid: &[u8; 16],
+    copies: &[ManifestSnapshot],
+) -> Result<Vec<VectorClockEntry>, SyncError> {
+    let envelope_fp = *blake3_hash(envelope_bytes).as_bytes();
+    for copy in copies {
+        for entry in &copy.manifest.blocks {
+            if entry.block_uuid == *block_uuid && entry.fingerprint == envelope_fp {
+                return Ok(entry.vector_clock_summary.clone());
+            }
+        }
+    }
+    Err(SyncError::InvalidArgument {
+        detail: format!(
+            "orphan block sibling for block_uuid {block_uuid:02x?}: no copy manifest \
+             in bundle.copies has a BlockEntry whose fingerprint matches the supplied \
+             envelope; either a stale block file on disk or a 1a-ingest data shape bug",
+        ),
+    })
 }
 
 /// Turn the C.1.1a [`VaultBundle`] into a [`DraftMerge`]. AEAD-decrypts
@@ -268,13 +335,17 @@ fn block_clock_on_manifest(
 ///
 /// # Per-copy block-clock pairing
 ///
-/// The per-copy block clock is looked up by `block_uuid` on the
-/// matching copy manifest. 1a's `ingest_conflict_copies` appends
-/// `copy_envelopes` and `bundle.copies` in matched positional order
-/// (each `copy_envelopes[i]` is the block envelope from
-/// `bundle.copies[i]`'s manifest); Task 8 mirrors that contract by
-/// indexing the two slices together. If 1a ever changes that ordering
-/// contract, this function must change too.
+/// The per-copy block clock is looked up by matching each envelope's
+/// BLAKE3-256 fingerprint against [`crate::vault::manifest::BlockEntry`]
+/// `::fingerprint` on every copy manifest in `bundle.copies` (see
+/// [`parent_block_clock`]). The 1a ingestion layer does NOT guarantee
+/// positional alignment between `bundle.copies[i]` and
+/// `divergence.copy_envelopes[i]` — the two slices come from
+/// independent filesystem scans (`enumerate_manifest_siblings` vs.
+/// `enumerate_block_siblings`) and may diverge whenever a manifest
+/// sibling didn't rewrite the block, or a block sibling has no
+/// matching manifest sibling. Fingerprint matching is the unambiguous
+/// pairing: it returns the manifest that authored the envelope.
 ///
 /// # Errors
 ///
@@ -284,8 +355,10 @@ fn block_clock_on_manifest(
 ///   identity) or an attacker-supplied corrupted ciphertext.
 /// - `SyncError::InvalidArgument` fires when the plan references a
 ///   `block_uuid` not present in `bundle.diverging_blocks` (structural
-///   bundle/plan disagreement), or when a referenced block_uuid is
-///   missing from one of the manifests.
+///   bundle/plan disagreement), when the canonical manifest is missing
+///   a `BlockEntry` for a divergent block_uuid, or when a copy block
+///   envelope's fingerprint matches no copy manifest's `BlockEntry`
+///   (orphan sibling — see [`parent_block_clock`]).
 ///
 /// # Purity & cost
 ///
@@ -337,19 +410,12 @@ pub fn prepare_merge(
         let mut copy_plaintexts: Vec<BlockPlaintext> =
             Vec::with_capacity(divergence.copy_envelopes.len());
 
-        for (copy_idx, copy_env) in divergence.copy_envelopes.iter().enumerate() {
-            let copy_manifest =
-                bundle
-                    .copies
-                    .get(copy_idx)
-                    .ok_or_else(|| SyncError::InvalidArgument {
-                        detail: format!(
-                            "bundle.copies[{copy_idx}] missing for block_uuid {block_uuid:02x?} \
-                         (copy_envelopes/copies length mismatch)",
-                        ),
-                    })?;
-            let copy_block_clock =
-                block_clock_on_manifest(&copy_manifest.manifest, block_uuid, "copy")?;
+        for copy_env in &divergence.copy_envelopes {
+            // Pair the envelope with its parent manifest's
+            // vector_clock_summary via BLAKE3-256 fingerprint match;
+            // positional alignment between `copy_envelopes` and
+            // `bundle.copies` is NOT guaranteed by 1a.
+            let copy_block_clock = parent_block_clock(&copy_env.bytes, block_uuid, &bundle.copies)?;
             let copy_pt = decrypt_block_envelope(&copy_env.bytes, &keys)?;
 
             let acc_pt = BlockPlaintext {
@@ -360,6 +426,10 @@ pub fn prepare_merge(
                 records: acc_records.values().cloned().collect(),
                 unknown: acc_unknown.clone(),
             };
+            // Multi-device note: `user_uuid` is the single-owner v1
+            // stand-in for the merging device. When multi-device support
+            // lands, this becomes a real `device_uuid` on
+            // `UnlockedIdentity` (or threaded from caller config).
             let merged = merge_block(
                 &acc_pt,
                 &acc_clock,
@@ -382,6 +452,12 @@ pub fn prepare_merge(
             copy_plaintexts.push(copy_pt);
         }
 
+        // Per-record veto pass. Linear scan: O(records · copies ·
+        // records_per_copy). Acceptable at v1 scale (a handful of
+        // copies × tens of records); a per-copy
+        // `BTreeMap<record_uuid, &Record>` index would be the
+        // tighter shape if Task 15's proptests show this in a hot
+        // path.
         for (record_uuid, local_rec) in acc_records.iter() {
             if local_rec.tombstone {
                 continue;
@@ -570,5 +646,212 @@ mod tests {
         assert_eq!(v1.disk_tombstoner_device, [0x01; 16]);
         assert_eq!(v2.disk_tombstone_at_ms, 200);
         assert_eq!(v2.disk_tombstoner_device, [0x01; 16]);
+    }
+}
+
+#[cfg(test)]
+mod parent_block_clock_tests {
+    //! Unit tests for [`parent_block_clock`] — proves the
+    //! fingerprint-matching pairing is sound across the cases that
+    //! positional-index pairing got wrong: copies missing this block,
+    //! copies referencing a different envelope for the same block_uuid,
+    //! and the orphan-envelope structural error.
+
+    use super::parent_block_clock;
+    use crate::crypto::hash::hash as blake3_hash;
+    use crate::sync::bundle::ManifestSnapshot;
+    use crate::vault::block::VectorClockEntry;
+    use crate::vault::{BlockEntry, KdfParamsRef, Manifest};
+    use std::path::PathBuf;
+
+    /// Empty-on-everything Manifest; tests populate `blocks` per case.
+    fn empty_manifest() -> Manifest {
+        Manifest {
+            manifest_version: 1,
+            vault_uuid: [0u8; 16],
+            format_version: 1,
+            suite_id: 1,
+            owner_user_uuid: [0u8; 16],
+            vector_clock: vec![],
+            blocks: vec![],
+            trash: vec![],
+            kdf_params: KdfParamsRef {
+                memory_kib: 262_144,
+                iterations: 3,
+                parallelism: 1,
+                salt: [0u8; 32],
+            },
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Wrap a manifest in a ManifestSnapshot with placeholder envelope
+    /// bytes and source_path — `parent_block_clock` only inspects
+    /// `manifest.blocks`.
+    fn snapshot(manifest: Manifest) -> ManifestSnapshot {
+        ManifestSnapshot {
+            manifest,
+            raw_envelope_bytes: vec![],
+            source_path: PathBuf::from("/dev/null"),
+        }
+    }
+
+    fn block_entry(block_uuid: [u8; 16], fp: [u8; 32], clock: Vec<VectorClockEntry>) -> BlockEntry {
+        BlockEntry {
+            block_uuid,
+            block_name: String::new(),
+            fingerprint: fp,
+            recipients: vec![],
+            vector_clock_summary: clock,
+            suite_id: 1,
+            created_at_ms: 0,
+            last_mod_ms: 0,
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+
+    const UUID_A: [u8; 16] = [0xAA; 16];
+    const UUID_B: [u8; 16] = [0xBB; 16];
+
+    #[test]
+    fn returns_matching_manifests_clock_when_single_copy_matches() {
+        let envelope = b"envelope-bytes-for-uuid-a".to_vec();
+        let fp = *blake3_hash(&envelope).as_bytes();
+        let clock = vec![VectorClockEntry {
+            device_uuid: [0x11; 16],
+            counter: 7,
+        }];
+
+        let mut m = empty_manifest();
+        m.blocks.push(block_entry(UUID_A, fp, clock.clone()));
+
+        let copies = vec![snapshot(m)];
+        let got = parent_block_clock(&envelope, &UUID_A, &copies).expect("expected clock");
+        assert_eq!(got, clock);
+    }
+
+    #[test]
+    fn returns_first_match_when_multiple_copies_share_fingerprint() {
+        // Two manifest siblings both reference the same unchanged block
+        // (same fingerprint, same clock summary). Either is a valid
+        // parent; the helper returns the first match.
+        let envelope = b"envelope-bytes-shared".to_vec();
+        let fp = *blake3_hash(&envelope).as_bytes();
+        let clock = vec![VectorClockEntry {
+            device_uuid: [0x22; 16],
+            counter: 3,
+        }];
+
+        let mut m1 = empty_manifest();
+        m1.blocks.push(block_entry(UUID_A, fp, clock.clone()));
+        let mut m2 = empty_manifest();
+        m2.blocks.push(block_entry(UUID_A, fp, clock.clone()));
+
+        let copies = vec![snapshot(m1), snapshot(m2)];
+        let got = parent_block_clock(&envelope, &UUID_A, &copies).expect("expected clock");
+        assert_eq!(got, clock);
+    }
+
+    #[test]
+    fn skips_copies_without_block_uuid_entry() {
+        // copy[0] doesn't reference UUID_A at all; copy[1] does.
+        // Positional-index pairing would have returned copy[0] (and
+        // erroneously failed). Fingerprint pairing correctly finds
+        // copy[1].
+        let envelope = b"envelope-bytes-uuid-a".to_vec();
+        let fp = *blake3_hash(&envelope).as_bytes();
+        let clock_a = vec![VectorClockEntry {
+            device_uuid: [0x33; 16],
+            counter: 5,
+        }];
+        let other_fp = *blake3_hash(b"other-envelope").as_bytes();
+
+        let mut m_other = empty_manifest();
+        m_other.blocks.push(block_entry(
+            UUID_B,
+            other_fp,
+            vec![VectorClockEntry {
+                device_uuid: [0x44; 16],
+                counter: 1,
+            }],
+        ));
+        let mut m_target = empty_manifest();
+        m_target
+            .blocks
+            .push(block_entry(UUID_A, fp, clock_a.clone()));
+
+        let copies = vec![snapshot(m_other), snapshot(m_target)];
+        let got = parent_block_clock(&envelope, &UUID_A, &copies).expect("expected clock");
+        assert_eq!(got, clock_a);
+    }
+
+    #[test]
+    fn skips_copies_with_different_fingerprint_for_same_uuid() {
+        // copy[0] references UUID_A but with a different envelope
+        // fingerprint (e.g. an older block version); copy[1] is the
+        // actual parent. Positional pairing would have grabbed copy[0]'s
+        // (wrong) clock summary.
+        let envelope = b"envelope-bytes-new".to_vec();
+        let fp_new = *blake3_hash(&envelope).as_bytes();
+        let fp_old = *blake3_hash(b"envelope-bytes-old").as_bytes();
+        let clock_new = vec![VectorClockEntry {
+            device_uuid: [0x55; 16],
+            counter: 9,
+        }];
+        let clock_old = vec![VectorClockEntry {
+            device_uuid: [0x66; 16],
+            counter: 4,
+        }];
+
+        let mut m_old = empty_manifest();
+        m_old.blocks.push(block_entry(UUID_A, fp_old, clock_old));
+        let mut m_new = empty_manifest();
+        m_new
+            .blocks
+            .push(block_entry(UUID_A, fp_new, clock_new.clone()));
+
+        let copies = vec![snapshot(m_old), snapshot(m_new)];
+        let got = parent_block_clock(&envelope, &UUID_A, &copies).expect("expected clock");
+        assert_eq!(got, clock_new);
+    }
+
+    #[test]
+    fn errors_on_orphan_envelope_with_no_matching_manifest() {
+        // The envelope authenticated (caller upstream) but no copy
+        // manifest references it. Structural bundle error —
+        // `parent_block_clock` returns InvalidArgument so the caller
+        // can surface the issue rather than guess a clock.
+        let envelope = b"orphan-envelope".to_vec();
+        let fp_other = *blake3_hash(b"some-other-envelope").as_bytes();
+
+        let mut m = empty_manifest();
+        m.blocks.push(block_entry(
+            UUID_A,
+            fp_other,
+            vec![VectorClockEntry {
+                device_uuid: [0x77; 16],
+                counter: 1,
+            }],
+        ));
+
+        let copies = vec![snapshot(m)];
+        let err = parent_block_clock(&envelope, &UUID_A, &copies).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("orphan block sibling"),
+            "expected 'orphan block sibling' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn errors_on_empty_copies() {
+        let envelope = b"envelope".to_vec();
+        let copies: Vec<ManifestSnapshot> = vec![];
+        let err = parent_block_clock(&envelope, &UUID_A, &copies).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("orphan block sibling"),
+            "expected 'orphan block sibling' in error, got: {msg}"
+        );
     }
 }
