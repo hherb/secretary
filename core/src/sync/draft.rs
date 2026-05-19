@@ -29,8 +29,6 @@
 //! [`commit_with_decisions`]: crate::sync::commit_with_decisions
 //! [`Record`]: crate::vault::record::Record
 
-#![forbid(unsafe_code)]
-
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::sync::bundle::ManifestHash;
