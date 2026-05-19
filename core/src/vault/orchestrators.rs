@@ -53,7 +53,13 @@ const VAULT_TOML_FILENAME: &str = "vault.toml";
 const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 
 /// Filename of the encrypted, signed manifest (§4 / vault-format.md §1).
-const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
+/// `pub(crate)` so the sync-orchestration layer
+/// (`crate::sync::{ingest, once, commit::write}`) can address the
+/// canonical manifest path without re-declaring the literal in three
+/// places. `pub(crate)` keeps it invisible to integration tests and
+/// external crates — those continue to use the documented filename
+/// literal directly.
+pub(crate) const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 
 /// Subdirectory holding imported / owner contact cards
 /// (vault-format.md §1, §5).

@@ -33,20 +33,13 @@ use crate::sync::state::SyncState;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::io::write_atomic;
 use crate::vault::orchestrators::{
-    format_uuid_hyphenated, open_vault, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION,
+    format_uuid_hyphenated, open_vault, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, MANIFEST_FILENAME,
 };
 use crate::vault::record::Record;
 use crate::vault::{
     encode_block_file, encode_manifest_file, encrypt_block, sign_manifest, BlockHeader,
     BlockPlaintext, ManifestHeader, RecipientPublicKeys, Unlocker, FILE_KIND_BLOCK,
 };
-
-/// On-disk filename of the canonical manifest. Mirrors the constants in
-/// [`crate::sync::once`] and [`crate::vault::orchestrators`] (both
-/// private — the value is single-sourced in `vault::orchestrators` via
-/// `MANIFEST_FILENAME`, repeated here verbatim to avoid widening that
-/// constant's visibility for one consumer).
-const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 
 /// Block plaintext `block_version` for v1 (§6.3). v1 is the only value
 /// v1 clients write.
@@ -116,7 +109,7 @@ pub fn commit_with_decisions(
     // bytes; this raw re-read can race a concurrent writer between
     // step 1's open and this call, but either way we hash whatever the
     // current bytes are and compare.
-    let manifest_path = vault_folder.join(CANONICAL_MANIFEST_FILENAME);
+    let manifest_path = vault_folder.join(MANIFEST_FILENAME);
     let envelope_bytes = std::fs::read(&manifest_path).map_err(|e| {
         SyncError::Vault(crate::vault::VaultError::Io {
             context: "failed to read manifest envelope for freshness re-check",
