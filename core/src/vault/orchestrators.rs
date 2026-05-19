@@ -598,6 +598,63 @@ pub(crate) fn read_vault_manifest_full(
     Ok((owner_card, manifest, manifest_envelope_bytes))
 }
 
+/// Verify each on-disk block file's BLAKE3-256 fingerprint matches the
+/// value committed in the manifest's [`BlockEntry::fingerprint`].
+///
+/// Returns `Ok(())` if every block matches. The first mismatch fires
+/// [`VaultError::BlockFingerprintMismatch`] with the failing
+/// `block_uuid` plus both fingerprints (the manifest's `expected` and
+/// the on-disk-bytes `got`). The mismatch is a typed signal that a
+/// partial commit (e.g. a crash between block writes and the manifest
+/// write inside `commit_with_decisions`) corrupted the vault — caller
+/// recovery is to re-run `sync_once → prepare_merge →
+/// commit_with_decisions`, which is convergent under CRDT idempotence.
+///
+/// Reads one block file per `manifest.blocks` entry; the per-file read
+/// buffer dominates allocation (the per-entry `PathBuf` / `String`
+/// construction is `O(1)` per block by comparison). The manifest must
+/// already be authenticated (envelope signature verified) — this
+/// helper does not re-verify it.
+///
+/// On the I/O failure path (e.g. a `blocks/<uuid>.cbor.enc` file is
+/// missing or unreadable) this surfaces a generic [`VaultError::Io`]
+/// with a static context string that does not carry the failing
+/// block's UUID. See [Issue #88] for the planned debuggability
+/// improvement.
+///
+/// [Issue #88]: https://github.com/hherb/secretary/issues/88
+///
+/// `pub(crate)` because it is only invoked from [`open_vault`] (wired
+/// in Task 5); external callers go via `open_vault`'s typed error
+/// surface.
+///
+/// `#[allow(dead_code)]` is a per-task TDD shim — Task 5 wires this
+/// helper into `open_vault`, at which point the marker comes off.
+#[allow(dead_code)]
+pub(crate) fn verify_block_fingerprints(
+    folder: &Path,
+    manifest: &Manifest,
+) -> Result<(), VaultError> {
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    for entry in &manifest.blocks {
+        let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
+        let block_path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+        let bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
+            context: "failed to read block file for fingerprint check",
+            source: e,
+        })?;
+        let got = *blake3_hash(&bytes).as_bytes();
+        if got != entry.fingerprint {
+            return Err(VaultError::BlockFingerprintMismatch {
+                block_uuid: entry.block_uuid,
+                expected: entry.fingerprint,
+                got,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Shared helper for [`open_vault`] and [`read_vault_manifest`].
 ///
 /// Inputs: the vault folder, pre-read `vault.toml` bytes, the unlocked
@@ -1992,5 +2049,159 @@ mod orchestrator_tests {
     fn ensure_empty_directory_accepts_empty_tempdir() {
         let dir = tempfile::tempdir().unwrap();
         ensure_empty_directory(dir.path()).expect("empty tempdir must succeed");
+    }
+
+    // ------------------------------------------------------------------
+    // verify_block_fingerprints — C.1.1b D6 (Task 4 of the merge plan)
+    // ------------------------------------------------------------------
+    //
+    // These tests exercise the read-time fingerprint check that
+    // `open_vault` will call (Task 5) to detect partial-commit
+    // corruption. We materialise the `golden_vault_001` fixture into a
+    // tempdir per test so the corruption test can mutate block files
+    // without affecting the on-disk reference vector.
+
+    /// Materialise `core/tests/data/golden_vault_001` into a tempdir,
+    /// open it, and return `(folder, _tmp_guard, manifest)`.
+    ///
+    /// Inline (rather than reusing `core/tests/fixtures/mod.rs`) so
+    /// lib-internal tests can exercise `pub(crate)` helpers without
+    /// crossing the integration-test boundary.
+    fn open_golden_vault_manifest_inline() -> (PathBuf, tempfile::TempDir, Manifest) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join("golden_vault_001");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().to_path_buf();
+        copy_recursive(&src, &dest);
+
+        let password = SecretBytes::new(read_golden_vault_001_password());
+        let open = open_vault(&dest, Unlocker::Password(&password), None)
+            .expect("open_vault must succeed on the golden fixture");
+        (dest, tmp, open.manifest)
+    }
+
+    /// Read the master password from
+    /// `core/tests/data/golden_vault_001_inputs.json`. Mirrors the
+    /// integration-test fixture in `core/tests/fixtures/mod.rs` but
+    /// lives in-crate so the lib-internal tests do not depend on the
+    /// integration-test target.
+    fn read_golden_vault_001_password() -> Vec<u8> {
+        #[derive(serde::Deserialize)]
+        struct Inputs {
+            password: String,
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join("golden_vault_001_inputs.json");
+        let raw =
+            std::fs::read_to_string(&path).expect("golden_vault_001_inputs.json must be readable");
+        let inputs: Inputs =
+            serde_json::from_str(&raw).expect("golden_vault_001_inputs.json must be valid JSON");
+        inputs.password.into_bytes()
+    }
+
+    fn copy_recursive(src: &Path, dest: &Path) {
+        if !dest.exists() {
+            std::fs::create_dir_all(dest).expect("mkdir -p");
+        }
+        for entry in std::fs::read_dir(src).expect("read_dir") {
+            let e = entry.expect("dir entry");
+            let s = e.path();
+            let d = dest.join(e.file_name());
+            if e.file_type().expect("file_type").is_dir() {
+                copy_recursive(&s, &d);
+            } else {
+                std::fs::copy(&s, &d).expect("copy");
+            }
+        }
+    }
+
+    #[test]
+    fn verify_block_fingerprints_ok_on_consistent_vault() {
+        let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
+        verify_block_fingerprints(&folder, &manifest).expect("consistent vault must verify");
+    }
+
+    #[test]
+    fn verify_block_fingerprints_detects_corrupted_block() {
+        let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
+        let block_uuid = manifest.blocks[0].block_uuid;
+        let block_path = folder.join(BLOCKS_SUBDIR).join(format!(
+            "{}{}",
+            format_uuid_hyphenated(&block_uuid),
+            BLOCK_FILE_EXTENSION
+        ));
+
+        // Flip the final byte — the AEAD tag tail of the on-disk block
+        // file. This always changes the BLAKE3 fingerprint regardless of
+        // file size, which is what the manifest check is supposed to
+        // notice.
+        let mut bytes = std::fs::read(&block_path).expect("read block");
+        *bytes
+            .last_mut()
+            .expect("golden block file must be non-empty") ^= 0xFF;
+        std::fs::write(&block_path, &bytes).expect("write corrupted block");
+
+        let err = verify_block_fingerprints(&folder, &manifest)
+            .expect_err("corrupted block must surface a typed mismatch");
+        match err {
+            VaultError::BlockFingerprintMismatch {
+                block_uuid: got_uuid,
+                expected,
+                got,
+            } => {
+                assert_eq!(
+                    got_uuid, block_uuid,
+                    "uuid in error must match corrupted block"
+                );
+                assert_eq!(
+                    expected, manifest.blocks[0].fingerprint,
+                    "expected = manifest's recorded fingerprint"
+                );
+                assert_ne!(
+                    expected, got,
+                    "got must differ from expected on a corrupted block"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Pins current behaviour: a missing block file surfaces as a
+    /// generic [`VaultError::Io`] rather than a UUID-tagged
+    /// `BlockFingerprintMismatch`. The static `context` string today
+    /// does not carry the failing block's UUID; that gap is tracked in
+    /// Issue #88. When #88 lands this test should flip to assert the
+    /// new typed variant.
+    #[test]
+    fn verify_block_fingerprints_io_error_on_missing_block() {
+        let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
+        let block_uuid = manifest.blocks[0].block_uuid;
+        let block_path = folder.join(BLOCKS_SUBDIR).join(format!(
+            "{}{}",
+            format_uuid_hyphenated(&block_uuid),
+            BLOCK_FILE_EXTENSION
+        ));
+        std::fs::remove_file(&block_path).expect("remove block file");
+
+        let err = verify_block_fingerprints(&folder, &manifest)
+            .expect_err("missing block file must surface an error");
+        match err {
+            VaultError::Io { context, source } => {
+                assert_eq!(
+                    context, "failed to read block file for fingerprint check",
+                    "context must identify the helper that produced the error"
+                );
+                assert_eq!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "underlying io::Error must be NotFound for a deleted file"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

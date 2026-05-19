@@ -11,14 +11,7 @@
 
 **Branch hygiene:** PR #84's squash-merge collapsed Tasks 1-3 + the two PR-review fix-ups into single commit `7dff8da` on main. The local `feature/c1-1b-sync-merge` was reset to `origin/main` and Task 4 cherry-picked on top, so the branch now contains exactly one new commit and a fresh PR will be visually clean.
 
-**Gauntlet:** 727 passed / 0 failed / 10 ignored (724 from PR #84's squash + 3 new from Task 4 — 2 original + 1 review-fix-up). Clippy + fmt + Python conformance + spec-citation freshness all clean.
-
-**PR #85 review fix-ups (this commit):**
-
-- Soften `verify_block_fingerprints` doc claim about "no allocation" (per-entry `PathBuf` / `String` construction was undercounted) and cross-reference [Issue #88](https://github.com/hherb/secretary/issues/88) for the I/O-failure debuggability gap.
-- Defensive `last_mut().unwrap()` instead of `bytes.len() - 1` in the corruption test (would panic on an empty file; not possible today but the idiom is cheaper to read).
-- New test `verify_block_fingerprints_io_error_on_missing_block` pins current behaviour (generic `VaultError::Io { context, source }` with `NotFound` io kind) and documents the flip-point when #88 lands.
-- **Filed off the back of PR #85 review:** [Issue #87](https://github.com/hherb/secretary/issues/87) (dedup `golden_vault_001_password` reader between integration fixture and lib-internal tests) and [Issue #88](https://github.com/hherb/secretary/issues/88) (`VaultError::Io` should carry the failing block UUID).
+**Gauntlet:** 726 passed / 0 failed / 10 ignored (724 from PR #84's squash + 2 new from Task 4). Clippy + fmt + Python conformance + spec-citation freshness all clean.
 
 ## (2) What's next — execute Task 5
 
@@ -58,7 +51,7 @@ Per `feedback_stay_in_inner_loop`, keep the one-task-one-commit-one-review caden
 
 ### (c) Acceptance criteria for the C.1.1b PR (final)
 
-- [ ] `cargo test --release --workspace --no-fail-fast` → 740 / 0 / 10 (724 baseline + 16 new tests total across Tasks 4-16; we're at 727 after Task 4 + review fix-up = 724 + 3)
+- [ ] `cargo test --release --workspace --no-fail-fast` → 740 / 0 / 10 (724 baseline + 16 new tests total across Tasks 4-16; we're at 726 after Task 4 = 724 + 2)
 - [ ] `cargo clippy --release --workspace --tests -- -D warnings` → clean
 - [ ] `cargo fmt --all -- --check` → clean
 - [ ] `uv run core/tests/python/conformance.py` → PASS
@@ -102,8 +95,6 @@ Per `feedback_stay_in_inner_loop`, keep the one-task-one-commit-one-review caden
 - **[#78](https://github.com/hherb/secretary/issues/78)** — C.1.1a integration-test gaps. Task 13's veto-fixture helpers may close some of #78 as a side effect — worth re-checking on Task 13 completion.
 - **[#79](https://github.com/hherb/secretary/issues/79)** — sync_kat.json ingestion vectors (Task 14 of the 1a plan, deferred). Not directly C.1.1b; relisted for tracking.
 - **[#81](https://github.com/hherb/secretary/issues/81)** — `MAX_BLOCK_FILE_SIZE` undocumented vs format-max recipient table. Not directly C.1.1b-relevant; tracked for the C.4 doc pass.
-- **[#87](https://github.com/hherb/secretary/issues/87)** — dedup `golden_vault_001_password` reader between `core/tests/fixtures/mod.rs` and the lib-internal test helper added in PR #85. Refactor follow-up, scoped to ~30 min. Filed off the back of PR #85 review.
-- **[#88](https://github.com/hherb/secretary/issues/88)** — `VaultError::Io` does not carry the failing block UUID on fingerprint-check I/O failures. Filed off the back of PR #85 review; current behaviour is pinned by the new `verify_block_fingerprints_io_error_on_missing_block` test (test flips when #88 lands).
 
 ### Open PRs at close
 
