@@ -40,7 +40,11 @@ pub mod outcome;
 pub mod prepare;
 pub mod state;
 
-pub use bundle::{BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot, VaultBundle};
+pub use bundle::{
+    compute_manifest_hash, BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot,
+    VaultBundle,
+};
+pub use commit::commit_with_decisions;
 pub use draft::{BlockId, DraftMerge, RecordId, RecordTombstoneVeto, VetoDecision};
 pub use error::SyncError;
 #[doc(hidden)]

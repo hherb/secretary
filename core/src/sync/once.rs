@@ -17,13 +17,7 @@ use crate::sync::state::SyncState;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::conflict::{clock_relation, ClockRelation};
-use crate::vault::orchestrators::read_vault_manifest_full;
-
-/// Filename of the canonical manifest on disk. Mirrors
-/// [`crate::sync::ingest`]'s constant; kept local because the two
-/// modules reach this from different angles and a cross-module
-/// re-export would create a needless coupling.
-const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
+use crate::vault::orchestrators::{read_vault_manifest_full, MANIFEST_FILENAME};
 
 /// Reconcile one local vault folder against caller-persisted state.
 ///
@@ -134,7 +128,7 @@ fn assemble_concurrent_outcome(
     disk_clock: Vec<VectorClockEntry>,
     local_highest_seen: Vec<VectorClockEntry>,
 ) -> Result<SyncOutcome, SyncError> {
-    let canonical_path: PathBuf = vault_folder.join(CANONICAL_MANIFEST_FILENAME);
+    let canonical_path: PathBuf = vault_folder.join(MANIFEST_FILENAME);
     let manifest_hash: ManifestHash = compute_manifest_hash(canonical_envelope_bytes);
 
     let owner_card_bytes = owner_card

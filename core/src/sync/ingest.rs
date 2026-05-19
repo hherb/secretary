@@ -22,15 +22,11 @@ use crate::crypto::aead::{AeadKey, AEAD_TAG_LEN};
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, BlockEnvelope, ManifestSnapshot, VaultBundle};
+use crate::vault::orchestrators::MANIFEST_FILENAME;
 use crate::vault::{
     clock_relation, decode_block_file, decode_manifest_file, decrypt_manifest_body,
     verify_block_signature, verify_manifest, ClockRelation, Manifest,
 };
-
-/// The canonical manifest filename on disk. Conflict-copy siblings
-/// are recognised by starting with this prefix and not matching it
-/// exactly.
-const CANONICAL_MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 
 /// Attempt to decode + authenticate one candidate manifest envelope
 /// against the canonical owner identity. Returns `Some(snapshot)` if
@@ -159,8 +155,8 @@ pub(crate) fn authenticate_manifest_envelope(
 /// read-dir hiccups on a symlink loop) are silently skipped so one
 /// poison entry can't deny-of-service the whole scan.
 ///
-/// The `starts_with(CANONICAL_MANIFEST_FILENAME)` filter covers all
-/// observed cloud-sync naming conventions: Dropbox
+/// The `starts_with(MANIFEST_FILENAME)` filter covers all observed
+/// cloud-sync naming conventions: Dropbox
 /// `manifest.cbor.enc (conflicted copy …)`, iCloud
 /// `manifest.cbor.enc 2`, Syncthing
 /// `manifest.cbor.enc.sync-conflict-…`, etc. The filter is the
@@ -178,10 +174,10 @@ pub(crate) fn enumerate_manifest_siblings(folder: &Path) -> Result<Vec<PathBuf>,
             Some(n) => n,
             None => continue,
         };
-        if name == CANONICAL_MANIFEST_FILENAME {
+        if name == MANIFEST_FILENAME {
             continue;
         }
-        if !name.starts_with(CANONICAL_MANIFEST_FILENAME) {
+        if !name.starts_with(MANIFEST_FILENAME) {
             continue;
         }
         out.push(path);
