@@ -610,10 +610,19 @@ pub(crate) fn read_vault_manifest_full(
 /// recovery is to re-run `sync_once → prepare_merge →
 /// commit_with_decisions`, which is convergent under CRDT idempotence.
 ///
-/// Reads one block file per `manifest.blocks` entry. No allocation
-/// beyond the per-file read buffer. The manifest must already be
-/// authenticated (envelope signature verified) — this helper does not
-/// re-verify it.
+/// Reads one block file per `manifest.blocks` entry; the per-file read
+/// buffer dominates allocation (the per-entry `PathBuf` / `String`
+/// construction is `O(1)` per block by comparison). The manifest must
+/// already be authenticated (envelope signature verified) — this
+/// helper does not re-verify it.
+///
+/// On the I/O failure path (e.g. a `blocks/<uuid>.cbor.enc` file is
+/// missing or unreadable) this surfaces a generic [`VaultError::Io`]
+/// with a static context string that does not carry the failing
+/// block's UUID. See [Issue #88] for the planned debuggability
+/// improvement.
+///
+/// [Issue #88]: https://github.com/hherb/secretary/issues/88
 ///
 /// `pub(crate)` because it is only invoked from [`open_vault`] (wired
 /// in Task 5); external callers go via `open_vault`'s typed error
@@ -2131,8 +2140,9 @@ mod orchestrator_tests {
         // file size, which is what the manifest check is supposed to
         // notice.
         let mut bytes = std::fs::read(&block_path).expect("read block");
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xFF;
+        *bytes
+            .last_mut()
+            .expect("golden block file must be non-empty") ^= 0xFF;
         std::fs::write(&block_path, &bytes).expect("write corrupted block");
 
         let err = verify_block_fingerprints(&folder, &manifest)
@@ -2154,6 +2164,41 @@ mod orchestrator_tests {
                 assert_ne!(
                     expected, got,
                     "got must differ from expected on a corrupted block"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Pins current behaviour: a missing block file surfaces as a
+    /// generic [`VaultError::Io`] rather than a UUID-tagged
+    /// `BlockFingerprintMismatch`. The static `context` string today
+    /// does not carry the failing block's UUID; that gap is tracked in
+    /// Issue #88. When #88 lands this test should flip to assert the
+    /// new typed variant.
+    #[test]
+    fn verify_block_fingerprints_io_error_on_missing_block() {
+        let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
+        let block_uuid = manifest.blocks[0].block_uuid;
+        let block_path = folder.join(BLOCKS_SUBDIR).join(format!(
+            "{}{}",
+            format_uuid_hyphenated(&block_uuid),
+            BLOCK_FILE_EXTENSION
+        ));
+        std::fs::remove_file(&block_path).expect("remove block file");
+
+        let err = verify_block_fingerprints(&folder, &manifest)
+            .expect_err("missing block file must surface an error");
+        match err {
+            VaultError::Io { context, source } => {
+                assert_eq!(
+                    context, "failed to read block file for fingerprint check",
+                    "context must identify the helper that produced the error"
+                );
+                assert_eq!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "underlying io::Error must be NotFound for a deleted file"
                 );
             }
             other => panic!("unexpected error: {other:?}"),
