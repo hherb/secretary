@@ -60,14 +60,25 @@ const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 const CONTACTS_SUBDIR: &str = "contacts";
 
 /// Subdirectory holding encrypted block files
-/// (vault-format.md §1, §6.1). `pub(crate)` so the C.1.1a
-/// conflict-copy scanner can address the same path.
-pub(crate) const BLOCKS_SUBDIR: &str = "blocks";
+/// (vault-format.md §1, §6.1). `#[doc(hidden)] pub` (re-exported from
+/// `vault/mod.rs`) so:
+///
+/// - The C.1.1a conflict-copy scanner
+///   (`crate::sync::ingest::enumerate_block_siblings`) can address
+///   the same path without re-declaring the string.
+/// - Integration tests in `tests/*.rs` can address the blocks subdir
+///   without duplicating a `const` (`pub(crate)` is invisible to
+///   integration tests; `#[doc(hidden)] pub` is the established
+///   cross-target test-hook pattern — see [`format_uuid_hyphenated`]
+///   and `crate::sync::__test_dispatch`).
+#[doc(hidden)]
+pub const BLOCKS_SUBDIR: &str = "blocks";
 
 /// Filename extension for block envelopes on disk: every block file
-/// is `<uuid-hyphenated>.cbor.enc`. Re-exported `pub(crate)` for the
-/// same reason as [`BLOCKS_SUBDIR`].
-pub(crate) const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
+/// is `<uuid-hyphenated>.cbor.enc`. `#[doc(hidden)] pub` re-exported
+/// from `vault/mod.rs` for the same reason as [`BLOCKS_SUBDIR`].
+#[doc(hidden)]
+pub const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 
 /// Format a 16-byte UUID as canonical lowercase 8-4-4-4-12 hex
 /// (`docs/vault-format.md` §1).

@@ -111,6 +111,14 @@ Per `feedback_stay_in_inner_loop`, keep the one-task-one-commit-one-review caden
 - **[#81](https://github.com/hherb/secretary/issues/81)** — `MAX_BLOCK_FILE_SIZE` undocumented vs format-max recipient table. Not directly C.1.1b-relevant; tracked for the C.4 doc pass.
 - **[#87](https://github.com/hherb/secretary/issues/87)** — dedup `golden_vault_001_password` reader between `core/tests/fixtures/mod.rs` and the lib-internal test helper added in PR #85. Refactor follow-up, scoped to ~30 min. Filed off the back of PR #85 review.
 - **[#88](https://github.com/hherb/secretary/issues/88)** — `VaultError::Io` does not carry the failing block UUID on fingerprint-check I/O failures. Filed off the back of PR #85 review; current behaviour now ALSO pinned by the renamed FFI `open_vault_missing_block_file_returns_folder_invalid` test (test flips when #88 lands).
+- **[#90](https://github.com/hherb/secretary/issues/90)** — consolidate four `copy_dir_recursive` test-helper copies (two in `core/tests/`, two in `ffi/secretary-ffi-bridge/tests/`) into one shared helper per crate. Filed off the back of PR #89 review. Cross-crate scope, ~20 min refactor.
+
+### PR #89 review fix-ups (subsequent commit on this branch)
+
+- **Single-source `BLOCKS_SUBDIR` / `BLOCK_FILE_EXTENSION`.** Changed both from `pub(crate)` to `#[doc(hidden)] pub` and re-exported from `vault/mod.rs` alongside `format_uuid_hyphenated` (same established cross-target test-hook pattern — see `project_secretary_cfg_test_not_propagated`). The duplicated `const`s in `core/tests/open_vault.rs` were removed.
+- **`mod fixtures;` declaration moved** to the top of `core/tests/open_vault.rs` next to the other `use` block (was inlined under the §10 test section).
+- **Issue #90 filed** for the cross-crate `copy_dir_recursive` consolidation — broader than this PR's scope.
+- Gauntlet after fix-ups: **728 / 0 / 10** (refactor is test-count-neutral; same baseline as the Task 5 commit). Clippy + fmt + Python conformance + spec-citation freshness all clean.
 
 ### Open PRs at close
 

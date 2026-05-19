@@ -28,8 +28,11 @@ use secretary_core::identity::fingerprint;
 use secretary_core::unlock::{self, create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
     encode_manifest_file, open_vault, sign_manifest, KdfParamsRef, Manifest, ManifestError,
-    ManifestHeader, OpenVault, Unlocker, VaultError, VectorClockEntry,
+    ManifestHeader, OpenVault, Unlocker, VaultError, VectorClockEntry, BLOCKS_SUBDIR,
+    BLOCK_FILE_EXTENSION,
 };
+
+mod fixtures;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers (mirror `create_vault.rs::make_fast_vault`)
@@ -434,18 +437,11 @@ fn open_vault_rollback_skipped_when_local_clock_none() {
 // ---------------------------------------------------------------------------
 // 10. C.1.1b D6 — block fingerprint mismatch surfaces as a typed error.
 // ---------------------------------------------------------------------------
-
-mod fixtures;
-
-/// Subdirectory of a vault folder that holds the per-block encrypted
-/// payloads (`<uuid>.cbor.enc`). Mirrors `BLOCKS_SUBDIR` in
-/// `core/src/vault/orchestrators.rs` — duplicated here because the
-/// constant is `pub(crate)` to the core crate.
-const BLOCKS_SUBDIR: &str = "blocks";
-
-/// On-disk extension for per-block encrypted payloads. Mirrors
-/// `BLOCK_FILE_EXTENSION` from the core crate (also `pub(crate)`).
-const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
+//
+// Uses the `#[doc(hidden)] pub` `BLOCKS_SUBDIR` / `BLOCK_FILE_EXTENSION`
+// re-exports from `secretary_core::vault` (imported at the top of this
+// file) so the on-disk filename convention is single-sourced from the
+// production constants the orchestrators write block files with.
 
 /// Wires `verify_block_fingerprints` into the `open_vault` read path
 /// (closing C.1.1b D6 — the partial-commit visibility gap).
