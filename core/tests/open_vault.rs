@@ -430,3 +430,104 @@ fn open_vault_rollback_skipped_when_local_clock_none() {
         .expect("open succeeds when local_highest_clock is None");
     assert!(opened.manifest.vector_clock.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// 10. C.1.1b D6 — block fingerprint mismatch surfaces as a typed error.
+// ---------------------------------------------------------------------------
+
+mod fixtures;
+
+/// Subdirectory of a vault folder that holds the per-block encrypted
+/// payloads (`<uuid>.cbor.enc`). Mirrors `BLOCKS_SUBDIR` in
+/// `core/src/vault/orchestrators.rs` — duplicated here because the
+/// constant is `pub(crate)` to the core crate.
+const BLOCKS_SUBDIR: &str = "blocks";
+
+/// On-disk extension for per-block encrypted payloads. Mirrors
+/// `BLOCK_FILE_EXTENSION` from the core crate (also `pub(crate)`).
+const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
+
+/// Wires `verify_block_fingerprints` into the `open_vault` read path
+/// (closing C.1.1b D6 — the partial-commit visibility gap).
+///
+/// Copies `tests/data/golden_vault_001/` to a fresh tempdir, flips
+/// the last byte of the first on-disk block file, and asserts that
+/// `open_vault` now refuses to return an `OpenVault` and instead
+/// surfaces a typed [`VaultError::BlockFingerprintMismatch`]. Without
+/// the wiring `open_vault` would succeed (manifest signature is still
+/// valid; the corruption only changes the per-block bytes), masking
+/// the partial commit until a downstream caller hits the AEAD failure.
+#[test]
+fn open_vault_rejects_corrupted_block_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dest = tmp.path().to_path_buf();
+    copy_dir_recursive(std::path::Path::new("tests/data/golden_vault_001"), &dest);
+
+    // Pick the first `<uuid>.cbor.enc` block file under the blocks
+    // subdir by enumerating directly — open_vault would normally
+    // surface the UUID via the manifest, but we need to corrupt
+    // before opening. Sort to make the choice deterministic across
+    // platforms with non-deterministic readdir ordering.
+    let blocks_dir = dest.join(BLOCKS_SUBDIR);
+    let mut block_files: Vec<_> = fs::read_dir(&blocks_dir)
+        .expect("read_dir blocks")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.ends_with(BLOCK_FILE_EXTENSION))
+                .unwrap_or(false)
+        })
+        .collect();
+    block_files.sort();
+    let target = block_files
+        .first()
+        .expect("golden_vault_001 must have at least one block file");
+
+    let mut bytes = fs::read(target).expect("read block");
+    // Defensive idiom (cheaper to read than `bytes.len() - 1`); the
+    // golden block file is non-empty by construction.
+    *bytes
+        .last_mut()
+        .expect("golden block file must be non-empty") ^= 0xFF;
+    fs::write(target, &bytes).expect("write corrupted block");
+
+    let password = fixtures::golden_vault_001_password();
+    let err = open_vault(&dest, Unlocker::Password(&password), None)
+        .expect_err("expected BlockFingerprintMismatch on corrupted block");
+
+    match err {
+        VaultError::BlockFingerprintMismatch {
+            block_uuid: _,
+            expected,
+            got,
+        } => {
+            assert_ne!(
+                expected, got,
+                "expected and got fingerprints must differ on a real mismatch",
+            );
+        }
+        other => panic!("expected BlockFingerprintMismatch, got {other:?}"),
+    }
+}
+
+/// Minimal recursive directory copy. Sufficient for the
+/// golden_vault_001 layout (a folder of regular files plus one
+/// `blocks/` subdirectory). Not symlink-safe; not needed for the
+/// fixture under test.
+fn copy_dir_recursive(src: &Path, dest: &Path) {
+    if !dest.exists() {
+        fs::create_dir_all(dest).expect("create_dir_all dest");
+    }
+    for entry in fs::read_dir(src).expect("read_dir src") {
+        let e = entry.expect("dir entry");
+        let s = e.path();
+        let d = dest.join(e.file_name());
+        if e.file_type().expect("file_type").is_dir() {
+            copy_dir_recursive(&s, &d);
+        } else {
+            fs::copy(&s, &d).expect("copy file");
+        }
+    }
+}

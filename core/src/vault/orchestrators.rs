@@ -523,6 +523,17 @@ pub fn open_vault(
     let (owner_card, manifest_body, manifest_file, _manifest_envelope_bytes) =
         read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
 
+    // C.1.1b D6: verify each on-disk block file's BLAKE3 fingerprint
+    // matches `BlockEntry.fingerprint` in the (now-authenticated)
+    // manifest. Closes the partial-commit window where a
+    // `commit_with_decisions` crash between block writes and the
+    // manifest write would leave a mismatched on-disk state. The
+    // mismatch surfaces as `VaultError::BlockFingerprintMismatch` —
+    // recovery is to re-run `sync_once → prepare_merge →
+    // commit_with_decisions`, which is convergent under CRDT
+    // idempotence.
+    verify_block_fingerprints(folder, &manifest_body)?;
+
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
@@ -624,13 +635,8 @@ pub(crate) fn read_vault_manifest_full(
 ///
 /// [Issue #88]: https://github.com/hherb/secretary/issues/88
 ///
-/// `pub(crate)` because it is only invoked from [`open_vault`] (wired
-/// in Task 5); external callers go via `open_vault`'s typed error
-/// surface.
-///
-/// `#[allow(dead_code)]` is a per-task TDD shim — Task 5 wires this
-/// helper into `open_vault`, at which point the marker comes off.
-#[allow(dead_code)]
+/// `pub(crate)` because it is only invoked from [`open_vault`];
+/// external callers go via `open_vault`'s typed error surface.
 pub(crate) fn verify_block_fingerprints(
     folder: &Path,
     manifest: &Manifest,

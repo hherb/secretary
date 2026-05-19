@@ -517,16 +517,15 @@ fn save_block_recipients_can_all_decrypt() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Tampered block on disk → fingerprint mismatch detectable on read
+// 6. Tampered block on disk → open_vault refuses with a typed error
 // ---------------------------------------------------------------------------
 //
-// `open_vault` does not currently re-hash blocks on open (PR-B scope is
-// just the manifest), so this test asserts the smoke-level invariant:
-// after corrupting the on-disk block bytes, the BLAKE3 of the corrupted
-// bytes no longer matches `manifest.blocks[0].fingerprint`. Future
-// integration of a "load block by uuid" path (PR-C) will turn this into
-// a typed-error round-trip; for PR-B it is a guard that the fingerprint
-// table is the authoritative integrity reference.
+// C.1.1b D6 closed the gap this test was originally a smoke-level
+// guard for: `open_vault` now BLAKE3-re-hashes every on-disk block file
+// at open time and refuses to return an `OpenVault` if any block's
+// bytes don't match the manifest's `BlockEntry.fingerprint`. The
+// failure surfaces as the typed [`VaultError::BlockFingerprintMismatch`]
+// variant carrying the failing block_uuid + both fingerprints.
 
 #[test]
 fn save_block_then_tampered_block_fails_open() {
@@ -554,18 +553,39 @@ fn save_block_then_tampered_block_fails_open() {
         .join("blocks")
         .join(format!("{block_uuid_hex}.cbor.enc"));
     let mut corrupted = fs::read(&block_path).unwrap();
-    let last = corrupted.len() - 1;
-    corrupted[last] ^= 0x01;
+    // Defensive idiom — `make_simple_plaintext`'s block file is always
+    // non-empty, but `last_mut().expect(...)` reads cheaper than
+    // `corrupted.len() - 1` indexing.
+    *corrupted
+        .last_mut()
+        .expect("saved block file must be non-empty") ^= 0x01;
     fs::write(&block_path, &corrupted).unwrap();
 
     drop(open);
-    let reopened = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
-    let stored_fp = reopened.manifest.blocks[0].fingerprint;
-    let on_disk_fp: [u8; 32] = *secretary_core::crypto::hash::hash(&corrupted).as_bytes();
-    assert_ne!(
-        stored_fp, on_disk_fp,
-        "tampered bytes must not match the manifest fingerprint"
-    );
+    let err = open_vault(dir.path(), Unlocker::Password(&pw), None)
+        .expect_err("open_vault must refuse a tampered block (C.1.1b D6)");
+    match err {
+        VaultError::BlockFingerprintMismatch {
+            block_uuid: reported_uuid,
+            expected,
+            got,
+        } => {
+            assert_eq!(
+                reported_uuid, block_uuid,
+                "reported block_uuid must match the corrupted block"
+            );
+            assert_ne!(
+                expected, got,
+                "expected and got fingerprints must differ on a real mismatch"
+            );
+            let on_disk_fp: [u8; 32] = *secretary_core::crypto::hash::hash(&corrupted).as_bytes();
+            assert_eq!(
+                got, on_disk_fp,
+                "got fingerprint must be the BLAKE3 of the on-disk bytes"
+            );
+        }
+        other => panic!("expected BlockFingerprintMismatch, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
