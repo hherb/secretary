@@ -46,4 +46,5 @@ pub use error::SyncError;
 pub use once::__test_dispatch;
 pub use once::sync_once;
 pub use outcome::{DiffPlan, RollbackEvidence, SyncOutcome};
+pub use prepare::prepare_merge;
 pub use state::SyncState;
