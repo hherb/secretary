@@ -255,9 +255,20 @@ mod tests {
     /// [`DraftMerge`] holds the six required fields (vault UUID, plan,
     /// manifest hash, merged records, vetoes, post-merge clock) in
     /// shapes the downstream `commit_with_decisions` consumes.
+    ///
+    /// Also pins the `#[zeroize(skip)]` semantics on every field: calling
+    /// `.zeroize()` must be a no-op for the framing scalars (`vault_uuid`,
+    /// `manifest_hash`) and for the contained collections (`merged_records`,
+    /// `vetoes`, `post_merge_clock`, `plan.diverging_blocks`). Drop-time
+    /// wipe of the inner `Record`'s `SecretString` / `SecretBytes` field
+    /// values is covered by the `RecordFieldValue` types' own
+    /// `ZeroizeOnDrop` impls — this assertion catches a future regression
+    /// where someone removes a `#[zeroize(skip)]` annotation and a
+    /// non-secret framing field (e.g. the manifest hash) suddenly starts
+    /// getting wiped in place.
     #[test]
     fn draft_merge_holds_required_fields() {
-        let d = DraftMerge {
+        let mut d = DraftMerge {
             vault_uuid: [9; 16],
             plan: DiffPlan {
                 diverging_blocks: vec![[0; 16]],
@@ -273,5 +284,13 @@ mod tests {
         assert!(d.merged_records.is_empty());
         assert!(d.post_merge_clock.is_empty());
         assert_eq!(d.manifest_hash, ManifestHash([0; 32]));
+        // All fields skip-annotated — .zeroize() must be a no-op.
+        d.zeroize();
+        assert_eq!(d.vault_uuid, [9; 16]);
+        assert_eq!(d.plan.diverging_blocks, vec![[0; 16]]);
+        assert_eq!(d.manifest_hash, ManifestHash([0; 32]));
+        assert!(d.merged_records.is_empty());
+        assert!(d.vetoes.is_empty());
+        assert!(d.post_merge_clock.is_empty());
     }
 }
