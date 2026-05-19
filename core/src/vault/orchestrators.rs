@@ -76,12 +76,22 @@ pub(crate) const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 /// dashed grouping is normative for `<contact-uuid>.card` and
 /// `<block-uuid>.cbor.enc` filenames.
 ///
-/// `pub(crate)` so the C.1.1a conflict-copy scanner
-/// (`crate::sync::ingest::enumerate_block_siblings`) can derive
-/// canonical block filenames from a `block_uuid` without
-/// re-implementing — keeping the on-disk filename format pinned to a
-/// single source of truth.
-pub(crate) fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
+/// `#[doc(hidden)] pub` (re-exported from `vault/mod.rs`) so:
+///
+/// - The C.1.1a conflict-copy scanner
+///   (`crate::sync::ingest::enumerate_block_siblings`) can derive
+///   canonical block filenames from a `block_uuid` without
+///   re-implementing.
+/// - Integration tests in `tests/sync_helpers/mod.rs` can reuse the
+///   same formatter without copying the body (`#[cfg(test)]` items on
+///   the lib are invisible to `tests/*.rs`; `#[doc(hidden)] pub` is
+///   the established cross-target test-hook pattern — see
+///   `__test_dispatch` in `crate::sync::once`).
+///
+/// Keeps the on-disk filename format pinned to a single source of
+/// truth across production code, sync layer, and test helpers.
+#[doc(hidden)]
+pub fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
     let mut s = String::with_capacity(36);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for (i, b) in uuid.iter().enumerate() {
