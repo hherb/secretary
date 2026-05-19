@@ -27,11 +27,13 @@ use crate::vault::record::Record;
 ///
 /// When multiple peers tombstone after the local edit, the returned
 /// veto carries the *latest* peer's `tombstoned_at_ms` and the
-/// best-effort device uuid attached to it. Tests assert there's at
-/// most one canonical peer for the same `record_uuid` in a
-/// well-formed bundle (each copy must be signed by the canonical
-/// owner identity — an attacker forging multiple copies cannot bypass
-/// the design).
+/// best-effort device uuid attached to it. On tied `tombstoned_at_ms`
+/// the lexicographically smallest `device_uuid` wins — the tie-break
+/// is intrinsic so the result is independent of the iteration order
+/// the caller passes peers in. Tests assert there's at most one
+/// canonical peer for the same `record_uuid` in a well-formed bundle
+/// (each copy must be signed by the canonical owner identity — an
+/// attacker forging multiple copies cannot bypass the design).
 ///
 /// **Pure:** borrows all inputs, allocates only the returned
 /// [`RecordTombstoneVeto`] (which `clone()`s `local` so the caller
@@ -65,8 +67,11 @@ pub(crate) fn tombstone_veto_set(
                 peer.tombstoned_at_ms,
                 last_modifier_device(peer).unwrap_or([0u8; 16]),
             );
+            // Strict-greater timestamp wins; on ties the lexicographically
+            // smaller device_uuid wins. Order-independent.
             latest = Some(match latest {
-                Some(prev) if prev.0 >= cand.0 => prev,
+                Some(prev) if prev.0 > cand.0 => prev,
+                Some(prev) if prev.0 == cand.0 && prev.1 <= cand.1 => prev,
                 _ => cand,
             });
         }
@@ -101,8 +106,9 @@ fn last_modifier_device(record: &Record) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::tombstone_veto_set;
+    use crate::crypto::secret::SecretString;
     use crate::sync::draft::BlockId;
-    use crate::vault::record::Record;
+    use crate::vault::record::{Record, RecordField, RecordFieldValue};
     use std::collections::BTreeMap;
 
     /// Construct a test [`Record`] with explicit tombstone state. All
@@ -118,6 +124,39 @@ mod tests {
             created_at_ms: 0,
             last_mod_ms,
             tombstone,
+            tombstoned_at_ms,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// Construct a tombstoned peer [`Record`] carrying a single
+    /// placeholder field with the supplied `field_device` as its
+    /// `device_uuid`. Used to exercise the `last_modifier_device`
+    /// happy path (`max_by_key(|f| f.last_mod)` returns `Some`).
+    fn peer_with_field(
+        uuid: u8,
+        last_mod_ms: u64,
+        tombstoned_at_ms: u64,
+        field_device: [u8; 16],
+    ) -> Record {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "username".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(String::new())),
+                last_mod: last_mod_ms,
+                device_uuid: field_device,
+                unknown: BTreeMap::new(),
+            },
+        );
+        Record {
+            record_uuid: [uuid; 16],
+            record_type: "kv".into(),
+            fields,
+            tags: Vec::new(),
+            created_at_ms: 0,
+            last_mod_ms,
+            tombstone: true,
             tombstoned_at_ms,
             unknown: BTreeMap::new(),
         }
@@ -184,5 +223,26 @@ mod tests {
         let veto = tombstone_veto_set(&local, TEST_BLOCK_UUID, &[&peer_a, &peer_b])
             .expect("expected veto");
         assert_eq!(veto.disk_tombstone_at_ms, 300);
+    }
+
+    /// On tied `tombstoned_at_ms` across peers, the veto carries the
+    /// lexicographically smallest `device_uuid`. The result is
+    /// independent of slice iteration order — running the helper on
+    /// both peer orderings yields the same veto.
+    #[test]
+    fn tied_timestamps_smallest_device_wins() {
+        let local = rec(1, 100, false, 0);
+        let peer_high = peer_with_field(1, 200, 200, [0xFF; 16]);
+        let peer_low = peer_with_field(1, 200, 200, [0x01; 16]);
+
+        let v1 = tombstone_veto_set(&local, TEST_BLOCK_UUID, &[&peer_high, &peer_low])
+            .expect("expected veto");
+        let v2 = tombstone_veto_set(&local, TEST_BLOCK_UUID, &[&peer_low, &peer_high])
+            .expect("expected veto");
+
+        assert_eq!(v1.disk_tombstone_at_ms, 200);
+        assert_eq!(v1.disk_tombstoner_device, [0x01; 16]);
+        assert_eq!(v2.disk_tombstone_at_ms, 200);
+        assert_eq!(v2.disk_tombstoner_device, [0x01; 16]);
     }
 }
