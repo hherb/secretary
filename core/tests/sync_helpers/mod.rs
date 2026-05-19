@@ -173,7 +173,17 @@ fn recursive_copy(src: &Path, dest: &Path) {
 /// the step 11-13 pattern in `core::vault::orchestrators::save_block`
 /// — only the clock changes; header bytes (`vault_uuid`,
 /// `created_at_ms`, `last_mod_ms`) are preserved bit-for-bit.
-fn write_manifest_at(
+///
+/// **Pre-condition:** the vault on disk must open cleanly. After a
+/// raw block rewrite via [`rewrite_block_with_records`] this is
+/// **not** the case (the block fingerprint in the manifest no longer
+/// matches the on-disk bytes; `open_vault` fails with
+/// `BlockFingerprintMismatch` per C.1.1b D6). Callers needing to write
+/// a manifest post-rewrite should use
+/// [`rewrite_block_with_records_and_update_manifest`] instead — it
+/// re-signs the manifest in-process from a cached `OpenVault` handle,
+/// avoiding the inconsistent intermediate state on disk.
+pub fn write_manifest_at(
     folder: &Path,
     filename: &str,
     new_clock: Vec<VectorClockEntry>,
@@ -435,6 +445,92 @@ pub fn rewrite_block_with_records(
     fingerprint_out
 }
 
+/// Rewrite the block at `block_uuid` with `new_records` (via
+/// [`rewrite_block_with_records`]) AND update the canonical manifest
+/// so its `BlockEntry.fingerprint` matches the new on-disk bytes and
+/// its top-level `vector_clock` is set to `manifest_clock`. The
+/// resulting on-disk pair (manifest + block) opens cleanly: a fresh
+/// [`open_vault`] succeeds because `verify_block_fingerprints` agrees
+/// with the rewritten block.
+///
+/// **Why a dedicated helper?** Post-C.1.1b D6, `open_vault` rejects
+/// any vault whose manifest disagrees with on-disk block bytes. A
+/// naive "rewrite block, then open, then re-sign manifest" sequence
+/// fails at step 2. This helper instead re-signs the manifest
+/// **in-process from the caller's cached `OpenVault` handle**, never
+/// re-reading disk during the inconsistent window. That same cached
+/// handle (the IBK / identity / owner_card it carries) drives both
+/// the block-rewrite and the manifest re-sign — see
+/// [`rewrite_block_with_records`] for the same rationale.
+///
+/// Returns the new block file's BLAKE3-256 fingerprint (also written
+/// into the manifest); useful to callers that want to assert on the
+/// fingerprint or pass it forward to a sibling-manifest writer.
+///
+/// The block's per-block `vector_clock_summary` and `last_modifier_device`
+/// are **preserved verbatim** from the cached manifest. Tasks that need
+/// to force per-block divergence between canonical and sibling
+/// manifests must extend this helper (or compose with a future sibling
+/// writer) — out of scope for Task 9, which only needs a clean post-
+/// rewrite vault for the merge-layer smoke test.
+#[allow(dead_code)]
+pub fn rewrite_block_with_records_and_update_manifest(
+    folder: &Path,
+    open: &secretary_core::vault::OpenVault,
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    new_records: Vec<secretary_core::vault::Record>,
+    block_seed: &[u8; AEAD_NONCE_LEN],
+    manifest_clock: Vec<VectorClockEntry>,
+    manifest_nonce: &[u8; AEAD_NONCE_LEN],
+) -> [u8; 32] {
+    let new_fingerprint =
+        rewrite_block_with_records(folder, open, block_uuid, new_records, block_seed);
+
+    // Build the new manifest body in-process: same Manifest as the
+    // cached handle, except the target block's fingerprint and the
+    // top-level vector_clock are replaced.
+    let mut new_manifest = open.manifest.clone();
+    let idx = new_manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == block_uuid)
+        .expect("block_uuid not in manifest");
+    new_manifest.blocks[idx].fingerprint = new_fingerprint;
+    new_manifest.vector_clock = manifest_clock;
+
+    // Re-derive owner signer keys (mirrors the [`write_manifest_at`]
+    // setup but driven from the cached `OpenVault` rather than a fresh
+    // [`open_vault`] call — see the helper docstring for why).
+    let owner_card_bytes = open.owner_card.to_canonical_cbor().expect("card cbor");
+    let owner_fp = fingerprint(&owner_card_bytes);
+    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
+    ed_sk_bytes.zeroize();
+    let owner_pq_sk =
+        MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).expect("ml-dsa sk");
+
+    let new_header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: open.manifest_file.header.last_mod_ms,
+    };
+    let new_manifest_file = sign_manifest(
+        new_header,
+        &new_manifest,
+        &open.identity_block_key,
+        manifest_nonce,
+        owner_fp,
+        &owner_ed_sk,
+        &owner_pq_sk,
+    )
+    .expect("sign_manifest");
+
+    let manifest_bytes = encode_manifest_file(&new_manifest_file).expect("encode_manifest_file");
+    std::fs::write(folder.join(MANIFEST_FILENAME), &manifest_bytes).expect("write manifest");
+
+    new_fingerprint
+}
+
 #[cfg(test)]
 mod helper_tests {
     use super::*;
@@ -482,6 +578,65 @@ mod helper_tests {
         let plaintext = decrypt_block_using_open(&open, &bytes).expect("decrypt");
         assert_eq!(plaintext.records, new_records);
         assert_eq!(plaintext.block_uuid, block_uuid);
+    }
+
+    /// After [`rewrite_block_with_records_and_update_manifest`] runs
+    /// once, the vault on disk opens cleanly: `verify_block_fingerprints`
+    /// (the C.1.1b D6 gate inside `open_vault`) sees the manifest's new
+    /// `BlockEntry.fingerprint` matches the rewritten block bytes. This
+    /// proves the helper actually re-signs the manifest in-process and
+    /// the canonical state is consistent post-rewrite — which is the
+    /// pre-condition every downstream merge-layer integration test
+    /// relies on.
+    #[test]
+    fn rewrite_block_and_update_manifest_round_trips_through_open_vault() {
+        let initial_clock = vec![VectorClockEntry {
+            device_uuid: [9; SYNC_HELPERS_UUID_LEN],
+            counter: 1,
+        }];
+        let (folder, _tmp) = fresh_vault_with_clock(initial_clock);
+
+        let block_uuid = golden_vault_001_first_block_uuid(&folder);
+        let password = fixtures::golden_vault_001_password();
+        let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open");
+
+        let device_a = [0x0A; SYNC_HELPERS_UUID_LEN];
+        let post_rewrite_clock = vec![VectorClockEntry {
+            device_uuid: device_a,
+            counter: 2,
+        }];
+        let new_fp = rewrite_block_with_records_and_update_manifest(
+            &folder,
+            &open,
+            block_uuid,
+            Vec::new(),
+            &BLOCK_NONCE_E,
+            post_rewrite_clock.clone(),
+            &CANONICAL_NONCE_A,
+        );
+        // Cheap sanity: BLAKE3-256 of a real encrypted block is
+        // overwhelmingly unlikely to be all-zero.
+        assert_ne!(new_fp, [0u8; 32]);
+
+        // The D6 round-trip assertion: open_vault must succeed AND the
+        // returned manifest must reflect both the new fingerprint and
+        // the new top-level clock.
+        let reopened = open_vault(&folder, Unlocker::Password(&password), None)
+            .expect("post-rewrite open_vault must succeed");
+        let entry = reopened
+            .manifest
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == block_uuid)
+            .expect("block still in manifest");
+        assert_eq!(
+            entry.fingerprint, new_fp,
+            "manifest BlockEntry.fingerprint must match the rewritten block fingerprint"
+        );
+        assert_eq!(
+            reopened.manifest.vector_clock, post_rewrite_clock,
+            "manifest top-level vector_clock must reflect the helper's update"
+        );
     }
 
     /// Two rewrites with distinct seed nonces must produce distinct
