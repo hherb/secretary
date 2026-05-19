@@ -1,19 +1,10 @@
-//! `commit_with_decisions` — atomic disk write of a merged + decided
-//! vault state. This module currently ships the pure helper
-//! [`apply_decisions`] (C.1.1b Task 10); the full
-//! `commit_with_decisions` orchestrator lands in Task 11.
+//! `apply_decisions` — pure helper enforcing the
+//! [`crate::sync::DraftMerge::vetoes`] ↔ [`crate::sync::VetoDecision`]
+//! bijection and applying the per-decision record adjustment.
 //!
-//! [`apply_decisions`] enforces the bijection between
-//! [`DraftMerge::vetoes`] and the caller's [`VetoDecision`] slice and
-//! returns the post-decision merged record set. The freshness re-check
-//! against `draft.manifest_hash`, the block-first manifest-last write
-//! ordering, and the post-commit [`crate::sync::SyncState`] return all
-//! belong to [`commit_with_decisions`].
-//!
-//! See `docs/superpowers/specs/2026-05-18-c1-1b-sync-merge-design.md`
-//! §"commit_with_decisions".
-
-#![forbid(unsafe_code)]
+//! The vector clock + manifest fields stay on `draft`; callers re-read
+//! them after this helper to build the new on-disk manifest. Consumed
+//! by [`super::commit_with_decisions`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,9 +40,6 @@ use crate::vault::record::Record;
 /// Pure function: takes `&DraftMerge` + `&[VetoDecision]`, returns
 /// `Result<Vec<Record>, SyncError>` (the post-decision record set,
 /// sorted by `record_uuid` to match `prepare_merge`'s output shape).
-/// The vector clock + manifest fields stay on `draft`; callers re-read
-/// them after this helper to build the new on-disk manifest in Task 11.
-#[allow(dead_code)] // Consumed by commit_with_decisions in Task 11.
 pub(crate) fn apply_decisions(
     draft: &DraftMerge,
     decisions: &[VetoDecision],
@@ -171,6 +159,8 @@ mod tests {
             merged_records: merged,
             vetoes,
             post_merge_clock: vec![],
+            per_block_clocks: BTreeMap::new(),
+            per_block_records: BTreeMap::new(),
         }
     }
 

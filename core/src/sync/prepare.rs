@@ -20,7 +20,7 @@ use crate::crypto::secret::Sensitive;
 use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
 use crate::sync::bundle::{compute_manifest_hash, ManifestSnapshot, VaultBundle};
-use crate::sync::draft::{BlockId, DraftMerge, RecordTombstoneVeto};
+use crate::sync::draft::{BlockId, DraftMerge, RecordId, RecordTombstoneVeto};
 use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
 use crate::unlock::UnlockedIdentity;
@@ -376,6 +376,8 @@ pub fn prepare_merge(
 
     let mut merged_records: BTreeMap<[u8; 16], Record> = BTreeMap::new();
     let mut vetoes: Vec<RecordTombstoneVeto> = Vec::new();
+    let mut per_block_clocks: BTreeMap<[u8; 16], Vec<VectorClockEntry>> = BTreeMap::new();
+    let mut per_block_records: BTreeMap<[u8; 16], Vec<RecordId>> = BTreeMap::new();
 
     for block_uuid in &plan.diverging_blocks {
         let divergence =
@@ -472,6 +474,14 @@ pub fn prepare_merge(
             }
         }
 
+        // Snapshot the per-block fold output so `commit_with_decisions`
+        // can re-encrypt this block without re-running the merge.
+        // `acc_records` is keyed by `record_uuid` and BTreeMap iteration
+        // yields the sorted ascending order required for canonical
+        // re-encrypt; collecting the keys preserves that order.
+        per_block_clocks.insert(*block_uuid, acc_clock.clone());
+        per_block_records.insert(*block_uuid, acc_records.keys().copied().collect());
+
         merged_records.extend(acc_records);
     }
 
@@ -487,6 +497,8 @@ pub fn prepare_merge(
         merged_records: merged_records.into_values().collect(),
         vetoes,
         post_merge_clock,
+        per_block_clocks,
+        per_block_records,
     })
 }
 

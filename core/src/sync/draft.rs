@@ -29,6 +29,8 @@
 //! [`commit_with_decisions`]: crate::sync::commit_with_decisions
 //! [`Record`]: crate::vault::record::Record
 
+use std::collections::BTreeMap;
+
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::sync::bundle::ManifestHash;
@@ -93,6 +95,27 @@ pub struct DraftMerge {
     /// to match).
     #[zeroize(skip)]
     pub post_merge_clock: Vec<VectorClockEntry>,
+    /// Per-affected-block vector clock — the merged per-block clock
+    /// `prepare_merge` produced for each `block_uuid` in
+    /// `plan.diverging_blocks`. Empty for the silent-merge (no
+    /// diverging blocks) case. `commit_with_decisions` writes this
+    /// into each rewritten `BlockEntry.vector_clock_summary`.
+    ///
+    /// `#[zeroize(skip)]` — `BTreeMap` does not have a blanket
+    /// `Zeroize` impl. Values are non-secret framing (vector clock
+    /// entries are `(device_uuid, counter)` public material).
+    #[zeroize(skip)]
+    pub per_block_clocks: BTreeMap<[u8; 16], Vec<VectorClockEntry>>,
+    /// Per-affected-block record assignment — which `record_uuid`s
+    /// the merge produced for each `block_uuid` in
+    /// `plan.diverging_blocks`. Values are sorted ascending by
+    /// `record_uuid` so `commit_with_decisions`'s per-block filter
+    /// is deterministic. Empty for the silent-merge case.
+    ///
+    /// `#[zeroize(skip)]` — `BTreeMap` lacks blanket `Zeroize`;
+    /// values are 16-byte public UUIDs.
+    #[zeroize(skip)]
+    pub per_block_records: BTreeMap<[u8; 16], Vec<RecordId>>,
 }
 
 /// One record that the merge would tombstone if accepted as-is, but
@@ -167,7 +190,6 @@ impl VetoDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     /// Construct a minimal-but-valid [`Record`] for tests. The
     /// `last_mod_ms` parameter doubles as the synthetic clock anchor;
@@ -268,6 +290,10 @@ mod tests {
     /// getting wiped in place.
     #[test]
     fn draft_merge_holds_required_fields() {
+        let mut per_block_clocks: BTreeMap<[u8; 16], Vec<VectorClockEntry>> = BTreeMap::new();
+        per_block_clocks.insert([0; 16], vec![]);
+        let mut per_block_records: BTreeMap<[u8; 16], Vec<RecordId>> = BTreeMap::new();
+        per_block_records.insert([0; 16], vec![[1; 16]]);
         let mut d = DraftMerge {
             vault_uuid: [9; 16],
             plan: DiffPlan {
@@ -277,6 +303,8 @@ mod tests {
             merged_records: Vec::new(),
             vetoes: Vec::new(),
             post_merge_clock: Vec::new(),
+            per_block_clocks: per_block_clocks.clone(),
+            per_block_records: per_block_records.clone(),
         };
         assert_eq!(d.vault_uuid, [9; 16]);
         assert_eq!(d.plan.diverging_blocks.len(), 1);
@@ -284,6 +312,8 @@ mod tests {
         assert!(d.merged_records.is_empty());
         assert!(d.post_merge_clock.is_empty());
         assert_eq!(d.manifest_hash, ManifestHash([0; 32]));
+        assert_eq!(d.per_block_clocks.len(), 1);
+        assert_eq!(d.per_block_records.len(), 1);
         // All fields skip-annotated — .zeroize() must be a no-op.
         d.zeroize();
         assert_eq!(d.vault_uuid, [9; 16]);
@@ -292,5 +322,7 @@ mod tests {
         assert!(d.merged_records.is_empty());
         assert!(d.vetoes.is_empty());
         assert!(d.post_merge_clock.is_empty());
+        assert_eq!(d.per_block_clocks, per_block_clocks);
+        assert_eq!(d.per_block_records, per_block_records);
     }
 }

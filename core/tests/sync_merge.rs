@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use secretary_core::crypto::secret::SecretString;
-use secretary_core::sync::{prepare_merge, sync_once, SyncOutcome, SyncState};
+use secretary_core::sync::{
+    commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState,
+};
 use secretary_core::unlock::open_with_password;
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{open_vault, Record, RecordField, RecordFieldValue, Unlocker};
@@ -282,5 +284,110 @@ fn prepare_merge_after_canonical_block_rewrite_with_no_per_block_divergence_retu
         post.iter()
             .any(|e| e.device_uuid == device_b && e.counter == 1),
         "post_merge_clock must include sibling device entry",
+    );
+}
+
+/// Task 11: three-step happy path. Two concurrent manifests with no
+/// per-block divergence → `bundle.diverging_blocks` is empty,
+/// `DraftMerge.vetoes` is empty, and `commit_with_decisions` writes
+/// only a new manifest (no block rewrites). The post-commit
+/// `SyncState.highest_vector_clock_seen` carries the folded clock from
+/// both manifests; a subsequent `sync_once` against that state returns
+/// `NothingToDo` because the on-disk manifest now dominates the
+/// returned state's clock.
+///
+/// Asserts:
+/// 1. `commit_with_decisions` succeeds with empty `vetoes` / empty
+///    `decisions`.
+/// 2. The returned `SyncState`'s clock carries both manifest devices.
+/// 3. A subsequent `sync_once` on the post-commit state returns
+///    `NothingToDo` — the converging-loop closure property.
+#[test]
+fn commit_with_decisions_empty_vetoes_writes_merged_state() {
+    let device_canonical = [0x0A; 16];
+    let device_sibling = [0x0B; 16];
+    let device_local = [0x0C; 16];
+
+    let canonical_clock = vec![VectorClockEntry {
+        device_uuid: device_canonical,
+        counter: 1,
+    }];
+    let sibling_clock = vec![VectorClockEntry {
+        device_uuid: device_sibling,
+        counter: 1,
+    }];
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_manifests(
+        canonical_clock,
+        "manifest.cbor.enc.sync-conflict-from-device-bb",
+        sibling_clock,
+    );
+
+    let password = fixtures::golden_vault_001_password();
+    let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+    let bundle_bytes =
+        std::fs::read(folder.join("identity.bundle.enc")).expect("read identity bundle");
+    let identity =
+        open_with_password(&vt_bytes, &bundle_bytes, &password).expect("open_with_password");
+
+    let vault_uuid = extract_vault_uuid(&folder);
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: device_local,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+
+    let outcome = sync_once(&folder, &identity, &state, 0u64).expect("sync_once");
+    let (bundle, plan) = match outcome {
+        SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
+        other => panic!("expected ConcurrentDetected, got {other:?}"),
+    };
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    assert!(
+        draft.vetoes.is_empty(),
+        "no vetoes expected when no blocks diverge",
+    );
+    assert!(
+        draft.plan.diverging_blocks.is_empty(),
+        "Task 11 fixture has no per-block divergence",
+    );
+
+    let new_state = commit_with_decisions(&folder, &password, draft, Vec::new(), 1_000_000)
+        .expect("commit_with_decisions");
+
+    // Post-commit clock carries both manifests' device entries.
+    assert!(
+        new_state
+            .highest_vector_clock_seen
+            .iter()
+            .any(|e| e.device_uuid == device_canonical && e.counter == 1),
+        "new SyncState clock must include canonical device entry",
+    );
+    assert!(
+        new_state
+            .highest_vector_clock_seen
+            .iter()
+            .any(|e| e.device_uuid == device_sibling && e.counter == 1),
+        "new SyncState clock must include sibling device entry",
+    );
+    assert_eq!(
+        new_state.vault_uuid, vault_uuid,
+        "new SyncState must carry the same vault_uuid",
+    );
+
+    // Closure property: re-running sync_once against the post-commit
+    // state on the same (now-updated) disk returns NothingToDo. The
+    // manifest now carries the folded clock so disk clock == local
+    // highest-seen.
+    //
+    // Note: the sibling conflict-copy manifest is still on disk
+    // (commit_with_decisions doesn't sweep siblings — that's a separate
+    // cleanup concern), but the canonical manifest's clock now
+    // dominates the sibling's, so sync_once treats the disk as
+    // "post-merged" and returns NothingToDo.
+    let outcome2 = sync_once(&folder, &identity, &new_state, 0u64).expect("sync_once 2");
+    assert!(
+        matches!(outcome2, SyncOutcome::NothingToDo),
+        "post-commit sync_once should return NothingToDo, got {outcome2:?}",
     );
 }
