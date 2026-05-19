@@ -1,7 +1,7 @@
 # NEXT_SESSION.md
 
 **Session date:** 2026-05-19 (implementation session — C.1.1b Task 7 of 17 shipped; pure-function veto-detection helper landed)
-**Status:** PR #91 (Task 6) **MERGED** into `main` as [`7c4dd7f`](https://github.com/hherb/secretary/commit/7c4dd7f) (squashed Task 6 + baton + three review-fix commits: `style(sync): drop redundant #![forbid(unsafe_code)] from draft.rs`, `test(sync): rename veto-zeroize test to match what it asserts`, `test(sync): pin DraftMerge zeroize no-op on framing fields`). `feature/c1-1b-sync-merge` reset onto post-merge `main` and now carries one new commit: Task 7 ([`49b8b35`](https://github.com/hherb/secretary/commit/49b8b35)) — `core/src/sync/prepare.rs` with `tombstone_veto_set` + private `last_modifier_device`, seven table-driven tests, and the `pub mod prepare;` wire-up in `core/src/sync/mod.rs`. 10 tasks remain (8-17).
+**Status:** PR #91 (Task 6) **MERGED** into `main` as [`7c4dd7f`](https://github.com/hherb/secretary/commit/7c4dd7f) (squashed Task 6 + baton + three review-fix commits: `style(sync): drop redundant #![forbid(unsafe_code)] from draft.rs`, `test(sync): rename veto-zeroize test to match what it asserts`, `test(sync): pin DraftMerge zeroize no-op on framing fields`). `feature/c1-1b-sync-merge` reset onto post-merge `main` and now carries Task 7 ([`49b8b35`](https://github.com/hherb/secretary/commit/49b8b35)) — `core/src/sync/prepare.rs` with `tombstone_veto_set` + private `last_modifier_device`, plus the `pub mod prepare;` wire-up in `core/src/sync/mod.rs` — plus one in-PR review-fix commit addressing PR #93 self-review issues: tie-break made intrinsic (lexicographically smallest `device_uuid` wins on equal `tombstoned_at_ms`; was iteration-order dependent) and two new tests (`veto_propagates_peer_field_device` exercising `last_modifier_device`'s `Some`-branch + `tied_timestamps_smallest_device_wins` pinning the tie-break). 10 tasks remain (8-17).
 
 ## (1) What we shipped this session
 
@@ -13,9 +13,9 @@
 
 **Session-start hazard caught:** When `/nextsession` started, the baton on `main` (`d00fc43`) said PR #91 was "to be opened at end of this session" but PR #91 was already OPEN. Initial plan was to refresh the baton to "verification-only session, PR #91 awaiting review" and pause Task 7 implementation. Mid-session the user merged PR #91 and signalled "continue", so the verification-only baton commit (`039d374` on `main`, not pushed) was discarded via `git reset --hard origin/main`; the unpushed handoff snapshot at `docs/handoffs/2026-05-19-c1-1b-pr-91-awaiting-review.md` was also discarded in the reset. **Lesson**: when the baton's "to be opened" gate is stale, verify PR state via `gh pr view` BEFORE committing a baton-only commit — saves a reset cycle.
 
-**Gauntlet on `feature/c1-1b-sync-merge` after Task 7:**
+**Gauntlet on `feature/c1-1b-sync-merge` after Task 7 + the review-fix:**
 
-- `cargo test --release --workspace --no-fail-fast` → **739 / 0 / 10** (732 baseline from `7c4dd7f` + 7 new = the seven `sync::prepare::tests::*` lib tests).
+- `cargo test --release --workspace --no-fail-fast` → **741 / 0 / 10** (732 baseline from `7c4dd7f` + 9 new = seven Task-7 `sync::prepare::tests::*` lib tests + two PR #93 self-review additions).
 - `cargo clippy --release --workspace --tests -- -D warnings` → clean.
 - `cargo fmt --all -- --check` → clean.
 - `uv run core/tests/python/conformance.py` → PASS.
@@ -64,7 +64,7 @@ Per `feedback_stay_in_inner_loop`, keep the one-task-one-commit-one-review caden
 
 ### (c) Acceptance criteria for the C.1.1b PR (final)
 
-- [ ] `cargo test --release --workspace --no-fail-fast` → 742 / 0 / 10 (728 baseline at `ba969ef` + 14 new tests total across Tasks 6-16; we're at 739 after Task 7 = 728 + 4 (Task 6) + 7 (Task 7))
+- [ ] `cargo test --release --workspace --no-fail-fast` → 742+ / 0 / 10 (728 baseline at `ba969ef` + ≥14 new tests total across Tasks 6-16; we're at 741 after Task 7 + the review-fix = 728 + 4 (Task 6) + 7 (Task 7) + 2 (PR #93 review-fix))
 - [ ] `cargo clippy --release --workspace --tests -- -D warnings` → clean
 - [ ] `cargo fmt --all -- --check` → clean
 - [ ] `uv run core/tests/python/conformance.py` → PASS
