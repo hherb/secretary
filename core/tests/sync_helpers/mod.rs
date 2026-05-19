@@ -473,6 +473,28 @@ pub fn rewrite_block_with_records(
 /// manifests must extend this helper (or compose with a future sibling
 /// writer) — out of scope for Task 9, which only needs a clean post-
 /// rewrite vault for the merge-layer smoke test.
+///
+/// **Test helper: not crash-safe.** The block file is written before
+/// the manifest is re-signed, so a crash between the two `std::fs::write`
+/// calls leaves a `BlockEntry.fingerprint` that disagrees with the
+/// on-disk block — exactly the state the C.1.1b D6 gate rejects on
+/// the next `open_vault`. For test fixtures this just corrupts a
+/// `tempfile::TempDir` that the test owns end-to-end; do NOT adapt
+/// this sequence for production code paths. Production sync orchestrators
+/// must use the atomic-write primitives in [`secretary_core::vault::io`]
+/// (see CLAUDE.md "Atomic-write contract").
+///
+/// `block_seed` and `manifest_nonce` MUST differ — they feed two
+/// independent AEAD encryptions under keys derived from the same
+/// `OpenVault` (IBK for the manifest body, BCK for the block body),
+/// and the helper enforces the constraint via `assert_ne!` so
+/// accidental nonce reuse is caught at the call site rather than
+/// silently weakening AEAD uniqueness. The check is `assert_ne!` (not
+/// `debug_assert_ne!`) because the project's standard gauntlet runs
+/// `cargo test --release`, where `debug_assertions = false` would
+/// silently compile the check out. See the per-rewrite ChaCha20Rng
+/// seeding rationale on [`rewrite_block_with_records`] and the
+/// `AEAD-uniqueness` paragraph in CLAUDE.md's atomic-write section.
 #[allow(dead_code)]
 pub fn rewrite_block_with_records_and_update_manifest(
     folder: &Path,
@@ -483,6 +505,13 @@ pub fn rewrite_block_with_records_and_update_manifest(
     manifest_clock: Vec<VectorClockEntry>,
     manifest_nonce: &[u8; AEAD_NONCE_LEN],
 ) -> [u8; 32] {
+    assert_ne!(
+        block_seed, manifest_nonce,
+        "block_seed and manifest_nonce must differ — sharing them would seed two AEAD \
+         encryptions in the same vault with identical 24-byte material, defeating the \
+         AEAD-uniqueness invariant (see CLAUDE.md atomic-write section)",
+    );
+
     let new_fingerprint =
         rewrite_block_with_records(folder, open, block_uuid, new_records, block_seed);
 
@@ -494,7 +523,12 @@ pub fn rewrite_block_with_records_and_update_manifest(
         .blocks
         .iter()
         .position(|b| b.block_uuid == block_uuid)
-        .expect("block_uuid not in manifest");
+        .unwrap_or_else(|| {
+            panic!(
+                "block_uuid {block_uuid:?} not present in cached manifest \
+                 (rewrite_block_with_records_and_update_manifest)"
+            )
+        });
     new_manifest.blocks[idx].fingerprint = new_fingerprint;
     new_manifest.vector_clock = manifest_clock;
 
@@ -636,6 +670,35 @@ mod helper_tests {
         assert_eq!(
             reopened.manifest.vector_clock, post_rewrite_clock,
             "manifest top-level vector_clock must reflect the helper's update"
+        );
+    }
+
+    /// Passing the same 24-byte value for `block_seed` and
+    /// `manifest_nonce` must panic at the call site rather than silently
+    /// seeding two AEAD encryptions in the same vault with identical
+    /// material. The check is `assert_ne!` (not `debug_assert_ne!`) so
+    /// it survives `cargo test --release` — confirmed here by running
+    /// the panic-path under the project's standard release gauntlet.
+    #[test]
+    #[should_panic(expected = "block_seed and manifest_nonce must differ")]
+    fn rewrite_block_and_update_manifest_panics_on_shared_nonce() {
+        let initial_clock = vec![VectorClockEntry {
+            device_uuid: [9; SYNC_HELPERS_UUID_LEN],
+            counter: 1,
+        }];
+        let (folder, _tmp) = fresh_vault_with_clock(initial_clock);
+        let block_uuid = golden_vault_001_first_block_uuid(&folder);
+        let password = fixtures::golden_vault_001_password();
+        let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open");
+
+        let _ = rewrite_block_with_records_and_update_manifest(
+            &folder,
+            &open,
+            block_uuid,
+            Vec::new(),
+            &BLOCK_NONCE_E,
+            Vec::new(),
+            &BLOCK_NONCE_E,
         );
     }
 

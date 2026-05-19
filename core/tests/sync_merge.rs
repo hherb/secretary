@@ -148,7 +148,7 @@ fn prepare_merge_on_two_concurrent_manifests_returns_draft_with_no_vetoes() {
 /// sibling) and exercise `prepare_merge`'s iterative fold path with
 /// real divergent records.
 #[test]
-fn prepare_merge_after_canonical_block_rewrite_produces_well_formed_draft() {
+fn prepare_merge_after_canonical_block_rewrite_with_no_per_block_divergence_returns_empty_draft() {
     let device_a = [0x0A; 16];
     let device_b = [0x0B; 16];
     let device_local = [0x0C; 16];
