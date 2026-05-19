@@ -15,9 +15,9 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::sync::draft::{DraftMerge, RecordId, VetoDecision};
+use crate::sync::draft::{DraftMerge, RecordId, RecordTombstoneVeto, VetoDecision};
 use crate::sync::error::SyncError;
 use crate::vault::record::Record;
 
@@ -30,9 +30,9 @@ use crate::vault::record::Record;
 ///
 /// Note: `BTreeSet` dedupe means duplicate decisions for the same
 /// `record_id` collapse to a single entry, so two `KeepLocal` entries
-/// for the same id are not a cardinality error. A subsequent task can
-/// tighten this to `Vec`-based duplicate detection if duplicates need
-/// to be a typed error.
+/// for the same id are not a cardinality error. Tightening this to a
+/// typed duplicate-decision error is tracked in
+/// [issue #98](https://github.com/hherb/secretary/issues/98).
 ///
 /// Violations → typed [`SyncError::MissingVetoDecision`] /
 /// [`SyncError::UnknownVetoDecision`]. The error always points at the
@@ -40,14 +40,15 @@ use crate::vault::record::Record;
 /// assertions are deterministic.
 ///
 /// Semantics per veto/decision pair:
-/// - [`VetoDecision::KeepLocal`] — find the matching record in
-///   `merged_records`, restore it to the veto's `local_state` (clearing
-///   any peer-side tombstone the merge picked up).
+/// - [`VetoDecision::KeepLocal`] — restore the matching record in
+///   `merged_records` to the veto's `local_state` (clearing any
+///   peer-side tombstone the merge picked up).
 /// - [`VetoDecision::AcceptTombstone`] — leave the record in
 ///   `merged_records` as-is (the merge already wrote the death clock).
 ///
 /// Pure function: takes `&DraftMerge` + `&[VetoDecision]`, returns
-/// `Result<Vec<Record>, SyncError>` (the post-decision record set).
+/// `Result<Vec<Record>, SyncError>` (the post-decision record set,
+/// sorted by `record_uuid` to match `prepare_merge`'s output shape).
 /// The vector clock + manifest fields stay on `draft`; callers re-read
 /// them after this helper to build the new on-disk manifest in Task 11.
 #[allow(dead_code)] // Consumed by commit_with_decisions in Task 11.
@@ -55,9 +56,16 @@ pub(crate) fn apply_decisions(
     draft: &DraftMerge,
     decisions: &[VetoDecision],
 ) -> Result<Vec<Record>, SyncError> {
-    let veto_ids: BTreeSet<RecordId> = draft.vetoes.iter().map(|v| v.record_id).collect();
+    // Index vetoes by record_id so the KeepLocal lookup below is O(log n)
+    // and structurally cannot fail once the bijection check passes.
+    let vetoes_by_id: BTreeMap<RecordId, &RecordTombstoneVeto> =
+        draft.vetoes.iter().map(|v| (v.record_id, v)).collect();
     let decision_ids: BTreeSet<RecordId> = decisions.iter().map(|d| d.record_id()).collect();
 
+    // Bijection check. BTreeSet view of vetoes_by_id.keys() preserves
+    // canonical-sort ordering so the smallest offending id is reported
+    // deterministically by test assertions.
+    let veto_ids: BTreeSet<RecordId> = vetoes_by_id.keys().copied().collect();
     if let Some(missing) = veto_ids.difference(&decision_ids).next() {
         return Err(SyncError::MissingVetoDecision {
             record_id: *missing,
@@ -69,25 +77,39 @@ pub(crate) fn apply_decisions(
         });
     }
 
-    let mut records = draft.merged_records.clone();
+    // Index merged records by id for O(log n) per-decision update and
+    // canonical sort-by-uuid output (matches prepare_merge::merged_records
+    // construction via BTreeMap::into_values).
+    let mut records_by_id: BTreeMap<RecordId, Record> = draft
+        .merged_records
+        .iter()
+        .cloned()
+        .map(|r| (r.record_uuid, r))
+        .collect();
+
     for d in decisions {
         match d {
             VetoDecision::AcceptTombstone { .. } => {}
             VetoDecision::KeepLocal { record_id } => {
-                let veto = draft
-                    .vetoes
-                    .iter()
-                    .find(|v| v.record_id == *record_id)
-                    .ok_or(SyncError::EmptyDraftWithVetoes)?;
-                if let Some(slot) = records.iter_mut().find(|r| r.record_uuid == *record_id) {
-                    *slot = veto.local_state.clone();
-                } else {
-                    records.push(veto.local_state.clone());
-                }
+                // Both lookups are infallible by construction:
+                //  - vetoes_by_id: the bijection check above guarantees
+                //    every decision.record_id is a key.
+                //  - records_by_id: prepare_merge only emits a veto for
+                //    a record_id it has just placed in merged_records
+                //    (see prepare.rs::prepare_merge — the veto pass is
+                //    nested inside `for (record_uuid, _) in acc_records`,
+                //    and acc_records flows into merged_records).
+                let veto = vetoes_by_id
+                    .get(record_id)
+                    .expect("bijection check guarantees a veto for this decision.record_id");
+                let slot = records_by_id
+                    .get_mut(record_id)
+                    .expect("prepare_merge guarantees veto.record_id is in merged_records");
+                *slot = veto.local_state.clone();
             }
         }
     }
-    Ok(records)
+    Ok(records_by_id.into_values().collect())
 }
 
 #[cfg(test)]
@@ -240,7 +262,8 @@ mod tests {
 
     /// Two `KeepLocal` decisions targeting the same `record_id` collapse
     /// to one (BTreeSet-based bijection check). Pins current behaviour;
-    /// upgrading to a typed duplicate-decision error is a future task.
+    /// upgrading to a typed duplicate-decision error is tracked in
+    /// [issue #98](https://github.com/hherb/secretary/issues/98).
     #[test]
     fn duplicate_decisions_for_same_id_treated_as_one() {
         let d = draft_with_vetoes(vec![veto(1)], vec![rec(1, 100)]);
