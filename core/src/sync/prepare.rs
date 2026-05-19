@@ -225,6 +225,21 @@ mod tests {
         assert_eq!(veto.disk_tombstone_at_ms, 300);
     }
 
+    /// `last_modifier_device` returns the `device_uuid` of the field
+    /// with the maximum `last_mod`. When the peer record has a single
+    /// field, that field's `device_uuid` is propagated unchanged into
+    /// the returned veto's `disk_tombstoner_device`. Closes the gap
+    /// that the empty-fields tests leave (they always exercise the
+    /// `None` branch and the all-zero sentinel).
+    #[test]
+    fn veto_propagates_peer_field_device() {
+        let local = rec(1, 100, false, 0);
+        let peer = peer_with_field(1, 200, 200, [0x42; 16]);
+        let veto = tombstone_veto_set(&local, TEST_BLOCK_UUID, &[&peer]).expect("expected veto");
+        assert_eq!(veto.disk_tombstone_at_ms, 200);
+        assert_eq!(veto.disk_tombstoner_device, [0x42; 16]);
+    }
+
     /// On tied `tombstoned_at_ms` across peers, the veto carries the
     /// lexicographically smallest `device_uuid`. The result is
     /// independent of slice iteration order — running the helper on
