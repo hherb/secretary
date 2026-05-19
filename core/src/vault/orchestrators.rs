@@ -60,14 +60,25 @@ const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 const CONTACTS_SUBDIR: &str = "contacts";
 
 /// Subdirectory holding encrypted block files
-/// (vault-format.md §1, §6.1). `pub(crate)` so the C.1.1a
-/// conflict-copy scanner can address the same path.
-pub(crate) const BLOCKS_SUBDIR: &str = "blocks";
+/// (vault-format.md §1, §6.1). `#[doc(hidden)] pub` (re-exported from
+/// `vault/mod.rs`) so:
+///
+/// - The C.1.1a conflict-copy scanner
+///   (`crate::sync::ingest::enumerate_block_siblings`) can address
+///   the same path without re-declaring the string.
+/// - Integration tests in `tests/*.rs` can address the blocks subdir
+///   without duplicating a `const` (`pub(crate)` is invisible to
+///   integration tests; `#[doc(hidden)] pub` is the established
+///   cross-target test-hook pattern — see [`format_uuid_hyphenated`]
+///   and `crate::sync::__test_dispatch`).
+#[doc(hidden)]
+pub const BLOCKS_SUBDIR: &str = "blocks";
 
 /// Filename extension for block envelopes on disk: every block file
-/// is `<uuid-hyphenated>.cbor.enc`. Re-exported `pub(crate)` for the
-/// same reason as [`BLOCKS_SUBDIR`].
-pub(crate) const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
+/// is `<uuid-hyphenated>.cbor.enc`. `#[doc(hidden)] pub` re-exported
+/// from `vault/mod.rs` for the same reason as [`BLOCKS_SUBDIR`].
+#[doc(hidden)]
+pub const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 
 /// Format a 16-byte UUID as canonical lowercase 8-4-4-4-12 hex
 /// (`docs/vault-format.md` §1).
@@ -523,6 +534,17 @@ pub fn open_vault(
     let (owner_card, manifest_body, manifest_file, _manifest_envelope_bytes) =
         read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
 
+    // C.1.1b D6: verify each on-disk block file's BLAKE3 fingerprint
+    // matches `BlockEntry.fingerprint` in the (now-authenticated)
+    // manifest. Closes the partial-commit window where a
+    // `commit_with_decisions` crash between block writes and the
+    // manifest write would leave a mismatched on-disk state. The
+    // mismatch surfaces as `VaultError::BlockFingerprintMismatch` —
+    // recovery is to re-run `sync_once → prepare_merge →
+    // commit_with_decisions`, which is convergent under CRDT
+    // idempotence.
+    verify_block_fingerprints(folder, &manifest_body)?;
+
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
@@ -624,13 +646,8 @@ pub(crate) fn read_vault_manifest_full(
 ///
 /// [Issue #88]: https://github.com/hherb/secretary/issues/88
 ///
-/// `pub(crate)` because it is only invoked from [`open_vault`] (wired
-/// in Task 5); external callers go via `open_vault`'s typed error
-/// surface.
-///
-/// `#[allow(dead_code)]` is a per-task TDD shim — Task 5 wires this
-/// helper into `open_vault`, at which point the marker comes off.
-#[allow(dead_code)]
+/// `pub(crate)` because it is only invoked from [`open_vault`];
+/// external callers go via `open_vault`'s typed error surface.
 pub(crate) fn verify_block_fingerprints(
     folder: &Path,
     manifest: &Manifest,

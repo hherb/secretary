@@ -176,17 +176,20 @@ fn copy_golden_to_tempdir() -> tempfile::TempDir {
 }
 
 #[test]
-fn read_block_corrupt_block_file_returns_corrupt_vault() {
+fn open_vault_corrupt_block_file_returns_corrupt_vault() {
+    // C.1.1b D6: `open_vault` re-hashes every on-disk block file at
+    // open time and surfaces a typed `BlockFingerprintMismatch` (folded
+    // to `FfiVaultError::CorruptVault` by the bridge mapper) when the
+    // bytes don't match the manifest's `BlockEntry.fingerprint`. Prior
+    // to D6 the bridge tolerated the mismatch at open time and only
+    // caught it on `read_block`; flipping the first byte of the block
+    // envelope is now visible to `open_vault` itself.
     let tmp = copy_golden_to_tempdir();
-    // Tamper the first byte of the on-disk block envelope (in the
-    // 4-byte BlockFile magic). decode_block_file will reject with
-    // BlockError::BadMagic which folds into CorruptVault.
     let block_path = tmp.path().join("blocks").join(VAULT_001_BLOCK_FILENAME);
     let mut bytes = fs::read(&block_path).unwrap();
     bytes[0] ^= 0xff;
     fs::write(&block_path, &bytes).unwrap();
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap();
-    let err = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap_err();
+    let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "got {err:?}",
@@ -194,17 +197,24 @@ fn read_block_corrupt_block_file_returns_corrupt_vault() {
 }
 
 #[test]
-fn read_block_missing_block_file_returns_corrupt_vault() {
+fn open_vault_missing_block_file_returns_folder_invalid() {
+    // C.1.1b D6: a deleted block file surfaces during `open_vault`'s
+    // per-block fingerprint check as a `VaultError::Io` with kind
+    // `NotFound`, which the bridge's guarded `Io` arm routes to
+    // `FfiVaultError::FolderInvalid` (the same NotFound bucket that
+    // pre-unlock missing-folder errors fold into). Issue #88 tracks
+    // promoting this to a UUID-tagged variant; until then this test
+    // pins the current routing.
     let tmp = copy_golden_to_tempdir();
-    // Delete the only block file.
     fs::remove_file(tmp.path().join("blocks").join(VAULT_001_BLOCK_FILENAME)).unwrap();
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap();
-    let err = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap_err();
-    let FfiVaultError::CorruptVault { detail } = err else {
-        panic!("expected CorruptVault, got {err:?}");
+    let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
+    let FfiVaultError::FolderInvalid { detail } = err else {
+        panic!("expected FolderInvalid, got {err:?}");
     };
-    assert!(detail.contains("block file missing"), "detail: {detail}");
-    assert!(detail.contains("11223344"), "detail: {detail}");
+    assert!(
+        detail.contains("failed to read block file for fingerprint check"),
+        "detail: {detail}"
+    );
 }
 
 #[test]

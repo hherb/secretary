@@ -28,8 +28,11 @@ use secretary_core::identity::fingerprint;
 use secretary_core::unlock::{self, create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
     encode_manifest_file, open_vault, sign_manifest, KdfParamsRef, Manifest, ManifestError,
-    ManifestHeader, OpenVault, Unlocker, VaultError, VectorClockEntry,
+    ManifestHeader, OpenVault, Unlocker, VaultError, VectorClockEntry, BLOCKS_SUBDIR,
+    BLOCK_FILE_EXTENSION,
 };
+
+mod fixtures;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers (mirror `create_vault.rs::make_fast_vault`)
@@ -429,4 +432,98 @@ fn open_vault_rollback_skipped_when_local_clock_none() {
     let opened = open_vault(dir.path(), Unlocker::Password(&pw), None)
         .expect("open succeeds when local_highest_clock is None");
     assert!(opened.manifest.vector_clock.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 10. C.1.1b D6 — block fingerprint mismatch surfaces as a typed error.
+// ---------------------------------------------------------------------------
+//
+// Uses the `#[doc(hidden)] pub` `BLOCKS_SUBDIR` / `BLOCK_FILE_EXTENSION`
+// re-exports from `secretary_core::vault` (imported at the top of this
+// file) so the on-disk filename convention is single-sourced from the
+// production constants the orchestrators write block files with.
+
+/// Wires `verify_block_fingerprints` into the `open_vault` read path
+/// (closing C.1.1b D6 — the partial-commit visibility gap).
+///
+/// Copies `tests/data/golden_vault_001/` to a fresh tempdir, flips
+/// the last byte of the first on-disk block file, and asserts that
+/// `open_vault` now refuses to return an `OpenVault` and instead
+/// surfaces a typed [`VaultError::BlockFingerprintMismatch`]. Without
+/// the wiring `open_vault` would succeed (manifest signature is still
+/// valid; the corruption only changes the per-block bytes), masking
+/// the partial commit until a downstream caller hits the AEAD failure.
+#[test]
+fn open_vault_rejects_corrupted_block_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dest = tmp.path().to_path_buf();
+    copy_dir_recursive(std::path::Path::new("tests/data/golden_vault_001"), &dest);
+
+    // Pick the first `<uuid>.cbor.enc` block file under the blocks
+    // subdir by enumerating directly — open_vault would normally
+    // surface the UUID via the manifest, but we need to corrupt
+    // before opening. Sort to make the choice deterministic across
+    // platforms with non-deterministic readdir ordering.
+    let blocks_dir = dest.join(BLOCKS_SUBDIR);
+    let mut block_files: Vec<_> = fs::read_dir(&blocks_dir)
+        .expect("read_dir blocks")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.ends_with(BLOCK_FILE_EXTENSION))
+                .unwrap_or(false)
+        })
+        .collect();
+    block_files.sort();
+    let target = block_files
+        .first()
+        .expect("golden_vault_001 must have at least one block file");
+
+    let mut bytes = fs::read(target).expect("read block");
+    // Defensive idiom (cheaper to read than `bytes.len() - 1`); the
+    // golden block file is non-empty by construction.
+    *bytes
+        .last_mut()
+        .expect("golden block file must be non-empty") ^= 0xFF;
+    fs::write(target, &bytes).expect("write corrupted block");
+
+    let password = fixtures::golden_vault_001_password();
+    let err = open_vault(&dest, Unlocker::Password(&password), None)
+        .expect_err("expected BlockFingerprintMismatch on corrupted block");
+
+    match err {
+        VaultError::BlockFingerprintMismatch {
+            block_uuid: _,
+            expected,
+            got,
+        } => {
+            assert_ne!(
+                expected, got,
+                "expected and got fingerprints must differ on a real mismatch",
+            );
+        }
+        other => panic!("expected BlockFingerprintMismatch, got {other:?}"),
+    }
+}
+
+/// Minimal recursive directory copy. Sufficient for the
+/// golden_vault_001 layout (a folder of regular files plus one
+/// `blocks/` subdirectory). Not symlink-safe; not needed for the
+/// fixture under test.
+fn copy_dir_recursive(src: &Path, dest: &Path) {
+    if !dest.exists() {
+        fs::create_dir_all(dest).expect("create_dir_all dest");
+    }
+    for entry in fs::read_dir(src).expect("read_dir src") {
+        let e = entry.expect("dir entry");
+        let s = e.path();
+        let d = dest.join(e.file_name());
+        if e.file_type().expect("file_type").is_dir() {
+            copy_dir_recursive(&s, &d);
+        } else {
+            fs::copy(&s, &d).expect("copy file");
+        }
+    }
 }

@@ -289,12 +289,24 @@ pub fn decrypt_block_using_open(
     Ok(plaintext)
 }
 
-/// Open the temp vault, replace the named block's records, re-encrypt
-/// with a deterministic per-rewrite RNG seeded from `aead_nonce`, and
-/// write the new envelope to `blocks/<uuid>.cbor.enc`. Returns the new
-/// block file's BLAKE3-256 fingerprint (32 bytes) — the value that
-/// belongs in `BlockEntry.fingerprint` for callers that follow up with
-/// a manifest rewrite.
+/// Replace the named block's records using the caller's pre-unlocked
+/// vault handle, re-encrypt with a deterministic per-rewrite RNG seeded
+/// from `aead_nonce`, and write the new envelope to
+/// `blocks/<uuid>.cbor.enc`. Returns the new block file's BLAKE3-256
+/// fingerprint (32 bytes) — the value that belongs in
+/// `BlockEntry.fingerprint` for callers that follow up with a manifest
+/// rewrite.
+///
+/// Takes `&OpenVault` (not just `folder`) because as of C.1.1b D6 the
+/// production `open_vault` rejects vaults whose manifest fingerprints
+/// disagree with the on-disk block bytes — so two rewrites of the same
+/// vault folder cannot share an internal `open_vault` call without a
+/// matching manifest rewrite in between. Callers cache the
+/// `OpenVault` from before the first rewrite; the IBK / identity /
+/// owner_card it holds are independent of block fingerprints and
+/// remain valid across rewrites. Task 9 introduces
+/// `rewrite_block_with_records_and_update_manifest`, which composes
+/// this primitive with the manifest re-sign step.
 ///
 /// `aead_nonce` is the seed for [`rand_chacha::ChaCha20Rng`], not the
 /// on-disk AEAD nonce: `encrypt_block` consumes RNG bytes for the BCK,
@@ -315,6 +327,7 @@ pub fn decrypt_block_using_open(
 #[allow(dead_code)]
 pub fn rewrite_block_with_records(
     folder: &Path,
+    open: &secretary_core::vault::OpenVault,
     block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
     new_records: Vec<secretary_core::vault::Record>,
     aead_nonce: &[u8; AEAD_NONCE_LEN],
@@ -332,9 +345,6 @@ pub fn rewrite_block_with_records(
     // (`save_block` core path, `save_block.rs` test fixtures).
     const BLOCK_VERSION_V1: u32 = 1;
     const SCHEMA_VERSION_V1: u32 = 1;
-
-    let password = fixtures::golden_vault_001_password();
-    let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
 
     let entry_idx = open
         .manifest
@@ -422,11 +432,6 @@ pub fn rewrite_block_with_records(
     }
     std::fs::write(&path, &bytes).expect("write block file");
 
-    // Re-borrow `open` so its `Drop` (zeroize of identity_block_key,
-    // identity, etc.) runs deterministically after we've finished
-    // using its secret material.
-    drop(open);
-
     fingerprint_out
 }
 
@@ -439,6 +444,13 @@ mod helper_tests {
     /// using the owner identity. Proves
     /// [`rewrite_block_with_records`] + [`decrypt_block_using_open`]
     /// agree on the wire format.
+    ///
+    /// The cached `OpenVault` handle is taken BEFORE any rewrite so
+    /// that the cached manifest matches the on-disk block fingerprints
+    /// at open time (C.1.1b D6 — `open_vault` rejects any vault whose
+    /// manifest fingerprints disagree with the block bytes). Decryption
+    /// itself only consumes the IBK / identity / owner_card on the
+    /// handle, which are immune to block-byte changes.
     #[test]
     fn rewrite_block_with_records_round_trips() {
         let golden_clock = vec![VectorClockEntry {
@@ -450,15 +462,21 @@ mod helper_tests {
         let block_uuid = golden_vault_001_first_block_uuid(&folder);
         let new_records: Vec<secretary_core::vault::Record> = Vec::new();
 
-        let new_fingerprint =
-            rewrite_block_with_records(&folder, block_uuid, new_records.clone(), &BLOCK_NONCE_E);
+        let password = fixtures::golden_vault_001_password();
+        let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open");
+
+        let new_fingerprint = rewrite_block_with_records(
+            &folder,
+            &open,
+            block_uuid,
+            new_records.clone(),
+            &BLOCK_NONCE_E,
+        );
         // Fingerprint must be a real BLAKE3-256 (non-zero with high
         // probability over fresh ciphertext); cheap sanity check that
         // we didn't silently return an all-zero placeholder.
         assert_ne!(new_fingerprint, [0u8; 32]);
 
-        let password = fixtures::golden_vault_001_password();
-        let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open");
         let block_path = block_file_path(&folder, &block_uuid);
         let bytes = std::fs::read(&block_path).expect("read block");
         let plaintext = decrypt_block_using_open(&open, &bytes).expect("decrypt");
@@ -471,6 +489,10 @@ mod helper_tests {
     /// the per-rewrite ChaCha20Rng seeding actually delivers distinct
     /// BCK + AEAD body nonces, so callers can rewrite multiple blocks
     /// in the same vault without AEAD key+nonce reuse.
+    ///
+    /// The cached `OpenVault` handle is taken before the first rewrite
+    /// — see `rewrite_block_with_records_round_trips` for the same
+    /// rationale (C.1.1b D6).
     #[test]
     fn rewrite_block_with_records_distinct_seeds_produce_distinct_ciphertexts() {
         let golden_clock = vec![VectorClockEntry {
@@ -480,10 +502,15 @@ mod helper_tests {
         let (folder, _tmp) = fresh_vault_with_clock(golden_clock);
         let block_uuid = golden_vault_001_first_block_uuid(&folder);
 
-        let fp_e = rewrite_block_with_records(&folder, block_uuid, Vec::new(), &BLOCK_NONCE_E);
+        let password = fixtures::golden_vault_001_password();
+        let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open");
+
+        let fp_e =
+            rewrite_block_with_records(&folder, &open, block_uuid, Vec::new(), &BLOCK_NONCE_E);
         let bytes_after_e = std::fs::read(block_file_path(&folder, &block_uuid)).expect("read");
 
-        let fp_f = rewrite_block_with_records(&folder, block_uuid, Vec::new(), &BLOCK_NONCE_F);
+        let fp_f =
+            rewrite_block_with_records(&folder, &open, block_uuid, Vec::new(), &BLOCK_NONCE_F);
         let bytes_after_f = std::fs::read(block_file_path(&folder, &block_uuid)).expect("read");
 
         assert_ne!(
