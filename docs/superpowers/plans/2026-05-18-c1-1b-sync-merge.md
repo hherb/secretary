@@ -2163,7 +2163,7 @@ fn prepare_merge_stale_manifest_hash_returns_evidence_stale() {
 }
 ```
 
-Actually per D5: `prepare_merge` does NOT re-check the manifest. The freshness check lives in `commit_with_decisions`. Remove this test from Task 9 and re-add it in Task 13 under `commit_with_decisions_stale_manifest_hash_aborts`. The "name vs scope" mismatch is a planning artifact; Task 13 takes ownership.
+Actually per D5: `prepare_merge` does NOT re-check the manifest. The freshness check lives in `commit_with_decisions`. Remove this test from Task 9 and re-add it in Task 13 under `commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes` (the suffix advertises the second half of the assertion — byte-identical manifest post-abort). The "name vs scope" mismatch is a planning artifact; Task 13 takes ownership.
 
 - [ ] **Step 6: Run tests**
 

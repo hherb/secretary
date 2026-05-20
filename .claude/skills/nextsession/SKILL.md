@@ -15,9 +15,25 @@ Remember our general coding principles:
 Once you have completed yor tasks, check
 (a) does README.md need updating because of the changes made in this session? If so, update README.md
 (b) does ROADMAP.md need updating because of the changes made in this session? If so, update ROADMAP.md
-Before we end, update or create NEXT_SESSION.md containing: 
+Before we end, the baton handoff must capture:
 (1) what we shipped this session with commit SHAs, 
 (2) what's next with concrete acceptance criteria, 
 (3) any open decisions or risks, 
 (4) the exact commands needed to resume (cd, branch, test command). 
-(5) Save an EXACT copy of NEXT_SESSION.md to docs/handoffs/ with a timestamp as filename — same content, just a frozen archive for audit/learning. Do not author the handoff separately; NEXT_SESSION.md is the live ephemeral version and the handoff is its timestamped snapshot.
+
+**(5) Handoff file model (NEXT_SESSION.md is a symlink — author the handoff once, not twice).**
+
+`NEXT_SESSION.md` at the repo root is a **relative symlink** to the latest file in `docs/handoffs/`. The handoff doc is the only authored file; `NEXT_SESSION.md` is a pointer that transparently resolves to it. This is intentional — it eliminates the prior pattern (carry two byte-identical copies of the baton, one at NEXT_SESSION.md and one at docs/handoffs/) which produced inevitable merge conflicts whenever the same content was edited on both the feature branch and `main` during a pause window.
+
+**Workflow:**
+- Author the new handoff at `docs/handoffs/<YYYY-MM-DD>-<task-or-feature-slug>-shipped.md`.
+- Retarget the symlink in one line: `ln -snf docs/handoffs/<your-new-file>.md NEXT_SESSION.md`.
+- Verify: `ls -la NEXT_SESSION.md` shows the `->` target; `head -3 NEXT_SESSION.md` reads the handoff content transparently.
+- Commit BOTH the new handoff file AND the retargeted symlink as one commit on the feature branch (per [[feedback_next_session_in_pr]]).
+
+**Why this avoids conflicts:**
+- New handoff files NEVER conflict (new path on each task).
+- The symlink contents are a single line (the target path); the only way it conflicts is if two branches retarget to *different* paths simultaneously — rare, and a trivial 1-line resolution when it happens.
+- Fixall / review-feedback edits during an open PR go into the handoff doc itself; if `main` already has a synced copy (per [[feedback_next_session_main_authoritative]]), only the handoff file path is the conflict surface, not NEXT_SESSION.md too.
+
+Do not author the handoff separately as a "frozen archive snapshot" of a hand-edited NEXT_SESSION.md — the handoff IS the live baton; NEXT_SESSION.md is its symlink. If you find yourself rewriting both files in lockstep, the symlink is broken — restore it.

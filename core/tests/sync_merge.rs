@@ -391,3 +391,116 @@ fn commit_with_decisions_empty_vetoes_writes_merged_state() {
         "post-commit sync_once should return NothingToDo, got {outcome2:?}",
     );
 }
+
+/// Mutating the canonical manifest between `prepare_merge` and
+/// `commit_with_decisions` must abort with `SyncError::EvidenceStale`
+/// AND leave the on-disk manifest byte-identical to its post-mutation
+/// state (no commit-side write happened).
+///
+/// Proves the D5 TOCTOU freshness re-check inside
+/// `commit_with_decisions` (step 2 of its prologue):
+/// 1. `open_vault` authenticates the on-disk state.
+/// 2. The raw manifest envelope is re-read and BLAKE3-hashed.
+/// 3. The hash is compared against `draft.manifest_hash` captured by
+///    `prepare_merge`.
+/// 4. A mismatch aborts with `EvidenceStale` before any block re-encrypt
+///    or manifest rewrite happens — the caller retries the full
+///    `sync_once → prepare_merge → commit_with_decisions` cycle against
+///    fresh evidence (design doc §D5).
+///
+/// Setup uses the empty-divergence fixture from
+/// [`commit_with_decisions_empty_vetoes_writes_merged_state`]: two
+/// concurrent manifests referencing the same block contents so
+/// `bundle.diverging_blocks` is empty and the commit has no per-block
+/// writes to do. The race window is opened by `write_manifest_at` —
+/// it rewrites the canonical manifest with a new clock between
+/// `prepare_merge` and `commit_with_decisions`, advancing the on-disk
+/// envelope hash away from `draft.manifest_hash`.
+#[test]
+fn commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes() {
+    let device_canonical = [0x0A; 16];
+    let device_sibling = [0x0B; 16];
+    let device_local = [0x0C; 16];
+
+    let canonical_clock = vec![VectorClockEntry {
+        device_uuid: device_canonical,
+        counter: 1,
+    }];
+    let sibling_clock = vec![VectorClockEntry {
+        device_uuid: device_sibling,
+        counter: 1,
+    }];
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_manifests(
+        canonical_clock,
+        "manifest.cbor.enc.sync-conflict-from-device-bb",
+        sibling_clock,
+    );
+
+    let password = fixtures::golden_vault_001_password();
+    let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+    let bundle_bytes =
+        std::fs::read(folder.join("identity.bundle.enc")).expect("read identity bundle");
+    let identity =
+        open_with_password(&vt_bytes, &bundle_bytes, &password).expect("open_with_password");
+
+    let vault_uuid = extract_vault_uuid(&folder);
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: device_local,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+
+    let outcome = sync_once(&folder, &identity, &state, 0u64).expect("sync_once");
+    let (bundle, plan) = match outcome {
+        SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
+        other => panic!("expected ConcurrentDetected, got {other:?}"),
+    };
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+
+    // Open the race window: rewrite the canonical manifest with a new
+    // clock so the on-disk envelope hash diverges from
+    // `draft.manifest_hash` captured by prepare_merge above. The new
+    // clock is well-formed (single-entry, properly signed via the
+    // golden identity by `write_manifest_at`) so step 1 of
+    // `commit_with_decisions` (`open_vault`) still succeeds — the
+    // failure must fire from the step 2 freshness re-check, not from
+    // a malformed manifest.
+    let racing_clock = vec![VectorClockEntry {
+        device_uuid: device_canonical,
+        counter: 99,
+    }];
+    sync_helpers::write_manifest_at(
+        &folder,
+        sync_helpers::MANIFEST_FILENAME,
+        racing_clock,
+        &sync_helpers::SIBLING_NONCE_C,
+    );
+
+    // Snapshot the post-mutation manifest BLAKE3 so we can prove
+    // commit_with_decisions wrote zero bytes after its EvidenceStale
+    // abort.
+    let manifest_path = folder.join(sync_helpers::MANIFEST_FILENAME);
+    let bytes_before_commit = std::fs::read(&manifest_path).expect("read manifest before commit");
+    let hash_before = secretary_core::sync::compute_manifest_hash(&bytes_before_commit);
+
+    let err = commit_with_decisions(&folder, &password, draft, Vec::new(), 1_000_000)
+        .expect_err("commit_with_decisions must reject a stale draft.manifest_hash");
+    assert!(
+        matches!(err, secretary_core::sync::SyncError::EvidenceStale),
+        "expected SyncError::EvidenceStale, got {err:?}",
+    );
+
+    // Post-condition: the canonical manifest is byte-identical to its
+    // post-mutation state — the commit aborted before any disk write.
+    // (Block files weren't expected to change either since the
+    // no-divergence draft has no affected blocks; the manifest is the
+    // single commit point so byte-equality there is the disposition
+    // test.)
+    let bytes_after_commit = std::fs::read(&manifest_path).expect("read manifest after commit");
+    let hash_after = secretary_core::sync::compute_manifest_hash(&bytes_after_commit);
+    assert_eq!(
+        hash_before, hash_after,
+        "EvidenceStale must abort with NO disk writes; manifest bytes changed",
+    );
+}

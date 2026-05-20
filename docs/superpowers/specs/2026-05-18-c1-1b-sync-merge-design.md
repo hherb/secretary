@@ -404,7 +404,7 @@ core/src/vault/mod.rs             +BlockFingerprintMismatch variant (~5 LOC)
 | `commit_with_decisions_accept_tombstone_finalizes_delete` | Decision AcceptTombstone{id} → record tombstoned at disk's timestamp |
 | `commit_with_decisions_partial_decisions_returns_missing_veto_decision` | Vetoes carry N, decisions carry N−1 → `SyncError::MissingVetoDecision` |
 | `commit_with_decisions_unknown_decision_id_returns_unknown_veto` | Decisions includes id not in vetoes → `SyncError::UnknownVetoDecision` |
-| `commit_with_decisions_stale_manifest_hash_aborts` | Disk changed between prepare and commit → `SyncError::EvidenceStale`, NO disk writes |
+| `commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes` | Disk changed between prepare and commit → `SyncError::EvidenceStale`, NO disk writes |
 | `commit_with_decisions_block_fingerprint_mismatch_repaired_by_reconverge` | Simulate partial-crash via mid-test manifest revert → next sync_once+prepare+commit produces consistent state (idempotence proof) |
 | `open_vault_detects_block_fingerprint_mismatch` | Manually corrupt one block file → `VaultError::BlockFingerprintMismatch` |
 
