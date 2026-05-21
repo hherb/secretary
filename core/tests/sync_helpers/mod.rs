@@ -342,6 +342,77 @@ pub fn rewrite_block_with_records(
     new_records: Vec<secretary_core::vault::Record>,
     aead_nonce: &[u8; AEAD_NONCE_LEN],
 ) -> [u8; 32] {
+    let entry = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("block_uuid not in manifest");
+
+    let (fp, bytes) = encrypt_block_bytes_for_uuid(
+        open,
+        block_uuid,
+        new_records,
+        entry.vector_clock_summary.clone(),
+        entry.block_name.clone(),
+        entry.created_at_ms,
+        entry.last_mod_ms,
+        aead_nonce,
+    );
+
+    let path = block_file_path(folder, &block_uuid);
+    // Ensure blocks/ exists (golden vault always has it, but a future
+    // caller may rewrite into a sparser fixture).
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create_dir_all blocks/");
+    }
+    std::fs::write(&path, &bytes).expect("write block file");
+
+    fp
+}
+
+/// Pure-encryption variant of [`rewrite_block_with_records`]: build a
+/// `BlockHeader` + `BlockPlaintext` from the supplied parameters, encrypt
+/// via `encrypt_block` under the owner identity reachable from `open`,
+/// CBOR-encode the resulting `BlockFile`, and return the BLAKE3-256
+/// fingerprint + envelope bytes. Performs **no I/O** — callers decide
+/// where on disk to put the resulting envelope (canonical path,
+/// sibling-suffix path, etc.).
+///
+/// Used by both [`rewrite_block_with_records`] (single canonical write)
+/// and [`fresh_vault_two_concurrent_blocks`] (canonical + sibling block
+/// pair). Splitting the encryption from the file write lets the
+/// two-block fixture vary `block_clock` and `block_seed` per envelope
+/// without re-deriving the owner keys.
+///
+/// `block_clock` is written verbatim into both the `BlockHeader.vector_clock`
+/// (signed inside the block envelope) AND the `BlockPlaintext` record
+/// list — the caller is responsible for matching this against the
+/// manifest's `BlockEntry.vector_clock_summary` for self-consistency
+/// (D6 doesn't check it, but `prepare_merge`'s veto detection compares
+/// against the manifest copy, not the block header).
+///
+/// `block_name` / `created_at_ms` / `last_mod_ms` mirror save_block's
+/// step 4-9 pattern. `last_mod_ms` is the moment-of-rewrite stamp; the
+/// canonical block's existing value is preserved when this is called
+/// from the no-mutation path.
+///
+/// `aead_seed` is the 24-byte rewrite seed for `ChaCha20Rng::from_seed`;
+/// see [`rewrite_block_with_records`]'s docstring for the seed-vs-nonce
+/// rationale and AEAD-uniqueness invariant.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+fn encrypt_block_bytes_for_uuid(
+    open: &secretary_core::vault::OpenVault,
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    new_records: Vec<secretary_core::vault::Record>,
+    block_clock: Vec<VectorClockEntry>,
+    block_name: String,
+    created_at_ms: u64,
+    last_mod_ms: u64,
+    aead_seed: &[u8; AEAD_NONCE_LEN],
+) -> ([u8; 32], Vec<u8>) {
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
     use secretary_core::crypto::kem::MlKem768Public;
     use secretary_core::identity::fingerprint::fingerprint;
@@ -355,14 +426,6 @@ pub fn rewrite_block_with_records(
     // (`save_block` core path, `save_block.rs` test fixtures).
     const BLOCK_VERSION_V1: u32 = 1;
     const SCHEMA_VERSION_V1: u32 = 1;
-
-    let entry_idx = open
-        .manifest
-        .blocks
-        .iter()
-        .position(|b| b.block_uuid == block_uuid)
-        .expect("block_uuid not in manifest");
-    let entry = open.manifest.blocks[entry_idx].clone();
 
     // Re-derive owner sender keys (mirrors save_block step 4 setup).
     let owner_card_bytes = open.owner_card.to_canonical_cbor().expect("card cbor");
@@ -395,14 +458,14 @@ pub fn rewrite_block_with_records(
         file_kind: FILE_KIND_BLOCK,
         vault_uuid: open.manifest.vault_uuid,
         block_uuid,
-        created_at_ms: entry.created_at_ms,
-        last_mod_ms: entry.last_mod_ms,
-        vector_clock: entry.vector_clock_summary.clone(),
+        created_at_ms,
+        last_mod_ms,
+        vector_clock: block_clock,
     };
     let plaintext = BlockPlaintext {
         block_version: BLOCK_VERSION_V1,
         block_uuid,
-        block_name: entry.block_name.clone(),
+        block_name,
         schema_version: SCHEMA_VERSION_V1,
         records: new_records,
         unknown: std::collections::BTreeMap::new(),
@@ -417,7 +480,7 @@ pub fn rewrite_block_with_records(
     // would break determinism, which the `distinct_seeds_produce_
     // distinct_ciphertexts` invariant depends on.
     let mut seed = [0u8; 32];
-    seed[..AEAD_NONCE_LEN].copy_from_slice(aead_nonce);
+    seed[..AEAD_NONCE_LEN].copy_from_slice(aead_seed);
     let mut rng = ChaCha20Rng::from_seed(seed);
 
     let block_file = encrypt_block(
@@ -432,17 +495,8 @@ pub fn rewrite_block_with_records(
     )
     .expect("encrypt_block");
     let bytes = encode_block_file(&block_file).expect("encode_block_file");
-    let fingerprint_out = *secretary_core::crypto::hash::hash(&bytes).as_bytes();
-
-    let path = block_file_path(folder, &block_uuid);
-    // Ensure blocks/ exists (golden vault always has it, but a future
-    // caller may rewrite into a sparser fixture).
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("create_dir_all blocks/");
-    }
-    std::fs::write(&path, &bytes).expect("write block file");
-
-    fingerprint_out
+    let fp = *secretary_core::crypto::hash::hash(&bytes).as_bytes();
+    (fp, bytes)
 }
 
 /// Rewrite the block at `block_uuid` with `new_records` (via
@@ -563,6 +617,240 @@ pub fn rewrite_block_with_records_and_update_manifest(
     std::fs::write(folder.join(MANIFEST_FILENAME), &manifest_bytes).expect("write manifest");
 
     new_fingerprint
+}
+
+/// Per-block-divergent two-manifest fixture for C.1.1b Task 13's veto
+/// tests. Writes BOTH a canonical block file (with `canonical_records`)
+/// AND a sibling block file at
+/// `blocks/<uuid>.cbor.enc<sibling_block_suffix>` (with `sibling_records`),
+/// then re-signs the canonical manifest AND writes a sibling manifest
+/// such that:
+///
+/// 1. The canonical manifest's `BlockEntry[block_uuid]` has
+///    `fingerprint = BLAKE3(canonical_block_bytes)` and
+///    `vector_clock_summary = canonical_block_clock`.
+/// 2. The sibling manifest's `BlockEntry[block_uuid]` has
+///    `fingerprint = BLAKE3(sibling_block_bytes)` and
+///    `vector_clock_summary = sibling_block_clock`.
+/// 3. Both manifests' top-level `vector_clock` are set per the
+///    `*_manifest_clock` arguments.
+///
+/// This drives the C.1.1a ingest layer to emit a non-empty
+/// `bundle.diverging_blocks` (because the canonical + sibling
+/// `vector_clock_summary` for the same block_uuid are concurrent) and
+/// `prepare_merge`'s [`crate::sync::parent_block_clock`] fingerprint
+/// match to bind each block envelope to the correct manifest's
+/// per-block clock.
+///
+/// The post-fixture vault opens cleanly: D6 only checks the CANONICAL
+/// manifest's `BlockEntry.fingerprint` against the on-disk file at
+/// `blocks/<uuid>.cbor.enc` — the sibling block file is invisible to
+/// `verify_block_fingerprints`. The sibling manifest's claim of a
+/// different fingerprint is fine because D6 doesn't inspect sibling
+/// manifests.
+///
+/// Pre-condition: `block_uuid` MUST exist in `golden_vault_001`'s
+/// manifest (caller obtains via [`golden_vault_001_first_block_uuid`]
+/// for the single-block fixture, or knows the UUID a priori for a
+/// fresh-built multi-block fixture).
+///
+/// Constraints on caller:
+/// - `canonical_block_clock` and `sibling_block_clock` MUST be
+///   concurrent (or sibling strictly dominate canonical) — otherwise
+///   `ingest_block_divergence` skips this block and the bundle's
+///   `diverging_blocks` is empty (same outcome as Task 9's smoke test).
+/// - `canonical_manifest_clock` and `sibling_manifest_clock` MUST be
+///   concurrent — otherwise `sync_once` returns a non-`ConcurrentDetected`
+///   outcome and the merge pipeline never engages.
+/// - `sibling_block_suffix` MUST start with a non-empty separator
+///   (e.g. `".sync-conflict-from-device-bb"`) so the resulting filename
+///   is recognized as a sibling by
+///   [`crate::sync::enumerate_block_siblings`] (any filename strictly
+///   starting with `<uuid>.cbor.enc` and not equal to it qualifies).
+/// - `sibling_manifest_filename` MUST start with `"manifest.cbor.enc"`
+///   for the same reason — see Task 8's existing helpers for the
+///   convention.
+///
+/// `now_ms` is written into both blocks' `header.last_mod_ms` AND both
+/// manifests' `BlockEntry.last_mod_ms` for the block_uuid (mirroring
+/// `commit_with_decisions`'s step 5-6 production behavior at the
+/// fixture level).
+///
+/// Returns `(folder, tmp)` — caller keeps `tmp` alive for the test scope.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn fresh_vault_two_concurrent_blocks(
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    canonical_records: Vec<secretary_core::vault::Record>,
+    canonical_block_clock: Vec<VectorClockEntry>,
+    canonical_manifest_clock: Vec<VectorClockEntry>,
+    sibling_records: Vec<secretary_core::vault::Record>,
+    sibling_block_clock: Vec<VectorClockEntry>,
+    sibling_manifest_clock: Vec<VectorClockEntry>,
+    sibling_manifest_filename: &str,
+    sibling_block_suffix: &str,
+    now_ms: u64,
+) -> (PathBuf, tempfile::TempDir) {
+    // Step 1: fresh copy of golden_vault_001 into a temp dir. The
+    // canonical manifest's top-level clock is set to a placeholder
+    // (we'll overwrite it in step 5); using an empty clock here means
+    // the temp vault opens cleanly via the standard fresh helper.
+    let (folder, tmp) = fresh_vault_with_clock(Vec::new());
+
+    // Step 2: open the vault to cache identity material. The cached
+    // handle drives both block encryptions AND both manifest re-signs
+    // without ever re-reading disk during the fingerprint-inconsistent
+    // window (mirrors the pattern in
+    // [`rewrite_block_with_records_and_update_manifest`]).
+    let password = fixtures::golden_vault_001_password();
+    let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open_vault");
+
+    // Step 3: encrypt the canonical block + sibling block in-process.
+    // Both use the existing per-block name + created_at_ms from the
+    // golden vault entry; the block_clock + records + AEAD seed vary
+    // per envelope.
+    let golden_entry = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("block_uuid not in golden manifest");
+
+    let (canonical_fp, canonical_bytes) = encrypt_block_bytes_for_uuid(
+        &open,
+        block_uuid,
+        canonical_records,
+        canonical_block_clock.clone(),
+        golden_entry.block_name.clone(),
+        golden_entry.created_at_ms,
+        now_ms,
+        &BLOCK_NONCE_E,
+    );
+    let (sibling_fp, sibling_bytes) = encrypt_block_bytes_for_uuid(
+        &open,
+        block_uuid,
+        sibling_records,
+        sibling_block_clock.clone(),
+        golden_entry.block_name.clone(),
+        golden_entry.created_at_ms,
+        now_ms,
+        &BLOCK_NONCE_F,
+    );
+
+    // Step 4: write both block files. Canonical goes to the
+    // production path; sibling goes to the suffix path.
+    let canonical_path = block_file_path(&folder, &block_uuid);
+    if let Some(parent) = canonical_path.parent() {
+        std::fs::create_dir_all(parent).expect("create_dir_all blocks/");
+    }
+    std::fs::write(&canonical_path, &canonical_bytes).expect("write canonical block");
+
+    let sibling_path = canonical_path.with_file_name(format!(
+        "{stem}{suffix}",
+        stem = canonical_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("canonical path utf-8"),
+        suffix = sibling_block_suffix,
+    ));
+    std::fs::write(&sibling_path, &sibling_bytes).expect("write sibling block");
+
+    // Step 5: build + sign the canonical manifest. Update its
+    // BlockEntry.fingerprint / vector_clock_summary / last_mod_ms for
+    // block_uuid; set the manifest-level vector_clock.
+    write_manifest_with_block_entry(
+        &folder,
+        &open,
+        MANIFEST_FILENAME,
+        block_uuid,
+        canonical_fp,
+        canonical_block_clock,
+        canonical_manifest_clock,
+        now_ms,
+        &CANONICAL_NONCE_A,
+    );
+
+    // Step 6: build + sign the sibling manifest. Same structure as
+    // canonical but with sibling fingerprint + clocks, written to the
+    // sibling filename.
+    write_manifest_with_block_entry(
+        &folder,
+        &open,
+        sibling_manifest_filename,
+        block_uuid,
+        sibling_fp,
+        sibling_block_clock,
+        sibling_manifest_clock,
+        now_ms,
+        &SIBLING_NONCE_B,
+    );
+
+    drop(open);
+    (folder, tmp)
+}
+
+/// Build + sign a manifest from a cached `OpenVault`, replacing one
+/// `BlockEntry`'s `fingerprint` / `vector_clock_summary` / `last_mod_ms`
+/// AND the manifest-level `vector_clock`, then write the result to
+/// `folder.join(filename)`.
+///
+/// Lifted out of [`fresh_vault_two_concurrent_blocks`] so the canonical
+/// and sibling manifest writes share one signing path. Mirrors the
+/// step 5-7 sequence inside `commit_with_decisions::commit_with_decisions`
+/// but is driven by the test's cached `OpenVault` rather than a fresh
+/// `open_vault` call (necessary because the disk is in a fingerprint-
+/// inconsistent state between block writes and manifest writes — D6
+/// would reject a fresh open).
+#[allow(clippy::too_many_arguments)]
+fn write_manifest_with_block_entry(
+    folder: &Path,
+    open: &secretary_core::vault::OpenVault,
+    filename: &str,
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    block_fingerprint: [u8; 32],
+    block_clock: Vec<VectorClockEntry>,
+    manifest_clock: Vec<VectorClockEntry>,
+    block_last_mod_ms: u64,
+    manifest_aead_nonce: &[u8; AEAD_NONCE_LEN],
+) {
+    let mut manifest = open.manifest.clone();
+    let idx = manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == block_uuid)
+        .unwrap_or_else(|| panic!("block_uuid {block_uuid:?} not present in cached manifest"));
+    manifest.blocks[idx].fingerprint = block_fingerprint;
+    manifest.blocks[idx].vector_clock_summary = block_clock;
+    manifest.blocks[idx].last_mod_ms = block_last_mod_ms;
+    manifest.vector_clock = manifest_clock;
+
+    let owner_card_bytes = open.owner_card.to_canonical_cbor().expect("card cbor");
+    let owner_fp = fingerprint(&owner_card_bytes);
+    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
+    ed_sk_bytes.zeroize();
+    let owner_pq_sk =
+        MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).expect("ml-dsa sk");
+
+    let new_header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: open.manifest_file.header.last_mod_ms,
+    };
+    let new_manifest_file = sign_manifest(
+        new_header,
+        &manifest,
+        &open.identity_block_key,
+        manifest_aead_nonce,
+        owner_fp,
+        &owner_ed_sk,
+        &owner_pq_sk,
+    )
+    .expect("sign_manifest");
+
+    let manifest_bytes = encode_manifest_file(&new_manifest_file).expect("encode_manifest_file");
+    std::fs::write(folder.join(filename), &manifest_bytes).expect("write manifest");
 }
 
 #[cfg(test)]
@@ -738,6 +1026,90 @@ mod helper_tests {
         assert_ne!(
             bytes_after_e, bytes_after_f,
             "distinct seeds must yield distinct on-disk envelopes (AEAD uniqueness proof)"
+        );
+    }
+
+    /// Smoke: [`fresh_vault_two_concurrent_blocks`] produces a vault
+    /// folder where:
+    ///
+    /// 1. The canonical manifest opens cleanly via the standard
+    ///    `open_vault` path (D6 fingerprint gate sees the canonical
+    ///    block file matches `BlockEntry.fingerprint`).
+    /// 2. Both the canonical block file AND the sibling block file
+    ///    exist on disk under the expected paths.
+    /// 3. The canonical manifest's BlockEntry for `block_uuid` carries
+    ///    the canonical block's fingerprint + the supplied
+    ///    `canonical_block_clock`.
+    /// 4. The two block files have distinct on-disk bytes (proves the
+    ///    canonical vs sibling encryptions used distinct AEAD seeds).
+    ///
+    /// Acceptance for downstream Task 13 tests: this fixture produces
+    /// a per-block-divergent state that `sync_once` will detect as
+    /// concurrent AND `ingest_block_divergence` will include in
+    /// `bundle.diverging_blocks`.
+    #[test]
+    fn fresh_vault_two_concurrent_blocks_produces_consistent_canonical_with_sibling_on_disk() {
+        let device_a = [0x0A; SYNC_HELPERS_UUID_LEN];
+        let device_b = [0x0B; SYNC_HELPERS_UUID_LEN];
+
+        let canonical_block_clock = vec![VectorClockEntry {
+            device_uuid: device_a,
+            counter: 1,
+        }];
+        let canonical_manifest_clock = canonical_block_clock.clone();
+        let sibling_block_clock = vec![VectorClockEntry {
+            device_uuid: device_b,
+            counter: 1,
+        }];
+        let sibling_manifest_clock = sibling_block_clock.clone();
+
+        // Discover the golden vault's first block_uuid via a throwaway
+        // open. Using the same UUID for both canonical + sibling is
+        // the per-block-divergent shape Task 13's tests require.
+        let (probe_folder, _probe_tmp) = fresh_vault_with_clock(Vec::new());
+        let block_uuid = golden_vault_001_first_block_uuid(&probe_folder);
+
+        let (folder, _tmp) = fresh_vault_two_concurrent_blocks(
+            block_uuid,
+            Vec::new(),
+            canonical_block_clock.clone(),
+            canonical_manifest_clock,
+            Vec::new(),
+            sibling_block_clock,
+            sibling_manifest_clock,
+            "manifest.cbor.enc.sync-conflict-from-device-bb",
+            ".sync-conflict-from-device-bb",
+            1_000_000,
+        );
+
+        // D6 round-trip: the canonical manifest must open cleanly.
+        let password = fixtures::golden_vault_001_password();
+        let open = open_vault(&folder, Unlocker::Password(&password), None)
+            .expect("canonical manifest must open after fixture build");
+        let entry = open
+            .manifest
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == block_uuid)
+            .expect("block_uuid in canonical manifest");
+        assert_eq!(
+            entry.vector_clock_summary, canonical_block_clock,
+            "canonical manifest must carry the fixture-supplied canonical_block_clock",
+        );
+
+        let canonical_path = block_file_path(&folder, &block_uuid);
+        let sibling_path = canonical_path.with_file_name(format!(
+            "{stem}.sync-conflict-from-device-bb",
+            stem = canonical_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("utf-8"),
+        ));
+        let canonical_bytes = std::fs::read(&canonical_path).expect("read canonical block");
+        let sibling_bytes = std::fs::read(&sibling_path).expect("read sibling block");
+        assert_ne!(
+            canonical_bytes, sibling_bytes,
+            "canonical and sibling block files must have distinct on-disk bytes",
         );
     }
 }
