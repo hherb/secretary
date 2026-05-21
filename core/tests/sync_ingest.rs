@@ -45,13 +45,7 @@ fn open_identity(folder: &std::path::Path) -> secretary_core::unlock::UnlockedId
     open_with_password(&vault_toml, &bundle, &password).expect("open_with_password")
 }
 
-/// Read the vault_uuid from `golden_vault_001`'s `vault.toml` so test
-/// SyncState values bind to the right vault.
-fn extract_vault_uuid(folder: &std::path::Path) -> [u8; 16] {
-    let s = std::fs::read_to_string(folder.join("vault.toml")).unwrap();
-    let vt = secretary_core::unlock::vault_toml::decode(&s).unwrap();
-    vt.vault_uuid
-}
+use fixtures::extract_vault_uuid;
 
 /// Build a SyncState whose `highest_vector_clock_seen` is concurrent
 /// with `canonical_clock`: both clocks reference one device the other
