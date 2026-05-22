@@ -145,8 +145,11 @@ fn read_canonical_block_records(folder: &std::path::Path, block_uuid: [u8; 16]) 
 /// 8. Assert `records_v2 == records_v1` (merged record set
 ///    deterministic in the inputs; AEAD nonces differ but plaintext
 ///    matches).
-/// 9. Assert `open_vault` succeeds on the recovered + re-committed
-///    vault.
+/// 9. Assert `b_v2 != b_v1` (AEAD-nonce-per-rewrite — the retried
+///    commit must produce fresh ciphertext, not a deterministic
+///    re-emission of `b_v1`).
+/// 10. Assert `open_vault` succeeds on the recovered + re-committed
+///     vault.
 #[test]
 fn partial_commit_recovers_via_idempotent_re_run() {
     // Step 0: discover the golden vault's first block_uuid in a throwaway
@@ -305,6 +308,17 @@ fn partial_commit_recovers_via_idempotent_re_run() {
     assert_eq!(
         records_v2, records_v1,
         "retried commit must reproduce the same canonical block record set",
+    );
+
+    // Step 9.5: AEAD-nonce-per-rewrite — the v2 commit must re-encrypt
+    // the canonical block with a fresh nonce, so its on-disk bytes must
+    // differ from the v1 commit's ciphertext even though the plaintext
+    // is identical (asserted in step 9). A deterministic-nonce
+    // regression would silently re-emit `b_v1` here.
+    let b_v2 = std::fs::read(&canonical_block_path).expect("read post-recovery canonical block");
+    assert_ne!(
+        b_v1, b_v2,
+        "v2 commit must use a fresh AEAD nonce (deterministic nonce would re-emit b_v1)",
     );
 
     // Step 10: the recovered vault opens cleanly.
