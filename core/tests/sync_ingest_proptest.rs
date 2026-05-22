@@ -31,11 +31,7 @@ fn open_identity(folder: &std::path::Path) -> secretary_core::unlock::UnlockedId
     open_with_password(&vault_toml, &bundle, &password).unwrap()
 }
 
-fn extract_vault_uuid(folder: &std::path::Path) -> [u8; 16] {
-    let s = std::fs::read_to_string(folder.join("vault.toml")).unwrap();
-    let vt = secretary_core::unlock::vault_toml::decode(&s).unwrap();
-    vt.vault_uuid
-}
+use fixtures::extract_vault_uuid;
 
 proptest! {
     // Cases reduced from the default 256 because each iteration runs

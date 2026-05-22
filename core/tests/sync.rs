@@ -250,13 +250,12 @@ fn sync_once_concurrent_manifest_hash_matches_bundle_envelope_bytes() {
     }
 }
 
-/// Helper: extract the golden vault's vault_uuid from its vault.toml
-/// so we don't hard-code the value here — it's pinned in the fixture
-/// builder and any drift would surface as a vault.toml decode failure.
+/// Helper: extract the golden vault's vault_uuid via the shared
+/// [`fixtures::extract_vault_uuid`] helper, fixing the folder to the
+/// in-tree golden_vault_001 since this file's tests run against the
+/// pre-built fixture (not a temp copy).
 fn extract_golden_vault_uuid() -> [u8; 16] {
-    let s = std::fs::read_to_string("tests/data/golden_vault_001/vault.toml").unwrap();
-    let vt = secretary_core::unlock::vault_toml::decode(&s).unwrap();
-    vt.vault_uuid
+    fixtures::extract_vault_uuid(std::path::Path::new("tests/data/golden_vault_001"))
 }
 
 #[test]

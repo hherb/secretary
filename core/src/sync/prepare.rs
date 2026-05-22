@@ -454,22 +454,39 @@ pub fn prepare_merge(
             copy_plaintexts.push(copy_pt);
         }
 
-        // Per-record veto pass. Linear scan: O(records · copies ·
-        // records_per_copy). Acceptable at v1 scale (a handful of
-        // copies × tens of records); a per-copy
-        // `BTreeMap<record_uuid, &Record>` index would be the
-        // tighter shape if Task 15's proptests show this in a hot
-        // path.
-        for (record_uuid, local_rec) in acc_records.iter() {
-            if local_rec.tombstone {
+        // Per-record veto pass. Walk the CANONICAL (pre-merge) records
+        // here, NOT `acc_records` (the post-merge accumulator). The
+        // veto's `local_state` is the canonical record — what
+        // [`crate::sync::commit::apply_decisions::KeepLocal`] will
+        // restore on top of `merged_records` when the user rejects the
+        // peer's tombstone.
+        //
+        // Why pre-merge and not post-merge: when a peer's tombstone is
+        // strictly later than the canonical record's `last_mod_ms`,
+        // [`merge_block`]'s §11.3 tombstone-wins-by-clock rule writes
+        // a tombstoned record into `acc_records`. Iterating
+        // `acc_records` here would see `local_rec.tombstone == true`
+        // and `continue` past the very case the veto is meant to
+        // surface — making the integration veto branch unreachable
+        // under well-formed inputs (proved by the test corpus from
+        // C.1.1b Task 13.1; the pre-fix behavior produced
+        // `vetoes.is_empty()` on a per-block-divergent fixture where
+        // the design says exactly one veto must fire).
+        //
+        // Linear scan: O(canonical_records · copies · records_per_copy).
+        // Acceptable at v1 scale (a handful of copies × tens of records);
+        // a per-copy `BTreeMap<record_uuid, &Record>` index would be the
+        // tighter shape if Task 15's proptests show this in a hot path.
+        for canonical_rec in canonical_pt.records.iter() {
+            if canonical_rec.tombstone {
                 continue;
             }
             let peers: Vec<&Record> = copy_plaintexts
                 .iter()
                 .flat_map(|cpt| cpt.records.iter())
-                .filter(|r| r.record_uuid == *record_uuid)
+                .filter(|r| r.record_uuid == canonical_rec.record_uuid)
                 .collect();
-            if let Some(v) = tombstone_veto_set(local_rec, *block_uuid, &peers) {
+            if let Some(v) = tombstone_veto_set(canonical_rec, *block_uuid, &peers) {
                 vetoes.push(v);
             }
         }

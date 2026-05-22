@@ -8,7 +8,6 @@
 //! to the component-wise max of the canonical and copy clocks.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use secretary_core::crypto::secret::SecretString;
 use secretary_core::sync::{
@@ -21,17 +20,7 @@ use secretary_core::vault::{open_vault, Record, RecordField, RecordFieldValue, U
 mod fixtures;
 mod sync_helpers;
 
-/// Read the vault_uuid from the fixture folder's `vault.toml`. Mirrors
-/// the helper used in `core/tests/sync.rs`; pulled into this file so
-/// the merge-layer integration tests don't depend on the sync.rs test
-/// module. (A follow-up could lift this into `fixtures/mod.rs` if more
-/// test files need it, but it's deferred — out of scope for Task 8.)
-fn extract_vault_uuid(folder: &Path) -> [u8; 16] {
-    let s = std::fs::read_to_string(folder.join("vault.toml"))
-        .expect("vault.toml must exist in fixture folder");
-    let vt = secretary_core::unlock::vault_toml::decode(&s).expect("decode vault.toml");
-    vt.vault_uuid
-}
+use fixtures::extract_vault_uuid;
 
 /// Concurrent canonical + sibling manifests with no per-block changes:
 /// `bundle.diverging_blocks` is empty, so `prepare_merge` runs zero
