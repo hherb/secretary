@@ -288,3 +288,76 @@ fn commit_with_decisions_keep_local_overrides_peer_tombstone() {
         "new SyncState must include sibling-side device entry",
     );
 }
+
+/// Task 13.2 — `AcceptTombstone` finalizes the peer's tombstone: the
+/// merged tombstoned record is persisted unchanged.
+///
+/// Fixture is identical to Task 13.1's. The caller passes
+/// `VetoDecision::AcceptTombstone { record_id: [0xAA; 16] }`;
+/// `apply_decisions` treats `AcceptTombstone` as a no-op (the merge
+/// already wrote the tombstone into `merged_records` via
+/// `merge_block`'s §11.3 tombstone-wins-by-clock rule), the commit
+/// re-encrypts the canonical block, and the new on-disk record set
+/// holds the TOMBSTONED record (`tombstone == true`,
+/// `tombstoned_at_ms == 200`).
+///
+/// Asserts:
+/// 1. `commit_with_decisions(...)` succeeds with the
+///    `AcceptTombstone` decision.
+/// 2. Post-commit, the canonical block decrypts to one record with
+///    `tombstone == true` and `tombstoned_at_ms == 200` (the peer's
+///    death clock).
+/// 3. The merged record's `last_mod_ms` advances to the peer's
+///    `tombstoned_at_ms` (per `merge_record`'s
+///    `last_mod_ms = local.last_mod_ms.max(remote.last_mod_ms)`).
+#[test]
+fn commit_with_decisions_accept_tombstone_finalizes_peer_delete() {
+    let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    assert_eq!(
+        draft.vetoes.len(),
+        1,
+        "fixture must produce exactly one veto for the per-block-divergent record",
+    );
+
+    let password = fixtures::golden_vault_001_password();
+    commit_with_decisions(
+        &folder,
+        &password,
+        draft,
+        vec![VetoDecision::AcceptTombstone {
+            record_id: VETO_RECORD_UUID,
+        }],
+        COMMIT_NOW_MS,
+    )
+    .expect("commit_with_decisions");
+
+    // Post-commit on-disk state: the canonical block now holds the
+    // TOMBSTONED record. The merge wrote the death clock and
+    // `AcceptTombstone` did not override it (no-op on the merged set).
+    let records = read_canonical_block_records(&folder, block_uuid);
+    assert_eq!(
+        records.len(),
+        1,
+        "post-commit block must contain exactly the tombstoned record (tombstones are kept-for-undelete per §6.3)",
+    );
+    assert_eq!(records[0].record_uuid, VETO_RECORD_UUID);
+    assert!(
+        records[0].tombstone,
+        "AcceptTombstone must leave the record TOMBSTONED on disk",
+    );
+    assert_eq!(
+        records[0].tombstoned_at_ms, DISK_TOMBSTONE_AT_MS,
+        "post-commit record must carry the peer's tombstoned_at_ms (death clock)",
+    );
+    // §11.5 invariant: `tombstoned_at_ms == last_mod_ms` on tombstoned
+    // records. `merge_record`'s `last_mod_ms = max(local, remote)` plus
+    // the §11.3 staleness filter together enforce this — the assertion
+    // pins the post-merge shape against an accidental drift.
+    assert_eq!(
+        records[0].last_mod_ms, DISK_TOMBSTONE_AT_MS,
+        "tombstoned record must satisfy §11.5 invariant `tombstoned_at_ms == last_mod_ms`",
+    );
+}
