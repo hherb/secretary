@@ -425,3 +425,75 @@ fn commit_with_decisions_missing_veto_decision_aborts_with_typed_error() {
         "MissingVetoDecision must abort with NO block writes; canonical block bytes changed",
     );
 }
+
+/// Task 13.4 — Unknown veto decision aborts the commit with a typed
+/// error pointing at the stray decision's `record_id`.
+///
+/// Fixture is identical to Tasks 13.1-13.3. The caller passes one
+/// matching decision (`KeepLocal { [0xAA; 16] }`) AND one stray
+/// decision (`KeepLocal { [0xFF; 16] }`) whose `record_id` doesn't
+/// match any veto. The bijection check sees
+/// `decision_ids - veto_ids = {[0xFF; 16]}` and returns
+/// `SyncError::UnknownVetoDecision { record_id: [0xFF; 16] }`.
+///
+/// Asserts:
+/// 1. `commit_with_decisions(...)` returns
+///    `Err(SyncError::UnknownVetoDecision { record_id: [0xFF; 16] })`.
+/// 2. The on-disk canonical block file is byte-identical to its
+///    pre-commit state (same no-disk-write rationale as Task 13.3).
+///
+/// The `[0xFF; 16]` stray UUID is chosen to be lexicographically
+/// greater than the matching `[0xAA; 16]` veto so the
+/// `BTreeSet::difference` order is unambiguous — if a future change
+/// to the bijection check were to surface the smallest stray instead
+/// of the only stray, this test's assertion (one-element diff) would
+/// still pin the correct UUID.
+#[test]
+fn commit_with_decisions_unknown_veto_decision_aborts_with_typed_error() {
+    let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    assert_eq!(
+        draft.vetoes.len(),
+        1,
+        "fixture must produce exactly one veto for the per-block-divergent record",
+    );
+
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    let block_bytes_before = std::fs::read(&block_path).expect("read canonical block pre-commit");
+
+    let stray_record_id: [u8; 16] = [0xFF; 16];
+    let password = fixtures::golden_vault_001_password();
+    let err = commit_with_decisions(
+        &folder,
+        &password,
+        draft,
+        vec![
+            VetoDecision::KeepLocal {
+                record_id: VETO_RECORD_UUID,
+            },
+            VetoDecision::KeepLocal {
+                record_id: stray_record_id,
+            },
+        ],
+        COMMIT_NOW_MS,
+    )
+    .expect_err("commit_with_decisions must reject a decision whose record_id is not in vetoes");
+
+    match err {
+        secretary_core::sync::SyncError::UnknownVetoDecision { record_id } => {
+            assert_eq!(
+                record_id, stray_record_id,
+                "UnknownVetoDecision must report the stray decision's record_id",
+            );
+        }
+        other => panic!("expected SyncError::UnknownVetoDecision, got {other:?}"),
+    }
+
+    let block_bytes_after = std::fs::read(&block_path).expect("read canonical block post-abort");
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "UnknownVetoDecision must abort with NO block writes; canonical block bytes changed",
+    );
+}
