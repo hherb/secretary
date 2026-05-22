@@ -361,3 +361,67 @@ fn commit_with_decisions_accept_tombstone_finalizes_peer_delete() {
         "tombstoned record must satisfy §11.5 invariant `tombstoned_at_ms == last_mod_ms`",
     );
 }
+
+/// Task 13.3 — Missing veto decision aborts the commit with a typed
+/// error pointing at the un-adjudicated `record_id`.
+///
+/// Fixture is identical to Task 13.1's. The caller passes EMPTY
+/// `decisions` even though `draft.vetoes` carries one veto. The
+/// bijection check in `commit::apply_decisions` (see §"bijection
+/// rules") sees `veto_ids - decision_ids = {[0xAA; 16]}` and returns
+/// `SyncError::MissingVetoDecision { record_id: [0xAA; 16] }`. The
+/// abort happens BEFORE any block re-encrypt or manifest rewrite.
+///
+/// Asserts:
+/// 1. `commit_with_decisions(...)` returns
+///    `Err(SyncError::MissingVetoDecision { record_id: [0xAA; 16] })`.
+/// 2. The on-disk canonical block file is byte-identical to its
+///    pre-commit state — the abort happens before any commit-side
+///    write, so the fixture's block survives unchanged. (The
+///    manifest is also pre-commit-identical, but the manifest's
+///    no-write invariant is already covered by Task 12's
+///    `commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes`;
+///    this test focuses on the block-side proof.)
+#[test]
+fn commit_with_decisions_missing_veto_decision_aborts_with_typed_error() {
+    let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    assert_eq!(
+        draft.vetoes.len(),
+        1,
+        "fixture must produce exactly one veto for the per-block-divergent record",
+    );
+
+    // Snapshot the canonical block bytes BEFORE the (expected-to-abort)
+    // commit so the no-disk-write post-condition can be proved.
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    let block_bytes_before = std::fs::read(&block_path).expect("read canonical block pre-commit");
+
+    let password = fixtures::golden_vault_001_password();
+    let err = commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+        .expect_err(
+            "commit_with_decisions must reject an empty decisions vec when vetoes are non-empty",
+        );
+
+    match err {
+        secretary_core::sync::SyncError::MissingVetoDecision { record_id } => {
+            assert_eq!(
+                record_id, VETO_RECORD_UUID,
+                "MissingVetoDecision must report the un-adjudicated record_id",
+            );
+        }
+        other => panic!("expected SyncError::MissingVetoDecision, got {other:?}"),
+    }
+
+    // Post-condition: the canonical block file is byte-identical to its
+    // pre-commit state. `apply_decisions` runs at commit step 3 (BEFORE
+    // step 5's per-block re-encrypt), so the typed error fires with
+    // zero block writes happening downstream.
+    let block_bytes_after = std::fs::read(&block_path).expect("read canonical block post-abort");
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "MissingVetoDecision must abort with NO block writes; canonical block bytes changed",
+    );
+}
