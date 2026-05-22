@@ -1042,6 +1042,15 @@ mod helper_tests {
     ///    `canonical_block_clock`.
     /// 4. The two block files have distinct on-disk bytes (proves the
     ///    canonical vs sibling encryptions used distinct AEAD seeds).
+    /// 5. The SIBLING manifest decrypts cleanly under the same identity
+    ///    and carries SIBLING-side data: its `BlockEntry` references the
+    ///    sibling block's fingerprint + `sibling_block_clock`, and its
+    ///    top-level `vector_clock` equals `sibling_manifest_clock`. This
+    ///    rules out an accidental copy of canonical data into the
+    ///    sibling manifest by `write_manifest_with_block_entry` — the
+    ///    downstream Task 13 tests would catch a swap via
+    ///    `plan.diverging_blocks` non-empty, but the failure mode would
+    ///    point at `ingest_block_divergence`, not the fixture builder.
     ///
     /// Acceptance for downstream Task 13 tests: this fixture produces
     /// a per-block-divergent state that `sync_once` will detect as
@@ -1049,6 +1058,9 @@ mod helper_tests {
     /// `bundle.diverging_blocks`.
     #[test]
     fn fresh_vault_two_concurrent_blocks_produces_consistent_canonical_with_sibling_on_disk() {
+        use secretary_core::crypto::aead::AEAD_TAG_LEN;
+        use secretary_core::vault::manifest::{decode_manifest_file, decrypt_manifest_body};
+
         let device_a = [0x0A; SYNC_HELPERS_UUID_LEN];
         let device_b = [0x0B; SYNC_HELPERS_UUID_LEN];
 
@@ -1069,16 +1081,19 @@ mod helper_tests {
         let (probe_folder, _probe_tmp) = fresh_vault_with_clock(Vec::new());
         let block_uuid = golden_vault_001_first_block_uuid(&probe_folder);
 
+        const SIBLING_MF_FILENAME: &str = "manifest.cbor.enc.sync-conflict-from-device-bb";
+        const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
+
         let (folder, _tmp) = fresh_vault_two_concurrent_blocks(
             block_uuid,
             Vec::new(),
             canonical_block_clock.clone(),
             canonical_manifest_clock,
             Vec::new(),
-            sibling_block_clock,
-            sibling_manifest_clock,
-            "manifest.cbor.enc.sync-conflict-from-device-bb",
-            ".sync-conflict-from-device-bb",
+            sibling_block_clock.clone(),
+            sibling_manifest_clock.clone(),
+            SIBLING_MF_FILENAME,
+            SIBLING_BLOCK_SUFFIX,
             1_000_000,
         );
 
@@ -1099,7 +1114,7 @@ mod helper_tests {
 
         let canonical_path = block_file_path(&folder, &block_uuid);
         let sibling_path = canonical_path.with_file_name(format!(
-            "{stem}.sync-conflict-from-device-bb",
+            "{stem}{SIBLING_BLOCK_SUFFIX}",
             stem = canonical_path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1110,6 +1125,50 @@ mod helper_tests {
         assert_ne!(
             canonical_bytes, sibling_bytes,
             "canonical and sibling block files must have distinct on-disk bytes",
+        );
+
+        // Decrypt + inspect the sibling manifest. Closes the gap where a
+        // bug in [`write_manifest_with_block_entry`] could write
+        // canonical data to both manifests — the downstream Task 13
+        // tests rely on the sibling manifest carrying the sibling
+        // fingerprint to drive `bundle.diverging_blocks` non-empty.
+        let sibling_mf_bytes =
+            std::fs::read(folder.join(SIBLING_MF_FILENAME)).expect("read sibling manifest");
+        let sibling_mf =
+            decode_manifest_file(&sibling_mf_bytes).expect("decode sibling manifest envelope");
+        let mut ct_with_tag = Vec::with_capacity(sibling_mf.aead_ct.len() + AEAD_TAG_LEN);
+        ct_with_tag.extend_from_slice(&sibling_mf.aead_ct);
+        ct_with_tag.extend_from_slice(&sibling_mf.aead_tag);
+        let sibling_body = decrypt_manifest_body(
+            &sibling_mf.header,
+            &ct_with_tag,
+            &open.identity_block_key,
+            &sibling_mf.aead_nonce,
+        )
+        .expect("decrypt sibling manifest body");
+
+        assert_eq!(
+            sibling_body.vector_clock, sibling_manifest_clock,
+            "sibling manifest's top-level vector_clock must equal sibling_manifest_clock",
+        );
+
+        let sibling_entry = sibling_body
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == block_uuid)
+            .expect("block_uuid in sibling manifest");
+        assert_eq!(
+            sibling_entry.vector_clock_summary, sibling_block_clock,
+            "sibling manifest's BlockEntry must reference sibling_block_clock, not canonical",
+        );
+        let sibling_fp = *secretary_core::crypto::hash::hash(&sibling_bytes).as_bytes();
+        assert_eq!(
+            sibling_entry.fingerprint, sibling_fp,
+            "sibling manifest's BlockEntry.fingerprint must reference the sibling block file's bytes",
+        );
+        assert_ne!(
+            sibling_entry.fingerprint, entry.fingerprint,
+            "sibling manifest's BlockEntry.fingerprint must differ from canonical's",
         );
     }
 }
