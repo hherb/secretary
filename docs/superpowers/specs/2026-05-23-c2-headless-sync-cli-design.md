@@ -321,19 +321,23 @@ main():
     args = parse()
     password = unlock::read_password(args)            // SecretBytes; zeroized on drop
     identity = open_with_password(folder, &password)  // UnlockedIdentity; owns IBK
-    ibk_copy = identity.identity_block_key.clone()    // SecretBytes for commit path
     state = state::load(state_dir, identity.vault.vault_uuid)?
     _lockfile = state::acquire_lockfile(state_dir, identity.vault.vault_uuid)?  // RAII guard
 
     match args.subcommand:
-        Once  => pipeline::run_one(&identity, &ibk_copy, &mut state, ...)?
-        Run   => daemon::loop(&identity, &ibk_copy, &mut state, ...)?
+        Once  => pipeline::run_one(&identity, &password, &mut state, ...)?
+        Run   => daemon::run(&identity, &password, &mut state, ...)?
 
     state::save(state_dir, &state)?  // final persist on clean shutdown
-    // identity, ibk_copy, _lockfile drop here → ZeroizeOnDrop + lockfile release
+    // identity, password, _lockfile drop here → ZeroizeOnDrop + lockfile release
 ```
 
-`commit_with_decisions` takes `&SecretBytes` (the IBK), not `&UnlockedIdentity`. Since `IdentityBundle` deliberately does not `Clone` (past safety review), the IBK is extracted once at startup as `ibk_copy: SecretBytes`. Both halves zeroize on drop.
+The pipeline holds two secret-bearing values for the daemon's lifetime:
+
+1. `identity: UnlockedIdentity` — consumed by `sync_once` and `prepare_merge` (both take `&UnlockedIdentity`). The `IdentityBundle` inside it deliberately does not `Clone` (past safety review), so it's constructed once at startup and passed by reference.
+2. `password: SecretBytes` — consumed by `commit_with_decisions`, which takes `&SecretBytes` and re-opens the vault internally (per its source: `open_vault(folder, Unlocker::Password(password), None)`). The CLI cannot avoid retaining the password if `run` mode is to commit merges across the daemon's lifetime without re-prompting the user.
+
+Both values zeroize on drop via existing `ZeroizeOnDrop` impls. The password residence window equals the process lifetime — same posture as the `UnlockedIdentity`, intentional per D1 (foreground-while-unlocked = process-lifetime in the headless case).
 
 ## Testing strategy
 
