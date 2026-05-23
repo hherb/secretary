@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-23-c2-task-1-scaffold-shipped.md
+docs/handoffs/2026-05-23-c2-task-2-state-lockfile-shipped.md
