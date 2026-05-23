@@ -28,7 +28,7 @@
 //! UFCS form to make the call site unambiguous on any toolchain ≥ 1.87.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use fs4::{FileExt as Fs4FileExt, TryLockError};
@@ -106,13 +106,20 @@ pub fn default_state_dir() -> Option<PathBuf> {
 /// Load `SyncState` from `<state-dir>/<vault_uuid_hex>.state.cbor`. If the
 /// file does not exist, return `SyncState::empty(vault_uuid)`. Validates
 /// that any decoded state's `vault_uuid` matches the expected one.
+///
+/// Treats `ErrorKind::NotFound` from the single `fs::read` syscall as the
+/// "missing file" signal — a `Path::exists` pre-check would introduce a
+/// TOCTOU window where concurrent deletion (or a non-`secretary-sync`
+/// tool, since the per-vault lockfile only excludes our own binary) would
+/// surface as a confusing `Io` error instead of empty-state semantics.
 #[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn load(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<SyncState, StateError> {
     let path = state_file_path(state_dir, vault_uuid);
-    if !path.exists() {
-        return Ok(SyncState::empty(vault_uuid));
-    }
-    let bytes = fs::read(&path)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(SyncState::empty(vault_uuid)),
+        Err(e) => return Err(StateError::Io(e)),
+    };
     let state = SyncState::from_canonical_cbor(&bytes).map_err(StateError::Decode)?;
     if state.vault_uuid != vault_uuid {
         return Err(StateError::VaultUuidMismatch {
@@ -300,5 +307,20 @@ mod tests {
                 "expected path ending in secretary/sync, got {dir:?}"
             );
         }
+    }
+
+    /// Loading a file that exists but holds non-CBOR bytes returns the
+    /// typed `Decode` error (and not e.g. `Io` or a panic). Exercises the
+    /// `StateError::Decode` arm directly.
+    #[test]
+    fn load_corrupt_bytes_returns_decode_error() {
+        let dir = TempDir::new().unwrap();
+        let path = state_file_path(dir.path(), [5; 16]);
+        std::fs::write(&path, b"\xff\xff\xff\xff").unwrap();
+        let err = load(dir.path(), [5; 16]).unwrap_err();
+        assert!(
+            matches!(err, StateError::Decode(_)),
+            "expected Decode, got {err:?}"
+        );
     }
 }
