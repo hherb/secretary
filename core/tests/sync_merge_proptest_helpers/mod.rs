@@ -1,16 +1,20 @@
-//! Shared helpers for `core/tests/sync_merge_proptest.rs`.
+//! Shared helpers for `core/tests/sync_merge_proptest.rs` AND
+//! `core/tests/sync_kat.rs` (per-block-divergent fixture builders +
+//! sync_once driver are common to both binaries).
 //!
-//! Extracted from the proptest binary to keep the proptest file under
-//! the 500-LOC project soft cap (see CLAUDE.md / repo feedback).
-//! Constants, record builders, fixture builders, and the
-//! `sync_once → ConcurrentDetected` driver all live here; the proptest
-//! file holds only the four `proptest!` blocks plus their per-property
-//! docstrings.
+//! Extracted from the proptest binary in C.1.1b Task 15 to keep the
+//! proptest file under the 500-LOC project soft cap (see CLAUDE.md /
+//! repo feedback). Re-used by `sync_kat.rs` in C.1.1b Task 16 — the
+//! KAT vectors' `concurrent_merge_apply_decisions` family builds the
+//! same fixtures via `scenario` ∈ {`no_veto`, `single_veto`,
+//! `two_veto`}.
 //!
-//! Re-exports `crate::fixtures` + `crate::sync_helpers` symbols
-//! verbatim — those modules are declared at the proptest binary's
-//! crate root, and this helper module accesses them via `crate::`
-//! (mirroring the pattern in `core/tests/sync_helpers/mod.rs`).
+//! Each consuming binary declares
+//! `mod fixtures; mod sync_helpers; mod sync_merge_proptest_helpers;`
+//! at its crate root; the `crate::fixtures` + `crate::sync_helpers`
+//! paths resolve in both binary contexts. Items unused in a given
+//! binary are flagged `#[allow(dead_code)]` (Rust's dead-code
+//! analyser runs per-binary).
 
 use std::collections::BTreeMap;
 
@@ -90,6 +94,7 @@ const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
 /// project's reference hardware while still exploring two independent
 /// dimensions per property (typically the canonical + sibling clock
 /// counters).
+#[allow(dead_code)] // sync_kat.rs doesn't use proptest case counts.
 pub const PROPTEST_CASES: u32 = 16;
 
 /// Build a LIVE record with one field. `uuid` controls the
@@ -192,6 +197,68 @@ pub fn build_no_veto_fixture(
         canonical_manifest_clock,
         vec![live_record(
             NONCONFLICTING_RECORD_SIBLING_UUID,
+            SIBLING_DEVICE_UUID,
+            SIBLING_NONCONFLICTING_LAST_MOD_MS,
+            "sibling",
+        )],
+        sibling_block_clock,
+        sibling_manifest_clock,
+        SIBLING_MANIFEST_FILENAME,
+        SIBLING_BLOCK_SUFFIX,
+        COMMIT_NOW_MS,
+    );
+    (folder, tmp, block_uuid)
+}
+
+/// Build a per-block-divergent fixture where canonical and sibling
+/// both modify the SAME record UUID ([`NONCONFLICTING_RECORD_CANONICAL_UUID`])
+/// with different field values and `last_mod` timestamps. The merge
+/// applies per-field LWW (`docs/crypto-design.md` §11.3) — sibling's
+/// `last_mod` strictly exceeds canonical's, so sibling's field value
+/// wins. No tombstones → `draft.vetoes` is empty.
+///
+/// The post-merge canonical block holds exactly ONE record (the LWW
+/// collapse). Consumed by sync_kat.rs vector
+/// `concurrent_same_block_field_lww_no_vetoes` to distinguish from
+/// `concurrent_disjoint_blocks_no_vetoes_applied` (whose disjoint-UUID
+/// merge yields TWO records).
+#[allow(dead_code)] // currently only consumed by sync_kat.rs.
+pub fn build_same_block_field_lww_no_veto_fixture(
+    counter_canonical: u64,
+    counter_sibling: u64,
+) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
+    let (probe_folder, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe_folder);
+
+    let canonical_block_clock = vec![VectorClockEntry {
+        device_uuid: CANONICAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let sibling_block_clock = vec![VectorClockEntry {
+        device_uuid: SIBLING_DEVICE_UUID,
+        counter: 1,
+    }];
+    let canonical_manifest_clock = vec![VectorClockEntry {
+        device_uuid: CANONICAL_DEVICE_UUID,
+        counter: counter_canonical,
+    }];
+    let sibling_manifest_clock = vec![VectorClockEntry {
+        device_uuid: SIBLING_DEVICE_UUID,
+        counter: counter_sibling,
+    }];
+
+    let (folder, tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![live_record(
+            NONCONFLICTING_RECORD_CANONICAL_UUID,
+            CANONICAL_DEVICE_UUID,
+            LOCAL_LAST_MOD_MS,
+            "canonical",
+        )],
+        canonical_block_clock,
+        canonical_manifest_clock,
+        vec![live_record(
+            NONCONFLICTING_RECORD_CANONICAL_UUID,
             SIBLING_DEVICE_UUID,
             SIBLING_NONCONFLICTING_LAST_MOD_MS,
             "sibling",
@@ -318,6 +385,11 @@ pub fn build_two_veto_fixture(
 /// Map a boolean choice to a [`VetoDecision`] for a given `record_id`.
 /// `true` → `KeepLocal`, `false` → `AcceptTombstone`. Used by property
 /// 3 to vary the decision kind per veto across cases.
+///
+/// sync_kat.rs deserialises its decisions directly from JSON (named
+/// `KeepLocal` / `AcceptTombstone` strings) so it doesn't consume this
+/// helper.
+#[allow(dead_code)]
 pub fn make_decision(record_id: [u8; 16], keep_local: bool) -> VetoDecision {
     if keep_local {
         VetoDecision::KeepLocal { record_id }
@@ -361,7 +433,9 @@ pub fn drive_sync_once_concurrent(folder: &std::path::Path) -> (VaultBundle, Dif
 
 /// Read the canonical block's decrypted records via a fresh `open_vault`
 /// so the caller's stale state doesn't contaminate the assertion.
-/// Consumed by properties 2 and 3.
+/// Consumed by properties 2 and 3; will be consumed by sync_kat.rs in
+/// later C.1.1b Task 16 vectors (per-record post-commit assertions).
+#[allow(dead_code)]
 pub fn read_canonical_block_records(folder: &std::path::Path, block_uuid: [u8; 16]) -> Vec<Record> {
     let password = fixtures::golden_vault_001_password();
     let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
