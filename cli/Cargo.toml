@@ -27,8 +27,11 @@ tempfile = "=3.27.0"
 rpassword = "7"
 serde_json = "1"
 # `fs4` is a maintained fork of the unmaintained `fs2` crate (fs2's last
-# release was 2019). API for sync `FileExt::try_lock_exclusive` is
-# drop-in compatible. Used by Task 2's host-local lockfile.
+# release was 2019). Used by Task 2's host-local lockfile through the
+# `fs4::FileExt::try_lock` trait method. NOTE: stdlib stabilized an
+# inherent `File::try_lock` in Rust 1.89 that shadows the trait; we
+# keep fs4 because the workspace MSRV (1.87) is below 1.89, and the
+# call site uses UFCS (`Fs4FileExt::try_lock(&file)`) to disambiguate.
 fs4 = "1"
 signal-hook = "0.3"
 thiserror = "2"
