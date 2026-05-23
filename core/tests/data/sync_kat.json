@@ -171,6 +171,21 @@
       "expected_post_commit_outcome": "NothingToDo",
       "expected_post_commit_canonical_records_count": 1,
       "expected_canonical_record_tombstoned": true
+    },
+    {
+      "name": "concurrent_two_tombstone_vetoes_mixed_decisions",
+      "vector_type": "concurrent_merge_apply_decisions",
+      "scenario": "two_veto",
+      "counter_canonical": 5,
+      "counter_sibling": 5,
+      "decisions": [
+        { "kind": "KeepLocal", "record_id": "RECORD_A_UUID" },
+        { "kind": "AcceptTombstone", "record_id": "RECORD_B_UUID" }
+      ],
+      "expected_vetoes_count": 2,
+      "expected_diverging_blocks_count": 1,
+      "expected_post_commit_outcome": "NothingToDo",
+      "expected_post_commit_canonical_records_count": 2
     }
   ]
 }
