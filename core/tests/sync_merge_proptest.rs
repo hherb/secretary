@@ -389,7 +389,6 @@ fn drive_sync_once_concurrent(
 /// Read the canonical block's decrypted records via a fresh `open_vault`
 /// so the caller's stale state doesn't contaminate the assertion.
 /// Consumed by properties 2 and 3.
-#[allow(dead_code)]
 fn read_canonical_block_records(folder: &std::path::Path, block_uuid: [u8; 16]) -> Vec<Record> {
     let password = fixtures::golden_vault_001_password();
     let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
@@ -459,6 +458,103 @@ proptest! {
             outcome,
             SyncOutcome::NothingToDo,
             "post-commit sync_once must report NothingToDo (state.clock vs disk.clock must be Equal)",
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: PROPTEST_CASES,
+        .. ProptestConfig::default()
+    })]
+
+    /// Property 2 — The three-step
+    /// `sync_once → prepare_merge → commit_with_decisions` is a
+    /// deterministic function of its inputs: running it on two
+    /// independent vaults built with identical fixture parameters
+    /// produces:
+    ///
+    /// - The same returned [`SyncState`] (post_merge_clock is a pure
+    ///   function of the input manifest clocks).
+    /// - The same decrypted canonical block records (CRDT merge is a
+    ///   pure function of its inputs).
+    /// - DIFFERENT canonical block envelope bytes (AEAD nonces are
+    ///   drawn from `OsRng` per rewrite — a deterministic-nonce
+    ///   regression would emit identical ciphertext).
+    ///
+    /// The first two assertions are the idempotence claim: the merge
+    /// surface has no hidden state that would let two equivalent
+    /// invocations diverge in their observable output. The third
+    /// assertion pins the AEAD-nonce-per-rewrite contract at the
+    /// proptest level (the integration-test surface in
+    /// `sync_merge_crash.rs` already covers the same contract for the
+    /// retry path; this adds property-level coverage over a different
+    /// dimension — across independent vaults).
+    ///
+    /// Inputs: same as property 1 (canonical + sibling manifest-clock
+    /// counters).
+    #[test]
+    fn prop_three_step_idempotent_on_repeated_invocation(
+        counter_canonical in 1u64..1000,
+        counter_sibling in 1u64..1000,
+    ) {
+        // Two independent fixtures with identical inputs. The two
+        // `tempfile::TempDir`s must stay alive until the test ends.
+        let (folder_a, _tmp_a, block_uuid_a) =
+            build_no_veto_fixture(counter_canonical, counter_sibling);
+        let (folder_b, _tmp_b, block_uuid_b) =
+            build_no_veto_fixture(counter_canonical, counter_sibling);
+        prop_assert_eq!(
+            block_uuid_a,
+            block_uuid_b,
+            "both fixtures must derive the same block_uuid from golden_vault_001",
+        );
+
+        let password = fixtures::golden_vault_001_password();
+
+        let run_three_step = |folder: &std::path::Path| -> (SyncState, Vec<Record>, Vec<u8>) {
+            let (bundle, plan, _state_pre) = drive_sync_once_concurrent(folder);
+            let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+            let bundle_bytes = std::fs::read(folder.join("identity.bundle.enc"))
+                .expect("read identity bundle");
+            let identity = open_with_password(&vt_bytes, &bundle_bytes, &password)
+                .expect("open_with_password");
+
+            let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
+            assert!(
+                draft.vetoes.is_empty(),
+                "no_veto_fixture must produce zero vetoes (got {})",
+                draft.vetoes.len(),
+            );
+            let new_state =
+                commit_with_decisions(folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+                    .expect("commit_with_decisions");
+            let records = read_canonical_block_records(folder, block_uuid_a);
+            let block_path = sync_helpers::block_file_path(folder, &block_uuid_a);
+            let block_bytes = std::fs::read(&block_path).expect("read canonical block");
+            (new_state, records, block_bytes)
+        };
+
+        let (state_a, records_a, bytes_a) = run_three_step(&folder_a);
+        let (state_b, records_b, bytes_b) = run_three_step(&folder_b);
+
+        // Pure function of inputs: SyncState matches.
+        prop_assert_eq!(
+            state_a,
+            state_b,
+            "two equivalent fixtures must yield the same post-commit SyncState",
+        );
+        // Pure function of inputs: decrypted block records match.
+        prop_assert_eq!(
+            records_a,
+            records_b,
+            "two equivalent fixtures must yield the same decrypted canonical block records",
+        );
+        // AEAD-nonce-per-rewrite contract: envelope bytes diverge.
+        prop_assert_ne!(
+            bytes_a,
+            bytes_b,
+            "two independent commits must produce different ciphertext (AEAD nonces from OsRng)",
         );
     }
 }
