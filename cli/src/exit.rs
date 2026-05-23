@@ -22,6 +22,8 @@ use secretary_core::sync::SyncError;
 // only the skeleton; the unit tests below exercise every variant so
 // the discriminant table is locked in. The allow lifts once Task 5
 // references the rest of the surface.
+// TODO(#113): remove this `#[allow(dead_code)]` when Task 5 wires the
+// dispatch layer that consumes every variant.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -40,6 +42,8 @@ impl ExitCode {
     /// Map a `SyncError` to the documented exit code. Variants without a
     /// dedicated code map to `GenericError`.
     #[must_use]
+    // TODO(#113): remove this `#[allow(dead_code)]` when Task 5 wires
+    // the dispatch layer that calls `from_sync_error`.
     #[allow(dead_code)]
     pub fn from_sync_error(err: &SyncError) -> Self {
         match err {
