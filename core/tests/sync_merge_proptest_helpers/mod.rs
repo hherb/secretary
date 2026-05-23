@@ -1,16 +1,20 @@
-//! Shared helpers for `core/tests/sync_merge_proptest.rs`.
+//! Shared helpers for `core/tests/sync_merge_proptest.rs` AND
+//! `core/tests/sync_kat.rs` (per-block-divergent fixture builders +
+//! sync_once driver are common to both binaries).
 //!
-//! Extracted from the proptest binary to keep the proptest file under
-//! the 500-LOC project soft cap (see CLAUDE.md / repo feedback).
-//! Constants, record builders, fixture builders, and the
-//! `sync_once → ConcurrentDetected` driver all live here; the proptest
-//! file holds only the four `proptest!` blocks plus their per-property
-//! docstrings.
+//! Extracted from the proptest binary in C.1.1b Task 15 to keep the
+//! proptest file under the 500-LOC project soft cap (see CLAUDE.md /
+//! repo feedback). Re-used by `sync_kat.rs` in C.1.1b Task 16 — the
+//! KAT vectors' `concurrent_merge_apply_decisions` family builds the
+//! same fixtures via `scenario` ∈ {`no_veto`, `single_veto`,
+//! `two_veto`}.
 //!
-//! Re-exports `crate::fixtures` + `crate::sync_helpers` symbols
-//! verbatim — those modules are declared at the proptest binary's
-//! crate root, and this helper module accesses them via `crate::`
-//! (mirroring the pattern in `core/tests/sync_helpers/mod.rs`).
+//! Each consuming binary declares
+//! `mod fixtures; mod sync_helpers; mod sync_merge_proptest_helpers;`
+//! at its crate root; the `crate::fixtures` + `crate::sync_helpers`
+//! paths resolve in both binary contexts. Items unused in a given
+//! binary are flagged `#[allow(dead_code)]` (Rust's dead-code
+//! analyser runs per-binary).
 
 use std::collections::BTreeMap;
 
@@ -90,6 +94,7 @@ const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
 /// project's reference hardware while still exploring two independent
 /// dimensions per property (typically the canonical + sibling clock
 /// counters).
+#[allow(dead_code)] // sync_kat.rs doesn't use proptest case counts.
 pub const PROPTEST_CASES: u32 = 16;
 
 /// Build a LIVE record with one field. `uuid` controls the
@@ -318,6 +323,11 @@ pub fn build_two_veto_fixture(
 /// Map a boolean choice to a [`VetoDecision`] for a given `record_id`.
 /// `true` → `KeepLocal`, `false` → `AcceptTombstone`. Used by property
 /// 3 to vary the decision kind per veto across cases.
+///
+/// sync_kat.rs deserialises its decisions directly from JSON (named
+/// `KeepLocal` / `AcceptTombstone` strings) so it doesn't consume this
+/// helper.
+#[allow(dead_code)]
 pub fn make_decision(record_id: [u8; 16], keep_local: bool) -> VetoDecision {
     if keep_local {
         VetoDecision::KeepLocal { record_id }
@@ -361,7 +371,9 @@ pub fn drive_sync_once_concurrent(folder: &std::path::Path) -> (VaultBundle, Dif
 
 /// Read the canonical block's decrypted records via a fresh `open_vault`
 /// so the caller's stale state doesn't contaminate the assertion.
-/// Consumed by properties 2 and 3.
+/// Consumed by properties 2 and 3; will be consumed by sync_kat.rs in
+/// later C.1.1b Task 16 vectors (per-record post-commit assertions).
+#[allow(dead_code)]
 pub fn read_canonical_block_records(folder: &std::path::Path, block_uuid: [u8; 16]) -> Vec<Record> {
     let password = fixtures::golden_vault_001_password();
     let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");

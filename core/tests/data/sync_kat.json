@@ -1,9 +1,10 @@
 {
-  "schema_version": 1,
-  "description": "C.1 sync dispatch KAT. Inputs: state_vault_uuid + state_highest_vector_clock + disk_vector_clock. Output: enum variant name + (where applicable) the new_state's highest_vector_clock_seen. Python clean-room replay scheduled for C.4 (cross-device convergence conformance).",
+  "schema_version": 2,
+  "description": "C.1 sync + C.1.1b merge KAT. Two vector families: (1) clock_dispatch — pure vector-clock dispatch (state_highest_vector_clock × disk_vector_clock → outcome variant); (2) concurrent_merge_apply_decisions / evidence_stale / fingerprint_repair — disk-backed three-step merge flow (sync_once → prepare_merge → commit_with_decisions) with scenario-named fixture builders. Schema bumped 1 → 2 in C.1.1b Task 16. Python clean-room replay scheduled for C.4 (issue #76).",
   "vectors": [
     {
       "name": "equal_clocks_nothing_to_do",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
@@ -15,6 +16,7 @@
     },
     {
       "name": "empty_state_empty_disk_nothing_to_do",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [],
       "disk_vector_clock": [],
@@ -22,6 +24,7 @@
     },
     {
       "name": "empty_state_disk_present_applied_automatically",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [],
       "disk_vector_clock": [
@@ -34,6 +37,7 @@
     },
     {
       "name": "disk_strictly_ahead_applied_automatically",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
@@ -48,6 +52,7 @@
     },
     {
       "name": "disk_adds_new_device_applied_automatically",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
@@ -64,6 +69,7 @@
     },
     {
       "name": "disk_strictly_behind_rollback_rejected",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 9 }
@@ -75,6 +81,7 @@
     },
     {
       "name": "disk_missing_seen_device_rollback_rejected",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
@@ -87,6 +94,7 @@
     },
     {
       "name": "concurrent_disjoint_devices_concurrent_detected",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 }
@@ -98,6 +106,7 @@
     },
     {
       "name": "concurrent_overlapping_devices_concurrent_detected",
+      "vector_type": "clock_dispatch",
       "state_vault_uuid": "00112233445566778899AABBCCDDEEFF",
       "state_highest_vector_clock": [
         { "device_uuid": "01010101010101010101010101010101", "counter": 5 },
@@ -108,6 +117,17 @@
         { "device_uuid": "02020202020202020202020202020202", "counter": 4 }
       ],
       "expected_outcome": "ConcurrentDetected"
+    },
+    {
+      "name": "concurrent_disjoint_blocks_no_vetoes_applied",
+      "vector_type": "concurrent_merge_apply_decisions",
+      "scenario": "no_veto",
+      "counter_canonical": 5,
+      "counter_sibling": 5,
+      "decisions": [],
+      "expected_vetoes_count": 0,
+      "expected_diverging_blocks_count": 1,
+      "expected_post_commit_outcome": "NothingToDo"
     }
   ]
 }
