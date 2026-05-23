@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "description": "C.1 sync + C.1.1b merge KAT. Two vector families: (1) clock_dispatch — pure vector-clock dispatch (state_highest_vector_clock × disk_vector_clock → outcome variant); (2) concurrent_merge_apply_decisions / evidence_stale / fingerprint_repair — disk-backed three-step merge flow (sync_once → prepare_merge → commit_with_decisions) with scenario-named fixture builders. Schema bumped 1 → 2 in C.1.1b Task 16. Python clean-room replay scheduled for C.4 (issue #76).",
+  "description": "C.1 sync + C.1.1b merge KAT. Four vector families (one per `vector_type` enum variant): (1) clock_dispatch — pure vector-clock dispatch (state_highest_vector_clock × disk_vector_clock → outcome variant); (2) concurrent_merge_apply_decisions — disk-backed three-step merge flow (sync_once → prepare_merge → commit_with_decisions) with scenario-named fixture builders; (3) evidence_stale — commit-time TOCTOU re-check fires SyncError::EvidenceStale on a racing manifest rewrite; (4) fingerprint_repair — partial-commit corruption fires VaultError::BlockFingerprintMismatch at open_vault. Schema bumped 1 → 2 in C.1.1b Task 16. Python clean-room replay scheduled for C.4 (issue #76).",
   "vectors": [
     {
       "name": "equal_clocks_nothing_to_do",

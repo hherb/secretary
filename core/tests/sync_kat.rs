@@ -154,6 +154,12 @@ const UUID_LEN: usize = 16;
 /// UUIDs (which are private to the proptest helpers) so this binary
 /// doesn't couple to those constants. Any well-formed new clock advances
 /// the on-disk manifest envelope hash off `draft.manifest_hash`.
+///
+/// Convention for this binary: `[0x99; 16]` is the dedicated "racing
+/// writer" identity for `evidence_stale`-style fixtures. Reuse it for
+/// any future vector that simulates a third device racing the commit;
+/// do not reuse it for non-racing fixture roles (pick a fresh constant
+/// instead, so the byte pattern stays a reliable signal of intent).
 const RACING_DEVICE_UUID: [u8; UUID_LEN] = [0x99; UUID_LEN];
 
 fn hex_to_uuid(s: &str) -> [u8; UUID_LEN] {
@@ -289,9 +295,18 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
             "vector {name} canonical-block records count mismatch",
         );
         if let Some(expected_tombstoned) = v.expected_canonical_record_tombstoned {
-            assert!(
-                !records.is_empty(),
-                "vector {name} expected canonical record tombstone flag but block is empty",
+            // `read_canonical_block_records` does not promise a stable
+            // record ordering — `records[0]` is only an unambiguous
+            // target when the canonical block holds exactly one record.
+            // Fail loudly if a future vector pairs this field with a
+            // multi-record post-commit state; that case needs a
+            // per-record-uuid-keyed assertion shape, not `records[0]`.
+            assert_eq!(
+                records.len(),
+                1,
+                "vector {name} expected_canonical_record_tombstoned is only meaningful \
+                 when the post-commit canonical block holds exactly 1 record (got {})",
+                records.len(),
             );
             assert_eq!(
                 records[0].tombstone, expected_tombstoned,
