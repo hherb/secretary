@@ -339,9 +339,12 @@ pub fn open_identity(folder: &std::path::Path) -> UnlockedIdentity {
 
 /// Drive `sync_once` against a built fixture and unwrap the
 /// `ConcurrentDetected` payload. Property cases use this once per
-/// fixture; failures fail-fast with `panic!` so the caller's
-/// `prop_assert!` sees the unwound error.
-pub fn drive_sync_once_concurrent(folder: &std::path::Path) -> (VaultBundle, DiffPlan, SyncState) {
+/// fixture; failures fail-fast with `panic!` (proptest catches and
+/// reports as case failure). Callers don't need the constructed
+/// `SyncState` — they pass the returned `bundle` and `plan` straight
+/// into `prepare_merge`, then build a fresh `SyncState` indirectly via
+/// `commit_with_decisions`.
+pub fn drive_sync_once_concurrent(folder: &std::path::Path) -> (VaultBundle, DiffPlan) {
     let identity = open_identity(folder);
     let vault_uuid = fixtures::extract_vault_uuid(folder);
     let local_clock = vec![VectorClockEntry {
@@ -350,11 +353,10 @@ pub fn drive_sync_once_concurrent(folder: &std::path::Path) -> (VaultBundle, Dif
     }];
     let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
     let outcome = sync_once(folder, &identity, &state, 0u64).expect("sync_once");
-    let (bundle, plan) = match outcome {
+    match outcome {
         SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
         other => panic!("expected ConcurrentDetected, got {other:?}"),
-    };
-    (bundle, plan, state)
+    }
 }
 
 /// Read the canonical block's decrypted records via a fresh `open_vault`

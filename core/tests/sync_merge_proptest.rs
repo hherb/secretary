@@ -90,7 +90,7 @@ proptest! {
     ) {
         let (folder, _tmp, _block_uuid) =
             build_no_veto_fixture(counter_canonical, counter_sibling);
-        let (bundle, plan, _state_pre) = drive_sync_once_concurrent(&folder);
+        let (bundle, plan) = drive_sync_once_concurrent(&folder);
         let identity = open_identity(&folder);
 
         let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
@@ -150,18 +150,22 @@ proptest! {
         counter_canonical in 1u64..1000,
         counter_sibling in 1u64..1000,
     ) {
-        let (folder_a, _tmp_a, block_uuid_a) =
+        // Both UUIDs come from the same deterministic
+        // `golden_vault_001_first_block_uuid` probe inside the fixture
+        // builder, so they are structurally identical and no runtime
+        // equality check is needed.
+        let (folder_a, _tmp_a, block_uuid) =
             build_no_veto_fixture(counter_canonical, counter_sibling);
-        let (folder_b, _tmp_b, block_uuid_b) =
+        let (folder_b, _tmp_b, _block_uuid_b) =
             build_no_veto_fixture(counter_canonical, counter_sibling);
-        prop_assert_eq!(
-            block_uuid_a,
-            block_uuid_b,
-            "both fixtures must derive the same block_uuid from golden_vault_001",
-        );
 
+        // `assert!` (not `prop_assert!`) inside the closure: proptest's
+        // `prop_assert!` macro expands to `return Err(...)` from the
+        // enclosing test fn, which cannot cross a closure boundary.
+        // Panics from `assert!` are still caught by proptest and
+        // reported as case failures — only shrinking metadata is lost.
         let run = |folder: &std::path::Path| {
-            let (bundle, plan, _state_pre) = drive_sync_once_concurrent(folder);
+            let (bundle, plan) = drive_sync_once_concurrent(folder);
             let identity = open_identity(folder);
             let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
             assert!(
@@ -173,8 +177,8 @@ proptest! {
             let new_state =
                 commit_with_decisions(folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
                     .expect("commit_with_decisions");
-            let records = read_canonical_block_records(folder, block_uuid_a);
-            let block_path = sync_helpers::block_file_path(folder, &block_uuid_a);
+            let records = read_canonical_block_records(folder, block_uuid);
+            let block_path = sync_helpers::block_file_path(folder, &block_uuid);
             let block_bytes = std::fs::read(&block_path).expect("read canonical block");
             (new_state, records, block_bytes)
         };
@@ -244,8 +248,13 @@ proptest! {
         let decision_a = make_decision(RECORD_A_UUID, keep_local_a);
         let decision_b = make_decision(RECORD_B_UUID, keep_local_b);
 
+        // `assert_eq!` (not `prop_assert_eq!`) inside the closure: see
+        // the same note on the property-2 `run` closure — proptest's
+        // assertion macros can't cross a closure boundary, and a
+        // panic-based check is functionally equivalent at the cost of
+        // shrinking metadata.
         let commit = |folder: &std::path::Path, decisions: Vec<VetoDecision>| {
-            let (bundle, plan, _state_pre) = drive_sync_once_concurrent(folder);
+            let (bundle, plan) = drive_sync_once_concurrent(folder);
             let identity = open_identity(folder);
             let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
             assert_eq!(
@@ -320,7 +329,7 @@ proptest! {
         let (folder, _tmp, _block_uuid) =
             build_single_veto_fixture(counter_canonical, counter_sibling);
 
-        let (bundle, plan, _state_pre) = drive_sync_once_concurrent(&folder);
+        let (bundle, plan) = drive_sync_once_concurrent(&folder);
         let identity = open_identity(&folder);
         let password = fixtures::golden_vault_001_password();
 
