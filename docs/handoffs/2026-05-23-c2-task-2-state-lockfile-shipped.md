@@ -9,11 +9,15 @@ A single commit on `feature/c2-task-2` carrying the second code slice of C.2 —
 
 | Artifact | Path | Notes |
 |---|---|---|
-| State module | [`cli/src/state.rs`](../../cli/src/state.rs) | New, ~225 LOC. `canonical_hex` / `state_file_path` / `lock_file_path` / `default_state_dir` (pure helpers). `load` (empty-on-missing + vault-UUID mismatch typed error). `save` (atomic via `tempfile::NamedTempFile::persist`, same `=3.27.0` pin). `LockfileGuard` RAII type via `fs4::FileExt::try_lock` UFCS form. 10 unit tests. |
+| State module | [`cli/src/state.rs`](../../cli/src/state.rs) | New, ~230 LOC. `canonical_hex` / `state_file_path` / `lock_file_path` / `default_state_dir` (pure helpers). `load` (single-syscall `fs::read` with `ErrorKind::NotFound` → empty-state; vault-UUID mismatch typed error). `save` (atomic via `tempfile::NamedTempFile::persist`, same `=3.27.0` pin). `LockfileGuard` RAII type via `fs4::FileExt::try_lock` UFCS form. 11 unit tests. |
 | CLI entry point | [`cli/src/main.rs`](../../cli/src/main.rs) | One-line change: `mod state;` registered alongside the existing `mod args; mod exit;`. |
 | Crate manifest | [`cli/Cargo.toml`](../../cli/Cargo.toml) | `fs4` comment updated to reflect the actual API used (`FileExt::try_lock`) + the MSRV rationale for keeping the dep instead of switching to stdlib's stabilized `File::try_lock`. |
 
-Commit: `b8d3c0a` ("C.2 Task 2 — state persistence + host-local lockfile").
+Commits:
+- `b8d3c0a` — "C.2 Task 2 — state persistence + host-local lockfile" (initial slice).
+- *(this commit)* — post-review touch-up: tighten `load` to a single-syscall `fs::read` with `ErrorKind::NotFound` (closes a benign TOCTOU window where `Path::exists` could race a non-`secretary-sync` deleter, since the per-vault lockfile only excludes our own binary). Adds one new test (`load_corrupt_bytes_returns_decode_error`) exercising the `StateError::Decode` arm directly. Workspace 823 → 824.
+
+A third nit from review — switching `canonical_hex` to the `hex` crate — was checked-and-skipped: `core/Cargo.toml` declares `hex` only under `[dev-dependencies]`; runtime hex sites in `core` (`identity/fingerprint.rs::hex_form`, `unlock/vault_toml.rs::hex_nibble`) hand-roll the encoding. The current `canonical_hex` follows the established convention.
 
 ### Plan ↔ reality reconciliations
 
@@ -28,7 +32,7 @@ Three deliberate deviations from the plan, all noted in the commit message + PR 
 ### Gauntlet snapshot at session close
 
 ```
-PASSED: 823 FAILED: 0 IGNORED: 10
+PASSED: 824 FAILED: 0 IGNORED: 10
 clippy --release --workspace --tests -- -D warnings   clean
 fmt --all -- --check                                  clean
 uv run core/tests/python/conformance.py               PASS
@@ -51,7 +55,7 @@ After this PR merges, the next slice is **C.2 Task 3: Unlock module** ([`docs/su
   - TTY path uses `rpassword::prompt_password(PASSWORD_PROMPT)`; stream path uses the pure-function helper above.
 - [ ] `cli/src/main.rs` gains `mod unlock;`.
 - [ ] N unit tests cover: roundtrip from `Cursor<Vec<u8>>`, trailing `\n` strip, trailing `\r\n` strip, empty-after-strip returns `Empty`, no-trailing-newline preserved verbatim. Plan text says "5 tests"; per Task 2's reconciliation pattern, the actual count may float by ±1 depending on body vs prose.
-- [ ] Gauntlet target: **PASSED: 823 + N FAILED: 0 IGNORED: 10**. Absolute base is now 823 (not the plan's 821/822).
+- [ ] Gauntlet target: **PASSED: 824 + N FAILED: 0 IGNORED: 10**. Absolute base is now 824 (not the plan's 821/822) — bumped from 823 by the post-review `load_corrupt_bytes_returns_decode_error` test.
 - [ ] Clippy, fmt, conformance, spec freshness all clean.
 
 ### Plan handoff
@@ -114,7 +118,7 @@ git status --short                       # expect: clean (modulo NEXT_SESSION.md
 git checkout main
 git pull --ff-only origin main
 
-# Verify gauntlet on fresh main (expect 823 / 0 / 10 — same as session close):
+# Verify gauntlet on fresh main (expect 824 / 0 / 10 — same as session close):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -133,7 +137,7 @@ cd .worktrees/c2-task-3
 ## Closing inventory
 
 - **Branch state on close:** `main` at `968aee1` (PR #112 squash-merged). `feature/c2-task-2` carries 1 commit (`b8d3c0a`) on top.
-- **Workspace tests on `feature/c2-task-2`:** 823 passed + 10 ignored (813 base + 10 new cli `state` unit tests). Clippy + fmt + Python conformance + spec freshness all clean.
+- **Workspace tests on `feature/c2-task-2`:** 824 passed + 10 ignored (813 base + 11 new cli `state` unit tests; the 11th is `load_corrupt_bytes_returns_decode_error`, added during post-review touch-up). Clippy + fmt + Python conformance + spec freshness all clean.
 - **README.md:** unchanged this session — Task 2 ships internal scaffolding (state/lockfile primitives), no user-visible behavior. Plan defers README update to Task 10.
 - **ROADMAP.md:** unchanged this session — same reason; ROADMAP already calls C.2 "queued" since the C.2 design PR.
 - **CLAUDE.md:** unchanged this session — the `tempfile` exact-pin discipline noted in `cli/Cargo.toml` is a cross-reference, not a new convention.
