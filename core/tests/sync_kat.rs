@@ -97,6 +97,15 @@ struct ConcurrentMergeApplyDecisionsVector {
     /// (record count = 2) from same-UUID-LWW merges (count = 1).
     #[serde(default)]
     expected_post_commit_canonical_records_count: Option<usize>,
+    /// Optional: the `tombstone` flag of the FIRST record in the
+    /// post-commit canonical block. Distinguishes `KeepLocal` (live —
+    /// `false`) from `AcceptTombstone` (tombstoned — `true`) at the
+    /// KAT level; the deeper field-by-field semantics (death-clock
+    /// preserved, last_mod_ms advanced) live in `sync_merge_vetoes.rs`.
+    /// Only consulted when
+    /// `expected_post_commit_canonical_records_count` is set.
+    #[serde(default)]
+    expected_canonical_record_tombstoned: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +121,7 @@ struct DecisionJson {
 }
 
 const EXPECTED_SCHEMA_VERSION: u32 = 2;
-const EXPECTED_VECTOR_COUNT: usize = 12;
+const EXPECTED_VECTOR_COUNT: usize = 13;
 const UUID_LEN: usize = 16;
 
 fn hex_to_uuid(s: &str) -> [u8; UUID_LEN] {
@@ -247,6 +256,16 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
             expected_count,
             "vector {name} canonical-block records count mismatch",
         );
+        if let Some(expected_tombstoned) = v.expected_canonical_record_tombstoned {
+            assert!(
+                !records.is_empty(),
+                "vector {name} expected canonical record tombstone flag but block is empty",
+            );
+            assert_eq!(
+                records[0].tombstone, expected_tombstoned,
+                "vector {name} canonical-block first record tombstone-flag mismatch",
+            );
+        }
     }
 
     // Closure property: re-running `sync_once` against the post-commit

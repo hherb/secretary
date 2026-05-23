@@ -154,7 +154,23 @@
       "expected_vetoes_count": 1,
       "expected_diverging_blocks_count": 1,
       "expected_post_commit_outcome": "NothingToDo",
-      "expected_post_commit_canonical_records_count": 1
+      "expected_post_commit_canonical_records_count": 1,
+      "expected_canonical_record_tombstoned": false
+    },
+    {
+      "name": "concurrent_one_tombstone_veto_accept_tombstone",
+      "vector_type": "concurrent_merge_apply_decisions",
+      "scenario": "single_veto",
+      "counter_canonical": 5,
+      "counter_sibling": 5,
+      "decisions": [
+        { "kind": "AcceptTombstone", "record_id": "RECORD_A_UUID" }
+      ],
+      "expected_vetoes_count": 1,
+      "expected_diverging_blocks_count": 1,
+      "expected_post_commit_outcome": "NothingToDo",
+      "expected_post_commit_canonical_records_count": 1,
+      "expected_canonical_record_tombstoned": true
     }
   ]
 }
