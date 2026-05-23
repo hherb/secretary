@@ -456,14 +456,28 @@ Purpose: deliberately exercise the platform quirk so a future regression (e.g. `
 - **Windows CI runner.** Adds `ReadDirectoryChangesW` coverage. Tracked but explicitly out of scope per D10.
 - **Daemon-mode JSON-RPC control socket.** Lets an external UI talk to the daemon (pause sync, force sync, query last outcome). Out of scope — Sub-project D platform UIs plug in via the FFI to the core API directly, not via `cli/`.
 - **`status` subcommand.** Per D8 — YAGNI until observability requirements crystallise.
+- **Clean-room conformance harness for `cli/`.** Per the §"Conformance" section above — the surfaces a clean-room re-implementation would need are frozen by this spec, but the actual harness (analogous to `core/tests/python/conformance.py`) is deferred to a future C.2.x slice or absorbed into C.4. User explicitly stated this is on the eventual roadmap; not foreclosed.
 
 ## Conformance and clean-room property
 
-C.2 does NOT add a clean-room property. The CLI is a Rust-only consumer of the already-clean-roomed `core::sync` API; the project's "spec is normative; clean-room implementation from `docs/` alone must be possible" property applies to `core` only.
+### This slice
 
-The C.2 spec is normative for the CLI's *observable behaviour* — exit codes, file layouts, lockfile semantics, state-file CBOR shape — but does not freeze the binary's internal architecture. A future operator porting `secretary-sync` to a different language (Go, Swift, Python) can do so by reading this doc plus the C.1 / C.1.1a / C.1.1b specs that define the `core::sync` API surface.
+C.2 does NOT add a CLI-level clean-room conformance harness in this slice. The CLI is a Rust-only consumer of the already-clean-roomed `core::sync` API; the project's "spec is normative; clean-room implementation from `docs/` alone must be possible" property applies to `core` in this slice. No `conformance.py` updates are needed for C.2.
 
-No `conformance.py` updates needed for C.2.
+The C.2 spec IS normative for the CLI's *observable behaviour* — exit codes, file layouts, lockfile semantics, state-file CBOR shape, partial-download filter patterns — and explicitly freezes those surfaces so a future clean-room CLI can target them. The binary's internal architecture is NOT frozen.
+
+### Future slice — clean-room CLI conformance
+
+Per user direction (2026-05-23 brainstorm), a clean-room property for `cli/` is a planned future addition, not a foreclosed one. The eventual conformance harness for `secretary-sync` should target:
+
+- **Exit code surface** — every documented exit code (0/1/2/10/11/12/13/14) must fire for the same input class in a clean-room reimplementation.
+- **State-file CBOR shape** — `<vault_uuid_hex>.state.cbor` produced by the Rust binary must be byte-identical to the one produced by any clean-room CLI on the same input sequence (the file's bytes are already pinned by `SyncState::to_cbor_bytes` in `core`).
+- **Lockfile semantics** — file location + exclusive-lock acquisition + auto-release on process death.
+- **Partial-download filter pattern table** — the canonical 10-pattern list in D6 is the contract; a clean-room CLI must reject the same files.
+- **Veto-policy behaviour in `--non-interactive`** — `KeepLocal` applied to all vetoes; no silent record deletion.
+- **CLI flags + their defaults** — including the `--ready-window-ms=2000` mobile-network-aware default.
+
+Tracked as a future C.2.x slice or as part of C.4 (cross-device convergence conformance), depending on which scope surfaces first. Until then, the spec freezes the surfaces a clean-room re-implementation will need; only the harness that actually proves the property is deferred.
 
 ## Spec self-review notes
 
@@ -475,7 +489,7 @@ No `conformance.py` updates needed for C.2.
 - No placeholders / TBDs / vague requirements.
 - Pin discipline (`tempfile = "=3.27.0"`) carried into `cli/`.
 - The `feedback_windows_not_primary` stance is captured in D10 + non-goals + risks.
-- The "spec is normative" property is correctly scoped — applies to `core`, not to `cli`.
+- The "spec is normative" property is correctly scoped — applies to `core` in this slice; the CLI's observable surfaces are frozen by this spec so that a future clean-room CLI conformance harness (deferred, not foreclosed) has a contract to target.
 
 ## Approval
 
