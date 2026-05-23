@@ -112,7 +112,7 @@ struct DecisionJson {
 }
 
 const EXPECTED_SCHEMA_VERSION: u32 = 2;
-const EXPECTED_VECTOR_COUNT: usize = 11;
+const EXPECTED_VECTOR_COUNT: usize = 12;
 const UUID_LEN: usize = 16;
 
 fn hex_to_uuid(s: &str) -> [u8; UUID_LEN] {
