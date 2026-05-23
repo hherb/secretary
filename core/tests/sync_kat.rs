@@ -44,8 +44,9 @@ mod sync_helpers;
 mod sync_merge_proptest_helpers;
 
 use sync_merge_proptest_helpers::{
-    build_no_veto_fixture, build_single_veto_fixture, build_two_veto_fixture,
-    drive_sync_once_concurrent, open_identity, COMMIT_NOW_MS, RECORD_A_UUID, RECORD_B_UUID,
+    build_no_veto_fixture, build_same_block_field_lww_no_veto_fixture, build_single_veto_fixture,
+    build_two_veto_fixture, drive_sync_once_concurrent, open_identity,
+    read_canonical_block_records, COMMIT_NOW_MS, RECORD_A_UUID, RECORD_B_UUID,
 };
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +92,11 @@ struct ConcurrentMergeApplyDecisionsVector {
     expected_vetoes_count: usize,
     expected_diverging_blocks_count: usize,
     expected_post_commit_outcome: String,
+    /// Optional: the number of records the canonical block holds after
+    /// commit_with_decisions returns. Distinguishes disjoint-UUID merges
+    /// (record count = 2) from same-UUID-LWW merges (count = 1).
+    #[serde(default)]
+    expected_post_commit_canonical_records_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,7 +112,7 @@ struct DecisionJson {
 }
 
 const EXPECTED_SCHEMA_VERSION: u32 = 2;
-const EXPECTED_VECTOR_COUNT: usize = 10;
+const EXPECTED_VECTOR_COUNT: usize = 11;
 const UUID_LEN: usize = 16;
 
 fn hex_to_uuid(s: &str) -> [u8; UUID_LEN] {
@@ -195,6 +201,9 @@ fn build_concurrent_fixture(
 ) -> (std::path::PathBuf, tempfile::TempDir, [u8; UUID_LEN]) {
     match scenario {
         "no_veto" => build_no_veto_fixture(counter_canonical, counter_sibling),
+        "same_block_field_lww_no_veto" => {
+            build_same_block_field_lww_no_veto_fixture(counter_canonical, counter_sibling)
+        }
         "single_veto" => build_single_veto_fixture(counter_canonical, counter_sibling),
         "two_veto" => build_two_veto_fixture(counter_canonical, counter_sibling),
         other => panic!("unknown scenario name: {other}"),
@@ -208,7 +217,7 @@ fn build_concurrent_fixture(
 /// `DraftMerge` shape, `commit_with_decisions` success, and the
 /// post-commit `sync_once` outcome.
 fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyDecisionsVector) {
-    let (folder, _tmp, _block_uuid) =
+    let (folder, _tmp, block_uuid) =
         build_concurrent_fixture(&v.scenario, v.counter_canonical, v.counter_sibling);
     let identity = open_identity(&folder);
     let (bundle, plan) = drive_sync_once_concurrent(&folder);
@@ -230,6 +239,15 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
     let password = fixtures::golden_vault_001_password();
     let new_state = commit_with_decisions(&folder, &password, draft, decisions, COMMIT_NOW_MS)
         .unwrap_or_else(|e| panic!("vector {name} commit_with_decisions failed: {e}"));
+
+    if let Some(expected_count) = v.expected_post_commit_canonical_records_count {
+        let records = read_canonical_block_records(&folder, block_uuid);
+        assert_eq!(
+            records.len(),
+            expected_count,
+            "vector {name} canonical-block records count mismatch",
+        );
+    }
 
     // Closure property: re-running `sync_once` against the post-commit
     // state on the now-updated disk returns the expected terminal

@@ -127,7 +127,20 @@
       "decisions": [],
       "expected_vetoes_count": 0,
       "expected_diverging_blocks_count": 1,
-      "expected_post_commit_outcome": "NothingToDo"
+      "expected_post_commit_outcome": "NothingToDo",
+      "expected_post_commit_canonical_records_count": 2
+    },
+    {
+      "name": "concurrent_same_block_field_lww_no_vetoes",
+      "vector_type": "concurrent_merge_apply_decisions",
+      "scenario": "same_block_field_lww_no_veto",
+      "counter_canonical": 5,
+      "counter_sibling": 5,
+      "decisions": [],
+      "expected_vetoes_count": 0,
+      "expected_diverging_blocks_count": 1,
+      "expected_post_commit_outcome": "NothingToDo",
+      "expected_post_commit_canonical_records_count": 1
     }
   ]
 }

@@ -210,6 +210,68 @@ pub fn build_no_veto_fixture(
     (folder, tmp, block_uuid)
 }
 
+/// Build a per-block-divergent fixture where canonical and sibling
+/// both modify the SAME record UUID ([`NONCONFLICTING_RECORD_CANONICAL_UUID`])
+/// with different field values and `last_mod` timestamps. The merge
+/// applies per-field LWW (`docs/crypto-design.md` §11.3) — sibling's
+/// `last_mod` strictly exceeds canonical's, so sibling's field value
+/// wins. No tombstones → `draft.vetoes` is empty.
+///
+/// The post-merge canonical block holds exactly ONE record (the LWW
+/// collapse). Consumed by sync_kat.rs vector
+/// `concurrent_same_block_field_lww_no_vetoes` to distinguish from
+/// `concurrent_disjoint_blocks_no_vetoes_applied` (whose disjoint-UUID
+/// merge yields TWO records).
+#[allow(dead_code)] // currently only consumed by sync_kat.rs.
+pub fn build_same_block_field_lww_no_veto_fixture(
+    counter_canonical: u64,
+    counter_sibling: u64,
+) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
+    let (probe_folder, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe_folder);
+
+    let canonical_block_clock = vec![VectorClockEntry {
+        device_uuid: CANONICAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let sibling_block_clock = vec![VectorClockEntry {
+        device_uuid: SIBLING_DEVICE_UUID,
+        counter: 1,
+    }];
+    let canonical_manifest_clock = vec![VectorClockEntry {
+        device_uuid: CANONICAL_DEVICE_UUID,
+        counter: counter_canonical,
+    }];
+    let sibling_manifest_clock = vec![VectorClockEntry {
+        device_uuid: SIBLING_DEVICE_UUID,
+        counter: counter_sibling,
+    }];
+
+    let (folder, tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![live_record(
+            NONCONFLICTING_RECORD_CANONICAL_UUID,
+            CANONICAL_DEVICE_UUID,
+            LOCAL_LAST_MOD_MS,
+            "canonical",
+        )],
+        canonical_block_clock,
+        canonical_manifest_clock,
+        vec![live_record(
+            NONCONFLICTING_RECORD_CANONICAL_UUID,
+            SIBLING_DEVICE_UUID,
+            SIBLING_NONCONFLICTING_LAST_MOD_MS,
+            "sibling",
+        )],
+        sibling_block_clock,
+        sibling_manifest_clock,
+        SIBLING_MANIFEST_FILENAME,
+        SIBLING_BLOCK_SUFFIX,
+        COMMIT_NOW_MS,
+    );
+    (folder, tmp, block_uuid)
+}
+
 /// Build a per-block-divergent fixture with a SINGLE veto. The veto
 /// targets [`RECORD_A_UUID`] (canonical LIVE at
 /// [`LOCAL_LAST_MOD_MS`], sibling TOMBSTONED at
