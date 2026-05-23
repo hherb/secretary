@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-23-c2-design-shipped.md
+docs/handoffs/2026-05-23-c2-task-1-scaffold-shipped.md

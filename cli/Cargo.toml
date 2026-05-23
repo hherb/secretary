@@ -1,0 +1,36 @@
+[package]
+name = "secretary-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "secretary-sync"
+path = "src/main.rs"
+
+[dependencies]
+secretary-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+notify = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+dirs = "5"
+# `tempfile` exact-pinned to match `core/Cargo.toml`. The CLI's state file
+# (per docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md §"State persistence")
+# uses NamedTempFile::persist for atomic rename, same discipline as the
+# vault format. A regression in persist semantics would silently corrupt
+# the SyncState file. Same exact-pin rule as `core` — bump only via
+# deliberate changelog review (CLAUDE.md "exact pins on security-critical paths").
+tempfile = "=3.27.0"
+rpassword = "7"
+serde_json = "1"
+fs2 = "0.4"
+signal-hook = "0.3"
+thiserror = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "=3.27.0"
