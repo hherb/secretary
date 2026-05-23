@@ -5,6 +5,7 @@ use clap::Parser;
 
 mod args;
 mod exit;
+mod state;
 
 fn main() {
     let cli = args::Cli::parse();
