@@ -10,7 +10,7 @@ A single PR on `feature/c2-task-1` carrying the first code slice of C.2 — the 
 | Artifact | Path | Notes |
 |---|---|---|
 | Workspace manifest | [`Cargo.toml`](../../Cargo.toml) | `cli` added to `[workspace] members` (slot 2 between `core` and the `ffi/*` crates). |
-| Crate manifest | [`cli/Cargo.toml`](../../cli/Cargo.toml) | 11 runtime deps (clap, notify, tracing, tracing-subscriber, dirs, tempfile=3.27.0 exact-pinned, rpassword, serde_json, fs2, signal-hook, thiserror) + 2 dev deps (assert_cmd, predicates). |
+| Crate manifest | [`cli/Cargo.toml`](../../cli/Cargo.toml) | 11 runtime deps (clap, notify, tracing, tracing-subscriber, dirs, tempfile=3.27.0 exact-pinned, rpassword, serde_json, fs4, signal-hook, thiserror) + 2 dev deps (assert_cmd, predicates) + `[lints] workspace = true`. |
 | Binary entry point | [`cli/src/main.rs`](../../cli/src/main.rs) | Skeleton `clap::Parser::parse()` → match subcommand → eprintln + `ExitCode::GenericError`. |
 | Arg parser | [`cli/src/args.rs`](../../cli/src/args.rs) | `Cli` / `Command::{Once,Run}` / `CommonArgs` / `RunArgs` / `LogFormat`. 4 unit tests, including the spec-frozen 2000 ms `--ready-window-ms` default. |
 | Exit codes | [`cli/src/exit.rs`](../../cli/src/exit.rs) | `ExitCode` enum (0/1/2/10/11/12/13/14) + `from_sync_error` mapper. 9 unit tests pin every discriminant + the `EvidenceStale` mapping. `#[allow(dead_code)]` on the not-yet-used surface; Task 5 wires the rest. |
@@ -46,7 +46,7 @@ After this PR merges, the next slice is **C.2 Task 2: state persistence + host-l
   - `default_state_dir() -> Option<PathBuf>` via the `dirs` crate.
   - `load(state_dir, vault_uuid) -> Result<SyncState, StateError>` — empty-on-missing, vault-UUID-mismatch returns typed error.
   - `save(state_dir, &SyncState) -> Result<(), StateError>` — atomic via `tempfile::NamedTempFile::persist`.
-  - `LockfileGuard::acquire(state_dir, vault_uuid)` — `fs2::try_lock_exclusive`; collision returns `StateError::LockfileHeld`; kernel auto-release on drop.
+  - `LockfileGuard::acquire(state_dir, vault_uuid)` — `fs4::fs_std::FileExt::try_lock_exclusive`; collision returns `StateError::LockfileHeld`; kernel auto-release on drop.
 - [ ] `cli/src/main.rs` gains `mod state;`.
 - [ ] 9 new unit tests cover: canonical_hex format, state/lock file-path layout, load-missing-returns-empty, save→load roundtrip, vault-UUID-mismatch typed error, lockfile collision returns held, lockfile releases on drop, different-vaults-don't-collide, default_state_dir ends in `secretary/sync`.
 - [ ] Gauntlet target: **PASSED: 822 FAILED: 0 IGNORED: 10** (813 base + 9 new). Plan said 821 but the base is now 813, so the absolute number floats up by one.
@@ -72,12 +72,14 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 ### Risks carried into Task 2
 
 - **`tempfile = "=3.27.0"` exact pin** is now duplicated in `cli/Cargo.toml`. Same discipline as `core` — bump only via deliberate changelog review. Documented in-file via comment cross-referencing CLAUDE.md.
-- **`#![forbid(unsafe_code)]`** workspace-wide. `cli/` already pure-safe — Task 2's `fs2::FileExt::try_lock_exclusive` is fully safe Rust (the lower-level `flock(2)` lives inside `fs2`).
-- **`#[allow(dead_code)]` on `ExitCode` / `from_sync_error`** lifts when Task 5 (pipeline) consumes them. If Task 5 ships without removing the allow, the lint hides a regression. Reviewer for the Task 5 PR should grep for `allow(dead_code)` in `cli/src/exit.rs` and require it removed.
+- **`#![forbid(unsafe_code)]`** is now enforced on `cli/` via `[lints] workspace = true` in `cli/Cargo.toml` (added during PR review cleanup — Task 1 originally omitted the opt-in). `cli/` is pure-safe; Task 2's `fs4::fs_std::FileExt::try_lock_exclusive` is fully safe Rust (the lower-level `flock(2)` lives inside `fs4`).
+- **`fs4 = "1"`** replaces the original `fs2 = "0.4"` (fs2 last released 2019 and is effectively unmaintained). Drop-in API for the sync lockfile primitive Task 2 needs.
+- **`#[allow(dead_code)]` on `ExitCode` / `from_sync_error`** lifts when Task 5 (pipeline) consumes them. Tracked at issue [#113](https://github.com/hherb/secretary/issues/113), with `TODO(#113):` markers at the suppression sites in `cli/src/exit.rs`. Issue #113 also tracks the related Task 5 obligation: validating the `--non-interactive` ↔ `--password-stdin` co-requirement per spec §"Public surface".
 
-### Issues currently open (unchanged from C.2 design close)
+### Issues currently open
 
 - #37 — Sub-project C umbrella. C.2 Task 1 ✅ in this PR.
+- **#113 — C.2 Task 5 cleanup checklist** (filed during PR review): lift `#[allow(dead_code)]` in `cli/src/exit.rs` and add `--non-interactive` ↔ `--password-stdin` validation. Must be addressed by the Task 5 PR.
 - #38, #45, #75, #76, #78, #79, #81, #87, #88, #90, #95, #98 — none block C.2 Task 2.
 
 ### Housekeeping note (stale worktrees on disk)

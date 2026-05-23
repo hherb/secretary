@@ -6,7 +6,7 @@
 
 **Architecture:** Library-thin, I/O-at-edges. A pure-function `pipeline::run_one(&UnlockedIdentity, &SecretBytes, &mut SyncState, ...)` performs one sync attempt — `sync_once` → dispatch → optional `prepare_merge` → veto adjudication via a `VetoUx` trait → `commit_with_decisions`. The `run` subcommand wraps `run_one` in a `daemon::run` loop driven by `notify::RecommendedWatcher` events with a debounce state machine and an optional periodic poll. The `once` subcommand is `run_one` plus state-file save plus exit-code mapping. State persistence + host-local lockfile live in `state.rs` (filename = `<vault_uuid_hex>.state.cbor` / `<vault_uuid_hex>.lock` under `dirs`-resolved OS data dir, `--state-dir` override). Partial-download detection composes a pure pattern matcher + size-stability probe in `watcher::ready`. Unlock reads bytes from stdin or TTY into a `SecretBytes` held for the daemon's lifetime.
 
-**Tech Stack:** stable Rust (workspace toolchain). New `cli/` workspace member with binary-only deps: `clap` (derive), `notify` 6.x (RecommendedWatcher), `tracing-subscriber` (env-filter + fmt + json), `dirs` 5.x, `tempfile` `=3.27.0` exact-pinned, `rpassword`, `serde_json`, `fs2` 0.4 (cross-platform flock), `signal-hook`. Dev-deps: `assert_cmd`, `predicates`. No new deps in `core/`. All Rust pure-safe (`#![forbid(unsafe_code)]` per workspace lint).
+**Tech Stack:** stable Rust (workspace toolchain). New `cli/` workspace member with binary-only deps: `clap` (derive), `notify` 6.x (RecommendedWatcher), `tracing-subscriber` (env-filter + fmt + json), `dirs` 5.x, `tempfile` `=3.27.0` exact-pinned, `rpassword`, `serde_json`, `fs4` 1.x (cross-platform flock; maintained fork of the unmaintained `fs2`), `signal-hook`. Dev-deps: `assert_cmd`, `predicates`. No new deps in `core/`. All Rust pure-safe (`#![forbid(unsafe_code)]` per workspace lint, opt-in via `[lints] workspace = true` in `cli/Cargo.toml`).
 
 **Spec:** [`docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`](../specs/2026-05-23-c2-headless-sync-cli-design.md) (D1–D10 settled 2026-05-23).
 
@@ -168,7 +168,9 @@ dirs = "5"
 tempfile = "=3.27.0"
 rpassword = "7"
 serde_json = "1"
-fs2 = "0.4"
+# `fs4` is a maintained fork of the unmaintained `fs2` crate (fs2's last
+# release was 2019). Drop-in API for the sync lockfile primitive Task 2 uses.
+fs4 = "1"
 signal-hook = "0.3"
 thiserror = "2"
 
@@ -176,6 +178,9 @@ thiserror = "2"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "=3.27.0"
+
+[lints]
+workspace = true
 ```
 
 - [ ] **Step 4: Write the failing test for `args.rs`**
@@ -579,7 +584,7 @@ EOF
 
 ## Task 2: State persistence + lockfile (`cli/src/state.rs`)
 
-**Why:** Every subcommand needs to load/save the `SyncState` CBOR file and acquire the host-local lockfile before doing anything else. The pure-function pieces (`path_for_vault`, `canonical_hex`) are trivially table-testable; the I/O pieces (`load`, `save`, `LockfileGuard`) need temp-dir fixtures. Lockfile uses `fs2::FileExt::try_lock_exclusive` for cross-platform flock/LockFileEx. Atomic state-file write via `tempfile::NamedTempFile::persist` (same `=3.27.0` pin as core).
+**Why:** Every subcommand needs to load/save the `SyncState` CBOR file and acquire the host-local lockfile before doing anything else. The pure-function pieces (`path_for_vault`, `canonical_hex`) are trivially table-testable; the I/O pieces (`load`, `save`, `LockfileGuard`) need temp-dir fixtures. Lockfile uses `fs4::fs_std::FileExt::try_lock_exclusive` for cross-platform flock/LockFileEx (fs4 1.x; verify the exact module path against the live docs at impl time — fs4's v1 line restructured the namespace from fs2's flat layout). Atomic state-file write via `tempfile::NamedTempFile::persist` (same `=3.27.0` pin as core).
 
 **Files:**
 - Create: `cli/src/state.rs`
@@ -610,15 +615,17 @@ Create `cli/src/state.rs`:
 //! exact-pin discipline as the vault format.
 //!
 //! The lockfile is `<state-dir>/<vault_uuid_hex>.lock`, locked via
-//! `fs2::FileExt::try_lock_exclusive` (flock(LOCK_EX|LOCK_NB) on Unix,
-//! LockFileEx on Windows). Kernel auto-releases on process death; no
-//! stale-PID handling required.
+//! `fs4::fs_std::FileExt::try_lock_exclusive` (flock(LOCK_EX|LOCK_NB) on
+//! Unix, LockFileEx on Windows). Kernel auto-releases on process death;
+//! no stale-PID handling required. NOTE: verify the exact fs4 1.x
+//! module path against the live docs — fs4 1.x reorganized the
+//! namespace from fs2's flat layout.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
+use fs4::fs_std::FileExt;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
@@ -883,7 +890,7 @@ cli/src/state.rs:
 - load: empty-on-missing + vault_uuid mismatch check.
 - save: atomic write via tempfile::NamedTempFile::persist (same
   =3.27.0 pin as core; comment cross-references CLAUDE.md).
-- LockfileGuard: fs2::try_lock_exclusive RAII guard; collision returns
+- LockfileGuard: fs4::fs_std::FileExt::try_lock_exclusive RAII guard; collision returns
   the typed StateError::LockfileHeld; drop releases (kernel auto).
 
 9 new unit tests; workspace 812→821.
@@ -898,7 +905,7 @@ gh pr create --base main --title "C.2 Task 2 — state persistence + host-local 
 ## Summary
 - `cli/src/state.rs` — load/save SyncState CBOR + LockfileGuard RAII type.
 - `canonical_hex` / path helpers are pure free functions, table-tested.
-- Lockfile uses `fs2::try_lock_exclusive` (cross-platform).
+- Lockfile uses `fs4::fs_std::FileExt::try_lock_exclusive` (cross-platform; verify exact module path against live fs4 1.x docs at impl time).
 - State-file write uses `tempfile::NamedTempFile::persist` with `tempfile = "=3.27.0"` pinned (matches `core/Cargo.toml`).
 
 ## Test plan
