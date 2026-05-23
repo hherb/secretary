@@ -186,6 +186,14 @@
       "expected_diverging_blocks_count": 1,
       "expected_post_commit_outcome": "NothingToDo",
       "expected_post_commit_canonical_records_count": 2
+    },
+    {
+      "name": "prepare_merge_stale_hash_evidence_stale",
+      "vector_type": "evidence_stale",
+      "scenario": "no_veto",
+      "counter_canonical": 5,
+      "counter_sibling": 5,
+      "racing_counter": 99
     }
   ]
 }

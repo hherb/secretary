@@ -33,8 +33,8 @@
 #![forbid(unsafe_code)]
 
 use secretary_core::sync::{
-    __test_dispatch, commit_with_decisions, prepare_merge, sync_once, RollbackEvidence,
-    SyncOutcome, SyncState, VetoDecision,
+    __test_dispatch, commit_with_decisions, compute_manifest_hash, prepare_merge, sync_once,
+    RollbackEvidence, SyncError, SyncOutcome, SyncState, VetoDecision,
 };
 use secretary_core::vault::block::VectorClockEntry;
 use serde::Deserialize;
@@ -71,6 +71,8 @@ enum VectorBody {
     ClockDispatch(ClockDispatchVector),
     #[serde(rename = "concurrent_merge_apply_decisions")]
     ConcurrentMergeApplyDecisions(ConcurrentMergeApplyDecisionsVector),
+    #[serde(rename = "evidence_stale")]
+    EvidenceStale(EvidenceStaleVector),
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +83,19 @@ struct ClockDispatchVector {
     expected_outcome: String,
     #[serde(default)]
     expected_new_state_clock: Option<Vec<EntryJson>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EvidenceStaleVector {
+    scenario: String,
+    counter_canonical: u64,
+    counter_sibling: u64,
+    /// New counter written into the racing manifest. The racing
+    /// manifest's clock has exactly one entry — `(RACING_DEVICE_UUID,
+    /// racing_counter)` — which is well-formed but byte-different from
+    /// the prepare-time canonical manifest envelope, forcing the
+    /// commit-time freshness re-check to fire `EvidenceStale`.
+    racing_counter: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,8 +136,15 @@ struct DecisionJson {
 }
 
 const EXPECTED_SCHEMA_VERSION: u32 = 2;
-const EXPECTED_VECTOR_COUNT: usize = 14;
+const EXPECTED_VECTOR_COUNT: usize = 15;
 const UUID_LEN: usize = 16;
+
+/// Synthetic device UUID for the `evidence_stale` race-window manifest
+/// rewrite. Distinct from the fixture's canonical / sibling device
+/// UUIDs (which are private to the proptest helpers) so this binary
+/// doesn't couple to those constants. Any well-formed new clock advances
+/// the on-disk manifest envelope hash off `draft.manifest_hash`.
+const RACING_DEVICE_UUID: [u8; UUID_LEN] = [0x99; UUID_LEN];
 
 fn hex_to_uuid(s: &str) -> [u8; UUID_LEN] {
     let bytes = hex::decode(s).expect("hex");
@@ -283,6 +305,54 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
     }
 }
 
+/// Replay an `evidence_stale` vector. Drives the commit-time TOCTOU
+/// freshness re-check (`commit_with_decisions` step 2): after
+/// `prepare_merge` captures the manifest hash, the canonical manifest
+/// is rewritten with a fresh well-formed clock. The subsequent commit
+/// must abort with `SyncError::EvidenceStale` and leave the manifest
+/// bytes unchanged (zero disk writes from the commit).
+fn replay_evidence_stale(name: &str, v: &EvidenceStaleVector) {
+    let (folder, _tmp, _block_uuid) =
+        build_concurrent_fixture(&v.scenario, v.counter_canonical, v.counter_sibling);
+    let identity = open_identity(&folder);
+    let (bundle, plan) = drive_sync_once_concurrent(&folder);
+
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan)
+        .unwrap_or_else(|e| panic!("vector {name} prepare_merge failed: {e}"));
+
+    let racing_clock = vec![VectorClockEntry {
+        device_uuid: RACING_DEVICE_UUID,
+        counter: v.racing_counter,
+    }];
+    sync_helpers::write_manifest_at(
+        &folder,
+        sync_helpers::MANIFEST_FILENAME,
+        racing_clock,
+        &sync_helpers::SIBLING_NONCE_C,
+    );
+
+    let manifest_path = folder.join(sync_helpers::MANIFEST_FILENAME);
+    let bytes_before = std::fs::read(&manifest_path)
+        .unwrap_or_else(|e| panic!("vector {name} read manifest pre-commit failed: {e}"));
+    let hash_before = compute_manifest_hash(&bytes_before);
+
+    let password = fixtures::golden_vault_001_password();
+    let err =
+        commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS).unwrap_err();
+    assert!(
+        matches!(err, SyncError::EvidenceStale),
+        "vector {name} expected SyncError::EvidenceStale, got {err:?}",
+    );
+
+    let bytes_after = std::fs::read(&manifest_path)
+        .unwrap_or_else(|e| panic!("vector {name} read manifest post-commit failed: {e}"));
+    let hash_after = compute_manifest_hash(&bytes_after);
+    assert_eq!(
+        hash_before, hash_after,
+        "vector {name} EvidenceStale must abort with NO disk writes",
+    );
+}
+
 #[test]
 fn replay_sync_kat() {
     let raw = std::fs::read_to_string("tests/data/sync_kat.json").unwrap();
@@ -298,6 +368,7 @@ fn replay_sync_kat() {
             VectorBody::ConcurrentMergeApplyDecisions(body) => {
                 replay_concurrent_merge_apply_decisions(&v.name, body)
             }
+            VectorBody::EvidenceStale(body) => replay_evidence_stale(&v.name, body),
         }
     }
 
