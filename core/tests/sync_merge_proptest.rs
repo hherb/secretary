@@ -50,7 +50,8 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use secretary_core::crypto::secret::SecretString;
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState, VetoDecision,
+    commit_with_decisions, prepare_merge, sync_once, SyncError, SyncOutcome, SyncState,
+    VetoDecision,
 };
 use secretary_core::unlock::open_with_password;
 use secretary_core::vault::block::VectorClockEntry;
@@ -249,7 +250,6 @@ fn build_no_veto_fixture(
 /// targets [`RECORD_A_UUID`] (canonical LIVE at
 /// [`LOCAL_LAST_MOD_MS`], sibling TOMBSTONED at
 /// [`SIBLING_TOMBSTONE_AT_MS`]). Consumed by property 4.
-#[allow(dead_code)]
 fn build_single_veto_fixture(
     counter_canonical: u64,
     counter_sibling: u64,
@@ -656,5 +656,125 @@ proptest! {
             records_ba,
             "decision order must not affect the post-commit canonical block records",
         );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: PROPTEST_CASES,
+        .. ProptestConfig::default()
+    })]
+
+    /// Property 4 — `commit_with_decisions` enforces the strict
+    /// `draft.vetoes` ↔ `decisions` bijection by `record_id`. For a
+    /// fixture with exactly one veto on [`RECORD_A_UUID`], the test
+    /// constructs `decisions` from random `(include_match, strays)`
+    /// pairs and asserts the outcome class:
+    ///
+    /// - `!include_match` (matching decision omitted) →
+    ///   `Err(SyncError::MissingVetoDecision { record_id: RECORD_A_UUID })`,
+    ///   regardless of how many strays are present. `apply_decisions`'s
+    ///   Missing check runs before Unknown, so Missing wins on
+    ///   `(no_match, with_strays)`.
+    /// - `include_match && !strays.is_empty()` →
+    ///   `Err(SyncError::UnknownVetoDecision { record_id })` where
+    ///   `record_id == min(strays)` (BTreeSet ordering — smallest
+    ///   stray fires).
+    /// - `include_match && strays.is_empty()` → `Ok(_)`.
+    ///
+    /// Strays are constructed as `[seed; 16]` from a random
+    /// `seed: u8 in (0..=0xFF except 0xAA)`. Excluding 0xAA prevents
+    /// a stray from coincidentally landing on
+    /// [`RECORD_A_UUID = [0xAA; 16]`], which would collapse into the
+    /// matching decision via the bijection's set-based dedupe
+    /// semantics.
+    ///
+    /// Inputs: clock counters, `include_match: bool`, `strays`: a vec
+    /// of distinct-from-0xAA seeds 0-2 entries long.
+    #[test]
+    fn prop_decision_bijection_enforced(
+        counter_canonical in 1u64..1000,
+        counter_sibling in 1u64..1000,
+        include_match: bool,
+        strays in prop::collection::vec(
+            (0u8..=0xFF).prop_filter("stray must not equal RECORD_A_UUID first byte", |b| *b != 0xAA),
+            0usize..=2,
+        ),
+    ) {
+        let (folder, _tmp, _block_uuid) =
+            build_single_veto_fixture(counter_canonical, counter_sibling);
+
+        let (bundle, plan, _state_pre) = drive_sync_once_concurrent(&folder);
+        let password = fixtures::golden_vault_001_password();
+        let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+        let bundle_bytes = std::fs::read(folder.join("identity.bundle.enc"))
+            .expect("read identity bundle");
+        let identity = open_with_password(&vt_bytes, &bundle_bytes, &password)
+            .expect("open_with_password");
+
+        let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+        prop_assert_eq!(
+            draft.vetoes.len(),
+            1,
+            "single_veto_fixture must produce exactly one veto",
+        );
+
+        // Build the decisions vec. Matching decision (if requested)
+        // first, then strays — but the bijection check is set-based, so
+        // ordering inside the vec doesn't affect which error fires.
+        let mut decisions = Vec::with_capacity((include_match as usize) + strays.len());
+        if include_match {
+            decisions.push(VetoDecision::KeepLocal { record_id: RECORD_A_UUID });
+        }
+        for seed in &strays {
+            let stray_uuid = [*seed; 16];
+            decisions.push(VetoDecision::KeepLocal { record_id: stray_uuid });
+        }
+
+        let result = commit_with_decisions(&folder, &password, draft, decisions, COMMIT_NOW_MS);
+
+        if !include_match {
+            // Matching decision omitted → Missing fires on
+            // RECORD_A_UUID (the only veto). Strays, if any, do not
+            // matter — Missing is checked before Unknown.
+            match result {
+                Err(SyncError::MissingVetoDecision { record_id }) => prop_assert_eq!(
+                    record_id,
+                    RECORD_A_UUID,
+                    "Missing must report RECORD_A_UUID (the un-adjudicated veto)",
+                ),
+                other => prop_assert!(
+                    false,
+                    "expected MissingVetoDecision, got {other:?}",
+                ),
+            }
+        } else if !strays.is_empty() {
+            // Matching present + strays → Unknown fires on the
+            // smallest stray. `strays` carries u8 seeds; the resulting
+            // [u8; 16] UUIDs sort lexicographically by their first
+            // byte (all 16 bytes equal in our construction), so the
+            // smallest stray UUID corresponds to the smallest seed.
+            let smallest_stray_seed = *strays.iter().min().expect("strays non-empty");
+            let expected_stray_uuid = [smallest_stray_seed; 16];
+            match result {
+                Err(SyncError::UnknownVetoDecision { record_id }) => prop_assert_eq!(
+                    record_id,
+                    expected_stray_uuid,
+                    "Unknown must report the smallest stray UUID",
+                ),
+                other => prop_assert!(
+                    false,
+                    "expected UnknownVetoDecision, got {other:?}",
+                ),
+            }
+        } else {
+            // Matching present + no strays → bijection holds, commit
+            // succeeds.
+            prop_assert!(
+                result.is_ok(),
+                "exact bijection must commit successfully, got {:?}",
+                result,
+            );
+        }
     }
 }
