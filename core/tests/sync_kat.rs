@@ -37,6 +37,7 @@ use secretary_core::sync::{
     RollbackEvidence, SyncError, SyncOutcome, SyncState, VetoDecision,
 };
 use secretary_core::vault::block::VectorClockEntry;
+use secretary_core::vault::{open_vault, Unlocker, VaultError};
 use serde::Deserialize;
 
 mod fixtures;
@@ -73,6 +74,8 @@ enum VectorBody {
     ConcurrentMergeApplyDecisions(ConcurrentMergeApplyDecisionsVector),
     #[serde(rename = "evidence_stale")]
     EvidenceStale(EvidenceStaleVector),
+    #[serde(rename = "fingerprint_repair")]
+    FingerprintRepair(FingerprintRepairVector),
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +86,13 @@ struct ClockDispatchVector {
     expected_outcome: String,
     #[serde(default)]
     expected_new_state_clock: Option<Vec<EntryJson>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FingerprintRepairVector {
+    scenario: String,
+    counter_canonical: u64,
+    counter_sibling: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,7 +146,7 @@ struct DecisionJson {
 }
 
 const EXPECTED_SCHEMA_VERSION: u32 = 2;
-const EXPECTED_VECTOR_COUNT: usize = 15;
+const EXPECTED_VECTOR_COUNT: usize = 16;
 const UUID_LEN: usize = 16;
 
 /// Synthetic device UUID for the `evidence_stale` race-window manifest
@@ -353,6 +363,41 @@ fn replay_evidence_stale(name: &str, v: &EvidenceStaleVector) {
     );
 }
 
+/// Replay a `fingerprint_repair` vector. Simulates a partial-commit
+/// post-condition (block file rewritten without the manifest update)
+/// by flipping a byte in the canonical block file, then asserts
+/// `open_vault` fires `VaultError::BlockFingerprintMismatch` at open
+/// time. The full crash-recovery flow (idempotent reconvergence via
+/// re-running the three-step API) is exercised by
+/// `sync_merge_crash.rs::partial_commit_recovers_via_idempotent_re_run`;
+/// this KAT pins the typed-error surface only.
+fn replay_fingerprint_repair(name: &str, v: &FingerprintRepairVector) {
+    let (folder, _tmp, block_uuid) =
+        build_concurrent_fixture(&v.scenario, v.counter_canonical, v.counter_sibling);
+
+    // Corrupt the canonical block file by flipping a single byte. The
+    // manifest still references the OLD block fingerprint; the on-disk
+    // bytes hash to a different value; `open_vault`'s eager
+    // `verify_block_fingerprints` step (Task 5) detects the mismatch.
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    let mut bytes = std::fs::read(&block_path)
+        .unwrap_or_else(|e| panic!("vector {name} read block failed: {e}"));
+    assert!(
+        !bytes.is_empty(),
+        "vector {name} block file empty; cannot corrupt",
+    );
+    bytes[0] ^= 0xFF;
+    std::fs::write(&block_path, &bytes)
+        .unwrap_or_else(|e| panic!("vector {name} write corrupted block failed: {e}"));
+
+    let password = fixtures::golden_vault_001_password();
+    let err = open_vault(&folder, Unlocker::Password(&password), None).unwrap_err();
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { .. }),
+        "vector {name} expected VaultError::BlockFingerprintMismatch, got {err:?}",
+    );
+}
+
 #[test]
 fn replay_sync_kat() {
     let raw = std::fs::read_to_string("tests/data/sync_kat.json").unwrap();
@@ -369,6 +414,7 @@ fn replay_sync_kat() {
                 replay_concurrent_merge_apply_decisions(&v.name, body)
             }
             VectorBody::EvidenceStale(body) => replay_evidence_stale(&v.name, body),
+            VectorBody::FingerprintRepair(body) => replay_fingerprint_repair(&v.name, body),
         }
     }
 
