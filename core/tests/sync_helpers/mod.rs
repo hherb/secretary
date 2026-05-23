@@ -87,15 +87,6 @@ pub const BLOCK_NONCE_F: [u8; AEAD_NONCE_LEN] = [
     0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F,
 ];
 
-/// Distinct rewrite-seed for the third block rewrite in C.1.1b
-/// fixtures — reserved for tests that rewrite the canonical block AND
-/// two siblings.
-#[allow(dead_code)]
-pub const BLOCK_NONCE_G: [u8; AEAD_NONCE_LEN] = [
-    0x6A, 0x7B, 0x8C, 0x9D, 0xAE, 0xBF, 0xC0, 0xD1, 0xE2, 0xF3, 0x04, 0x15, 0x26, 0x37, 0x48, 0x59,
-    0x6A, 0x7B, 0x8C, 0x9D, 0xAE, 0xBF, 0xC0, 0xD1,
-];
-
 /// Recursively copies `golden_vault_001/` into a fresh temp dir, then
 /// rewrites the canonical manifest's vector clock to `new_clock`
 /// using [`CANONICAL_NONCE_A`].
