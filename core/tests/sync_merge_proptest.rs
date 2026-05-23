@@ -49,7 +49,9 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use secretary_core::crypto::secret::SecretString;
-use secretary_core::sync::{commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState};
+use secretary_core::sync::{
+    commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState, VetoDecision,
+};
 use secretary_core::unlock::open_with_password;
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{open_vault, Record, RecordField, RecordFieldValue, Unlocker};
@@ -296,10 +298,20 @@ fn build_single_veto_fixture(
     (folder, tmp, block_uuid)
 }
 
+/// Map a boolean choice to a [`VetoDecision`] for a given `record_id`.
+/// `true` → `KeepLocal`, `false` → `AcceptTombstone`. Used by property
+/// 3 to vary the decision kind per veto across cases.
+fn make_decision(record_id: [u8; 16], keep_local: bool) -> VetoDecision {
+    if keep_local {
+        VetoDecision::KeepLocal { record_id }
+    } else {
+        VetoDecision::AcceptTombstone { record_id }
+    }
+}
+
 /// Build a per-block-divergent fixture with TWO disjoint vetoes. Both
 /// records are LIVE on canonical, TOMBSTONED on sibling at the later
 /// death clock. Used by property 3 to vary decision ordering.
-#[allow(dead_code)]
 fn build_two_veto_fixture(
     counter_canonical: u64,
     counter_sibling: u64,
@@ -555,6 +567,94 @@ proptest! {
             bytes_a,
             bytes_b,
             "two independent commits must produce different ciphertext (AEAD nonces from OsRng)",
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: PROPTEST_CASES,
+        .. ProptestConfig::default()
+    })]
+
+    /// Property 3 — Given a draft with two vetoes on disjoint
+    /// `record_id`s, the order of decisions inside the
+    /// `Vec<VetoDecision>` passed to `commit_with_decisions` does NOT
+    /// affect the post-commit observable state. Two equivalent
+    /// fixtures are built; one commits with decisions `[d_a, d_b]`,
+    /// the other with `[d_b, d_a]`. Assert:
+    ///
+    /// - Same returned [`SyncState`].
+    /// - Same decrypted canonical block records (set equality — both
+    ///   come from `prepare_merge`'s BTreeMap-into-Vec output, so they
+    ///   are already sorted by `record_uuid`; element-wise equality is
+    ///   the strict check).
+    ///
+    /// Why this is non-trivial: `apply_decisions` iterates decisions
+    /// in their input order to apply per-record `KeepLocal` restores.
+    /// If the per-decision side effects were not commutative (e.g., a
+    /// future refactor accidentally shared mutable state across
+    /// per-decision steps), the two orderings would diverge. The
+    /// property pins commutativity over the full decision set.
+    ///
+    /// Inputs: clock counters + two booleans (`keep_local_a`,
+    /// `keep_local_b`) that vary the decision kind per veto. This
+    /// covers the (KeepLocal, KeepLocal), (KeepLocal, AcceptTombstone),
+    /// (AcceptTombstone, KeepLocal), and
+    /// (AcceptTombstone, AcceptTombstone) decision pairings across the
+    /// 16 case budget.
+    #[test]
+    fn prop_commit_associative_under_disjoint_vetoes(
+        counter_canonical in 1u64..1000,
+        counter_sibling in 1u64..1000,
+        keep_local_a: bool,
+        keep_local_b: bool,
+    ) {
+        let (folder_a, _tmp_a, block_uuid) =
+            build_two_veto_fixture(counter_canonical, counter_sibling);
+        let (folder_b, _tmp_b, _block_uuid_b) =
+            build_two_veto_fixture(counter_canonical, counter_sibling);
+
+        let password = fixtures::golden_vault_001_password();
+        let decision_a = make_decision(RECORD_A_UUID, keep_local_a);
+        let decision_b = make_decision(RECORD_B_UUID, keep_local_b);
+
+        let commit = |folder: &std::path::Path, decisions: Vec<VetoDecision>| -> (SyncState, Vec<Record>) {
+            let (bundle, plan, _state_pre) = drive_sync_once_concurrent(folder);
+            let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+            let bundle_bytes = std::fs::read(folder.join("identity.bundle.enc"))
+                .expect("read identity bundle");
+            let identity = open_with_password(&vt_bytes, &bundle_bytes, &password)
+                .expect("open_with_password");
+            let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
+            assert_eq!(
+                draft.vetoes.len(),
+                2,
+                "two_veto_fixture must produce exactly two vetoes (got {})",
+                draft.vetoes.len(),
+            );
+            let new_state =
+                commit_with_decisions(folder, &password, draft, decisions, COMMIT_NOW_MS)
+                    .expect("commit_with_decisions");
+            let records = read_canonical_block_records(folder, block_uuid);
+            (new_state, records)
+        };
+
+        // Order 1: [d_a, d_b]
+        let (state_ab, records_ab) =
+            commit(&folder_a, vec![decision_a.clone(), decision_b.clone()]);
+        // Order 2: [d_b, d_a] — swapped
+        let (state_ba, records_ba) = commit(&folder_b, vec![decision_b, decision_a]);
+
+        prop_assert_eq!(
+            state_ab,
+            state_ba,
+            "decision order must not affect the returned SyncState",
+        );
+        prop_assert_eq!(
+            records_ab,
+            records_ba,
+            "decision order must not affect the post-commit canonical block records",
         );
     }
 }
