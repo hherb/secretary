@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-23-c1-1b-shipped.md
+docs/handoffs/2026-05-23-c2-design-shipped.md
