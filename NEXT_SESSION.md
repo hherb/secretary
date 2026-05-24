@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-23-c2-task-3-unlock-shipped.md
+docs/handoffs/2026-05-25-c2-task-4-veto-shipped.md
