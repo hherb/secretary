@@ -45,8 +45,20 @@ impl<R: BufRead, W: Write> TtyVetoUx<R, W> {
 impl<R: BufRead, W: Write> VetoUx for TtyVetoUx<R, W> {
     fn decide(&mut self, vetoes: &[RecordTombstoneVeto]) -> Vec<VetoDecision> {
         let mut out: Vec<VetoDecision> = Vec::with_capacity(vetoes.len());
+        // EOF (`read_line` → `Ok(0)`) is final: no further reply can ever
+        // arrive on this reader. Track whether we've already surfaced
+        // that to the operator so we emit the breadcrumb at most once
+        // even when several vetoes default in sequence.
+        let mut eof_logged = false;
         for veto in vetoes {
             loop {
+                // Prompt-write failures (`writeln!`, `flush`) are
+                // intentionally swallowed: if stderr is dead but stdin
+                // is alive, the operator may be typing blind, but the
+                // decision they enter still propagates correctly. The
+                // alternative (panic on broken stderr) would be a worse
+                // UX than degraded prompts in a session that's already
+                // half-broken.
                 let _ = writeln!(
                     self.writer,
                     "Record {} would be tombstoned by peer. Keep local? [y/n] (empty = {DEFAULT_DECISION_LABEL})",
@@ -54,13 +66,31 @@ impl<R: BufRead, W: Write> VetoUx for TtyVetoUx<R, W> {
                 );
                 let _ = self.writer.flush();
                 let mut line = String::new();
-                if self.reader.read_line(&mut line).is_err() {
+                let read = self.reader.read_line(&mut line);
+                if read.is_err() {
                     // I/O error reading the reply: conservative
-                    // safe-default per `DEFAULT_DECISION_LABEL`.
+                    // safe-default per `DEFAULT_DECISION_LABEL`. Errors
+                    // may be transient (interrupted syscall etc.), so
+                    // subsequent vetoes still prompt — only the current
+                    // one defaults.
                     out.push(VetoDecision::KeepLocal {
                         record_id: veto.record_id,
                     });
                     break;
+                }
+                if matches!(read, Ok(0)) && !eof_logged {
+                    // First EOF observed: emit one explanatory line so
+                    // an operator whose stderr is still readable can
+                    // tell their session degraded into auto-default
+                    // mode (rather than guessing why subsequent prompts
+                    // got no answer). Falls through to the empty-line
+                    // branch below which records KeepLocal.
+                    let _ = writeln!(
+                        self.writer,
+                        "  (stdin closed; remaining vetoes default to {DEFAULT_DECISION_LABEL})"
+                    );
+                    let _ = self.writer.flush();
+                    eof_logged = true;
                 }
                 let trimmed = line.trim();
                 match trimmed {
@@ -88,35 +118,9 @@ impl<R: BufRead, W: Write> VetoUx for TtyVetoUx<R, W> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::dummy_veto;
     use super::*;
-    use secretary_core::sync::{BlockId, RecordId};
-    use secretary_core::vault::record::Record;
-    use std::collections::BTreeMap;
     use std::io::{BufReader, Cursor};
-
-    /// Build a minimal `RecordTombstoneVeto` with a single-byte-pattern
-    /// `record_id` for assertions about reply ordering.
-    fn dummy_veto(record_id_byte: u8) -> RecordTombstoneVeto {
-        let record_id: RecordId = [record_id_byte; 16];
-        let block_id: BlockId = [0; 16];
-        RecordTombstoneVeto {
-            record_id,
-            block_id,
-            local_state: Record {
-                record_uuid: record_id,
-                record_type: "kv".into(),
-                fields: BTreeMap::new(),
-                tags: Vec::new(),
-                created_at_ms: 0,
-                last_mod_ms: 0,
-                tombstone: false,
-                tombstoned_at_ms: 0,
-                unknown: BTreeMap::new(),
-            },
-            disk_tombstone_at_ms: 1_000,
-            disk_tombstoner_device: [0; 16],
-        }
-    }
 
     /// Convenience: wrap a scripted reply byte string into the
     /// `BufReader<Cursor<Vec<u8>>>` shape the UX expects.
@@ -178,6 +182,27 @@ mod tests {
         let mut ux = make_ux(b"");
         let decisions = ux.decide(&[dummy_veto(1)]);
         assert!(matches!(decisions[0], VetoDecision::KeepLocal { .. }));
+    }
+
+    #[test]
+    fn eof_emits_breadcrumb_once_and_defaults_remaining_to_keep_local() {
+        // Closed stdin + multiple vetoes: every decision must default
+        // to KeepLocal (safe per spec §D4) AND the operator-facing
+        // breadcrumb must appear exactly once even though three vetoes
+        // hit Ok(0) in sequence (the `eof_logged` latch).
+        let mut ux = make_ux(b"");
+        let decisions = ux.decide(&[dummy_veto(1), dummy_veto(2), dummy_veto(3)]);
+        assert_eq!(decisions.len(), 3);
+        for d in &decisions {
+            assert!(matches!(d, VetoDecision::KeepLocal { .. }));
+        }
+        let written = String::from_utf8(ux.writer.into_inner()).expect("UTF-8");
+        let needle = "(stdin closed; remaining vetoes default to KeepLocal)";
+        let count = written.matches(needle).count();
+        assert_eq!(
+            count, 1,
+            "expected EOF breadcrumb exactly once, found {count}; output:\n{written}"
+        );
     }
 
     #[test]

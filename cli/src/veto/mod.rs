@@ -18,6 +18,9 @@ use secretary_core::sync::{RecordTombstoneVeto, VetoDecision};
 pub mod interactive;
 pub mod noninteractive;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 /// Strategy for converting a slice of [`RecordTombstoneVeto`] into the
 /// `Vec<VetoDecision>` that [`secretary_core::sync::commit_with_decisions`]
 /// requires.

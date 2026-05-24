@@ -9,13 +9,15 @@ One commit on `feature/c2-task-4` carrying the fourth code slice of C.2 — the 
 
 | Artifact | Path | Notes |
 |---|---|---|
-| Veto module root | [`cli/src/veto/mod.rs`](../../cli/src/veto/mod.rs) | New, 39 LOC. `pub trait VetoUx { fn decide(&mut self, vetoes: &[RecordTombstoneVeto]) -> Vec<VetoDecision> }`. Object-safe (the pipeline will hold it as `&mut dyn VetoUx`). `pub mod interactive` + `pub mod noninteractive`. |
-| Non-interactive impl | [`cli/src/veto/noninteractive.rs`](../../cli/src/veto/noninteractive.rs) | New, 81 LOC. `pub struct AutoKeepLocalVetoUx` (unit struct, stateless). `impl VetoUx` maps every veto → `VetoDecision::KeepLocal { record_id: v.record_id }` preserving slice order. 2 unit tests: empty-input no-op, multi-veto order preservation. Spec §D4 safe default. |
-| Interactive impl | [`cli/src/veto/interactive.rs`](../../cli/src/veto/interactive.rs) | New, 236 LOC. `pub struct TtyVetoUx<R: BufRead, W: Write>` generic over reader/writer so tests drive the prompt via `Cursor` without a real TTY (production wires `stdin().lock()` + `stderr().lock()`). Per-veto `y/Y/yes` → `KeepLocal`, `n/N/no` → `AcceptTombstone`, empty line → `KeepLocal` (documented safe default), invalid input → re-prompt with `(please answer y or n)` hint. I/O read error mid-reply also lands on `KeepLocal` (irreversibility argument — see (3) below). 11 unit tests covering all six reply forms + EOF + invalid+re-prompt + hint inspection + multi-veto bijection + empty-slice no-op. |
+| Veto module root | [`cli/src/veto/mod.rs`](../../cli/src/veto/mod.rs) | New. `pub trait VetoUx { fn decide(&mut self, vetoes: &[RecordTombstoneVeto]) -> Vec<VetoDecision> }`. Object-safe (the pipeline will hold it as `&mut dyn VetoUx`). `pub mod interactive` + `pub mod noninteractive` + `#[cfg(test)] pub(crate) mod test_util`. |
+| Non-interactive impl | [`cli/src/veto/noninteractive.rs`](../../cli/src/veto/noninteractive.rs) | New. `pub struct AutoKeepLocalVetoUx` (unit struct, stateless). `impl VetoUx` maps every veto → `VetoDecision::KeepLocal { record_id: v.record_id }` preserving slice order. 2 unit tests: empty-input no-op, multi-veto order preservation. Spec §D4 safe default. |
+| Interactive impl | [`cli/src/veto/interactive.rs`](../../cli/src/veto/interactive.rs) | New. `pub struct TtyVetoUx<R: BufRead, W: Write>` generic over reader/writer so tests drive the prompt via `Cursor` without a real TTY (production wires `stdin().lock()` + `stderr().lock()`). Per-veto `y/Y/yes` → `KeepLocal`, `n/N/no` → `AcceptTombstone`, empty line → `KeepLocal` (documented safe default), invalid input → re-prompt with `(please answer y or n)` hint. I/O read error mid-reply also lands on `KeepLocal` (irreversibility argument — see (3) below). EOF (`Ok(0)`) emits a one-time `(stdin closed; remaining vetoes default to KeepLocal)` breadcrumb to the writer (latched by `eof_logged`) so an operator whose stderr is still readable can tell the session degraded into auto-default mode. 12 unit tests covering all six reply forms + EOF + EOF breadcrumb (once-only across multi-veto) + invalid+re-prompt + hint inspection + multi-veto bijection + empty-slice no-op. |
+| Shared test fixture | [`cli/src/veto/test_util.rs`](../../cli/src/veto/test_util.rs) | New, `#[cfg(test)]`-only. `pub fn dummy_veto(record_id_byte: u8) -> RecordTombstoneVeto`. Single source of truth used by both `interactive::tests` and `noninteractive::tests` (replaces two identical inline copies). |
 | CLI entry point | [`cli/src/main.rs`](../../cli/src/main.rs) | One-line change: `mod veto;` registered alongside the existing `mod args; mod exit; mod state; mod unlock;`. |
 
 Commits:
-- *(this commit)* — "C.2 Task 4 — veto UX trait + non-interactive + interactive impls" on `feature/c2-task-4`. 13 new unit tests; workspace 836 → 849.
+- "C.2 Task 4 — veto UX trait + non-interactive + interactive impls" — initial slice. 13 new unit tests; workspace 836 → 849.
+- "C.2 Task 4 — review fixes: EOF breadcrumb, error-swallow comment, shared test_util" — review follow-up addressing all four issues from PR #116 review: (1) EOF latch + breadcrumb in `TtyVetoUx::decide` + 1 new test, (2) explicit comment near the silenced `writeln!`/`flush` calls explaining the trade-off, (3) `dummy_veto` extracted to `cli/src/veto/test_util.rs`, (4) the no-max-attempts re-prompt cap concern is logged as issue [#117](https://github.com/hherb/secretary/issues/117) (low-priority defensive-coding fix; not in scope for Task 4). Workspace 849 → 850.
 
 ### Plan ↔ reality reconciliations
 
@@ -24,13 +26,13 @@ Three deliberate deviations from the plan, all noted in the commit body:
 | Plan note | Reality | Resolution |
 |---|---|---|
 | `"Record {} would be tombstoned by peer. Keep local? [y/n]"` (plan prompt) | `"Record {} would be tombstoned by peer. Keep local? [y/n] (empty = KeepLocal)"` | Surfacing the safe default in the prompt itself: spec §D4 makes empty-input → `KeepLocal` policy-significant, so a user who doesn't read the spec sees the consequence next to the question. Pure UX; no semantics change. The hint string is parameterised by a `DEFAULT_DECISION_LABEL` constant for a single source of truth across the prompt and the doc comment. |
-| Plan acceptance: 7 unit tests; workspace 828 → 835. | **13 unit tests; workspace 836 → 849.** | Plan baseline (828) predates Task 3's +12. Beyond the plan's 5 happy-path interactive tests + 2 noninteractive: `scripted_uppercase_y_returns_keep_local`, `scripted_word_yes_returns_keep_local`, `scripted_word_no_returns_accept_tombstone` (close the `[y/Y/yes]` / `[n/N/no]` synonym branches each as their own test rather than implicit-only), `scripted_eof_with_no_input_defaults_to_keep_local` (`Ok(0)` from `read_line` reaches the empty-line branch), `invalid_input_reprompt_writes_hint_to_writer` (asserts the `(please answer y or n)` hint actually flushes to the writer — branch coverage that the plan's pass/fail tests skip), `empty_veto_slice_returns_empty_without_touching_io` (boundary: zero-element loop must not write any prompts). Same `±N` reconciliation pattern as Tasks 1–3. |
+| Plan acceptance: 7 unit tests; workspace 828 → 835. | **14 unit tests; workspace 836 → 850.** | Plan baseline (828) predates Task 3's +12. Beyond the plan's 5 happy-path interactive tests + 2 noninteractive: `scripted_uppercase_y_returns_keep_local`, `scripted_word_yes_returns_keep_local`, `scripted_word_no_returns_accept_tombstone` (close the `[y/Y/yes]` / `[n/N/no]` synonym branches each as their own test rather than implicit-only), `scripted_eof_with_no_input_defaults_to_keep_local` (`Ok(0)` from `read_line` reaches the empty-line branch), `eof_emits_breadcrumb_once_and_defaults_remaining_to_keep_local` (review follow-up: latched EOF breadcrumb is emitted exactly once across N vetoes), `invalid_input_reprompt_writes_hint_to_writer` (asserts the `(please answer y or n)` hint actually flushes to the writer — branch coverage that the plan's pass/fail tests skip), `empty_veto_slice_returns_empty_without_touching_io` (boundary: zero-element loop must not write any prompts). Same `±N` reconciliation pattern as Tasks 1–3. |
 | `cargo test --release -p secretary-cli --lib veto` | `cargo test --release -p secretary-cli veto` | `cli/` is binary-only (no `lib.rs`). The `--lib` filter errors with "no library targets found". Drop the filter; cargo runs the binary's unit tests by default. Same correction as Task 3. |
 
 ### Gauntlet snapshot at session close
 
 ```
-PASSED: 849 FAILED: 0 IGNORED: 10
+PASSED: 850 FAILED: 0 IGNORED: 10
 clippy --release --workspace --tests -- -D warnings   clean
 fmt --all -- --check                                  clean
 uv run core/tests/python/conformance.py               PASS
@@ -51,7 +53,7 @@ After this PR merges, the next slice is **C.2 Task 5: Pipeline (`cli/src/pipelin
 - [ ] New `cli/src/main.rs` registers `mod pipeline;`.
 - [ ] Add `--non-interactive` ↔ `--password-stdin` flag-pair validation at the args-parse layer (the typed-error site for `UnlockReadError::NonInteractiveWithoutStdin`).
 - [ ] Pipeline-level unit tests: each outcome variant + each veto policy + state-update side effects + the no-op happy paths. Plan expects ~15-20 new tests.
-- [ ] Gauntlet target: **PASSED: 849 + N FAILED: 0 IGNORED: 10**. Absolute base is now 849 (bumped from 836 by Task 4's 13 new tests).
+- [ ] Gauntlet target: **PASSED: 850 + N FAILED: 0 IGNORED: 10**. Absolute base is now 850 (bumped from 836 by Task 4's 14 new tests, including the review-follow-up EOF-breadcrumb test).
 - [ ] Clippy, fmt, conformance, spec freshness all clean.
 
 ### Plan handoff
@@ -67,6 +69,9 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 - **I/O read error mid-reply → `KeepLocal`.** Reasoning: `AcceptTombstone` is irreversible (the record is gone on the next commit); `KeepLocal` is recoverable (operator re-runs and sees the same prompt). With the trait method returning `Vec<VetoDecision>` (not `Result<...>`), the only places to absorb a read failure are panic, escalate via re-design, or fall back to the safe default. The plan picked the safe default and this implementation preserves it; see the `DEFAULT_DECISION_LABEL` constant + module-doc comment for the in-source justification.
 - **Per-veto reply parsing is loop-local.** `let mut line = String::new();` is declared INSIDE the inner re-prompt `loop`, so a fresh buffer is allocated each re-prompt — `read_line` appends, so reusing the buffer across re-prompts would corrupt the next reply. Tested by `invalid_input_reprompts_then_accepts_valid` (b"maybe\ny\n" → first read gets "maybe\n", re-prompt buffer is fresh, second read gets "y\n").
 - **TtyVetoUx is generic over `BufRead + Write`** (not just `Read + Write`) because `read_line` is on `BufRead`. Production callers wrap `stdin().lock()` in `BufReader` first.
+- **EOF detection via latched `eof_logged` flag** (review follow-up). `read_line` returning `Ok(0)` is terminal — no further input can ever arrive on the same reader — so we emit one operator-facing breadcrumb (`(stdin closed; remaining vetoes default to KeepLocal)`) the first time it happens, then fall through to the empty-line branch (still `KeepLocal`). Without the latch, N closed-stdin vetoes would produce N identical breadcrumbs. Tested by `eof_emits_breadcrumb_once_and_defaults_remaining_to_keep_local`.
+- **Silent prompt-write failures are intentional** (review follow-up). The `let _ = writeln!(...)` / `let _ = self.writer.flush()` pattern is now explicitly documented in the impl: if stderr dies but stdin is alive, the operator may type blind, but the decision they enter still propagates correctly. Panicking on broken stderr would degrade a half-broken session into a hard crash. Trade-off noted at the first call site.
+- **Shared `dummy_veto` test fixture** (review follow-up). Moved from two identical inline definitions in `interactive::tests` and `noninteractive::tests` to a single `pub fn` in `cli/src/veto/test_util.rs` (`#[cfg(test)] pub(crate) mod test_util` in `mod.rs`). Sibling test modules import it via `super::super::test_util::dummy_veto`.
 
 ### Decisions carried forward (unchanged from Task 3 close)
 
@@ -88,6 +93,7 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 
 - #37 — Sub-project C umbrella. C.2 Tasks 1-3 ✅ in PRs #112, #114, #115; Task 4 pending PR.
 - #113 — C.2 Task 5 cleanup checklist: lift `#[allow(dead_code)]` in `cli/src/exit.rs`, `cli/src/state.rs`, `cli/src/unlock.rs`, **and now `cli/src/veto/`**; add `--non-interactive` ↔ `--password-stdin` validation. Task 4 added more allowances under the same TODO(#113) marker — same cleanup obligation.
+- #117 — **NEW**, filed during Task 4 review cleanup. `TtyVetoUx` re-prompt loop has no max-attempts cap; a pathological reader could hang `decide` forever. Low-priority defensive-coding fix (operator Ctrl-C and Task 5's `--non-interactive` ↔ `--password-stdin` validation both mitigate); logged for traceability rather than fixed in-task to keep Task 4 surface tight.
 - #38, #45, #75, #76, #78, #79, #81, #87, #88, #90, #95, #98 — none block C.2 Task 5.
 
 ### Housekeeping note (stale worktrees on disk)
@@ -122,7 +128,7 @@ git status --short                       # expect: clean (modulo NEXT_SESSION.md
 git checkout main
 git pull --ff-only origin main
 
-# Verify gauntlet on fresh main (expect 849 / 0 / 10 — same as session close):
+# Verify gauntlet on fresh main (expect 850 / 0 / 10 — same as session close):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -142,8 +148,8 @@ cd .worktrees/c2-task-5
 
 ## Closing inventory
 
-- **Branch state on close:** `main` at `7fc1c61` (PR #115 squash-merged). `feature/c2-task-4` carries 1 commit on top.
-- **Workspace tests on `feature/c2-task-4`:** 849 passed + 10 ignored (836 base + 13 new cli `veto` unit tests: 11 in `interactive.rs` + 2 in `noninteractive.rs`). Clippy + fmt + Python conformance + spec freshness all clean.
+- **Branch state on close:** `main` at `7fc1c61` (PR #115 squash-merged). `feature/c2-task-4` carries 2 commits on top (initial slice + review follow-up).
+- **Workspace tests on `feature/c2-task-4`:** 850 passed + 10 ignored (836 base + 14 new cli `veto` unit tests: 12 in `interactive.rs` + 2 in `noninteractive.rs`). Clippy + fmt + Python conformance + spec freshness all clean.
 - **README.md:** unchanged this session — Task 4 ships internal scaffolding (veto UX trait + impls), no user-visible behavior. Plan defers README update to Task 10.
 - **ROADMAP.md:** unchanged this session — same reason; ROADMAP already calls C.2 "queued" since the C.2 design PR.
 - **CLAUDE.md:** unchanged this session — no new convention; veto trait + Cursor-based test pattern are local to `cli/src/veto/` and don't generalise to repo-wide guidance.

@@ -29,34 +29,8 @@ impl VetoUx for AutoKeepLocalVetoUx {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::dummy_veto;
     use super::*;
-    use secretary_core::sync::{BlockId, RecordId};
-    use secretary_core::vault::record::Record;
-    use std::collections::BTreeMap;
-
-    /// Build a minimal `RecordTombstoneVeto` with a single-byte-pattern
-    /// `record_id` for ordering assertions.
-    fn dummy_veto(record_id_byte: u8) -> RecordTombstoneVeto {
-        let record_id: RecordId = [record_id_byte; 16];
-        let block_id: BlockId = [0; 16];
-        RecordTombstoneVeto {
-            record_id,
-            block_id,
-            local_state: Record {
-                record_uuid: record_id,
-                record_type: "kv".into(),
-                fields: BTreeMap::new(),
-                tags: Vec::new(),
-                created_at_ms: 0,
-                last_mod_ms: 0,
-                tombstone: false,
-                tombstoned_at_ms: 0,
-                unknown: BTreeMap::new(),
-            },
-            disk_tombstone_at_ms: 1_000,
-            disk_tombstoner_device: [0; 16],
-        }
-    }
 
     #[test]
     fn empty_input_returns_empty() {
