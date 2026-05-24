@@ -18,7 +18,16 @@
 //! newline byte popped off before construction). The intermediate
 //! `Vec<u8>` / `String` allocation is moved into the wrapper, never
 //! copied, so the password never lives in an unzeroized heap location
-//! after this module returns control.
+//! **after this module returns control**.
+//!
+//! Residual caveat: `Vec::read_to_end` (stdin path) and the `String`
+//! buffer inside `rpassword::prompt_password` (TTY path) may reallocate
+//! and grow as they read. Each grow frees the *previous* allocation
+//! without zeroizing it, so a small window of unzeroed heap residue
+//! exists during the read itself. This is the same cross-workspace
+//! caveat documented in [`docs/manual/contributors/memory-hygiene-audit-internal.md`](../../docs/manual/contributors/memory-hygiene-audit-internal.md);
+//! for typical password lengths (well under the default `Vec` initial
+//! capacity progression), the practical exposure is one or two grows.
 //!
 //! See [`CLAUDE.md`](../../CLAUDE.md) "Memory hygiene: zeroize discipline".
 
@@ -105,6 +114,15 @@ pub fn read_password_from_reader<R: Read>(reader: &mut R) -> Result<SecretBytes,
 #[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn read_password_from_tty() -> Result<SecretBytes, UnlockReadError> {
     let s = rpassword::prompt_password(PASSWORD_PROMPT)?;
+    finalize_tty(s)
+}
+
+/// Convert an `rpassword`-returned `String` into a zeroize-on-drop
+/// [`SecretBytes`], rejecting empty input with
+/// [`UnlockReadError::Empty`]. Split out from [`read_password_from_tty`]
+/// so the empty-input branch is exercisable in unit tests without
+/// driving a real TTY.
+fn finalize_tty(s: String) -> Result<SecretBytes, UnlockReadError> {
     let bytes = s.into_bytes();
     if bytes.is_empty() {
         return Err(UnlockReadError::Empty);
@@ -149,6 +167,17 @@ mod tests {
         let mut input = Cursor::new(b"hunter2\n\n".to_vec());
         let secret = read_password_from_reader(&mut input).expect("read failed");
         assert_eq!(secret.expose(), b"hunter2\n");
+    }
+
+    /// Symmetric to `reader_only_strips_one_newline`: a trailing
+    /// `\r\n\r\n` strips one full `\r\n` and preserves the inner one.
+    /// Locks in "strip one line ending atomically" rather than "strip
+    /// one `\n` then maybe one `\r`."
+    #[test]
+    fn reader_only_strips_one_crlf() {
+        let mut input = Cursor::new(b"hunter2\r\n\r\n".to_vec());
+        let secret = read_password_from_reader(&mut input).expect("read failed");
+        assert_eq!(secret.expose(), b"hunter2\r\n");
     }
 
     /// A lone `\r` (no `\n` after it) is NOT stripped — we only treat
@@ -204,5 +233,28 @@ mod tests {
         let _ = PasswordSource::<Cursor<Vec<u8>>>::Tty;
         let mut cursor = Cursor::new(b"x".to_vec());
         let _ = PasswordSource::Stream(&mut cursor);
+    }
+
+    /// TTY-path empty-input branch: `finalize_tty("")` must return the
+    /// typed `Empty` error, matching the stdin path's behavior. The
+    /// helper exists specifically so this branch is reachable without
+    /// driving a pty.
+    #[test]
+    fn finalize_tty_empty_string_errors_as_empty() {
+        let err = finalize_tty(String::new()).unwrap_err();
+        assert!(
+            matches!(err, UnlockReadError::Empty),
+            "expected Empty, got {err:?}"
+        );
+    }
+
+    /// TTY-path happy path: `finalize_tty` moves the `String`'s buffer
+    /// into a `SecretBytes` whose bytes match the input verbatim. The
+    /// TTY caller does NOT strip a trailing newline — `rpassword`
+    /// already consumes the Enter keystroke before returning.
+    #[test]
+    fn finalize_tty_preserves_password_bytes() {
+        let secret = finalize_tty(String::from("hunter2")).expect("finalize failed");
+        assert_eq!(secret.expose(), b"hunter2");
     }
 }

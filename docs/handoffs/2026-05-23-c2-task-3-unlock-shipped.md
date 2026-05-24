@@ -5,15 +5,16 @@
 
 ## (1) What we shipped this session
 
-A single commit on `feature/c2-task-3` carrying the third code slice of C.2 — the password-sourcing primitives. The TTY path is a thin `rpassword` wrapper; the `--password-stdin` path is a pure-function (`Cursor`-testable) reader. Both funnel bytes into a freshly allocated [`SecretBytes`] via [`SecretBytes::new`], moving ownership of the underlying allocation so the password never lingers in an unzeroized location after the function returns.
+Two commits on `feature/c2-task-3` carrying the third code slice of C.2 — the password-sourcing primitives. The TTY path is a thin `rpassword` wrapper; the `--password-stdin` path is a pure-function (`Cursor`-testable) reader. Both funnel bytes into a freshly allocated [`SecretBytes`] via [`SecretBytes::new`], moving ownership of the underlying allocation so the password never lingers in an unzeroized location after the function returns.
 
 | Artifact | Path | Notes |
 |---|---|---|
-| Unlock module | [`cli/src/unlock.rs`](../../cli/src/unlock.rs) | New, ~200 LOC. `UnlockReadError` (3 variants: `NonInteractiveWithoutStdin`, `Io`, `Empty`). `PasswordSource<'a, R: Read>` enum (`Tty` / `Stream(&mut R)`). `read_password_from_reader<R: Read>(&mut R) -> Result<SecretBytes, _>` strips exactly one `\n` or `\r\n`, returns `Empty` if the remainder is empty. `read_password_from_tty() -> Result<SecretBytes, _>` calls `rpassword::prompt_password("Vault password: ")`. 9 unit tests. |
+| Unlock module | [`cli/src/unlock.rs`](../../cli/src/unlock.rs) | New, ~230 LOC. `UnlockReadError` (3 variants: `NonInteractiveWithoutStdin`, `Io`, `Empty`). `PasswordSource<'a, R: Read>` enum (`Tty` / `Stream(&mut R)`). `read_password_from_reader<R: Read>(&mut R) -> Result<SecretBytes, _>` strips exactly one `\n` or `\r\n`, returns `Empty` if the remainder is empty. `read_password_from_tty() -> Result<SecretBytes, _>` delegates to a private `finalize_tty(String) -> Result<SecretBytes, _>` helper so the empty-input branch is testable without a pty. 12 unit tests. |
 | CLI entry point | [`cli/src/main.rs`](../../cli/src/main.rs) | One-line change: `mod unlock;` registered alongside the existing `mod args; mod exit; mod state;`. |
 
 Commits:
-- *(this commit)* — "C.2 Task 3 — unlock module: TTY + stdin password sourcing" on `feature/c2-task-3`.
+- `15c58fa` — "C.2 Task 3 — unlock module: TTY + stdin password sourcing" on `feature/c2-task-3`.
+- *(this commit)* — post-review touch-up: module-doc caveat about intermediate `Vec::read_to_end` / `rpassword` `String` reallocations leaving unzeroed heap residue during the read window; `finalize_tty` helper extracted to make the TTY empty-input branch reachable in unit tests without driving a pty; symmetric `\r\n\r\n` → `\r\n` test added to lock in "strip one line ending atomically" semantics. No behavioral change; +3 tests (9 → 12).
 
 ### Plan ↔ reality reconciliations
 
@@ -23,12 +24,12 @@ Three deliberate deviations from the plan, all noted in the commit body:
 |---|---|---|
 | `SecretBytes::from(buf.as_slice())` + `zeroize::Zeroize::zeroize(&mut buf)` | `SecretBytes::new(buf)` (ownership move) | The plan's pattern would have required adding `zeroize` as a direct dep of `cli/Cargo.toml` AND double-allocated (`From<&[u8]>` calls `bytes.to_vec()`). `SecretBytes::new(Vec<u8>)` takes ownership of the original allocation; the `ZeroizeOnDrop` derive on `SecretBytes` wipes the entire `capacity` slice on drop, including bytes past `len` (e.g. the popped trailing-newline byte). Single allocation, no new dep, aligned with CLAUDE.md §"Memory hygiene: zeroize discipline". |
 | `cargo test -p secretary-cli --lib unlock` | `cargo test -p secretary-cli unlock` | `cli/` is binary-only (`[[bin]]` in `Cargo.toml`, no `lib.rs`). The `--lib` filter errors with "no library targets found in package `secretary-cli`". Drop the filter; cargo runs the binary's unit tests by default. |
-| "5 tests" (plan prose) / "N unit tests" (acceptance) | **9 unit tests** / **PASSED: 833** | Two additional edge-case tests beyond the plan body: `reader_lone_cr_is_preserved` (lone `\r` is NOT stripped — only `\r\n`) and `reader_crlf_only_errors_as_empty` (a bare `\r\n` reduces to empty). These close the line-ending strip's branch coverage. Same `±1` reconciliation pattern as Tasks 1 and 2. |
+| "5 tests" (plan prose) / "N unit tests" (acceptance) | **12 unit tests** / **PASSED: 836** | Beyond the plan's 5 happy-path tests: `reader_lone_cr_is_preserved` (lone `\r` is NOT stripped), `reader_crlf_only_errors_as_empty` (bare `\r\n` reduces to empty), `reader_only_strips_one_crlf` (post-review: symmetric `\r\n\r\n` strip-once test), `finalize_tty_empty_string_errors_as_empty` + `finalize_tty_preserves_password_bytes` (post-review: TTY-path branch coverage via the extracted helper). Close the line-ending strip's branch coverage and the TTY path's empty-input branch. Same `±N` reconciliation pattern as Tasks 1 and 2. |
 
 ### Gauntlet snapshot at session close
 
 ```
-PASSED: 833 FAILED: 0 IGNORED: 10
+PASSED: 836 FAILED: 0 IGNORED: 10
 clippy --release --workspace --tests -- -D warnings   clean
 fmt --all -- --check                                  clean
 uv run core/tests/python/conformance.py               PASS
@@ -54,7 +55,7 @@ After this PR merges, the next slice is **C.2 Task 4: Veto trait + non-interacti
   - Prompts per-record `y/n`; empty line = `KeepLocal` (safe default); invalid input re-prompts.
   - Scripted-reader tests covering `y`, `n`, empty, invalid+re-prompt.
 - [ ] `cli/src/main.rs` gains `mod veto;`.
-- [ ] Gauntlet target: **PASSED: 833 + N FAILED: 0 IGNORED: 10**. Absolute base is now 833 (bumped from 824 by Task 3's 9 new tests).
+- [ ] Gauntlet target: **PASSED: 836 + N FAILED: 0 IGNORED: 10**. Absolute base is now 836 (bumped from 824 by Task 3's 12 new tests, including the 3 post-review additions).
 - [ ] Clippy, fmt, conformance, spec freshness all clean.
 
 ### Plan handoff
@@ -121,7 +122,7 @@ git status --short                       # expect: clean (modulo NEXT_SESSION.md
 git checkout main
 git pull --ff-only origin main
 
-# Verify gauntlet on fresh main (expect 833 / 0 / 10 — same as session close):
+# Verify gauntlet on fresh main (expect 836 / 0 / 10 — same as session close):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -140,7 +141,7 @@ cd .worktrees/c2-task-4
 ## Closing inventory
 
 - **Branch state on close:** `main` at `e6c9d4f` (PR #114 squash-merged). `feature/c2-task-3` carries 1 commit on top.
-- **Workspace tests on `feature/c2-task-3`:** 833 passed + 10 ignored (824 base + 9 new cli `unlock` unit tests). Clippy + fmt + Python conformance + spec freshness all clean.
+- **Workspace tests on `feature/c2-task-3`:** 836 passed + 10 ignored (824 base + 12 new cli `unlock` unit tests, 9 in the initial commit + 3 in the post-review touch-up). Clippy + fmt + Python conformance + spec freshness all clean.
 - **README.md:** unchanged this session — Task 3 ships internal scaffolding (password-sourcing primitives), no user-visible behavior. Plan defers README update to Task 10.
 - **ROADMAP.md:** unchanged this session — same reason; ROADMAP already calls C.2 "queued" since the C.2 design PR.
 - **CLAUDE.md:** unchanged this session — the zeroize-discipline note (Task 3's `SecretBytes::new(buf)` ownership-move pattern) is already in CLAUDE.md's "Memory hygiene: zeroize discipline" section; no new convention.
