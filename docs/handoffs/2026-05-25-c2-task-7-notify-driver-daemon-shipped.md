@@ -1,6 +1,6 @@
 # NEXT_SESSION.md — C.2 Task 7 (`notify_driver` + `daemon` loop) shipped
 
-**Session date:** 2026-05-25 (C.2 Task 7 — `cli/src/watcher/notify_driver.rs` + `cli/src/daemon.rs`: the `notify::RecommendedWatcher` event source plus the closure-shaped daemon orchestration loop. Pure-orchestration core + production composition helper. No `main.rs` hook — that lands in Task 9 once signal handling (Task 8) is wired.).
+**Session date:** 2026-05-25 (C.2 Task 7 — `cli/src/watcher/notify_driver.rs` + `cli/src/daemon.rs`: the `notify::RecommendedWatcher` event source plus the closure-shaped daemon orchestration loop. Pure-orchestration core + production composition helper. No `main.rs` hook — that lands in Task 9 once signal handling (Task 8) is wired.). **Updated 2026-05-26** to absorb PR-review fixup pass (5 issues addressed in-place, 2 deferred to GitHub issues #122 + #123).
 **Status:** C.2 Task 7 ✅ on branch `feature/c2-task-7`; PR pending. Tasks 8-10 queued.
 
 ## (1) What we shipped this session
@@ -14,7 +14,22 @@ One commit on `feature/c2-task-7` carrying the seventh code slice of C.2 — the
 | Watcher submodule wiring | [`cli/src/watcher/mod.rs`](../../cli/src/watcher/mod.rs) | One-line addition (`pub mod notify_driver;`) next to the existing `debounce` and `ready` re-exports. The submodule's doc comment cross-reference to "Task 7" now resolves intra-crate. |
 | Library surface wiring | [`cli/src/lib.rs`](../../cli/src/lib.rs) | One-line addition (`pub mod daemon;`) next to the existing `args`, `exit`, `pipeline`, `state`, `unlock`, `veto`, `watcher` re-exports. Production consumers reach the daemon under `secretary_cli::daemon::*`. |
 
-**Commit:** `C.2 Task 7 — notify driver + daemon event loop` (see `git log feature/c2-task-7` for the local pre-merge SHA; the post-squash-merge SHA on `main` will differ). 22 new tests across the two new modules (7 notify_driver + 15 daemon); workspace 904 → 926. No issue closes with this commit; #37 (Sub-project C umbrella) advances by one more C.2 slice.
+**Commit:** `C.2 Task 7 — notify driver + daemon event loop` (see `git log feature/c2-task-7` for the local pre-merge SHA; the post-squash-merge SHA on `main` will differ). A follow-up review-fixup commit lands on the same branch (see §"Review fixup pass" below). 25 new tests across the two new modules after the fixup (7 notify_driver + 18 daemon); workspace 904 → 929. No issue closes with this commit; #37 (Sub-project C umbrella) advances by one more C.2 slice. Two follow-up issues filed: #122 (daemon.rs ~770 LOC — consider directory module split) and #123 (test timing-flake mitigation).
+
+### Review fixup pass (2026-05-26)
+
+Code review surfaced six observations on the initial commit; five were addressed in-place on `feature/c2-task-7` as a follow-up fixup commit, two filed as deferred GitHub issues. All five in-place fixes are self-contained, do not change the public API beyond the documented `DaemonConfig` additions, and ship with new unit tests where applicable.
+
+| Review issue | Resolution | Where |
+|---|---|---|
+| `is_sync_relevant` — `paths.is_empty()` early return relies on vacuous-truth gotcha that a "simplifying" reader might fold away. | Added a four-line comment explaining the inverted vacuous-`all()` semantic and that the explicit early return must stay. | [`cli/src/watcher/notify_driver.rs`](../../cli/src/watcher/notify_driver.rs) `is_sync_relevant`. |
+| `NotifyWatcher::poll` swallows `RecvTimeoutError::Disconnected` and `TryRecvError::Disconnected` silently — should be impossible (the `_watcher` sender stays alive) but if it ever fires, the daemon would stop receiving events with no signal. | Both Disconnected arms now emit `tracing::error!` before returning. Different message text per call site so the operator can tell which path tripped. | [`cli/src/watcher/notify_driver.rs`](../../cli/src/watcher/notify_driver.rs) `NotifyWatcher::poll`. |
+| `SHUTDOWN_POLL_INTERVAL` was a module-private const; tests had to pay the full 1 s per loop iteration, which slowed `run_exits_when_shutdown_flag_flips_mid_loop` to ~2 s. Future signal-handler work might also want to tune it. | Renamed to `pub const DEFAULT_SHUTDOWN_POLL_INTERVAL` and added `DaemonConfig::shutdown_poll_interval: Duration` field. Tests override to `TEST_SHUTDOWN_INTERVAL = 200 ms` (constrained `≥ TEST_POLL_INTERVAL` so it never fragments scripted `None` slots). A `debug_assert!` in `run_against_vault` rejects zero to flag misconfiguration that would otherwise busy-spin the watcher. | [`cli/src/daemon.rs`](../../cli/src/daemon.rs) `DaemonConfig`, `run_against_vault`. |
+| `run_against_vault`'s `wait_for_ready → Ok(false)` path logged at debug-only — a continuously-modified vault folder would silently never sync. | Added a saturating-counter `consecutive_not_ready: u32` captured in the `on_sync` closure; resets on `Ok(true)`. New `pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5` and a pure helper `note_not_ready_and_should_warn` extracted for unit-testability. A single `tracing::warn!` fires exactly once at the threshold and stays silent on subsequent skips until the next successful `Ok(true)` resets the counter. 3 new unit tests pin the fire-once-at-threshold + reset + u32::MAX-saturation semantics. | [`cli/src/daemon.rs`](../../cli/src/daemon.rs) `READY_NOT_READY_WARN_THRESHOLD`, `note_not_ready_and_should_warn`, `run_against_vault::on_sync`. |
+| `daemon.rs` at 641 LOC was already over the 500-LOC threshold; the fixup pass adds another ~130 LOC, taking it to ~770. Splitting requires non-trivial restructure. | Filed as [#122](https://github.com/hherb/secretary/issues/122) for follow-up — directory-module candidate shape proposed but no immediate action. Inline-tests pattern matches the rest of the `cli/` crate, so the threshold is a soft signal rather than a blocker. | Tracked, not in-scope. |
+| Behavioural daemon tests use 50–200 ms wall-clock windows — could flake under loaded CI runners. | Filed as [#123](https://github.com/hherb/secretary/issues/123) with the symptom signature + mitigation (bump constants 2–4×). No flake observed; speculative. | Tracked, not in-scope. |
+
+Gauntlet on close-of-fixup: **PASSED: 929 FAILED: 0 IGNORED: 10**, clippy + fmt + conformance + spec-freshness all clean.
 
 ### Plan ↔ reality reconciliations
 
@@ -28,21 +43,21 @@ Three deliberate deviations from the plan, all validated up-front via a brainsto
 
 Plan also said "Hook the `run` subcommand's stub in `cli/src/main.rs` to `daemon::run`" — deferred to Task 9 (subcommand dispatch wiring). `main.rs` still stubs through to `eprintln!("secretary-sync run: not yet implemented")` because the full wire-up requires `unlock` + `state::load` + `state::acquire_lockfile` orchestration that Task 9 is scoped to assemble. Without signal handling (Task 8) the daemon also can't be cleanly Ctrl-C'd from `main.rs`, so hooking it now would ship a non-Ctrl-C-stoppable binary. The handoff acceptance criterion was aspirational; the plan's literal Steps 1-3 don't include `main.rs` changes either. Task 8 + Task 9 together do the real wire-up.
 
-The plan estimated 2 new tests (1 notify_driver smoke + 1 daemon compile-shape) for a workspace bump of 854 → 856. The 854 baseline was stale (drifted from the actual 904 in Task 6 close), and the 2-test estimate was tied to the now-rejected compile-only stub. Actual: **22 new tests** (7 notify_driver + 15 daemon); workspace **904 → 926**.
+The plan estimated 2 new tests (1 notify_driver smoke + 1 daemon compile-shape) for a workspace bump of 854 → 856. The 854 baseline was stale (drifted from the actual 904 in Task 6 close), and the 2-test estimate was tied to the now-rejected compile-only stub. Actual after the 2026-05-26 fixup pass: **25 new tests** (7 notify_driver + 18 daemon); workspace **904 → 929**.
 
 ### Gauntlet snapshot at session close
 
 ```
-PASSED: 926 FAILED: 0 IGNORED: 10
+PASSED: 929 FAILED: 0 IGNORED: 10
 clippy --release --workspace --tests -- -D warnings   clean
 fmt --all -- --check                                  clean
 uv run core/tests/python/conformance.py               PASS
 uv run core/tests/python/spec_test_name_freshness.py  PASS (96 resolved / 0 unresolved / 2 suppressed)
 ```
 
-Baseline 904 came from Task 6 close. Task 7 added 22 new tests:
+Baseline 904 came from Task 6 close. Task 7 added 25 new tests (after the 2026-05-26 review-fixup pass):
 - `watcher::notify_driver::tests::*` — 7 tests (5 predicate-level + 2 against a real `notify` watcher).
-- `daemon::tests::*` — 15 tests (5 `compute_wait` pure-function + 8 `run` behavioural + 1 `now_ms` plausibility + 1 `notify_start_to_sync_error` mapping pin).
+- `daemon::tests::*` — 18 tests (5 `compute_wait` pure-function + 8 `run` behavioural + 3 `note_not_ready_and_should_warn` semantic pins added in the fixup pass + 1 `now_ms` plausibility + 1 `notify_start_to_sync_error` mapping pin).
 
 ## (2) What's next — start C.2 Task 8
 
@@ -54,7 +69,7 @@ After this PR merges, the next slice is **C.2 Task 8: logging + signal handling 
 - [ ] New `cli/src/signal.rs` (~60–100 LOC): exposes `install_shutdown_handler() -> Arc<AtomicBool>` using `signal-hook` (already in `cli/Cargo.toml`). Hooks SIGINT + SIGTERM; flips the flag the daemon already polls (`DaemonConfig::shutdown_flag`).
 - [ ] New `cli/src/lib.rs` lines: `pub mod logging;` + `pub mod signal;` (Task 5 established the lib.rs pattern; Tasks 6 + 7 added `watcher` + `daemon`; Task 8 adds two more).
 - [ ] Unit tests: logging — at minimum, EnvFilter parses from `--verbose=N` correctly; signal — register / un-register without leaking the handler, and the flag flips on a synthetic signal raise (test-only). The signal harness is the trickier bit because Rust's test runner already installs its own signal handlers; gate signal-handler tests behind `cfg(test)` + a one-test-at-a-time discipline (no `#[test(parallel = false)]` available, but `signal-hook` itself supports installing-and-uninstalling cleanly so tests can be careful).
-- [ ] Gauntlet target: **PASSED: 926 + N FAILED: 0 IGNORED: 10**. Absolute base is now 926 (bumped from 904 by Task 7's 22 new tests).
+- [ ] Gauntlet target: **PASSED: 929 + N FAILED: 0 IGNORED: 10**. Absolute base is now 929 (bumped from 904 by Task 7's 22 original new tests + 3 added in the 2026-05-26 fixup pass).
 - [ ] Clippy, fmt, conformance, spec freshness all clean.
 
 ### Plan handoff
@@ -68,7 +83,8 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 - **`daemon::run` is closure-shaped (`P: FnMut(Duration) → Option<WatcherEvent>`, `S: FnMut()`), not trait-driven.** Pure functions in reusable modules per project preference. The closure shape lets tests inject a `ScriptedPoller` + a `SyncCounter` without `Box<dyn ...>` overhead or a `MockEventSource` struct, and lets the production composition (`run_against_vault`) inline the `NotifyWatcher::poll` and `wait_for_ready` + `run_one` calls without an indirection.
 - **Trailing-edge debounce in the daemon honours Task 6's documented semantic.** The redesign uses `poll`'s timeout as the debounce timer; the previous plan's `std::thread::sleep` degraded to leading-edge-with-burst-coalescing and would have rendered Task 6's 5 trailing-edge unit tests semantically misleading.
 - **`compute_wait` is a pure free function pulled out of the loop body.** Smallest-of three deadlines (remaining debounce, remaining poll interval, shutdown poll interval). Five pure unit tests pin it against drift — independently of the harder-to-test loop body.
-- **`SHUTDOWN_POLL_INTERVAL = 1 s` is the loop's worst-case cancellation latency.** Balances operator-visible Ctrl-C responsiveness against per-iteration overhead. The flag is checked at every loop iteration, and `poll` blocks at most this long when nothing else (debounce / periodic poll) is closer.
+- **`DEFAULT_SHUTDOWN_POLL_INTERVAL = 1 s` is the loop's default worst-case cancellation latency.** Balances operator-visible Ctrl-C responsiveness against per-iteration overhead. The flag is checked at every loop iteration, and `poll` blocks at most this long when nothing else (debounce / periodic poll) is closer. **Per-instance override** lives on `DaemonConfig::shutdown_poll_interval: Duration` (introduced by the 2026-05-26 fixup pass); tests set it to 200 ms so flag-flip assertions complete in well under a second. A `debug_assert!` in `run_against_vault` rejects zero to flag misconfiguration that would busy-spin the watcher.
+- **`READY_NOT_READY_WARN_THRESHOLD = 5` consecutive `wait_for_ready → Ok(false)` returns trigger a single warn-level log.** Added by the 2026-05-26 fixup pass to surface stuck-folder conditions that would otherwise stay invisible at debug verbosity. The counter resets on the next `Ok(true)`, so a transient stable window followed by another stuck stretch re-fires the warn — one signal per stuck streak. The `note_not_ready_and_should_warn` helper is unit-tested in three places (fire-exactly-once-at-threshold, refire-after-reset, saturate-at-u32::MAX).
 - **`is_sync_relevant` in `notify_driver` filters partial-download patterns at the watcher layer.** `*.icloud` / `*.crdownload` writes never cross into the debounce window. Pairs with Task 6's `ready::matches_partial_pattern` table — same canonical filename list, applied earlier in the pipeline. The handoff acceptance criterion called for "partial-download gate"; this is one half of it (the other half — folder-level size-stability via `wait_for_ready` — runs in `run_against_vault`'s `on_sync` closure).
 - **`run_against_vault` calls `wait_for_ready(vault_folder, &RealClock, ready_window)` before each sync.** Treats the folder's metadata stability as a coarse-grained post-debounce safety check; on macOS / Linux the folder mtime changes with every contents change inside, so a still-changing folder yields `Ok(false)` and the sync is skipped that round. The default `ready_window` is 2000 ms (`RunArgs::ready_window_ms`), which adds latency to each sync attempt — acceptable for v1; if operator complaints surface, `--ready-window-ms 0` is the documented mitigation.
 - **`WatcherEvent::PollTick` is never emitted by the production `NotifyWatcher`.** Only synthetic test event sources produce it. The periodic-poll path is driven by `compute_wait`'s `poll_interval` arm + the top-of-loop `last_poll_at` check, not by a notify-side event. The variant stays in the enum because tests use it to verify the `match` arm is wired correctly.
@@ -96,9 +112,11 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 
 ### Issues currently open
 
-- #37 — Sub-project C umbrella. C.2 Tasks 1-6 ✅ in PRs #112, #114, #115, #116, #118, #119; Task 7 pending PR.
+- #37 — Sub-project C umbrella. C.2 Tasks 1-6 ✅ in PRs #112, #114, #115, #116, #118, #119; Task 7 pending PR (#121).
 - #117 — `TtyVetoUx` re-prompt loop has no max-attempts cap. Low-priority defensive-coding fix; still queued, not in scope for Task 8.
 - #120 — `matches_partial_pattern` allocates per call via `to_ascii_lowercase`. Filed during PR #119 review; performance-only, no correctness or security impact. Pick up if a profiler ever flags it; not in scope for Task 8.
+- **#122** — *new* — `cli/src/daemon.rs` at ~770 LOC (post-fixup) is over the 500-LOC threshold. Candidate directory-module shape captured in the issue. Pick up as a standalone cleanup PR or when Task 8/9 add more daemon code.
+- **#123** — *new* — daemon behavioural tests use 50–200 ms wall-clock windows. Speculative CI-flake risk; mitigation (2–4× constant bump) documented. No observed flake yet.
 - #38, #45, #75, #76, #78, #79, #81, #87, #88, #90, #95, #98 — none block C.2 Task 8.
 
 ### Housekeeping note (stale worktrees on disk)
@@ -139,7 +157,7 @@ git status --short                       # expect: clean (modulo NEXT_SESSION.md
 git checkout main
 git pull --ff-only origin main
 
-# Verify gauntlet on fresh main (expect 926 / 0 / 10 — same as session close):
+# Verify gauntlet on fresh main (expect 929 / 0 / 10 — same as session close after the 2026-05-26 fixup pass):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -161,7 +179,7 @@ cd .worktrees/c2-task-8
 ## Closing inventory
 
 - **Branch state on close:** `main` at `132e15f` (PR #119 squash-merged). `feature/c2-task-7` carries one commit on top (Task 7 code + tests + handoff + symlink).
-- **Workspace tests on `feature/c2-task-7`:** 926 passed + 10 ignored (904 base + 22 new tests: 7 in `watcher::notify_driver::tests` + 15 in `daemon::tests`). Clippy + fmt + Python conformance + spec freshness all clean.
+- **Workspace tests on `feature/c2-task-7`:** 929 passed + 10 ignored (904 base + 25 new tests: 7 in `watcher::notify_driver::tests` + 18 in `daemon::tests`, including the 3 added in the 2026-05-26 fixup pass). Clippy + fmt + Python conformance + spec freshness all clean.
 - **README.md:** unchanged this session — Task 7 ships internal pure-function scaffolding (no operator-visible surface change yet). The C.2 status line in README still implies "queued"; promoting it to "in progress" is deferred until Task 9 wires the subcommands so `secretary-sync` actually runs.
 - **ROADMAP.md:** unchanged this session — same reason; ROADMAP's progress bar still calls C.2 "queued". Bump deferred to Task 9 close.
 - **CLAUDE.md:** unchanged this session — no new convention; daemon submodule is local to `cli/` and doesn't generalise to repo-wide guidance. (The "trailing-edge debounce" semantic was already captured in Task 6's `cli/src/watcher/debounce.rs` module-level doc.)
