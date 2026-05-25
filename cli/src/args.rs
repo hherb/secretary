@@ -89,8 +89,11 @@ pub enum LogFormat {
 /// Currently single-variant: `--non-interactive` without
 /// `--password-stdin` would otherwise block on a TTY prompt that
 /// `--non-interactive` mode explicitly forbids — better to reject the
-/// invocation than to hang. The CLI dispatch maps this to
-/// [`crate::exit::ExitCode::UsageError`] (exit 2).
+/// invocation than to hang. `secretary-sync`'s `main()` invokes
+/// [`CommonArgs::validate`] before dispatching to the (currently-stub)
+/// subcommand bodies and maps this error to
+/// [`crate::exit::ExitCode::UsageError`] (exit 2). The corresponding
+/// binary-level test lives in `cli/tests/main_validate.rs`.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ArgsValidationError {
     /// `--non-interactive` was passed without `--password-stdin`. With
