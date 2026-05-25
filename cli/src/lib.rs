@@ -14,3 +14,4 @@ pub mod pipeline;
 pub mod state;
 pub mod unlock;
 pub mod veto;
+pub mod watcher;
