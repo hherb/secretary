@@ -44,6 +44,12 @@ const PARTIAL_SUFFIXES: &[&str] = &[
 /// `.~lock.foo.odt#`) and Dropbox dot-prefixed temp files (e.g.
 /// `.~dropbox-abc.tmp`). `~$` catches Microsoft Office lockfiles
 /// (e.g. `~$report.docx`). Both come from spec §D6.
+///
+/// **Case-folding intentionally omitted.** Every entry is pure
+/// punctuation, so `starts_with` matches identically on any platform's
+/// case-folding rules. A future letter-bearing entry would need the
+/// same `to_ascii_lowercase` treatment that `PARTIAL_SUFFIXES` uses;
+/// the case-insensitive `PARTIAL_BASENAMES` check is a third path.
 const PARTIAL_PREFIXES: &[&str] = &[".~", "~$"];
 
 /// Whole-basename markers for OS filesystem-metadata droppings that
@@ -118,7 +124,15 @@ impl Clock for RealClock {
     }
 }
 
-/// Wait up to `window` for `path` to become size-stable.
+/// Probe `path` for size-stability across a single `window`-length
+/// sleep.
+///
+/// Performs **one** `stat()`, sleeps for exactly `window` via
+/// [`Clock::sleep`], then performs a **second** `stat()` and compares.
+/// This is a single probe, **not** a retry loop: a still-changing file
+/// yields `Ok(false)` on the first miss. The driver (Task 7's daemon
+/// loop) provides the retry by re-firing this function on the next
+/// debounce tick — see [`super::debounce::step`].
 ///
 /// Returns:
 /// - `Ok(true)` if the path does NOT match a partial-marker pattern
@@ -176,6 +190,11 @@ mod tests {
     fn icloud_partial_marker_caught() {
         assert!(matches_partial_pattern(&p("foo.icloud")));
         assert!(matches_partial_pattern(&p("dir/sub/bar.icloud")));
+        // Case-insensitive suffix match — pins the `to_ascii_lowercase`
+        // branch against drift (analogous to dotted_metadata_caught's
+        // DESKTOP.INI coverage of the basename branch).
+        assert!(matches_partial_pattern(&p("Photo.ICLOUD")));
+        assert!(matches_partial_pattern(&p("Photo.iCloud")));
     }
 
     #[test]
@@ -315,6 +334,36 @@ mod tests {
         let missing = dir.path().join("not-there");
         let clock = InstantClock;
         let result = wait_for_ready(&missing, &clock, Duration::ZERO);
+        assert!(result.is_err(), "expected ENOENT, got {result:?}");
+    }
+
+    /// Clock impl that deletes the file at the recorded path the
+    /// instant `sleep` fires — used to exercise the second-`stat()`
+    /// failure branch of [`wait_for_ready`].
+    struct DeleteOnSleep {
+        path: PathBuf,
+    }
+    impl Clock for DeleteOnSleep {
+        fn sleep(&self, _: Duration) {
+            // Ignore the error — if the file is already gone the test
+            // assertion below still pins the second-stat failure.
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn wait_for_ready_errors_when_file_disappears_between_stats() {
+        // Pin the second-`stat()` failure path: first stat succeeds
+        // (file present, non-empty), DeleteOnSleep removes the file
+        // during the sleep window, second stat returns ENOENT which
+        // wait_for_ready propagates as io::Error.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("disappearing");
+        std::fs::write(&target, b"non-empty").expect("write");
+        let clock = DeleteOnSleep {
+            path: target.clone(),
+        };
+        let result = wait_for_ready(&target, &clock, Duration::ZERO);
         assert!(result.is_err(), "expected ENOENT, got {result:?}");
     }
 }

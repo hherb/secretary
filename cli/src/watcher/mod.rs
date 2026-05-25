@@ -27,7 +27,7 @@ pub mod ready;
 /// driver tick. The driver is responsible for collapsing
 /// `notify::Event` bursts into at most one [`Self::SyncCandidate`] per
 /// debounce window (see [`debounce::step`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherEvent {
     /// One or more files in the vault folder changed; the daemon
     /// should attempt a sync after the debounce window expires.
@@ -55,9 +55,12 @@ mod tests {
     }
 
     #[test]
-    fn watcher_event_clone_round_trip() {
+    fn watcher_event_copy_round_trip() {
+        // Pin the `Copy` derive — Task 7's daemon loop passes these by
+        // value across debounce/poll/shutdown branches; losing `Copy`
+        // would force `.clone()` calls at every match arm.
         let original = WatcherEvent::SyncCandidate;
-        let copied = original.clone();
+        let copied = original;
         assert_eq!(original, copied);
     }
 

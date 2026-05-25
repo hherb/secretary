@@ -14,7 +14,7 @@ One commit on `feature/c2-task-6` carrying the sixth code slice of C.2 — the p
 | Debounce (pure state machine) | [`cli/src/watcher/debounce.rs`](../../cli/src/watcher/debounce.rs) | New (~135 LOC). `DebounceDecision` enum (`Schedule` / `Reschedule`); `step(now, pending_since, window) -> (decision, new_pending_since)` is the entire state machine. Trailing-edge semantics: each event in-window resets the deadline; the daemon loop fires `SyncCandidate` when the deadline expires uninterrupted. 5 unit tests cover first-event / within-window-burst / past-window-reset / equal-to-window-boundary / three-event-burst-collapse. |
 | Library surface wiring | [`cli/src/lib.rs`](../../cli/src/lib.rs) | One-line addition: `pub mod watcher;` next to the existing `args`, `exit`, `pipeline`, `state`, `unlock`, `veto` re-exports. Production consumers reach the watcher under `secretary_cli::watcher::*`. |
 
-**Commit:** `C.2 Task 6 — watcher submodule: partial-download ready + pure debounce` (see `git log feature/c2-task-6` for the local pre-merge SHA; the post-squash-merge SHA on `main` will differ). 26 new tests across watcher's three submodules (3 mod + 18 ready + 5 debounce); workspace 877 → 903. No issue closes with this commit; #37 (Sub-project C umbrella) advances by one more C.2 slice.
+**Commit:** `C.2 Task 6 — watcher submodule: partial-download ready + pure debounce` (see `git log feature/c2-task-6` for the local pre-merge SHA; the post-squash-merge SHA on `main` will differ). 27 new tests across watcher's three submodules (3 mod + 19 ready + 5 debounce); workspace 877 → 904. The 19th ready test (`wait_for_ready_errors_when_file_disappears_between_stats`) was added in the PR-review fixup pass to pin the second-`stat()` failure branch. No issue closes with this commit; #37 (Sub-project C umbrella) advances by one more C.2 slice; #120 is a follow-up filed during the same review (low-priority allocation cleanup in `matches_partial_pattern`).
 
 ### Plan ↔ reality reconciliations
 
@@ -25,19 +25,19 @@ Two deliberate deviations from the plan, each documented inline in code comments
 | Plan declared `DebounceDecision::AlreadyPending` as a third enum variant alongside `Schedule` + `Reschedule`. | The plan's `step` function never constructs `AlreadyPending` — every code path returns either `Schedule` (no pending / past window) or `Reschedule` (within window). The variant would be dead code on day one and trip `clippy -D warnings`. | Removed `AlreadyPending` from the enum. Documented the two-variant state machine as **trailing-edge debounce** in `debounce.rs`'s module doc. If a future driver wants a "cap-collapse drop" semantic (cap the total wait time at N windows instead of resetting indefinitely), it'd be a behavioural change requiring its own design — not a leftover variant. Aligns with [[feedback_act_on_issues_dont_mention]] (don't ship dead code) + the recently-closed #113 (cli crate compiles `-D warnings` with zero `#[allow(dead_code)]`). |
 | Plan code's `PARTIAL_PREFIXES` constant declared `[".~", "~$", "."]` but the function body only checked `.~` and `~$` explicitly — the `.` entry was unused. | A literal `.` prefix would also catch ordinary dotfiles (e.g., a contributor accidentally dropping a `.gitignore` into the vault folder would be silently filtered as "partial"). | Reduced the constant to `[".~", "~$"]` and iterated over it in the function body, so the constant is genuinely used (no dead-data warnings) and the semantics match what the spec §D6 table covers. `.DS_Store` is still caught by the `PARTIAL_BASENAMES` whole-name check. |
 
-The plan also estimated 17 new tests (12 ready + 4 debounce + 1 module sanity). Actual: **26 new tests** (3 mod sanity + 18 ready + 5 debounce). The extras came from one positive case per spec §D6 row (the plan compressed `.crdownload` and `.download` into one test; spec §D6 distinguishes Chromium vs Safari/Firefox so I split them), plus a dedicated test for the Dropbox `.~foo.tmp` route (which the plan claims is "caught by both `.~` and `.tmp`" — pinning that with an explicit test), plus a missing-file → `io::Error` test (required by the acceptance criteria's "missing-file branch" but absent from the plan code), plus a `burst_of_three_events_collapses_into_single_reschedule_chain` test (the plan's burst-collapse only had two events).
+The plan also estimated 17 new tests (12 ready + 4 debounce + 1 module sanity). Actual at first push: **26 new tests** (3 mod sanity + 18 ready + 5 debounce). The extras came from one positive case per spec §D6 row (the plan compressed `.crdownload` and `.download` into one test; spec §D6 distinguishes Chromium vs Safari/Firefox so I split them), plus a dedicated test for the Dropbox `.~foo.tmp` route (which the plan claims is "caught by both `.~` and `.tmp`" — pinning that with an explicit test), plus a missing-file → `io::Error` test (required by the acceptance criteria's "missing-file branch" but absent from the plan code), plus a `burst_of_three_events_collapses_into_single_reschedule_chain` test (the plan's burst-collapse only had two events). The PR-review fixup pass added a 19th `ready` test (`wait_for_ready_errors_when_file_disappears_between_stats`) and folded two case-insensitive `.ICLOUD` assertions into the existing `icloud_partial_marker_caught` row, bringing the total to **27 new tests** (3 + 19 + 5).
 
 ### Gauntlet snapshot at session close
 
 ```
-PASSED: 903 FAILED: 0 IGNORED: 10
+PASSED: 904 FAILED: 0 IGNORED: 10
 clippy --release --workspace --tests -- -D warnings   clean
 fmt --all -- --check                                  clean
 uv run core/tests/python/conformance.py               PASS
 uv run core/tests/python/spec_test_name_freshness.py  PASS (96 resolved / 0 unresolved / 2 suppressed)
 ```
 
-(Baseline drift note: the prior baton recorded 868 at Task 5 close. A clean-main checkout from `90334ce` actually shows 877 — the 9-test delta is likely from doctest binaries or `--no-fail-fast` aggregation that the baton's quick `awk` didn't fully account for. Task 6 itself adds exactly 26 new tests (3 + 18 + 5); the post-Task-6 total is 877 + 26 = 903, consistent with the gauntlet output. Future batons should treat 903 as the new baseline.)
+(Baseline drift note: the prior baton recorded 868 at Task 5 close. A clean-main checkout from `90334ce` actually shows 877 — the 9-test delta is likely from doctest binaries or `--no-fail-fast` aggregation that the baton's quick `awk` didn't fully account for. Task 6 itself adds 27 new tests (3 + 19 + 5); the post-Task-6 total is 877 + 27 = 904, consistent with the gauntlet output. Future batons should treat 904 as the new baseline.)
 
 ## (2) What's next — start C.2 Task 7
 
@@ -50,7 +50,7 @@ After this PR merges, the next slice is **C.2 Task 7: `notify` driver + daemon l
 - [ ] New `cli/src/lib.rs` line: `pub mod daemon;` (Task 5 established the `lib.rs` pattern; Task 6 added `watcher`; Task 7 adds `daemon`).
 - [ ] Hook the `run` subcommand's stub in `cli/src/main.rs` to `daemon::run`. (`once` subcommand still stubs through to Task 9's dispatch wiring; Task 7 is daemon-only.)
 - [ ] Unit tests for `notify_driver` cover the platform-event → `WatcherEvent` mapping (using `notify`'s synthetic event constructors); daemon-loop tests cover at least: one-event-end-to-end (synthetic mpsc event → `pipeline::run_one` invoked → state advanced) + shutdown-event-exits-cleanly + debounce-collapses-burst (two synthetic events within the window produce exactly one sync attempt).
-- [ ] Gauntlet target: **PASSED: 903 + N FAILED: 0 IGNORED: 10**. Absolute base is now 903 (bumped from 877 by Task 6's 26 new tests).
+- [ ] Gauntlet target: **PASSED: 904 + N FAILED: 0 IGNORED: 10**. Absolute base is now 904 (bumped from 877 by Task 6's 27 new tests).
 - [ ] Clippy, fmt, conformance, spec freshness all clean.
 
 ### Plan handoff
@@ -93,6 +93,7 @@ Full step-by-step in [`docs/superpowers/plans/2026-05-23-c2-headless-sync-cli.md
 
 - #37 — Sub-project C umbrella. C.2 Tasks 1-5 ✅ in PRs #112, #114, #115, #116, #118; Task 6 pending PR.
 - #117 — `TtyVetoUx` re-prompt loop has no max-attempts cap. Low-priority defensive-coding fix; still queued, not in scope for Task 7.
+- #120 — `matches_partial_pattern` allocates per call via `to_ascii_lowercase`. Filed during PR #119 review; performance-only, no correctness or security impact. Pick up if a profiler ever flags it; not in scope for Task 7.
 - #38, #45, #75, #76, #78, #79, #81, #87, #88, #90, #95, #98 — none block C.2 Task 7.
 
 ### Housekeeping note (stale worktrees on disk)
@@ -131,7 +132,7 @@ git status --short                       # expect: clean (modulo NEXT_SESSION.md
 git checkout main
 git pull --ff-only origin main
 
-# Verify gauntlet on fresh main (expect 903 / 0 / 10 — same as session close):
+# Verify gauntlet on fresh main (expect 904 / 0 / 10 — same as session close):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -153,8 +154,8 @@ cd .worktrees/c2-task-7
 
 ## Closing inventory
 
-- **Branch state on close:** `main` at `90334ce` (PR #118 squash-merged). `feature/c2-task-6` carries 1 commit on top (Task 6 code + tests + handoff + symlink).
-- **Workspace tests on `feature/c2-task-6`:** 903 passed + 10 ignored (877 base + 26 new watcher tests: 3 in `watcher::tests` + 18 in `watcher::ready::tests` + 5 in `watcher::debounce::tests`). Clippy + fmt + Python conformance + spec freshness all clean.
+- **Branch state on close:** `main` at `90334ce` (PR #118 squash-merged). `feature/c2-task-6` carries 2 commits on top (Task 6 code + tests + handoff + symlink, then a PR-review fixup that tightened a docstring, added `Copy` to `WatcherEvent`, documented `PARTIAL_PREFIXES` case-folding rationale, and added one ready-module test for the second-`stat()` failure path). Both fold into a single squash-merge at ship time.
+- **Workspace tests on `feature/c2-task-6`:** 904 passed + 10 ignored (877 base + 27 new watcher tests: 3 in `watcher::tests` + 19 in `watcher::ready::tests` + 5 in `watcher::debounce::tests`). Clippy + fmt + Python conformance + spec freshness all clean.
 - **README.md:** unchanged this session — Task 6 ships internal pure-function scaffolding (no operator-visible surface change). The C.2 status line in README still reads "queued"; promoting it to "in progress" is deferred until Task 9 wires the subcommands so `secretary-sync` actually runs.
 - **ROADMAP.md:** unchanged this session — same reason; ROADMAP already calls C.2 "queued" since the C.2 design PR.
 - **CLAUDE.md:** unchanged this session — no new convention; watcher submodule is local to `cli/` and doesn't generalise to repo-wide guidance.
