@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-25-c2-task-6-watcher-ready-debounce-shipped.md
+docs/handoffs/2026-05-25-c2-task-7-notify-driver-daemon-shipped.md
