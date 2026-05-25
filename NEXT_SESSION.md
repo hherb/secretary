@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-25-c2-task-4-veto-shipped.md
+docs/handoffs/2026-05-25-c2-task-5-pipeline-shipped.md
