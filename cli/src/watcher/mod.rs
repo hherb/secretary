@@ -13,11 +13,12 @@
 //!   into one scheduled `SyncCandidate` per `--debounce-ms` window.
 //!
 //! The [`notify::RecommendedWatcher`](https://docs.rs/notify) integration
-//! that produces the actual event stream lives in
-//! `cli/src/watcher/notify_driver.rs` (Task 7) and consumes both pure
-//! pieces through a [`WatcherEvent`]-emitting driver.
+//! that produces the actual event stream lives in [`notify_driver`]
+//! (Task 7) and consumes both pure pieces through a
+//! [`WatcherEvent`]-emitting driver.
 
 pub mod debounce;
+pub mod notify_driver;
 pub mod ready;
 
 /// What the watcher dispatcher tells the [`crate::pipeline::run_one`]
