@@ -43,15 +43,17 @@ use crate::watcher::notify_driver::NotifyWatcher;
 use crate::watcher::ready::{wait_for_ready, RealClock};
 use crate::watcher::WatcherEvent;
 
-/// Maximum interval the loop will block on `poll` without checking
-/// the shutdown flag.
+/// Default upper bound on how long the loop blocks on `poll` without
+/// checking the shutdown flag.
 ///
-/// Used as the wait when nothing else (debounce window, periodic poll)
-/// is closer. Picked at 1 s as a balance between operator-visible
-/// shutdown latency (Ctrl-C should feel snappy) and per-iteration
-/// overhead (no point spinning the loop every 10 ms in an idle
-/// daemon).
-const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(1000);
+/// Production daemons leave this at the default. Tests override
+/// [`DaemonConfig::shutdown_poll_interval`] with a shorter value so
+/// flag-flip assertions don't add a full second to the test suite.
+///
+/// Picked at 1 s as a balance between operator-visible shutdown
+/// latency (Ctrl-C should feel snappy) and per-iteration overhead
+/// (no point spinning the loop every 10 ms in an idle daemon).
+pub const DEFAULT_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Configuration knobs for the daemon loop.
 #[derive(Debug, Clone)]
@@ -68,9 +70,14 @@ pub struct DaemonConfig {
     /// against backend gaps (FSEvents coalescing, inotify queue
     /// overflow) at a small cost in wasted attempts.
     pub poll_interval: Option<Duration>,
+    /// Upper bound on how long the loop blocks on `poll` without
+    /// re-checking [`Self::shutdown_flag`]. Production wires this to
+    /// [`DEFAULT_SHUTDOWN_POLL_INTERVAL`]; tests use a smaller value to
+    /// keep flag-flip assertions fast.
+    pub shutdown_poll_interval: Duration,
     /// Cancellation flag set by the signal handler (SIGINT/SIGTERM,
     /// landing in Task 8). The loop polls this flag at most every
-    /// [`SHUTDOWN_POLL_INTERVAL`].
+    /// [`Self::shutdown_poll_interval`].
     pub shutdown_flag: Arc<AtomicBool>,
 }
 
@@ -135,7 +142,7 @@ where
             debounce_pending,
             config.debounce,
             config.poll_interval.map(|pi| (pi, last_poll_at)),
-            SHUTDOWN_POLL_INTERVAL,
+            config.shutdown_poll_interval,
         );
 
         match poll(wait) {
@@ -193,6 +200,18 @@ fn compute_wait(
     wait
 }
 
+/// Threshold of consecutive `wait_for_ready` → `Ok(false)` returns that
+/// triggers a single operator-visible warn log. After this many
+/// debounce-fired or periodic-fired cycles in a row where the folder
+/// was still being modified, something external (another process,
+/// stuck cloud sync agent) is likely the cause and the operator
+/// should know — debug-level "skipping sync" lines would otherwise
+/// stay invisible at default verbosity.
+///
+/// Pinned by the [`note_not_ready_and_should_warn`] unit test so the
+/// fire-exactly-once-at-threshold semantic is durable.
+pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
+
 /// Production composition: start a [`NotifyWatcher`] against
 /// `vault_folder`, then run the daemon loop with closures that bridge
 /// to [`wait_for_ready`] + [`run_one`].
@@ -203,7 +222,11 @@ fn compute_wait(
 ///    folder's metadata has stopped changing across a `ready_window`
 ///    probe. The check is best-effort — a stat failure or partial
 ///    marker on the folder itself (impossible in practice) is logged
-///    at debug and skipped, not fatal.
+///    at debug and skipped, not fatal. After
+///    [`READY_NOT_READY_WARN_THRESHOLD`] consecutive `Ok(false)`
+///    returns a warn-level log fires once so operators notice when
+///    something external is continuously modifying the folder and
+///    starving the sync; the counter resets on the next `Ok(true)`.
 /// 2. Calls [`run_one`] for one sync attempt; any [`SyncError`] is
 ///    logged at warn level and the loop continues per spec §"Daemon
 ///    loop sketch" ("on pipeline error: log + continue").
@@ -229,15 +252,36 @@ pub fn run_against_vault(
     config: DaemonConfig,
     ready_window: Duration,
 ) -> Result<(), SyncError> {
+    // Production should always use the default; flag accidental zeros
+    // (would cause the loop to spin without ever blocking) at startup
+    // rather than silently busy-loop in the watcher poll.
+    debug_assert!(
+        !config.shutdown_poll_interval.is_zero(),
+        "DaemonConfig::shutdown_poll_interval must be > 0; use DEFAULT_SHUTDOWN_POLL_INTERVAL in production"
+    );
     let watcher = NotifyWatcher::start(vault_folder).map_err(notify_start_to_sync_error)?;
     let clock = RealClock;
+    let mut consecutive_not_ready: u32 = 0;
     run(
         config,
         |timeout| watcher.poll(timeout),
         || {
             match wait_for_ready(vault_folder, &clock, ready_window) {
-                Ok(true) => {}
+                Ok(true) => {
+                    consecutive_not_ready = 0;
+                }
                 Ok(false) => {
+                    if note_not_ready_and_should_warn(
+                        &mut consecutive_not_ready,
+                        READY_NOT_READY_WARN_THRESHOLD,
+                    ) {
+                        tracing::warn!(
+                            folder = %vault_folder.display(),
+                            consecutive_skips = consecutive_not_ready,
+                            "vault folder has not become size-stable across {} consecutive sync attempts; another process may be continuously modifying it",
+                            READY_NOT_READY_WARN_THRESHOLD,
+                        );
+                    }
                     tracing::debug!("vault folder not size-stable; skipping sync");
                     return;
                 }
@@ -252,6 +296,22 @@ pub fn run_against_vault(
         },
     );
     Ok(())
+}
+
+/// Increments `consecutive` (saturating) and returns `true` exactly
+/// when the new value equals `threshold` — i.e. on the
+/// `threshold`-th consecutive `wait_for_ready → Ok(false)`. Subsequent
+/// returns over the threshold do NOT re-fire (the warn was already
+/// emitted; further iterations stay at debug level until the counter
+/// resets).
+///
+/// Pure helper extracted from [`run_against_vault`]'s `on_sync`
+/// closure so the fire-once-at-threshold semantic is unit-testable
+/// without spinning up a real watcher + vault fixture.
+#[must_use]
+fn note_not_ready_and_should_warn(consecutive: &mut u32, threshold: u32) -> bool {
+    *consecutive = consecutive.saturating_add(1);
+    *consecutive == threshold
 }
 
 /// Wall-clock milliseconds since the UNIX epoch, saturating on
@@ -304,6 +364,15 @@ mod tests {
     /// cleanly: one debounce window of "did nothing" then one poll
     /// fire.
     const TEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+    /// Short shutdown-poll interval for tests. Keeps
+    /// [`run_exits_when_shutdown_flag_flips_mid_loop`] under ~400 ms
+    /// instead of paying [`DEFAULT_SHUTDOWN_POLL_INTERVAL`] (1 s) per
+    /// iteration. Deliberately set ≥ [`TEST_POLL_INTERVAL`] so the
+    /// shutdown interval never fragments a scripted `None` slot that
+    /// is meant to elapse the full periodic-poll interval — see the
+    /// scripting model in [`ScriptedPoller`].
+    const TEST_SHUTDOWN_INTERVAL: Duration = Duration::from_millis(200);
 
     /// Sentinel that ends scripts in tests. The poller exhausting
     /// its script returns this so the loop exits deterministically.
@@ -361,11 +430,13 @@ mod tests {
     }
 
     /// Build a default test config with the given debounce window,
-    /// no periodic poll, and a fresh shutdown_flag.
+    /// no periodic poll, a fresh shutdown_flag, and the short
+    /// [`TEST_SHUTDOWN_INTERVAL`].
     fn test_config(debounce: Duration) -> DaemonConfig {
         DaemonConfig {
             debounce,
             poll_interval: None,
+            shutdown_poll_interval: TEST_SHUTDOWN_INTERVAL,
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -376,8 +447,14 @@ mod tests {
     #[test]
     fn compute_wait_returns_shutdown_interval_with_no_constraints() {
         let now = Instant::now();
-        let wait = compute_wait(now, None, TEST_DEBOUNCE, None, SHUTDOWN_POLL_INTERVAL);
-        assert_eq!(wait, SHUTDOWN_POLL_INTERVAL);
+        let wait = compute_wait(
+            now,
+            None,
+            TEST_DEBOUNCE,
+            None,
+            DEFAULT_SHUTDOWN_POLL_INTERVAL,
+        );
+        assert_eq!(wait, DEFAULT_SHUTDOWN_POLL_INTERVAL);
     }
 
     /// `compute_wait` caps at the remaining debounce window when a
@@ -393,7 +470,7 @@ mod tests {
             Some(pending),
             TEST_DEBOUNCE,
             None,
-            SHUTDOWN_POLL_INTERVAL,
+            DEFAULT_SHUTDOWN_POLL_INTERVAL,
         );
         // Allow a small tolerance for clock granularity.
         assert!(
@@ -416,7 +493,7 @@ mod tests {
             Some(pending),
             TEST_DEBOUNCE,
             None,
-            SHUTDOWN_POLL_INTERVAL,
+            DEFAULT_SHUTDOWN_POLL_INTERVAL,
         );
         assert_eq!(wait, Duration::ZERO);
     }
@@ -434,7 +511,7 @@ mod tests {
             None,
             TEST_DEBOUNCE,
             Some((TEST_POLL_INTERVAL, last_poll)),
-            SHUTDOWN_POLL_INTERVAL,
+            DEFAULT_SHUTDOWN_POLL_INTERVAL,
         );
         assert!(
             wait <= Duration::from_millis(60) && wait >= Duration::from_millis(59),
@@ -455,7 +532,7 @@ mod tests {
             Some(pending),
             TEST_DEBOUNCE,
             Some((TEST_POLL_INTERVAL, last_poll)),
-            SHUTDOWN_POLL_INTERVAL,
+            DEFAULT_SHUTDOWN_POLL_INTERVAL,
         );
         assert!(
             wait <= Duration::from_millis(10) && wait >= Duration::from_millis(9),
@@ -473,6 +550,7 @@ mod tests {
         let config = DaemonConfig {
             debounce: TEST_DEBOUNCE,
             poll_interval: None,
+            shutdown_poll_interval: TEST_SHUTDOWN_INTERVAL,
             shutdown_flag: flag,
         };
         run(config, |t| poller.poll(t), || counter.record());
@@ -561,6 +639,7 @@ mod tests {
         let config = DaemonConfig {
             debounce: TEST_DEBOUNCE,
             poll_interval: Some(TEST_POLL_INTERVAL),
+            shutdown_poll_interval: TEST_SHUTDOWN_INTERVAL,
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         };
         run(config, |t| poller.poll(t), || counter.record());
@@ -576,13 +655,16 @@ mod tests {
         let flag_clone = flag.clone();
         let mut counter = SyncCounter::new();
         // Script is two Nones so the poller sleeps for two
-        // SHUTDOWN_POLL_INTERVAL-bounded waits; the side thread flips
+        // TEST_SHUTDOWN_INTERVAL-bounded waits; the side thread flips
         // the flag during the first sleep. The loop catches it at the
-        // top of the next iteration.
+        // top of the next iteration. Total wall-clock is bounded by
+        // 2× TEST_SHUTDOWN_INTERVAL (≈400 ms) — without the test
+        // override this would be 2 s.
         let mut poller = ScriptedPoller::new([None, None]);
         let config = DaemonConfig {
             debounce: TEST_DEBOUNCE,
             poll_interval: None,
+            shutdown_poll_interval: TEST_SHUTDOWN_INTERVAL,
             shutdown_flag: flag,
         };
         let handle = std::thread::spawn(move || {
@@ -621,6 +703,60 @@ mod tests {
         const CEILING_MS: u64 = 32_503_680_000_000;
         assert!(ms >= FLOOR_MS, "now_ms below floor: {ms}");
         assert!(ms <= CEILING_MS, "now_ms above ceiling: {ms}");
+    }
+
+    /// `note_not_ready_and_should_warn` fires `true` exactly once on
+    /// the threshold-th consecutive call and stays `false` afterwards
+    /// until the caller resets the counter. Pins the
+    /// fire-once-at-threshold semantic for the
+    /// [`READY_NOT_READY_WARN_THRESHOLD`] policy.
+    #[test]
+    fn note_not_ready_fires_warn_exactly_once_at_threshold() {
+        let mut counter: u32 = 0;
+        let threshold: u32 = 3;
+        assert!(!note_not_ready_and_should_warn(&mut counter, threshold));
+        assert_eq!(counter, 1);
+        assert!(!note_not_ready_and_should_warn(&mut counter, threshold));
+        assert_eq!(counter, 2);
+        assert!(
+            note_not_ready_and_should_warn(&mut counter, threshold),
+            "third call hits the threshold"
+        );
+        assert_eq!(counter, 3);
+        assert!(
+            !note_not_ready_and_should_warn(&mut counter, threshold),
+            "fourth call is past the threshold and must NOT re-fire"
+        );
+        assert_eq!(counter, 4);
+    }
+
+    /// Resetting `counter` to 0 (as `run_against_vault` does on
+    /// `wait_for_ready → Ok(true)`) restores fire-at-threshold
+    /// behavior for the next streak. Pins that the warn would re-fire
+    /// after a transient stable period followed by another stuck
+    /// stretch — the operator should hear about each streak.
+    #[test]
+    fn note_not_ready_refires_after_counter_reset() {
+        let mut counter: u32 = 0;
+        let threshold: u32 = 2;
+        let _ = note_not_ready_and_should_warn(&mut counter, threshold);
+        assert!(note_not_ready_and_should_warn(&mut counter, threshold));
+        // Folder became stable for one cycle.
+        counter = 0;
+        // Second streak — must fire again on its own threshold-th hit.
+        assert!(!note_not_ready_and_should_warn(&mut counter, threshold));
+        assert!(note_not_ready_and_should_warn(&mut counter, threshold));
+    }
+
+    /// `note_not_ready_and_should_warn` uses saturating arithmetic so
+    /// a pathological never-ending stuck stretch can't panic on
+    /// counter overflow. Caller can rely on counter staying at
+    /// `u32::MAX` indefinitely after reaching it.
+    #[test]
+    fn note_not_ready_saturates_at_u32_max() {
+        let mut counter: u32 = u32::MAX;
+        let _ = note_not_ready_and_should_warn(&mut counter, 1);
+        assert_eq!(counter, u32::MAX);
     }
 
     /// `notify_start_to_sync_error` wraps a notify error in

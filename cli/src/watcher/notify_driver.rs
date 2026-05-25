@@ -87,13 +87,24 @@ impl NotifyWatcher {
     /// the daemon loop. The drain just spares the daemon the cost of
     /// looping once per queued event for a burst that the platform
     /// has already coalesced into the channel.
+    ///
+    /// A `Disconnected` channel is logged at error level — it should
+    /// be impossible (the `_watcher` field holds the sender alive for
+    /// our entire lifetime) but if it ever fires, the daemon would
+    /// silently stop receiving events. The error log makes that
+    /// detectable in operator logs.
     pub fn poll(&self, timeout: Duration) -> Option<WatcherEvent> {
-        // Wait up to `timeout` for the FIRST event. Treat any of
-        // timeout / disconnect / notify-level error as "no event".
+        // Wait up to `timeout` for the FIRST event.
         let first = match self.rx.recv_timeout(timeout) {
             Ok(Ok(event)) => event,
             Ok(Err(_notify_err)) => return None,
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
+            Err(RecvTimeoutError::Timeout) => return None,
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::error!(
+                    "notify watcher channel disconnected; daemon will receive no further filesystem events"
+                );
+                return None;
+            }
         };
 
         let mut any_relevant = is_sync_relevant(&first);
@@ -109,7 +120,13 @@ impl NotifyWatcher {
                     }
                 }
                 Ok(Err(_notify_err)) => continue,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    tracing::error!(
+                        "notify watcher channel disconnected mid-drain; daemon will receive no further filesystem events"
+                    );
+                    break;
+                }
             }
         }
 
@@ -145,6 +162,10 @@ fn is_sync_relevant(event: &Event) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
         return false;
     }
+    // Explicit early return for the empty-paths case: `iter().all(_)`
+    // is vacuously `true` on an empty iterator, which would invert to
+    // `false` below — opposite of the documented "pathless events are
+    // conservatively relevant" semantic. Don't fold this check away.
     if event.paths.is_empty() {
         return true;
     }
