@@ -7,6 +7,7 @@ mod args;
 mod exit;
 mod state;
 mod unlock;
+mod veto;
 
 fn main() {
     let cli = args::Cli::parse();
