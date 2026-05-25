@@ -41,7 +41,6 @@ use secretary_core::crypto::secret::SecretBytes;
 /// is intentional — `rpassword::prompt_password` does not append one.
 const PASSWORD_PROMPT: &str = "Vault password: ";
 
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 #[derive(Debug, Error)]
 pub enum UnlockReadError {
     #[error("--non-interactive requires --password-stdin to provide the password")]
@@ -60,7 +59,6 @@ pub enum UnlockReadError {
 /// Generic over `R: Read` so unit tests (and Task 5's
 /// pipeline-orchestration tests) can drive the `Stream` arm from a
 /// `Cursor<Vec<u8>>` without touching stdin or a TTY.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub enum PasswordSource<'a, R: Read> {
     /// Read interactively from the TTY via `rpassword` — no echo.
     Tty,
@@ -83,7 +81,6 @@ pub enum PasswordSource<'a, R: Read> {
 /// on stdin, either of which would otherwise pass an empty password
 /// down to `open_with_password` and surface a less obvious unlock
 /// failure further in.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn read_password_from_reader<R: Read>(reader: &mut R) -> Result<SecretBytes, UnlockReadError> {
     let mut buf: Vec<u8> = Vec::new();
     reader.read_to_end(&mut buf)?;
@@ -111,7 +108,6 @@ pub fn read_password_from_reader<R: Read>(reader: &mut R) -> Result<SecretBytes,
 /// The returned [`SecretBytes`] is constructed via [`SecretBytes::new`]
 /// from `String::into_bytes` — the underlying allocation moves, so the
 /// password never lives in an unzeroized `String` after this call.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn read_password_from_tty() -> Result<SecretBytes, UnlockReadError> {
     let s = rpassword::prompt_password(PASSWORD_PROMPT)?;
     finalize_tty(s)

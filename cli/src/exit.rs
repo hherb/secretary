@@ -17,14 +17,12 @@ use secretary_core::sync::SyncError;
 /// | 12 | EvidenceStale after retry budget exhausted. |
 /// | 13 | BlockFingerprintMismatch on commit. |
 /// | 14 | Lockfile held — another secretary-sync process is running on this vault. |
-// The non-`GenericError` variants and `from_sync_error` are consumed by
-// the pipeline + dispatch wiring landed in Task 5 onward. Task 1 ships
-// only the skeleton; the unit tests below exercise every variant so
-// the discriminant table is locked in. The allow lifts once Task 5
-// references the rest of the surface.
-// TODO(#113): remove this `#[allow(dead_code)]` when Task 5 wires the
-// dispatch layer that consumes every variant.
-#[allow(dead_code)]
+// As of C.2 Task 5, `ExitCode` is library-public (`secretary_cli::exit::ExitCode`)
+// and the discriminant table is locked in by the per-variant unit tests
+// below. Variants not yet referenced from `main.rs` will be wired by
+// the dispatch path in Task 9 (`run_one` outcome → exit code), but the
+// surface is part of the library API today, so no `#[allow(dead_code)]`
+// is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ExitCode {
@@ -42,9 +40,6 @@ impl ExitCode {
     /// Map a `SyncError` to the documented exit code. Variants without a
     /// dedicated code map to `GenericError`.
     #[must_use]
-    // TODO(#113): remove this `#[allow(dead_code)]` when Task 5 wires
-    // the dispatch layer that calls `from_sync_error`.
-    #[allow(dead_code)]
     pub fn from_sync_error(err: &SyncError) -> Self {
         match err {
             SyncError::EvidenceStale => Self::EvidenceStale,

@@ -12,8 +12,9 @@ use super::VetoUx;
 /// unit struct; instantiation is free.
 ///
 /// Order is preserved one-to-one with the input slice so the bijection
-/// check in `commit_with_decisions` is trivially satisfied.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
+/// check in `commit_with_decisions` is trivially satisfied. Consumed
+/// by [`crate::pipeline::run_one`] when the operator passes
+/// `--non-interactive`.
 pub struct AutoKeepLocalVetoUx;
 
 impl VetoUx for AutoKeepLocalVetoUx {

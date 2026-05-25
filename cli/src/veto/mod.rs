@@ -28,9 +28,8 @@ pub(crate) mod test_util;
 /// Implementations are stateless and side-effect-free except for the
 /// actual UX layer (which reads from a [`std::io::Read`] + writes to a
 /// [`std::io::Write`]). The trait is intentionally object-safe so the
-/// upcoming pipeline can pick the impl at runtime behind a
-/// `&mut dyn VetoUx` without monomorphisation.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
+/// pipeline picks the impl at runtime behind a `&mut dyn VetoUx`
+/// without monomorphisation — see [`crate::pipeline::run_one`].
 pub trait VetoUx {
     /// Produce one [`VetoDecision`] per input veto, **preserving order**.
     ///

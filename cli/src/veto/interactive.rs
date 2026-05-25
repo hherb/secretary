@@ -28,15 +28,14 @@ use super::VetoUx;
 const DEFAULT_DECISION_LABEL: &str = "KeepLocal";
 
 /// TTY veto UX, generic over any [`BufRead`] + [`Write`] pair for
-/// testability. Production wires `stdin().lock()` + `stderr().lock()`.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
+/// testability. Production wires `stdin().lock()` + `stderr().lock()`;
+/// [`crate::pipeline::run_one`] consumes it via `&mut dyn VetoUx`.
 pub struct TtyVetoUx<R: BufRead, W: Write> {
     reader: R,
     writer: W,
 }
 
 impl<R: BufRead, W: Write> TtyVetoUx<R, W> {
-    #[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
     pub fn new(reader: R, writer: W) -> Self {
         Self { reader, writer }
     }

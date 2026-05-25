@@ -1,13 +1,13 @@
 //! `secretary-sync` entry point. See
 //! [`docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`](../../docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md).
+//!
+//! As of C.2 Task 5, `cli/` is a library + binary hybrid: this binary
+//! re-exports the orchestration surface through [`secretary_cli`] (see
+//! [`src/lib.rs`](lib.rs)) so integration tests in `cli/tests/*.rs` can
+//! reach the modules without spawning the binary.
 
 use clap::Parser;
-
-mod args;
-mod exit;
-mod state;
-mod unlock;
-mod veto;
+use secretary_cli::{args, exit};
 
 fn main() {
     let cli = args::Cli::parse();

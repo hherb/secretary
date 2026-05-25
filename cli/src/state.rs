@@ -41,7 +41,6 @@ const STATE_FILE_EXTENSION: &str = "state.cbor";
 const LOCK_FILE_EXTENSION: &str = "lock";
 const VAULT_UUID_HEX_LEN: usize = 32;
 
-#[allow(dead_code)] // TODO(#113): consumed when Task 5 pipeline wires state load/save + lockfile acquire.
 #[derive(Debug, Error)]
 pub enum StateError {
     #[error("I/O error reading or writing state file: {0}")]
@@ -112,7 +111,6 @@ pub fn default_state_dir() -> Option<PathBuf> {
 /// TOCTOU window where concurrent deletion (or a non-`secretary-sync`
 /// tool, since the per-vault lockfile only excludes our own binary) would
 /// surface as a confusing `Io` error instead of empty-state semantics.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn load(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<SyncState, StateError> {
     let path = state_file_path(state_dir, vault_uuid);
     let bytes = match fs::read(&path) {
@@ -133,7 +131,6 @@ pub fn load(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<SyncState, StateEr
 /// Atomically persist `SyncState` to `<state-dir>/<vault_uuid_hex>.state.cbor`.
 /// Uses `tempfile::NamedTempFile::persist` for rename(2) / MoveFileExW
 /// semantics — same `=3.27.0` exact pin as the vault format layer.
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 pub fn save(state_dir: &Path, state: &SyncState) -> Result<(), StateError> {
     fs::create_dir_all(state_dir)?;
     let final_path = state_file_path(state_dir, state.vault_uuid);
@@ -148,14 +145,12 @@ pub fn save(state_dir: &Path, state: &SyncState) -> Result<(), StateError> {
 
 /// RAII guard for the per-vault exclusive lockfile. Holds the locked file
 /// handle; releases on drop (kernel auto-releases flock when fd closes).
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 #[derive(Debug)]
 pub struct LockfileGuard {
     _file: File,
     path: PathBuf,
 }
 
-#[allow(dead_code)] // TODO(#113): consumed by Task 5 pipeline.
 impl LockfileGuard {
     /// Acquire the exclusive lock on `<state-dir>/<vault_uuid_hex>.lock`.
     /// Returns `Err(StateError::LockfileHeld)` if another process already

@@ -6,6 +6,15 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+# Promote `secretary-cli` to a library + binary hybrid so integration
+# tests under `cli/tests/*.rs` can reach the orchestration modules
+# (`pipeline`, `veto`, `unlock`, `state`, `exit`) without going through
+# the binary boundary. The binary still ships as `secretary-sync`; the
+# library is the same set of modules surfaced under `secretary_cli::*`.
+name = "secretary_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "secretary-sync"
 path = "src/main.rs"
