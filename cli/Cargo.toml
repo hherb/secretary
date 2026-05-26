@@ -55,6 +55,13 @@ signal-hook = "0.3"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "=3.27.0"
+# `rand` is dev-only and used by `tests/once_integration.rs` to generate
+# password values at test runtime instead of hard-coding string literals.
+# Literal byte arrays / strings flowing into password / nonce / key
+# parameters trip CodeQL's `rust/hard-coded-cryptographic-value` rule
+# repeatedly, so test inputs that exercise crypto sinks must be
+# runtime-generated (see CLAUDE.md memory `feedback_test_crypto_random_not_hardcoded`).
+rand = "0.9"
 
 [lints]
 workspace = true

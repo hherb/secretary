@@ -1619,6 +1619,7 @@ dependencies = [
  "fs4",
  "notify",
  "predicates",
+ "rand",
  "rpassword",
  "secretary-core",
  "serde_json",
