@@ -115,6 +115,12 @@ fn run(cli: Cli) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail_generic(format_args!("state load failed: {e}")),
     };
+    // LockfileHeld returns *before* state is mutated, so we deliberately
+    // skip the `state::save` at the bottom of this function on that
+    // branch — the in-memory `state` came straight from `state::load`
+    // and re-saving it would race the holder's writes. Any other
+    // acquire failure (FS error, permission) is handled the same way:
+    // bail before touching disk-side state.
     let _lock_guard = match LockfileGuard::acquire(&state_dir, vault_uuid) {
         Ok(g) => g,
         Err(StateError::LockfileHeld(path)) => {

@@ -280,6 +280,12 @@ fn once_creates_lockfile_in_state_dir() {
 /// clap-derive `Subcommand` enum stays exported in the operator-facing
 /// help text — a refactor that accidentally hides one of them would
 /// silently break the operator's discoverability.
+///
+/// Asserts on each subcommand's doc-comment description (sourced from
+/// `cli/src/args.rs::Command::{Once,Run}`) rather than the bare names
+/// "once" / "run" so the test is bound to the subcommand-listing
+/// context, not any accidental occurrence of those words elsewhere in
+/// the help text.
 #[test]
 fn help_lists_both_subcommands() {
     Command::cargo_bin(BIN_NAME)
@@ -287,7 +293,11 @@ fn help_lists_both_subcommands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("once").and(predicate::str::contains("run")));
+        .stdout(
+            predicate::str::contains("Commands:")
+                .and(predicate::str::contains("Single sync attempt then exit"))
+                .and(predicate::str::contains("Long-running daemon")),
+        );
 }
 
 /// `--log-format=json` switches the tracing subscriber into JSON-line
