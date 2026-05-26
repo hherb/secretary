@@ -74,9 +74,20 @@ pub fn try_init(verbose: u8, format: LogFormat) -> Result<&'static str, TryInitE
     let directive = resolve_directive(verbose);
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(directive));
+    // Diagnostics go to stderr so the binary's stdout stays usable for
+    // operators redirecting it (`secretary-sync once vault > out`). The
+    // `tracing-subscriber::fmt()` default is stdout, which would pollute
+    // any such stream and breaks the established Unix CLI convention.
     match format {
-        LogFormat::Human => fmt().with_env_filter(env_filter).try_init()?,
-        LogFormat::Json => fmt().with_env_filter(env_filter).json().try_init()?,
+        LogFormat::Human => fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::io::stderr)
+            .try_init()?,
+        LogFormat::Json => fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::io::stderr)
+            .json()
+            .try_init()?,
     }
     Ok(directive)
 }

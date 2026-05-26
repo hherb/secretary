@@ -50,23 +50,28 @@ fn run_non_interactive_without_password_stdin_exits_usage_error() {
 }
 
 /// `--password-stdin` alone (without `--non-interactive`) MUST pass
-/// the args-layer validation. The subcommand body is still a Task 9
-/// stub today, so the process exits 1 (`GenericError`) with the "not
-/// yet implemented" message — but critically NOT 2 (UsageError).
-/// Pins the negative side of the validation contract.
+/// the args-layer validation. As of Task 9 the subcommand body is
+/// live, so with empty piped stdin the password-read step fails
+/// with the typed `UnlockReadError::Empty` and exits 1
+/// (`GenericError`). The critical assertion is "NOT 2 (UsageError)"
+/// — validation passed and we made it into the body.
 #[test]
 fn once_password_stdin_alone_passes_args_validation() {
     Command::cargo_bin(BIN_NAME)
         .expect("binary built")
         .args(["once", "--password-stdin", "/tmp/vault"])
+        .write_stdin("")
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("not yet implemented"));
+        .stderr(predicate::str::contains("password is empty"));
 }
 
 /// Both flags together — the canonical headless invocation. Passes
-/// validation, falls through to the Task 9 stub.
+/// validation, falls through to the Task 9 body, where empty piped
+/// stdin trips `UnlockReadError::Empty` and exits 1 (`GenericError`).
+/// Mirrors [`once_password_stdin_alone_passes_args_validation`] but
+/// against the `--non-interactive` arm of the validate matrix.
 #[test]
 fn once_non_interactive_with_password_stdin_passes_args_validation() {
     Command::cargo_bin(BIN_NAME)
@@ -77,8 +82,9 @@ fn once_non_interactive_with_password_stdin_passes_args_validation() {
             "--password-stdin",
             "/tmp/vault",
         ])
+        .write_stdin("")
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("not yet implemented"));
+        .stderr(predicate::str::contains("password is empty"));
 }
