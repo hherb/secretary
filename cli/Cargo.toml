@@ -42,8 +42,14 @@ serde_json = "1"
 # keep fs4 because the workspace MSRV (1.87) is below 1.89, and the
 # call site uses UFCS (`Fs4FileExt::try_lock(&file)`) to disambiguate.
 fs4 = "1"
-signal-hook = "0.3"
 thiserror = "2"
+
+# `signal-hook` is Unix-only. Per spec §D10 + CLAUDE.md
+# `feedback_windows_not_primary`, we do not add a Windows-specific
+# signal-handling crate; the non-Unix surface of `cli/src/signal.rs`
+# returns a permanently-false flag with a `tracing::warn!`.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
 
 [dev-dependencies]
 assert_cmd = "2"

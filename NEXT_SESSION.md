@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-25-c2-task-7-notify-driver-daemon-shipped.md
+docs/handoffs/2026-05-26-c2-task-8-logging-signal-shipped.md
