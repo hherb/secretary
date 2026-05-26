@@ -11,7 +11,9 @@
 pub mod args;
 pub mod daemon;
 pub mod exit;
+pub mod logging;
 pub mod pipeline;
+pub mod signal;
 pub mod state;
 pub mod unlock;
 pub mod veto;
