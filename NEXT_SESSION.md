@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-26-c2-task-9-main-dispatch-shipped.md
+docs/handoffs/2026-05-26-c2-shipped.md
