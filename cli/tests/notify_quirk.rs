@@ -133,6 +133,15 @@ fn collect_events(rx: &Receiver<notify::Result<Event>>, budget: Duration) -> Vec
 /// FSEvents' read-only `Access` ticks while accepting the catch-all
 /// `Any` / `Other` so this test stays robust against minor `notify`
 /// taxonomy reshuffles.
+///
+/// **Intentional duplication.** This is a hand-rolled copy of the
+/// wrapper's predicate, not an import — the file's purpose is to pin
+/// `notify`'s **own** behaviour one layer below the wrapper, so the
+/// two predicates SHOULD drift independently. A future "DRY" refactor
+/// that imports the wrapper's predicate here would couple this
+/// "naked notify" pin to the wrapper's filtering policy and erase the
+/// diagnostic-split that motivates this file (see the module-level
+/// "Why a separate file" docstring above).
 #[must_use]
 fn is_sync_relevant_kind(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Access(_))

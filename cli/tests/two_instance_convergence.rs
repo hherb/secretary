@@ -244,6 +244,17 @@ fn force_kill(child: &mut Child) {
 /// `SyncState::highest_vector_clock_seen` after one periodic-poll
 /// cycle and graceful shutdown.
 ///
+/// **Scope: quiescent convergence only.** Both daemons observe the
+/// same disk-side state with no third-party writes during the test
+/// window; the merge layer is exercised against a single agreed-upon
+/// vault state, not against concurrent mutations. Cross-device
+/// live-mutation convergence (where each daemon's writes race against
+/// the other's reads) is deferred to **C.4** — see
+/// `docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`
+/// §D8 + the C.4 row in `ROADMAP.md`. What this test pins is the
+/// daemons' state-mutation contract, signal handling, and final
+/// state-save path — not the merge layer under contention.
+///
 /// Scenario:
 ///
 /// 1. Stage `golden_vault_001` into a shared `vault_dir` under one
