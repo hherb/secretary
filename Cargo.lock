@@ -3244,7 +3244,7 @@ dependencies = [
  "bit-vec",
  "bitflags 2.11.1",
  "num-traits",
- "rand",
+ "rand 0.9.4",
  "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
@@ -3346,6 +3346,17 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
 
 [[package]]
 name = "rand"
@@ -3687,7 +3698,7 @@ dependencies = [
  "fs4",
  "notify",
  "predicates",
- "rand",
+ "rand 0.9.4",
  "rpassword",
  "secretary-core",
  "serde_json",
@@ -3735,13 +3746,16 @@ dependencies = [
 name = "secretary-desktop"
 version = "0.1.0"
 dependencies = [
+ "dirs 5.0.1",
  "hex",
+ "rand 0.8.6",
  "secretary-ffi-bridge",
  "serde",
  "serde_json",
  "sha2",
  "tauri",
  "tauri-build",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -5129,7 +5143,7 @@ dependencies = [
  "serde",
  "tempfile",
  "textwrap",
- "toml 0.8.23",
+ "toml 0.9.12+spec-1.1.0",
  "uniffi_internal_macros",
  "uniffi_meta",
  "uniffi_pipeline",
@@ -5185,7 +5199,7 @@ dependencies = [
  "quote",
  "serde",
  "syn 2.0.117",
- "toml 0.8.23",
+ "toml 0.9.12+spec-1.1.0",
  "uniffi_meta",
 ]
 

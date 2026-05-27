@@ -1,17 +1,14 @@
 //! Secretary desktop client — Tauri 2 main entry point.
 //!
-//! D.1.1 walking skeleton: minimal "hello world" window. The session,
-//! commands, and timer thread land in later tasks per
-//! `docs/superpowers/plans/2026-05-27-d11-tauri-walking-skeleton.md`.
+//! D.1.1 walking skeleton. The modules (`auto_lock`, `constants`, `errors`,
+//! `session`, `settings`) live in the sibling library crate
+//! ([`secretary_desktop`]) so integration tests in `tests/*.rs` can reach
+//! them. Tauri command handlers (Task 4) and the auto-lock timer thread
+//! (Task 5) wire those modules into the Builder pipeline below.
 
 // Hide the console window on Windows in release builds. Cosmetic for D.1.1
 // but the macro is canonical Tauri practice — keep it from day one.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-mod auto_lock;
-mod constants;
-mod errors;
-mod settings;
 
 fn main() {
     tauri::Builder::default()
