@@ -11,6 +11,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// and the timer thread to compute "now". Pulled out as a free function so
 /// tests can inject a fixed value via the `is_expired` argument rather than
 /// monkey-patching the clock.
+///
+/// `Duration::as_millis()` returns `u128`; we truncate to `u64`. `u64::MAX`
+/// milliseconds from the UNIX epoch is ≈ year 584_556_020 — past any horizon
+/// where this code will run — so the truncation is safe and not worth a
+/// runtime check.
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
