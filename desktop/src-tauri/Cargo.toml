@@ -1,0 +1,32 @@
+[package]
+name = "secretary-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "secretary-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 2.x. Features kept minimal: window for the main window, no
+# tray icon / no auto-updater / no clipboard / no shell — D.1.1 doesn't
+# need any of those. Add features per-slice as D.1.x grows.
+#
+# Other crates the later D.1.x tasks need (`secretary-ffi-bridge`, `serde`,
+# `serde_json`, `thiserror`, `tracing` / `tracing-subscriber`, `sha2`, `hex`,
+# `rand`, `dirs`, `tempfile`) are intentionally NOT pre-pulled here — each
+# task adds the dep it actually introduces, so reviewers can see "this PR
+# pulled in X" without cross-referencing the plan. `tempfile` (when added
+# for atomic writes in Task 2/3) MUST be exact-pinned (`=3.27.0`) to match
+# `core/Cargo.toml` / `cli/Cargo.toml` per CLAUDE.md "exact pins on
+# security-critical paths".
+tauri = { version = "2", features = [] }
+
+[lints]
+workspace = true

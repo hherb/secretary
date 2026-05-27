@@ -1,0 +1,12 @@
+# pnpm 11+ config (per https://pnpm.io/settings — replaces the legacy
+# `"pnpm"` field in package.json). Not a multi-package workspace; this
+# file just hosts pnpm settings local to desktop/.
+#
+# `allowBuilds` whitelists packages whose postinstall scripts are
+# allowed to run. pnpm 11 blocks all postinstall scripts by default
+# (supply-chain hardening). Vite uses esbuild for dev transformation;
+# its postinstall installs the platform-native esbuild binary, without
+# which `vite` / `pnpm tauri dev` fails at first request. Keep this
+# list minimal — any new entry needs a deliberate review.
+allowBuilds:
+  esbuild: true

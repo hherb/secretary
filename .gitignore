@@ -166,3 +166,13 @@ tempCodeRunnerFile.py
 # the duration of a brainstorming session.
 .superpowers/
 
+# Tauri 2 desktop client (D.1.x). Frontend deps, Vite output, and the
+# Cargo target dir for `secretary-desktop` (Tauri's build dir lives at
+# desktop/src-tauri/target, distinct from the workspace target at
+# /target). `gen/` is uniffi/tauri-bridge generated content per build.
+desktop/node_modules/
+desktop/target/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
