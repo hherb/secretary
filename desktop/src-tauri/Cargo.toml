@@ -41,6 +41,12 @@ tauri = { version = "2", features = [] }
 # Versions track the workspace conventions already used by `core/` and
 # `ffi/secretary-ffi-bridge/`.
 secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
+# `secretary-core` is pulled in for `SecretString` / `SecretBytes`, the
+# zeroize-typed wrappers required to construct `bridge::FieldInputValue::Text`
+# / `::Bytes`. The bridge does not re-export them; both its own tests and
+# `ffi/secretary-ffi-py` import them directly from core via the same
+# `secretary_core::crypto::secret::{SecretString, SecretBytes}` path.
+secretary-core = { path = "../../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
