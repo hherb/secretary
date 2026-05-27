@@ -282,7 +282,8 @@ mod tests {
 
 use std::path::{Path, PathBuf};
 
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use secretary_core::crypto::secret::SecretString;
 use secretary_ffi_bridge::{
     read_block, save_block, BlockInput, FieldInput, FieldInputValue, OpenVaultManifest,
@@ -466,15 +467,24 @@ pub fn device_uuid_path_in(data_dir: &Path, vault_uuid: &[u8]) -> PathBuf {
 }
 
 /// Persistent per-vault device UUID accessor. On first call for a given
-/// `vault_uuid`, generates 16 OsRng bytes, atomically writes them via
-/// `tempfile::NamedTempFile::persist`, and returns them. On subsequent calls
-/// for the same vault, reads the file back and returns it.
+/// `vault_uuid`, generates 16 `OsRng` bytes, atomically persists them via
+/// `tempfile::NamedTempFile::persist_noclobber`, and returns them. On
+/// subsequent calls for the same vault, reads the file back and returns it.
 ///
 /// The vector-clock layer (Sub-project C) needs a stable per-vault device
 /// identifier; we cannot derive it from the user identity (a single user
 /// across two machines must have two device UUIDs) or from a hardware
 /// fingerprint (privacy, plus brittle across OS reinstalls). Random +
 /// persisted is the simplest reliable approach.
+///
+/// Race semantics: two processes opening the same vault concurrently for
+/// the first time would each see `path.exists() == false` and each generate
+/// their own UUID. `persist_noclobber` makes the rename TOCTOU-free — the
+/// race-winner's bytes land on disk; the race-loser's `persist_noclobber`
+/// returns `ErrorKind::AlreadyExists`, at which point we re-read the
+/// winner's file and return *those* bytes (not the in-memory ones we just
+/// generated). Both processes converge on a single device UUID, preserving
+/// the vector-clock invariant that one device == one fingerprint.
 ///
 /// The `_in` variant takes an explicit `data_dir` so integration tests can
 /// drive a tempdir; production callers use [`load_or_create_device_uuid`].
@@ -483,26 +493,12 @@ pub fn load_or_create_device_uuid_in(
     vault_uuid: &[u8],
 ) -> Result<[u8; DEVICE_UUID_BYTE_LEN], AppError> {
     use std::fs;
+    use std::io;
 
     let path = device_uuid_path_in(data_dir, vault_uuid);
 
     if path.exists() {
-        let bytes = fs::read(&path).map_err(|e| AppError::Io {
-            detail: format!("read device_uuid file {}: {}", path.display(), e),
-        })?;
-        if bytes.len() != DEVICE_UUID_BYTE_LEN {
-            return Err(AppError::Io {
-                detail: format!(
-                    "device_uuid file {} has {} bytes (expected {})",
-                    path.display(),
-                    bytes.len(),
-                    DEVICE_UUID_BYTE_LEN,
-                ),
-            });
-        }
-        let mut uuid = [0u8; DEVICE_UUID_BYTE_LEN];
-        uuid.copy_from_slice(&bytes);
-        return Ok(uuid);
+        return read_device_uuid_file(&path);
     }
 
     // First-call path: generate + atomically persist.
@@ -512,12 +508,17 @@ pub fn load_or_create_device_uuid_in(
     })?;
 
     let mut uuid = [0u8; DEVICE_UUID_BYTE_LEN];
-    rand::thread_rng().fill_bytes(&mut uuid);
+    OsRng.try_fill_bytes(&mut uuid).map_err(|e| AppError::Io {
+        detail: format!("OS entropy for device UUID: {e}"),
+    })?;
 
-    // `tempfile::NamedTempFile::new_in(parent)` + `persist(path)` performs
-    // the same `rename(2)` / `MoveFileExW` semantics as
-    // `core/src/vault/io.rs::write_atomic`. The `tempfile = "=3.27.0"`
-    // exact-pin in Cargo.toml is the same atomic-write discipline.
+    // `tempfile::NamedTempFile::new_in(parent)` + `persist_noclobber(path)`
+    // performs the same `rename(2)` / `MoveFileExW` atomic-rename semantics
+    // as `core/src/vault/io.rs::write_atomic`, but refuses to overwrite an
+    // existing target. This closes the TOCTOU between the `path.exists()`
+    // check above and the rename below: if a parallel process wrote the
+    // file in between, `persist_noclobber` returns `AlreadyExists` and we
+    // read the persisted bytes instead of stomping them.
     let temp_file = tempfile::NamedTempFile::new_in(parent).map_err(|e| AppError::Io {
         detail: format!("tempfile new_in {}: {}", parent.display(), e),
     })?;
@@ -529,14 +530,42 @@ pub fn load_or_create_device_uuid_in(
             e
         ),
     })?;
-    temp_file.persist(&path).map_err(|e| AppError::Io {
-        detail: format!(
-            "atomic persist of device_uuid file {}: {}",
-            path.display(),
-            e
-        ),
-    })?;
+    match temp_file.persist_noclobber(&path) {
+        Ok(_) => Ok(uuid),
+        Err(persist_err) if persist_err.error.kind() == io::ErrorKind::AlreadyExists => {
+            // Race lost: another process persisted first. Read its bytes
+            // and discard our own — both sides converge on one UUID.
+            read_device_uuid_file(&path)
+        }
+        Err(persist_err) => Err(AppError::Io {
+            detail: format!(
+                "atomic persist of device_uuid file {}: {}",
+                path.display(),
+                persist_err.error
+            ),
+        }),
+    }
+}
 
+/// Read a device-UUID file and validate its length. Shared between the
+/// fast-path (file already exists) and the race-loser path (concurrent
+/// first-unlock) of [`load_or_create_device_uuid_in`].
+fn read_device_uuid_file(path: &Path) -> Result<[u8; DEVICE_UUID_BYTE_LEN], AppError> {
+    let bytes = std::fs::read(path).map_err(|e| AppError::Io {
+        detail: format!("read device_uuid file {}: {}", path.display(), e),
+    })?;
+    if bytes.len() != DEVICE_UUID_BYTE_LEN {
+        return Err(AppError::Io {
+            detail: format!(
+                "device_uuid file {} has {} bytes (expected {})",
+                path.display(),
+                bytes.len(),
+                DEVICE_UUID_BYTE_LEN,
+            ),
+        });
+    }
+    let mut uuid = [0u8; DEVICE_UUID_BYTE_LEN];
+    uuid.copy_from_slice(&bytes);
     Ok(uuid)
 }
 
@@ -585,7 +614,9 @@ mod io_tests {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let mut fresh_uuid = [0u8; 16];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut fresh_uuid);
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut fresh_uuid)
+            .expect("OS entropy in test");
 
         let first = load_or_create_device_uuid_in(dir.path(), &fresh_uuid)
             .expect("first call must succeed");
@@ -633,5 +664,66 @@ mod io_tests {
         let a = load_or_create_device_uuid_in(dir.path(), &[0x01; 16]).expect("vault a");
         let b = load_or_create_device_uuid_in(dir.path(), &[0x02; 16]).expect("vault b");
         assert_ne!(a, b, "different vaults must get different device UUIDs");
+    }
+
+    /// Stress the race-loser path: many threads call
+    /// `load_or_create_device_uuid_in` concurrently for the same fresh
+    /// vault_uuid. Without the `persist_noclobber` guard the race-loser
+    /// would persist its own UUID *over* the winner's, and the threads
+    /// would diverge on the in-memory return value vs the on-disk bytes.
+    /// With the guard, all threads converge on a single UUID — whichever
+    /// reached `persist_noclobber` first.
+    ///
+    /// 16 threads against a fresh tempdir reliably forces multiple racers
+    /// to see `path.exists() == false` and contend on the rename. The test
+    /// is non-flaky in the sense that the *convergence* assertion holds
+    /// regardless of which thread wins; a TOCTOU regression would surface
+    /// as divergent returned UUIDs, not a timing-dependent failure.
+    #[test]
+    fn concurrent_first_unlock_converges_on_single_device_uuid() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let vault_uuid = [0xEF; 16];
+        let thread_count = 16;
+        let barrier = Arc::new(Barrier::new(thread_count));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let dir = Arc::clone(&dir);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    // Synchronise the start so threads actually contend on
+                    // the rename rather than serialising via thread spawn.
+                    barrier.wait();
+                    load_or_create_device_uuid_in(dir.path(), &vault_uuid)
+                        .expect("concurrent caller must succeed")
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread panic"))
+            .collect();
+
+        let winner = results[0];
+        assert_ne!(winner, [0u8; 16], "winner UUID must be RNG-generated");
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(
+                *r, winner,
+                "thread {i} diverged from the on-disk winner — TOCTOU regression: \
+                 got {r:?}, expected {winner:?}",
+            );
+        }
+
+        // Sanity: re-reading the persisted file matches the convergence value.
+        let on_disk = load_or_create_device_uuid_in(dir.path(), &vault_uuid)
+            .expect("post-race read must succeed");
+        assert_eq!(
+            on_disk, winner,
+            "on-disk bytes must match the value returned to every thread"
+        );
     }
 }

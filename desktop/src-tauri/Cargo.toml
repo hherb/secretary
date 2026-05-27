@@ -63,12 +63,15 @@ hex = "0.4"
 #   (`~/Library/Application Support/...` on macOS,
 #   `~/.local/share/...` on Linux). v5; the API surface used here
 #   (`dirs::data_dir`) has been stable since v2.
-# - `rand` for the per-vault device UUID generation (16 bytes from OsRng).
-#   The same version is already in the workspace transitively via
-#   `secretary-core`'s zeroize / crypto stack.
+# - `rand` for the per-vault device UUID generation. The 16 bytes come
+#   from `rand::rngs::OsRng` (OS CSPRNG) directly — not `rand::rng()` —
+#   matching the `rand_core::OsRng` discipline used throughout `core/src`
+#   for security-critical randomness. Pinned to `0.9` to share the major
+#   already in the workspace via `cli/Cargo.toml`, rather than introducing
+#   a parallel `rand 0.8` chain.
 tempfile = "=3.27.0"
 dirs = "5"
-rand = "0.8"
+rand = "0.9"
 
 [lints]
 workspace = true
