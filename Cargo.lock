@@ -3735,8 +3735,15 @@ dependencies = [
 name = "secretary-desktop"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "secretary-ffi-bridge",
+ "serde",
+ "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
