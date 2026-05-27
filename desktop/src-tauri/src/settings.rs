@@ -366,14 +366,13 @@ pub fn load_from_vault(
             detail: "settings field text payload missing".to_string(),
         })?;
 
-    // HACK: the bridge's `RecordInput` has no `record_type` field —
+    // HACK(#141): the bridge's `RecordInput` has no `record_type` field —
     // `save::input::RecordInput::into_core_record` hardcodes
     // `record_type: String::new()`. So records this client wrote arrive back
-    // with `record.record_type() == ""`. Until the bridge gains a
-    // `record_type` field on `RecordInput` (filed by this task as a
-    // follow-up issue), treat empty as v1 so the round-trip succeeds; pass
-    // the original value through otherwise so a future v2 record from a
-    // newer client surfaces `SettingsUnknownVersion` correctly.
+    // with `record.record_type() == ""`. Until issue #141 lands, treat empty
+    // as v1 so the round-trip succeeds; pass the original value through
+    // otherwise so a future v2 record from a newer client surfaces
+    // `SettingsUnknownVersion` correctly.
     let stored_record_type = record.record_type();
     let effective_record_type = if stored_record_type.is_empty() {
         SETTINGS_RECORD_TYPE
@@ -413,10 +412,10 @@ pub fn save_to_vault(
 
     let (_record_type, field_name, field_value_text) = serialize_settings(new_settings);
 
-    // NOTE: see HACK in `load_from_vault` — `RecordInput` doesn't expose a
-    // `record_type` field, so the SETTINGS_RECORD_TYPE component of the
-    // tuple is discarded here. The matching workaround on load treats the
-    // empty `record_type` as v1.
+    // NOTE(#141): see HACK in `load_from_vault` — `RecordInput` doesn't
+    // expose a `record_type` field, so the SETTINGS_RECORD_TYPE component
+    // of the tuple is discarded here. The matching workaround on load
+    // treats the empty `record_type` as v1.
     let block_input = BlockInput {
         block_uuid,
         block_name: SETTINGS_BLOCK_NAME.to_string(),
