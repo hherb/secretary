@@ -360,9 +360,11 @@ pub fn load_from_vault(
             detail: format!("settings field '{}' is not text-typed", field.name()),
         });
     }
-    let field_text = field.expose_text().ok_or_else(|| AppError::SettingsCorrupt {
-        detail: "settings field text payload missing".to_string(),
-    })?;
+    let field_text = field
+        .expose_text()
+        .ok_or_else(|| AppError::SettingsCorrupt {
+            detail: "settings field text payload missing".to_string(),
+        })?;
 
     // HACK: the bridge's `RecordInput` has no `record_type` field —
     // `save::input::RecordInput::into_core_record` hardcodes
