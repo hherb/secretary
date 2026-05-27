@@ -19,7 +19,7 @@ Four pure-Rust modules that compile + unit-test in isolation, no I/O, no Tauri r
 | Handoff baton | This file ([`docs/handoffs/2026-05-27-d11-task-2-shipped.md`](.)) | Captures Task 2's delivery and frames Task 3. |
 | Symlink retarget | [`NEXT_SESSION.md`](../../NEXT_SESSION.md) | Bumped from `2026-05-27-d11-task-1-shipped.md` to this file. |
 
-**Commits on `feature/d11-task-2`** (5, one per module + a fmt fixup):
+**Commits on `feature/d11-task-2`** (5 original + 2 post-review fixups + a baton-sync amendment):
 
 | SHA | Subject |
 |---|---|
@@ -28,26 +28,28 @@ Four pure-Rust modules that compile + unit-test in isolation, no I/O, no Tauri r
 | `588f37e` | `feat(d11): IdleTracker pure module — now_ms + notify + is_expired (underflow-safe)` |
 | `0a1281a` | `feat(d11): Settings parse/serialize pure module + Task 2 clippy hardening` |
 | `de947dd` | `style(d11): cargo fmt fixup over Task 2 modules` |
+| `ea30470` | `docs(d11): document u64 ms truncation bound in auto_lock::now_ms` |
+| `31bb133` | `refactor(d11): split map_ffi_error pure helper from From<FfiVaultError>` |
 
 Post-squash-merge SHA on `main` will differ.
 
 ### Gauntlet (live, performed)
 
 ```
-PASSED: 992 FAILED: 0 IGNORED: 10        # baseline was 960 / 0 / 10
+PASSED: 993 FAILED: 0 IGNORED: 10        # baseline was 960 / 0 / 10
 cargo clippy --release --workspace --tests -- -D warnings   → clean
 cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS
 ```
 
-Plan predicted +27 tests (960 → 987). Actual delta is **+32** (960 → 992) — five extra tests beyond the plan's count, all defensible additions and called out per-module:
+Plan predicted +27 tests (960 → 987). Actual delta is **+33** (960 → 993) — six extra tests beyond the plan's count, all defensible additions and called out per-module:
 
-- `errors.rs`: +2 — `ffi_wrong_password_or_corrupt_collapses_to_wrong_password` (pins the anti-oracle collapse at the From<FfiVaultError> seam, not just at the serde shape) + `ffi_corrupt_vault_detail_is_logged_but_stripped_on_serialize` (pins the detail-stripping path end-to-end).
+- `errors.rs`: +3 — `ffi_wrong_password_or_corrupt_collapses_to_wrong_password` (pins the anti-oracle collapse at the From<FfiVaultError> seam, not just at the serde shape) + `ffi_corrupt_vault_detail_is_logged_but_stripped_on_serialize` (pins the detail-stripping path end-to-end) + `map_ffi_error_is_pure_no_log_side_effect_required` (post-review-fixup: documents the API of the pure `map_ffi_error` helper that `From<FfiVaultError>` delegates to after logging).
 - `auto_lock.rs`: +1 — `now_ms_is_after_2020` (sanity check: would catch an accidental "return seconds instead of milliseconds" regression).
 - `settings.rs`: +2 — `parse_non_integer_errors` (the plan listed this in the test count but I had to verify) + `validate_save_accepts_min_and_max_inclusive` (the `..=` form is easy to off-by-one; pins the inclusivity).
 
-Per the plan's note on prediction tracking: surplus tests are good news; Task 3's gauntlet baseline becomes **992 / 0 / 10** rather than **987 / 0 / 10**.
+Per the plan's note on prediction tracking: surplus tests are good news; Task 3's gauntlet baseline becomes **993 / 0 / 10** rather than **987 / 0 / 10**.
 
 ### Plan execution trace (for the reviewer)
 
@@ -66,7 +68,7 @@ Per the plan (Task 3 begins at plan line 1500 of `docs/superpowers/plans/2026-05
 
 **Acceptance criteria for Task 3 (from the plan):**
 
-- Gauntlet count goes from **992 → ~1004** (+12 integration tests).
+- Gauntlet count goes from **993 → ~1005** (+12 integration tests).
 - `desktop/src-tauri/Cargo.toml` gains `tempfile = "=3.27.0"` (exact pin per CLAUDE.md atomic-write discipline) + `dirs = "5"` + `rand` (for the per-vault device UUID generation).
 - Settings round-trips through a real ephemeral vault: write via `save_block`, read back via `read_block`, parse via Task 2's `parse_settings_field`, assert equality.
 - Drop-chain wipe pinned: drop the `UnlockedSession`, then memory-inspect that the `UnlockedIdentity`'s secret bytes are zeroed (the bridge crate's existing zeroize tests give a working pattern).
@@ -83,6 +85,18 @@ Per the plan (Task 3 begins at plan line 1500 of `docs/superpowers/plans/2026-05
 
 Neither adaptation changes the spec or the architectural decisions. Both are encounters with reality that the plan author couldn't have predicted without the live attempt.
 
+### Post-review fixups (PR #137 review thread)
+
+Two minor items from the PR #137 self-review landed as separate commits on top of the original five (`ea30470`, `31bb133`):
+
+1. **Documented the `u64` ms truncation bound in `now_ms`.** `Duration::as_millis()` returns `u128`; the truncation to `u64` is safe well past any horizon this code will run, but worth one sentence in the docstring.
+2. **Factored `map_ffi_error` out of `From<FfiVaultError>`.** The original `From` body embedded a `tracing::warn!` side effect; conventionally `From` is expected to be pure-value. The pure mapping now lives in `pub fn map_ffi_error(e) -> AppError`, and `impl From` logs + delegates. The side effect is visible at the call site rather than buried in the conversion. Adds one test (`map_ffi_error_is_pure_no_log_side_effect_required`) documenting the pure-helper API; existing 8 `From`-path tests unchanged.
+
+Two further review items were deferred and filed as follow-up issues:
+
+- **#139** — `AppError` lacks `Deserialize`; the wire-format contract is enforced one-way only at the Rust level. The `#[serde(skip_serializing)]` on `detail` fields makes a strict identity round-trip impossible without changing attribute semantics; defer to Task 6 (TS discriminated union) so the wire-format pin has a single canonical source.
+- **#140** — `parse_settings_field`'s text-only invariant is documented but not type-enforced. Task 3 has the context (vault-load wiring + `RecordFieldValue` shape) to either enforce by signature or cover by acceptance test.
+
 ### Decisions settled
 
 - **Anti-oracle conflation preserved at the IPC seam.** Both `FfiVaultError::WrongPasswordOrCorrupt` and `FfiVaultError::WrongMnemonicOrCorrupt` collapse to `AppError::WrongPassword`. This is now pinned by `ffi_wrong_password_or_corrupt_collapses_to_wrong_password` so a future refactor that tries to split the variants for "better UX" will fail a test rather than slip through.
@@ -91,14 +105,16 @@ Neither adaptation changes the spec or the architectural decisions. Both are enc
 
 ### Risks carried forward
 
-- **Plan's gauntlet-count predictions for Tasks 3–5 should be re-validated.** Task 2 came in at **992** rather than the predicted **987** (+5 surplus tests). Task 3 was predicted at 999 (assuming 987 + 12); the actual baseline is now 992 + ~12 = ~1004. Task 4 at 1002 → ~1007; Task 5 at 1005 → ~1010. If actual counts diverge further, the plan should grow a one-line note rather than the implementations being padded/trimmed to hit predictions.
+- **Plan's gauntlet-count predictions for Tasks 3–5 should be re-validated.** Task 2 came in at **993** rather than the predicted **987** (+6 surplus tests, including +1 from the post-review fixup). Task 3 was predicted at 999 (assuming 987 + 12); the actual baseline is now 993 + ~12 = ~1005. Task 4 at 1002 → ~1008; Task 5 at 1005 → ~1011. If actual counts diverge further, the plan should grow a one-line note rather than the implementations being padded/trimmed to hit predictions.
 - **`AppError::KdfTooWeak` has no producer.** It survives as a typed variant for the future where the bridge surfaces the structured `WeakKdfParams` payload, but today every "weak KDF" failure folds through the bridge's `CorruptVault { detail }`. The serde-shape test `kdf_too_weak_carries_payload` keeps the wire format pinned, so when the bridge eventually exposes the structured payload the desktop side will already be ready. Document in `From<FfiVaultError>` docstring (done).
 - **`AppError::AlreadyUnlocked` / `AppError::NotUnlocked` have no producer in Task 2.** These are session-state errors — Task 3's `VaultSession::unlock` and `VaultSession::with_open_vault` produce them. The `#[allow(dead_code)]` on `AppError` covers them; the producer comment in the source names Task 4 (which is when the actual command handlers wrap them).
 
-### Issues currently open (unchanged from prior session)
+### Issues currently open (carry-over + new from PR #137 review)
 
 - #37, #117, #120, #122, #123 — none affected by Task 2.
 - #38, #45, #75, #76, #78, #79, #81, #87, #88, #90, #95, #98 — none affected.
+- **#139** — desktop: `AppError` lacks `Deserialize`; revisit alongside Task 6 TS discriminated union.
+- **#140** — desktop: `parse_settings_field` text-only invariant; resolve in Task 3 (signature change or acceptance test).
 
 ### Housekeeping (stale worktrees on disk)
 
@@ -125,7 +141,7 @@ git status --short              # expect: clean
 git checkout main
 git pull --ff-only origin main
 
-# Re-baseline the gauntlet on fresh main (expect 992 / 0 / 10):
+# Re-baseline the gauntlet on fresh main (expect 993 / 0 / 10):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 
 # Set up the Task 3 worktree:
@@ -147,7 +163,7 @@ uv run core/tests/python/spec_test_name_freshness.py
 ## Closing inventory
 
 - **Branch state on close:** `main` at `e329087` (D.1.1 Task 1 PR #131 merged earlier this session). `feature/d11-task-2` carries 5 commits on top (4 module commits + 1 fmt fixup).
-- **Workspace tests on `feature/d11-task-2`:** **992 passed + 10 ignored** (+32 over the post-Task-1 baseline of 960).
+- **Workspace tests on `feature/d11-task-2`:** **993 passed + 10 ignored** (+33 over the post-Task-1 baseline of 960; includes +1 from the post-review fixup).
 - **README.md:** unchanged. Per-task status flips on a sub-project in early implementation phase would be noise (see prior baton; same logic applies).
 - **ROADMAP.md:** unchanged. D.1 section's wording ("D.1.1 walking skeleton ... in design.") remains brief and inoffensive; the per-task implementation status doesn't belong in the cross-sub-project roadmap.
 - **CLAUDE.md:** unchanged this session.
