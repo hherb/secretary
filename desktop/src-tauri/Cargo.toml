@@ -17,25 +17,16 @@ tauri-build = { version = "2", features = [] }
 # Tauri 2.x. Features kept minimal: window for the main window, no
 # tray icon / no auto-updater / no clipboard / no shell — D.1.1 doesn't
 # need any of those. Add features per-slice as D.1.x grows.
+#
+# Other crates the later D.1.x tasks need (`secretary-ffi-bridge`, `serde`,
+# `serde_json`, `thiserror`, `tracing` / `tracing-subscriber`, `sha2`, `hex`,
+# `rand`, `dirs`, `tempfile`) are intentionally NOT pre-pulled here — each
+# task adds the dep it actually introduces, so reviewers can see "this PR
+# pulled in X" without cross-referencing the plan. `tempfile` (when added
+# for atomic writes in Task 2/3) MUST be exact-pinned (`=3.27.0`) to match
+# `core/Cargo.toml` / `cli/Cargo.toml` per CLAUDE.md "exact pins on
+# security-critical paths".
 tauri = { version = "2", features = [] }
-secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-sha2 = "0.10"
-hex = "0.4"
-rand = "0.8"
-dirs = "5"
-# `tempfile` exact-pinned to match `core/Cargo.toml` and `cli/Cargo.toml`.
-# Used for atomic writes of the device_uuid file via `NamedTempFile::persist`.
-# Same exact-pin rule as core: bump only via deliberate changelog review
-# (CLAUDE.md "exact pins on security-critical paths").
-tempfile = "=3.27.0"
-
-[dev-dependencies]
-tempfile = "=3.27.0"
 
 [lints]
 workspace = true
