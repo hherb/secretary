@@ -21,7 +21,7 @@ use secretary_ffi_bridge::vault::open_vault_with_password;
 use secretary_ffi_bridge::{OpenVaultManifest, UnlockedIdentity};
 
 use crate::auto_lock::{now_ms, IdleTracker};
-use crate::errors::AppError;
+use crate::errors::{AppError, AppWarning};
 use crate::settings::{self, Settings};
 
 /// The complete unlocked-state bundle. `Drop` wipes both bridge handles in
@@ -35,6 +35,12 @@ pub struct UnlockedSession {
     /// `<device_data_dir>/secretary-desktop/devices/<vault_uuid_hex>.dev`.
     /// Required by the bridge's `save_block` for vector-clock semantics.
     pub device_uuid: [u8; 16],
+    /// Non-fatal warnings produced during unlock (clamped-on-load values,
+    /// unknown settings version, settings record shape mismatch). Logged
+    /// via `tracing::warn!` at unlock time so they're visible in stderr;
+    /// also retained here so Task 4's IPC layer can surface them to the
+    /// frontend as a banner without an extra vault read.
+    pub pending_warnings: Vec<AppWarning>,
 }
 
 impl Drop for UnlockedSession {
@@ -107,6 +113,17 @@ impl VaultSession {
         self.inner.as_ref().map(|u| u.settings).unwrap_or_default()
     }
 
+    /// Non-fatal warnings produced during the most recent unlock. Empty
+    /// while locked or when the settings record was clean. Task 4 wires
+    /// this through `#[tauri::command] get_pending_warnings` so the
+    /// frontend can render a banner alongside the manifest view.
+    pub fn pending_warnings(&self) -> Vec<AppWarning> {
+        self.inner
+            .as_ref()
+            .map(|u| u.pending_warnings.clone())
+            .unwrap_or_default()
+    }
+
     /// Mark UI activity. Silent no-op when locked — the timer thread is
     /// the only thing reading `last_activity_ms` while locked, and it
     /// shouldn't observe "user is active" inputs after the vault is gone.
@@ -135,22 +152,32 @@ impl VaultSession {
         let device_uuid =
             settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid_bytes)?;
 
-        let settings_val = match settings::load_from_vault(&output.identity, &output.manifest) {
-            Ok((s, _warnings)) => s,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "settings load failed during unlock; falling back to defaults"
-                );
-                Settings::default()
-            }
-        };
+        let (settings_val, pending_warnings) =
+            match settings::load_from_vault(&output.identity, &output.manifest) {
+                Ok((s, warnings)) => {
+                    for w in &warnings {
+                        tracing::warn!(
+                            warning = ?w,
+                            "non-fatal settings load issue during unlock"
+                        );
+                    }
+                    (s, warnings)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "settings load failed during unlock; falling back to defaults"
+                    );
+                    (Settings::default(), Vec::new())
+                }
+            };
 
         self.inner = Some(UnlockedSession {
             identity: output.identity,
             manifest: output.manifest,
             settings: settings_val,
             device_uuid,
+            pending_warnings,
         });
         // Reset the idle tracker to "now" so an old (pre-unlock) timestamp
         // doesn't trigger an immediate auto-lock on the first timer tick.

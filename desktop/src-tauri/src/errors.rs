@@ -108,9 +108,13 @@ pub enum AppError {
 // frontend-visible contract break. The shared prefix is intentional —
 // these are the settings-domain warnings, and future non-settings
 // warnings would NOT share the prefix.
+// `Clone` is derived so `VaultSession::pending_warnings()` can hand owned
+// copies to IPC commands without coupling the caller's borrow lifetime to
+// the session mutex — every variant is a small fixed-size payload, so
+// the clone is cheap.
 #[allow(clippy::enum_variant_names)]
 #[allow(dead_code)]
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum AppWarning {
     SettingsCorrupt {

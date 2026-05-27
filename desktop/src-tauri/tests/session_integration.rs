@@ -117,6 +117,27 @@ fn settings_load_from_vault_without_settings_block_returns_defaults() {
 }
 
 #[test]
+fn pending_warnings_empty_on_clean_unlock() {
+    let (mut session, _device_dir) = fresh_session();
+    session
+        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .expect("unlock");
+    assert!(
+        session.pending_warnings().is_empty(),
+        "clean unlock against a settings-less vault must produce no warnings"
+    );
+}
+
+#[test]
+fn pending_warnings_empty_while_locked() {
+    let (session, _device_dir) = fresh_session();
+    assert!(
+        session.pending_warnings().is_empty(),
+        "locked session must report no warnings"
+    );
+}
+
+#[test]
 fn unlock_then_lock_cycles_repeatedly() {
     let (mut session, _device_dir) = fresh_session();
     for i in 0..3 {
