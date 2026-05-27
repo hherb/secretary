@@ -8,6 +8,11 @@
 // but the macro is canonical Tauri practice — keep it from day one.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auto_lock;
+mod constants;
+mod errors;
+mod settings;
+
 fn main() {
     tauri::Builder::default()
         .run(tauri::generate_context!())

@@ -18,15 +18,30 @@ tauri-build = { version = "2", features = [] }
 # tray icon / no auto-updater / no clipboard / no shell — D.1.1 doesn't
 # need any of those. Add features per-slice as D.1.x grows.
 #
-# Other crates the later D.1.x tasks need (`secretary-ffi-bridge`, `serde`,
-# `serde_json`, `thiserror`, `tracing` / `tracing-subscriber`, `sha2`, `hex`,
-# `rand`, `dirs`, `tempfile`) are intentionally NOT pre-pulled here — each
-# task adds the dep it actually introduces, so reviewers can see "this PR
-# pulled in X" without cross-referencing the plan. `tempfile` (when added
-# for atomic writes in Task 2/3) MUST be exact-pinned (`=3.27.0`) to match
-# `core/Cargo.toml` / `cli/Cargo.toml` per CLAUDE.md "exact pins on
-# security-critical paths".
+# Per CLAUDE.md "exact pins on security-critical paths": when `tempfile` is
+# pulled in for atomic writes in Task 3, it MUST be exact-pinned (`=3.27.0`)
+# to match `core/Cargo.toml` / `cli/Cargo.toml`.
 tauri = { version = "2", features = [] }
+
+# Task 2 pure modules:
+# - `secretary-ffi-bridge` is consumed for `FfiVaultError` (typed mapping
+#   surface in `errors.rs`). Workspace path dep — not an FFI hop.
+# - `serde` / `serde_json` for the serde-tagged `AppError` / `AppWarning`
+#   discriminated unions that cross the Tauri IPC seam.
+# - `thiserror` for derive-based `Error` impls.
+# - `tracing` for structured logs on the Rust side (developer-facing
+#   `detail` fields are logged here but stripped before IPC serialization).
+# - `sha2` + `hex` for the deterministic SHA-256-derived UUID helper and
+#   the frozen-UUID tripwire tests in `constants::tests`.
+# Versions track the workspace conventions already used by `core/` and
+# `ffi/secretary-ffi-bridge/`.
+secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+sha2 = "0.10"
+hex = "0.4"
 
 [lints]
 workspace = true
