@@ -161,3 +161,8 @@ tempCodeRunnerFile.py
 # committed asset PNGs (e.g. assets/secretary_logo.png) are unaffected.
 /monitor-*.png
 
+# Superpowers visual-companion (brainstorming UI) session state. Local
+# scratch — mockups, server PIDs, and event logs that exist only for
+# the duration of a brainstorming session.
+.superpowers/
+

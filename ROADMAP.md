@@ -124,16 +124,16 @@ Sub-project C is where shippable software starts to exist. The `secretary sync` 
 
 ## Sub-project D — Platform UIs ⏳ (planned)
 
-The UIs are deliberately written natively per platform (see [ADR-0001](docs/adr/0001-rust-core.md)). UI is not shared across platforms — each platform's idiom matters more than code reuse on the UI tier. Each UI consumes Sub-project A (vault crypto + format) and Sub-project C (sync orchestration) through the Sub-project B FFI, so UI code never touches a file watcher or a merge function directly.
+The UIs are built as one Tauri 2 codebase (Rust backend + Svelte/TypeScript frontend) targeting all platforms from a single source tree. See [ADR-0007](docs/adr/0007-d-row-tauri.md) for the pivot from the original "Python + NiceGUI + SwiftUI + Compose" plan (ADR-0001) — the short version is that Tauri closes a localhost-HTTP attack surface, keeps secrets in Rust's deterministic-zeroize address space, and collapses three UI codebases into one. The Sub-project B Python and uniffi-Swift/Kotlin bindings remain in the project as paths for third-party consumers (scripts, Apple Shortcuts, Android AutoFill Service) but are no longer the UI path.
 
 Phase plan:
 
-- **D.1 — Desktop / Web (Python + NiceGUI)**: vault create / unlock / browse / add credential / share. NiceGUI runs the same codebase as a native desktop window or as a browser app.
-- **D.2 — iOS (Swift + SwiftUI)**: native app with the same feature set, plus Apple Keychain interop and AutoFill provider.
-- **D.3 — Android (Kotlin + Jetpack Compose)**: native app with the same feature set, plus Android AutoFill Service.
-- **D.4 — Browser autofill extensions**: future, after the platform clients stabilise.
+- **D.1 — Tauri walking skeleton (macOS + Linux desktop)**: unlock-an-existing-vault flow + block-list scaffold + auto-lock with vault-stored timeout settings + lock button. First end-to-end Tauri client proving the architecture. Decomposed as D.1.1 (this slice — walking skeleton) → D.1.2 (browse / reveal secrets) → D.1.3 (vault create wizard) → D.1.4 (record edit / save) → D.1.5 (share / trash / restore).
+- **D.2 — Linux + Windows desktop maturation**: CI matrix, distribution packaging (`.deb` / `.AppImage` / `.rpm` / `.msi`), code signing, notarization. Windows is not a primary target but the Tauri codebase supports it; contributors are welcome.
+- **D.3 — Tauri 2 mobile (iOS + Android)**: same Rust + Svelte/TS codebase via Tauri 2's mobile support, plus per-platform shims (App Store / Play Store packaging, mobile-specific UX, Apple Keychain interop, Android AutoFill Service).
+- **D.4 — Browser autofill extensions**: future, after the platform clients stabilise. Unchanged from original plan.
 
-Each platform UI is independent — they can ship in any order and at independent paces. Desktop / web is likely first because Python iteration is fastest and it doubles as the reference UI for spec-conformance testing.
+Each phase is independent — they can ship in any order and at independent paces. D.1 is first because the desktop walking skeleton proves the architecture before the mobile-specific complexity in D.3.
 
 ---
 
@@ -172,8 +172,9 @@ Rough order-of-magnitude expectations (no commitments):
 - **Sub-project A complete + audited**: months, not weeks.
 - **Sub-project B (FFI)**: weeks once A is frozen.
 - **Sub-project C (sync orchestration + headless CLI)**: weeks-to-months on top of B; the C.1 state machine and C.2 CLI are bounded, the C.3 mobile adapters depend on per-platform OS work.
-- **Sub-project D.1 (desktop/web)**: weeks on top of C — much of the heavy lifting is done by then.
-- **Sub-project D.2 + D.3 (iOS, Android)**: parallelisable; pace depends on contributors.
+- **Sub-project D.1 (Tauri walking skeleton + feature slices on macOS / Linux desktop)**: weeks-to-months on top of C — Tauri scaffold is one-time cost; per-feature slices (D.1.1 → D.1.5) are bounded.
+- **Sub-project D.2 (Linux + Windows desktop maturation)**: weeks after D.1; CI matrix + packaging + signing.
+- **Sub-project D.3 (Tauri 2 mobile — iOS + Android)**: parallelisable with D.2; Tauri 2 mobile is younger than desktop so expect rougher edges. Pace depends on contributors.
 - **v1.0 release**: when all of the above ship and the spec has been stable across at least one external review cycle.
 
 The project will not have a "1.0" tag until the cryptographic foundation has stood up to independent scrutiny and the first reference UI is real software people can use to store real secrets.

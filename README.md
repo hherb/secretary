@@ -19,10 +19,8 @@ That last requirement is the hard one. A vault that protects a credential for th
 Secretary is a client-only system. There is no server, no managed service, no hosted backend. Sync between devices uses any folder the user already has — iCloud Drive, Google Drive, Dropbox, OneDrive, a WebDAV mount on a home NAS, or a USB stick. Sharing between users uses any folder both parties can access.
 
 **Target platforms (planned):**
-- Desktop: macOS, Windows, Linux (Python with NiceGUI)
-- Web: served by the same Python codebase (NiceGUI runs in a browser)
-- iOS: native Swift / SwiftUI
-- Android: native Kotlin / Jetpack Compose
+- Desktop: macOS, Linux, Windows — Tauri 2 (Rust backend + Svelte/TypeScript frontend)
+- Mobile: iOS, Android — same Tauri 2 codebase via Tauri 2 mobile support
 - Browser autofill extensions: future
 
 **Target users:**
@@ -49,22 +47,25 @@ Secretary is a client-only system. There is no server, no managed service, no ho
                     │   • Memory hygiene (zeroize, secret) │
                     └──────────────┬───────────────────────┘
                                    │
-                ┌──────────────────┼──────────────────┐
-                │                  │                  │
-            PyO3 bindings     uniffi (Swift)    uniffi (Kotlin)
-                │                  │                  │
-                ▼                  ▼                  ▼
-        ┌───────────────┐  ┌──────────────┐  ┌─────────────────┐
-        │ Python +      │  │ Swift +      │  │ Kotlin +        │
-        │ NiceGUI       │  │ SwiftUI      │  │ Jetpack Compose │
-        │               │  │              │  │                 │
-        │ Desktop + Web │  │ iOS          │  │ Android         │
-        └───────────────┘  └──────────────┘  └─────────────────┘
+                  ┌────────────────┼────────────────────┐
+                  │                │                    │
+            direct crate dep  PyO3 bindings    uniffi (Swift / Kotlin)
+                  │                │                    │
+                  ▼                ▼                    ▼
+        ┌─────────────────┐  ┌──────────────┐  ┌─────────────────────┐
+        │ Tauri 2 client  │  │ Python       │  │ Third-party Swift / │
+        │ (Rust backend + │  │ (scripts,    │  │ Kotlin consumers    │
+        │ Svelte / TS UI) │  │ automation,  │  │ (Apple Shortcuts,   │
+        │                 │  │ analysis)    │  │ Android AutoFill)   │
+        │ macOS, Linux,   │  │              │  │                     │
+        │ Windows, iOS,   │  │ Sub-project  │  │ Sub-project B-uniffi│
+        │ Android         │  │ B            │  │                     │
+        └─────────────────┘  └──────────────┘  └─────────────────────┘
 ```
 
-The Rust core is the single source of truth for everything security-relevant — cryptography, vault parsing, key handling, conflict resolution. Each platform has its own native UI written in the language and idiom of that platform; UI is not shared across platforms (different platforms have different conventions, and Rust's GUI ecosystem is not yet mature enough to be the unifier).
+The Rust core is the single source of truth for everything security-relevant — cryptography, vault parsing, key handling, conflict resolution. The primary UI is a single Tauri 2 codebase (Rust backend + Svelte/TypeScript frontend) targeting all five platforms from one source tree; secrets never leave Rust's deterministic-zeroize address space, and there is no localhost HTTP server (Tauri IPC is in-process via a custom URL scheme). The Python and uniffi-Swift/Kotlin bindings remain in the project as third-party-consumer paths (scripts, Apple Shortcuts integration, Android AutoFill Service) but are no longer the UI path.
 
-**Why this architecture:** see [docs/adr/0001-rust-core.md](docs/adr/0001-rust-core.md). It mirrors the architecture used by Bitwarden, 1Password, Signal, and Mullvad — well-trodden territory.
+**Why this architecture:** see [docs/adr/0001-rust-core.md](docs/adr/0001-rust-core.md) for the original Rust-core decision, and [docs/adr/0007-d-row-tauri.md](docs/adr/0007-d-row-tauri.md) for the 2026-05 pivot of the UI layer from per-platform native (NiceGUI + SwiftUI + Compose) to a single Tauri 2 codebase. The Rust-core layer mirrors the architecture used by Bitwarden, 1Password, Signal, and Mullvad — well-trodden territory.
 
 ## Cryptographic design at a glance
 
@@ -171,7 +172,7 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | FFI bindings (block share) | ✅ Sub-project B.4d (`share_block` through PyO3 + uniffi via the same shared bridge; first FFI call where `ContactCard` values cross the boundary as canonical-CBOR bytes-in via the new `OpenVaultManifest::owner_card_bytes()` accessor; 13-variant `FfiVaultError` adding 4 typed share variants — `NotAuthor` / `RecipientAlreadyPresent` / `MissingRecipientCard` / `CardDecodeFailure`; mirrors core's single-recipient-append signature so atomicity is per-call; v1 single-author only — share-as-fork future PR) |
 | FFI bindings (block trash + restore lifecycle pair) | ✅ Sub-project B.5 (`trash_block` + `restore_block` through PyO3 + uniffi via the same shared bridge; 15-variant `FfiVaultError` adding 2 typed restore-side variants — `BlockUuidAlreadyLive` / `BlockNotInTrash`; `RestoreVerificationFailed` folds to `CorruptVault` per the "data on disk doesn't match what we signed" contract; restore reads the largest-timestamp file in `trash/`, full-decrypts + hybrid-verifies (defense in depth) before any manifest mutation, resolves `recipient_fingerprint` → `contact_uuid` by scanning `contacts/*.card`, then renames `trash/` → `blocks/` and purges older copies best-effort; the per-block vector clock is preserved verbatim from the file header for sync correctness; new `docs/vault-format.md` §7.1 normative sequence; v1 owner-as-author only) |
 | Sync orchestration (file watching, cloud-folder integration, conflict-detection scheduling — headless, exposed via FFI) | ✅ Sub-project C through C.2: pure-Rust sync state machine (C.1 / C.1.1a / C.1.1b — `sync_once → prepare_merge → commit_with_decisions` over an authenticated `VaultBundle` of sibling conflict-copies, block-first / manifest-last atomic writes with idempotent crash recovery) plus the headless `secretary-sync` CLI (C.2 — `once` and `run` subcommands, `notify`-driven daemon loop with trailing-edge debounce, partial-download size-stability gate, host-local lockfile, two-instance convergence test). Mobile sync adapters (C.3) and cross-device convergence conformance (C.4) ⏳ next. |
-| Platform UIs (NiceGUI desktop/web, SwiftUI iOS, Compose Android) | ⏳ Sub-project D |
+| Platform UIs (Tauri-based universal client — Svelte/TypeScript frontend + Rust backend, targeting macOS / Linux / Windows desktop and iOS / Android mobile from one codebase) | ⏳ Sub-project D — pivoted from NiceGUI + SwiftUI + Compose to Tauri 2 in 2026-05 ([ADR 0007](docs/adr/0007-d-row-tauri.md)). D.1.1 walking skeleton (unlock + block-list scaffold + vault-stored auto-lock settings) in design. `secretary-ffi-py` and `secretary-ffi-uniffi` remain as third-party-consumer paths (scripts, Shortcuts, AutoFill) — no longer the UI path. |
 
 A clean-room implementation in any language can be built from `docs/` alone. This is verified by [core/tests/python/conformance.py](core/tests/python/conformance.py) — a stdlib-only `uv run`-compatible Python script that performs (1) full hybrid-decap + AEAD-decrypt + hybrid-verify against the `golden_vault_001/` reference vault using only the spec, (2) a cross-language replay of eleven `conflict_kat.json` merge vectors covering each `ClockRelation` branch, the `tombstoned_at_ms` death-clock semantics, the §11.3 identity-metadata override, and record-level `unknown`-map collisions; (3) a case-insensitivity self-test guarding hex-comparison drift in `py_merge_unknown_map`; and (4) a `--diff-replay` mode used by the fuzz harness for cross-language decoder agreement. All halves run from spec docs alone, with no dependencies on the Rust source.
 
