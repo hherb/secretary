@@ -154,8 +154,9 @@ impl From<FfiVaultError> for AppError {
             // Both bridge variants conflate "wrong credential" and "corruption"
             // per the anti-oracle property; we preserve the conflation at the
             // UI boundary too.
-            FfiVaultError::WrongPasswordOrCorrupt
-            | FfiVaultError::WrongMnemonicOrCorrupt => AppError::WrongPassword,
+            FfiVaultError::WrongPasswordOrCorrupt | FfiVaultError::WrongMnemonicOrCorrupt => {
+                AppError::WrongPassword
+            }
 
             // Genuine cryptographic / integrity failures → VaultCorrupt.
             FfiVaultError::CorruptVault { detail }
@@ -167,8 +168,7 @@ impl From<FfiVaultError> for AppError {
             // inconsistent and they need to re-pair from backups. We synthesise
             // a detail string (this variant carries no payload).
             FfiVaultError::VaultMismatch => AppError::VaultCorrupt {
-                detail: "vault.toml and identity.bundle.enc reference different vaults"
-                    .to_string(),
+                detail: "vault.toml and identity.bundle.enc reference different vaults".to_string(),
             },
 
             // Pre-decryption mnemonic validation failure. Unreachable from

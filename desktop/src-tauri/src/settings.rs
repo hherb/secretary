@@ -6,8 +6,8 @@
 //! UUIDs, lazy creation, validation bounds, version handling).
 
 use crate::constants::{
-    AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS,
-    SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS, SETTINGS_RECORD_TYPE,
+    AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS,
+    SETTINGS_RECORD_TYPE,
 };
 use crate::errors::{AppError, AppWarning};
 
@@ -131,7 +131,10 @@ mod tests {
 
     #[test]
     fn default_uses_constant() {
-        assert_eq!(Settings::default().auto_lock_timeout_ms, AUTO_LOCK_DEFAULT_MS);
+        assert_eq!(
+            Settings::default().auto_lock_timeout_ms,
+            AUTO_LOCK_DEFAULT_MS
+        );
     }
 
     #[test]
