@@ -11,6 +11,7 @@
 mod auto_lock;
 mod constants;
 mod errors;
+mod settings;
 
 fn main() {
     tauri::Builder::default()

@@ -101,9 +101,10 @@ mod tests {
 
     #[test]
     fn tick_interval_constant_is_usable() {
-        // Smoke: ensure tick interval is strictly positive at runtime.
-        // (Compile-time fit in u64 is enforced by the constant's type.)
-        assert!(AUTO_LOCK_TICK_MS > 0);
+        // Smoke: ensure tick interval is strictly positive. Compile-time
+        // known, so use a const block — clippy correctly flags `assert!`
+        // on compile-time constants as not a runtime test.
+        const _: () = assert!(AUTO_LOCK_TICK_MS > 0);
     }
 
     #[test]

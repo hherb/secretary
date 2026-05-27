@@ -51,6 +51,11 @@ pub const AUTO_LOCK_TICK_MS: u64 = 5_000;
 /// **Rationale:** Each mousemove during typing shouldn't issue an IPC; 2s
 /// is well below any plausible threshold so the timer never spuriously fires
 /// while the user is active.
+///
+// Consumer lands in Task 5 (auto-lock timer thread) / Task 6 (frontend
+// debounce). Allowed dead at this Task-2 checkpoint by design — the
+// constants module ships ahead of its consumers per the plan.
+#[allow(dead_code)]
 pub const ACTIVITY_NOTIFY_MIN_INTERVAL_MS: u64 = 2_000;
 
 // =============================================================================
@@ -113,19 +118,22 @@ mod tests {
     /// Drift = vault-format break risk; see `settings_record_uuid_is_deterministic_and_frozen`.
     const FROZEN_SETTINGS_RECORD_UUID_HEX: &str = "4145cb7a4531f1ac41af6717e205e1a9";
 
-    // Sanity: ensure no two constants accidentally hold the same value
-    // (would mask a refactor bug).
+    // Sanity: ensure constant relationships hold. These are
+    // compile-time-known so we use const blocks — clippy correctly
+    // flags `assert!` on compile-time constants as not a runtime test.
+    // The const-block form upgrades the check to a compile error if the
+    // relationship is ever violated.
     #[test]
     fn auto_lock_bounds_are_ordered() {
-        assert!(AUTO_LOCK_MIN_MS < AUTO_LOCK_DEFAULT_MS);
-        assert!(AUTO_LOCK_DEFAULT_MS < AUTO_LOCK_MAX_MS);
+        const _: () = assert!(AUTO_LOCK_MIN_MS < AUTO_LOCK_DEFAULT_MS);
+        const _: () = assert!(AUTO_LOCK_DEFAULT_MS < AUTO_LOCK_MAX_MS);
     }
 
     #[test]
     fn tick_interval_smaller_than_min_threshold() {
         // Otherwise auto-lock can never fire within the user's chosen
         // threshold — spec §6 invariant.
-        assert!(AUTO_LOCK_TICK_MS < AUTO_LOCK_MIN_MS);
+        const _: () = assert!(AUTO_LOCK_TICK_MS < AUTO_LOCK_MIN_MS);
     }
 
     #[test]

@@ -29,6 +29,19 @@
 
 use secretary_ffi_bridge::error::FfiVaultError;
 
+// `AppError` variants `VaultPathNotFound` / `VaultPathNotAVault` /
+// `VaultPathLocked` / `AlreadyUnlocked` / `NotUnlocked` are constructed by
+// the Task 4 command handlers (which have access to the user-picked path
+// and the session-state mutex) rather than by the `From<FfiVaultError>`
+// impl. They appear in the wire-format schema from day one so the
+// frontend's TS discriminated union (Task 6) mirrors the full surface,
+// but the Rust producers land in Task 4.
+//
+// `AppWarning::SettingsCorrupt` is constructed by the Task 3 vault-load
+// path when the settings record decodes but its field shapes don't match
+// the schema (vs `SettingsClamped` which fires on out-of-range numeric
+// values, already produced by `settings::parse_settings_field`).
+#[allow(dead_code)]
 #[derive(thiserror::Error, Debug, serde::Serialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum AppError {
@@ -87,6 +100,14 @@ pub enum AppError {
     },
 }
 
+// All three variants are part of the IPC wire-format schema; renaming to
+// drop the `Settings` prefix would change the on-wire `code` discriminator
+// strings (e.g. `"settings_clamped"` → `"clamped"`) which would be a
+// frontend-visible contract break. The shared prefix is intentional —
+// these are the settings-domain warnings, and future non-settings
+// warnings would NOT share the prefix.
+#[allow(clippy::enum_variant_names)]
+#[allow(dead_code)]
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum AppWarning {
