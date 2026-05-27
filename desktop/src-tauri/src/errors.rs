@@ -6,8 +6,10 @@
 //!   the wire format is `{ "code": "wrong_password", ... }`.
 //! - Developer-facing `detail` fields are `#[serde(skip_serializing)]` — they're
 //!   logged via `tracing` on the Rust side but NEVER cross the IPC seam.
-//! - `From<FfiVaultError>` is an explicit `match` so we choose the user-facing
-//!   variant per case; no fall-through wrap-in-`Internal`.
+//! - The mapping from `FfiVaultError` is split into a pure [`map_ffi_error`]
+//!   function (no side effects, exhaustive match) and an `impl From` that
+//!   logs at `warn` before delegating. The side effect is visible at the
+//!   call site rather than buried inside the `From` body.
 //! - `WrongPassword` collapse rule: anything decryption-failure-shaped becomes
 //!   `WrongPassword` (info-leak prevention per `docs/threat-model.md` §13).
 //!
@@ -124,87 +126,100 @@ pub enum AppWarning {
     },
 }
 
-impl From<FfiVaultError> for AppError {
-    /// Explicit per-variant mapping. Adding a new `FfiVaultError` variant
-    /// in the bridge crate will surface here as a compile error (the match
-    /// must be exhaustive), forcing a deliberate UI-mapping choice.
-    ///
-    /// The bridge's `WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`
-    /// variants are deliberately conflated per `docs/threat-model.md` §13's
-    /// anti-oracle property; both fold to `WrongPassword` here (the user's
-    /// affordance is "retry credential" in both cases). Bridge variants
-    /// that cannot reach D.1.1's code paths (block-share authorisation,
-    /// trash/restore preconditions, recovery-phrase pre-validation) fold
-    /// to `Internal { detail }` so a regression that lets them fire
-    /// surfaces as a clear bug-report path.
-    ///
-    /// `FolderInvalid` folds to `Io { detail }` here because the bridge
-    /// surfaces the underlying IO context but not the caller's chosen path.
-    /// Task 4's command handlers, which DO know the user-picked path, will
-    /// construct `VaultPathNotFound` / `VaultPathNotAVault` directly at the
-    /// boundary so the UI can render the path-specific affordance.
-    fn from(e: FfiVaultError) -> Self {
-        // Log developer-facing detail before stripping. tracing::warn so
-        // it appears in stderr in dev mode and in any production log sink
-        // without requiring DEBUG verbosity.
-        tracing::warn!(?e, "FfiVaultError surfacing to AppError");
-
-        match e {
-            // Decryption-failure-shaped → WrongPassword (info-leak prevention).
-            // Both bridge variants conflate "wrong credential" and "corruption"
-            // per the anti-oracle property; we preserve the conflation at the
-            // UI boundary too.
-            FfiVaultError::WrongPasswordOrCorrupt | FfiVaultError::WrongMnemonicOrCorrupt => {
-                AppError::WrongPassword
-            }
-
-            // Genuine cryptographic / integrity failures → VaultCorrupt.
-            FfiVaultError::CorruptVault { detail }
-            | FfiVaultError::SaveCryptoFailure { detail }
-            | FfiVaultError::CardDecodeFailure { detail } => AppError::VaultCorrupt { detail },
-
-            // vault.toml ↔ identity.bundle.enc mismatch is a corruption-class
-            // failure from the user's perspective: the on-disk state is
-            // inconsistent and they need to re-pair from backups. We synthesise
-            // a detail string (this variant carries no payload).
-            FfiVaultError::VaultMismatch => AppError::VaultCorrupt {
-                detail: "vault.toml and identity.bundle.enc reference different vaults".to_string(),
-            },
-
-            // Pre-decryption mnemonic validation failure. Unreachable from
-            // D.1.1's password-only unlock path; if it ever fires here, it's
-            // a bug — surface as Internal with detail for the bug report.
-            FfiVaultError::InvalidMnemonic { detail } => AppError::Internal {
-                detail: format!("invalid mnemonic on password-only unlock path: {detail}"),
-            },
-
-            // Pre-unlock filesystem failure. Task 4's command handlers replace
-            // this with the path-aware VaultPathNotFound / VaultPathNotAVault
-            // construction at the boundary; here we fold to the generic Io
-            // bucket so any pre-Task-4 code path surfaces something coherent.
-            FfiVaultError::FolderInvalid { detail } => AppError::Io { detail },
-
-            // Block-lookup miss. Reachable in D.1.1 if a caller passes a
-            // stale block UUID to read_block (e.g. between a settings-block
-            // creation and the subsequent manifest refresh). Surface as
-            // Internal — D.1.1's settings flow never asks for an unknown
-            // UUID, so this firing means a bug.
-            FfiVaultError::BlockNotFound { uuid_hex } => AppError::Internal {
-                detail: format!("block not found in manifest: {uuid_hex}"),
-            },
-
-            // Block-share authorization failures, recipient table mismatches,
-            // and trash/restore preconditions: unreachable in D.1.1 (no
-            // share / no trash UI). Map to Internal so an accidental
-            // wiring of a share/trash command surfaces clearly.
-            other @ (FfiVaultError::NotAuthor { .. }
-            | FfiVaultError::RecipientAlreadyPresent
-            | FfiVaultError::MissingRecipientCard { .. }
-            | FfiVaultError::BlockUuidAlreadyLive { .. }
-            | FfiVaultError::BlockNotInTrash { .. }) => AppError::Internal {
-                detail: format!("{other:?}"),
-            },
+/// Pure mapping from `FfiVaultError` to `AppError`. No side effects — the
+/// `tracing::warn!` that records the developer-facing detail before it's
+/// stripped at the IPC seam lives in `impl From<FfiVaultError> for AppError`
+/// so the side effect is visible at the call site.
+///
+/// Exposed as a function (not just an `impl From` body) so callers that
+/// want the mapping without the log line — e.g. unit tests checking variant
+/// routing, or future call sites that have already logged the source error
+/// at a different level — can use it directly.
+///
+/// Adding a new `FfiVaultError` variant in the bridge crate will surface
+/// here as a compile error (the match must be exhaustive), forcing a
+/// deliberate UI-mapping choice.
+///
+/// The bridge's `WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`
+/// variants are deliberately conflated per `docs/threat-model.md` §13's
+/// anti-oracle property; both fold to `WrongPassword` here (the user's
+/// affordance is "retry credential" in both cases). Bridge variants
+/// that cannot reach D.1.1's code paths (block-share authorisation,
+/// trash/restore preconditions, recovery-phrase pre-validation) fold
+/// to `Internal { detail }` so a regression that lets them fire
+/// surfaces as a clear bug-report path.
+///
+/// `FolderInvalid` folds to `Io { detail }` here because the bridge
+/// surfaces the underlying IO context but not the caller's chosen path.
+/// Task 4's command handlers, which DO know the user-picked path, will
+/// construct `VaultPathNotFound` / `VaultPathNotAVault` directly at the
+/// boundary so the UI can render the path-specific affordance.
+pub fn map_ffi_error(e: FfiVaultError) -> AppError {
+    match e {
+        // Decryption-failure-shaped → WrongPassword (info-leak prevention).
+        // Both bridge variants conflate "wrong credential" and "corruption"
+        // per the anti-oracle property; we preserve the conflation at the
+        // UI boundary too.
+        FfiVaultError::WrongPasswordOrCorrupt | FfiVaultError::WrongMnemonicOrCorrupt => {
+            AppError::WrongPassword
         }
+
+        // Genuine cryptographic / integrity failures → VaultCorrupt.
+        FfiVaultError::CorruptVault { detail }
+        | FfiVaultError::SaveCryptoFailure { detail }
+        | FfiVaultError::CardDecodeFailure { detail } => AppError::VaultCorrupt { detail },
+
+        // vault.toml ↔ identity.bundle.enc mismatch is a corruption-class
+        // failure from the user's perspective: the on-disk state is
+        // inconsistent and they need to re-pair from backups. We synthesise
+        // a detail string (this variant carries no payload).
+        FfiVaultError::VaultMismatch => AppError::VaultCorrupt {
+            detail: "vault.toml and identity.bundle.enc reference different vaults".to_string(),
+        },
+
+        // Pre-decryption mnemonic validation failure. Unreachable from
+        // D.1.1's password-only unlock path; if it ever fires here, it's
+        // a bug — surface as Internal with detail for the bug report.
+        FfiVaultError::InvalidMnemonic { detail } => AppError::Internal {
+            detail: format!("invalid mnemonic on password-only unlock path: {detail}"),
+        },
+
+        // Pre-unlock filesystem failure. Task 4's command handlers replace
+        // this with the path-aware VaultPathNotFound / VaultPathNotAVault
+        // construction at the boundary; here we fold to the generic Io
+        // bucket so any pre-Task-4 code path surfaces something coherent.
+        FfiVaultError::FolderInvalid { detail } => AppError::Io { detail },
+
+        // Block-lookup miss. Reachable in D.1.1 if a caller passes a
+        // stale block UUID to read_block (e.g. between a settings-block
+        // creation and the subsequent manifest refresh). Surface as
+        // Internal — D.1.1's settings flow never asks for an unknown
+        // UUID, so this firing means a bug.
+        FfiVaultError::BlockNotFound { uuid_hex } => AppError::Internal {
+            detail: format!("block not found in manifest: {uuid_hex}"),
+        },
+
+        // Block-share authorization failures, recipient table mismatches,
+        // and trash/restore preconditions: unreachable in D.1.1 (no
+        // share / no trash UI). Map to Internal so an accidental
+        // wiring of a share/trash command surfaces clearly.
+        other @ (FfiVaultError::NotAuthor { .. }
+        | FfiVaultError::RecipientAlreadyPresent
+        | FfiVaultError::MissingRecipientCard { .. }
+        | FfiVaultError::BlockUuidAlreadyLive { .. }
+        | FfiVaultError::BlockNotInTrash { .. }) => AppError::Internal {
+            detail: format!("{other:?}"),
+        },
+    }
+}
+
+impl From<FfiVaultError> for AppError {
+    /// Logs the source error at `warn` level (developer-facing detail goes
+    /// to stderr / log sink before being stripped at the IPC seam), then
+    /// delegates to the pure mapping in [`map_ffi_error`].
+    fn from(e: FfiVaultError) -> Self {
+        tracing::warn!(?e, "FfiVaultError surfacing to AppError");
+        map_ffi_error(e)
     }
 }
 
@@ -292,6 +307,17 @@ mod tests {
             v["code"], "wrong_password",
             "anti-oracle: WrongPasswordOrCorrupt must collapse to WrongPassword"
         );
+    }
+
+    #[test]
+    fn map_ffi_error_is_pure_no_log_side_effect_required() {
+        // Calling the pure helper directly (not via `.into()` / `From`) must
+        // produce the same routing as the `From` impl. Documents the public
+        // API of the side-effect-free path so future callers that already
+        // logged the source at a different level can reuse it.
+        let mapped = map_ffi_error(FfiVaultError::WrongMnemonicOrCorrupt);
+        let v = round_trip(&mapped);
+        assert_eq!(v["code"], "wrong_password");
     }
 
     #[test]
