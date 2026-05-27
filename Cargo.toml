@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core",
     "cli",
+    "desktop/src-tauri",
     "ffi/secretary-ffi-py",
     "ffi/secretary-ffi-uniffi",
     "ffi/secretary-ffi-bridge",

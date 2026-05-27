@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-27-d11-tauri-spec-shipped.md
+docs/handoffs/2026-05-27-d11-task-1-shipped.md
