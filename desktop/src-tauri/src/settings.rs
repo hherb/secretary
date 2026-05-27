@@ -356,16 +356,28 @@ pub fn load_from_vault(
         .field_at(0)
         .expect("field_count==1 ⇒ field_at(0) is Some");
 
+    // Both shape-checks fall through to defaults+warning rather than an
+    // `AppError` for the same reason `record_count != 1` and
+    // `field_count != 1` do: a settings record that's shaped wrong on
+    // disk must not block vault access, since the user's only recourse
+    // is the Settings dialog itself. Severity is uniform across all four
+    // "settings record disagrees with v1 shape" cases.
     if !field.is_text() {
-        return Err(AppError::SettingsCorrupt {
-            detail: format!("settings field '{}' is not text-typed", field.name()),
-        });
+        return Ok((
+            Settings::default(),
+            vec![AppWarning::SettingsCorrupt {
+                detail: format!("settings field '{}' is not text-typed", field.name()),
+            }],
+        ));
     }
-    let field_text = field
-        .expose_text()
-        .ok_or_else(|| AppError::SettingsCorrupt {
-            detail: "settings field text payload missing".to_string(),
-        })?;
+    let Some(field_text) = field.expose_text() else {
+        return Ok((
+            Settings::default(),
+            vec![AppWarning::SettingsCorrupt {
+                detail: "settings field text payload missing".to_string(),
+            }],
+        ));
+    };
 
     // HACK(#141): the bridge's `RecordInput` has no `record_type` field —
     // `save::input::RecordInput::into_core_record` hardcodes
