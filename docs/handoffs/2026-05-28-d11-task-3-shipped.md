@@ -15,7 +15,7 @@ Implements the stateful Task-3 layer that wires the Task-2 pure modules into a l
 | Integration tests | [`desktop/src-tauri/tests/session_integration.rs`](../../desktop/src-tauri/tests/session_integration.rs) | New `tests/` directory in the desktop crate. **11 tests** — 9 read-path against `core/tests/data/golden_vault_001/` (unlock happy / wrong-password / lock / double-unlock-rejects / settings-defaults-without-block / 3-cycle / notify-activity-silent-when-locked / notify-activity-advances-when-unlocked / `with_unlocked`-Ok-then-Err-after-lock as indirect Drop chain proof) + 2 write-path against ephemeral `tempfile::tempdir()` copies (set_settings persists & reloads / set_settings out-of-range errors without writing). Password sourced via the same `b"correct horse battery staple"` value that `core/tests/data/golden_vault_001_inputs.json` defines for the deterministic fixture builder. |
 | Bridge gap follow-up | [GH #141](https://github.com/hherb/secretary/issues/141) | `secretary_ffi_bridge::RecordInput` has no `record_type` field — its `into_core_record` hardcodes empty string. Means records this client writes lose their schema version tag (`secretary.settings.v1`). Worked around in `load_from_vault` (treat empty as v1) + `save_to_vault` (discard the SETTINGS_RECORD_TYPE from the serialize tuple). HACK comments in source code cross-reference `#141` for greppability when the fix lands. Worth fixing before D.1.1 Task 6 (TS discriminated union) so the on-disk record_type is settled before the wire-format pin. |
 
-**Commits on `feature/d11-task-3`** (4 originals — no fixup yet):
+**Commits on `feature/d11-task-3`** (4 originals + 5 review-fixup commits):
 
 | SHA | Subject |
 |---|---|
@@ -23,31 +23,45 @@ Implements the stateful Task-3 layer that wires the Task-2 pure modules into a l
 | `72a1f00` | `feat(d11): settings vault I/O facade + per-vault device UUID persistence` |
 | `0e70900` | `feat(d11): VaultSession + UnlockedSession Drop chain + 11 integration tests` |
 | `6fcf9d4` | `docs(d11): cross-reference issue #141 in settings.rs HACK/NOTE comments` |
+| `d0689b2` | `fix(d11): close TOCTOU in device-UUID persistence, drop parallel rand 0.8 chain` |
+| `c3c15b9` | `fix(d11): unify SettingsCorrupt severity in load_from_vault` |
+| `96f4285` | `fix(d11): surface settings load warnings on unlock via tracing + UnlockedSession field` |
+| `8788239` | `refactor(d11): split settings.rs into module dir (parse + io)` |
 
 Post-squash-merge SHA on `main` will differ.
 
-### Gauntlet (live, performed)
+### Gauntlet (live, performed — post-review-fixup)
 
 ```
-PASSED: 1008 FAILED: 0 IGNORED: 10        # baseline was 993 / 0 / 10
+PASSED: 1011 FAILED: 0 IGNORED: 10        # baseline was 993 / 0 / 10
 cargo clippy --release --workspace --tests -- -D warnings   → clean
-cargo fmt --all -- --check                                  → clean (one fmt fixup absorbed pre-commit)
+cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS
 ```
 
-Plan predicted **+12** tests (993 → 1005). Actual delta is **+15** (993 → 1008) — three extra tests beyond the plan's count, all defensible additions:
+Plan predicted **+12** tests (993 → 1005). Pre-review actual was **+15**; the in-PR review fixup added **+3** more (1008 → 1011) — the `concurrent_first_unlock_converges_on_single_device_uuid` TOCTOU regression test plus two `pending_warnings()` accessor checks. All defensible:
 
-- `settings.rs::io_tests`: +4 instead of the plan's +2 — added `device_uuid_path_uses_hex_vault_uuid_and_dev_extension` (pins the path encoding so an accidental refactor doesn't orphan existing on-disk device files) and `load_or_create_rejects_wrong_length_file` (defensive AppError::Io check against partial writes / manual edits), beyond the plan's round-trip + per-vault-isolation tests.
-- `session_integration.rs`: +11 instead of the plan's +10 — added `lock_transitions_with_unlocked_from_ok_to_not_unlocked` as indirect Drop-chain proof (the plan's "memory-inspect that the UnlockedIdentity's secret bytes are zeroed" is not directly testable from outside the bridge's opaque handle, so we pin the visible state transition: `with_unlocked` returns Ok pre-lock + Err(NotUnlocked) post-lock; the bridge's per-handle zeroize tests separately pin the underlying byte-clearing).
+- `settings::io::tests`: +5 instead of the plan's +2 — added `device_uuid_path_uses_hex_vault_uuid_and_dev_extension` (pins the path encoding so an accidental refactor doesn't orphan existing on-disk device files), `load_or_create_rejects_wrong_length_file` (defensive AppError::Io check against partial writes / manual edits), and `concurrent_first_unlock_converges_on_single_device_uuid` (16-thread Barrier-synced stress that proves `persist_noclobber` keeps the race-loser path coherent — see review fix below).
+- `session_integration.rs`: +13 instead of the plan's +10 — added `lock_transitions_with_unlocked_from_ok_to_not_unlocked` as indirect Drop-chain proof, plus `pending_warnings_empty_on_clean_unlock` and `pending_warnings_empty_while_locked` for the new IPC-ready warnings accessor (see review fix below).
 
-Per the plan's note on prediction tracking: surplus tests are good news; Task 4's gauntlet baseline becomes **1008 / 0 / 10** rather than **1005 / 0 / 10**.
+Per the plan's note on prediction tracking: surplus tests are good news; Task 4's gauntlet baseline becomes **1011 / 0 / 10** rather than **1005 / 0 / 10**.
+
+### In-PR review fixup (commits `d0689b2`..`8788239`)
+
+A round of self-review identified five issues — all addressed in this PR rather than deferred (per the project's "fix every review issue before merging" discipline):
+
+1. **TOCTOU in `load_or_create_device_uuid_in`** (`d0689b2`). The original `path.exists()` → generate → `tempfile::persist(...)` sequence allowed two concurrent first-unlock processes to each see the file as absent, each generate their own UUID, and the race-loser to overwrite the winner's bytes. The losing process kept its in-memory UUID, but disk held the winner's — the next unlock by both would diverge, breaking the per-device fingerprint invariant the vector-clock layer relies on. Switched to `tempfile::NamedTempFile::persist_noclobber`: on `ErrorKind::AlreadyExists`, the race-loser re-reads the winner's file and returns those bytes instead. Pinned by the new `concurrent_first_unlock_converges_on_single_device_uuid` 16-thread Barrier-synced test.
+2. **Parallel `rand 0.8` chain** (`d0689b2`, same commit). The original `rand = "0.8"` introduced a second `rand` major into the workspace alongside the `rand 0.9.4` already pulled by `cli/`. Bumped to `rand = "0.9"` (single workspace major) and switched the device-UUID generator to `rand::rngs::OsRng.try_fill_bytes(...)` directly — matching the `rand_core::OsRng` discipline used throughout `core/src` for security-critical randomness. Cargo.lock confirms the post-change tree has a single `rand 0.9.4` entry.
+3. **Settings-load warnings discarded on unlock** (`96f4285`). The original `VaultSession::unlock` was matching `Ok((s, _warnings)) => s` — load-time warnings (clamped values, unknown versions, settings shape mismatches) were silently dropped while the error-path symmetric branch already logged via `tracing::warn!`. Now: each `AppWarning` is logged at unlock time, and the warnings vec is retained on `UnlockedSession::pending_warnings`. Task 4's IPC layer will wire this through a `get_pending_warnings` command. New `VaultSession::pending_warnings()` accessor; `AppWarning` gains `Clone` so the accessor can hand owned copies to the IPC seam.
+4. **Inconsistent `SettingsCorrupt` severity** (`c3c15b9`). The four "settings record shape disagrees with v1" cases in `load_from_vault` were split between `AppWarning` (fall through to defaults) and `AppError` (hard fail bubbling up to unlock). A vault whose settings field was non-text became unusable; a vault with the wrong record count merely yielded defaults — same severity, opposite behaviour. Unified: all four cases now return `Ok((Settings::default(), vec![AppWarning::SettingsCorrupt { .. }]))`. Matches the spec §8 rationale that a broken settings record must not block vault access.
+5. **`settings.rs` past 500-line split threshold** (`8788239`). At ~637 lines, settings.rs sat past the proactive-split bar the project uses for new code. Split into a `settings/` directory: `mod.rs` (27 lines, re-export surface), `parse.rs` (273 lines, Task-2 pure value layer), `io.rs` (477 lines, Task-3 vault I/O + device-UUID persistence). External callers see the same `crate::settings::*` flat surface — purely organisational.
 
 ### Plan execution trace (for the reviewer)
 
-- Plan Steps 1–12 followed with adaptations called out in §(3).
-- Step 13 (push + PR) executes at the end of this session.
-- Files within the 500-LOC CLAUDE.md threshold: session.rs ≈ 210 LOC, settings.rs ≈ 580 LOC total (270 Task-2 pure + 310 Task-3 I/O facade — approaching the threshold; if Task 4 adds more save-side helpers a split into `settings/parse.rs` + `settings/io.rs` is the natural follow-up).
+- Plan Steps 1–12 followed with adaptations called out in §(3); review-fixup pass landed in five additional commits before merge.
+- Step 13 (push + PR) executed at the end of this session.
+- Files within the 500-LOC CLAUDE.md threshold (post review-fixup split): session.rs ≈ 220 LOC, settings/parse.rs ≈ 273 LOC, settings/io.rs ≈ 477 LOC, settings/mod.rs ≈ 27 LOC. All comfortably under the threshold.
 - Per-module TDD discipline preserved: integration tests authored in the same commit as the implementation (commit 3 of 4); the foundation commit (commit 1) and the settings I/O facade (commit 2) each compile + pass their own scope independently so the diff stays bisectable.
 
 ## (2) What's next — D.1.1 Task 4 (IPC commands + DTOs)
@@ -61,7 +75,7 @@ Per the plan (Task 4 begins at line 2318 of [`docs/superpowers/plans/2026-05-27-
 
 **Acceptance criteria for Task 4 (from the plan):**
 
-- Gauntlet count goes from **1008 → ~1018** (+10 IPC integration tests).
+- Gauntlet count goes from **1011 → ~1022** (+10 IPC integration tests, plus the existing `get_pending_warnings` plumbing already lives on `VaultSession`; Task 4 just exposes it through a `#[tauri::command]`).
 - Each command surfaces `AppError` to the frontend with the `detail` field stripped (already pinned by Task 2's `vault_corrupt_detail_is_stripped` test pattern; the new IPC-layer tests pin the same property end-to-end).
 - `unlock_vault` constructs `AppError::VaultPathNotFound` / `AppError::VaultPathNotAVault` at the command boundary (using the user-picked path) rather than relying on the bridge's `FolderInvalid` → generic `Io` fallback; the variants are already in `AppError` (Task 2) — Task 4 makes them reachable from the wire format.
 - `notify_activity` is debounced at `ACTIVITY_NOTIFY_MIN_INTERVAL_MS` (2 s) by the FRONTEND side per spec §6 — Task 4's Rust handler does not debounce (the timer thread reads `last_activity_ms` once per tick anyway, so per-call cost is negligible). The frontend debounce lands in Task 6.
@@ -92,7 +106,7 @@ Neither adaptation changes the spec or the architectural decisions. Both are enc
 
 ### Risks carried forward
 
-- **Plan's gauntlet-count predictions for Tasks 4–5 should be re-validated.** Task 3 came in at **1008** rather than the predicted **999** (+15 vs +12 actual). Task 4 was predicted at 1002 → ~1018; Task 5 at 1005 → ~1023. If actual counts diverge further, the plan should grow a one-line note rather than the implementations being padded/trimmed to hit predictions.
+- **Plan's gauntlet-count predictions for Tasks 4–5 should be re-validated.** Task 3 came in at **1011** post-review-fixup rather than the predicted **999** (+18 vs +12 actual). Task 4 was predicted at 1002 → ~1018; Task 5 at 1005 → ~1023. The Task 4 baseline is now **1011**; if actual counts diverge further, the plan should grow a one-line note rather than the implementations being padded/trimmed to hit predictions.
 - **`AppError::KdfTooWeak` still has no producer** (carry-over from Task 2). Survives as a typed variant for the future where the bridge surfaces structured `WeakKdfParams`. Test `kdf_too_weak_carries_payload` keeps the wire format pinned.
 - **Bridge `RecordInput.record_type` workaround ships forever-empty record_type strings on disk** (issue #141). For v1 alone this is harmless — the workaround treats empty as v1. The risk surfaces if/when v2 schema migration ships and the bridge fix has not landed yet: v2 records written by a newer client would have non-empty record_type, but v1 records written by THIS code would still have empty. The migration path needs to treat empty as v1 even after bridge fix; the workaround comment in `load_from_vault` makes this explicit.
 
@@ -129,7 +143,7 @@ git status --short              # expect: clean
 git checkout main
 git pull --ff-only origin main
 
-# Re-baseline the gauntlet on fresh main (expect 1008 / 0 / 10):
+# Re-baseline the gauntlet on fresh main (expect 1011 / 0 / 10):
 cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" | awk '{passed+=$4; failed+=$6; ignored+=$8} END {print "PASSED:", passed, "FAILED:", failed, "IGNORED:", ignored}'
 
 # Set up the Task 4 worktree:
@@ -151,13 +165,13 @@ uv run core/tests/python/spec_test_name_freshness.py
 ## Closing inventory
 
 - **Branch state on close:** `main` at `a3ee9e9` (D.1.1 Task 2 PR #137 merged earlier today). `feature/d11-task-3` carries 4 commits on top (foundation + settings I/O + session + #141 cross-ref).
-- **Workspace tests on `feature/d11-task-3`:** **1008 passed + 10 ignored** (+15 over the post-Task-2 baseline of 993).
+- **Workspace tests on `feature/d11-task-3` (post review-fixup):** **1011 passed + 10 ignored** (+18 over the post-Task-2 baseline of 993; +3 from the review-fixup tests over the pre-review 1008).
 - **README.md:** unchanged. Per the prior baton's standing pattern, per-task status flips on a sub-project in early implementation phase would be noise; the existing "D.1.1 walking skeleton ... in design" covers the implementation phase as a whole until D.1.1 ships end-to-end (Task 12).
 - **ROADMAP.md:** unchanged. Same logic as README.
 - **CLAUDE.md:** unchanged this session.
 - **NEXT_SESSION.md:** symlink retargeted to this file.
 - **`docs/adr/`:** unchanged.
-- **`desktop/src-tauri/src/`:** new `lib.rs` (5-line `pub mod` re-exporter) + extended `session.rs` (full impl, was a stub from the foundation commit) + extended `settings.rs` (Task-2 pure modules untouched; vault I/O facade appended). `main.rs` slimmed (mod declarations moved to lib.rs).
+- **`desktop/src-tauri/src/`:** new `lib.rs` (5-line `pub mod` re-exporter) + extended `session.rs` (full impl + `pending_warnings()` accessor) + new `settings/` directory split into `mod.rs` (27 LOC re-export surface), `parse.rs` (273 LOC Task-2 pure value layer), `io.rs` (477 LOC Task-3 vault I/O + device-UUID persistence). `main.rs` slimmed (mod declarations moved to lib.rs). The standalone `settings.rs` file no longer exists; renames are tracked by git.
 - **`desktop/src-tauri/tests/`:** new directory. `session_integration.rs` is the first integration test file in the desktop crate.
 - **`desktop/src-tauri/Cargo.toml`:** gains `[lib]` section + 4 new deps (`tempfile`, `dirs`, `rand`, `secretary-core` path).
 - **`desktop/src/` (Svelte):** untouched in Task 3.
