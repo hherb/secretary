@@ -84,13 +84,25 @@ pub fn unlock_with_password_impl(
 }
 
 /// Pre-bridge sanity check on the user-picked folder path. Distinguishes
-/// "folder is unreachable" (`VaultPathNotFound`) from "folder exists but
-/// is empty / lacks vault files" (`VaultPathNotAVault`) so the UI affordance
-/// is precise. The bridge would otherwise fold both into the generic
+/// "path is unreachable" (`VaultPathNotFound`) from "path exists but
+/// isn't a vault folder" (`VaultPathNotAVault`) so the UI affordance is
+/// precise. The bridge would otherwise fold both into the generic
 /// `FolderInvalid` → `Io` bucket.
+///
+/// UX rule: `VaultPathNotFound` means the OS can't see the path at all
+/// (filesystem layer returned "no such file"). Anything that exists but
+/// isn't openable as a vault folder — a regular file, a folder without
+/// the canonical filenames — maps to `VaultPathNotAVault`. Otherwise the
+/// frontend renders a misleading "doesn't exist" message for a path the
+/// user just clicked in their file picker.
 fn validate_vault_path(folder: &Path, folder_path_str: &str) -> Result<(), AppError> {
-    if !folder.exists() || !folder.is_dir() {
+    if !folder.exists() {
         return Err(AppError::VaultPathNotFound {
+            path: folder_path_str.to_string(),
+        });
+    }
+    if !folder.is_dir() {
+        return Err(AppError::VaultPathNotAVault {
             path: folder_path_str.to_string(),
         });
     }
@@ -126,19 +138,20 @@ mod tests {
     }
 
     #[test]
-    fn regular_file_path_yields_vault_path_not_found() {
+    fn regular_file_path_yields_vault_path_not_a_vault() {
         let temp = tempdir().expect("tempdir");
         let file_path = temp.path().join("not-a-folder.txt");
         std::fs::write(&file_path, b"hi").expect("write fixture");
         let err = validate_vault_path(&file_path, file_path.to_str().expect("utf8")).unwrap_err();
-        // A regular file is "not a vault folder" — the spec maps this to
-        // VaultPathNotFound (the variant covers "does not exist or is not
-        // readable as a folder"), not VaultPathNotAVault (which is reserved
-        // for the "folder exists but is empty" case).
-        assert!(
-            matches!(err, AppError::VaultPathNotFound { .. }),
-            "expected VaultPathNotFound, got {err:?}"
-        );
+        // The path exists — the OS can see it — so `VaultPathNotFound`
+        // would render a misleading "doesn't exist" message. The file
+        // simply isn't a vault folder, which maps to `VaultPathNotAVault`.
+        match err {
+            AppError::VaultPathNotAVault { path } => {
+                assert_eq!(path, file_path.to_str().expect("utf8"));
+            }
+            other => panic!("expected VaultPathNotAVault, got {other:?}"),
+        }
     }
 
     #[test]

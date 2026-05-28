@@ -65,9 +65,11 @@ pub fn lock_impl(state: &Mutex<VaultSession>) -> Result<bool, AppError> {
     Ok(was_unlocked)
 }
 
-/// Testable core for `notify_activity`. Silent no-op while locked
-/// (mirrors `VaultSession::notify_activity`'s contract); under lock,
-/// just advances the idle tracker timestamp.
+/// Testable core for `notify_activity`. Forwards into
+/// `VaultSession::notify_activity`, whose own contract is: advance the
+/// idle tracker while unlocked, silent no-op while locked. The mutex
+/// acquisition here is the IPC-state mutex, not a vault-state lock; the
+/// session-side locked/unlocked guard happens inside the call.
 pub fn notify_activity_impl(state: &Mutex<VaultSession>) -> Result<(), AppError> {
     let mut session = state.lock().map_err(|e| AppError::Internal {
         detail: format!("session mutex poisoned: {e}"),

@@ -1,7 +1,29 @@
 # NEXT_SESSION.md — D.1.1 Task 4 (IPC commands + DTOs) shipped
 
 **Session date:** 2026-05-28 (continues immediately from the D.1.1 Task 3 session earlier the same day; Task 3 landed via PR #142 at `6f984d4` on `main`. This session wires the Task-3 `VaultSession` through the Tauri IPC surface — seven `#[tauri::command]` handlers, four DTO types, JSON wire-format pinning end-to-end.)
-**Status:** D.1.1 Task 4 authored on branch `feature/d11-task-4`; PR pending. Predecessors on `main`: D.1.1 spec + ADR 0007 (PR #130, `a5d85b9`), D.1.1 Task 1 scaffold (PR #131, `e329087`), D.1.1 Task 2 pure modules (PR #137, `a3ee9e9`), D.1.1 Task 3 VaultSession (PR #142, `6f984d4`).
+**Status:** D.1.1 Task 4 authored on branch `feature/d11-task-4`; PR #143 open with review-fixup commit on top. Predecessors on `main`: D.1.1 spec + ADR 0007 (PR #130, `a5d85b9`), D.1.1 Task 1 scaffold (PR #131, `e329087`), D.1.1 Task 2 pure modules (PR #137, `a3ee9e9`), D.1.1 Task 3 VaultSession (PR #142, `6f984d4`).
+
+## Review fixups (post-PR-open)
+
+Two in-PR fixes from the PR #143 review:
+
+- **Regular file path now yields `VaultPathNotAVault`, not `VaultPathNotFound`** ([commands/unlock.rs](../../desktop/src-tauri/src/commands/unlock.rs)). The path *exists* — the OS can see it — so `VaultPathNotFound` would have rendered a misleading "doesn't exist" message for a file the user just clicked in their picker. `VaultPathNotFound` is now strictly "OS returned no such file"; everything that exists-but-isn't-a-vault-folder maps to `VaultPathNotAVault`. Unit test renamed + assertion updated; integration tests unchanged.
+- **`notify_activity_impl` doc-comment reworded** ([commands/lock.rs](../../desktop/src-tauri/src/commands/lock.rs)). Old phrasing "no-op while locked... under lock, just advances" parsed as a contradiction; new wording distinguishes the IPC-state mutex from the vault-state lock and clarifies that the session-side guard happens inside `VaultSession::notify_activity`.
+
+Two issues filed for deferred items (not in scope for D.1.1 walking skeleton):
+
+- **#144** — Argon2id runs under the IPC mutex during unlock; blocks Tauri executor. Deferred to D.1.4+ when concurrent IPC pressure matters.
+- **#145** — `get_manifest` has no recovery path for unlock-time warnings if the frontend loses them. Deferred; suggest a `get_warnings` command or an opt-in flag when warning volume grows.
+
+Review-fixup gauntlet (re-run after fixes):
+
+```
+PASSED: 1041 FAILED: 0 IGNORED: 10        # unchanged from initial ship
+cargo clippy --release --workspace --tests -- -D warnings   → clean
+cargo fmt --all -- --check                                  → clean
+uv run core/tests/python/conformance.py                     → PASS
+uv run core/tests/python/spec_test_name_freshness.py        → PASS
+```
 
 ## (1) What we shipped this session
 
@@ -103,6 +125,8 @@ Neither adaptation changes the spec or the architectural decisions. All four are
 - #139 — desktop: `AppError` lacks `Deserialize`; carry-over from Task 2; revisit alongside Task 6 TS discriminated union. **Status update:** still relevant — the integration tests in `ipc_integration.rs` re-parse error JSON via `serde_json::Value` rather than `serde_json::from_str::<AppError>`, which is the workaround. Adding `Deserialize` would let those tests use a typed round-trip instead.
 - #140 — desktop: `parse_settings_field` text-only invariant; carry-over from Task 2 + Task 3 status update. **Status update:** Task 4 doesn't touch this; the I/O boundary enforcement Task 3 added still holds.
 - #141 — bridge: `RecordInput` lacks `record_type` field; carry-over from Task 3.
+- #144 — desktop: Argon2id KDF runs under IPC mutex during unlock; blocks Tauri executor. Filed during PR #143 review; deferred to D.1.4+.
+- #145 — desktop: no recovery path for unlock-time settings warnings if frontend loses them. Filed during PR #143 review; deferred.
 
 ### Housekeeping (stale worktrees on disk)
 
