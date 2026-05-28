@@ -6,11 +6,12 @@
 //   - Renders an aria-live="polite", role="status" banner so screen
 //     readers announce the auto-lock without stealing focus.
 //   - Reason-specific copy: `idle` → "Vault auto-locked due to
-//     inactivity"; `keep_alive_failing` → "Activity tracking is failing
-//     — the vault may lock unexpectedly". (`manual` is intentionally
-//     unhandled here — the App.svelte parent filters it out before
-//     mounting Toast, matching the plan's smoke step "click Lock
-//     manually → no toast".)
+//     inactivity"; `keep_alive_failing` → "Activity tracking is
+//     failing — the vault may lock unexpectedly". The
+//     `AutoLockNotice` union has only these two variants — `manual`
+//     is filtered at the producer (stores.ts::vaultLocked) so the
+//     component never sees it; the switch in messageFor() is
+//     exhaustive at compile time.
 //   - Auto-dismiss: after TOAST_AUTO_DISMISS_MS the toast clears the
 //     `autoLockNotice` store (which unmounts itself via App's `{#if}`).
 //   - Manual dismiss: clicking the × button clears the notice
@@ -34,7 +35,6 @@ import {
 } from '../src/lib/stores';
 
 const IDLE_NOTICE: AutoLockNotice = { reason: 'idle', at: 1_000 };
-const MANUAL_NOTICE: AutoLockNotice = { reason: 'manual', at: 1_000 };
 const KEEP_ALIVE_NOTICE: AutoLockNotice = { reason: 'keep_alive_failing', at: 1_000 };
 
 // Local mirror of the auto-dismiss timeout. Must match the constant in
@@ -147,16 +147,3 @@ describe('Toast.svelte — auto-dismiss', () => {
   });
 });
 
-describe('Toast.svelte — defensive', () => {
-  it('rendering with reason="manual" still renders without throwing (App should filter, but defence in depth)', () => {
-    // The plan filters `manual` at the App.svelte level (no toast on
-    // explicit-lock). If a regression at the parent ever passes a manual
-    // notice in, the component should fail safe — render nothing useful,
-    // not throw. We pin "doesn't throw" + "the dismiss button still
-    // works" so a user who somehow ended up looking at a manual toast
-    // can clear it.
-    const { getByRole } = render(Toast, { props: { notice: MANUAL_NOTICE } });
-    const dismiss = getByRole('button', { name: /dismiss/i });
-    expect(dismiss).toBeTruthy();
-  });
-});

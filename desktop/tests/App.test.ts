@@ -25,6 +25,7 @@ import {
   autoLockNotice,
   beginUnlock,
   unlockSucceeded,
+  settingsUpdated,
   beginLock,
   vaultLocked,
   _resetSessionStateForTest
@@ -148,7 +149,13 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     }
   });
 
-  it('reason="explicit" maps to autoLockNotice.reason="manual" and transitions to locked', async () => {
+  it('reason="explicit" transitions to locked and does NOT raise autoLockNotice', async () => {
+    // The producer-side filter in stores.ts::vaultLocked drops the
+    // notice write for 'manual' (the mapped frontend reason for an
+    // explicit user-lock). State still transitions to locked; the
+    // toast surface stays silent — the user clicked Lock themselves
+    // and doesn't need a confirmation banner. See the AutoLockNotice
+    // union doc-comment in stores.ts for the altitude argument.
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     render(App);
@@ -156,11 +163,7 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     capturedHandlers[0]({ payload: { reason: 'explicit' } });
 
     expect(get(sessionState).status).toBe('locked');
-    const notice = get(autoLockNotice);
-    expect(notice).not.toBeNull();
-    if (notice) {
-      expect(notice.reason).toBe('manual');
-    }
+    expect(get(autoLockNotice)).toBeNull();
   });
 
   it('also locks correctly when the event fires from `unlocking` (mid-flight race)', async () => {
@@ -237,7 +240,6 @@ describe('App.svelte — activity-tracking lifecycle (Task 10)', () => {
     // change, so the activity-tracking lifecycle must not restart —
     // otherwise the dialog's Save flow would tear down + re-install
     // document listeners on every settings change.
-    const { settingsUpdated } = await import('../src/lib/stores');
     settingsUpdated({ autoLockTimeoutMs: 300_000 });
 
     // Give any racy $effect a tick to settle before asserting.
@@ -286,7 +288,12 @@ describe('App.svelte — Toast rendering (Task 10)', () => {
     expect(await findByText(/auto-locked due to inactivity/i)).toBeTruthy();
   });
 
-  it('does NOT render Toast after an explicit-lock event (reason=manual is filtered)', async () => {
+  it('does NOT render Toast after an explicit-lock event (notice never raised)', async () => {
+    // Producer-side filter: vaultLocked('manual') leaves autoLockNotice
+    // untouched, so no Toast mounts. Pinned at the rendering layer to
+    // complement the stores.test.ts "does NOT raise" assertion — the
+    // contract spans store + UI, and a regression at either site needs
+    // to surface in a test that runs against the full mount.
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     const { queryByText } = render(App);
@@ -294,9 +301,7 @@ describe('App.svelte — Toast rendering (Task 10)', () => {
 
     capturedHandlers[0]({ payload: { reason: 'explicit' } });
 
-    // Notice was set on the store (the existing #149 test pins that),
-    // but the toast surface filters manual at App level.
-    expect(get(autoLockNotice)).not.toBeNull();
+    expect(get(autoLockNotice)).toBeNull();
     // Microtask drain so any pending Toast mount could appear.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(queryByText(/auto-locked due to inactivity/i)).toBeNull();

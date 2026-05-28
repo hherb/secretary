@@ -70,10 +70,7 @@
     if (sessionStatus !== 'unlocked') {
       return;
     }
-    const stop = startActivityTracking();
-    return () => {
-      stop();
-    };
+    return startActivityTracking();
   });
 </script>
 
@@ -92,11 +89,11 @@
   <Unlock />
 {/if}
 
-{#if $autoLockNotice && $autoLockNotice.reason !== 'manual'}
-  <!-- Spec §12 auto-lock notice surface. `manual` is filtered here so
-       a user who clicked Lock themselves doesn't get a confirmation
-       toast — the notice still lands in the store (existing #149
-       contract) but renders no UI. `idle` and `keep_alive_failing`
-       both reach the Toast and render reason-specific copy. -->
+{#if $autoLockNotice}
+  <!-- Spec §12 auto-lock notice surface. The AutoLockNotice union is
+       narrow by construction (`manual` is filtered at the producer in
+       `stores.ts::vaultLocked` — see the comment there for the
+       altitude argument); every notice that lands in the store is
+       intended to render. -->
   <Toast notice={$autoLockNotice} />
 {/if}

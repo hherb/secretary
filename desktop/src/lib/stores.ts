@@ -51,18 +51,24 @@ export const sessionState: Readable<SessionState> = {
 };
 
 // Short-lived notice surfaced when the backend `vault-locked` event
-// fires (`idle` for auto-lock, `manual` for explicit-lock), or when
-// the activity-tracker keep-alive IPC starts failing repeatedly. The
-// discriminated union lets the toast component pick its copy and
-// severity. `at` is the millisecond timestamp at which the notice
-// was raised, used for de-duplication and auto-dismiss timing.
+// fires with `reason='auto'` (an idle-timeout lock), or when the
+// activity-tracker keep-alive IPC starts failing repeatedly. The
+// discriminated union lets the toast component pick its copy. `at`
+// is the millisecond timestamp at which the notice was raised, used
+// to reset the toast's auto-dismiss timer on a fresh notice.
 //
-// `vaultLocked()` sets the `idle` / `manual` reasons automatically as
-// part of the transition; `keep_alive_failing` is set directly by
-// `auto_lock.ts` since it's not tied to a session-state transition.
+// `vaultLocked('idle', ...)` raises the notice as part of the
+// transition. `vaultLocked('manual', ...)` intentionally does NOT —
+// the user just clicked Lock themselves, no surface is needed to
+// inform them — and an entry-level `'manual'` reason in this union
+// would invite a dead render path at the toast surface. The filter
+// lives in the producer; downstream consumers see only the reasons
+// that actually warrant a notice.
+//
+// `keep_alive_failing` is set directly by `auto_lock.ts` since it's
+// not tied to a session-state transition.
 export type AutoLockNotice =
   | { reason: 'idle'; at: number }
-  | { reason: 'manual'; at: number }
   | { reason: 'keep_alive_failing'; at: number };
 
 export const autoLockNotice = writable<AutoLockNotice | null>(null);
@@ -84,9 +90,15 @@ export function beginUnlock(now: number = Date.now()): void {
 
 /**
  * `unlocking → unlocked`. Carries the manifest + settings into the
- * variant payload.
+ * variant payload, and clears any pending `autoLockNotice` so a stale
+ * notice from a prior lock cycle does not survive into the new
+ * unlocked session (a user who returned to an undismissed auto-lock
+ * toast and unlocked would otherwise see it linger on top of the
+ * Vault until the dismiss timer eventually fires; spec §12 ties the
+ * notice to the lock event, not to the cross-session interval).
  */
 export function unlockSucceeded(manifest: ManifestDto, settings: SettingsDto): void {
+  autoLockNotice.set(null);
   transition(['unlocking'], { status: 'unlocked', manifest, settings });
 }
 
@@ -115,12 +127,19 @@ export function beginLock(now: number = Date.now()): void {
 
 /**
  * `* → locked`. Authoritative end-state from the backend `vault-locked`
- * event; accepted from any current state. Also raises the matching
- * `autoLockNotice` so the toast surface can render the reason copy.
+ * event; accepted from any current state. Raises `autoLockNotice` ONLY
+ * for the `'idle'` reason — explicit user-lock (`'manual'`) does not
+ * need a confirmation surface (the user just clicked Lock themselves).
+ * Centralising this filter in the producer keeps the AutoLockNotice
+ * union narrow (no `'manual'` variant) and removes dead arms from the
+ * toast surface — see the AutoLockNotice doc-comment above for the
+ * full altitude argument.
  */
 export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()): void {
   _internal.set({ status: 'locked', lastError: null });
-  autoLockNotice.set({ reason, at });
+  if (reason === 'idle') {
+    autoLockNotice.set({ reason, at });
+  }
 }
 
 /**

@@ -8,11 +8,10 @@
   //
   // Contract (pinned by Toast.test.ts):
   //   - Reason-specific copy: `idle` and `keep_alive_failing` get
-  //     distinct messages. `manual` is unhandled here on purpose —
-  //     App.svelte filters it out before mounting Toast, per the plan
-  //     ("click Lock manually → no toast"). Defence-in-depth: if a
-  //     manual notice ever slips past the filter, we still render the
-  //     dismiss button so the user can clear it.
+  //     distinct messages. The `AutoLockNotice` union is narrow by
+  //     construction (`'manual'` is filtered at the producer in
+  //     `stores.ts::vaultLocked`), so the switch below is exhaustive
+  //     over the only reasons that ever reach this component.
   //   - Auto-dismiss after TOAST_AUTO_DISMISS_MS by clearing
   //     `autoLockNotice` (which unmounts the toast via App's {#if}).
   //   - × button clears the notice immediately.
@@ -32,18 +31,15 @@
   // trigger; lib/constants.ts mirrors Rust-side bounds, not toast UX).
   const TOAST_AUTO_DISMISS_MS = 5_000;
 
-  // Reason-to-copy mapping. `manual` deliberately falls through to an
-  // empty string — App.svelte filters this reason before mount, so this
-  // value only surfaces if a regression at the parent passes a manual
-  // notice in. The × button still works in that case.
+  // Reason-to-copy mapping. Exhaustive over the (narrow) AutoLockNotice
+  // union; if a new reason is added, the switch becomes non-exhaustive
+  // and tsc surfaces the missing arm at compile time.
   function messageFor(n: AutoLockNotice): string {
     switch (n.reason) {
       case 'idle':
         return 'Vault auto-locked due to inactivity';
       case 'keep_alive_failing':
         return 'Activity tracking is failing — the vault may lock unexpectedly';
-      case 'manual':
-        return '';
     }
   }
 
@@ -51,14 +47,16 @@
     autoLockNotice.set(null);
   }
 
-  // $effect re-runs whenever `notice` changes (Svelte 5 tracks the prop
-  // reference). Each notice gets its own setTimeout; the returned
-  // cleanup clears it on prop change or unmount, so a stale timer
-  // never wipes a fresh notice and unmount never leaves a late firing
-  // behind.
+  // $effect re-runs whenever `notice.at` changes (Svelte 5 tracks the
+  // specific signal read inside the effect). Keying on `.at` rather
+  // than the prop reference is the semantic dep — the test's
+  // "fresh notice resets the timer" contract is exactly about a new
+  // `at` value getting a fresh dismiss window. The `void` makes the
+  // read explicit and silences tsc's noUnusedLocals concern; reading
+  // a Svelte 5 prop getter has the side effect of registering a dep,
+  // so esbuild's pure-expression elimination cannot strip it.
   $effect(() => {
-    // Reading the prop registers it as a dep of this effect.
-    void notice;
+    void notice.at;
     const timerId = setTimeout(dismiss, TOAST_AUTO_DISMISS_MS);
     return () => clearTimeout(timerId);
   });

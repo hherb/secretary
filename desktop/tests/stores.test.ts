@@ -270,7 +270,10 @@ describe('vaultLocked is authoritative — accepts from any state', () => {
     unlockSucceeded(MANIFEST, SETTINGS);
     vaultLocked('manual', 300);
     expect(get(sessionState).status).toBe('locked');
-    expect(get(autoLockNotice)).toEqual({ reason: 'manual', at: 300 });
+    // `manual` does NOT raise the notice — the user clicked Lock
+    // themselves, no confirmation surface is needed (filter lives in
+    // the producer, see stores.ts::vaultLocked).
+    expect(get(autoLockNotice)).toBeNull();
   });
 
   it('from locking → locked', () => {
@@ -279,7 +282,55 @@ describe('vaultLocked is authoritative — accepts from any state', () => {
     beginLock(0);
     vaultLocked('manual', 400);
     expect(get(sessionState).status).toBe('locked');
-    expect(get(autoLockNotice)).toEqual({ reason: 'manual', at: 400 });
+    expect(get(autoLockNotice)).toBeNull();
+  });
+
+  it('vaultLocked(\'idle\') raises the autoLockNotice with the carrying timestamp', () => {
+    // Pinned separately from the existing "from unlocking → locked"
+    // test so the producer-side filter contract is explicit: idle
+    // writes, manual does not.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    vaultLocked('idle', 500);
+    expect(get(autoLockNotice)).toEqual({ reason: 'idle', at: 500 });
+  });
+
+  it('vaultLocked(\'manual\') does NOT raise the autoLockNotice even when one was already set', () => {
+    // Defence in depth: if a prior keep_alive_failing or idle notice
+    // sits in the store, a subsequent manual lock must leave it as-is
+    // (the manual lock itself doesn't add a new notice). The producer
+    // filter is strictly "manual doesn't write", not "manual clears".
+    autoLockNotice.set({ reason: 'keep_alive_failing', at: 100 });
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    vaultLocked('manual', 200);
+    // Note: unlockSucceeded above cleared the keep_alive_failing
+    // notice (the unlock-clears-stale-notice contract). So the
+    // post-vaultLocked('manual') state is null. This pins both
+    // contracts in one place.
+    expect(get(autoLockNotice)).toBeNull();
+  });
+});
+
+describe('unlockSucceeded clears any stale autoLockNotice', () => {
+  // Spec §12 ties the notice to the lock event. A user who returns
+  // to an undismissed auto-lock toast and then unlocks shouldn't
+  // see the stale notice linger on top of their freshly-mounted
+  // Vault while the dismiss timer counts down — the unlock itself
+  // is the user-action that should clear the notice.
+
+  it('a pre-existing idle notice is cleared on successful unlock', () => {
+    autoLockNotice.set({ reason: 'idle', at: 100 });
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    expect(get(autoLockNotice)).toBeNull();
+  });
+
+  it('a pre-existing keep_alive_failing notice is cleared on successful unlock', () => {
+    autoLockNotice.set({ reason: 'keep_alive_failing', at: 100 });
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    expect(get(autoLockNotice)).toBeNull();
   });
 });
 
