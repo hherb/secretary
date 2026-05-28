@@ -7,7 +7,7 @@
 // router ever invoking Vault from another state.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import Vault from '../src/routes/Vault.svelte';
 import {
   beginUnlock,
@@ -17,12 +17,16 @@ import {
 import type { ManifestDto, SettingsDto, BlockSummaryDto } from '../src/lib/ipc';
 import type { AppWarning } from '../src/lib/errors';
 
-// LockButton (transitively imported via TopBar) calls `lock` ipc, so we
-// stub it so the rendered tree doesn't blow up on missing Tauri.
-const { lockMock } = vi.hoisted(() => ({ lockMock: vi.fn() }));
+// LockButton (transitively imported via TopBar) calls `lock` ipc, and
+// SettingsDialog calls `setSettings`. Stub both so the rendered tree
+// doesn't blow up on missing Tauri.
+const { lockMock, setSettingsMock } = vi.hoisted(() => ({
+  lockMock: vi.fn(),
+  setSettingsMock: vi.fn()
+}));
 vi.mock('../src/lib/ipc', async () => {
   const real = await vi.importActual<typeof import('../src/lib/ipc')>('../src/lib/ipc');
-  return { ...real, lock: lockMock };
+  return { ...real, lock: lockMock, setSettings: setSettingsMock };
 });
 
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
@@ -60,6 +64,8 @@ beforeEach(() => {
   _resetSessionStateForTest();
   lockMock.mockReset();
   lockMock.mockResolvedValue(undefined);
+  setSettingsMock.mockReset();
+  setSettingsMock.mockResolvedValue(undefined);
 });
 
 describe('Vault.svelte — initial render contract', () => {
@@ -167,6 +173,29 @@ describe('Vault.svelte — manifest warning banners', () => {
     unlockWith(manifestFixture({ warnings: [] }));
     const { container } = render(Vault);
     expect(container.querySelectorAll('.vault__warning').length).toBe(0);
+  });
+});
+
+describe('Vault.svelte — settings dialog wiring', () => {
+  it('mounts SettingsDialog in the closed state by default', () => {
+    // The dialog is always in the DOM (the bindable `open` prop drives
+    // showModal/close inside the component) but starts hidden.
+    unlockWith(manifestFixture({}));
+    const { container } = render(Vault);
+    const dialog = container.querySelector('.settings-dialog') as HTMLDialogElement | null;
+    expect(dialog).not.toBeNull();
+    expect(dialog?.hasAttribute('open')).toBe(false);
+  });
+
+  it('clicking the TopBar settings gear opens the dialog', async () => {
+    unlockWith(manifestFixture({}));
+    const { container, getByRole } = render(Vault);
+    const gear = getByRole('button', { name: /settings/i });
+    await fireEvent.click(gear);
+    await waitFor(() => {
+      const dialog = container.querySelector('.settings-dialog') as HTMLDialogElement;
+      expect(dialog.hasAttribute('open')).toBe(true);
+    });
   });
 });
 

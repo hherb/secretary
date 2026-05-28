@@ -289,10 +289,12 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg-elevated);
-  color: var(--color-text-muted);
-  cursor: not-allowed;
+  color: var(--color-text);
+  cursor: pointer;
   font-size: var(--font-size-sm);
-  opacity: 0.6;
+}
+.top-bar__settings:hover:not(:disabled) {
+  background: var(--color-border);
 }
 
 /* LockButton */

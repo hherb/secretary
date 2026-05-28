@@ -1,8 +1,11 @@
 <script lang="ts">
   import LockButton from './LockButton.svelte';
 
-  type Props = { vaultLabel: string };
-  let { vaultLabel }: Props = $props();
+  type Props = {
+    vaultLabel: string;
+    onOpenSettings: () => void;
+  };
+  let { vaultLabel, onOpenSettings }: Props = $props();
 </script>
 
 <header class="top-bar">
@@ -14,8 +17,8 @@
     <button
       type="button"
       class="top-bar__settings"
-      disabled
-      title="Settings dialog lands in the next release"
+      onclick={onOpenSettings}
+      title="Settings"
       aria-label="Settings"
     >
       ⚙️ Settings
