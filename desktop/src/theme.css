@@ -340,6 +340,93 @@ body {
   color: var(--color-text-muted);
 }
 
+/* SettingsDialog — native <dialog> modal. backdrop is the auto
+   pseudo-element rendered by the platform when showModal() is called. */
+.settings-dialog {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  padding: var(--space-5);
+  min-width: 380px;
+  box-shadow: var(--shadow-lg);
+}
+.settings-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+.settings-dialog__title {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-lg);
+}
+.settings-dialog__field {
+  display: block;
+  margin-bottom: var(--space-4);
+}
+.settings-dialog__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+.settings-dialog__input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-dialog__input {
+  flex: 0 0 100px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+}
+.settings-dialog__suffix {
+  color: var(--color-text-muted);
+}
+.settings-dialog__error {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+.settings-dialog__error-detail {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+}
+.settings-dialog__actions {
+  margin-top: var(--space-5);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.settings-dialog__button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.settings-dialog__button--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+.settings-dialog__button--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+.settings-dialog__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* App.svelte locking splash — brief between unlocked → locked. */
 .locking-splash {
   min-height: 100vh;
