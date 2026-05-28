@@ -18,3 +18,4 @@ pub mod dtos;
 pub mod errors;
 pub mod session;
 pub mod settings;
+pub mod timer;

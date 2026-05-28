@@ -33,13 +33,28 @@ pub const VAULT_LOCKED_EVENT: &str = "vault-locked";
 /// invoked `lock` explicitly.
 pub const LOCK_REASON_EXPLICIT: &str = "explicit";
 
+/// Reason string for the `vault-locked` event payload when the auto-lock
+/// timer (see [`crate::timer`]) fires after the configured idle threshold.
+/// The frontend toast phrases the two reasons differently.
+pub const LOCK_REASON_AUTO: &str = "auto";
+
+/// Build the `vault-locked` event payload for a given reason. Single
+/// construction site so the wire format can be exercised by the unit
+/// tests below and reused by every emit call (`commands::lock` for
+/// explicit, `main::auto_lock_timer_loop` for auto). Without this, two
+/// independent `serde_json::json!({...})` invocations would have to be
+/// kept in lockstep by convention alone.
+pub fn vault_locked_payload(reason: &str) -> serde_json::Value {
+    serde_json::json!({ "reason": reason })
+}
+
 #[tauri::command]
 pub async fn lock(state: State<'_, Mutex<VaultSession>>, app: AppHandle) -> Result<(), AppError> {
     let was_unlocked = lock_impl(state.inner())?;
     if was_unlocked {
         app.emit(
             VAULT_LOCKED_EVENT,
-            serde_json::json!({ "reason": LOCK_REASON_EXPLICIT }),
+            vault_locked_payload(LOCK_REASON_EXPLICIT),
         )
         .map_err(|e| AppError::Internal {
             detail: format!("event emit failed: {e}"),
@@ -76,4 +91,50 @@ pub fn notify_activity_impl(state: &Mutex<VaultSession>) -> Result<(), AppError>
     })?;
     session.notify_activity();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_locked_event_name_is_kebab_case() {
+        // Pin the Tauri event name — Svelte's `listen('vault-locked', ...)`
+        // (Task 6) depends on this exact string. A typo here is silent at
+        // build time and only surfaces as a missed toast at runtime.
+        assert_eq!(VAULT_LOCKED_EVENT, "vault-locked");
+    }
+
+    #[test]
+    fn lock_reason_constants_match_frontend_discriminator() {
+        // The frontend AppError-style discriminated union (Task 6) keys off
+        // these literal strings. Pin both so a rename here can't desync
+        // the wire format from the TS layer silently.
+        assert_eq!(LOCK_REASON_EXPLICIT, "explicit");
+        assert_eq!(LOCK_REASON_AUTO, "auto");
+    }
+
+    #[test]
+    fn explicit_lock_event_payload_serializes_to_expected_json() {
+        // Exercises the same `vault_locked_payload` helper the `lock`
+        // command calls — so a typo in the production call site (e.g.,
+        // renaming the JSON key) is caught here, not only in Task 6's
+        // listener at runtime.
+        assert_eq!(
+            vault_locked_payload(LOCK_REASON_EXPLICIT).to_string(),
+            r#"{"reason":"explicit"}"#
+        );
+    }
+
+    #[test]
+    fn auto_lock_event_payload_serializes_to_expected_json() {
+        // Mirror of the explicit-reason test for the auto-lock path; the
+        // timer thread in `main::auto_lock_timer_loop` (Task 5) calls
+        // `vault_locked_payload(LOCK_REASON_AUTO)` so this same assertion
+        // covers its emit body.
+        assert_eq!(
+            vault_locked_payload(LOCK_REASON_AUTO).to_string(),
+            r#"{"reason":"auto"}"#
+        );
+    }
 }

@@ -233,4 +233,17 @@ impl VaultSession {
             None => Err(AppError::NotUnlocked),
         }
     }
+
+    /// Test helper: rewind the idle tracker so the session is expired against
+    /// any positive `threshold_ms`. Used by `tests/session_integration.rs`
+    /// to drive the auto-lock timer's `AutoLocked` path without sleeping.
+    ///
+    /// `#[doc(hidden)] pub fn` is the project workaround for `#[cfg(test)]`
+    /// items not reaching integration tests (they're a separate compilation
+    /// unit). Production code must NEVER call this — the `_for_test` suffix
+    /// is the only marker; the doc-hidden flag keeps it out of rustdoc.
+    #[doc(hidden)]
+    pub fn force_expire_idle_tracker_for_test(&mut self) {
+        self.idle.last_activity_ms = 0;
+    }
 }
