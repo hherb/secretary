@@ -38,13 +38,23 @@ pub const LOCK_REASON_EXPLICIT: &str = "explicit";
 /// The frontend toast phrases the two reasons differently.
 pub const LOCK_REASON_AUTO: &str = "auto";
 
+/// Build the `vault-locked` event payload for a given reason. Single
+/// construction site so the wire format can be exercised by the unit
+/// tests below and reused by every emit call (`commands::lock` for
+/// explicit, `main::auto_lock_timer_loop` for auto). Without this, two
+/// independent `serde_json::json!({...})` invocations would have to be
+/// kept in lockstep by convention alone.
+pub fn vault_locked_payload(reason: &str) -> serde_json::Value {
+    serde_json::json!({ "reason": reason })
+}
+
 #[tauri::command]
 pub async fn lock(state: State<'_, Mutex<VaultSession>>, app: AppHandle) -> Result<(), AppError> {
     let was_unlocked = lock_impl(state.inner())?;
     if was_unlocked {
         app.emit(
             VAULT_LOCKED_EVENT,
-            serde_json::json!({ "reason": LOCK_REASON_EXPLICIT }),
+            vault_locked_payload(LOCK_REASON_EXPLICIT),
         )
         .map_err(|e| AppError::Internal {
             detail: format!("event emit failed: {e}"),
@@ -106,21 +116,25 @@ mod tests {
 
     #[test]
     fn explicit_lock_event_payload_serializes_to_expected_json() {
-        // Reproduces the exact payload `lock` emits — checks that the
-        // `serde_json::json!` invocation hits the wire format the
-        // frontend pins on. If `to_string` ever pretty-prints by default,
-        // this test catches it before Task 6's listener does.
-        let payload = serde_json::json!({ "reason": LOCK_REASON_EXPLICIT });
-        assert_eq!(payload.to_string(), r#"{"reason":"explicit"}"#);
+        // Exercises the same `vault_locked_payload` helper the `lock`
+        // command calls — so a typo in the production call site (e.g.,
+        // renaming the JSON key) is caught here, not only in Task 6's
+        // listener at runtime.
+        assert_eq!(
+            vault_locked_payload(LOCK_REASON_EXPLICIT).to_string(),
+            r#"{"reason":"explicit"}"#
+        );
     }
 
     #[test]
     fn auto_lock_event_payload_serializes_to_expected_json() {
         // Mirror of the explicit-reason test for the auto-lock path; the
-        // timer thread in `main::auto_lock_timer_loop` (Task 5) emits this
-        // exact JSON. Pinning here means the timer thread doesn't need
-        // its own wire-format assertion.
-        let payload = serde_json::json!({ "reason": LOCK_REASON_AUTO });
-        assert_eq!(payload.to_string(), r#"{"reason":"auto"}"#);
+        // timer thread in `main::auto_lock_timer_loop` (Task 5) calls
+        // `vault_locked_payload(LOCK_REASON_AUTO)` so this same assertion
+        // covers its emit body.
+        assert_eq!(
+            vault_locked_payload(LOCK_REASON_AUTO).to_string(),
+            r#"{"reason":"auto"}"#
+        );
     }
 }

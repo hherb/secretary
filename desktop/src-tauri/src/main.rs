@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 
-use secretary_desktop::commands::lock::{LOCK_REASON_AUTO, VAULT_LOCKED_EVENT};
+use secretary_desktop::commands::lock::{
+    vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
+};
 use secretary_desktop::commands::{lock, settings, unlock, vault};
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
@@ -98,10 +100,8 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
         let state = app.state::<Mutex<VaultSession>>();
         match tick(&state) {
             TickOutcome::AutoLocked => {
-                if let Err(e) = app.emit(
-                    VAULT_LOCKED_EVENT,
-                    serde_json::json!({ "reason": LOCK_REASON_AUTO }),
-                ) {
+                if let Err(e) = app.emit(VAULT_LOCKED_EVENT, vault_locked_payload(LOCK_REASON_AUTO))
+                {
                     tracing::error!(
                         error = %e,
                         "failed to emit vault-locked event from auto-lock timer"
