@@ -146,6 +146,31 @@ describe('LockButton.svelte — error path', () => {
       }
     });
   });
+
+  it('coerces a non-AppError rejection (bare string) to { code: "internal" }', async () => {
+    // Defence in depth: `call()` in ipc.ts already normalises non-AppError
+    // rejections to `{ code: 'internal' }`, but this test bypasses that
+    // layer by mocking the `lock` export directly. The narrowing inside
+    // `lockFailed` must still surface a renderable AppError so the user
+    // gets a coherent "Internal error" toast rather than an undefined
+    // discriminant flowing into `userMessageFor`.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    lockMock.mockRejectedValueOnce('raw string from a panic');
+
+    unlockSession();
+    const { getByRole } = render(LockButton);
+    await fireEvent.click(getByRole('button', { name: /lock/i }));
+
+    await waitFor(() => {
+      const s = get(sessionState);
+      expect(s.status).toBe('locked');
+      if (s.status === 'locked') {
+        expect(s.lastError).toEqual({ code: 'internal' });
+      }
+    });
+
+    errorSpy.mockRestore();
+  });
 });
 
 describe('LockButton.svelte — defensive guard', () => {

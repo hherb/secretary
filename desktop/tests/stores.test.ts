@@ -143,6 +143,92 @@ describe('legal transitions', () => {
   });
 });
 
+describe('error narrowing — lockFailed / unlockFailed accept unknown', () => {
+  // `lockFailed` / `unlockFailed` are typed `(err: unknown) => void` and
+  // narrow internally via `isAppError`. Belt-and-braces against the
+  // (currently impossible) case of `call()` in ipc.ts leaking a non-
+  // AppError rejection: the helpers must coerce to `{ code: 'internal' }`
+  // rather than dropping a malformed payload into `lastError` where
+  // `userMessageFor` would have to render an unknown discriminant.
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  it('lockFailed coerces a bare-string rejection to { code: "internal" }', () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    lockFailed('something exploded');
+    const s = get(sessionState);
+    expect(s.status).toBe('locked');
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual({ code: 'internal' });
+    }
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('lockFailed coerces a plain Error to { code: "internal" }', () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    lockFailed(new Error('panic from Tauri runtime'));
+    const s = get(sessionState);
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual({ code: 'internal' });
+    }
+  });
+
+  it('lockFailed coerces a future-unknown { code } shape to { code: "internal" }', () => {
+    // Simulates a future Rust AppError variant whose discriminator the
+    // TS union doesn't know yet. The helper falls back to `internal`
+    // rather than letting an unrenderable discriminant reach the UI.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    lockFailed({ code: 'future_variant_not_yet_in_ts_union' });
+    const s = get(sessionState);
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual({ code: 'internal' });
+    }
+  });
+
+  it('lockFailed passes through a real typed AppError unchanged', () => {
+    // Regression pin: narrowing must NOT clobber a valid AppError.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    lockFailed(WRONG_PWD);
+    const s = get(sessionState);
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual(WRONG_PWD);
+    }
+  });
+
+  it('unlockFailed coerces a bare-string rejection to { code: "internal" }', () => {
+    beginUnlock(0);
+    unlockFailed('something exploded');
+    const s = get(sessionState);
+    expect(s.status).toBe('locked');
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual({ code: 'internal' });
+    }
+  });
+
+  it('unlockFailed passes through a real typed AppError unchanged', () => {
+    beginUnlock(0);
+    unlockFailed(WRONG_PWD);
+    const s = get(sessionState);
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual(WRONG_PWD);
+    }
+  });
+});
+
 describe('vaultLocked is authoritative — accepts from any state', () => {
   it('from locked → locked + autoLockNotice fires', () => {
     vaultLocked('idle', 100);

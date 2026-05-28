@@ -2,7 +2,6 @@
   import { get } from 'svelte/store';
   import { lock } from '../lib/ipc';
   import { sessionState, beginLock, lockFailed } from '../lib/stores';
-  import type { AppError } from '../lib/errors';
 
   async function handleClick() {
     // Defensive — Vault only mounts us when status === 'unlocked' but
@@ -16,7 +15,9 @@
       // event listener calls `vaultLocked()` when the backend confirms.
       // Frontend mirrors backend reality per spec §7.
     } catch (e) {
-      lockFailed(e as AppError);
+      // `lockFailed` accepts `unknown` and narrows internally; no cast
+      // required at the call site.
+      lockFailed(e);
     }
   }
 </script>

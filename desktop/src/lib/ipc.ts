@@ -33,7 +33,7 @@ export interface SettingsDto {
   autoLockTimeoutMs: number;
 }
 
-function isAppError(err: unknown): err is AppError {
+export function isAppError(err: unknown): err is AppError {
   if (typeof err !== 'object' || err === null || !('code' in err)) {
     return false;
   }

@@ -23,7 +23,7 @@
 
 import { writable, derived, type Readable } from 'svelte/store';
 import type { AppError } from './errors';
-import type { ManifestDto, SettingsDto } from './ipc';
+import { isAppError, type ManifestDto, type SettingsDto } from './ipc';
 
 export type SessionState =
   | { status: 'locked'; lastError: AppError | null }
@@ -90,11 +90,16 @@ export function unlockSucceeded(manifest: ManifestDto, settings: SettingsDto): v
 }
 
 /**
- * `unlocking → locked`. Carries the typed error so the Unlock form can
- * render `userMessageFor(err)` inline.
+ * `unlocking → locked`. Accepts `unknown` (caller passes a catch param)
+ * and narrows defensively — the IPC layer already coerces non-AppError
+ * rejections via `call()` in `ipc.ts`, but doing the narrowing here too
+ * means the helper's contract holds even if a future refactor moves
+ * error mapping away from the IPC boundary. Non-AppError shapes are
+ * captured as `{ code: 'internal' }` so `userMessageFor` always has a
+ * valid discriminant to render.
  */
-export function unlockFailed(err: AppError): void {
-  transition(['unlocking'], { status: 'locked', lastError: err });
+export function unlockFailed(err: unknown): void {
+  transition(['unlocking'], { status: 'locked', lastError: narrowAppError(err) });
 }
 
 /**
@@ -128,9 +133,11 @@ export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()):
  * if the mutex was poisoned) in exchange for never stranding the user.
  * The auto-lock timer keeps running server-side and will eventually
  * reconcile reality.
+ *
+ * Accepts `unknown`; see `unlockFailed` for the narrowing rationale.
  */
-export function lockFailed(err: AppError): void {
-  transition(['locking'], { status: 'locked', lastError: err });
+export function lockFailed(err: unknown): void {
+  transition(['locking'], { status: 'locked', lastError: narrowAppError(err) });
 }
 
 /**
@@ -144,6 +151,20 @@ export function _resetSessionStateForTest(): void {
 }
 
 // --- Internal --------------------------------------------------------------
+
+/**
+ * Narrow a catch-param `unknown` to a typed `AppError`. Non-AppError
+ * shapes (a bare string, a panic Error, a future Rust variant not yet
+ * in the union) coerce to `{ code: 'internal' }` and the original is
+ * logged so the developer-facing breadcrumb survives. Same coercion
+ * `ipc.ts::call` performs — keeping it here too means the helpers'
+ * contracts hold independent of IPC-layer details.
+ */
+function narrowAppError(err: unknown): AppError {
+  if (isAppError(err)) return err;
+  console.error('session-state helper received non-AppError rejection', err);
+  return { code: 'internal' };
+}
 
 /**
  * Atomic check-and-set: if `current.status` is not in `allowed`, the
