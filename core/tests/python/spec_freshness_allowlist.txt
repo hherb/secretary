@@ -18,3 +18,46 @@ docs/crypto-design.md::_conflicts
 
 # reason: KAT vector key in core/tests/data/conflict_kat.json (line 806), not a Rust fn name
 docs/threat-model.md::concurrent_tombstone_wins_preserves_live_unknown
+
+# --- ffi/secretary-ffi-bridge symbol citations (Sub-project B). The freshness
+# --- check only scans core/, so FFI-bridge symbol names register as bare-
+# --- unresolved. The FFI-secret-handling memo legitimately cites them.
+
+# reason: ffi/secretary-ffi-bridge/src/record/field.rs::FieldHandle::expose_text — FFI accessor, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::expose_text
+
+# reason: ffi/secretary-ffi-bridge/src/record/field.rs::FieldHandle::expose_bytes — FFI accessor, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::expose_bytes
+
+# reason: ffi/secretary-ffi-bridge/src/create.rs::MnemonicOutput::take_phrase — FFI one-shot accessor, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::take_phrase
+
+# reason: ffi/secretary-ffi-bridge/src/record/orchestration.rs::read_block — FFI free fn, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::read_block
+
+# reason: ffi/secretary-ffi-bridge/src/record/field.rs test name — naming convention prototype, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::wipe_then_wipe_is_idempotent
+
+# reason: ffi/secretary-ffi-bridge/src/sync_helpers.rs::lock_or_recover — FFI mutex-poison helper, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::lock_or_recover
+
+# reason: std::borrow::ToOwned::to_owned — Rust standard library method, not a project symbol
+docs/manual/contributors/ffi-secret-handling-internal.md::to_owned
+
+# reason: std::slice::ToOwned via [T]::to_vec — Rust standard library method, not a project symbol
+docs/manual/contributors/ffi-secret-handling-internal.md::to_vec
+
+# reason: ffi/secretary-ffi-bridge/src/identity.rs::UnlockedIdentity::user_uuid — FFI accessor, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::user_uuid
+
+# reason: core/tests/data/golden_vault_001/ — KAT test-data directory name, not a Rust fn
+docs/manual/contributors/ffi-secret-handling-internal.md::golden_vault_001
+
+# reason: core/tests/data/golden_vault_002/ — KAT test-data directory name, not a Rust fn
+docs/manual/contributors/ffi-secret-handling-internal.md::golden_vault_002
+
+# reason: ffi/secretary-ffi-bridge/src/error.rs::FfiUnlockError — FFI error type, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::FfiUnlockError::WrongPasswordOrCorrupt
+
+# reason: ffi/secretary-ffi-bridge/src/error.rs::FfiUnlockError — FFI error type, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::FfiUnlockError::WrongMnemonicOrCorrupt
