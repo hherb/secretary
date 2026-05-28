@@ -95,6 +95,10 @@ fn main() {
 fn auto_lock_timer_loop(app: tauri::AppHandle) {
     let tick_interval = Duration::from_millis(AUTO_LOCK_TICK_MS);
     loop {
+        // Sleep *before* the first tick — at startup the session is always
+        // locked, so an immediate first tick would be a wasted lock-and-
+        // check. The 5 s startup grace also keeps a transiently slow boot
+        // from racing the timer against `manage()`'s state registration.
         thread::sleep(tick_interval);
 
         let state = app.state::<Mutex<VaultSession>>();
