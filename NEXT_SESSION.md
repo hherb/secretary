@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-28-d11-task-6-shipped.md
+docs/handoffs/2026-05-28-d11-task-7-shipped.md
