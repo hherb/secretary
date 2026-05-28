@@ -1,19 +1,27 @@
 //! Secretary desktop client — Tauri 2 main entry point.
 //!
 //! D.1.1 walking skeleton. Modules (`auto_lock`, `commands`, `constants`,
-//! `dtos`, `errors`, `session`, `settings`) live in the sibling library
-//! crate ([`secretary_desktop`]) so integration tests in `tests/*.rs`
-//! can reach them. Task 4 wires the [`commands`] surface into the Tauri
-//! `invoke_handler`; Task 5 will spawn the auto-lock timer thread.
+//! `dtos`, `errors`, `session`, `settings`, `timer`) live in the sibling
+//! library crate ([`secretary_desktop`]) so integration tests in
+//! `tests/*.rs` can reach them. Task 4 wired the [`commands`] surface
+//! into the Tauri `invoke_handler`; Task 5 adds the auto-lock timer
+//! thread spawned from `Builder::setup`.
 
 // Hide the console window on Windows in release builds. Cosmetic for D.1.1
 // but the macro is canonical Tauri practice — keep it from day one.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
+use tauri::{Emitter, Manager};
+
+use secretary_desktop::commands::lock::{LOCK_REASON_AUTO, VAULT_LOCKED_EVENT};
 use secretary_desktop::commands::{lock, settings, unlock, vault};
+use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
+use secretary_desktop::timer::{tick, TickOutcome};
 
 fn main() {
     // Init `tracing` subscriber for structured logs on stderr. Developer-
@@ -55,6 +63,55 @@ fn main() {
             lock::lock,
             lock::notify_activity,
         ])
+        .setup(|app| {
+            // Spawn the auto-lock timer thread. It lives for the lifetime of
+            // the process — the OS reclaims it on exit. No graceful join:
+            // the thread sleeps between ticks and the body is pure (no
+            // external resource that would leak), so abrupt termination
+            // is fine for the D.1.1 walking skeleton.
+            //
+            // The `AppHandle` is `Clone` and cheap; it carries the state
+            // manager so the thread can fetch the `Mutex<VaultSession>`
+            // each tick.
+            let app_handle = app.handle().clone();
+            thread::Builder::new()
+                .name("secretary-auto-lock-timer".to_string())
+                .spawn(move || auto_lock_timer_loop(app_handle))
+                .expect("OS must allow spawning the auto-lock timer thread");
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Secretary tauri application");
+}
+
+/// OS thread that drives [`tick`] on a fixed interval. On
+/// [`TickOutcome::AutoLocked`] emits the `vault-locked` Tauri event with
+/// `{ "reason": "auto" }` so the frontend can render its toast.
+///
+/// Pulled out as a free function so the `setup` closure stays terse and the
+/// loop body is easy to read top-down.
+fn auto_lock_timer_loop(app: tauri::AppHandle) {
+    let tick_interval = Duration::from_millis(AUTO_LOCK_TICK_MS);
+    loop {
+        thread::sleep(tick_interval);
+
+        let state = app.state::<Mutex<VaultSession>>();
+        match tick(&state) {
+            TickOutcome::AutoLocked => {
+                if let Err(e) = app.emit(
+                    VAULT_LOCKED_EVENT,
+                    serde_json::json!({ "reason": LOCK_REASON_AUTO }),
+                ) {
+                    tracing::error!(
+                        error = %e,
+                        "failed to emit vault-locked event from auto-lock timer"
+                    );
+                }
+            }
+            TickOutcome::NoAction | TickOutcome::Skipped => {
+                // No-op: either the session is still active, or another
+                // command holds the mutex and we'll retry next tick.
+            }
+        }
+    }
 }

@@ -33,6 +33,11 @@ pub const VAULT_LOCKED_EVENT: &str = "vault-locked";
 /// invoked `lock` explicitly.
 pub const LOCK_REASON_EXPLICIT: &str = "explicit";
 
+/// Reason string for the `vault-locked` event payload when the auto-lock
+/// timer (see [`crate::timer`]) fires after the configured idle threshold.
+/// The frontend toast phrases the two reasons differently.
+pub const LOCK_REASON_AUTO: &str = "auto";
+
 #[tauri::command]
 pub async fn lock(state: State<'_, Mutex<VaultSession>>, app: AppHandle) -> Result<(), AppError> {
     let was_unlocked = lock_impl(state.inner())?;
@@ -76,4 +81,46 @@ pub fn notify_activity_impl(state: &Mutex<VaultSession>) -> Result<(), AppError>
     })?;
     session.notify_activity();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_locked_event_name_is_kebab_case() {
+        // Pin the Tauri event name — Svelte's `listen('vault-locked', ...)`
+        // (Task 6) depends on this exact string. A typo here is silent at
+        // build time and only surfaces as a missed toast at runtime.
+        assert_eq!(VAULT_LOCKED_EVENT, "vault-locked");
+    }
+
+    #[test]
+    fn lock_reason_constants_match_frontend_discriminator() {
+        // The frontend AppError-style discriminated union (Task 6) keys off
+        // these literal strings. Pin both so a rename here can't desync
+        // the wire format from the TS layer silently.
+        assert_eq!(LOCK_REASON_EXPLICIT, "explicit");
+        assert_eq!(LOCK_REASON_AUTO, "auto");
+    }
+
+    #[test]
+    fn explicit_lock_event_payload_serializes_to_expected_json() {
+        // Reproduces the exact payload `lock` emits — checks that the
+        // `serde_json::json!` invocation hits the wire format the
+        // frontend pins on. If `to_string` ever pretty-prints by default,
+        // this test catches it before Task 6's listener does.
+        let payload = serde_json::json!({ "reason": LOCK_REASON_EXPLICIT });
+        assert_eq!(payload.to_string(), r#"{"reason":"explicit"}"#);
+    }
+
+    #[test]
+    fn auto_lock_event_payload_serializes_to_expected_json() {
+        // Mirror of the explicit-reason test for the auto-lock path; the
+        // timer thread in `main::auto_lock_timer_loop` (Task 5) emits this
+        // exact JSON. Pinning here means the timer thread doesn't need
+        // its own wire-format assertion.
+        let payload = serde_json::json!({ "reason": LOCK_REASON_AUTO });
+        assert_eq!(payload.to_string(), r#"{"reason":"auto"}"#);
+    }
 }
