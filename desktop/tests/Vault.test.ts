@@ -82,6 +82,17 @@ describe('Vault.svelte — initial render contract', () => {
     const { getByRole } = render(Vault);
     expect(getByRole('button', { name: /lock/i })).toBeTruthy();
   });
+
+  it('renders a short vault UUID without a misleading ellipsis tail', () => {
+    // Backend currently emits 32-hex-char UUIDs so the slice is always a
+    // strict prefix. But if a future build or debug fixture ever produces
+    // a value shorter than the prefix length, the bar must show the full
+    // string rather than "abc…" (where the "…" implies a hidden suffix).
+    unlockWith(manifestFixture({ vaultUuidHex: 'abc' }));
+    const { getByText, queryByText } = render(Vault);
+    expect(getByText('abc')).toBeTruthy();
+    expect(queryByText(/abc…/)).toBeNull();
+  });
 });
 
 describe('Vault.svelte — block count pluralisation', () => {
