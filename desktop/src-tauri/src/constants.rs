@@ -52,10 +52,8 @@ pub const AUTO_LOCK_TICK_MS: u64 = 5_000;
 /// is well below any plausible threshold so the timer never spuriously fires
 /// while the user is active.
 ///
-// Consumer lands in Task 5 (auto-lock timer thread) / Task 6 (frontend
-// debounce). Allowed dead at this Task-2 checkpoint by design — the
-// constants module ships ahead of its consumers per the plan.
-#[allow(dead_code)]
+/// Shared with `desktop/src/lib/auto_lock.ts::ACTIVITY_NOTIFY_MIN_INTERVAL_MS` —
+/// change both together.
 pub const ACTIVITY_NOTIFY_MIN_INTERVAL_MS: u64 = 2_000;
 
 // =============================================================================

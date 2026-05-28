@@ -12,19 +12,24 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src tests",
-    "svelte-check": "svelte-check --tsconfig ./tsconfig.json"
+    "svelte-check": "svelte-check --tsconfig ./tsconfig.json",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2"
   },
   "devDependencies": {
+    "@eslint/js": "^9",
     "@sveltejs/vite-plugin-svelte": "^4",
     "@tauri-apps/cli": "^2",
+    "eslint": "^9",
+    "jsdom": "^25",
     "svelte": "^5",
     "svelte-check": "^4",
     "tslib": "^2",
     "typescript": "^5",
+    "typescript-eslint": "^8",
     "vite": "^6",
     "vitest": "^2"
   }
