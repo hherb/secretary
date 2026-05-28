@@ -69,7 +69,7 @@ describe('ipc wrappers — argument shape', () => {
 describe('ipc wrappers — return shape', () => {
   it('listBlocks resolves with the array unchanged', async () => {
     const payload = [
-      { blockUuidHex: 'aa', blockName: 'Banking', recordCount: 3, lastModMs: 100 }
+      { blockUuidHex: 'aa', blockName: 'Banking', createdAtMs: 50, lastModifiedMs: 100 }
     ];
     invokeMock.mockResolvedValue(payload);
     const blocks = await listBlocks();

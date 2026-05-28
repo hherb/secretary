@@ -15,8 +15,8 @@ import type { AppError, AppWarning } from './errors';
 export interface BlockSummaryDto {
   blockUuidHex: string;
   blockName: string;
-  recordCount: number;
-  lastModMs: number;
+  createdAtMs: number;
+  lastModifiedMs: number;
 }
 
 export interface ManifestDto {
