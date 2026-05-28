@@ -1,0 +1,128 @@
+/* Secretary desktop — CSS custom-property theme tokens.
+ *
+ * Loaded once from App.svelte; every component references these tokens
+ * via `var(--…)`. No CSS framework — plain custom properties keep the
+ * bundle minimal (~2 KB after gzip) and let the entire theme be
+ * reviewed in a single file. Dark mode is handled by overriding the
+ * tokens in `@media (prefers-color-scheme: dark)` below; no JS toggle.
+ */
+
+:root {
+  /* Color tokens — neutral base. Components compose via semantic names
+     rather than literal hex values so dark-mode lives in one place. */
+  --color-bg: #fafafa;
+  --color-bg-elevated: #ffffff;
+  --color-text: #1a1a1a;
+  --color-text-muted: #6b6b6b;
+  --color-border: #e0e0e0;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-warning: #d97706;
+  --color-warning-bg: #fffbeb;
+
+  /* Spacing scale — 4 px base; powers-of-2-ish to keep the rhythm
+     consistent across components without exhausting the design space. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Border-radius tokens */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Typography */
+  --font-stack: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-stack-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 15px;
+  --font-size-lg: 18px;
+  --font-size-xl: 22px;
+
+  /* Shadows — opacity tuned for the light theme; dark mode overrides
+     each shadow token below since black-on-black is invisible. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f0f10;
+    --color-bg-elevated: #1a1a1c;
+    --color-text: #f5f5f5;
+    --color-text-muted: #a1a1a1;
+    --color-border: #2a2a2d;
+    --color-primary: #60a5fa;
+    --color-primary-hover: #93c5fd;
+    --color-danger: #f87171;
+    --color-danger-bg: #2a1414;
+    --color-warning: #fbbf24;
+    --color-warning-bg: #2a2014;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-stack);
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+  background: var(--color-bg);
+  margin: 0;
+}
+
+/* ---- Component classes -------------------------------------------------
+ *
+ * Component-scoped styles live in `theme.css` (this file) rather than in
+ * `<style>` blocks inside individual `.svelte` files. Reason: Vite 6's
+ * internal `preprocessCSS` trips a `PartialEnvironment` proxy bug under
+ * Vitest, which would otherwise force us to remove component styles to
+ * keep the harness green. Side benefit: every visual choice is reviewable
+ * in one file rather than spread across components.
+ *
+ * Naming convention: `.<component>` for the root, `.<component>__<part>`
+ * for inner parts (BEM-light). New components add a small block below.
+ */
+
+/* PathPicker */
+.path-picker {
+  display: flex;
+  gap: var(--space-2);
+}
+.path-picker input {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  font-family: var(--font-stack-mono);
+  font-size: var(--font-size-sm);
+}
+.path-picker button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.path-picker button:hover:not(:disabled) {
+  background: var(--color-border);
+}
+.path-picker button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
