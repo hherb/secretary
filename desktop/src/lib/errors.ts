@@ -1,10 +1,9 @@
-// Discriminated union mirroring src-tauri/src/errors.rs::AppError and
-// ::AppWarning. The Rust side serializes with
-// `#[serde(tag = "code", rename_all = "snake_case")]`; the discriminator
-// strings below MUST match exactly. Adding a Rust variant without
-// extending this union surfaces as a TypeScript-side fall-through where
-// the switch in `userMessageFor` no longer covers every code path — keep
-// the two in lockstep.
+// Discriminator strings match the Rust side's
+// `#[serde(tag = "code", rename_all = "snake_case")]` wire format.
+// Adding a Rust variant without extending the union here breaks
+// `userMessageFor`'s exhaustive switch at tsc compile time;
+// `userMessageFor` also has a runtime default arm in case a future
+// build's wire format precedes the matching TS source update.
 
 // Single source of truth for known AppError discriminator strings. Exported
 // so runtime guards (e.g. `ipc.ts::isAppError`) can validate against the

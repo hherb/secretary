@@ -1,6 +1,4 @@
 // Pins the rate-limit + cleanup contract for startActivityTracking().
-// The mock for ../src/lib/ipc.ts uses vi.hoisted for the same hoisting
-// reason as ipc.test.ts.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';

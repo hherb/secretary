@@ -1,11 +1,7 @@
-// Svelte stores for session-level state. Components subscribe via
-// `$sessionState` reactivity; non-Svelte modules use the imperative
-// `.subscribe()` / `.update()` surface.
-//
-// The discriminated union encodes UI states (not just unlock/lock booleans)
-// so the App.svelte router can `switch ($s.status)` instead of branching
-// on bag-of-booleans. `lastError` is null except in the locked state — the
-// error toast is only meaningful when we landed back on the unlock screen.
+// Svelte stores for session-level state. The discriminated union lets
+// consumers exhaust on `.status` rather than juggle booleans, and the
+// per-variant payloads make illegal states (e.g. reading `manifest`
+// while `locked`) unrepresentable at the type level.
 
 import { writable, derived } from 'svelte/store';
 import type { AppError } from './errors';
