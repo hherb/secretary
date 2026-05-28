@@ -21,7 +21,11 @@ primitive, and the constant-time-discipline the primitive provides
 plain `==` on a secret-derived value.
 
 **Date:** 2026-05-02 (post-PR-#12 monitor stabilisation; 430 tests +
-6 ignored on `main`).
+6 ignored on `main`). **Re-verified 2026-05-28** against the
+post-Sub-project-B/C codebase — see "Re-verification" notes inline. Line
+numbers cited below have drifted by a few lines per file as the modules
+have grown; the symbol-name citations remain authoritative and the
+hyperlinks still land near the intended code.
 
 ---
 
@@ -39,16 +43,20 @@ their values are observable to any adversary that can read the cloud-
 folder copy of the vault.
 
 The `subtle` crate is a direct dependency
-([core/Cargo.toml:17](../../../core/Cargo.toml#L17)) and surfaces a
-`Sensitive<T>::ct_eq` API at
-[core/src/crypto/secret.rs:64-67](../../../core/src/crypto/secret.rs#L64-L67).
-That API has no production call sites today — by design, because the
-verify-then-decap pattern means the codebase never compares two secret
-byte strings for equality outside of AEAD MAC verification. The API
-exists for future hardening (e.g. if Sub-project C orchestration
-introduces a "do these two unwrapped block-content keys agree?" check)
-or for FFI consumers (Sub-project B) that need to expose CT-equality
-to clients.
+([core/Cargo.toml](../../../core/Cargo.toml) — currently `subtle = "2"`).
+The `Sensitive<T>` wrapper intentionally **does not** implement
+`PartialEq` (see §6 below); the `==` operator on secret-bearing types
+routes through `subtle::ConstantTimeEq` exclusively via the
+`PartialEq` impls on `SecretBytes` and `SecretString` — both newer than
+the original audit (PR #16, post-2026-05-02). See
+[core/src/crypto/secret.rs](../../../core/src/crypto/secret.rs) for the
+two `PartialEq for SecretBytes` / `PartialEq for SecretString` impls
+that delegate to `ct_eq` on the underlying byte/`str` representation.
+The verify-then-decap pattern still means the codebase has no explicit
+**call site** that does `a.ct_eq(b)` outside of these `PartialEq`
+impls themselves — `==` on `Record` / `RecordField` values for
+proptest-shrinking and conflict-resolution duplicate-detection
+transparently uses the CT path.
 
 The principal items to flag for external review are not bugs in
 *our* code but **assumptions we make about upstream crates** — we
@@ -220,22 +228,30 @@ per dalek's documented invariants) and `ml-kem` 0.2 (RustCrypto FIPS
 "tamper with recipient table" (binds via AEAD AAD on the block).
 
 **Production paths (all `==` on `[u8; 16]`):**
-- [core/src/vault/orchestrators.rs:530](../../../core/src/vault/orchestrators.rs#L530) —
-  `manifest_file.author_fingerprint != owner_fp`.
-- [core/src/vault/orchestrators.rs:1038](../../../core/src/vault/orchestrators.rs#L1038),
-  [:1066](../../../core/src/vault/orchestrators.rs#L1066) —
-  `author_fp != block_file.author_fingerprint` cross-check.
-- [core/src/vault/orchestrators.rs:1089](../../../core/src/vault/orchestrators.rs#L1089),
-  [:1121](../../../core/src/vault/orchestrators.rs#L1121) —
+- [core/src/vault/orchestrators.rs#L751](../../../core/src/vault/orchestrators.rs#L751) —
+  `manifest_file.author_fingerprint != owner_fp` (open-vault path).
+- [core/src/vault/orchestrators.rs#L1227](../../../core/src/vault/orchestrators.rs#L1227) —
+  `author_fp != block_file.author_fingerprint` cross-check on the
+  read-block path; mirrored in `share_block` at the §1840–1904
+  recipient-resolution block.
+- [core/src/vault/orchestrators.rs#L1278](../../../core/src/vault/orchestrators.rs#L1278),
+  [#L1310](../../../core/src/vault/orchestrators.rs#L1310) —
   recipient-table lookup `.any(|w| w.recipient_fingerprint == ...)`
   and `.find(|(fp, _)| *fp == wrap.recipient_fingerprint)`.
-- [core/src/vault/block.rs:1242](../../../core/src/vault/block.rs#L1242),
-  [:1670](../../../core/src/vault/block.rs#L1670) — duplicate-
-  fingerprint check on adjacent sorted entries (well-formedness).
-- [core/src/vault/block.rs:1751](../../../core/src/vault/block.rs#L1751),
-  [:1777](../../../core/src/vault/block.rs#L1777) —
-  `block.author_fingerprint != sender_card_fingerprint` cross-check
-  + reader entry lookup `.find(|r| &r.recipient_fingerprint == reader_card_fingerprint)`.
+- [core/src/vault/block.rs#L1747](../../../core/src/vault/block.rs#L1747) —
+  `block.author_fingerprint != sender_card_fingerprint` cross-check.
+- [core/src/vault/block.rs#L1773](../../../core/src/vault/block.rs#L1773) —
+  reader entry lookup
+  `.find(|r| &r.recipient_fingerprint == reader_card_fingerprint)`.
+- Duplicate-fingerprint well-formedness check on adjacent sorted
+  entries — see the `duplicate recipient fingerprint in recipient
+  table` error class and the surrounding well-formedness code in
+  [core/src/vault/block.rs](../../../core/src/vault/block.rs).
+- Sync orchestration cross-checks (added in C.1.1a, post-audit):
+  [core/src/sync/ingest.rs](../../../core/src/sync/ingest.rs)
+  authenticates sibling envelopes against the canonical owner
+  identity via the same fingerprint primitives, applying identical
+  non-CT-is-acceptable reasoning.
 
 **Why `==` is acceptable here:** `Fingerprint = [u8; 16]` is a
 **public** value by design. Fingerprints are derived from BLAKE3 of
@@ -308,29 +324,42 @@ data-independent Argon2id pass schedule.
 ## 6. `subtle` crate adoption
 
 `subtle = "2"` is a direct dependency. The single import is at
-[core/src/crypto/secret.rs:14](../../../core/src/crypto/secret.rs#L14)
-and the only API exposed is `Sensitive<T>::ct_eq`
-([:64-67](../../../core/src/crypto/secret.rs#L64-L67)) for byte-
-string comparison.
+[core/src/crypto/secret.rs](../../../core/src/crypto/secret.rs)
+(`use subtle::ConstantTimeEq;` near the top of the file).
 
-`Sensitive<T>` deliberately does **not** implement `PartialEq` —
-documented at
-[core/src/crypto/secret.rs:76-78](../../../core/src/crypto/secret.rs#L76-L78):
-"`subtle` only provides `ConstantTimeEq` for slices and integer
-primitives; an `==` impl bounded on `T: ConstantTimeEq` would
-silently fail to apply to `[u8; N]`, the dominant case." This forces
-callers to use `ct_eq` explicitly when comparing secrets, rather than
-the syntactic `==` which would silently fall back to a non-CT impl.
+Three CT-aware comparison surfaces live on the secret-bearing wrappers:
 
-**Production call sites of `ct_eq`:** zero. By design — see Summary
-above. The verify-then-decap pattern means the codebase never has a
-"compare two secret byte strings" moment outside of AEAD MAC verify
-(where the comparison is inside the upstream crate).
+1. **`SecretBytes: PartialEq`** — `eq` delegates to
+   `self.inner.ct_eq(&other.inner)`. The `ct_eq` short-circuits on
+   length mismatch (returns false without reading mismatched bytes); for
+   equal lengths it's branch-free over the byte content.
+2. **`SecretString: PartialEq`** — `eq` delegates to
+   `self.inner.as_bytes().ct_eq(other.inner.as_bytes())`. Same
+   short-circuit-on-length-mismatch + branch-free-on-content
+   discipline as `SecretBytes`.
+3. **`Sensitive<T>`: no `PartialEq`** — documented at the type level:
+   `subtle` only provides `ConstantTimeEq` for slices and integer
+   primitives; an `==` impl bounded on `T: ConstantTimeEq` would
+   silently fail to apply to `[u8; N]`, the dominant use case (32-byte
+   keys). Callers needing byte-equality on a `Sensitive<[u8; N]>`
+   compare slices explicitly: `a.expose()[..].ct_eq(&b.expose()[..])`.
+
+**Production call sites of `ct_eq`:** the two `PartialEq` impls above,
+both internal to `secret.rs`. No external `.ct_eq(...)` call sites
+exist in `core/`, `cli/`, or `ffi/`. The verify-then-decap pattern
+still means the codebase has no explicit secret-vs-secret equality
+comparison outside of AEAD MAC verify (which is inside the upstream
+crate) — the two `PartialEq` impls exist so that **transparent** `==`
+on `Record` / `RecordField` (used in CRDT conflict resolution and
+proptest shrinking) routes through CT comparison instead of the
+non-CT byte-slice `==` that would otherwise apply.
 
 **Gaps to flag for external review:**
 - None — the API surface is small, the discipline is documented at
   the type level, and the absence of CT-violating fallbacks is
-  enforced by the absence of a `PartialEq` impl on `Sensitive`.
+  enforced by the absence of a `PartialEq` impl on `Sensitive` plus
+  the active CT-routing `PartialEq` impls on `SecretBytes` and
+  `SecretString`.
 
 ---
 
@@ -356,11 +385,15 @@ auditors.
    is non-secret information.
 
 3. **`ml-dsa` version pin**: the crate is at `0.1.0-rc.8` (release
-   candidate). Consider switching to a stable 1.x release once
-   available, and adding a comment in
+   candidate) as of 2026-05-28 — no change since the original audit.
+   Consider switching to a stable 1.x release once available, and
+   adding a comment in
    [core/Cargo.toml](../../../core/Cargo.toml) flagging the security-
-   critical pin (similar to `tempfile = "=3.27.0"`'s
-   exact-pin pattern).
+   critical pin (similar to the existing
+   `zeroize = "=1.8.2"` and `tempfile = "=3.27.0"` exact-pin
+   pattern — note that `zeroize` joined the exact-pin set after the
+   original audit, the third security-critical dep on that
+   discipline).
 
 These are not blockers for the external review; they're small
 discipline-tightening that the external reviewer might recommend
@@ -387,6 +420,33 @@ anyway.
 
 ---
 
+## Re-verification: Sub-projects B and C
+
+The audit was written against Sub-project A only. As of 2026-05-28
+both Sub-project B (FFI bindings, complete through B.6 v2) and
+Sub-project C (sync orchestration: C.1, C.1.1a/b, C.2 — headless
+`secretary-sync` CLI — all complete) have shipped substantial new
+Rust code that handles secret material. A spot re-verification:
+
+- **Sub-project B (`ffi/secretary-ffi-bridge`)** inherits the core's
+  CT discipline transparently — the bridge does not introduce any
+  new secret-vs-secret equality comparisons of its own. The
+  `FieldHandle::expose_text` / `FieldHandle::expose_bytes` accessors return
+  caller-owned plaintext (the foreign-runtime heap-copy caveat in
+  [`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md));
+  once a secret crosses the FFI boundary, CT discipline becomes a
+  foreign-runtime concern that the bridge cannot enforce. **No
+  bridge-side CT regression** was found.
+- **Sub-project C (`core/src/sync/`)** introduces additional sites
+  that copy secret bytes out of `Sensitive`-wrapped sources for
+  per-block AEAD decryption and signing (see
+  [`prepare.rs#L169`](../../../core/src/sync/prepare.rs#L169) and
+  [`commit/write.rs#L237`](../../../core/src/sync/commit/write.rs#L237)
+  for the X25519 and Ed25519 secret-key copy-then-wrap-then-zeroize
+  sites). These follow the established `bind → wrap → zeroize`
+  pattern from the memory-hygiene memo's stack-residue table. No
+  new `==`-on-secret comparison was introduced.
+
 ## Conclusion
 
 The internal pass found no bugs and no gaps in our own code. The
@@ -407,5 +467,11 @@ The verify-then-decap pattern (signature → AEAD-MAC → decap, in that
 order) means the codebase never has a "compare two secret byte
 strings for equality" moment outside of AEAD MAC verification —
 which is itself constant-time inside the upstream crate. The
-`Sensitive::ct_eq` API exists for future callers (Sub-project B FFI,
-Sub-project C orchestration) but has no current production use.
+`SecretBytes` / `SecretString` `PartialEq` impls route the
+transparent `==` operator through `subtle::ConstantTimeEq` for the
+two cases (record-field equality in conflict resolution and proptest
+shrinking) where syntactic `==` on secret-bearing values is in
+production use today. `Sensitive<T>` deliberately retains no
+`PartialEq` impl so that a slip into non-CT equality on a
+fixed-size-array secret produces a compile error rather than a
+silent fallback.

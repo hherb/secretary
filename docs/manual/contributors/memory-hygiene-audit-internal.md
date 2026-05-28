@@ -21,7 +21,13 @@ defeat zeroize discipline, (c) the surrounding code zeroizes any
 stack-residue copies after the secret is moved into the wrapper.
 
 **Date:** 2026-05-02 (post-side-channel internal audit; 430 tests + 6
-ignored on `main`).
+ignored on `main`). **Re-verified 2026-05-28** against the post-
+Sub-project-B/C codebase — see the "Cross-sub-project discipline" and
+"Re-verification" sections below. The line numbers cited in the
+stack-residue table and the file-anchor citations have drifted by a few
+lines per file as the modules have grown; the symbol-name citations
+remain authoritative and all twelve `.zeroize()` post-move calls have
+been confirmed present in the current code.
 
 ---
 
@@ -61,14 +67,17 @@ in-memory types). See "Resolved: record-content zeroize" below.
 ## Wrapper discipline
 
 [core/src/crypto/secret.rs](../../../core/src/crypto/secret.rs)
-defines the two secret-bearing wrappers used throughout the crate:
+defines the three secret-bearing wrappers used throughout the crate
+(the third, `SecretString`, was introduced by PR #16's
+`RecordFieldValue` rewrap — see "Resolved: record-content zeroize"):
 
 | Wrapper | Derive | Storage | Custom impls | Notes |
 |---|---|---|---|---|
-| `SecretBytes` | `Zeroize, ZeroizeOnDrop` | `Vec<u8>` (heap) | `Debug` (redacted, prints len only); `PartialEq, Eq` via `subtle::ConstantTimeEq` | No `Clone` derived; `Display` not implemented. |
-| `Sensitive<T: Zeroize>` | `Zeroize, ZeroizeOnDrop` | `T` (typically `[u8; 32]` or `Vec<u8>`) | `Debug` (redacted, prints `<redacted>`) | Intentionally **does not** implement `PartialEq` — see [secret.rs:75-85](../../../core/src/crypto/secret.rs#L75-L85): `subtle` only provides `ConstantTimeEq` for slices and integer primitives, and an `==` impl bounded on `T: ConstantTimeEq` would silently fail to apply to `[u8; N]`. Callers needing byte-equality compare slices via `a.expose()[..].ct_eq(&b.expose()[..])`. |
+| `SecretBytes` | `Zeroize, ZeroizeOnDrop, Clone` | `Vec<u8>` (heap) | `Debug` (redacted, prints len only); `PartialEq, Eq` via `subtle::ConstantTimeEq` | `Clone` was added with PR #16 for conflict-resolution duplicate-detection and proptest shrinking; the cloned allocation is itself zeroize-on-drop. `Display` not implemented. |
+| `SecretString` | `Zeroize, ZeroizeOnDrop, Clone` | `String` (heap) | `Debug` (redacted, prints len only); `PartialEq, Eq` via byte-slice `subtle::ConstantTimeEq` | Sibling of `SecretBytes` for human-readable secrets (passwords, secret notes, recovery phrases stored in records). |
+| `Sensitive<T: Zeroize>` | `Zeroize, ZeroizeOnDrop` | `T` (typically `[u8; 32]` or `Vec<u8>`) | `Debug` (redacted, prints `<redacted>`) | Intentionally **does not** implement `PartialEq` — see the inline comment above the type definition in [secret.rs](../../../core/src/crypto/secret.rs): `subtle` only provides `ConstantTimeEq` for slices and integer primitives, and an `==` impl bounded on `T: ConstantTimeEq` would silently fail to apply to `[u8; N]`. Callers needing byte-equality compare slices via `a.expose()[..].ct_eq(&b.expose()[..])`. |
 
-**Both wrappers are sound.** No changes recommended.
+**All three wrappers are sound.** No changes recommended.
 
 ## Top-level secret types
 
@@ -250,6 +259,57 @@ additive. Pinned by two integration tests at
 `ml_dsa_65_secret_zeroize_clears_inner_bytes` and
 `ml_kem_768_secret_zeroize_clears_inner_bytes`.
 
+## Cross-sub-project discipline (re-verification, 2026-05-28)
+
+Sub-projects B and C were written **after** the original 2026-05-02
+audit. A spot re-verification confirms both new layers follow the
+established `bind → wrap → zeroize` pattern at every secret-bearing
+site:
+
+- **Sub-project C — sync orchestration**
+  ([core/src/sync/](../../../core/src/sync/)). The two new sites that
+  copy secret keys out of `Sensitive<...>` wrappers for per-block AEAD
+  decryption and signing both follow the pattern verbatim:
+  - [sync/prepare.rs#L169](../../../core/src/sync/prepare.rs#L169) —
+    `let mut x_sk_bytes = *identity.identity.x25519_sk.expose(); let
+    reader_x_sk: X25519Secret = Sensitive::new(x_sk_bytes);
+    x_sk_bytes.zeroize();`
+  - [sync/commit/write.rs#L237](../../../core/src/sync/commit/write.rs#L237) —
+    the parallel `ed_sk_bytes.zeroize()` pattern for the author's
+    Ed25519 secret key.
+
+  No new top-level secret types are introduced — the sync layer
+  composes `Sensitive`-wrapped values from the existing core types
+  rather than declaring its own wrappers.
+
+- **Sub-project B — FFI bridge**
+  ([ffi/secretary-ffi-bridge/](../../../ffi/secretary-ffi-bridge/)).
+  The bridge re-exposes core types through opaque-handle wrappers
+  (`UnlockedIdentity`, `MnemonicOutput`, `OpenVaultManifest`,
+  `BlockReadOutput`, `Record`, `FieldHandle`) using the `Mutex<Option
+  <Inner>>` (or `Arc<Mutex<Option<Inner>>>` for shared handles)
+  pattern. The inner `Inner` types are all built from the established
+  `Sensitive` / `SecretBytes` / `SecretString` wrappers, so the
+  bridge inherits the drop-cascade zeroize discipline without
+  introducing new bytes-handling sites. The dedicated
+  [`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md)
+  memo walks the bridge layer in detail and covers the foreign-
+  runtime heap-copy caveat that the bridge cannot close from the
+  Rust side.
+
+- **CLI (`cli/`)** — the `secretary-sync` binary consumes the sync
+  layer through its library surface; it does not introduce new
+  secret-bearing types. The TTY / stdin password-sourcing path in
+  [cli/src/unlock.rs](../../../cli/src/unlock.rs) reads the password
+  into a `SecretBytes` and feeds it directly to the core unlock
+  entry points without intermediate plaintext.
+
+The pattern from this memo's "Stack-residue gaps fixed" table is now
+the cross-codebase expectation. New work that introduces a fresh
+`Sensitive::new(stack_var)` site without the accompanying
+`stack_var.zeroize()` will fail the FFI memo's "Adding a new bridge
+handle" checklist and should fail review here too.
+
 ## Deferred items (not addressed in this pass)
 
 The two type-level deferred items from the original audit (record-content
@@ -296,6 +356,13 @@ verify both crates' drop discipline at their pinned versions.
   language's allocator and GC own a copy of any secret material
   passed across. The discipline there is Sub-project B's concern; the
   Rust core's job is to make sure its side of the boundary is clean.
+  As of the 2026-05-28 re-verification, the bridge-side discipline is
+  covered by a dedicated companion memo
+  ([`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md));
+  the foreign-runtime heap-copy caveat (Python `bytes`, Swift `String`,
+  Kotlin `ByteArray` not being authoritatively zeroizable from the
+  bridge) remains an inherent property of the FFI boundary and is
+  documented per-accessor on the bridge side.
 - **Clipboard hygiene** (Sub-project D): when a user copies a
   password to the system clipboard, the clipboard daemon owns a copy
   the Rust core has no visibility into. Mitigation is platform-UI

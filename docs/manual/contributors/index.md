@@ -1,9 +1,10 @@
 # Contributor-facing internal documentation
 
 This directory holds the **internal** documentation written for the people
-maintaining Secretary's Rust core: wire-protocol contracts that aren't
-otherwise visible from the code, and audit memos that recorded the
-methodology and findings of Phase A.7's three internal hardening passes.
+maintaining Secretary's Rust core and its surrounding sub-projects: wire-
+protocol contracts that aren't otherwise visible from the code, and audit
+memos that record the methodology and findings of the cross-cutting
+hardening passes.
 
 It is **not** user-facing documentation — for that, see
 [../primer/cryptography/index.md](../primer/cryptography/index.md) (the
@@ -13,7 +14,9 @@ hardening guide).
 
 ## What's in here
 
-### [`differential-replay-protocol.md`](differential-replay-protocol.md)
+### Wire-protocol contracts
+
+#### [`differential-replay-protocol.md`](differential-replay-protocol.md)
 
 The wire protocol the Rust integration test
 [`core/tests/differential_replay.rs`](../../../core/tests/differential_replay.rs)
@@ -24,10 +27,18 @@ encode/decode behaviour of an existing target. Some of the contract is
 machine-checked by `differential_replay.rs`; the rest is convention, easy to
 break silently if you don't know it's there.
 
-### [`side-channel-audit-internal.md`](side-channel-audit-internal.md)
+### Audit memos
 
-Phase A.7's internal pass over constant-time-sensitive call sites in the
-Rust core. Walks every CT-sensitive comparison flagged by
+The four memos below were originally written as Phase A.7's internal
+hardening track (the Rust-core audits, 2026-05-02) and have since grown to
+cover the FFI boundary (Sub-project B, 2026-05-28) as the secret-handling
+surface expanded across the language boundary.
+
+#### [`side-channel-audit-internal.md`](side-channel-audit-internal.md)
+
+Internal pass over constant-time-sensitive call sites in the Rust core
+([`core/src/{crypto,identity,unlock,vault}/`](../../../core/src/)). Walks
+every CT-sensitive comparison flagged by
 [`docs/threat-model.md`](../../threat-model.md) §3.2 / §3.3, identifies the
 underlying upstream primitive, and documents what discipline that primitive
 provides. **Read the relevant section before changing any signature
@@ -36,35 +47,102 @@ comparison** — the memo records which guarantees are upstream-provided
 versus which are defensive at the call site, and a regression in either
 direction is hard to spot from the diff alone.
 
-### [`memory-hygiene-audit-internal.md`](memory-hygiene-audit-internal.md)
+#### [`memory-hygiene-audit-internal.md`](memory-hygiene-audit-internal.md)
 
-Phase A.7's internal pass over zeroize discipline in the Rust core. Walks
-every type that wraps secret bytes, verifies its zeroize-on-drop wrapper
-discipline, and enumerates the stack-residue patterns where a secret value
-could linger in a named-but-unzeroized stack slot. **Read the relevant
-section before adding a new secret-bearing field, widening an existing
-secret's lifetime, or changing the drop ordering of a composite type
-holding multiple secrets.** The "Resolved" section at the bottom is
-load-bearing: it records which originally-deferred items have since been
-fixed (most recently `RecordFieldValue::{Text, Bytes}` → `SecretString` /
-`SecretBytes` and the `MlDsa65Secret` / `MlKem768Secret` newtype-zeroize
-follow-up).
+Internal pass over zeroize discipline in the Rust core. Walks every type
+that wraps secret bytes, verifies its zeroize-on-drop wrapper discipline,
+and enumerates the stack-residue patterns where a secret value could
+linger in a named-but-unzeroized stack slot. **Read the relevant section
+before adding a new secret-bearing field, widening an existing secret's
+lifetime, or changing the drop ordering of a composite type holding
+multiple secrets.** The "Resolved" section is load-bearing: it records
+which originally-deferred items have since been fixed.
+
+The memo's discipline has been carried forward into the sync orchestration
+layer ([`core/src/sync/`](../../../core/src/sync/), Sub-project C) and the
+FFI bridge ([`ffi/secretary-ffi-bridge/`](../../../ffi/secretary-ffi-bridge/),
+Sub-project B) — both layers were written after the audit landed and
+follow the established `bind → wrap → zeroize` pattern at every secret-
+material site. New cross-module sites are expected to keep that pattern.
+
+#### [`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md)
+
+The cross-FFI memory-hygiene companion that the earlier two audits
+explicitly deferred (under "Out of scope: cross-FFI memory hygiene
+(Sub-project B)"). Walks the six opaque handles exposed across the
+FFI (`UnlockedIdentity`, `MnemonicOutput`, `OpenVaultManifest`,
+`BlockReadOutput`, `Record`, `FieldHandle`), the `Arc<Mutex<Option<T>>>`
+pattern they share, the wipe-cascade discipline, and the
+foreign-runtime heap-copy caveat that the bridge cannot close from the
+Rust side. **Read this before adding a new bridge-side handle or
+accessor that returns secret bytes** — the "Adding a new bridge handle"
+checklist at the bottom is the contract the new code must meet.
+
+## A note on line references
+
+Each memo cites specific Rust file paths plus line numbers (e.g.
+[`core/src/crypto/aead.rs#L162`](../../../core/src/crypto/aead.rs#L162))
+to anchor its claims. Line numbers drift as the code evolves — the
+`#L162` anchor remains a valid hyperlink even when the cited symbol has
+moved a few lines, and the
+[`core/tests/python/spec_test_name_freshness.py`](../../../core/tests/python/spec_test_name_freshness.py)
+drift check covers the **symbol-name** citations (function names, type
+names, variant names) that are the load-bearing part of any reference.
+Run that script (`uv run` from the repo root) before shipping a memo
+update; it will flag any citation that no longer resolves in `core/`.
+
+If you find a citation whose line number is so out of date that the
+hyperlink no longer lands near the intended symbol, fix the line number
+in passing — but treat the symbol-name claim as the source of truth.
 
 ## Relationship to the external review
 
-These three memos are the **principal handoff package** for the planned
+These memos are the **principal handoff package** for the planned
 external paid review of the Rust core. The cryptographic-design and
 threat-model documents in [`docs/`](../../) are normative specs (what the
 code must implement); these memos are the audit trail (what the code
 actually does, and where the discipline holds vs. depends on an upstream
 crate's documented behaviour). An external reviewer with FIPS 203 / FIPS
-204 implementer experience should read the threat model first, then these
-three memos, then the corresponding source files.
+204 implementer experience should read the threat model first, then the
+two Rust-core memos (side-channel + memory-hygiene), then the
+corresponding source files. The FFI memo is a separate add-on for a
+reviewer with FFI-boundary expertise; the FFI's *cryptographic* surface
+is the core's (re-exposed verbatim), so cryptographic-discipline review
+of the bridge is mostly an exercise in re-verifying that the bridge
+doesn't break the discipline the core already established.
 
 The external review is a separate, paid, time-bound engagement and is out
 of scope for any in-session pass. See
-[`secretary_next_session.md`](../../../secretary_next_session.md) → "External
-(paid, time-bound)" for the current status.
+[`secretary_next_session.md`](../../../secretary_next_session.md) and
+[`ROADMAP.md`](../../../ROADMAP.md) for the current status of Phase A.7's
+external track.
+
+## Where the project is, vs. where the original memos were written
+
+The four audit memos were written in May 2026 against
+Sub-project A (Rust core) only. Since then:
+
+- **Sub-project B** (FFI bindings) — complete through B.6 v2. The
+  bridge crate + PyO3 + uniffi (Swift, Kotlin) expose unlock / open /
+  read / save / share / trash / restore. Cross-language conformance
+  KAT replays Rust ↔ Swift ↔ Kotlin parity. See
+  [`ROADMAP.md`](../../../ROADMAP.md) → Sub-project B for the per-
+  phase summary.
+- **Sub-project C** (sync orchestration) — C.1 (sync detection),
+  C.1.1a (conflict-copy ingestion), C.1.1b (merge layer), C.2 (the
+  headless `secretary-sync` CLI) all ✅ complete. C.3 (mobile
+  adapters) + C.4 (cross-device convergence conformance) pending.
+- **Sub-project D** (platform UIs) — pivoted to Tauri 2 per
+  [ADR 0007](../../adr/0007-d-row-tauri.md); D.1.1 (walking-skeleton
+  desktop client) in flight.
+
+The Rust core's *normative* behaviour is unchanged across these
+sub-projects (the spec is frozen for v1, see
+[`CLAUDE.md`](../../../CLAUDE.md) → "Spec is normative"). The memos'
+findings remain valid for the core; the FFI memo extends the
+discipline coverage to the bridge layer; sub-project C's sync code
+follows the established patterns; sub-project D's platform-UI hygiene
+will need its own memo when D matures past the walking-skeleton phase.
 
 ## When updating these memos
 
@@ -75,8 +153,18 @@ don't fit an existing memo's scope go into a new memo with its own
 methodology statement, not glued onto the side of one that's already
 shipped.
 
+A practical heuristic for choosing where new findings go:
+
+- **Bug fix in code already covered by a memo** → update the memo's
+  affected section in place, marking the date.
+- **New code in the existing scope (e.g. a new `core::crypto` primitive)** →
+  extend the relevant memo's coverage table; preserve the original
+  scope statement.
+- **New code in adjacent scope (e.g. a new FFI handle, a new sync
+  layer)** → either extend the cross-sub-project FFI memo (if it's an
+  FFI handle) or open a new memo with a clear scope statement (if it's
+  a new layer that needs its own treatment).
+
 If a memo cites a specific function name, file, or constant, the
 [`core/tests/python/spec_test_name_freshness.py`](../../../core/tests/python/spec_test_name_freshness.py)
-drift check covers it. Run that script (`uv run` from the repo root) before
-shipping a memo update; it will flag any citation that no longer resolves
-in `core/`.
+drift check covers it. Run that script before shipping a memo update.
