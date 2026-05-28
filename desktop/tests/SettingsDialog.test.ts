@@ -182,6 +182,66 @@ describe('SettingsDialog.svelte — Save happy path', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
+
+  it('parent-driven close after Save does not re-trigger cancel via the native close event', async () => {
+    // In production Vault.svelte binds `open` and sets it false from its
+    // own onClose handler. That flip propagates back to the dialog,
+    // making the $effect call dialogEl.close(), which fires the native
+    // `close` event. The onclose handler must NOT re-run cancel — cancel
+    // calls onClose, so without the `if (open) cancel()` guard the
+    // parent would be notified twice per save. Simulate the parent's
+    // flip with rerender({ open: false }) and assert onClose stays at 1.
+    unlockWith();
+    const onClose = vi.fn();
+    const { container, getByRole, rerender } = render(SettingsDialog, {
+      props: { open: true, onClose }
+    });
+    const input = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '5' } });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+
+    await rerender({ open: false, onClose });
+    await waitFor(() => {
+      const dialog = container.querySelector('dialog') as HTMLDialogElement;
+      expect(dialog.hasAttribute('open')).toBe(false);
+    });
+    // The native close event fired (polyfill dispatches it when the
+    // dialog was open at the time of close()), but onNativeClose saw
+    // open=false and skipped cancel — onClose stays at 1, not 2.
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Save when the session has raced to locked mid-IPC skips settingsUpdated and still closes', async () => {
+    // Race-guard test: a vault-locked event lands between the IPC firing
+    // and resolving (e.g. auto-lock at the boundary). The backend has
+    // already accepted the new settings; the in-memory `settingsUpdated`
+    // call would throw via the illegal-transition guard from a non-
+    // unlocked state. Save() peeks the status and skips the store update
+    // — backend is the source of truth, the next unlock observes the
+    // persisted value. The dialog still calls onClose; no error toast.
+    unlockWith();
+    const onClose = vi.fn();
+    // Resolve the IPC after we've moved the store to `locking`, mimicking
+    // an auto-lock firing while the save IPC is in flight.
+    setSettingsMock.mockImplementationOnce(async () => {
+      _resetSessionStateForTest(); // back to `locked` synchronously
+    });
+
+    const { container, getByRole } = renderOpen(onClose);
+    const input = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '5' } });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
+    // onClose still fires — the dialog is about to unmount anyway in
+    // production (Vault unmounts on leaving `unlocked`), so the parent
+    // ack is idempotent / harmless.
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // sessionState was reset by the racing event; settingsUpdated was
+    // skipped, so the store stays in its post-race state (locked).
+    expect(get(sessionState).status).toBe('locked');
+  });
 });
 
 describe('SettingsDialog.svelte — Cancel flow', () => {

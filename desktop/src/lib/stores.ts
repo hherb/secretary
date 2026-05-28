@@ -125,14 +125,20 @@ export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()):
 
 /**
  * `unlocked → unlocked`. In-place settings replacement after a successful
- * `set_settings` IPC. Manifest reference is preserved (same object
- * identity) so downstream `$derived` selectors keyed on it don't churn —
- * only consumers of `currentSettings` (or anything reading the variant's
- * `settings` field directly) see a change.
+ * `set_settings` IPC. The manifest reference is preserved (same object
+ * identity). Downstream `$derived` selectors keyed on manifest fields
+ * will re-evaluate when this update fires (Svelte 5 tracks the outer
+ * state), but they produce identical values so consumers see no change.
+ * Only `currentSettings` consumers (or anything reading the variant's
+ * `settings` field directly) propagate.
  *
  * Legal from `unlocked` only; SettingsDialog can only be opened from the
  * Vault route, which only mounts in the `unlocked` state, so a non-
- * `unlocked` caller is a state-machine bug.
+ * `unlocked` caller is a state-machine bug. Callers that may race with
+ * an inbound `vault-locked` event (e.g. SettingsDialog after an awaited
+ * IPC) should peek `$sessionState.status` and skip this helper if no
+ * longer `unlocked` — the backend has already persisted the change and
+ * the next unlock will observe it.
  */
 export function settingsUpdated(newSettings: SettingsDto): void {
   _internal.update((current) => {

@@ -29,9 +29,9 @@
   };
   let { open = $bindable(), onClose }: Props = $props();
 
-  const MIN_MIN = AUTO_LOCK_MIN_MS / MS_PER_MINUTE;
-  const MAX_MIN = AUTO_LOCK_MAX_MS / MS_PER_MINUTE;
-  const DEFAULT_MIN = AUTO_LOCK_DEFAULT_MS / MS_PER_MINUTE;
+  const MIN_MINUTES = AUTO_LOCK_MIN_MS / MS_PER_MINUTE;
+  const MAX_MINUTES = AUTO_LOCK_MAX_MS / MS_PER_MINUTE;
+  const DEFAULT_MINUTES = AUTO_LOCK_DEFAULT_MS / MS_PER_MINUTE;
 
   // Source-of-truth for the displayed value is the current store; the
   // dialog is a thin editor. The $derived means re-opening after a
@@ -43,7 +43,7 @@
       : AUTO_LOCK_DEFAULT_MS
   );
 
-  let inputMinutes = $state(DEFAULT_MIN);
+  let inputMinutes = $state(DEFAULT_MINUTES);
   let formError = $state<AppError | null>(null);
   let submitting = $state(false);
   let dialogEl: HTMLDialogElement | undefined = $state();
@@ -68,7 +68,11 @@
   });
 
   function validateOrError(): AppError | null {
-    if (!Number.isInteger(inputMinutes) || inputMinutes < MIN_MIN || inputMinutes > MAX_MIN) {
+    if (
+      !Number.isInteger(inputMinutes) ||
+      inputMinutes < MIN_MINUTES ||
+      inputMinutes > MAX_MINUTES
+    ) {
       return {
         code: 'settings_out_of_range',
         min: AUTO_LOCK_MIN_MS,
@@ -89,7 +93,15 @@
     try {
       const newMs = inputMinutes * MS_PER_MINUTE;
       await setSettings({ autoLockTimeoutMs: newMs });
-      settingsUpdated({ autoLockTimeoutMs: newMs });
+      // Race-guard: a vault-locked event may arrive between the IPC
+      // firing and resolving (auto-lock at the boundary). In that case
+      // the session has already left `unlocked` and `settingsUpdated`
+      // would throw via the illegal-transition guard. The backend has
+      // persisted the new value either way, so the next unlock observes
+      // it — skipping the in-memory update here is safe.
+      if ($sessionState.status === 'unlocked') {
+        settingsUpdated({ autoLockTimeoutMs: newMs });
+      }
       onClose();
     } catch (err) {
       // call() in ipc.ts already coerces non-AppError rejections, but
@@ -109,9 +121,20 @@
     inputMinutes = Math.round(currentMs / MS_PER_MINUTE);
     onClose();
   }
+
+  // The native `close` event fires both when our $effect calls
+  // dialogEl.close() (after save/cancel set `open` to false) AND when
+  // the user dismisses with Escape in a real browser. Only run cancel
+  // in the latter case — if `open` is already false the parent already
+  // initiated the close and re-running cancel is redundant. Without
+  // this guard, any future side-effect added to cancel() (telemetry,
+  // optimistic revert, etc.) would fire spuriously on every Save.
+  function onNativeClose() {
+    if (open) cancel();
+  }
 </script>
 
-<dialog bind:this={dialogEl} class="settings-dialog" onclose={cancel}>
+<dialog bind:this={dialogEl} class="settings-dialog" onclose={onNativeClose}>
   <h2 class="settings-dialog__title">Settings</h2>
 
   <label class="settings-dialog__field">
@@ -120,8 +143,8 @@
       <input
         type="number"
         class="settings-dialog__input"
-        min={MIN_MIN}
-        max={MAX_MIN}
+        min={MIN_MINUTES}
+        max={MAX_MINUTES}
         step="1"
         bind:value={inputMinutes}
         disabled={submitting}
