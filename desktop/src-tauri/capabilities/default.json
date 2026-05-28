@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0/capability",
+  "identifier": "default",
+  "description": "Default capabilities for the secretary-desktop main window. Grants the bare minimum the D.1.1 walking skeleton needs: Tauri core (event listening, IPC invoke) and the open-folder dialog used by PathPicker. Extend per-task as new capabilities are required.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open"
+  ]
+}
