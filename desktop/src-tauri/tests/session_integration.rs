@@ -327,3 +327,111 @@ fn set_settings_out_of_range_errors_without_writing() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// D.1.1 Task 5 — auto-lock timer integration tests
+// -----------------------------------------------------------------------
+//
+// Drive the pure `timer::tick` body against a real unlocked golden-vault
+// session — the path that needs an `UnlockedSession` and therefore can't
+// live inside `src/timer.rs`'s `#[cfg(test)]` block (which would have to
+// reach the bridge crate). The locked / contended-mutex / no-action paths
+// stay in `timer.rs` unit tests.
+
+use std::sync::Mutex;
+
+use secretary_desktop::timer::{tick, TickOutcome};
+
+/// Wrap a fresh session in a `Mutex` for the timer tests. The TempDir
+/// owns the device-UUID storage and must outlive the session.
+fn locked_session_mutex() -> (Mutex<VaultSession>, TempDir) {
+    let device_dir = tempfile::tempdir().expect("device-uuid tempdir");
+    let session = VaultSession::new(device_dir.path().to_path_buf());
+    (Mutex::new(session), device_dir)
+}
+
+#[test]
+fn timer_tick_auto_locks_expired_unlocked_session() {
+    let (mutex, _device_dir) = locked_session_mutex();
+
+    // Unlock against the golden vault, then force the idle tracker to a
+    // value that's expired against any positive threshold.
+    {
+        let mut session = mutex.lock().expect("session mutex");
+        session
+            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .expect("unlock golden vault");
+        session.force_expire_idle_tracker_for_test();
+        assert!(session.is_unlocked(), "precondition: unlocked");
+    }
+
+    let outcome = tick(&mutex);
+    assert_eq!(
+        outcome,
+        TickOutcome::AutoLocked,
+        "expired unlocked session must auto-lock on tick"
+    );
+
+    let session = mutex.lock().expect("session mutex");
+    assert!(
+        !session.is_unlocked(),
+        "tick(AutoLocked) must have dropped the unlocked inner state"
+    );
+}
+
+#[test]
+fn timer_tick_no_action_on_unlocked_not_yet_expired() {
+    let (mutex, _device_dir) = locked_session_mutex();
+
+    {
+        let mut session = mutex.lock().expect("session mutex");
+        session
+            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .expect("unlock golden vault");
+        // No `force_expire_idle_tracker_for_test()` — the session unlock
+        // resets the idle tracker to "now", so any positive threshold
+        // (default is `AUTO_LOCK_DEFAULT_MS` = 10 minutes) is far away.
+        assert!(session.is_unlocked());
+    }
+
+    let outcome = tick(&mutex);
+    assert_eq!(
+        outcome,
+        TickOutcome::NoAction,
+        "fresh unlock must not trigger auto-lock"
+    );
+
+    let session = mutex.lock().expect("session mutex");
+    assert!(
+        session.is_unlocked(),
+        "tick(NoAction) must leave the session unlocked"
+    );
+}
+
+#[test]
+fn timer_tick_reads_threshold_from_current_settings() {
+    // Adaptation from the plan (see timer.rs design note): `tick` reads the
+    // threshold from `session.current_settings()` inside the same lock
+    // acquisition as `should_auto_lock`. This test pins that behaviour: an
+    // unlocked session with the default `auto_lock_timeout_ms` and a
+    // last-activity timestamp from "now" must NOT auto-lock — the threshold
+    // observed by tick is `AUTO_LOCK_DEFAULT_MS`, not zero, not infinity.
+    let (mutex, _device_dir) = locked_session_mutex();
+
+    {
+        let mut session = mutex.lock().expect("session mutex");
+        session
+            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .expect("unlock golden vault");
+        assert_eq!(
+            session.current_settings(),
+            Settings::default(),
+            "golden vault carries default settings"
+        );
+    }
+
+    // With the default threshold and a fresh idle tracker, tick must not
+    // lock. If `tick` ever regresses to passing `threshold_ms = 0`, this
+    // would lock the session and fail.
+    assert_eq!(tick(&mutex), TickOutcome::NoAction);
+}
