@@ -17,7 +17,7 @@
 //     placeholder when unlocked.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import App from '../src/App.svelte';
 import {
@@ -86,10 +86,7 @@ describe('App.svelte — router', () => {
 describe('App.svelte — vault-locked event listener (#149)', () => {
   it('subscribes to the vault-locked event at mount', async () => {
     render(App);
-    // The `listen` call is fired inside an async onMount; flush the
-    // promise queue once before asserting.
-    await Promise.resolve();
-    expect(listenMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(listenMock).toHaveBeenCalledTimes(1));
     expect(listenMock).toHaveBeenCalledWith('vault-locked', expect.any(Function));
   });
 
@@ -97,8 +94,8 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     render(App);
-    await Promise.resolve();
-    // Drive the listener directly with a backend-shaped event.
+    // Wait until the listener has been installed before driving it.
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
     capturedHandlers[0]({ payload: { reason: 'auto' } });
 
     expect(get(sessionState).status).toBe('locked');
@@ -114,7 +111,7 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     render(App);
-    await Promise.resolve();
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
     capturedHandlers[0]({ payload: { reason: 'explicit' } });
 
     expect(get(sessionState).status).toBe('locked');
@@ -128,7 +125,7 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
   it('also locks correctly when the event fires from `unlocking` (mid-flight race)', async () => {
     beginUnlock(0);
     render(App);
-    await Promise.resolve();
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
     capturedHandlers[0]({ payload: { reason: 'auto' } });
     // Authoritative `vaultLocked` accepts from any state, including
     // `unlocking` — the backend has decided to lock, frontend follows.
@@ -137,11 +134,11 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
 
   it('detaches the listener on unmount', async () => {
     const { unmount } = render(App);
-    await Promise.resolve();
+    // Wait for the `.then` resolution that stashes `unlisten` so the
+    // unmount cleanup takes the synchronous detach branch.
+    await waitFor(() => expect(listenMock).toHaveBeenCalled());
     expect(unlistenMock).not.toHaveBeenCalled();
     unmount();
-    // Cleanup may queue a microtask; flush once.
-    await Promise.resolve();
-    expect(unlistenMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(unlistenMock).toHaveBeenCalledTimes(1));
   });
 });

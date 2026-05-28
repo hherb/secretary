@@ -30,11 +30,16 @@ export type SessionState =
   | { status: 'unlocked'; manifest: ManifestDto; settings: SettingsDto }
   | { status: 'locking'; startedAt: number };
 
-const INITIAL_STATE: SessionState = { status: 'locked', lastError: null };
+// Factory rather than a shared constant: each call yields a fresh
+// object so the initial-write and `_resetSessionStateForTest` can never
+// hand out aliased references that a test might accidentally mutate.
+function initialState(): SessionState {
+  return { status: 'locked', lastError: null };
+}
 
 // Internal writable — mutations gate through the transition helpers
 // below. Not exported; the public `sessionState` is a read-only view.
-const _internal = writable<SessionState>(INITIAL_STATE);
+const _internal = writable<SessionState>(initialState());
 
 // Public subscription surface. Components consume via the `$` Svelte
 // auto-subscription idiom (`$sessionState.status === 'unlocked'`).
@@ -117,7 +122,7 @@ export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()):
  * convention in `auto_lock.ts`.
  */
 export function _resetSessionStateForTest(): void {
-  _internal.set(INITIAL_STATE);
+  _internal.set(initialState());
   autoLockNotice.set(null);
 }
 

@@ -22,12 +22,15 @@
       // timeout (etc.) readily available.
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
-      // Password lifetime ends here — strip from DOM state immediately
-      // rather than relying on the route swap to clear the binding.
-      password = '';
     } catch (err) {
       unlockFailed(err as AppError);
     } finally {
+      // Password lifetime ends here regardless of outcome — strip the
+      // binding immediately so a failed attempt doesn't leave the string
+      // sitting in DOM state across the user's next keystroke. JS strings
+      // are immutable so we can't truly zeroize, but unbinding minimises
+      // the live-reference window the GC has to chase.
+      password = '';
       submitting = false;
     }
   }

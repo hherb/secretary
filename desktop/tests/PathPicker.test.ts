@@ -8,7 +8,7 @@
 // disabled prop blocks the click handler entirely.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import PathPicker from '../src/components/PathPicker.svelte';
 
 // The dialog plugin must be mocked: jsdom has no Tauri runtime, so the
@@ -70,10 +70,10 @@ describe('PathPicker', () => {
       props: { value: '', onSelect }
     });
     await fireEvent.click(getByRole('button'));
-    // open() resolves async — flush microtasks before asserting.
-    await Promise.resolve();
+    // `waitFor` polls until the assertion passes — robust against any
+    // future microtask-depth changes in `pick()`.
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/home/alice/vault'));
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect).toHaveBeenCalledWith('/home/alice/vault');
   });
 
   it('does NOT call onSelect when the dialog is cancelled (returns null)', async () => {
@@ -83,6 +83,9 @@ describe('PathPicker', () => {
       props: { value: '', onSelect }
     });
     await fireEvent.click(getByRole('button'));
+    // Settle the awaited dialog promise + the conditional branch
+    // continuation before asserting the negative.
+    await openMock.mock.results[0].value;
     await Promise.resolve();
     expect(onSelect).not.toHaveBeenCalled();
   });
@@ -113,6 +116,9 @@ describe('PathPicker', () => {
       props: { value: '', onSelect }
     });
     await fireEvent.click(getByRole('button'));
+    // Settle the awaited dialog promise + the conditional branch
+    // continuation before asserting the negative.
+    await openMock.mock.results[0].value;
     await Promise.resolve();
     expect(onSelect).not.toHaveBeenCalled();
   });

@@ -204,22 +204,22 @@ describe('illegal transitions log + no-op in prod', () => {
   // branch the prod-build silent-coerce path goes uncovered and a
   // regression that swallows ALL illegal edges (instead of just the
   // dev throw) would slip through.
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.stubEnv('DEV', false);
-    warnSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   it('beginUnlock from unlocking logs + leaves state unchanged', () => {
     beginUnlock(0);
     beginUnlock(0); // would-be illegal — must not throw, must log
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(get(sessionState).status).toBe('unlocking');
   });
 });

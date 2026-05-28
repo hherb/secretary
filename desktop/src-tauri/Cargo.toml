@@ -90,6 +90,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #   is already in `desktop/package.json`. Capability is granted via
 #   `desktop/src-tauri/capabilities/default.json` (`dialog:allow-open`);
 #   no other dialog permissions are needed by D.1.1.
+#
+# Caret range (not the exact-pin convention used by `tempfile`): the
+# dialog plugin is UI-only and no key material or vault bytes cross
+# it — the JS side receives only the chosen folder path (a string
+# already inside our trust boundary). No security-critical guarantee
+# rides on a specific 2.x patch version, so the standard caret range
+# is appropriate here.
 tauri-plugin-dialog = "2"
 
 [lints]

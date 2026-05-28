@@ -58,6 +58,35 @@ The surplus is intentional; under-counting was a plan-sketch slip.
 - File sizes (all comfortably under the 500-LOC threshold): stores.ts=159, App.svelte=58, Unlock.svelte=92, PathPicker.svelte=39, theme.css=189. Tests: stores.test=276, Unlock.test=146, PathPicker.test=109, App.test=137.
 - Per-module TDD discipline: each new file landed with its test in the same commit. Tests written first → ran red → implementation → ran green. The state-machine wrapper commit alone went red on 31 of 31 before implementation.
 
+### Fixup pass — PR #152 review (this same session)
+
+After the initial five-commit push, an in-review pass surfaced seven small items. Five were fixable in-PR; two are tracked as follow-up issues:
+
+| Item | Fix |
+|---|---|
+| `tauri-plugin-dialog = "2"` (caret range) vs project's exact-pin convention for security-critical deps | Added a comment in [`desktop/src-tauri/Cargo.toml`](../../desktop/src-tauri/Cargo.toml) justifying the caret: UI-only plugin, no key material crosses it (folder-path strings are already inside the trust boundary), no security guarantee rides on a specific 2.x patch. |
+| `INITIAL_STATE` was a shared object reference between the initial writable and `_resetSessionStateForTest` — a test that mutated `.lastError` would have mutated the module-level constant | Replaced with an `initialState()` factory so each call yields a fresh object. |
+| `Unlock.svelte` cleared `password` only on success, leaving the failed-attempt string in DOM state until the next keystroke | Moved `password = ''` into the `finally` block so the binding clears on both paths. Added a Vitest pin for the failure path (`106 / 0` passing, was 105). |
+| `Unlock.test.ts` used a triple `await Promise.resolve()` to flush the IPC chain — brittle if the chain grows another await link | Replaced with `await waitFor(() => expect(...))` from `@testing-library/svelte` across `Unlock.test.ts`, `PathPicker.test.ts` (positive cases), and `App.test.ts`. Negative cases in `PathPicker.test.ts` (cancellation + multi-select misuse) settle the awaited mock promise explicitly via `await openMock.mock.results[0].value` rather than `Promise.resolve()`. |
+| `warnSpy` variable name spied on `console.error`, not `console.warn` | Renamed to `errorSpy` in [`desktop/tests/stores.test.ts`](../../desktop/tests/stores.test.ts). |
+| `theme.css` centralization works around a Vite 6/Vitest bug but spreads visual rules away from their owning components | Filed as #153 (revisit after upstream fix). |
+| Emoji `🔐` icon renders inconsistently across platforms (especially Linux without an emoji font) | Filed as #154 (replace with inline SVG before D.1.1 ships externally). |
+
+Gauntlet after fixup (re-run, fully green):
+
+```
+Rust:           PASSED 1053 FAILED 0 IGNORED 10
+cargo clippy --release --workspace --tests -- -D warnings   → clean
+cargo fmt --all -- --check                                  → clean
+uv run core/tests/python/conformance.py                     → PASS
+uv run core/tests/python/spec_test_name_freshness.py        → PASS
+
+Frontend:       Vitest 106 / 0 (+1 password-clear-on-failure pin)
+pnpm typecheck                                              → clean
+pnpm svelte-check                                           → 224 files, 0 errors, 0 warnings
+pnpm lint                                                   → clean
+```
+
 ## (2) What's next — D.1.1 Task 8 (Vault route + BlockCard + LockButton)
 
 Per the plan, Task 8 lands the second user-visible route — the post-unlock screen with top bar (vault label + settings gear + lock button) + vertical stack of BlockCards. Clicks on cards are stubbed (D.1.2 wires them up). LockButton calls the `lock` IPC; the frontend waits for the `vault-locked` event (already wired by #149 in this PR) before transitioning to locked — backend reality is source of truth per spec §7.
@@ -122,6 +151,11 @@ Per the plan, Task 8 lands the second user-visible route — the post-unlock scr
 - #141 — bridge: `RecordInput` lacks `record_type` field. Status unchanged.
 - #144 — desktop: Argon2id KDF runs under IPC mutex during unlock. Status unchanged; still deferred to D.1.4+.
 - #145 — desktop: no recovery path for unlock-time settings warnings. Status unchanged; still deferred.
+
+### Issues filed during this PR's fixup pass
+
+- **#153** — desktop: re-migrate component styles from `theme.css` back to component `<style>` blocks once the upstream Vite/Vitest `preprocessCSS` bug clears.
+- **#154** — desktop: replace the emoji `🔐` unlock icon with inline SVG before D.1.1 ships externally.
 
 ### Housekeeping (stale worktrees on disk)
 
@@ -192,7 +226,7 @@ pnpm lint
 ## Closing inventory
 
 - **Branch state on close:** `main` at `ca5d0e5` (D.1.1 Task 6 PR #148 merged earlier today). `feature/d11-task-7` carries 5 code commits (one per logical unit: #150 wrapper, backend dialog plugin, theme + PathPicker + harness, Unlock route, App.svelte + #149 listener) + this baton. Squash-merge collapses to one commit on `main`.
-- **Workspace tests on `feature/d11-task-7`:** Rust **1053 passed + 10 ignored** (unchanged — backend touch is a dep addition + plugin registration). Vitest **105 passed** (errors=26, ipc=13, auto_lock=12, stores=31, PathPicker=8, Unlock=8, App=7) — new gauntlet baseline.
+- **Workspace tests on `feature/d11-task-7`:** Rust **1053 passed + 10 ignored** (unchanged — backend touch is a dep addition + plugin registration). Vitest **106 passed** post-fixup (errors=26, ipc=13, auto_lock=12, stores=31, PathPicker=8, Unlock=9, App=7) — new gauntlet baseline.
 - **README.md:** unchanged. Per prior batons, per-task status flips during D.1.1 implementation are noise until D.1.1 ships end-to-end (Task 12). The existing "D.1.1 walking skeleton … in design" covers the implementation phase as a whole.
 - **ROADMAP.md:** unchanged. Same logic as README.
 - **CLAUDE.md:** unchanged this session.

@@ -8,7 +8,7 @@
 //   5. submit ignored while already submitting (no double-fire)
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import Unlock from '../src/routes/Unlock.svelte';
 import {
@@ -77,13 +77,13 @@ describe('Unlock — initial render', () => {
 
     // Pick folder.
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
     // Fill password.
     const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
     await fireEvent.input(passwordInput, { target: { value: 'hunter2' } });
 
     const submitBtn = getByRole('button', { name: /unlock/i }) as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(false);
+    await waitFor(() => expect(submitBtn.disabled).toBe(false));
   });
 });
 
@@ -95,21 +95,21 @@ describe('Unlock — happy path', () => {
 
     const { getByRole, getByLabelText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
 
-    // Two awaits to flush the chained ipc resolves + the final transition.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // `waitFor` polls until the assertion passes; this is robust against
+    // future IPC-chain link additions in `submit()`, where the previous
+    // `await Promise.resolve()` triplet would have silently asserted
+    // against a half-resolved state.
+    await waitFor(() => expect(get(sessionState).status).toBe('unlocked'));
 
     expect(unlockMock).toHaveBeenCalledTimes(1);
     expect(unlockMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
     expect(settingsMock).toHaveBeenCalledTimes(1);
 
     const s = get(sessionState);
-    expect(s.status).toBe('unlocked');
     if (s.status === 'unlocked') {
       expect(s.manifest).toEqual(MANIFEST);
       expect(s.settings).toEqual(SETTINGS);
@@ -123,15 +123,11 @@ describe('Unlock — happy path', () => {
 
     const { getByRole, getByLabelText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
     const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
     await fireEvent.input(passwordInput, { target: { value: 'hunter2' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(passwordInput.value).toBe('');
+    await waitFor(() => expect(passwordInput.value).toBe(''));
   });
 });
 
@@ -142,15 +138,12 @@ describe('Unlock — error path', () => {
 
     const { getByRole, getByLabelText, findByText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'bad' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
 
     const s = get(sessionState);
-    expect(s.status).toBe('locked');
     if (s.status === 'locked') {
       expect(s.lastError).toEqual({ code: 'wrong_password' });
     }
@@ -160,6 +153,23 @@ describe('Unlock — error path', () => {
     expect(settingsMock).not.toHaveBeenCalled();
   });
 
+  it('clears the password field on unlock failure (do not retain in DOM across retry)', async () => {
+    // Security pin: the password string must not linger in the DOM
+    // binding after a failed attempt. JS strings are immutable so we
+    // can't truly zeroize, but unbinding minimises the live-reference
+    // window the GC has to chase.
+    unlockMock.mockRejectedValueOnce({ code: 'wrong_password' });
+    openDialogMock.mockResolvedValueOnce('/v');
+
+    const { getByRole, getByLabelText } = render(Unlock);
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
+    await fireEvent.input(passwordInput, { target: { value: 'bad' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+    await waitFor(() => expect(passwordInput.value).toBe(''));
+  });
+
   it('vault_path_not_found surfaces the path in the inline detail', async () => {
     const path = '/no/such/vault';
     unlockMock.mockRejectedValueOnce({ code: 'vault_path_not_found', path });
@@ -167,12 +177,10 @@ describe('Unlock — error path', () => {
 
     const { getByRole, getByLabelText, findByText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'x' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
 
     expect(await findByText(new RegExp(path))).toBeTruthy();
   });
