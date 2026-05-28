@@ -25,6 +25,7 @@ import {
   autoLockNotice,
   beginUnlock,
   unlockSucceeded,
+  beginLock,
   _resetSessionStateForTest
 } from '../src/lib/stores';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
@@ -75,11 +76,26 @@ describe('App.svelte — router', () => {
     expect(getByRole('button', { name: /unlock/i })).toBeTruthy();
   });
 
-  it('renders the placeholder vault view when sessionState is unlocked', () => {
+  it('renders the Vault route when sessionState is unlocked', () => {
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
+    const { getByText, getByRole } = render(App);
+    // Vault renders TopBar (Lock button) and a block-count label. Both
+    // are unique to Vault; the Unlock route renders neither.
+    expect(getByRole('button', { name: /lock/i })).toBeTruthy();
+    expect(getByText(/0 blocks/i)).toBeTruthy();
+  });
+
+  it('renders the Locking… splash when sessionState is locking', () => {
+    // App.svelte explicitly handles the brief `locking` transition with
+    // its own splash so the UI doesn't flash back to Unlock with stale
+    // BlockList data still visible. The backend's `vault-locked` event
+    // resolves the state to `locked` within milliseconds.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
     const { getByText } = render(App);
-    expect(getByText(/vault view coming in task 8/i)).toBeTruthy();
+    expect(getByText(/locking…/i)).toBeTruthy();
   });
 });
 
