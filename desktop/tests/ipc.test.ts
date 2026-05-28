@@ -11,7 +11,7 @@
 // reference. The naive pattern (`const invokeMock = vi.fn(); vi.mock(...)`)
 // produces a temporal-dead-zone error on some Vitest versions.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
@@ -31,6 +31,9 @@ import {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  // Suppress the IPC error-path log noise; individual tests that assert
+  // on console.error re-spy with their own implementation.
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 describe('ipc wrappers — argument shape', () => {
@@ -121,4 +124,42 @@ describe('ipc wrappers — error path', () => {
     invokeMock.mockRejectedValue({ message: 'panic in command handler' });
     await expect(listBlocks()).rejects.toMatchObject({ code: 'internal' });
   });
+
+  it('wraps null and undefined rejections as internal', async () => {
+    invokeMock.mockRejectedValueOnce(undefined);
+    await expect(listBlocks()).rejects.toMatchObject({ code: 'internal' });
+    invokeMock.mockRejectedValueOnce(null);
+    await expect(listBlocks()).rejects.toMatchObject({ code: 'internal' });
+  });
+
+  // Defense-in-depth: an object whose `code` is a string but is NOT a
+  // known AppError discriminator (e.g. emitted by a future Rust variant
+  // the TS layer hasn't been updated for) must be coerced to `internal`
+  // rather than passed through. Without this, the unknown code would
+  // reach `userMessageFor` and fall into its runtime fallback — desired
+  // behaviour, but it's safer to coerce at the IPC boundary first so
+  // every downstream component sees only known codes.
+  it('coerces unknown-code rejection to internal', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    invokeMock.mockRejectedValue({ code: 'future_variant_v2', extra: 1 });
+    await expect(listBlocks()).rejects.toMatchObject({ code: 'internal' });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('logs the original rejection before coercing to internal', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const original = { tauri_panic: 'serialize failed' };
+    invokeMock.mockRejectedValue(original);
+    await expect(listBlocks()).rejects.toMatchObject({ code: 'internal' });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('list_blocks'),
+      original
+    );
+    errorSpy.mockRestore();
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });

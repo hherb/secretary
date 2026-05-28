@@ -6,6 +6,35 @@
 // the switch in `userMessageFor` no longer covers every code path — keep
 // the two in lockstep.
 
+// Single source of truth for known AppError discriminator strings. Exported
+// so runtime guards (e.g. `ipc.ts::isAppError`) can validate against the
+// same set the type union uses. Adding/removing an entry here forces the
+// `AppError` union below to be edited in lockstep — both feed
+// `userMessageFor`'s exhaustive switch.
+export const APP_ERROR_CODES = [
+  'vault_path_not_found',
+  'vault_path_not_a_vault',
+  'vault_path_locked',
+  'wrong_password',
+  'kdf_too_weak',
+  'vault_corrupt',
+  'already_unlocked',
+  'not_unlocked',
+  'settings_corrupt',
+  'settings_unknown_version',
+  'settings_out_of_range',
+  'io',
+  'internal'
+] as const;
+export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
+
+export const APP_WARNING_CODES = [
+  'settings_corrupt',
+  'settings_clamped',
+  'settings_unknown_version'
+] as const;
+export type AppWarningCode = (typeof APP_WARNING_CODES)[number];
+
 export type AppError =
   | { code: 'vault_path_not_found'; path: string }
   | { code: 'vault_path_not_a_vault'; path: string }
@@ -100,7 +129,23 @@ export function userMessageFor(err: AppError): UserMessage {
         title: 'Internal error',
         actionHint: 'This is a bug. Please report it.'
       };
+    default:
+      return unknownErrorFallback(err);
   }
+}
+
+// Runtime fallback for `code` values not in the union — defends against a
+// future-Rust variant whose TS counterpart hasn't shipped yet. The compile-
+// time exhaustiveness check on the switch above is the primary gate; this
+// arm ensures the runtime cost of a miss is a logged "Unknown error" toast,
+// not a blank one (toast renderer would deref `.title` of `undefined`).
+function unknownErrorFallback(err: AppError): UserMessage {
+  console.error('userMessageFor: unknown AppError code', err);
+  return {
+    title: 'Unknown error',
+    detail: `code="${(err as { code: string }).code}"`,
+    actionHint: 'This may indicate an outdated app — try updating.'
+  };
 }
 
 export function userMessageForWarning(w: AppWarning): UserMessage {
@@ -119,6 +164,12 @@ export function userMessageForWarning(w: AppWarning): UserMessage {
       return {
         title: 'Settings format newer than this app',
         detail: `Schema "${w.version}" — using defaults.`
+      };
+    default:
+      console.error('userMessageForWarning: unknown AppWarning code', w);
+      return {
+        title: 'Unknown warning',
+        detail: `code="${(w as { code: string }).code}"`
       };
   }
 }

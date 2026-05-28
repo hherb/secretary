@@ -10,7 +10,9 @@
 // for the Rust `folder_path: String` parameter.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { AppError, AppWarning } from './errors';
+import { APP_ERROR_CODES, type AppError, type AppErrorCode, type AppWarning } from './errors';
+
+const KNOWN_ERROR_CODES: ReadonlySet<AppErrorCode> = new Set(APP_ERROR_CODES);
 
 export interface BlockSummaryDto {
   blockUuidHex: string;
@@ -32,7 +34,11 @@ export interface SettingsDto {
 }
 
 function isAppError(err: unknown): err is AppError {
-  return typeof err === 'object' && err !== null && 'code' in err && typeof (err as { code: unknown }).code === 'string';
+  if (typeof err !== 'object' || err === null || !('code' in err)) {
+    return false;
+  }
+  const code = (err as { code: unknown }).code;
+  return typeof code === 'string' && KNOWN_ERROR_CODES.has(code as AppErrorCode);
 }
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -43,8 +49,12 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       throw err;
     }
     // Tauri can also reject with a bare string (panics, serialization
-    // failures pre-AppError-mapping). Wrap as Internal so the UI layer
-    // still gets a typed shape to render.
+    // failures pre-AppError-mapping) or with a `{ code }` object whose
+    // code is not in the known set (e.g. a future Rust variant). Log the
+    // original — without this the developer-facing breadcrumb is lost —
+    // then surface a typed `internal` so the UI still renders a coherent
+    // toast.
+    console.error(`IPC ${cmd} returned non-AppError rejection`, err);
     throw { code: 'internal' } satisfies AppError;
   }
 }

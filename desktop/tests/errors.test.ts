@@ -5,10 +5,12 @@
 // known variant produces a non-empty title — silent fall-through to a
 // blank toast becomes a test failure.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   userMessageFor,
   userMessageForWarning,
+  APP_ERROR_CODES,
+  APP_WARNING_CODES,
   type AppError,
   type AppWarning
 } from '../src/lib/errors';
@@ -91,5 +93,67 @@ describe('userMessageForWarning', () => {
     });
     expect(msg.detail).toContain('30s');
     expect(msg.detail).toContain('60s');
+  });
+});
+
+// Runtime fall-through gate: a future-Rust variant whose TS counterpart
+// hasn't shipped must produce a logged "Unknown error" toast rather than
+// `undefined`. The TS exhaustiveness check is build-time; this is the
+// runtime backstop that prevents blank toasts in the field.
+describe('userMessageFor — runtime fallback for unknown code', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns Unknown error message for a code not in the union', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const msg = userMessageFor({ code: 'future_variant_v2' } as unknown as AppError);
+    expect(msg.title).toBe('Unknown error');
+    expect(msg.detail).toContain('future_variant_v2');
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('returns Unknown warning message for a warning code not in the union', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const msg = userMessageForWarning({
+      code: 'future_warning_v2'
+    } as unknown as AppWarning);
+    expect(msg.title).toBe('Unknown warning');
+    expect(msg.detail).toContain('future_warning_v2');
+    expect(errorSpy).toHaveBeenCalled();
+  });
+});
+
+// Lock the runtime allowlist against the type union: any change to the
+// `AppError` / `AppWarning` discriminants must also update the
+// `APP_*_CODES` arrays, because `ipc.ts::isAppError` uses them at runtime.
+// Drift between the two would let an unknown code slip through the IPC
+// guard and fall into the runtime fallback above — desired behaviour, but
+// preferable to catch the drift here first.
+describe('error code allowlists', () => {
+  it('APP_ERROR_CODES covers every variant in the test sweep', () => {
+    const sweepCodes: AppError['code'][] = [
+      'vault_path_not_found',
+      'vault_path_not_a_vault',
+      'vault_path_locked',
+      'wrong_password',
+      'kdf_too_weak',
+      'vault_corrupt',
+      'already_unlocked',
+      'not_unlocked',
+      'settings_corrupt',
+      'settings_unknown_version',
+      'settings_out_of_range',
+      'io',
+      'internal'
+    ];
+    expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());
+  });
+
+  it('APP_WARNING_CODES covers every warning variant', () => {
+    const sweepCodes: AppWarning['code'][] = [
+      'settings_corrupt',
+      'settings_clamped',
+      'settings_unknown_version'
+    ];
+    expect([...APP_WARNING_CODES].sort()).toEqual([...sweepCodes].sort());
   });
 });
