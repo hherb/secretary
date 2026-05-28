@@ -57,7 +57,29 @@ Each new file landed with its test in the same commit, tests written first → r
 
 ### Code-review fixups
 
-This baton is being written prior to opening the PR; if `/review` flags findings, they'll be applied in-PR per [[feedback_fix_all_review_issues]] and recorded here.
+`/review` on PR #156 flagged six items (1 medium, 3 low, 2 nit). All applied in-PR per [[feedback_fix_all_review_issues]] in one fixup commit on top of the four code commits + this baton update:
+
+1. **Medium — `onclose={cancel}` re-entrance after Save.** The dialog wired the native `close` event directly to `cancel`, so when the parent flipped `bind:open` to false the `$effect` would call `dialogEl.close()`, which fires `close`, which re-ran cancel — silently double-invoking `onClose()` on every Save. Existing unit tests didn't catch it because the test mock for `onClose` doesn't propagate back to a real `open` prop (only Vault.svelte's `bind:open` would). Fixed by introducing `onNativeClose() { if (open) cancel(); }` — Escape-from-real-browser still hits cancel (open is true at that point), but parent-initiated closes (open already false) are no-ops. New test in `SettingsDialog.test.ts` uses `rerender({ open: false })` to simulate the bindable feedback loop and pins `onClose` to a single call.
+2. **Low — race-guard around `settingsUpdated` post-IPC.** If a `vault-locked` event lands between `setSettings` firing and resolving (auto-lock at the boundary), the session has already left `unlocked` and `settingsUpdated` would throw via the illegal-transition guard. The backend persisted the value either way. Save now peeks `$sessionState.status` after the IPC and skips `settingsUpdated` if non-unlocked; `onClose()` still fires (the dialog is about to unmount anyway in production via Vault leaving `unlocked`). New test in `SettingsDialog.test.ts` stages the race via `setSettingsMock.mockImplementationOnce` that resets the store to `locked` before resolving.
+3. **Low — polyfill `close()` event firing unconditionally.** Real `HTMLDialogElement.close()` only fires the `close` event when the dialog was actually open; the polyfill in `tests/setup.ts` fired unconditionally. Guarded with a `wasOpen` capture before removing the attribute. No behaviour change in existing tests (none exercise the closed-then-re-closed path) but the polyfill now matches the spec narrowly enough that the onclose-re-entrance fix above continues to hold under any future test that does.
+4. **Doc nit — stores.ts `settingsUpdated` reactivity comment.** Original wording said downstream `$derived` selectors "don't churn"; with Svelte 5's fine-grained reactivity the selectors will re-evaluate (the outer state reference changed), they just produce identical values so consumers see no change. Rewrote the comment to describe the real mechanism. Also added a one-line note pointing future callers at the post-IPC race pattern Save() now uses.
+5. **Minor — `MIN_MIN` / `MAX_MIN` / `DEFAULT_MIN` constant naming.** Renamed to `MIN_MINUTES` / `MAX_MINUTES` / `DEFAULT_MINUTES` for clarity. Pure rename; references updated at all three call sites (validator, $effect re-seed, `<input min={…} max={…}>`).
+6. **Test surplus.** Two new tests landed alongside the medium + low fixes: `parent-driven close after Save does not re-trigger cancel via the native close event` and `Save when the session has raced to locked mid-IPC skips settingsUpdated and still closes`. SettingsDialog tests now total 19 (was 17). Frontend Vitest total **182 / 0** (was 180).
+
+Post-fixup gauntlet (re-ran in full):
+
+```
+Rust:           PASSED 1053 FAILED 0 IGNORED 10
+cargo clippy --release --workspace --tests -- -D warnings   → clean
+cargo fmt --all -- --check                                  → clean
+uv run core/tests/python/conformance.py                     → PASS
+uv run core/tests/python/spec_test_name_freshness.py        → PASS
+
+Frontend:       Vitest 182 / 0 (13 files; SettingsDialog now 19, all others unchanged)
+pnpm typecheck                                              → clean
+pnpm svelte-check                                           → 237 files, 0 errors, 0 warnings
+pnpm lint                                                   → clean
+```
 
 ## (2) What's next — D.1.1 Task 10 (App.svelte orchestration — event listener + Toast + activity tracking)
 
@@ -76,7 +98,7 @@ Per the plan, Task 10 closes the session lifecycle loop on the frontend:
 
 **Acceptance criteria for Task 10:**
 
-- Gauntlet: Rust **1053 / 0 / 10** (unchanged — Task 10 is frontend-only, backend event already emits per Task 5). Vitest **180 + N** where N ≈ 8-14 (Toast rendering + auto-dismiss + manual dismiss + App event-listener subscription + payload-to-vaultLocked wiring + activity-tracking start/stop on unlock/lock).
+- Gauntlet: Rust **1053 / 0 / 10** (unchanged — Task 10 is frontend-only, backend event already emits per Task 5). Vitest **182 + N** where N ≈ 8-14 (Toast rendering + auto-dismiss + manual dismiss + App event-listener subscription + payload-to-vaultLocked wiring + activity-tracking start/stop on unlock/lock).
 - `pnpm tauri dev` smoke: full lifecycle — unlock golden vault → open settings → set auto-lock to 1 min → Save → stop touching → ~70s later vault auto-locks → Toast slides in with "Vault auto-locked due to inactivity" → 5s later Toast dismisses → re-unlock + click Lock manually → screen transitions to Unlock immediately + NO toast (toast is only for `reason === 'idle'`, per the existing `autoLockNotice` discriminated union).
 - ESLint + svelte-check clean.
 
@@ -162,7 +184,7 @@ cargo test --release --workspace --no-fail-fast 2>&1 | grep "^test result:" | aw
 # Frontend baseline on main:
 cd desktop
 pnpm install
-pnpm test                       # expect: 180 passing
+pnpm test                       # expect: 182 passing
 pnpm typecheck                  # clean
 pnpm svelte-check               # 237 files, 0 errors
 pnpm lint                       # clean
@@ -185,7 +207,7 @@ cargo fmt --all -- --check
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 cd desktop
-pnpm test                       # expect 180 + Task-10 surplus (plan-target ~8-14 new)
+pnpm test                       # expect 182 + Task-10 surplus (plan-target ~8-14 new)
 pnpm typecheck
 pnpm svelte-check
 pnpm lint
@@ -193,8 +215,8 @@ pnpm lint
 
 ## Closing inventory
 
-- **Branch state on close:** `main` at `329d315` (D.1.1 Task 8 PR #155 merged earlier today). `feature/d11-task-9` carries 4 code commits (`ff43ef6`, `16310d6`, `81a5b28`, `7f231e1`) + this baton. Squash-merge collapses to one commit on `main`.
-- **Workspace tests on `feature/d11-task-9`:** Rust **1053 passed + 10 ignored** (unchanged — Task 9 is frontend-only). Vitest **180 passed** (errors=26, ipc=13, auto_lock=12, stores=45, constants=4, PathPicker=8, BlockCard=8, LockButton=9, TopBar=7, Unlock=9, Vault=14, SettingsDialog=17, App=8) — new gauntlet baseline.
+- **Branch state on close:** `main` at `329d315` (D.1.1 Task 8 PR #155 merged earlier today). `feature/d11-task-9` carries 4 code commits + 1 review-fixup commit + this baton + a merge from `origin/main` that absorbed the `e97dd1a` pause-window baton sync. Squash-merge collapses to one commit on `main`.
+- **Workspace tests on `feature/d11-task-9` (post-review-fixup):** Rust **1053 passed + 10 ignored** (unchanged — fixups were frontend-only). Vitest **182 passed** (errors=26, ipc=13, auto_lock=12, stores=45, constants=4, PathPicker=8, BlockCard=8, LockButton=9, TopBar=7, Unlock=9, Vault=14, SettingsDialog=19, App=8) — new gauntlet baseline.
 - **README.md:** unchanged. Per prior batons, per-task status flips during D.1.1 implementation are noise until D.1.1 ships end-to-end (Task 12). The existing "D.1.1 walking skeleton … in design" covers the implementation phase as a whole.
 - **ROADMAP.md:** unchanged. Same logic as README.
 - **CLAUDE.md:** unchanged this session.
