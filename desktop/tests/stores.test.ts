@@ -18,6 +18,7 @@ import {
   unlockSucceeded,
   unlockFailed,
   beginLock,
+  lockFailed,
   vaultLocked,
   _resetSessionStateForTest,
   type SessionState
@@ -34,6 +35,7 @@ const MANIFEST: ManifestDto = {
 };
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
 const WRONG_PWD: AppError = { code: 'wrong_password' };
+const INTERNAL_ERR: AppError = { code: 'internal' };
 
 beforeEach(() => {
   _resetSessionStateForTest();
@@ -121,6 +123,24 @@ describe('legal transitions', () => {
       expect(s.lastError).toBeNull();
     }
   });
+
+  it('locking → locked via lockFailed (carries the error)', () => {
+    // Lock IPC is documented infallible per spec §7, but transport-level
+    // errors (mutex poison, event-emit failure) can still surface from the
+    // Tauri layer. Without `lockFailed`, the `locking` state would stick
+    // until the next backend `vault-locked` event — bad UX. `lockFailed`
+    // transitions to `locked` and captures the typed error so the user
+    // sees something happened and can retry.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    lockFailed(INTERNAL_ERR);
+    const s = get(sessionState);
+    expect(s.status).toBe('locked');
+    if (s.status === 'locked') {
+      expect(s.lastError).toEqual(INTERNAL_ERR);
+    }
+  });
 });
 
 describe('vaultLocked is authoritative — accepts from any state', () => {
@@ -196,6 +216,24 @@ describe('illegal transitions throw in dev', () => {
     beginLock(0);
     expect(() => beginLock(0)).toThrow(/illegal session transition/i);
     expect(get(sessionState).status).toBe('locking');
+  });
+
+  it('lockFailed from locked is rejected', () => {
+    expect(() => lockFailed(INTERNAL_ERR)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('locked');
+  });
+
+  it('lockFailed from unlocking is rejected', () => {
+    beginUnlock(0);
+    expect(() => lockFailed(INTERNAL_ERR)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('unlocking');
+  });
+
+  it('lockFailed from unlocked is rejected', () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    expect(() => lockFailed(INTERNAL_ERR)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('unlocked');
   });
 });
 

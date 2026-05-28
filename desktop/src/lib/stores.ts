@@ -14,6 +14,7 @@
 //   unlocking   → unlocked     unlockSucceeded(manifest, settings)
 //   unlocking   → locked       unlockFailed(err)
 //   unlocked    → locking      beginLock()
+//   locking     → locked       lockFailed(err)
 //   *           → locked       vaultLocked('idle' | 'manual', at)
 //
 // `unlocking` and `locking` carry `startedAt: number` so the UI can
@@ -114,6 +115,22 @@ export function beginLock(now: number = Date.now()): void {
 export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()): void {
   _internal.set({ status: 'locked', lastError: null });
   autoLockNotice.set({ reason, at });
+}
+
+/**
+ * `locking → locked`. Captures the typed `lock` IPC failure so the
+ * locked screen can surface what went wrong. Per spec §7 the backend's
+ * `lock` is documented infallible, but the Tauri transport can still
+ * reject (mutex poisoning, event-emit failure) and without this helper
+ * the UI would stick in `locking` forever waiting for a `vault-locked`
+ * event that won't arrive. Force-transitioning to `locked` accepts a
+ * small UX cost (user may see "locked" while backend is still unlocked
+ * if the mutex was poisoned) in exchange for never stranding the user.
+ * The auto-lock timer keeps running server-side and will eventually
+ * reconcile reality.
+ */
+export function lockFailed(err: AppError): void {
+  transition(['locking'], { status: 'locked', lastError: err });
 }
 
 /**
