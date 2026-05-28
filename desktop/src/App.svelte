@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { sessionState, vaultLocked } from './lib/stores';
   import Unlock from './routes/Unlock.svelte';
+  import Vault from './routes/Vault.svelte';
   import './theme.css';
 
   // The backend `vault-locked` event fires from two call sites:
@@ -50,11 +51,15 @@
 </script>
 
 {#if $sessionState.status === 'unlocked'}
-  <!-- Vault route lands in Task 8. Placeholder copy keeps the smoke
-       test legible until BlockList ships. -->
-  <main>
-    <h1>Secretary</h1>
-    <p>Vault view coming in Task 8.</p>
+  <Vault />
+{:else if $sessionState.status === 'locking'}
+  <!-- Brief splash shown between `unlocked → locking → locked`. The
+       backend's `vault-locked` event will resolve us to `locked` within
+       milliseconds (lock just clears in-memory keys); this exists so
+       the user sees a transient "Locking…" state rather than a flash
+       of the Unlock screen with stale data still visible. -->
+  <main class="locking-splash" aria-live="polite">
+    <p class="locking-splash__label">Locking…</p>
   </main>
 {:else}
   <Unlock />

@@ -2,7 +2,7 @@
   import PathPicker from '../components/PathPicker.svelte';
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
   import { unlockWithPassword, getSettings } from '../lib/ipc';
-  import { userMessageFor, type AppError } from '../lib/errors';
+  import { userMessageFor } from '../lib/errors';
 
   let folderPath = $state('');
   let password = $state('');
@@ -23,7 +23,9 @@
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
     } catch (err) {
-      unlockFailed(err as AppError);
+      // `unlockFailed` accepts `unknown` and narrows internally; no cast
+      // required at the call site.
+      unlockFailed(err);
     } finally {
       // Password lifetime ends here regardless of outcome — strip the
       // binding immediately so a failed attempt doesn't leave the string

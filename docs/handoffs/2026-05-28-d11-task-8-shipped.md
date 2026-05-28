@@ -14,7 +14,7 @@ Three code commits (split for review readability — a state-machine helper, the
 | TBD | `feat(d11): Task 8 — App.svelte router renders Vault + Locking splash` | App.svelte's `{#if unlocked}` branch now renders `<Vault />` instead of the Task 7 placeholder; new `{:else if locking}` branch renders a small "Locking…" splash so the brief `unlocked → locking → locked` transition doesn't flash the Unlock screen with stale data. App.test.ts: replace the placeholder check with a Vault-content assertion (`getByRole('button', { name: /lock/i })` + `getByText(/0 blocks/i)`) and add a new test for the locking splash. theme.css gains `.locking-splash*` block. Vitest 144 (was 143). |
 | TBD | `docs(d11): Task 8 handoff baton` | This file. |
 
-### Gauntlet (live, performed)
+### Gauntlet (live, performed — post-fixup totals)
 
 ```
 Rust:           PASSED 1053 FAILED 0 IGNORED 10    # unchanged — Task 8 is frontend-only
@@ -23,8 +23,8 @@ cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS (97 resolved, 0 unresolved, 25 suppressed)
 
-Frontend:       Vitest 144 / 0 (11 files: errors=26, ipc=13, auto_lock=12, stores=35,
-                PathPicker=8, BlockCard=8, LockButton=8, TopBar=6, Unlock=9, Vault=11, App=8)
+Frontend:       Vitest 152 / 0 (11 files: errors=26, ipc=13, auto_lock=12, stores=41,
+                PathPicker=8, BlockCard=8, LockButton=9, TopBar=6, Unlock=9, Vault=12, App=8)
 pnpm typecheck                                              → clean
 pnpm svelte-check                                           → 232 files, 0 errors, 0 warnings
 pnpm lint                                                   → clean
@@ -53,6 +53,18 @@ The plan as-written has three issues that Task 6 / Task 7 batons flagged and thi
 ### Per-component TDD discipline
 
 Each new file landed with its test in the same commit, tests written first → ran red → implementation → ran green. The `lockFailed` helper alone went red on 4 of 4 before implementation. The leaf-components commit went red on 33 of 33 before implementation. App.svelte's router commit went red on 1 of 1 (the new locking-splash test) plus 1 of 1 (the rewritten Vault-content assertion replacing the placeholder check).
+
+### Code-review fixup (one follow-up commit)
+
+After the initial PR push, `/review` flagged three findings; this section records the resolutions (all in-PR per [[feedback_fix_all_review_issues]] — no deferrals).
+
+| Finding | Fix | Tests added |
+|---|---|---|
+| `e as AppError` cast in LockButton.svelte (and the same pattern in Unlock.svelte) silently funnels arbitrary catch-param shapes into `sessionState.lastError`. The IPC `call()` wrapper already coerces, but the cast at the call site misleads readers and silently breaks if the invariant ever migrates. | Exported `isAppError` from `ipc.ts`. Changed `lockFailed` + `unlockFailed` signatures to accept `unknown`; both now narrow internally via a new `narrowAppError` helper that falls back to `{ code: 'internal' }` (and logs the original) for non-AppError shapes. Removed the casts at the two call sites — symmetric fix means the Task 7 cast goes too. | +6 in `stores.test.ts` (bare string, plain Error, future-unknown `{ code }` shape, AppError pass-through for both `lockFailed` and `unlockFailed`) + 1 in `LockButton.test.ts` (full mock-driven non-AppError rejection through the UI path). |
+| Unkeyed `{#each manifest.warnings as warning}` in Vault.svelte — harmless today (warnings are static per-unlock) but index-keyed diffing would mis-animate if the list ever mutates. | Added a composite `(warning.code + '-' + i)` key. | (None — behavior covered by existing rendering test.) |
+| `vaultUuidHex.slice(0, 8) + '…'` in Vault.svelte appends an ellipsis even when the input is shorter than the prefix length — would render a misleading "abc…" tail on a 3-char input. Defensive cosmetic guard. | Extracted `labelForUuid(hex)`: when `hex.length <= UUID_LABEL_PREFIX_LEN`, returns the bare string. | +1 in `Vault.test.ts` (pins the no-tail-on-short-input behavior). |
+
+Gauntlet after fixup: **Vitest 152 / 0** (was 144; +6 stores + 1 LockButton + 1 Vault). Rust unchanged. clippy / fmt / conformance / svelte-check / typecheck / lint all clean.
 
 ## (2) What's next — D.1.1 Task 9 (Settings dialog + integration)
 

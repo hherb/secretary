@@ -221,3 +221,133 @@ body {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
 }
+
+/* Vault route */
+.vault {
+  padding: var(--space-4);
+  max-width: 720px;
+  margin: 0 auto;
+}
+.vault__warning {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+.vault__warning-detail {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  opacity: 0.85;
+}
+.vault__block-count {
+  margin: var(--space-5) 0 var(--space-2);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+.vault__block-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* TopBar */
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+.top-bar__left {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.top-bar__title {
+  font-size: var(--font-size-md);
+}
+.top-bar__vault-label {
+  font-family: var(--font-stack-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+.top-bar__right {
+  display: flex;
+  gap: var(--space-2);
+}
+.top-bar__settings {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  font-size: var(--font-size-sm);
+  opacity: 0.6;
+}
+
+/* LockButton */
+.lock-button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.lock-button:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.lock-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* BlockCard — disabled-button styling matches its non-interactive role
+   (D.1.2 wires up clicks). Looks card-like but is keyboard-skip-able. */
+.block-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: not-allowed;
+  font-family: var(--font-stack);
+  font-size: var(--font-size-md);
+  opacity: 0.85;
+}
+.block-card__name {
+  font-weight: 600;
+}
+.block-card__meta {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* App.svelte locking splash — brief between unlocked → locked. */
+.locking-splash {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+.locking-splash__label {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  color: var(--color-text-muted);
+}
