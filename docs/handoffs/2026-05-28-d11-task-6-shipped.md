@@ -1,7 +1,7 @@
 # NEXT_SESSION.md — D.1.1 Task 6 (frontend pure modules + Vitest harness) shipped
 
-**Session date:** 2026-05-28 (third D.1.1 slice of the day; continues immediately from the Task 5 session that landed via PR #146 at `16721c5` on `main`. This session establishes the TypeScript layer every Svelte component in Tasks 7–10 will import: typed IPC wrappers, error → user-message translation, session-state Svelte stores, debounced activity tracker, plus the Vitest + ESLint flat-config harness that wires the frontend into the project's "always green" discipline.)
-**Status:** D.1.1 Task 6 authored on branch `feature/d11-task-6`; PR to be opened at end of session. Predecessors on `main`: D.1.1 spec + ADR 0007 (PR #130, `a5d85b9`), D.1.1 Task 1 scaffold (PR #131, `e329087`), D.1.1 Task 2 pure modules (PR #137, `a3ee9e9`), D.1.1 Task 3 VaultSession (PR #142, `6f984d4`), D.1.1 Task 4 IPC commands + DTOs (PR #143, `9217602`), D.1.1 Task 5 auto-lock timer (PR #146, `16721c5`).
+**Session date:** 2026-05-28 (third D.1.1 slice of the day; continues immediately from the Task 5 session that landed via PR #146 at `16721c5` on `main`. This session establishes the TypeScript layer every Svelte component in Tasks 7–10 will import: typed IPC wrappers, error → user-message translation, session-state Svelte stores, debounced activity tracker, plus the Vitest + ESLint flat-config harness that wires the frontend into the project's "always green" discipline. **Updated 2026-05-28 PM: PR #148 review fixups applied — Vitest baseline now 61 (was 40), see §(1a).**)
+**Status:** D.1.1 Task 6 PR #148 open on branch `feature/d11-task-6`, review fixups landed and pushed. Predecessors on `main`: D.1.1 spec + ADR 0007 (PR #130, `a5d85b9`), D.1.1 Task 1 scaffold (PR #131, `e329087`), D.1.1 Task 2 pure modules (PR #137, `a3ee9e9`), D.1.1 Task 3 VaultSession (PR #142, `6f984d4`), D.1.1 Task 4 IPC commands + DTOs (PR #143, `9217602`), D.1.1 Task 5 auto-lock timer (PR #146, `16721c5`).
 
 ## (1) What we shipped this session
 
@@ -32,7 +32,27 @@ Adds the desktop frontend's pure-TS layer. Four small modules in [`desktop/src/l
 
 Post-squash-merge SHA on `main` will differ.
 
-### Gauntlet (live, performed)
+## (1a) PR #148 review fixups (2026-05-28 PM)
+
+After PR #148 opened, a multi-agent code review surfaced five critical findings and four important ones. All blocking items were fixed on `feature/d11-task-6` directly (per [[feedback_fix_all_review_issues]] — one issue per commit, no technical debt carried forward). Two items requiring broader scope were filed as separate GitHub issues so PR #148 stays scoped to "frontend pure modules + Vitest harness".
+
+| Commit | Subject | Review finding closed |
+|---|---|---|
+| `c512858` | `fix(d11): BlockSummaryDto field drift between TS and Rust` | Critical #1 — `recordCount` was fabricated, `lastModMs` should have been `lastModifiedMs`, `createdAtMs` was missing. Concrete runtime bug. |
+| `a2b9aad` | `fix(d11): close silent-failure chain in IPC + error layer` | Critical #2 + #3 + #4 — preserve original error via `console.error` in `call<T>`; tighten `isAppError` to validate against `APP_ERROR_CODES`; add default arms to `userMessageFor` / `userMessageForWarning` that log + return a generic "Unknown error" message instead of `undefined`. |
+| `70016d2` | `refactor(d11): structured AutoLockNotice discriminated union` | Important #8 — `autoLockNotice` was `string | null` (shape decoration); now `{ reason: 'idle' \| 'manual' \| 'keep_alive_failing'; at: number } \| null` so the toast renderer can switch on reason. |
+| `0e9137d` | `fix(d11): surface sustained notifyActivity failures via autoLockNotice` | Critical #5 — empty `.catch(() => {})` on the trailing-edge auto-lock keep-alive was the exact silent-failure pattern the user is allergic to (ML-DSA near-miss). Now both edges log at `warn` (not `debug`, which is filtered in production) and after 2 consecutive failures the `keep_alive_failing` toast fires. Drive-by: simplify `_resetActivityTrackingForTest` dead branch + add debounce-flood test. |
+| `437fad6` | `test(d11): add stores.test.ts covering SessionState + autoLockNotice` | Important #6 — `stores.ts` had zero test coverage in the original PR. 10 new tests pin the `currentSettings` derived selector across all four states + the `autoLockNotice` discriminated union + every `SessionState` variant is constructible. |
+| `0c6c795` | `chore(d11): retire stale task-context comments + drop dead_code allow` | Important #10 — `constants.rs::ACTIVITY_NOTIFY_MIN_INTERVAL_MS` lost its stale "Task-2 checkpoint" narrative and the now-obsolete `#[allow(dead_code)]`; `errors.ts` header dropped the drift-prone "1:1 mirror" prose; `stores.ts` stopped naming `App.svelte`; `eslint.config.js` dropped task-context narrative; `auto_lock.test.ts` dropped cross-file pointer to `ipc.test.ts`. |
+
+**Filed as separate GitHub issues** (out of PR #148's scope):
+
+- **#149** — d11: wire vault-locked Tauri event listener in App.svelte router (Task 7). Rust already emits the event from both explicit-lock and auto-lock paths; the listener belongs to Task 7's `App.svelte` work where the first proper component lands. Without it, the Rust auto-lock fires server-side but the UI keeps showing "unlocked" until the next IPC surfaces `NotUnlocked` — silent state drift.
+- **#150** — d11: harden SessionState transitions (transition helper or state-machine wrapper). Today there's no consumer of `sessionState` outside the lib; the raw `writable<SessionState>` exposes `.set()` to any caller, so illegal transitions are constructible. Cost/value says defer until Task 7 lands the first consumer and the transition surface is concrete.
+
+**Net effect on the gauntlet:** Vitest 40 → 61 (+21 tests across the new `stores.test.ts` + new error-path / failure-surfacing coverage in `errors.test.ts`, `ipc.test.ts`, `auto_lock.test.ts`). svelte-check 184 → 185 files (the new test file). Rust gauntlet unchanged.
+
+### Gauntlet (live, performed — post-review-fixups)
 
 ```
 Rust:           PASSED 1053 FAILED 0 IGNORED 10    # baseline unchanged — Task 6 is TS-only
@@ -41,9 +61,9 @@ cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS
 
-Frontend:       Vitest 40 / 0 (3 files: errors=22, ipc=10, auto_lock=8)
+Frontend:       Vitest 61 / 0 (4 files: errors=26, ipc=13, auto_lock=12, stores=10)
 pnpm typecheck                                              → clean
-pnpm svelte-check                                           → 184 files, 0 errors, 0 warnings
+pnpm svelte-check                                           → 185 files, 0 errors, 0 warnings
 pnpm lint                                                   → clean
 ```
 
@@ -127,6 +147,8 @@ None of the adaptations change the plan's specified file contents materially; #1
 - #141 — bridge: `RecordInput` lacks `record_type` field. Status unchanged.
 - #144 — desktop: Argon2id KDF runs under IPC mutex during unlock. Status unchanged; still deferred to D.1.4+.
 - #145 — desktop: no recovery path for unlock-time settings warnings. Status unchanged; still deferred.
+- **#149** — desktop: wire `vault-locked` Tauri event listener in App.svelte (Task 7). Filed during PR #148 review fixups; Rust emits the event from both lock paths, frontend listener TBD.
+- **#150** — desktop: harden SessionState transitions (transition helper / state-machine wrapper). Filed during PR #148 review fixups; defer until Task 7 lands the first consumer.
 
 ### Housekeeping (stale worktrees on disk)
 
@@ -163,9 +185,9 @@ cargo test --release --workspace --no-fail-fast 2>&1 | grep -E "^test result:" |
 # Frontend baseline on main (new from Task 6 onwards):
 cd desktop
 pnpm install                    # picks up the locked devDeps from this PR
-pnpm test                       # expect: 40 passing
+pnpm test                       # expect: 61 passing (post-review-fixups)
 pnpm typecheck                  # clean
-pnpm svelte-check               # 184 files, 0 errors
+pnpm svelte-check               # 185 files, 0 errors
 pnpm lint                       # clean
 cd ..
 
@@ -186,7 +208,7 @@ cargo fmt --all -- --check
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 cd desktop
-pnpm test                       # expect 40 + Task-7 surplus
+pnpm test                       # expect 61 + Task-7 surplus
 pnpm typecheck
 pnpm svelte-check
 pnpm lint
@@ -194,22 +216,22 @@ pnpm lint
 
 ## Closing inventory
 
-- **Branch state on close:** `main` at `16721c5` (D.1.1 Task 5 PR #146 merged earlier today). `feature/d11-task-6` carries 3 code commits on top (vitest harness + errors + eslint, ipc + stores, auto_lock) plus this baton commit.
-- **Workspace tests on `feature/d11-task-6`:** Rust **1053 passed + 10 ignored** (unchanged — Task 6 is TS-only). Vitest **40 passed** (errors=22, ipc=10, auto_lock=8) — new gauntlet baseline.
+- **Branch state on close:** `main` at `16721c5` (D.1.1 Task 5 PR #146 merged earlier today). `feature/d11-task-6` carries the original 3 code commits + baton, plus 6 review-fixup commits (§(1a)) + a merge of `origin/main` for baton sync. Squash-merge collapses to one commit on `main`.
+- **Workspace tests on `feature/d11-task-6`:** Rust **1053 passed + 10 ignored** (unchanged — Task 6 is TS-only). Vitest **61 passed** (errors=26, ipc=13, auto_lock=12, stores=10) — new gauntlet baseline. (Pre-review-fixup: 40.)
 - **README.md:** unchanged. Per the prior baton's standing pattern, per-task status flips on a sub-project in early implementation phase would be noise; the existing "D.1.1 walking skeleton ... in design" covers the implementation phase as a whole until D.1.1 ships end-to-end (Task 12).
 - **ROADMAP.md:** unchanged. Same logic as README.
 - **CLAUDE.md:** unchanged this session.
 - **NEXT_SESSION.md:** symlink retargeted to this file.
 - **`docs/adr/`:** unchanged.
 - **`desktop/src/lib/`:** new `errors.ts`, `ipc.ts`, `stores.ts`, `auto_lock.ts` (≈318 LOC total).
-- **`desktop/tests/`:** new `errors.test.ts`, `ipc.test.ts`, `auto_lock.test.ts` (≈311 LOC total).
+- **`desktop/tests/`:** new `errors.test.ts`, `ipc.test.ts`, `auto_lock.test.ts`, **`stores.test.ts` (added in review fixups)** (≈434 LOC total post-fixups).
 - **`desktop/vitest.config.ts`:** new (20 LOC).
 - **`desktop/eslint.config.js`:** new (32 LOC).
 - **`desktop/package.json`:** +4 devDeps (`@eslint/js`, `eslint`, `jsdom`, `typescript-eslint`), +1 script (`typecheck`).
 - **`desktop/pnpm-lock.yaml`:** +241 packages, mostly ESLint plugin tree and jsdom's parse5/whatwg-encoding subgraph.
 - **`desktop/src-tauri/`:** untouched in Task 6 — frontend-only slice.
 - **`desktop/src/` (Svelte components):** untouched — Task 7 lands the first components.
-- **Open issues:** see §(3) — none closed with this PR; no new issues opened.
-- **Open PRs:** one to be opened at end of this session (D.1.1 Task 6 — frontend pure modules + Vitest harness).
+- **Open issues:** see §(3) — none closed with this PR; **two new issues filed during review fixups (#149, #150)** for items deliberately scoped out of PR #148.
+- **Open PRs:** PR #148 (D.1.1 Task 6 — frontend pure modules + Vitest harness), review fixups applied and pushed.
 - **Worktrees on disk:** stale worktrees listed in §(3) can be cleaned up at any pause; `feature/d11-task-6` stays until merge.
 - **This file:** the live baton for the Task 6 close. The next slice opens with `docs/handoffs/<date>-d11-task-7-shipped.md`.
