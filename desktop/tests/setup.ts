@@ -30,8 +30,15 @@ if (typeof HTMLDialogElement !== 'undefined') {
       if (typeof returnValue === 'string') {
         this.setAttribute('returnValue', returnValue);
       }
+      // Only fire `close` when the dialog was actually open — matches
+      // the HTMLDialogElement spec (no spurious event on a closed-then-
+      // re-closed dialog) and avoids the polyfill diverging from real
+      // browsers in test code that handles the close event.
+      const wasOpen = this.hasAttribute('open');
       this.removeAttribute('open');
-      this.dispatchEvent(new Event('close'));
+      if (wasOpen) {
+        this.dispatchEvent(new Event('close'));
+      }
     };
   }
 }
