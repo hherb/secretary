@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { sessionState, vaultLocked } from './lib/stores';
+  import { sessionState, autoLockNotice, vaultLocked } from './lib/stores';
+  import { startActivityTracking } from './lib/auto_lock';
   import Unlock from './routes/Unlock.svelte';
   import Vault from './routes/Vault.svelte';
+  import Toast from './components/Toast.svelte';
   import './theme.css';
 
   // The backend `vault-locked` event fires from two call sites:
@@ -48,6 +50,31 @@
       }
     };
   });
+
+  // Activity tracking lifecycle. We only attach the document-level
+  // listeners while the vault is unlocked — outside that window the
+  // IPC keep-alive would be a no-op anyway (notify_activity is a silent
+  // no-op when locked, see commands::lock::notify_activity_impl).
+  // Tearing down on lock also prevents a small (but real) IPC-mutex
+  // contention against the auto-lock timer tick.
+  //
+  // The `$derived` wrapping `$sessionState.status` is load-bearing:
+  // it dedupes via === so a settingsUpdated transition (unlocked →
+  // unlocked with new settings; same status string) does not re-fire
+  // the effect, avoiding a tear-down-and-re-install of the document
+  // listeners on every settings save. Without this, the effect would
+  // re-run on every change to the whole sessionState signal.
+  const sessionStatus = $derived($sessionState.status);
+
+  $effect(() => {
+    if (sessionStatus !== 'unlocked') {
+      return;
+    }
+    const stop = startActivityTracking();
+    return () => {
+      stop();
+    };
+  });
 </script>
 
 {#if $sessionState.status === 'unlocked'}
@@ -63,4 +90,13 @@
   </main>
 {:else}
   <Unlock />
+{/if}
+
+{#if $autoLockNotice && $autoLockNotice.reason !== 'manual'}
+  <!-- Spec §12 auto-lock notice surface. `manual` is filtered here so
+       a user who clicked Lock themselves doesn't get a confirmation
+       toast — the notice still lands in the store (existing #149
+       contract) but renders no UI. `idle` and `keep_alive_failing`
+       both reach the Toast and render reason-specific copy. -->
+  <Toast notice={$autoLockNotice} />
 {/if}
