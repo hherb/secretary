@@ -17,7 +17,7 @@
 //     placeholder when unlocked.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import App from '../src/App.svelte';
 import {
@@ -25,10 +25,13 @@ import {
   autoLockNotice,
   beginUnlock,
   unlockSucceeded,
+  settingsUpdated,
   beginLock,
+  vaultLocked,
   _resetSessionStateForTest
 } from '../src/lib/stores';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
+import type { AutoLockNotice } from '../src/lib/stores';
 
 const MANIFEST: ManifestDto = {
   vaultUuidHex: 'aa',
@@ -44,13 +47,24 @@ const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
 // it directly) and the unlisten spy (so unmount detachment can be
 // asserted).
 type EventHandler = (event: { payload: { reason: 'explicit' | 'auto' } }) => void;
-const { listenMock, capturedHandlers, unlistenMock, openDialogMock } = vi.hoisted(() => {
+const {
+  listenMock,
+  capturedHandlers,
+  unlistenMock,
+  openDialogMock,
+  startActivityTrackingMock,
+  stopActivityTrackingMock
+} = vi.hoisted(() => {
   const handlers: EventHandler[] = [];
   return {
     listenMock: vi.fn(),
     capturedHandlers: handlers,
     unlistenMock: vi.fn(),
-    openDialogMock: vi.fn()
+    openDialogMock: vi.fn(),
+    // `startActivityTracking()` returns a cleanup fn — capture both so
+    // tests can assert lifecycle (call counts on each).
+    startActivityTrackingMock: vi.fn(),
+    stopActivityTrackingMock: vi.fn()
   };
 });
 vi.mock('@tauri-apps/api/event', () => ({
@@ -61,12 +75,24 @@ vi.mock('@tauri-apps/api/event', () => ({
   }
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openDialogMock }));
+// Mock `lib/auto_lock` so App's $effect-driven start/stop lifecycle can
+// be asserted without installing real document-level listeners. The
+// returned cleanup fn is the spy the test inspects to confirm App
+// invoked it on the way out of `unlocked`.
+vi.mock('../src/lib/auto_lock', () => ({
+  startActivityTracking: () => {
+    startActivityTrackingMock();
+    return stopActivityTrackingMock;
+  }
+}));
 
 beforeEach(() => {
   _resetSessionStateForTest();
   listenMock.mockClear();
   unlistenMock.mockClear();
   capturedHandlers.length = 0;
+  startActivityTrackingMock.mockClear();
+  stopActivityTrackingMock.mockClear();
 });
 
 describe('App.svelte — router', () => {
@@ -123,7 +149,13 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     }
   });
 
-  it('reason="explicit" maps to autoLockNotice.reason="manual" and transitions to locked', async () => {
+  it('reason="explicit" transitions to locked and does NOT raise autoLockNotice', async () => {
+    // The producer-side filter in stores.ts::vaultLocked drops the
+    // notice write for 'manual' (the mapped frontend reason for an
+    // explicit user-lock). State still transitions to locked; the
+    // toast surface stays silent — the user clicked Lock themselves
+    // and doesn't need a confirmation banner. See the AutoLockNotice
+    // union doc-comment in stores.ts for the altitude argument.
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     render(App);
@@ -131,11 +163,7 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     capturedHandlers[0]({ payload: { reason: 'explicit' } });
 
     expect(get(sessionState).status).toBe('locked');
-    const notice = get(autoLockNotice);
-    expect(notice).not.toBeNull();
-    if (notice) {
-      expect(notice.reason).toBe('manual');
-    }
+    expect(get(autoLockNotice)).toBeNull();
   });
 
   it('also locks correctly when the event fires from `unlocking` (mid-flight race)', async () => {
@@ -156,5 +184,165 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     expect(unlistenMock).not.toHaveBeenCalled();
     unmount();
     await waitFor(() => expect(unlistenMock).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('App.svelte — activity-tracking lifecycle (Task 10)', () => {
+  // Activity tracking (document-level mousemove + keydown listeners,
+  // debounced into `notifyActivity` IPC) must be active iff the session
+  // is `unlocked`. Starting it on `locked` would attach listeners we
+  // never use; leaving it running after a lock would keep the page
+  // touching the IPC mutex while the backend is already locked.
+
+  it('does not start activity tracking while the session is locked', () => {
+    render(App);
+    // Initial state is `locked` — App must not start tracking.
+    expect(startActivityTrackingMock).not.toHaveBeenCalled();
+  });
+
+  it('starts activity tracking when the session enters `unlocked`', async () => {
+    render(App);
+    expect(startActivityTrackingMock).not.toHaveBeenCalled();
+
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+
+    await waitFor(() => expect(startActivityTrackingMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('mounting App while already unlocked starts activity tracking exactly once', async () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    render(App);
+    await waitFor(() => expect(startActivityTrackingMock).toHaveBeenCalledTimes(1));
+    expect(stopActivityTrackingMock).not.toHaveBeenCalled();
+  });
+
+  it('stops activity tracking when the session leaves `unlocked`', async () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    render(App);
+    await waitFor(() => expect(startActivityTrackingMock).toHaveBeenCalledTimes(1));
+
+    // Backend-driven lock — drive the captured event handler.
+    capturedHandlers[0]({ payload: { reason: 'auto' } });
+
+    await waitFor(() => expect(stopActivityTrackingMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not double-start activity tracking on settings update (unlocked → unlocked)', async () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    render(App);
+    await waitFor(() => expect(startActivityTrackingMock).toHaveBeenCalledTimes(1));
+
+    // settingsUpdated transitions unlocked → unlocked. The status didn't
+    // change, so the activity-tracking lifecycle must not restart —
+    // otherwise the dialog's Save flow would tear down + re-install
+    // document listeners on every settings change.
+    settingsUpdated({ autoLockTimeoutMs: 300_000 });
+
+    // Give any racy $effect a tick to settle before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(startActivityTrackingMock).toHaveBeenCalledTimes(1);
+    expect(stopActivityTrackingMock).not.toHaveBeenCalled();
+  });
+
+  it('stops activity tracking on unmount when unlocked', async () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    const { unmount } = render(App);
+    await waitFor(() => expect(startActivityTrackingMock).toHaveBeenCalledTimes(1));
+    expect(stopActivityTrackingMock).not.toHaveBeenCalled();
+
+    unmount();
+    // $effect cleanup runs on unmount; tracking stops so document
+    // listeners don't outlive the component tree.
+    await waitFor(() => expect(stopActivityTrackingMock).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('App.svelte — Toast rendering (Task 10)', () => {
+  // The Toast component is mounted under `{#if $autoLockNotice}` so the
+  // backend `vault-locked` event (idle) surfaces the spec §12 notice.
+  // `manual` is filtered out — user clicked Lock themselves; no toast.
+  // `keep_alive_failing` (raised by lib/auto_lock.ts) gets a toast.
+
+  it('does not render Toast when autoLockNotice is null', () => {
+    const { queryByRole } = render(App);
+    expect(get(autoLockNotice)).toBeNull();
+    // Toast uses role="status"; the only other status role in App is
+    // the Locking… splash (queried with aria-live="polite" too). Use a
+    // text match to disambiguate.
+    expect(queryByRole('button', { name: /dismiss/i })).toBeNull();
+  });
+
+  it('renders Toast with idle copy after an auto-lock event', async () => {
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    const { findByText } = render(App);
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
+
+    capturedHandlers[0]({ payload: { reason: 'auto' } });
+
+    expect(await findByText(/auto-locked due to inactivity/i)).toBeTruthy();
+  });
+
+  it('does NOT render Toast after an explicit-lock event (notice never raised)', async () => {
+    // Producer-side filter: vaultLocked('manual') leaves autoLockNotice
+    // untouched, so no Toast mounts. Pinned at the rendering layer to
+    // complement the stores.test.ts "does NOT raise" assertion — the
+    // contract spans store + UI, and a regression at either site needs
+    // to surface in a test that runs against the full mount.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    const { queryByText } = render(App);
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
+
+    capturedHandlers[0]({ payload: { reason: 'explicit' } });
+
+    expect(get(autoLockNotice)).toBeNull();
+    // Microtask drain so any pending Toast mount could appear.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(queryByText(/auto-locked due to inactivity/i)).toBeNull();
+    expect(queryByText(/activity tracking is failing/i)).toBeNull();
+  });
+
+  it('renders Toast with keep_alive_failing copy when that notice is set directly', async () => {
+    // `lib/auto_lock.ts` raises this notice independently of the
+    // backend event — it's a frontend-driven heads-up that the
+    // IPC keep-alive is failing repeatedly.
+    const notice: AutoLockNotice = { reason: 'keep_alive_failing', at: 1_000 };
+    autoLockNotice.set(notice);
+
+    const { findByText } = render(App);
+    expect(await findByText(/activity tracking is failing/i)).toBeTruthy();
+  });
+
+  it('clicking × on the toast clears the notice and unmounts the toast', async () => {
+    const notice: AutoLockNotice = { reason: 'idle', at: 1_000 };
+    autoLockNotice.set(notice);
+
+    const { findByRole, queryByRole } = render(App);
+    const dismiss = await findByRole('button', { name: /dismiss/i });
+
+    await fireEvent.click(dismiss);
+
+    expect(get(autoLockNotice)).toBeNull();
+    // After the store clears, the {#if} branch unmounts the toast.
+    await waitFor(() => expect(queryByRole('button', { name: /dismiss/i })).toBeNull());
+  });
+
+  it('autonomous vaultLocked(idle) (no Tauri event) also surfaces the toast', async () => {
+    // Defence in depth: any path that lands in `idle` via vaultLocked
+    // (e.g. a future direct-call site) should still show the toast,
+    // because the surface is store-driven, not event-driven.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    const { findByText } = render(App);
+
+    vaultLocked('idle', 1_000);
+
+    expect(await findByText(/auto-locked due to inactivity/i)).toBeTruthy();
   });
 });
