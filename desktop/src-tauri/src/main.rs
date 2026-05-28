@@ -55,6 +55,11 @@ fn main() {
     );
 
     tauri::Builder::default()
+        // The dialog plugin powers `PathPicker.svelte`'s native folder-
+        // selection dialog (frontend opens it via
+        // `@tauri-apps/plugin-dialog`). Permissions for the JS side are
+        // granted by `capabilities/default.json` (`dialog:allow-open`).
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(VaultSession::new(device_data_dir)))
         .invoke_handler(tauri::generate_handler![
             unlock::unlock_with_password,
