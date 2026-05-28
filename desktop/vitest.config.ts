@@ -21,6 +21,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.test.ts'],
-    globals: false
+    globals: false,
+    // Polyfills JSDOM gaps (currently HTMLDialogElement.showModal /
+    // .close, missing from jsdom 25 — see tests/setup.ts header for
+    // the upstream issue). `svelteTesting()` plugin appends its own
+    // auto-cleanup setup file, so this composes rather than replaces.
+    setupFiles: ['./tests/setup.ts']
   }
 });

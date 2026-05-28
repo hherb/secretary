@@ -3,6 +3,7 @@
   import { userMessageForWarning } from '../lib/errors';
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
+  import SettingsDialog from '../components/SettingsDialog.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -25,6 +26,8 @@
   let unlocked = $derived(
     $sessionState.status === 'unlocked' ? $sessionState : null
   );
+
+  let settingsOpen = $state(false);
 </script>
 
 {#if unlocked}
@@ -32,7 +35,7 @@
   {@const vaultLabel = labelForUuid(manifest.vaultUuidHex)}
 
   <div class="vault">
-    <TopBar {vaultLabel} />
+    <TopBar {vaultLabel} onOpenSettings={() => (settingsOpen = true)} />
 
     {#each manifest.warnings as warning, i (warning.code + '-' + i)}
       {@const msg = userMessageForWarning(warning)}
@@ -53,5 +56,10 @@
         <BlockCard {block} />
       {/each}
     </div>
+
+    <SettingsDialog
+      bind:open={settingsOpen}
+      onClose={() => (settingsOpen = false)}
+    />
   </div>
 {/if}

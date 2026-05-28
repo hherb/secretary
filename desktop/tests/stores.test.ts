@@ -20,6 +20,7 @@ import {
   beginLock,
   lockFailed,
   vaultLocked,
+  settingsUpdated,
   _resetSessionStateForTest,
   type SessionState
 } from '../src/lib/stores';
@@ -121,6 +122,27 @@ describe('legal transitions', () => {
     expect(s.status).toBe('locked');
     if (s.status === 'locked') {
       expect(s.lastError).toBeNull();
+    }
+  });
+
+  it('unlocked → unlocked via settingsUpdated (settings field replaced, manifest preserved)', () => {
+    // SettingsDialog calls `settingsUpdated(newSettings)` after a successful
+    // `set_settings` IPC so the in-memory store reflects the persisted value
+    // immediately (no round-trip through `getSettings`). The transition is
+    // intentionally settings-only — the manifest stays referentially equal
+    // so downstream `$derived` selectors keyed on it don't churn.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    const before = get(sessionState);
+    const beforeManifest = before.status === 'unlocked' ? before.manifest : null;
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000 };
+    settingsUpdated(newSettings);
+    const after = get(sessionState);
+    expect(after.status).toBe('unlocked');
+    if (after.status === 'unlocked') {
+      expect(after.settings).toEqual(newSettings);
+      // Manifest reference preserved — same object identity, not a clone.
+      expect(after.manifest).toBe(beforeManifest);
     }
   });
 
@@ -320,6 +342,28 @@ describe('illegal transitions throw in dev', () => {
     unlockSucceeded(MANIFEST, SETTINGS);
     expect(() => lockFailed(INTERNAL_ERR)).toThrow(/illegal session transition/i);
     expect(get(sessionState).status).toBe('unlocked');
+  });
+
+  it('settingsUpdated from locked is rejected', () => {
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000 };
+    expect(() => settingsUpdated(newSettings)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('locked');
+  });
+
+  it('settingsUpdated from unlocking is rejected', () => {
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000 };
+    beginUnlock(0);
+    expect(() => settingsUpdated(newSettings)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('unlocking');
+  });
+
+  it('settingsUpdated from locking is rejected', () => {
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000 };
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    beginLock(0);
+    expect(() => settingsUpdated(newSettings)).toThrow(/illegal session transition/i);
+    expect(get(sessionState).status).toBe('locking');
   });
 });
 

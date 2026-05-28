@@ -1,13 +1,14 @@
 // Tests for TopBar.svelte — the unlocked-vault top bar. Renders the app
-// title + a truncated vault UUID label + a settings-gear button (disabled
-// until Task 9 wires up SettingsDialog) + the LockButton.
+// title + a truncated vault UUID label + a settings-gear button (now
+// enabled, fires onOpenSettings) + the LockButton.
 //
-// TopBar takes `vaultLabel` as a prop so the parent (Vault.svelte) can
-// pre-truncate the UUID. Keeps the component pure — testable without
-// mocking the entire sessionState store.
+// TopBar takes `vaultLabel` and `onOpenSettings` as props so the parent
+// (Vault.svelte) can pre-truncate the UUID and own the dialog open state.
+// Keeps the component pure — testable without mocking the entire
+// sessionState store.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import TopBar from '../src/components/TopBar.svelte';
 import {
   beginUnlock,
@@ -41,32 +42,48 @@ beforeEach(() => {
   unlockSucceeded(MANIFEST, SETTINGS);
 });
 
+function renderBar(opts: { vaultLabel?: string; onOpenSettings?: () => void } = {}) {
+  return render(TopBar, {
+    props: {
+      vaultLabel: opts.vaultLabel ?? 'aabbccdd…',
+      onOpenSettings: opts.onOpenSettings ?? vi.fn()
+    }
+  });
+}
+
 describe('TopBar.svelte — rendering', () => {
   it('renders the app title "Secretary"', () => {
-    const { getByText } = render(TopBar, { props: { vaultLabel: 'aabbccdd…' } });
+    const { getByText } = renderBar();
     expect(getByText(/secretary/i)).toBeTruthy();
   });
 
   it('renders the vault label passed via props', () => {
-    const { getByText } = render(TopBar, { props: { vaultLabel: 'aabbccdd…' } });
+    const { getByText } = renderBar({ vaultLabel: 'aabbccdd…' });
     expect(getByText(/aabbccdd…/)).toBeTruthy();
   });
 
-  it('renders the settings-gear button (disabled — lands in Task 9)', () => {
-    const { getByRole } = render(TopBar, { props: { vaultLabel: 'aabbccdd…' } });
+  it('renders the settings-gear button (enabled — Task 9 wired it up)', () => {
+    const { getByRole } = renderBar();
     const settings = getByRole('button', { name: /settings/i });
-    expect((settings as HTMLButtonElement).disabled).toBe(true);
+    expect((settings as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('clicking the settings button fires the onOpenSettings callback', async () => {
+    const onOpenSettings = vi.fn();
+    const { getByRole } = renderBar({ onOpenSettings });
+    await fireEvent.click(getByRole('button', { name: /settings/i }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   it('renders the LockButton', () => {
-    const { getByRole } = render(TopBar, { props: { vaultLabel: 'aabbccdd…' } });
+    const { getByRole } = renderBar();
     expect(getByRole('button', { name: /lock/i })).toBeTruthy();
   });
 
-  it('settings button has a title hinting at the deferred functionality', () => {
-    // Mirrors the BlockCard pattern — visible disabled element with a
-    // hover hint explains why it's there but non-interactive yet.
-    const { getByRole } = render(TopBar, { props: { vaultLabel: 'aabbccdd…' } });
+  it('settings button has a title attribute (hover hint for the gear icon)', () => {
+    // The gear emoji alone isn't enough — sighted users get the hover
+    // hint while screen-reader users get aria-label.
+    const { getByRole } = renderBar();
     const settings = getByRole('button', { name: /settings/i });
     const title = settings.getAttribute('title') ?? '';
     expect(title.length).toBeGreaterThan(0);
@@ -77,7 +94,7 @@ describe('TopBar.svelte — empty / edge cases', () => {
   it('renders even when vaultLabel is empty', () => {
     // Defensive: don't crash on an empty label. Backend doesn't promise
     // a non-empty UUID slice (it does, but TopBar is dumb about that).
-    const { container } = render(TopBar, { props: { vaultLabel: '' } });
+    const { container } = renderBar({ vaultLabel: '' });
     expect(container.textContent).toMatch(/secretary/i);
   });
 });
