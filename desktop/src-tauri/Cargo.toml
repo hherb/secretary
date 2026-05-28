@@ -6,6 +6,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# Both a [lib] and a [[bin]]. Integration tests in `tests/*.rs` link against
+# the library (`use secretary_desktop::...`); the binary is the Tauri entry
+# point. main.rs imports modules from the library so behaviour stays single-
+# sourced.
+[lib]
+name = "secretary_desktop"
+path = "src/lib.rs"
+
 [[bin]]
 name = "secretary-desktop"
 path = "src/main.rs"
@@ -17,15 +25,12 @@ tauri-build = { version = "2", features = [] }
 # Tauri 2.x. Features kept minimal: window for the main window, no
 # tray icon / no auto-updater / no clipboard / no shell — D.1.1 doesn't
 # need any of those. Add features per-slice as D.1.x grows.
-#
-# Per CLAUDE.md "exact pins on security-critical paths": when `tempfile` is
-# pulled in for atomic writes in Task 3, it MUST be exact-pinned (`=3.27.0`)
-# to match `core/Cargo.toml` / `cli/Cargo.toml`.
 tauri = { version = "2", features = [] }
 
 # Task 2 pure modules:
-# - `secretary-ffi-bridge` is consumed for `FfiVaultError` (typed mapping
-#   surface in `errors.rs`). Workspace path dep — not an FFI hop.
+# - `secretary-ffi-bridge` is consumed for `FfiVaultError` + the open / read /
+#   save vault entry points used by Task 3's `VaultSession`. Workspace path
+#   dep — not an FFI hop.
 # - `serde` / `serde_json` for the serde-tagged `AppError` / `AppWarning`
 #   discriminated unions that cross the Tauri IPC seam.
 # - `thiserror` for derive-based `Error` impls.
@@ -36,6 +41,12 @@ tauri = { version = "2", features = [] }
 # Versions track the workspace conventions already used by `core/` and
 # `ffi/secretary-ffi-bridge/`.
 secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
+# `secretary-core` is pulled in for `SecretString` / `SecretBytes`, the
+# zeroize-typed wrappers required to construct `bridge::FieldInputValue::Text`
+# / `::Bytes`. The bridge does not re-export them; both its own tests and
+# `ffi/secretary-ffi-py` import them directly from core via the same
+# `secretary_core::crypto::secret::{SecretString, SecretBytes}` path.
+secretary-core = { path = "../../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -43,5 +54,31 @@ tracing = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 
+# Task 3 vault I/O additions:
+# - `tempfile` exact-pinned per CLAUDE.md atomic-write discipline; matches
+#   `core/Cargo.toml` so a `cargo update` cannot silently move the resolved
+#   version inside the 3.x range. Drives the atomic `persist(...)` rename
+#   for the per-vault device UUID file.
+# - `dirs` for the platform-canonical `data_dir()` lookup
+#   (`~/Library/Application Support/...` on macOS,
+#   `~/.local/share/...` on Linux). v5; the API surface used here
+#   (`dirs::data_dir`) has been stable since v2.
+# - `rand` for the per-vault device UUID generation. The 16 bytes come
+#   from `rand::rngs::OsRng` (OS CSPRNG) directly — not `rand::rng()` —
+#   matching the `rand_core::OsRng` discipline used throughout `core/src`
+#   for security-critical randomness. Pinned to `0.9` to share the major
+#   already in the workspace via `cli/Cargo.toml`, rather than introducing
+#   a parallel `rand 0.8` chain.
+tempfile = "=3.27.0"
+dirs = "5"
+rand = "0.9"
+
 [lints]
 workspace = true
+
+[dev-dependencies]
+# `tempfile` is already a hard dep above (used by `settings::load_or_create_device_uuid`).
+# Re-declared at the same exact pin for explicit use in `tests/*.rs` integration
+# tests; the duplicate pin keeps the version locked even if a future refactor
+# moves the production dep elsewhere.
+tempfile = "=3.27.0"

@@ -1,6 +1,7 @@
-//! Settings record schema + parse/serialize. The vault I/O facade
-//! (`load_from_vault`, `save_to_vault`) lands in Task 3 along with
-//! `VaultSession`.
+//! Settings record schema + parse/serialize. Pure value-type layer — every
+//! input is a `&str`, every output is owned data, no filesystem or vault
+//! handles are touched. The vault I/O facade lives in the sibling
+//! [`super::io`] module.
 //!
 //! See spec §8 for the full schema rationale (record_type, deterministic
 //! UUIDs, lazy creation, validation bounds, version handling).
@@ -116,7 +117,7 @@ pub fn validate_save_value(value: u64) -> Result<(), AppError> {
 /// Serialize a `Settings` into the (record_type, field_name, field_value_text)
 /// triple expected by the vault save path. Pure function — the save call
 /// itself (which packages this into a `BlockInput` and calls
-/// `secretary_ffi_bridge::save_block`) lives in Task 3.
+/// `secretary_ffi_bridge::save_block`) lives in [`super::io::save_to_vault`].
 pub fn serialize_settings(s: &Settings) -> (String, String, String) {
     (
         SETTINGS_RECORD_TYPE.to_string(),
