@@ -73,6 +73,16 @@ tempfile = "=3.27.0"
 dirs = "5"
 rand = "0.9"
 
+# Task 4 IPC additions:
+# - `tracing-subscriber` is used only by the binary (`main.rs`) to install
+#   a stderr fmt subscriber so the `tracing::warn!` calls in error mappers
+#   and session paths are visible when running the desktop binary from a
+#   terminal. The library half doesn't depend on it — integration tests
+#   in `tests/*.rs` run without an installed subscriber and the
+#   `tracing::warn!` calls become no-ops, which is what we want.
+#   `env-filter` lets `RUST_LOG` tune verbosity at runtime.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [lints]
 workspace = true
 

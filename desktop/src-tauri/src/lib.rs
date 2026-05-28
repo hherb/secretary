@@ -12,7 +12,9 @@
 //! test boundary).
 
 pub mod auto_lock;
+pub mod commands;
 pub mod constants;
+pub mod dtos;
 pub mod errors;
 pub mod session;
 pub mod settings;
