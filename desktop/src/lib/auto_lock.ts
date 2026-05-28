@@ -11,6 +11,7 @@
 // once at mount and the returned cleanup runs on unmount.
 
 import { notifyActivity } from './ipc';
+import { autoLockNotice } from './stores';
 
 // Must match Rust-side ACTIVITY_NOTIFY_MIN_INTERVAL_MS in
 // src-tauri/src/constants.rs. Changing one without the other breaks the
@@ -18,29 +19,52 @@ import { notifyActivity } from './ipc';
 // faster cadence than expected.
 export const ACTIVITY_NOTIFY_MIN_INTERVAL_MS = 2_000;
 
+// After this many consecutive notifyActivity() rejections, surface a
+// `keep_alive_failing` toast so the user has some signal that the vault
+// may auto-lock unexpectedly. Two failures filters one-off transient
+// errors (e.g. the user clicked Lock between the debounce and the IPC)
+// without burying a sustained failure.
+const KEEP_ALIVE_FAILURE_NOTICE_THRESHOLD = 2;
+
 let lastNotifyMs = 0;
 let timerId: ReturnType<typeof setTimeout> | null = null;
 let cleanup: (() => void) | null = null;
+let consecutiveNotifyFailures = 0;
+
+function recordNotifyOutcome(promise: Promise<void>): void {
+  promise.then(
+    () => {
+      consecutiveNotifyFailures = 0;
+    },
+    (e: unknown) => {
+      consecutiveNotifyFailures += 1;
+      // `warn` (not `debug`) so the breadcrumb survives default browser
+      // log-level filtering — a silent drop here is exactly the failure
+      // mode that would let the vault auto-lock unexpectedly.
+      console.warn(
+        `notifyActivity failed (consecutive=${consecutiveNotifyFailures})`,
+        e
+      );
+      if (consecutiveNotifyFailures >= KEEP_ALIVE_FAILURE_NOTICE_THRESHOLD) {
+        autoLockNotice.set({ reason: 'keep_alive_failing', at: Date.now() });
+      }
+    }
+  );
+}
 
 function maybeNotify(): void {
   const now = Date.now();
   const elapsed = now - lastNotifyMs;
   if (elapsed >= ACTIVITY_NOTIFY_MIN_INTERVAL_MS) {
     lastNotifyMs = now;
-    notifyActivity().catch((e) => {
-      // Best-effort. A failure (e.g. session locked between the debounce
-      // and the IPC call) is silently dropped — the Rust side has the
-      // authoritative state and a missed notify just means the next
-      // mousemove will retry.
-      console.debug('notifyActivity failed', e);
-    });
+    recordNotifyOutcome(notifyActivity());
     return;
   }
   if (timerId === null) {
     timerId = setTimeout(() => {
       timerId = null;
       lastNotifyMs = Date.now();
-      notifyActivity().catch(() => {});
+      recordNotifyOutcome(notifyActivity());
     }, ACTIVITY_NOTIFY_MIN_INTERVAL_MS - elapsed);
   }
 }
@@ -73,12 +97,9 @@ export function startActivityTracking(): () => void {
 // no installed listeners). Underscore-prefixed and `_for_test`-style
 // suffix to flag it as not part of the production API.
 export function _resetActivityTrackingForTest(): void {
-  lastNotifyMs = 0;
-  if (timerId !== null) {
-    clearTimeout(timerId);
-    timerId = null;
-  }
   if (cleanup) {
     cleanup();
   }
+  lastNotifyMs = 0;
+  consecutiveNotifyFailures = 0;
 }
