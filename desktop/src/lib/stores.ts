@@ -14,6 +14,7 @@
 //   unlocking   → unlocked     unlockSucceeded(manifest, settings)
 //   unlocking   → locked       unlockFailed(err)
 //   unlocked    → locking      beginLock()
+//   unlocked    → unlocked     settingsUpdated(newSettings)
 //   locking     → locked       lockFailed(err)
 //   *           → locked       vaultLocked('idle' | 'manual', at)
 //
@@ -120,6 +121,27 @@ export function beginLock(now: number = Date.now()): void {
 export function vaultLocked(reason: 'idle' | 'manual', at: number = Date.now()): void {
   _internal.set({ status: 'locked', lastError: null });
   autoLockNotice.set({ reason, at });
+}
+
+/**
+ * `unlocked → unlocked`. In-place settings replacement after a successful
+ * `set_settings` IPC. Manifest reference is preserved (same object
+ * identity) so downstream `$derived` selectors keyed on it don't churn —
+ * only consumers of `currentSettings` (or anything reading the variant's
+ * `settings` field directly) see a change.
+ *
+ * Legal from `unlocked` only; SettingsDialog can only be opened from the
+ * Vault route, which only mounts in the `unlocked` state, so a non-
+ * `unlocked` caller is a state-machine bug.
+ */
+export function settingsUpdated(newSettings: SettingsDto): void {
+  _internal.update((current) => {
+    if (current.status !== 'unlocked') {
+      illegalTransition(current.status, 'unlocked', ['unlocked']);
+      return current;
+    }
+    return { status: 'unlocked', manifest: current.manifest, settings: newSettings };
+  });
 }
 
 /**
