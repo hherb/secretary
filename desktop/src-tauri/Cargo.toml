@@ -54,6 +54,16 @@ tracing = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 
+# D.1.2 reveal path additions:
+# - `base64`: encodes already-revealed `bytes` field plaintext for display/copy.
+#   Not on the crypto path — the bytes are already past the FFI expose boundary.
+#   Version matches the workspace-resolved 0.22.
+# - `zeroize`: overwrite the intermediate Vec<u8> from FieldHandle::expose_bytes
+#   after base64-encoding it, so the raw secret bytes don't linger on the
+#   stack/heap between expose and drop. Exact pin matches core/Cargo.toml.
+base64 = "0.22"
+zeroize = "=1.8.2"
+
 # Task 3 vault I/O additions:
 # - `tempfile` exact-pinned per CLAUDE.md atomic-write discipline; matches
 #   `core/Cargo.toml` so a `cargo update` cannot silently move the resolved
@@ -98,6 +108,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # rides on a specific 2.x patch version, so the standard caret range
 # is appropriate here.
 tauri-plugin-dialog = "2"
+
+# D.1.2 clipboard write for the "copy secret" affordance. Write-only — no
+# clipboard read permission (reading the clipboard is a sensitive capability
+# for a secrets manager; we grant only `clipboard-manager:allow-write-text`
+# in capabilities/default.json). Caret range is appropriate here for the
+# same reason as `tauri-plugin-dialog`: no secret bytes cross this seam, so
+# no security-critical guarantee rides on a specific 2.x patch version.
+tauri-plugin-clipboard-manager = "2"
 
 [lints]
 workspace = true

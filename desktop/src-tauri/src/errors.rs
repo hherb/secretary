@@ -77,6 +77,15 @@ pub enum AppError {
     #[error("No vault currently unlocked")]
     NotUnlocked,
 
+    #[error("Block not found — it may have been removed")]
+    BlockNotFound { block_uuid_hex: String },
+
+    #[error("Record not found")]
+    RecordNotFound { record_uuid_hex: String },
+
+    #[error("Field not found")]
+    FieldNotFound { field_name: String },
+
     #[error("Settings record is malformed; using defaults")]
     SettingsCorrupt {
         #[serde(skip_serializing)]
@@ -311,6 +320,33 @@ mod tests {
             v["code"], "wrong_password",
             "anti-oracle: WrongPasswordOrCorrupt must collapse to WrongPassword"
         );
+    }
+
+    #[test]
+    fn block_not_found_carries_hex() {
+        let v = round_trip(&AppError::BlockNotFound {
+            block_uuid_hex: "112233445566778899aabbccddeeff00".to_string(),
+        });
+        assert_eq!(v["code"], "block_not_found");
+        assert_eq!(v["block_uuid_hex"], "112233445566778899aabbccddeeff00");
+    }
+
+    #[test]
+    fn record_not_found_carries_hex() {
+        let v = round_trip(&AppError::RecordNotFound {
+            record_uuid_hex: "33445566778899aabbccddeeff001122".to_string(),
+        });
+        assert_eq!(v["code"], "record_not_found");
+        assert_eq!(v["record_uuid_hex"], "33445566778899aabbccddeeff001122");
+    }
+
+    #[test]
+    fn field_not_found_carries_name() {
+        let v = round_trip(&AppError::FieldNotFound {
+            field_name: "password".to_string(),
+        });
+        assert_eq!(v["code"], "field_not_found");
+        assert_eq!(v["field_name"], "password");
     }
 
     #[test]

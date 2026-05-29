@@ -1,11 +1,9 @@
 // Tests for BlockCard.svelte — the leaf component that renders a single
-// vault block summary. Clicks are intentionally stubbed for D.1.1 (the
-// block-detail view lands in D.1.2), so the card renders as a disabled
-// button: the user gets accessible feedback that the element exists but
-// isn't interactive yet, rather than a focusable element that does nothing.
+// vault block summary. BlockCard is clickable from D.1.2 onward; callers
+// supply an `onClick` callback that receives the full BlockSummaryDto.
 
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, it, expect, vi } from 'vitest';
+import { render, fireEvent } from '@testing-library/svelte';
 import BlockCard from '../src/components/BlockCard.svelte';
 import type { BlockSummaryDto } from '../src/lib/ipc';
 
@@ -24,49 +22,38 @@ const BLOCK: BlockSummaryDto = {
 
 describe('BlockCard.svelte — rendering', () => {
   it('renders the block name', () => {
-    const { getByText } = render(BlockCard, { props: { block: BLOCK } });
+    const { getByText } = render(BlockCard, { props: { block: BLOCK, onClick: () => {} } });
     expect(getByText('Banking')).toBeTruthy();
   });
 
   it('renders the last-modified date with the year', () => {
-    const { getByText } = render(BlockCard, { props: { block: BLOCK } });
+    const { getByText } = render(BlockCard, { props: { block: BLOCK, onClick: () => {} } });
     // Format is locale-dependent ("Jun 15, 2024" vs "15 Jun 2024" etc.).
     // Year is robust; the substring match doesn't pin format.
     expect(getByText(/2024/)).toBeTruthy();
   });
 
   it('rendered button has type="button" (no implicit form submit)', () => {
-    const { getByRole } = render(BlockCard, { props: { block: BLOCK } });
+    const { getByRole } = render(BlockCard, { props: { block: BLOCK, onClick: () => {} } });
     const button = getByRole('button', { name: /banking/i });
     expect(button.getAttribute('type')).toBe('button');
   });
 
-  it('rendered button is disabled (clicks land in D.1.2)', () => {
-    // Explicitly disabled rather than CSS `cursor: not-allowed` only:
-    // keyboard-focus users get the correct affordance instead of a
-    // focusable element that does nothing.
-    const { getByRole } = render(BlockCard, { props: { block: BLOCK } });
-    const button = getByRole('button', { name: /banking/i });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+  it('calls onClick with the block when clicked', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(BlockCard, { props: { block: BLOCK, onClick } });
+    await fireEvent.click(getByRole('button'));
+    expect(onClick).toHaveBeenCalledWith(BLOCK);
   });
 
   it('button has an aria-label that includes the block name', () => {
     // Screen readers read the aria-label; the visible content is
     // "Banking" + "modified ...", and the aria-label needs to include
     // the name so users picking from a list of cards can disambiguate.
-    const { getByRole } = render(BlockCard, { props: { block: BLOCK } });
+    const { getByRole } = render(BlockCard, { props: { block: BLOCK, onClick: () => {} } });
     const button = getByRole('button', { name: /banking/i });
     const ariaLabel = button.getAttribute('aria-label') ?? '';
     expect(ariaLabel).toMatch(/banking/i);
-  });
-
-  it('button has a title attribute hinting at the deferred functionality', () => {
-    // The title surfaces on hover; the copy explains why a visible card
-    // is non-interactive so the user doesn't think the app is broken.
-    const { getByRole } = render(BlockCard, { props: { block: BLOCK } });
-    const button = getByRole('button', { name: /banking/i });
-    const title = button.getAttribute('title') ?? '';
-    expect(title.length).toBeGreaterThan(0);
   });
 });
 
@@ -75,7 +62,7 @@ describe('BlockCard.svelte — empty / edge-case block names', () => {
     // Defensive — backend doesn't promise non-empty names today.
     // We accept whatever the manifest contains and don't crash.
     const empty: BlockSummaryDto = { ...BLOCK, blockName: '' };
-    const { container } = render(BlockCard, { props: { block: empty } });
+    const { container } = render(BlockCard, { props: { block: empty, onClick: () => {} } });
     expect(container.querySelector('button')).not.toBeNull();
   });
 
@@ -85,7 +72,7 @@ describe('BlockCard.svelte — empty / edge-case block names', () => {
       createdAtMs: MS_2024_06_15_NOON_UTC,
       lastModifiedMs: MS_2024_06_15_NOON_UTC
     };
-    const { getByText } = render(BlockCard, { props: { block: sameTime } });
+    const { getByText } = render(BlockCard, { props: { block: sameTime, onClick: () => {} } });
     expect(getByText(/2024/)).toBeTruthy();
   });
 });

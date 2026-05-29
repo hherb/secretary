@@ -1,23 +1,3 @@
-//! Data Transfer Objects crossing the Tauri IPC boundary.
-//!
-//! Discipline (spec §5 "IPC boundary"):
-//!
-//! - Hex-encode all `[u8; 16]` / `Vec<u8>` UUIDs as `String` fields with a
-//!   `_hex` suffix so the wire format is JSON-native (no `ArrayBuffer` on
-//!   the JS side; Task 6's TS discriminated union pins this).
-//! - Never serialize zeroize-typed values. The bridge types kept in
-//!   `VaultSession` (`UnlockedIdentity`, `OpenVaultManifest`) never reach
-//!   here — only their plaintext metadata projections do.
-//! - `From<&BridgeType>` impls live next to the DTO so the conversion is
-//!   reviewable in one place.
-//! - All DTOs `#[derive(serde::Serialize)]` and use
-//!   `#[serde(rename_all = "camelCase")]` to match JS/TS conventions on
-//!   the frontend side.
-//! - DTOs are intentionally *additive*: adding a field is a forward-
-//!   compatible wire-format change (frontend ignores unknown fields).
-//!   Removing or renaming a field is a contract break — Task 6's TS pin
-//!   makes the break visible at TS compile time.
-
 use secretary_ffi_bridge::vault::{BlockSummary, OpenVaultManifest};
 
 use crate::errors::AppWarning;

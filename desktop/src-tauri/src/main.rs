@@ -20,7 +20,7 @@ use tauri::{Emitter, Manager};
 use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
-use secretary_desktop::commands::{lock, settings, unlock, vault};
+use secretary_desktop::commands::{browse, lock, settings, unlock, vault};
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
 use secretary_desktop::timer::{tick, TickOutcome};
@@ -60,6 +60,15 @@ fn main() {
         // `@tauri-apps/plugin-dialog`). Permissions for the JS side are
         // granted by `capabilities/default.json` (`dialog:allow-open`).
         .plugin(tauri_plugin_dialog::init())
+        // The clipboard-manager plugin exposes the WRITE side of the OS
+        // clipboard to the frontend's "copy secret" affordance. The JS
+        // companion (`@tauri-apps/plugin-clipboard-manager`) is already
+        // installed in `desktop/package.json`. WRITE-ONLY: the capability
+        // in `capabilities/default.json` grants only
+        // `clipboard-manager:allow-write-text`; no read permission is
+        // issued — reading the clipboard is a sensitive capability for a
+        // secrets manager.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Mutex::new(VaultSession::new(device_data_dir)))
         .invoke_handler(tauri::generate_handler![
             unlock::unlock_with_password,
@@ -69,6 +78,8 @@ fn main() {
             settings::set_settings,
             lock::lock,
             lock::notify_activity,
+            browse::read_block,
+            browse::reveal_field,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of

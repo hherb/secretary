@@ -30,6 +30,7 @@ import {
   vaultLocked,
   _resetSessionStateForTest
 } from '../src/lib/stores';
+import { browseNav, openBlock, resetBrowse } from '../src/lib/browse';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
 import type { AutoLockNotice } from '../src/lib/stores';
 
@@ -88,6 +89,7 @@ vi.mock('../src/lib/auto_lock', () => ({
 
 beforeEach(() => {
   _resetSessionStateForTest();
+  resetBrowse();
   listenMock.mockClear();
   unlistenMock.mockClear();
   capturedHandlers.length = 0;
@@ -184,6 +186,33 @@ describe('App.svelte — vault-locked event listener (#149)', () => {
     expect(unlistenMock).not.toHaveBeenCalled();
     unmount();
     await waitFor(() => expect(unlistenMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('vault-locked resets browseNav to blocks (lock-clears-browse, Task 6)', async () => {
+    // Security contract: a revealed FieldViewer/FieldRow must not survive
+    // a vault lock. App.svelte calls resetBrowse() in the vault-locked
+    // listener BEFORE vaultLocked(notice), so FieldViewer/FieldRow unmount
+    // and their reveal/clipboard timers are cancelled.
+    //
+    // Drive the contract at the App mount level (strongest form): render
+    // App, drill into a block so browseNav.level === 'records', then fire
+    // the captured vault-locked handler and assert the level resets.
+    beginUnlock(0);
+    unlockSucceeded(MANIFEST, SETTINGS);
+    render(App);
+    await waitFor(() => expect(capturedHandlers.length).toBeGreaterThan(0));
+
+    // Simulate having navigated into a block (records level).
+    openBlock({ blockUuidHex: 'ab', blockName: 'B', createdAtMs: 1, lastModifiedMs: 2 });
+    expect(get(browseNav).level).toBe('records');
+
+    // Fire the backend vault-locked event (auto-lock path).
+    capturedHandlers[0]({ payload: { reason: 'auto' } });
+
+    // browseNav must have reset to `blocks` so no revealed field survives.
+    expect(get(browseNav).level).toBe('blocks');
+    // Session must also have transitioned to locked.
+    expect(get(sessionState).status).toBe('locked');
   });
 });
 

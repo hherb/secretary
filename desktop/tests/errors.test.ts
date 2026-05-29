@@ -122,6 +122,20 @@ describe('userMessageFor — runtime fallback for unknown code', () => {
   });
 });
 
+describe('new browse error codes', () => {
+  it.each(['block_not_found', 'record_not_found', 'field_not_found'])(
+    '%s maps to a non-empty title',
+    (code) => {
+      const err = (
+        code === 'block_not_found' ? { code, block_uuid_hex: 'ab' }
+        : code === 'record_not_found' ? { code, record_uuid_hex: 'ab' }
+        : { code, field_name: 'x' }
+      ) as AppError;
+      expect(userMessageFor(err).title.length).toBeGreaterThan(0);
+    }
+  );
+});
+
 // Lock the runtime allowlist against the type union: any change to the
 // `AppError` / `AppWarning` discriminants must also update the
 // `APP_*_CODES` arrays, because `ipc.ts::isAppError` uses them at runtime.
@@ -143,6 +157,9 @@ describe('error code allowlists', () => {
       'settings_unknown_version',
       'settings_out_of_range',
       'io',
+      'block_not_found',
+      'record_not_found',
+      'field_not_found',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

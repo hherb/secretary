@@ -317,8 +317,7 @@ body {
   cursor: not-allowed;
 }
 
-/* BlockCard — disabled-button styling matches its non-interactive role
-   (D.1.2 wires up clicks). Looks card-like but is keyboard-skip-able. */
+/* BlockCard — clickable card that navigates to the records level (D.1.2+). */
 .block-card {
   display: block;
   width: 100%;
@@ -328,16 +327,90 @@ body {
   border-radius: var(--radius-md);
   background: var(--color-bg-elevated);
   color: var(--color-text);
-  cursor: not-allowed;
+  cursor: pointer;
   font-family: var(--font-stack);
   font-size: var(--font-size-md);
-  opacity: 0.85;
+}
+.block-card:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
 }
 .block-card__name {
   font-weight: 600;
 }
 .block-card__meta {
   margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* RecordList — stacked-page view showing all records in a block. */
+.record-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.record-list__back {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-2);
+}
+.record-list__back:hover {
+  background: var(--color-border);
+}
+.record-list__error {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+.record-list__loading,
+.record-list__empty {
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* RecordRow — single record within a RecordList; models .block-card. */
+.record-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-family: var(--font-stack);
+  font-size: var(--font-size-md);
+}
+.record-row:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+}
+.record-row__type {
+  font-weight: 600;
+}
+.record-row__tag {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-stack-mono);
+}
+.record-row__meta {
+  margin-left: auto;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }
@@ -439,6 +512,101 @@ body {
   margin: 0;
   font-size: var(--font-size-lg);
   color: var(--color-text-muted);
+}
+
+/* FieldViewer — stacked-page view showing all fields for a record. */
+.field-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.field-viewer__back {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-2);
+}
+.field-viewer__back:hover {
+  background: var(--color-border);
+}
+.field-viewer__tag {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-stack-mono);
+}
+.field-viewer__empty {
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+/* FieldRow — single field within a FieldViewer; masked by default. */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+.field-row__name {
+  min-width: 120px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.field-row__masked {
+  flex: 1;
+  color: var(--color-text-muted);
+  font-family: var(--font-stack-mono);
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.1em;
+}
+.field-row__value {
+  flex: 1;
+  font-family: var(--font-stack-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  word-break: break-all;
+}
+.field-row__btn {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  flex-shrink: 0;
+}
+.field-row__btn:hover:not(:disabled) {
+  background: var(--color-border);
+}
+.field-row__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.field-row__error {
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-bg);
 }
 
 /* Toast.svelte — auto-lock notice. Fixed top-right, slides in.

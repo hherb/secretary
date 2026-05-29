@@ -4,6 +4,9 @@
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
+  import { browseNav, openBlock } from '../lib/browse';
+  import RecordList from '../components/RecordList.svelte';
+  import FieldViewer from '../components/FieldViewer.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -47,15 +50,20 @@
       </div>
     {/each}
 
-    <div class="vault__block-count">
-      {manifest.blockCount} block{manifest.blockCount === 1 ? '' : 's'}
-    </div>
-
-    <div class="vault__block-list">
-      {#each manifest.blockSummaries as block (block.blockUuidHex)}
-        <BlockCard {block} />
-      {/each}
-    </div>
+    {#if $browseNav.level === 'blocks'}
+      <div class="vault__block-count">
+        {manifest.blockCount} block{manifest.blockCount === 1 ? '' : 's'}
+      </div>
+      <div class="vault__block-list">
+        {#each manifest.blockSummaries as block (block.blockUuidHex)}
+          <BlockCard {block} onClick={openBlock} />
+        {/each}
+      </div>
+    {:else if $browseNav.level === 'records'}
+      <RecordList block={$browseNav.block} />
+    {:else}
+      <FieldViewer block={$browseNav.block} record={$browseNav.record} />
+    {/if}
 
     <SettingsDialog
       bind:open={settingsOpen}
