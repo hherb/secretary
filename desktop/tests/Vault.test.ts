@@ -6,7 +6,7 @@
 // router gates us, but defensive narrowing inside guards against the
 // router ever invoking Vault from another state.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import Vault from '../src/routes/Vault.svelte';
 import {
@@ -14,19 +14,23 @@ import {
   unlockSucceeded,
   _resetSessionStateForTest
 } from '../src/lib/stores';
+import { openBlock, resetBrowse } from '../src/lib/browse';
 import type { ManifestDto, SettingsDto, BlockSummaryDto } from '../src/lib/ipc';
 import type { AppWarning } from '../src/lib/errors';
 
 // LockButton (transitively imported via TopBar) calls `lock` ipc, and
 // SettingsDialog calls `setSettings`. Stub both so the rendered tree
-// doesn't blow up on missing Tauri.
-const { lockMock, setSettingsMock } = vi.hoisted(() => ({
+// doesn't blow up on missing Tauri. readBlock is stubbed so that the
+// RecordList view (rendered when browseNav.level === 'records') can
+// resolve without hitting the Tauri bridge.
+const { lockMock, setSettingsMock, readBlockMock } = vi.hoisted(() => ({
   lockMock: vi.fn(),
-  setSettingsMock: vi.fn()
+  setSettingsMock: vi.fn(),
+  readBlockMock: vi.fn()
 }));
 vi.mock('../src/lib/ipc', async () => {
   const real = await vi.importActual<typeof import('../src/lib/ipc')>('../src/lib/ipc');
-  return { ...real, lock: lockMock, setSettings: setSettingsMock };
+  return { ...real, lock: lockMock, setSettings: setSettingsMock, readBlock: readBlockMock };
 });
 
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
@@ -62,10 +66,17 @@ function unlockWith(manifest: ManifestDto) {
 
 beforeEach(() => {
   _resetSessionStateForTest();
+  resetBrowse();
   lockMock.mockReset();
   lockMock.mockResolvedValue(undefined);
   setSettingsMock.mockReset();
   setSettingsMock.mockResolvedValue(undefined);
+  readBlockMock.mockReset();
+  readBlockMock.mockResolvedValue({ blockUuidHex: 'ab', blockName: 'B', records: [] });
+});
+
+afterEach(() => {
+  resetBrowse();
 });
 
 describe('Vault.svelte — initial render contract', () => {
@@ -207,5 +218,20 @@ describe('Vault.svelte — defensive non-unlocked render', () => {
     // on `manifest` access.
     const { container } = render(Vault);
     expect(container.querySelector('.vault')).toBeNull();
+  });
+});
+
+describe('Vault.svelte — browse navigation', () => {
+  it('renders the RecordList view when a block is opened', async () => {
+    const block = blockFixture('B', 'ab');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    render(Vault);
+
+    // Transition to the records level; Vault re-renders RecordList.
+    openBlock(block);
+
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+    // Block-list should no longer be visible.
+    expect(document.querySelector('.block-card')).toBeNull();
   });
 });

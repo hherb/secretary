@@ -26,7 +26,8 @@ import {
   getSettings,
   setSettings,
   lock,
-  notifyActivity
+  notifyActivity,
+  readBlock
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -157,6 +158,20 @@ describe('ipc wrappers — error path', () => {
       original
     );
     errorSpy.mockRestore();
+  });
+});
+
+describe('ipc wrappers — readBlock', () => {
+  it('readBlock returns the BlockDetailDto', async () => {
+    invokeMock.mockResolvedValueOnce({
+      blockUuidHex: 'ab', blockName: 'Personal logins',
+      records: [{ recordUuidHex: 'cd', recordType: 'login', tags: ['work'],
+        createdAtMs: 1, lastModMs: 2, fieldCount: 1,
+        fields: [{ name: 'password', lastModMs: 2, isText: true, isBytes: false }] }]
+    });
+    const dto = await readBlock('ab');
+    expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab' });
+    expect(dto.records[0].recordType).toBe('login');
   });
 });
 

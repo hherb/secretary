@@ -23,6 +23,9 @@ export const APP_ERROR_CODES = [
   'settings_unknown_version',
   'settings_out_of_range',
   'io',
+  'block_not_found',
+  'record_not_found',
+  'field_not_found',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -47,6 +50,9 @@ export type AppError =
   | { code: 'settings_unknown_version'; version: string }
   | { code: 'settings_out_of_range'; min: number; max: number }
   | { code: 'io' }
+  | { code: 'block_not_found'; block_uuid_hex: string }
+  | { code: 'record_not_found'; record_uuid_hex: string }
+  | { code: 'field_not_found'; field_name: string }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -123,6 +129,12 @@ export function userMessageFor(err: AppError): UserMessage {
         title: 'Filesystem error',
         actionHint: 'Check disk space and permissions, then try again.'
       };
+    case 'block_not_found':
+      return { title: 'Block not found', actionHint: 'It may have been removed — go back and refresh.' };
+    case 'record_not_found':
+      return { title: 'Record not found', actionHint: 'Go back and reopen the block.' };
+    case 'field_not_found':
+      return { title: 'Field not found', actionHint: 'Go back and reopen the record.' };
     case 'internal':
       return {
         title: 'Internal error',

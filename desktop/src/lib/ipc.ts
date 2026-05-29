@@ -33,6 +33,34 @@ export interface SettingsDto {
   autoLockTimeoutMs: number;
 }
 
+export interface FieldMetaDto {
+  name: string;
+  lastModMs: number;
+  isText: boolean;
+  isBytes: boolean;
+}
+
+export interface RecordDto {
+  recordUuidHex: string;
+  recordType: string;
+  tags: string[];
+  createdAtMs: number;
+  lastModMs: number;
+  fieldCount: number;
+  fields: FieldMetaDto[];
+}
+
+export interface BlockDetailDto {
+  blockUuidHex: string;
+  blockName: string;
+  records: RecordDto[];
+}
+
+export interface RevealedFieldDto {
+  isText: boolean;
+  value: string;
+}
+
 export function isAppError(err: unknown): err is AppError {
   if (typeof err !== 'object' || err === null || !('code' in err)) {
     return false;
@@ -72,6 +100,18 @@ export async function listBlocks(): Promise<BlockSummaryDto[]> {
 
 export async function getManifest(): Promise<ManifestDto> {
   return call<ManifestDto>('get_manifest');
+}
+
+export async function readBlock(blockUuidHex: string): Promise<BlockDetailDto> {
+  return call<BlockDetailDto>('read_block', { blockUuidHex });
+}
+
+export async function revealField(
+  blockUuidHex: string,
+  recordUuidHex: string,
+  fieldName: string
+): Promise<RevealedFieldDto> {
+  return call<RevealedFieldDto>('reveal_field', { blockUuidHex, recordUuidHex, fieldName });
 }
 
 export async function getSettings(): Promise<SettingsDto> {
