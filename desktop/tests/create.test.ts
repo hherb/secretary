@@ -38,6 +38,11 @@ describe('joinSubfolder', () => {
     expect(joinSubfolder('/x', 'a/b')).toBeNull();
     expect(joinSubfolder('/x', 'a\\b')).toBeNull();
   });
+  it('rejects traversal segments so the path can never escape the parent', () => {
+    expect(joinSubfolder('/Users/h/Docs', '.')).toBeNull();
+    expect(joinSubfolder('/Users/h/Docs', '..')).toBeNull();
+    expect(joinSubfolder('/Users/h/Docs', '  ..  ')).toBeNull();
+  });
 });
 
 describe('groupMnemonicWords', () => {

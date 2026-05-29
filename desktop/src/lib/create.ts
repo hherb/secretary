@@ -25,12 +25,16 @@ export function passwordsMatch(pw: string, confirm: string): boolean {
 }
 
 /** Join a picked parent folder and a subfolder name into a target path.
- *  Returns null for an empty name or one containing a path separator
- *  (we create exactly one level, not a nested path). */
+ *  Returns null for an empty name, one containing a path separator, or a
+ *  traversal segment (`.` / `..`) — we create exactly one new level inside
+ *  the parent, never a nested path and never the parent (or above) itself.
+ *  The backend re-checks emptiness authoritatively, so this is a UX guard
+ *  (keep the "Will create:" hint truthful), not the security boundary. */
 export function joinSubfolder(parent: string, name: string): string | null {
   const trimmed = name.trim();
   if (trimmed.length === 0) return null;
   if (trimmed.includes('/') || trimmed.includes('\\')) return null;
+  if (trimmed === '.' || trimmed === '..') return null;
   const sep = parent.includes('\\') ? '\\' : '/';
   const base = parent.endsWith(sep) ? parent.slice(0, -sep.length) : parent;
   return `${base}${sep}${trimmed}`;

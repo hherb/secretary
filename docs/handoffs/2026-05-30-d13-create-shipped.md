@@ -36,7 +36,7 @@ cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS
 
-Frontend:    Vitest 269 / 0 (29 files; new: create, route, FolderStep, CredentialsStep,
+Frontend:    Vitest 270 / 0 (29 files; new: create, route, FolderStep, CredentialsStep,
              MnemonicStep, CreateVault, AppRoute, UnlockCreate + additions to ipc/errors)
 pnpm typecheck      → clean
 pnpm svelte-check   → 0 errors, 2 warnings (both intentional `state_referenced_locally`,
@@ -108,7 +108,7 @@ cargo fmt --all -- --check
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 cd desktop && pnpm install && pnpm test && pnpm typecheck && pnpm svelte-check && pnpm lint && cd ..
-# Expect: Vitest 269 passing
+# Expect: Vitest 270 passing
 
 # Author the D.1.4 plan (none exists yet):
 #   superpowers:brainstorming  → scope the add/edit-record (save_block) slice
@@ -134,7 +134,7 @@ git worktree prune && git worktree list
 ## Closing inventory
 
 - **Branch on close:** `main` @ `2a35a04`. `feature/d13-create` carries the spec + plan + 6 task commits + 4 review-fix commits + the ship commit (this handoff + symlink). Squash-merge collapses to one commit on `main`.
-- **Automated gauntlet:** Rust **1081 / 0 / 10**; clippy clean; fmt clean; conformance PASS; spec-freshness PASS; Vitest **269 / 0**; typecheck clean; svelte-check 0 errors / 2 intentional warnings; lint clean.
+- **Automated gauntlet:** Rust **1081 / 0 / 10**; clippy clean; fmt clean; conformance PASS; spec-freshness PASS; Vitest **270 / 0**; typecheck clean; svelte-check 0 errors / 2 intentional warnings; lint clean.
 - **Final whole-branch review:** Ready to merge; secret-leak verdict CLEAN; capabilities/registration PASS (no new capability needed; both commands registered).
 - **Manual §15 GUI smoke + L4 e2e:** NOT performed (headless). Manual smoke is the user's pre-merge gate (§(3)); L4 e2e deferred (#161).
 - **README.md / ROADMAP.md:** D.1.3 marked ✅; D.1.4 next.
