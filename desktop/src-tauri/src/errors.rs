@@ -86,6 +86,15 @@ pub enum AppError {
     #[error("Field not found")]
     FieldNotFound { field_name: String },
 
+    #[error("Vault folder is not empty")]
+    VaultFolderNotEmpty { path: String },
+
+    #[error("Could not create the vault")]
+    VaultCreateFailed {
+        #[serde(skip_serializing)]
+        detail: String,
+    },
+
     #[error("Settings record is malformed; using defaults")]
     SettingsCorrupt {
         #[serde(skip_serializing)]
@@ -347,6 +356,24 @@ mod tests {
         });
         assert_eq!(v["code"], "field_not_found");
         assert_eq!(v["field_name"], "password");
+    }
+
+    #[test]
+    fn vault_folder_not_empty_carries_path() {
+        let v = round_trip(&AppError::VaultFolderNotEmpty {
+            path: "/Users/h/Documents".to_string(),
+        });
+        assert_eq!(v["code"], "vault_folder_not_empty");
+        assert_eq!(v["path"], "/Users/h/Documents");
+    }
+
+    #[test]
+    fn vault_create_failed_detail_is_stripped() {
+        let v = round_trip(&AppError::VaultCreateFailed {
+            detail: "argon2id derivation OOM".to_string(),
+        });
+        assert_eq!(v["code"], "vault_create_failed");
+        assert!(v.get("detail").is_none(), "detail must NOT cross IPC");
     }
 
     #[test]
