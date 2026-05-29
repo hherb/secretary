@@ -9,21 +9,32 @@
     onCancel
   }: { seedPath?: string; onNext: (folder: string) => void; onCancel: () => void } = $props();
 
+  // seedPath is read ONCE to seed the picker; thereafter `picked` is
+  // user-driven. The svelte-check `state_referenced_locally` note is expected
+  // and intentional — the seed is deliberately not reactive after mount.
   let picked = $state(seedPath);
   let probed = $state<{ exists: boolean; isEmpty: boolean } | null>(null);
   let subfolderName = $state('');
   let probing = $state(false);
+
+  let probeGeneration = 0;
 
   async function probe(path: string): Promise<void> {
     if (path.length === 0) {
       probed = null;
       return;
     }
+    const gen = ++probeGeneration;
     probing = true;
     try {
-      probed = await probeCreateTarget(path);
+      const result = await probeCreateTarget(path);
+      if (gen === probeGeneration) {
+        probed = result;
+      }
     } finally {
-      probing = false;
+      if (gen === probeGeneration) {
+        probing = false;
+      }
     }
   }
 

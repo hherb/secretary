@@ -9,7 +9,7 @@
   }: {
     folder: string;
     submitting?: boolean;
-    onCreate: (displayName: string, password: string) => void;
+    onCreate: (displayName: string, password: string) => void | Promise<void>;
     onBack: () => void;
   } = $props();
 

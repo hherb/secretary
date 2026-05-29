@@ -33,4 +33,40 @@ describe('MnemonicStep', () => {
     await fireEvent.click(getByRole('button', { name: /copy/i }));
     expect(writeText).toHaveBeenCalledWith(PHRASE);
   });
+
+  // Security regression: a copied recovery phrase must not outlive the wizard step.
+  // On unmount (user clicks Continue shortly after copying), the pending clipboard
+  // auto-clear must fire NOW, not be silently dropped — mirroring the FieldRow
+  // precedent (spec §7 / D.1.2).
+  it('clears the clipboard immediately on unmount when a copy is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByRole, unmount } = render(MnemonicStep, {
+        props: { mnemonic: PHRASE, onDone: vi.fn() }
+      });
+      await fireEvent.click(getByRole('button', { name: /copy/i }));
+      await vi.advanceTimersByTimeAsync(0); // flush writeText(PHRASE) promise
+      expect(writeText).toHaveBeenCalledWith(PHRASE);
+      // Unmount before the 30s auto-clear fires (simulates user clicking Continue quickly).
+      unmount();
+      // The clear must have been fired eagerly, not stranded in the clipboard.
+      expect(writeText).toHaveBeenLastCalledWith('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not touch the clipboard on unmount when nothing was copied', async () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(MnemonicStep, {
+        props: { mnemonic: PHRASE, onDone: vi.fn() }
+      });
+      // Unmount without ever clicking Copy.
+      unmount();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

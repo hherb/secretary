@@ -41,4 +41,33 @@ describe('FolderStep', () => {
     await fireEvent.click(cont);
     expect(onNext).toHaveBeenCalledWith('/Users/h/empty');
   });
+
+  it('Cancel invokes onCancel', async () => {
+    (probeCreateTarget as ReturnType<typeof vi.fn>).mockResolvedValue({
+      exists: true,
+      isEmpty: true
+    });
+    const onCancel = vi.fn();
+    const { getByRole } = render(FolderStep, {
+      props: { seedPath: '', onNext: vi.fn(), onCancel }
+    });
+    await fireEvent.click(getByRole('button', { name: /cancel/i }));
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  it('subfolder path: typing a name yields the joined path on Continue', async () => {
+    (probeCreateTarget as ReturnType<typeof vi.fn>).mockResolvedValue({
+      exists: true,
+      isEmpty: false
+    });
+    const onNext = vi.fn();
+    const { findByLabelText, findByRole } = render(FolderStep, {
+      props: { seedPath: '/Users/h/Docs', onNext, onCancel: vi.fn() }
+    });
+    const subfolderInput = await findByLabelText(/subfolder name/i);
+    await fireEvent.input(subfolderInput, { target: { value: 'vault' } });
+    const cont = (await findByRole('button', { name: /continue/i })) as HTMLButtonElement;
+    await fireEvent.click(cont);
+    expect(onNext).toHaveBeenCalledWith('/Users/h/Docs/vault');
+  });
 });

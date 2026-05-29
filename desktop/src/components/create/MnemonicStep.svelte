@@ -22,8 +22,17 @@
     }, CLIPBOARD_CLEAR_MS);
   }
 
+  // A pending clipboard clear must not simply be cancelled on unmount —
+  // doing so would strand the copied recovery phrase in the OS clipboard
+  // past the wizard's lifetime. The OS clipboard is cross-process state
+  // independent of this component, so fire the clear now. Mirrors the
+  // FieldRow.svelte precedent (D.1.2). If nothing was copied (no pending
+  // timer), leave the clipboard untouched.
   onDestroy(() => {
-    if (clearTimer) clearTimeout(clearTimer);
+    if (clearTimer) {
+      clearTimeout(clearTimer);
+      void writeText('');
+    }
   });
 </script>
 
