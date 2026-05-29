@@ -4,8 +4,10 @@
   import { sessionState, autoLockNotice, vaultLocked } from './lib/stores';
   import { resetBrowse } from './lib/browse';
   import { startActivityTracking } from './lib/auto_lock';
+  import { appRoute } from './lib/route';
   import Unlock from './routes/Unlock.svelte';
   import Vault from './routes/Vault.svelte';
+  import CreateVault from './routes/CreateVault.svelte';
   import Toast from './components/Toast.svelte';
   import './theme.css';
 
@@ -94,6 +96,8 @@
   <main class="locking-splash" aria-live="polite">
     <p class="locking-splash__label">Locking…</p>
   </main>
+{:else if $appRoute === 'create'}
+  <CreateVault />
 {:else}
   <Unlock />
 {/if}

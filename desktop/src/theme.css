@@ -673,3 +673,7 @@ body {
 .mnemonic-grid__item { display: flex; gap: 0.4rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border, #3334); border-radius: 6px; }
 .mnemonic-grid__index { color: var(--muted, #888); min-width: 1.4em; text-align: right; }
 .mnemonic-grid__word { font-family: var(--mono, monospace); }
+
+/* Unlock — created-vault banner and create-affordance button */
+.unlock__banner { background: var(--ok-bg, #1b4); color: #fff; border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 1rem; }
+.unlock__error-action { margin-top: 0.4rem; background: none; border: 1px solid currentColor; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; }

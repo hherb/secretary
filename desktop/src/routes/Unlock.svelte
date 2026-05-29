@@ -3,8 +3,24 @@
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
   import { unlockWithPassword, getSettings } from '../lib/ipc';
   import { userMessageFor } from '../lib/errors';
+  import { openCreateWizard, createdVaultPath } from '../lib/route';
+  import { get } from 'svelte/store';
 
   let folderPath = $state('');
+
+  // Pre-fill from a just-created vault (set by finishCreateWizard).
+  const created = get(createdVaultPath);
+  if (created.length > 0 && folderPath.length === 0) {
+    folderPath = created;
+  }
+  const showCreatedBanner = $derived(created.length > 0);
+
+  // Is the current error the "not a vault" case? Then offer to create here.
+  const offerCreate = $derived(
+    $sessionState.status === 'locked' &&
+      $sessionState.lastError?.code === 'vault_path_not_a_vault'
+  );
+
   let password = $state('');
   let submitting = $state(false);
 
@@ -57,6 +73,12 @@
     <p class="unlock__subtitle">Open a vault</p>
 
     <form onsubmit={submit}>
+      {#if showCreatedBanner}
+        <div class="unlock__banner" role="status">
+          Vault created — enter your password to open it.
+        </div>
+      {/if}
+
       {#if errMsg}
         <div class="unlock__error" role="alert">
           <div class="unlock__error-title">{errMsg.title}</div>
@@ -64,7 +86,17 @@
             <div class="unlock__error-detail">{errMsg.detail}</div>
           {/if}
           {#if errMsg.actionHint}
-            <div class="unlock__error-hint">{errMsg.actionHint}</div>
+            {#if offerCreate}
+              <button
+                type="button"
+                class="unlock__error-action"
+                onclick={() => openCreateWizard(folderPath)}
+              >
+                Create a vault here
+              </button>
+            {:else}
+              <div class="unlock__error-hint">{errMsg.actionHint}</div>
+            {/if}
           {/if}
         </div>
       {/if}
