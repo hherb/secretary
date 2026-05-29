@@ -32,3 +32,12 @@ export const AUTO_LOCK_MAX_MS = 86_400_000;
  *  value when `currentSettings` is null (defence in depth — by the
  *  time the dialog opens, the manifest+settings have been loaded). */
 export const AUTO_LOCK_DEFAULT_MS = 600_000;
+
+/** How long a revealed field stays un-masked before auto-re-masking
+ *  (shoulder-surfing defence). Frontend-only UX timer — no backend mirror.
+ *  20 seconds: long enough to read/copy, short enough to limit exposure. */
+export const REVEAL_AUTO_HIDE_MS = 20_000;
+
+/** How long after a copy the clipboard is best-effort cleared. Frontend-only
+ *  UX timer — no backend mirror. 30 seconds. */
+export const CLIPBOARD_CLEAR_MS = 30_000;
