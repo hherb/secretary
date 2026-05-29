@@ -17,6 +17,7 @@ pub mod constants;
 pub mod dtos;
 pub mod errors;
 pub mod reveal;
+pub mod secret_arg;
 pub mod session;
 pub mod settings;
 pub mod timer;

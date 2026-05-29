@@ -29,6 +29,8 @@ describe('userMessageFor', () => {
     { code: 'settings_unknown_version', version: 'v99' },
     { code: 'settings_out_of_range', min: 60_000, max: 86_400_000 },
     { code: 'io' },
+    { code: 'vault_folder_not_empty', path: '/x' },
+    { code: 'vault_create_failed' },
     { code: 'internal' }
   ];
 
@@ -122,6 +124,21 @@ describe('userMessageFor — runtime fallback for unknown code', () => {
   });
 });
 
+describe('vault create error codes', () => {
+  it('vault_folder_not_empty surfaces the path + subfolder hint', () => {
+    const m = userMessageFor({ code: 'vault_folder_not_empty', path: '/Users/h/Docs' });
+    expect(m.title).toMatch(/empty/i);
+    expect(m.detail).toContain('/Users/h/Docs');
+    expect(m.actionHint).toMatch(/subfolder/i);
+  });
+
+  it('vault_create_failed has a retry hint', () => {
+    const m = userMessageFor({ code: 'vault_create_failed' });
+    expect(m.title).toMatch(/create/i);
+    expect(m.actionHint).toMatch(/try again/i);
+  });
+});
+
 describe('new browse error codes', () => {
   it.each(['block_not_found', 'record_not_found', 'field_not_found'])(
     '%s maps to a non-empty title',
@@ -160,6 +177,8 @@ describe('error code allowlists', () => {
       'block_not_found',
       'record_not_found',
       'field_not_found',
+      'vault_folder_not_empty',
+      'vault_create_failed',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

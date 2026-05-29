@@ -26,6 +26,8 @@ export const APP_ERROR_CODES = [
   'block_not_found',
   'record_not_found',
   'field_not_found',
+  'vault_folder_not_empty',
+  'vault_create_failed',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -53,6 +55,8 @@ export type AppError =
   | { code: 'block_not_found'; block_uuid_hex: string }
   | { code: 'record_not_found'; record_uuid_hex: string }
   | { code: 'field_not_found'; field_name: string }
+  | { code: 'vault_folder_not_empty'; path: string }
+  | { code: 'vault_create_failed' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -135,6 +139,17 @@ export function userMessageFor(err: AppError): UserMessage {
       return { title: 'Record not found', actionHint: 'Go back and reopen the block.' };
     case 'field_not_found':
       return { title: 'Field not found', actionHint: 'Go back and reopen the record.' };
+    case 'vault_folder_not_empty':
+      return {
+        title: "Folder isn't empty",
+        detail: `${err.path} already contains files.`,
+        actionHint: 'Choose an empty folder or create a new subfolder.'
+      };
+    case 'vault_create_failed':
+      return {
+        title: "Couldn't create the vault",
+        actionHint: 'Please try again.'
+      };
     case 'internal':
       return {
         title: 'Internal error',

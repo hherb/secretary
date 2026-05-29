@@ -3901,6 +3901,7 @@ dependencies = [
  "dirs 5.0.1",
  "hex",
  "rand",
+ "rand_core 0.6.4",
  "secretary-core",
  "secretary-ffi-bridge",
  "serde",

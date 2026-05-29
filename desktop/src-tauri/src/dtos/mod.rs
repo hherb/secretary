@@ -14,7 +14,9 @@
 //! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs).
 
 mod browse;
+mod create;
 mod manifest;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
+pub use create::{CreateTargetProbeDto, CreateVaultDto};
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};

@@ -16,6 +16,7 @@ use tauri::State;
 
 use crate::dtos::ManifestDto;
 use crate::errors::AppError;
+use crate::secret_arg::Password;
 use crate::session::VaultSession;
 
 /// Canonical files expected at the root of a vault folder. Their presence
@@ -34,23 +35,18 @@ const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 
 /// Tauri-side entry point. Thin delegating shell; logic lives in
 /// [`unlock_with_password_impl`].
+///
+/// `password: Password` is the zeroize-typed IPC boundary (D.1.3 closed the
+/// D.1.1 plain-`String` carry-forward). We hand `password.expose()` to the
+/// `&[u8]`-taking impl; the `Password` (and its inner `SecretBytes`) zeroizes
+/// when this shell returns.
 #[tauri::command]
 pub async fn unlock_with_password(
     state: State<'_, Mutex<VaultSession>>,
     folder_path: String,
-    password: String,
+    password: Password,
 ) -> Result<ManifestDto, AppError> {
-    // NOTE (D.1.1 deferred hardening): `password: String` is not
-    // zeroize-typed. Tauri's IPC layer deserializes incoming string
-    // arguments into a plain `String`, and we hand `password.as_bytes()`
-    // to the bridge below. A future hardening pass should:
-    //   1. Switch this argument to a `SecretString`-equivalent wrapper
-    //      with a `Deserialize` impl that overwrites the source bytes.
-    //   2. Audit the Tauri-side IPC buffer for residual password copies.
-    // Logged here as a marker comment rather than #-issue because the
-    // bridge surface that would consume the wrapper doesn't yet exist;
-    // the change is co-dependent with a bridge-side API addition.
-    unlock_with_password_impl(state.inner(), &folder_path, password.as_bytes())
+    unlock_with_password_impl(state.inner(), &folder_path, password.expose())
 }
 
 /// Testable core. Synchronous, no Tauri runtime needed. Validates the
