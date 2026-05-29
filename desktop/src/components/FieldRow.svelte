@@ -11,6 +11,7 @@
   let isTextValue = $state(true);
   let busy = $state(false);
   let failed = $state(false);
+  let copyFailed = $state(false);
 
   const hideTimer = createAutoHideTimer(() => mask(), REVEAL_AUTO_HIDE_MS);
 
@@ -32,6 +33,7 @@
 
   function mask(): void {
     revealed = null;
+    copyFailed = false;
     hideTimer.cancel();
   }
 
@@ -47,7 +49,17 @@
   async function copy(): Promise<void> {
     if (revealed === null) return;
     const value = revealed;
-    await writeText(value);
+    copyFailed = false;
+    try {
+      await writeText(value);
+    } catch (e) {
+      // The plugin write can fail (OS clipboard busy / permission). Surface
+      // it inline rather than swallowing into an unhandled rejection, and
+      // do NOT schedule a clear — nothing was written.
+      copyFailed = true;
+      console.error('clipboard write failed', e);
+      return;
+    }
     // Best-effort clear, reset on each copy so the full window applies to the
     // most recent copy (spec §8: may still clobber newer external clipboard
     // content — that tradeoff is accepted).
@@ -58,11 +70,19 @@
     }, CLIPBOARD_CLEAR_MS);
   }
 
-  // Cancel pending timers on unmount so a revealed secret isn't held alive
-  // in a timer closure after the view is closed (memory-hygiene discipline).
+  // On unmount (navigate away or vault lock — both unmount this subtree),
+  // tear down timers. The auto-hide timer just re-masks, so cancelling it is
+  // enough. But a *pending clipboard clear* must not simply be cancelled:
+  // doing so would strand the copied plaintext in the OS clipboard past the
+  // lock, violating spec §7 ("revealed secrets must not survive a lock").
+  // The OS clipboard is cross-process state independent of this component, so
+  // we fire the clear NOW instead of dropping it.
   $effect(() => () => {
     hideTimer.cancel();
-    clearClipboardClear();
+    if (clipboardClearHandle !== null) {
+      clearClipboardClear();
+      void writeText('');
+    }
   });
 </script>
 
@@ -79,4 +99,5 @@
   {/if}
 
   {#if failed}<span class="field-row__error" role="alert">Couldn't reveal.</span>{/if}
+  {#if copyFailed}<span class="field-row__error" role="alert">Couldn't copy.</span>{/if}
 </div>

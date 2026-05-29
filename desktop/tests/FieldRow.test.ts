@@ -83,4 +83,62 @@ describe('FieldRow', () => {
       vi.useRealTimers();
     }
   });
+
+  // Security regression: a copied secret must not outlive the view (spec §7).
+  // On unmount (navigate away / vault lock) with a clear still pending, the
+  // clipboard must be cleared NOW, not merely have its timer cancelled.
+  it('clears the clipboard immediately on unmount when a clear is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
+      writeTextMock.mockResolvedValue(undefined);
+      const { getByLabelText, unmount } =
+        render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
+      await fireEvent.click(getByLabelText(/reveal password/i));
+      await vi.advanceTimersByTimeAsync(0); // flush reveal
+      await fireEvent.click(getByLabelText(/copy password/i));
+      await vi.advanceTimersByTimeAsync(0); // flush writeText(value) + schedule clear
+      expect(writeTextMock).toHaveBeenCalledWith('hunter2');
+      writeTextMock.mockClear();
+      unmount(); // lock/navigate teardown, well before CLIPBOARD_CLEAR_MS elapses
+      expect(writeTextMock).toHaveBeenCalledWith(''); // cleared eagerly, not stranded
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not touch the clipboard on unmount when nothing was copied', async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
+      const { getByLabelText, unmount } =
+        render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
+      await fireEvent.click(getByLabelText(/reveal password/i)); // reveal but never copy
+      await vi.advanceTimersByTimeAsync(0);
+      unmount();
+      expect(writeTextMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces a failure and schedules no clear when the clipboard write rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
+      writeTextMock.mockRejectedValue(new Error('clipboard busy'));
+      const { getByLabelText, queryByText } =
+        render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
+      await fireEvent.click(getByLabelText(/reveal password/i));
+      await vi.advanceTimersByTimeAsync(0);
+      await fireEvent.click(getByLabelText(/copy password/i));
+      await vi.advanceTimersByTimeAsync(0); // flush the rejected writeText promise
+      expect(queryByText(/Couldn't copy/i)).toBeTruthy();
+      writeTextMock.mockClear();
+      await vi.advanceTimersByTimeAsync(CLIPBOARD_CLEAR_MS);
+      expect(writeTextMock).not.toHaveBeenCalled(); // failed copy schedules no clear
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
