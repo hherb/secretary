@@ -6,10 +6,21 @@
 
 /// Result of a successful `create_vault`. The `mnemonic` is the user's only
 /// recovery path — displayed once, never persisted by the app.
-#[derive(Debug, serde::Serialize)]
+#[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateVaultDto {
     pub mnemonic: String,
+}
+
+impl std::fmt::Debug for CreateVaultDto {
+    /// Redacts the recovery phrase — the mnemonic is the user's only
+    /// recovery secret and must never reach a log line via `{:?}`. Mirrors
+    /// the redacting `Debug` on `secretary_core`'s `Mnemonic`/`CreatedVault`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateVaultDto")
+            .field("mnemonic", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Result of `probe_create_target` — drives the wizard's empty-check +
