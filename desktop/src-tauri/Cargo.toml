@@ -54,6 +54,16 @@ tracing = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 
+# D.1.2 reveal path additions:
+# - `base64`: encodes already-revealed `bytes` field plaintext for display/copy.
+#   Not on the crypto path — the bytes are already past the FFI expose boundary.
+#   Version matches the workspace-resolved 0.22.
+# - `zeroize`: overwrite the intermediate Vec<u8> from FieldHandle::expose_bytes
+#   after base64-encoding it, so the raw secret bytes don't linger on the
+#   stack/heap between expose and drop. Exact pin matches core/Cargo.toml.
+base64 = "0.22"
+zeroize = "=1.8.2"
+
 # Task 3 vault I/O additions:
 # - `tempfile` exact-pinned per CLAUDE.md atomic-write discipline; matches
 #   `core/Cargo.toml` so a `cargo update` cannot silently move the resolved
