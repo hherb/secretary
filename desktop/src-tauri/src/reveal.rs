@@ -66,8 +66,6 @@ fn project_field_meta(handle: &FieldHandle) -> FieldMetaDto {
 /// Locate a record in the output by its hex UUID. Returns `None` if no
 /// record matches. Linear scan — record counts per block are small and the
 /// reveal path is human-paced.
-// wired in Task 3 (reveal_field)
-#[allow(dead_code)]
 pub fn locate_record(output: &BlockReadOutput, record_uuid_hex: &str) -> Option<Record> {
     for i in 0..output.record_count() {
         if let Some(record) = output.record_at(i) {

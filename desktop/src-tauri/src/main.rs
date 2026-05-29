@@ -70,6 +70,7 @@ fn main() {
             lock::lock,
             lock::notify_activity,
             browse::read_block,
+            browse::reveal_field,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of

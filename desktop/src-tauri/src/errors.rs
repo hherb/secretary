@@ -332,6 +332,24 @@ mod tests {
     }
 
     #[test]
+    fn record_not_found_carries_hex() {
+        let v = round_trip(&AppError::RecordNotFound {
+            record_uuid_hex: "33445566778899aabbccddeeff001122".to_string(),
+        });
+        assert_eq!(v["code"], "record_not_found");
+        assert_eq!(v["record_uuid_hex"], "33445566778899aabbccddeeff001122");
+    }
+
+    #[test]
+    fn field_not_found_carries_name() {
+        let v = round_trip(&AppError::FieldNotFound {
+            field_name: "password".to_string(),
+        });
+        assert_eq!(v["code"], "field_not_found");
+        assert_eq!(v["field_name"], "password");
+    }
+
+    #[test]
     fn map_ffi_error_is_pure_no_log_side_effect_required() {
         // Calling the pure helper directly (not via `.into()` / `From`) must
         // produce the same routing as the `From` impl. Documents the public

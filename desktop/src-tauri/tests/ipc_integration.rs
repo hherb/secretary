@@ -501,3 +501,64 @@ fn read_block_when_locked_is_not_unlocked() {
         browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX).expect_err("locked must error");
     assert!(matches!(err, AppError::NotUnlocked));
 }
+
+// ============================================================================
+// reveal_field
+//
+// Coverage note: only the TEXT reveal path is exercised end-to-end here,
+// because `golden_vault_001` contains no `bytes` field (and it is a frozen
+// KAT — we don't add one). The `bytes` → base64 path
+// (`expose_bytes` → `encode_revealed_bytes`) is covered by the unit tests in
+// `reveal.rs` (`encode_revealed_bytes_*`). If a `bytes` field ever lands in a
+// fixture, add an integration test here asserting `dto.is_text == false` and
+// that the base64 decodes to the expected bytes.
+// ============================================================================
+
+#[test]
+fn reveal_field_returns_text_plaintext() {
+    let (state, _device_dir) = unlocked_state();
+    let dto = browse::reveal_field_impl(
+        &state,
+        GOLDEN_BLOCK_UUID_HEX,
+        GOLDEN_RECORD_UUID_HEX,
+        "password",
+    )
+    .expect("reveal ok");
+    assert!(dto.is_text);
+    assert_eq!(dto.value, "hunter2");
+
+    let user = browse::reveal_field_impl(
+        &state,
+        GOLDEN_BLOCK_UUID_HEX,
+        GOLDEN_RECORD_UUID_HEX,
+        "username",
+    )
+    .expect("reveal ok");
+    assert_eq!(user.value, "owner@example.com");
+}
+
+#[test]
+fn reveal_field_unknown_record_is_record_not_found() {
+    let (state, _device_dir) = unlocked_state();
+    let err = browse::reveal_field_impl(
+        &state,
+        GOLDEN_BLOCK_UUID_HEX,
+        "ffffffffffffffffffffffffffffffff",
+        "password",
+    )
+    .expect_err("unknown record errors");
+    assert!(matches!(err, AppError::RecordNotFound { .. }));
+}
+
+#[test]
+fn reveal_field_unknown_field_is_field_not_found() {
+    let (state, _device_dir) = unlocked_state();
+    let err = browse::reveal_field_impl(
+        &state,
+        GOLDEN_BLOCK_UUID_HEX,
+        GOLDEN_RECORD_UUID_HEX,
+        "no_such_field",
+    )
+    .expect_err("unknown field errors");
+    assert!(matches!(err, AppError::FieldNotFound { .. }));
+}
