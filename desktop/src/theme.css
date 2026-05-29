@@ -655,3 +655,21 @@ body {
 .toast__dismiss:hover {
   color: var(--color-text);
 }
+
+/* D.1.3 create-vault wizard. Component-scoped <style> trips the Vite-6
+   preprocessCSS bug under Vitest (#153), so visual rules live here. */
+.wizard { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.wizard__card { width: min(560px, 92vw); padding: 2rem; }
+.wizard__title { margin: 0 0 1rem; }
+.wizard__error { border: 1px solid var(--danger, #b00); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem; }
+.wizard__error-title { font-weight: 600; }
+.wizard-step__title { margin: 0 0 0.5rem; }
+.wizard-step__hint { color: var(--muted, #888); font-size: 0.9rem; }
+.wizard-step__warn { color: var(--danger, #b00); font-size: 0.9rem; }
+.wizard-step__field { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.75rem 0; }
+.wizard-step__actions { display: flex; justify-content: space-between; margin-top: 1.25rem; gap: 0.5rem; }
+.wizard-step__ack { display: flex; align-items: center; gap: 0.5rem; margin: 1rem 0; }
+.mnemonic-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; padding: 0; margin: 1rem 0; list-style: none; }
+.mnemonic-grid__item { display: flex; gap: 0.4rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border, #3334); border-radius: 6px; }
+.mnemonic-grid__index { color: var(--muted, #888); min-width: 1.4em; text-align: right; }
+.mnemonic-grid__word { font-family: var(--mono, monospace); }
