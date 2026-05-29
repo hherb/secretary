@@ -133,6 +133,23 @@
         {submitting ? 'Unlocking…' : 'Unlock'}
       </button>
 
+      <div class="unlock__divider" aria-hidden="true"><span>or</span></div>
+
+      <!-- First-class create entry point (always visible, unlike the
+           contextual "Create a vault here" shown only on a not-a-vault
+           error). type="button" so it never submits the unlock form; seeds
+           the wizard with whatever folder is currently typed (empty is a
+           tested path). Disabled mid-unlock to avoid switching routes while
+           an unlock is in flight. -->
+      <button
+        type="button"
+        class="unlock__create"
+        disabled={submitting}
+        onclick={() => openCreateWizard(folderPath)}
+      >
+        Create a new vault
+      </button>
+
       <div class="unlock__footer">
         Lost your password? Use recovery phrase (coming soon)
       </div>

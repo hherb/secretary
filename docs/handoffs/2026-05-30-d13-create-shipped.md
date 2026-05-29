@@ -5,7 +5,7 @@
 
 ## (1) What we shipped this session
 
-A user with **no vault** can now create one from the desktop app: open the wizard (from the empty state, or via the now-actionable D.1.1 "Not a vault" hint) → choose a folder (empty, or offered a subfolder if non-empty) → set a display name + password + confirm → create (one Argon2id pass) → see the 24-word recovery mnemonic (copy + acknowledge) → land back on Unlock with the new path pre-filled + a "Vault created" banner → unlock into the empty vault. This is the **first write path** in Sub-project D. It also **closes the D.1.1 plain-`String` password carry-forward**: the IPC password boundary is now a zeroize-typed `Password` newtype (create **and** retrofit unlock).
+A user with **no vault** can now create one from the desktop app: open the wizard (via the always-visible **"Create a new vault"** button on the Unlock screen, or via the now-actionable D.1.1 "Not a vault" hint) → choose a folder (empty, or offered a subfolder if non-empty) → set a display name + password + confirm → create (one Argon2id pass) → see the 24-word recovery mnemonic (copy + acknowledge) → land back on Unlock with the new path pre-filled + a "Vault created" banner → unlock into the empty vault. This is the **first write path** in Sub-project D. It also **closes the D.1.1 plain-`String` password carry-forward**: the IPC password boundary is now a zeroize-typed `Password` newtype (create **and** retrofit unlock).
 
 All commits are on `feature/d13-create` (branched from `main` @ `2a35a04`; the spec + plan ride on the same branch, so the ship PR carries everything):
 
@@ -36,7 +36,7 @@ cargo fmt --all -- --check                                  → clean
 uv run core/tests/python/conformance.py                     → PASS
 uv run core/tests/python/spec_test_name_freshness.py        → PASS
 
-Frontend:    Vitest 270 / 0 (29 files; new: create, route, FolderStep, CredentialsStep,
+Frontend:    Vitest 272 / 0 (29 files; new: create, route, FolderStep, CredentialsStep,
              MnemonicStep, CreateVault, AppRoute, UnlockCreate + additions to ipc/errors)
 pnpm typecheck      → clean
 pnpm svelte-check   → 0 errors, 2 warnings (both intentional `state_referenced_locally`,
@@ -61,7 +61,7 @@ pnpm install && pnpm tauri build --debug
 ./src-tauri/target/debug/secretary-desktop
 ```
 
-Walk (spec §15): from the empty state (or point Unlock at a non-vault folder → click **"Create a vault here"**) → pick an empty folder, OR a non-empty one and accept the **subfolder** offer (type a name) → set display name + password + matching confirm (mismatch must disable Create) → **Create** → see the **24-word** mnemonic → **Copy** + paste elsewhere (matches) → tick **"I have written down my recovery phrase"** (Continue must stay disabled until ticked) → land on **Unlock** with the path **pre-filled** + **"Vault created"** banner → unlock with the **same password** → empty browse view. Re-run create into the now-non-empty folder → typed **"Folder isn't empty"** message. If any step fails it's a D.1.3 regression; don't merge until fixed. (The automated gauntlet is green, so a smoke failure would point at a real WebView/IPC/CSP/runtime issue the unit tests can't reach — exactly what the deferred L4 e2e #161 would catch automatically.)
+Walk (spec §15): from the Unlock screen click **"Create a new vault"** (or point Unlock at a non-vault folder → click the contextual **"Create a vault here"**) → pick an empty folder, OR a non-empty one and accept the **subfolder** offer (type a name) → set display name + password + matching confirm (mismatch must disable Create) → **Create** → see the **24-word** mnemonic → **Copy** + paste elsewhere (matches) → tick **"I have written down my recovery phrase"** (Continue must stay disabled until ticked) → land on **Unlock** with the path **pre-filled** + **"Vault created"** banner → unlock with the **same password** → empty browse view. Re-run create into the now-non-empty folder → typed **"Folder isn't empty"** message. If any step fails it's a D.1.3 regression; don't merge until fixed. (The automated gauntlet is green, so a smoke failure would point at a real WebView/IPC/CSP/runtime issue the unit tests can't reach — exactly what the deferred L4 e2e #161 would catch automatically.)
 
 ## (2) What's next — D.1.4 (vault edit: add / edit records, the `save_block` write path)
 
@@ -108,7 +108,7 @@ cargo fmt --all -- --check
 uv run core/tests/python/conformance.py
 uv run core/tests/python/spec_test_name_freshness.py
 cd desktop && pnpm install && pnpm test && pnpm typecheck && pnpm svelte-check && pnpm lint && cd ..
-# Expect: Vitest 270 passing
+# Expect: Vitest 272 passing
 
 # Author the D.1.4 plan (none exists yet):
 #   superpowers:brainstorming  → scope the add/edit-record (save_block) slice
@@ -134,7 +134,7 @@ git worktree prune && git worktree list
 ## Closing inventory
 
 - **Branch on close:** `main` @ `2a35a04`. `feature/d13-create` carries the spec + plan + 6 task commits + 4 review-fix commits + the ship commit (this handoff + symlink). Squash-merge collapses to one commit on `main`.
-- **Automated gauntlet:** Rust **1081 / 0 / 10**; clippy clean; fmt clean; conformance PASS; spec-freshness PASS; Vitest **270 / 0**; typecheck clean; svelte-check 0 errors / 2 intentional warnings; lint clean.
+- **Automated gauntlet:** Rust **1081 / 0 / 10**; clippy clean; fmt clean; conformance PASS; spec-freshness PASS; Vitest **272 / 0**; typecheck clean; svelte-check 0 errors / 2 intentional warnings; lint clean.
 - **Final whole-branch review:** Ready to merge; secret-leak verdict CLEAN; capabilities/registration PASS (no new capability needed; both commands registered).
 - **Manual §15 GUI smoke + L4 e2e:** NOT performed (headless). Manual smoke is the user's pre-merge gate (§(3)); L4 e2e deferred (#161).
 - **README.md / ROADMAP.md:** D.1.3 marked ✅; D.1.4 next.
