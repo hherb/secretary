@@ -27,7 +27,9 @@ import {
   setSettings,
   lock,
   notifyActivity,
-  readBlock
+  readBlock,
+  createVault,
+  probeCreateTarget
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -158,6 +160,26 @@ describe('ipc wrappers — error path', () => {
       original
     );
     errorSpy.mockRestore();
+  });
+});
+
+describe('ipc wrappers — createVault + probeCreateTarget', () => {
+  it('createVault forwards camelCase args and returns the DTO', async () => {
+    invokeMock.mockResolvedValueOnce({ mnemonic: 'word '.repeat(24).trim() });
+    const dto = await createVault('/tmp/v', 'Me', 'pw');
+    expect(invokeMock).toHaveBeenCalledWith('create_vault', {
+      folderPath: '/tmp/v',
+      displayName: 'Me',
+      password: 'pw'
+    });
+    expect(dto.mnemonic.split(' ').length).toBe(24);
+  });
+
+  it('probeCreateTarget returns exists + isEmpty', async () => {
+    invokeMock.mockResolvedValueOnce({ exists: true, isEmpty: true });
+    const probe = await probeCreateTarget('/tmp/v');
+    expect(invokeMock).toHaveBeenCalledWith('probe_create_target', { folderPath: '/tmp/v' });
+    expect(probe).toEqual({ exists: true, isEmpty: true });
   });
 });
 

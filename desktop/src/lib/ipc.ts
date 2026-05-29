@@ -61,6 +61,15 @@ export interface RevealedFieldDto {
   value: string;
 }
 
+export interface CreateVaultDto {
+  mnemonic: string;
+}
+
+export interface CreateTargetProbeDto {
+  exists: boolean;
+  isEmpty: boolean;
+}
+
 export function isAppError(err: unknown): err is AppError {
   if (typeof err !== 'object' || err === null || !('code' in err)) {
     return false;
@@ -85,6 +94,18 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     console.error(`IPC ${cmd} returned non-AppError rejection`, err);
     throw { code: 'internal' } satisfies AppError;
   }
+}
+
+export async function createVault(
+  folderPath: string,
+  displayName: string,
+  password: string
+): Promise<CreateVaultDto> {
+  return call<CreateVaultDto>('create_vault', { folderPath, displayName, password });
+}
+
+export async function probeCreateTarget(folderPath: string): Promise<CreateTargetProbeDto> {
+  return call<CreateTargetProbeDto>('probe_create_target', { folderPath });
 }
 
 export async function unlockWithPassword(
