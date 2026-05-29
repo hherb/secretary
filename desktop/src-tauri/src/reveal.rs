@@ -14,8 +14,6 @@ use crate::dtos::{BlockDetailDto, FieldMetaDto, RecordDto};
 /// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`],
 /// **skipping tombstoned records** (trash/restore is D.1.5). Carries only
 /// plaintext metadata — never calls `expose_text`/`expose_bytes`.
-// wired in Task 2 (read_block/reveal_field)
-#[allow(dead_code)]
 pub fn project_block_detail(block_uuid_hex: String, output: &BlockReadOutput) -> BlockDetailDto {
     let mut records = Vec::with_capacity(output.record_count());
     for i in 0..output.record_count() {
@@ -34,8 +32,6 @@ pub fn project_block_detail(block_uuid_hex: String, output: &BlockReadOutput) ->
     }
 }
 
-// wired in Task 2 (read_block/reveal_field)
-#[allow(dead_code)]
 fn project_record(record: &Record) -> RecordDto {
     let field_count = record.field_count();
     let mut fields = Vec::with_capacity(field_count);
@@ -58,8 +54,6 @@ fn project_record(record: &Record) -> RecordDto {
     }
 }
 
-// wired in Task 2 (read_block/reveal_field)
-#[allow(dead_code)]
 fn project_field_meta(handle: &FieldHandle) -> FieldMetaDto {
     FieldMetaDto {
         name: handle.name(),
@@ -72,7 +66,7 @@ fn project_field_meta(handle: &FieldHandle) -> FieldMetaDto {
 /// Locate a record in the output by its hex UUID. Returns `None` if no
 /// record matches. Linear scan — record counts per block are small and the
 /// reveal path is human-paced.
-// wired in Task 2 (read_block/reveal_field)
+// wired in Task 3 (reveal_field)
 #[allow(dead_code)]
 pub fn locate_record(output: &BlockReadOutput, record_uuid_hex: &str) -> Option<Record> {
     for i in 0..output.record_count() {

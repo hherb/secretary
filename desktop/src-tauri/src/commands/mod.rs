@@ -19,6 +19,7 @@
 //! testable functions over runtime mocking; spec §5 still pins the wire
 //! format via the DTO serde tests in [`crate::dtos`].
 
+pub mod browse;
 pub mod lock;
 pub mod settings;
 pub mod unlock;

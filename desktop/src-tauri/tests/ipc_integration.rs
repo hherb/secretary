@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{lock, settings, unlock, vault};
+use secretary_desktop::commands::{browse, lock, settings, unlock, vault};
 use secretary_desktop::dtos::SettingsInput;
 use secretary_desktop::errors::AppError;
 use secretary_desktop::session::VaultSession;
@@ -38,6 +38,9 @@ use tempfile::TempDir;
 // ============================================================================
 
 const GOLDEN_VAULT_PASSWORD: &str = "correct horse battery staple";
+
+const GOLDEN_BLOCK_UUID_HEX: &str = "112233445566778899aabbccddeeff00";
+const GOLDEN_RECORD_UUID_HEX: &str = "33445566778899aabbccddeeff001122";
 
 /// Auto-lock value used in the write-path tests. Picked as a non-default
 /// in-range value so a "fell back to default" regression is distinguishable
@@ -446,4 +449,55 @@ fn notify_activity_when_unlocked_advances_tracker() {
     lock::notify_activity_impl(&state).expect("must succeed");
     let t1 = state.lock().expect("mutex").last_activity_ms();
     assert!(t1 > t0, "tracker must advance: t0={t0}, t1={t1}");
+}
+
+// ============================================================================
+// read_block
+// ============================================================================
+
+#[test]
+fn read_block_projects_records_and_fields_without_secrets() {
+    let (state, _device_dir) = unlocked_state();
+    let dto = browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX).expect("read_block ok");
+
+    assert_eq!(dto.block_uuid_hex, GOLDEN_BLOCK_UUID_HEX);
+    assert_eq!(dto.block_name, "Personal logins");
+    assert_eq!(dto.records.len(), 1);
+
+    let rec = &dto.records[0];
+    assert_eq!(rec.record_uuid_hex, GOLDEN_RECORD_UUID_HEX);
+    assert_eq!(rec.record_type, "login");
+    assert_eq!(rec.tags, vec!["work".to_string()]);
+    assert_eq!(rec.field_count, 2);
+
+    let names: Vec<&str> = rec.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"username"));
+    assert!(names.contains(&"password"));
+    assert!(rec.fields.iter().all(|f| f.is_text && !f.is_bytes));
+
+    let json = serde_json::to_string(&dto).expect("serialize");
+    assert!(
+        !json.contains("hunter2"),
+        "plaintext password must not be in read_block DTO"
+    );
+    assert!(
+        !json.contains("owner@example.com"),
+        "plaintext username must not be in DTO"
+    );
+}
+
+#[test]
+fn read_block_unknown_uuid_is_block_not_found() {
+    let (state, _device_dir) = unlocked_state();
+    let err = browse::read_block_impl(&state, "ffffffffffffffffffffffffffffffff")
+        .expect_err("unknown block must error");
+    assert!(matches!(err, AppError::BlockNotFound { .. }));
+}
+
+#[test]
+fn read_block_when_locked_is_not_unlocked() {
+    let (state, _device_dir) = fresh_state();
+    let err =
+        browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX).expect_err("locked must error");
+    assert!(matches!(err, AppError::NotUnlocked));
 }
