@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-29-d11-shipped.md
+docs/handoffs/2026-05-29-d12-browse-shipped.md

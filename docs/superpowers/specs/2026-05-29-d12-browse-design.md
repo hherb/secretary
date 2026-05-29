@@ -197,7 +197,7 @@ Same commands as D.1.1's close (`cargo test --release --workspace`, clippy `-D w
 
 - **Record list:** each row = `record_type` (bold) · tag chips · "N fields · modified `DATE`" · chevron. Empty block → "No records." Tombstoned records absent.
 - **Field viewer:** each row = field `name` · masked value (`••••••••`) · reveal (👁) / re-mask (🙈) toggle · copy (⧉). Revealed text shows inline; revealed bytes show base64 with a "binary" tag. A revealed row shows a subtle "auto-hides" affordance.
-- **Breadcrumb/back:** every nested page shows where you are (`← Banking` / `← login`) and pops one level. `Esc` also pops a level.
+- **Breadcrumb/back:** every nested page shows where you are (`← Banking` / `← login`) and pops one level. (`Esc`-to-pop was specced here but deferred from the D.1.2 ship — the visible back buttons cover navigation; the keyboard affordance needs focus/dialog-interaction care and is tracked in [#164](https://github.com/hherb/secretary/issues/164).)
 - **Toasts:** reuse the D.1.1 `Toast` surface for "Copied" (and copy/clear failures, if any).
 - **Styling:** new classes (`.record-list`, `.record-row`, `.field-viewer`, `.field-row`) in `theme.css` (Vite 6 `preprocessCSS` workaround, #153), reusing existing tokens; dark mode inherits.
 
