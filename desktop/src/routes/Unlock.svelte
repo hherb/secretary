@@ -8,10 +8,18 @@
 
   let folderPath = $state('');
 
-  // Pre-fill from a just-created vault (set by finishCreateWizard).
+  // Pre-fill from a just-created vault (set by finishCreateWizard), then
+  // consume the store so the banner is strictly one-shot: Unlock remounts on
+  // every appRoute switch and on every lock, so without clearing, the
+  // "Vault created" banner would replay on a later unrelated unlock. The
+  // svelte-check state_referenced_locally note on `created`/showCreatedBanner
+  // is expected — the read is intentionally a one-time mount-time capture.
   const created = get(createdVaultPath);
-  if (created.length > 0 && folderPath.length === 0) {
-    folderPath = created;
+  if (created.length > 0) {
+    if (folderPath.length === 0) {
+      folderPath = created;
+    }
+    createdVaultPath.set('');
   }
   const showCreatedBanner = $derived(created.length > 0);
 

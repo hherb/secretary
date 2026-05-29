@@ -25,6 +25,7 @@ export function openCreateWizard(seedPath = ''): void {
 /** Abandon the wizard; back to Unlock. */
 export function cancelCreateWizard(): void {
   createSeedPath.set('');
+  createdVaultPath.set('');
   appRoute.set('unlock');
 }
 

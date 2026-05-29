@@ -45,4 +45,12 @@ describe('route store', () => {
     expect(get(createdVaultPath)).toBe('/Users/h/new-vault');
     expect(get(createSeedPath)).toBe('');
   });
+
+  it('cancelCreateWizard also clears any pending createdVaultPath', () => {
+    finishCreateWizard('/Users/h/new-vault');
+    expect(get(createdVaultPath)).toBe('/Users/h/new-vault');
+    openCreateWizard('/x');
+    cancelCreateWizard();
+    expect(get(createdVaultPath)).toBe('');
+  });
 });

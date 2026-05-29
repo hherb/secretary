@@ -26,4 +26,11 @@ describe('Unlock <-> create wiring', () => {
     await fireEvent.click(getByRole('button', { name: /create a vault here/i }));
     expect(get(appRoute)).toBe('create');
   });
+
+  it('consumes createdVaultPath so the banner is one-shot', () => {
+    createdVaultPath.set('/Users/h/new-vault');
+    const { getByText } = render(Unlock);
+    expect(getByText(/vault created/i)).toBeTruthy();   // shows this mount
+    expect(get(createdVaultPath)).toBe('');             // store consumed
+  });
 });
