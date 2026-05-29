@@ -109,6 +109,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # is appropriate here.
 tauri-plugin-dialog = "2"
 
+# D.1.2 clipboard write for the "copy secret" affordance. Write-only — no
+# clipboard read permission (reading the clipboard is a sensitive capability
+# for a secrets manager; we grant only `clipboard-manager:allow-write-text`
+# in capabilities/default.json). Caret range is appropriate here for the
+# same reason as `tauri-plugin-dialog`: no secret bytes cross this seam, so
+# no security-critical guarantee rides on a specific 2.x patch version.
+tauri-plugin-clipboard-manager = "2"
+
 [lints]
 workspace = true
 

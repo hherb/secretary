@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { sessionState, autoLockNotice, vaultLocked } from './lib/stores';
+  import { resetBrowse } from './lib/browse';
   import { startActivityTracking } from './lib/auto_lock';
   import Unlock from './routes/Unlock.svelte';
   import Vault from './routes/Vault.svelte';
@@ -32,6 +33,14 @@
 
     listen<VaultLockedPayload>('vault-locked', (event) => {
       const notice = REASON_TO_NOTICE[event.payload.reason];
+      // Reset browse nav on lock. The locking transition already unmounts
+      // the whole Vault subtree (sessionState → 'locked' swaps Vault for
+      // Unlock), so FieldViewer/FieldRow tear down and cancel their
+      // reveal/clipboard timers regardless. This reset is the cross-session
+      // hygiene step: it guarantees the NEXT unlock re-enters at the blocks
+      // level instead of a stale drill-down (records/fields) left over from
+      // before the lock.
+      resetBrowse();
       vaultLocked(notice);
     }).then((fn) => {
       if (unmounted) {
