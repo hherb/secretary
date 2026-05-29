@@ -172,7 +172,7 @@ describe('ipc wrappers — createVault + probeCreateTarget', () => {
       displayName: 'Me',
       password: 'pw'
     });
-    expect(dto.mnemonic.split(' ').length).toBe(24);
+    expect(dto.mnemonic).toBe('word '.repeat(24).trim());
   });
 
   it('probeCreateTarget returns exists + isEmpty', async () => {

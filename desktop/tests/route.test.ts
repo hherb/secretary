@@ -25,6 +25,12 @@ describe('route store', () => {
     expect(get(createSeedPath)).toBe('/Users/h/Docs');
   });
 
+  it('openCreateWizard with no arg routes to create with an empty seed', () => {
+    openCreateWizard();
+    expect(get(appRoute)).toBe('create');
+    expect(get(createSeedPath)).toBe('');
+  });
+
   it('cancelCreateWizard returns to unlock and clears the seed', () => {
     openCreateWizard('/x');
     cancelCreateWizard();
