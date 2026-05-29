@@ -10,18 +10,18 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ---
 
-## Where we are: 2026-05-26
+## Where we are: 2026-05-29
 
 - **Sub-project A**: feature-complete for v1. Internal hardening track (fuzzing, threat-model refresh, side-channel audit, memory-hygiene audit) ✅ closed. Only the external paid review track remains.
 - **Sub-project B**: complete through B.6 v2. Bridge crate + PyO3 + uniffi (Swift, Kotlin) expose unlock / open / read / save / share / trash / restore. Cross-language conformance KAT (22 vectors, lifecycle-complete) replays Rust ↔ Swift ↔ Kotlin parity.
 - **Sub-project C**: C.1 phase 1 (sync detection), C.1.1a (conflict-copy ingestion), C.1.1b (merge layer), C.2 (headless `secretary-sync` CLI) ✅ complete. The CLI now runs end-to-end against a real vault folder (`once` + `run` subcommands; `notify`-driven daemon loop with trailing-edge debounce, ready-window gate, host-local lockfile, signal-driven shutdown; two-instance convergence + cross-platform `notify` quirk pinned in CI). C.3 (mobile adapters) + C.4 (cross-device convergence conformance) ⏳ next.
-- **Sub-project D**: not started.
+- **Sub-project D**: D.1.1 Tauri walking skeleton ✅ shipped (2026-05-29) — unlock-an-existing-vault flow + block-list scaffold + vault-stored auto-lock timeout + auto-lock timer + lock button, as one Tauri 2 codebase (Rust backend + Svelte/TypeScript frontend). Landed across 12 task PRs (#130 spec/ADR → #157 app orchestration); the L4 end-to-end test is manual-only (not in CI) and deferred ([#161](https://github.com/hherb/secretary/issues/161)). D.1.2 (browse / reveal secrets) ⏳ next.
 
 ```
 [================================================================] Sub-project A — Rust core (feature-complete; A.7 internal track closed; external review pending)
 [================================================================] Sub-project B — FFI bindings (B.1 → B.6 v2 ✅)
 [==================================                              ] Sub-project C — Sync orchestration (C.1 + C.1.1a/b ✅; C.2 ✅)
-[                                                                ] Sub-project D — Platform UIs
+[===                                                             ] Sub-project D — Platform UIs (D.1.1 walking skeleton ✅; D.1.2+ ⏳)
 ```
 
 Test totals as of B.6 v2 / C.1.1b: 800 tests pass + 10 ignored under `cargo test --release --workspace`; 68 pytest; 38 Swift / 39 Kotlin smoke asserts; 22/22 cross-language conformance vectors PASS on both Swift and Kotlin. Clippy clean with `-D warnings --tests`. `#![forbid(unsafe_code)]` workspace-wide except a localized `deny` carve-out in the two binding-flavor crates.
@@ -122,13 +122,13 @@ Sub-project C is where shippable software starts to exist. The `secretary sync` 
 
 ---
 
-## Sub-project D — Platform UIs ⏳ (planned)
+## Sub-project D — Platform UIs 🚧 (D.1.1 ✅; D.1.2+ planned)
 
 The UIs are built as one Tauri 2 codebase (Rust backend + Svelte/TypeScript frontend) targeting all platforms from a single source tree. See [ADR-0007](docs/adr/0007-d-row-tauri.md) for the pivot from the original "Python + NiceGUI + SwiftUI + Compose" plan (ADR-0001) — the short version is that Tauri closes a localhost-HTTP attack surface, keeps secrets in Rust's deterministic-zeroize address space, and collapses three UI codebases into one. The Sub-project B Python and uniffi-Swift/Kotlin bindings remain in the project as paths for third-party consumers (scripts, Apple Shortcuts, Android AutoFill Service) but are no longer the UI path.
 
 Phase plan:
 
-- **D.1 — Tauri walking skeleton (macOS + Linux desktop)**: unlock-an-existing-vault flow + block-list scaffold + auto-lock with vault-stored timeout settings + lock button. First end-to-end Tauri client proving the architecture. Decomposed as D.1.1 (this slice — walking skeleton) → D.1.2 (browse / reveal secrets) → D.1.3 (vault create wizard) → D.1.4 (record edit / save) → D.1.5 (share / trash / restore).
+- **D.1 — Tauri walking skeleton (macOS + Linux desktop)**: unlock-an-existing-vault flow + block-list scaffold + auto-lock with vault-stored timeout settings + lock button. First end-to-end Tauri client proving the architecture. Decomposed as **D.1.1 ✅ shipped 2026-05-29 (walking skeleton)** → D.1.2 (browse / reveal secrets) ⏳ → D.1.3 (vault create wizard) → D.1.4 (record edit / save) → D.1.5 (share / trash / restore). D.1.1 spec + plan + ADR 0007 in [`docs/superpowers/plans/2026-05-27-d11-tauri-walking-skeleton.md`](docs/superpowers/plans/2026-05-27-d11-tauri-walking-skeleton.md); the L4 end-to-end test is manual-only and deferred ([#161](https://github.com/hherb/secretary/issues/161)).
 - **D.2 — Linux + Windows desktop maturation**: CI matrix, distribution packaging (`.deb` / `.AppImage` / `.rpm` / `.msi`), code signing, notarization. Windows is not a primary target but the Tauri codebase supports it; contributors are welcome.
 - **D.3 — Tauri 2 mobile (iOS + Android)**: same Rust + Svelte/TS codebase via Tauri 2's mobile support, plus per-platform shims (App Store / Play Store packaging, mobile-specific UX, Apple Keychain interop, Android AutoFill Service).
 - **D.4 — Browser autofill extensions**: future, after the platform clients stabilise. Unchanged from original plan.
