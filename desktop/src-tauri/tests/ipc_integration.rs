@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{browse, lock, settings, unlock, vault};
+use secretary_desktop::commands::{browse, create, lock, settings, unlock, vault};
 use secretary_desktop::dtos::SettingsInput;
 use secretary_desktop::errors::AppError;
 use secretary_desktop::session::VaultSession;
@@ -561,4 +561,136 @@ fn reveal_field_unknown_field_is_field_not_found() {
     )
     .expect_err("unknown field errors");
     assert!(matches!(err, AppError::FieldNotFound { .. }));
+}
+
+// ============================================================================
+// D.1.3 create-vault path. Hermetic: every vault is created in a fresh
+// TempDir; the password is generated at runtime (no hardcoded crypto value —
+// CodeQL). A created vault is asserted by RE-OPENING it with the same
+// freshly-chosen password (round-trip), never against the golden fixture.
+// ============================================================================
+
+mod create_path {
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+
+    const CREATE_DISPLAY_NAME: &str = "D.1.3 test identity";
+
+    /// A runtime-random ASCII password. Avoids a hardcoded crypto literal
+    /// while staying valid UTF-8 for the `Password` boundary.
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        // Map to printable hex so the value is a valid UTF-8 password.
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn create_writes_the_four_canonical_files() {
+        let dir = tempfile::tempdir().expect("vault tempdir");
+        let path = dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        let dto = create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault must succeed on an empty tempdir");
+
+        assert_eq!(dto.mnemonic.split_whitespace().count(), 24);
+
+        let p = dir.path();
+        assert!(p.join("vault.toml").is_file(), "vault.toml");
+        assert!(
+            p.join("identity.bundle.enc").is_file(),
+            "identity.bundle.enc"
+        );
+        assert!(p.join("manifest.cbor.enc").is_file(), "manifest.cbor.enc");
+        assert!(p.join("contacts").is_dir(), "contacts/ dir");
+    }
+
+    #[test]
+    fn created_vault_reopens_with_the_same_password() {
+        let dir = tempfile::tempdir().expect("vault tempdir");
+        let path = dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create");
+
+        let (state, _device_dir) = fresh_state();
+        let manifest = unlock::unlock_with_password_impl(&state, path, &pw)
+            .expect("freshly-created vault must open with the same password");
+        assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
+    }
+
+    #[test]
+    fn create_into_nonempty_folder_yields_vault_folder_not_empty() {
+        let dir = tempfile::tempdir().expect("vault tempdir");
+        std::fs::write(dir.path().join("stray.txt"), b"hi").expect("stray file");
+        let path = dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        let err = create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect_err("non-empty folder must be rejected");
+        match err {
+            AppError::VaultFolderNotEmpty { path: p } => assert_eq!(p, path),
+            other => panic!("expected VaultFolderNotEmpty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_makes_the_target_dir_when_missing() {
+        let dir = tempfile::tempdir().expect("parent tempdir");
+        let target = dir.path().join("my-vault");
+        let path = target.to_str().expect("utf8 path");
+        let pw = random_password();
+
+        create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create must mkdir -p the missing target");
+        assert!(target.join("vault.toml").is_file());
+    }
+
+    #[test]
+    fn probe_reports_empty_existing_and_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty = dir.path().to_str().expect("utf8");
+        let probe = create::probe_create_target_impl(empty);
+        assert!(
+            probe.exists && probe.is_empty,
+            "empty dir: exists + is_empty"
+        );
+
+        std::fs::write(dir.path().join("x"), b"x").expect("write");
+        let probe = create::probe_create_target_impl(empty);
+        assert!(probe.exists && !probe.is_empty, "non-empty dir");
+
+        let missing = dir.path().join("nope");
+        let probe = create::probe_create_target_impl(missing.to_str().expect("utf8"));
+        assert!(!probe.exists && !probe.is_empty, "missing path");
+    }
 }

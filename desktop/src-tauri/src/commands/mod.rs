@@ -20,6 +20,7 @@
 //! format via the DTO serde tests in [`crate::dtos`].
 
 pub mod browse;
+pub mod create;
 pub mod lock;
 pub mod settings;
 pub mod unlock;
