@@ -8,6 +8,7 @@
 //! deferred to B.4d's `share_block`.
 
 use secretary_core::crypto::sig::MlDsa65Public;
+use secretary_core::identity::card::ContactCard;
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::vault::block;
 use secretary_core::vault::record::Record as CoreRecord;
@@ -152,8 +153,37 @@ pub(crate) fn decrypt_block_plaintext(
         }
     };
 
+    decrypt_block_file_bytes(identity, &owner_card, &bytes)
+}
+
+/// Decode + hybrid-verify + AEAD-decrypt one block file's raw bytes as
+/// the vault owner (v1 single-author: sender = reader = owner), wiping
+/// the reader's secret keys before returning.
+///
+/// This is the shared decrypt tail factored out of
+/// [`decrypt_block_plaintext`]: it covers everything FROM
+/// `block::decode_block_file` THROUGH the explicit
+/// `drop(reader_x_sk); drop(reader_pq_sk);`. Both
+/// [`decrypt_block_plaintext`] (live blocks) and
+/// [`crate::trash::list_trashed_blocks`] (trashed files) call it after
+/// they resolve the on-disk path and read the bytes. The secret-key
+/// wipe timing is identical to the pre-extraction inline code.
+///
+/// # Errors
+///
+/// [`FfiVaultError::CorruptVault`] — malformed block file, owner-card
+/// canonicalization / pk-bundle / ML-DSA-65 parse failure, closed
+/// identity handle, ML-KEM-768 secret-key parse failure, or any
+/// [`secretary_core::vault::block::BlockError`] from the hybrid
+/// verify-then-decrypt (signature failure, decap failure, AAD/tag
+/// failure, `BlockUuidMismatch`).
+pub(crate) fn decrypt_block_file_bytes(
+    identity: &UnlockedIdentity,
+    owner_card: &ContactCard,
+    bytes: &[u8],
+) -> Result<secretary_core::vault::BlockPlaintext, FfiVaultError> {
     // Decode the BlockFile envelope.
-    let block_file = block::decode_block_file(&bytes).map_err(|e| FfiVaultError::CorruptVault {
+    let block_file = block::decode_block_file(bytes).map_err(|e| FfiVaultError::CorruptVault {
         detail: format!("malformed block file: {e}"),
     })?;
 
@@ -233,7 +263,7 @@ fn handle_wiped() -> FfiVaultError {
 /// Format a 16-byte UUID in the standard 8-4-4-4-12 hyphenated form
 /// (lowercase hex). Matches the on-disk filename convention used by
 /// `core::vault::io` for block files.
-fn uuid_hyphenated(uuid: &[u8; 16]) -> String {
+pub(crate) fn uuid_hyphenated(uuid: &[u8; 16]) -> String {
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         uuid[0], uuid[1], uuid[2], uuid[3],
