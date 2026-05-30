@@ -1,7 +1,7 @@
 # NEXT_SESSION.md — D.1.4 ✅ vault edit (add/edit records, lossless write path)
 
 **Session date:** 2026-05-30 (D.1.4 — the fourth Sub-project D feature slice, built on D.1.1–D.1.3). Executed all 8 implementation tasks via subagent-driven development (one implementer per task + spec/quality review after each + final whole-branch review).
-**Status:** D.1.4 ✅ complete on branch `feature/d14-edit`; **PR pending** (see §(4)). All automated gates green. The one human gate left is the **manual GUI smoke** (§(3)) — it cannot run headless.
+**Status:** D.1.4 ✅ complete on branch `feature/d14-edit`; **PR open** against `main` (final whole-branch review: Ready to merge / security CLEAN). All automated gates green. The one human gate left is the **manual GUI smoke** (§(3)) — it cannot run headless; it is the pre-merge gate.
 
 ## (1) What we shipped this session
 
@@ -157,8 +157,8 @@ git worktree prune && git worktree list
 
 - **Branch on close:** `main` @ `d2bf764`. `feature/d14-edit` carries the spec + plan + 14 task commits + 5 review-fix commits + the ship commit (this handoff + symlink + ConformanceErrors fix + README/ROADMAP). Squash-merge collapses to one commit on `main`.
 - **Automated gauntlet:** Rust **1098 / 0 / 10**; clippy clean; fmt clean; conformance PASS; spec-freshness PASS; Swift 22/22 PASS; Kotlin 22/22 PASS; Vitest **302 / 0**; typecheck clean; svelte-check 0 errors / 3 intentional warnings; lint clean.
-- **Final whole-branch review:** pending (controller).
-- **PR:** to be opened after final review.
+- **Final whole-branch review:** ✅ **Ready to merge** — zero Critical/Important/Minor issues. Security verdict **CLEAN** on all four invariants (`unknown` preservation at block/record/field; whole-block plaintext confined to the bridge; `RecordInputDto`/`RevealedFieldWithNameDto` Debug redaction; `decrypt_block_plaintext` extraction preserves the secret-key wipe timing). Frozen `core/src/` untouched (only `core/tests/` for the KAT regen).
+- **PR:** opened against `main` (`feature/d14-edit`). Merge is gated on the user's manual GUI smoke (§(3)).
 - **Manual §15 GUI smoke + L4 e2e:** NOT performed (headless). Manual smoke is the user's pre-merge gate (§(3)); L4 e2e deferred (#161).
 - **README.md / ROADMAP.md:** D.1.4 marked ✅; D.1.5 next.
 - **CLAUDE.md / `docs/adr/`:** unchanged (no format/architecture change).
