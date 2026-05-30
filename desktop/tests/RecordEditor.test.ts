@@ -23,4 +23,16 @@ describe('RecordEditor (add mode)', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('save_record', expect.objectContaining({ blockUuidHex: 'ab' })));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
   });
+
+  it('clears the draft and calls onCancel when Cancel is clicked', async () => {
+    const onCancel = vi.fn();
+    const { getByLabelText, getByRole } = render(RecordEditor, { props: { block: BLOCK, record: null, onSaved: vi.fn(), onCancel } });
+    // Type a secret-bearing value into the draft, then cancel.
+    await fireEvent.input(getByLabelText(/field value/i), { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /cancel/i }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    // The field value input is reset to empty (draft cleared), so the
+    // plaintext is no longer held in the editor's reactive state.
+    expect((getByLabelText(/field value/i) as HTMLInputElement).value).toBe('');
+  });
 });

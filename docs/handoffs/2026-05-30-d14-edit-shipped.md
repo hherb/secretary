@@ -36,6 +36,7 @@ All commits are on `feature/d14-edit` (branched from `main` @ `d2bf764`):
 | `5790bb2` | **Task 7** — `RecordEditor`/`NewBlock`/`FieldRowEditor`/`TagsEditor` editor components. |
 | `ad17ee2` | **Task 7 review fix** — document `RecordEditor` mount-read warning + editor CSS rules + `NewBlock` trim. |
 | `2769c80` | **Task 8** — editor routing in `Vault.svelte` + entry buttons + `refreshManifest` + `VaultEdit.test.ts` + `ConformanceErrors.{swift,kt}` `RecordNotFound` fixes + README/ROADMAP D.1.4 ✅ + handoff baton + symlink retarget. |
+| _(post-PR review)_ | **`/review` fixups** — `dto_to_record_content` trims field names before empty/dedup/storage (dedup + stored CBOR key now agree; the validation point #167's non-desktop callers will rely on) + 3 unit tests; `RecordEditor` Cancel symmetrically clears the secret draft (mirrors the post-save clear) + test; `create_block` doc clarified that UUID uniqueness rests on the CSPRNG, not an enforced check. No behaviour change to the lossless write path. |
 
 **Process note:** one worktree (`.worktrees/d14-edit`, branch `feature/d14-edit`), one reviewed commit per task + inline review-fix commits. Every finding fixed before proceeding.
 

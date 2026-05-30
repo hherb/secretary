@@ -65,10 +65,19 @@
       submitting = false;
     }
   }
+
+  // Cancel symmetrically clears the secret-bearing draft before navigating
+  // away — the unmount + GC would eventually drop it, but dropping the
+  // references now mirrors the post-save clear (and the D.1.3 CredentialsStep
+  // discipline) so a discarded draft's plaintext does not linger reachable.
+  function cancel(): void {
+    draft = emptyDraft();
+    onCancel();
+  }
 </script>
 
 <section class="editor">
-  <button type="button" class="editor__back" onclick={onCancel}>← Cancel</button>
+  <button type="button" class="editor__back" onclick={cancel}>← Cancel</button>
   <h2 class="editor__title">{record === null ? 'Add record' : 'Edit record'}</h2>
 
   {#if errMsg}

@@ -32,8 +32,13 @@ const BLOCK_VERSION_V1: u32 = 1;
 /// v1 record-schema version (matches `BlockInput::into_block_plaintext`).
 const SCHEMA_VERSION_V1: u32 = 1;
 
-/// Create a brand-new (empty) block. Insert path: a fresh `block_uuid`
-/// that does not yet appear in the manifest.
+/// Create a brand-new (empty) block. Insert path: the caller is expected to
+/// pass a fresh `block_uuid` (a 128-bit random UUID minted by the command
+/// layer) not already present in the manifest. This is NOT enforced here —
+/// `core::save_block` is insert-or-update by `block_uuid`, so a (astronomically
+/// improbable, 2⁻¹²⁸) collision would update the colliding block in place
+/// rather than erroring. The caller owns UUID generation; uniqueness rests on
+/// the CSPRNG, exactly as for record UUIDs.
 ///
 /// # Errors
 ///

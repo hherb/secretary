@@ -42,12 +42,20 @@ fn new_uuid_16() -> [u8; 16] {
 /// Validate field names (required + unique) and decode `RecordInputDto`'s
 /// `FieldValueDto`s into the bridge's zeroize-typed `FieldInput`s. Base64
 /// decode failure / empty / duplicate name → typed `InvalidFieldValue`.
+///
+/// Field names are trimmed before the empty-check, the uniqueness check, AND
+/// storage — matching the frontend's `draftToRecordInputDto`. Doing all three
+/// on the trimmed name keeps this command layer self-consistent (the dedup set
+/// and the stored CBOR key agree) and is the validation point a future
+/// non-desktop caller of the bridge primitives (uniffi/pyo3, #167) would rely
+/// on, since the bridge primitives themselves do no name validation.
 fn dto_to_record_content(dto: RecordInputDto) -> Result<RecordContent, AppError> {
     let mut seen = std::collections::HashSet::new();
     let mut fields = Vec::with_capacity(dto.fields.len());
     for f in dto.fields {
-        if f.name.trim().is_empty() || !seen.insert(f.name.clone()) {
-            return Err(AppError::InvalidFieldValue { field_name: f.name });
+        let name = f.name.trim().to_string();
+        if name.is_empty() || !seen.insert(name.clone()) {
+            return Err(AppError::InvalidFieldValue { field_name: name });
         }
         let value = match f.value {
             FieldValueDto::Text { text } => FieldInputValue::Text(SecretString::from(text)),
@@ -55,15 +63,12 @@ fn dto_to_record_content(dto: RecordInputDto) -> Result<RecordContent, AppError>
                 let raw = base64::engine::general_purpose::STANDARD
                     .decode(base64.as_bytes())
                     .map_err(|_| AppError::InvalidFieldValue {
-                        field_name: f.name.clone(),
+                        field_name: name.clone(),
                     })?;
                 FieldInputValue::Bytes(SecretBytes::from(raw.as_slice()))
             }
         };
-        fields.push(FieldInput {
-            name: f.name,
-            value,
-        });
+        fields.push(FieldInput { name, value });
     }
     Ok(RecordContent {
         record_type: dto.record_type,
@@ -285,4 +290,61 @@ pub fn reveal_record_impl(
         output.wipe();
         Ok(RecordRevealDto { fields })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dtos::FieldInputDto;
+
+    fn text_field(name: &str, text: &str) -> FieldInputDto {
+        FieldInputDto {
+            name: name.to_string(),
+            value: FieldValueDto::Text {
+                text: text.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn dto_to_record_content_trims_field_names_for_storage() {
+        let content = dto_to_record_content(RecordInputDto {
+            record_type: "login".into(),
+            tags: vec![],
+            fields: vec![text_field("  user  ", "alice")],
+        })
+        .expect("valid draft");
+        assert_eq!(content.fields.len(), 1);
+        assert_eq!(content.fields[0].name, "user", "stored name is trimmed");
+    }
+
+    #[test]
+    fn dto_to_record_content_rejects_names_that_collide_after_trim() {
+        // "user" and " user " are distinct strings but the same field once
+        // trimmed — the dedup must catch them so they can't both reach core.
+        let err = dto_to_record_content(RecordInputDto {
+            record_type: String::new(),
+            tags: vec![],
+            fields: vec![text_field("user", "a"), text_field(" user ", "b")],
+        })
+        .expect_err("duplicate-after-trim must be rejected");
+        match err {
+            AppError::InvalidFieldValue { field_name } => assert_eq!(field_name, "user"),
+            other => panic!("expected InvalidFieldValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dto_to_record_content_rejects_whitespace_only_name() {
+        let err = dto_to_record_content(RecordInputDto {
+            record_type: String::new(),
+            tags: vec![],
+            fields: vec![text_field("   ", "v")],
+        })
+        .expect_err("whitespace-only name must be rejected");
+        match err {
+            AppError::InvalidFieldValue { field_name } => assert!(field_name.is_empty()),
+            other => panic!("expected InvalidFieldValue, got {other:?}"),
+        }
+    }
 }
