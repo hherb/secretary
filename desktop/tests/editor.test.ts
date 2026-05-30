@@ -60,6 +60,21 @@ describe('draftToRecordInputDto', () => {
       ]
     });
   });
+
+  it('preserves field values verbatim (does not trim) while trimming name/type/tags', () => {
+    // Whitespace inside a stored password or base64 blob is significant;
+    // trimming it would silently corrupt secrets. This test pins that invariant.
+    const d: RecordDraft = {
+      recordType: '  login  ',
+      tags: ['  work  ', '   '],   // blank-only tag should be filtered out
+      fields: [{ name: '  pw  ', kind: 'text', value: '  hunter2  ' }]
+    };
+    const dto = draftToRecordInputDto(d);
+    expect(dto.recordType).toBe('login');                                    // trimmed
+    expect(dto.tags).toEqual(['work']);                                      // trimmed + blank filtered
+    expect(dto.fields[0].name).toBe('pw');                                  // trimmed
+    expect(dto.fields[0].value).toEqual({ kind: 'text', text: '  hunter2  ' }); // value NOT trimmed
+  });
 });
 
 describe('recordToDraft', () => {
