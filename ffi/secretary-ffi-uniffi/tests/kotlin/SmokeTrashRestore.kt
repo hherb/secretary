@@ -35,6 +35,8 @@ fun runTrashRestoreAsserts(env: SmokeEnv) {
                         listOf(
                             RecordInput(
                                 B5_RECORD_UUID,
+                                "",
+                                emptyList(),
                                 listOf(FieldInput("title", FieldInputValue.Text("secret"))),
                             ),
                         ),

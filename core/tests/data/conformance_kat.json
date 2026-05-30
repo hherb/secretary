@@ -198,6 +198,8 @@
         "records": [
           {
             "record_uuid_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "record_type": "note",
+            "tags": [],
             "fields": [
               {
                 "name": "title",
@@ -217,7 +219,7 @@
             "records": [
               {
                 "record_uuid_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                "record_type": "",
+                "record_type": "note",
                 "tags": [],
                 "fields": [
                   {

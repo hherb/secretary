@@ -289,6 +289,8 @@ fn generate_conformance_kat() {
             block_name: "Notes".to_string(),
             records: vec![RecordInput {
                 record_uuid: [0xCDu8; 16],
+                record_type: "note".to_string(),
+                tags: Vec::new(),
                 fields: vec![FieldInput {
                     name: "title".to_string(),
                     value: FieldInputValue::Text(SecretString::from("wifi password")),

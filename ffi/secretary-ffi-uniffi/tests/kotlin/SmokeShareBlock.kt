@@ -30,6 +30,8 @@ fun runShareBlockAsserts(env: SmokeEnv) {
                         records = listOf(
                             RecordInput(
                                 SHARE_BLOCK_RECORD_UUID,
+                                "",
+                                emptyList(),
                                 listOf(FieldInput("k", FieldInputValue.Text("v"))),
                             ),
                         ),

@@ -21,6 +21,8 @@ func runSaveBlockAsserts(env: SmokeEnv) {
             records: [
                 RecordInput(
                     recordUuid: saveBlockNewRecordUuid,
+                    recordType: "",
+                    tags: [],
                     fields: [
                         FieldInput(name: "title", value: .text(text: "wifi password")),
                         FieldInput(
@@ -155,6 +157,8 @@ func runSaveBlockAsserts(env: SmokeEnv) {
                 records: [
                     RecordInput(
                         recordUuid: saveBlockNewRecordUuid,
+                        recordType: "",
+                        tags: [],
                         fields: [FieldInput(name: "k", value: .text(text: "v"))]
                     ),
                 ]

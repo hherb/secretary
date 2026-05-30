@@ -57,6 +57,10 @@ pub struct FieldInput {
 pub struct RecordInput {
     /// 16-byte record UUID (validated as length-16 by the namespace fn).
     pub record_uuid: Vec<u8>,
+    /// Open-ended record-type discriminator. Empty allowed. (#141)
+    pub record_type: String,
+    /// Cross-cutting tags. (#141)
+    pub tags: Vec<String>,
     /// Ordered list of fields.
     pub fields: Vec<FieldInput>,
 }

@@ -115,13 +115,11 @@ pub fn load_from_vault(
         ));
     };
 
-    // HACK(#141): the bridge's `RecordInput` has no `record_type` field —
-    // `save::input::RecordInput::into_core_record` hardcodes
-    // `record_type: String::new()`. So records this client wrote arrive back
-    // with `record.record_type() == ""`. Until issue #141 lands, treat empty
-    // as v1 so the round-trip succeeds; pass the original value through
-    // otherwise so a future v2 record from a newer client surfaces
-    // `SettingsUnknownVersion` correctly.
+    // #141 closed: RecordInput now carries record_type, so a record this
+    // client wrote reads back with its real type. An empty type still maps
+    // to v1 (records written before #141 landed); any other value flows to
+    // parse_settings_field, which surfaces SettingsUnknownVersion for a
+    // future v2 record.
     let stored_record_type = record.record_type();
     let effective_record_type = if stored_record_type.is_empty() {
         SETTINGS_RECORD_TYPE
@@ -159,17 +157,15 @@ pub fn save_to_vault(
         .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
-    let (_record_type, field_name, field_value_text) = serialize_settings(new_settings);
+    let (record_type, field_name, field_value_text) = serialize_settings(new_settings);
 
-    // NOTE(#141): see HACK in `load_from_vault` — `RecordInput` doesn't
-    // expose a `record_type` field, so the SETTINGS_RECORD_TYPE component
-    // of the tuple is discarded here. The matching workaround on load
-    // treats the empty `record_type` as v1.
     let block_input = BlockInput {
         block_uuid,
         block_name: SETTINGS_BLOCK_NAME.to_string(),
         records: vec![RecordInput {
             record_uuid,
+            record_type,
+            tags: Vec::new(),
             fields: vec![FieldInput {
                 name: field_name,
                 value: FieldInputValue::Text(SecretString::from(field_value_text)),

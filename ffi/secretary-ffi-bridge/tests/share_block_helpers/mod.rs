@@ -107,6 +107,8 @@ pub fn save_one_record_block(
         block_name: "shared".to_string(),
         records: vec![RecordInput {
             record_uuid,
+            record_type: String::new(),
+            tags: Vec::new(),
             fields: vec![FieldInput {
                 name: field_name.to_string(),
                 value: FieldInputValue::Text(SecretString::from(field_value)),

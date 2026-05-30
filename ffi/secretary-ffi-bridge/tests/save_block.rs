@@ -79,6 +79,8 @@ fn save_block_insert_round_trips_through_read_block() {
         block_name: "Notes".to_string(),
         records: vec![RecordInput {
             record_uuid: NEW_RECORD_UUID,
+            record_type: String::new(),
+            tags: Vec::new(),
             fields: vec![
                 FieldInput {
                     name: "title".to_string(),
@@ -182,6 +184,8 @@ fn save_block_persists_to_disk_visible_to_fresh_open() {
             block_name: "persisted".to_string(),
             records: vec![RecordInput {
                 record_uuid: NEW_RECORD_UUID,
+                record_type: String::new(),
+                tags: Vec::new(),
                 fields: vec![FieldInput {
                     name: "k".to_string(),
                     value: FieldInputValue::Text(SecretString::from("v")),
@@ -381,8 +385,57 @@ fn arb_record_input() -> impl proptest::strategy::Strategy<Value = RecordInput> 
     )
         .prop_map(|(record_uuid, fields)| RecordInput {
             record_uuid,
+            record_type: String::new(),
+            tags: Vec::new(),
             fields,
         })
+}
+
+// ---------------------------------------------------------------------------
+// #141: record_type + tags round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn save_block_preserves_record_type_and_tags_141() {
+    // #141: RecordInput now carries record_type + tags; a saved record must
+    // read back with both intact (previously hardcoded empty).
+    use secretary_core::crypto::secret::SecretString;
+    use secretary_ffi_bridge::{
+        read_block, save_block, BlockInput, FieldInput, FieldInputValue, RecordInput,
+    };
+
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+
+    let block_uuid = [0x11u8; 16];
+    let record_uuid = [0x22u8; 16];
+    let input = BlockInput {
+        block_uuid,
+        block_name: "Logins".to_string(),
+        records: vec![RecordInput {
+            record_uuid,
+            record_type: "login".to_string(),
+            tags: vec!["work".to_string(), "email".to_string()],
+            fields: vec![FieldInput {
+                name: "username".to_string(),
+                value: FieldInputValue::Text(SecretString::from("alice")),
+            }],
+        }],
+    };
+    save_block(&identity, &manifest, input, [0x07u8; 16], 1_715_000_000_000).expect("save");
+
+    let out = read_block(&identity, &manifest, &block_uuid).expect("read");
+    let rec = out.record_at(0).expect("record 0");
+    assert_eq!(
+        rec.record_type(),
+        "login",
+        "record_type must round-trip (#141)"
+    );
+    assert_eq!(
+        rec.tags(),
+        vec!["work".to_string(), "email".to_string()],
+        "tags must round-trip (#141)"
+    );
+    out.wipe();
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +498,8 @@ fn save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk() {
         block_name: "raced".to_string(),
         records: vec![RecordInput {
             record_uuid: NEW_RECORD_UUID,
+            record_type: String::new(),
+            tags: Vec::new(),
             fields: vec![FieldInput {
                 name: "k".to_string(),
                 value: FieldInputValue::Text(SecretString::from("v")),

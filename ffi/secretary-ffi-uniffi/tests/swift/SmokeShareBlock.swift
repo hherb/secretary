@@ -35,6 +35,8 @@ func runShareBlockAsserts(env: SmokeEnv) {
                 records: [
                     RecordInput(
                         recordUuid: shareBlockRecordUuid,
+                        recordType: "",
+                        tags: [],
                         fields: [FieldInput(name: "k", value: .text(text: "v"))]
                     ),
                 ]

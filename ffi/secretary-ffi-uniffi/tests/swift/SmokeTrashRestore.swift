@@ -26,6 +26,8 @@ func runTrashRestoreAsserts(env: SmokeEnv) {
                 records: [
                     RecordInput(
                         recordUuid: b5RecordUuid,
+                        recordType: "",
+                        tags: [],
                         fields: [
                             FieldInput(name: "title", value: .text(text: "secret"))
                         ]

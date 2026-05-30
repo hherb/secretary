@@ -65,7 +65,14 @@ internal fun blockInputFromInputs(inputs: JSONObject): BlockInput {
             }
             FieldInput(fname, value)
         }
-        RecordInput(decodeHex(recordUuidStr), fields)
+        val recordType = if (rec.has("record_type")) rec.getString("record_type") else ""
+        val tags: List<String> = if (rec.has("tags")) {
+            val tagsArr = rec.getJSONArray("tags")
+            (0 until tagsArr.length()).map { tagsArr.getString(it) }
+        } else {
+            emptyList()
+        }
+        RecordInput(decodeHex(recordUuidStr), recordType, tags, fields)
     }
     return BlockInput(decodeHex(blockUuidHex), blockName, records)
 }
