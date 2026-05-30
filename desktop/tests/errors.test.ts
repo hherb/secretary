@@ -29,6 +29,8 @@ describe('userMessageFor', () => {
     { code: 'settings_unknown_version', version: 'v99' },
     { code: 'settings_out_of_range', min: 60_000, max: 86_400_000 },
     { code: 'io' },
+    { code: 'invalid_field_value', field_name: 'seed' },
+    { code: 'record_save_failed' },
     { code: 'vault_folder_not_empty', path: '/x' },
     { code: 'vault_create_failed' },
     { code: 'internal' }
@@ -139,6 +141,20 @@ describe('vault create error codes', () => {
   });
 });
 
+describe('edit error codes', () => {
+  it('invalid_field_value names the field', () => {
+    const m = userMessageFor({ code: 'invalid_field_value', field_name: 'seed' });
+    expect(m.title).toMatch(/invalid/i);
+    expect(JSON.stringify(m)).toContain('seed');
+  });
+
+  it('record_save_failed has a retry hint', () => {
+    const m = userMessageFor({ code: 'record_save_failed' });
+    expect(m.title).toMatch(/save/i);
+    expect(m.actionHint).toMatch(/try again/i);
+  });
+});
+
 describe('new browse error codes', () => {
   it.each(['block_not_found', 'record_not_found', 'field_not_found'])(
     '%s maps to a non-empty title',
@@ -177,6 +193,8 @@ describe('error code allowlists', () => {
       'block_not_found',
       'record_not_found',
       'field_not_found',
+      'invalid_field_value',
+      'record_save_failed',
       'vault_folder_not_empty',
       'vault_create_failed',
       'internal'

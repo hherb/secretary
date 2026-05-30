@@ -70,6 +70,36 @@ export interface CreateTargetProbeDto {
   isEmpty: boolean;
 }
 
+export type FieldValueDto =
+  | { kind: 'text'; text: string }
+  | { kind: 'bytes'; base64: string };
+
+export interface FieldInputDto {
+  name: string;
+  value: FieldValueDto;
+}
+
+export interface RecordInputDto {
+  recordType: string;
+  tags: string[];
+  fields: FieldInputDto[];
+}
+
+export interface RecordRefDto {
+  blockUuidHex: string;
+  recordUuidHex: string;
+}
+
+export interface RevealedFieldWithNameDto {
+  name: string;
+  isText: boolean;
+  value: string;
+}
+
+export interface RecordRevealDto {
+  fields: RevealedFieldWithNameDto[];
+}
+
 export function isAppError(err: unknown): err is AppError {
   if (typeof err !== 'object' || err === null || !('code' in err)) {
     return false;
@@ -133,6 +163,26 @@ export async function revealField(
   fieldName: string
 ): Promise<RevealedFieldDto> {
   return call<RevealedFieldDto>('reveal_field', { blockUuidHex, recordUuidHex, fieldName });
+}
+
+export async function createBlock(blockName: string): Promise<BlockSummaryDto> {
+  return call<BlockSummaryDto>('create_block', { blockName });
+}
+
+export async function saveRecord(blockUuidHex: string, record: RecordInputDto): Promise<RecordRefDto> {
+  return call<RecordRefDto>('save_record', { blockUuidHex, record });
+}
+
+export async function saveRecordEdit(
+  blockUuidHex: string,
+  recordUuidHex: string,
+  record: RecordInputDto
+): Promise<RecordRefDto> {
+  return call<RecordRefDto>('save_record_edit', { blockUuidHex, recordUuidHex, record });
+}
+
+export async function revealRecord(blockUuidHex: string, recordUuidHex: string): Promise<RecordRevealDto> {
+  return call<RecordRevealDto>('reveal_record', { blockUuidHex, recordUuidHex });
 }
 
 export async function getSettings(): Promise<SettingsDto> {

@@ -61,7 +61,7 @@
       </div>
     {:else if $browseNav.level === 'records'}
       <RecordList block={$browseNav.block} />
-    {:else}
+    {:else if $browseNav.level === 'fields'}
       <FieldViewer block={$browseNav.block} record={$browseNav.record} />
     {/if}
 
