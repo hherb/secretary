@@ -119,7 +119,9 @@ pub mod unlock;
 pub mod vault;
 
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
-pub use edit::{append_record, create_block, edit_record, RecordContent};
+pub use edit::{
+    append_record, create_block, edit_record, resurrect_record, tombstone_record, RecordContent,
+};
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};

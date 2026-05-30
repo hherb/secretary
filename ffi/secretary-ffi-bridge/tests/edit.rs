@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use secretary_core::crypto::secret::SecretString;
 use secretary_ffi_bridge::{
-    append_record, create_block, edit_record, open_vault_with_password, read_block, FieldInput,
-    FieldInputValue, OpenVaultManifest, RecordContent, UnlockedIdentity,
+    append_record, create_block, edit_record, open_vault_with_password, read_block,
+    resurrect_record, tombstone_record, BlockReadOutput, FieldInput, FieldInputValue,
+    OpenVaultManifest, Record, RecordContent, UnlockedIdentity,
 };
 
 const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
@@ -206,6 +207,163 @@ fn edit_record_missing_uuid_is_record_not_found() {
         2_000,
     )
     .expect_err("editing an absent record must fail");
+    assert!(
+        matches!(
+            err,
+            secretary_ffi_bridge::FfiVaultError::RecordNotFound { .. }
+        ),
+        "expected RecordNotFound, got {err:?}"
+    );
+}
+
+/// Helper: create a block and append one `user`=`alice` login record.
+/// Returns `(block_uuid, record_uuid)`.
+fn block_with_alice(opened: &Opened, block_uuid: [u8; 16], record_uuid: [u8; 16]) {
+    create_block(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        "Logins".into(),
+        DEVICE_UUID,
+        1_000,
+    )
+    .expect("create_block");
+    append_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        RecordContent {
+            record_type: "login".into(),
+            tags: vec![],
+            fields: vec![FieldInput {
+                name: "user".into(),
+                value: FieldInputValue::Text(SecretString::from("alice")),
+            }],
+        },
+        DEVICE_UUID,
+        2_000,
+    )
+    .expect("append_record");
+}
+
+/// Helper: find a record handle by UUID in a read-block output.
+fn find_record(out: &BlockReadOutput, uuid: [u8; 16]) -> Option<Record> {
+    (0..out.record_count())
+        .map(|i| out.record_at(i).unwrap())
+        .find(|r| r.record_uuid() == uuid)
+}
+
+#[test]
+fn tombstone_record_hides_from_read_block() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0x81u8; 16];
+    let record_uuid = [0x82u8; 16];
+    block_with_alice(&opened, block_uuid, record_uuid);
+
+    tombstone_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect("tombstone_record");
+
+    // The record is STILL present in the block file (soft-delete), but its
+    // tombstone flag is now set.
+    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).expect("read");
+    let found = find_record(&out, record_uuid).expect("tombstoned record still present");
+    assert!(
+        found.tombstone(),
+        "tombstoned record must report tombstone()"
+    );
+    out.wipe();
+}
+
+#[test]
+fn resurrect_record_clears_tombstone_and_keeps_fields() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0x91u8; 16];
+    let record_uuid = [0x92u8; 16];
+    block_with_alice(&opened, block_uuid, record_uuid);
+
+    tombstone_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect("tombstone_record");
+
+    resurrect_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        4_000,
+    )
+    .expect("resurrect_record");
+
+    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).expect("read");
+    let r = find_record(&out, record_uuid).expect("resurrected record present");
+    assert!(!r.tombstone(), "resurrected record must clear tombstone()");
+    assert_eq!(
+        r.field_by_name("user").unwrap().expose_text().as_deref(),
+        Some("alice"),
+        "resurrected record must keep its fields"
+    );
+    out.wipe();
+}
+
+#[test]
+fn tombstone_record_errors_on_absent_or_already_tombstoned() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0xA1u8; 16];
+    let record_uuid = [0xA2u8; 16];
+    block_with_alice(&opened, block_uuid, record_uuid);
+
+    // Absent record UUID → RecordNotFound.
+    let err = tombstone_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        [0x99u8; 16],
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect_err("tombstoning a missing record must fail");
+    assert!(
+        matches!(
+            err,
+            secretary_ffi_bridge::FfiVaultError::RecordNotFound { .. }
+        ),
+        "expected RecordNotFound, got {err:?}"
+    );
+
+    // Already-tombstoned record → RecordNotFound (no live record with this UUID).
+    tombstone_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect("first tombstone");
+    let err = tombstone_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        4_000,
+    )
+    .expect_err("re-tombstoning an already-tombstoned record must fail");
     assert!(
         matches!(
             err,
