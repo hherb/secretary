@@ -85,7 +85,18 @@ pub fn append_record(
 /// preserving its `record_uuid`, `created_at_ms`, record-level `unknown`,
 /// `tombstoned_at_ms`, and — by name-matching — each kept field's
 /// `unknown`. A field absent from the delta is dropped (the user removed
-/// it). Siblings are untouched. `last_mod_ms` bumps to `now_ms`.
+/// it). Siblings are untouched. The record-level `last_mod_ms` bumps to
+/// `now_ms`.
+///
+/// Per-field clocks are bumped only on a genuine change: a field whose
+/// value is byte-identical to the prior record keeps its prior `last_mod`
+/// and `device_uuid` (the editing device touched the record but not that
+/// field's value). This matters under cross-device sync — core's
+/// field-level merge is `last_mod` last-write-wins, so bumping an
+/// untouched field's clock here would let this device's stale-but-newer
+/// copy clobber a concurrent edit of that field on another device. Only
+/// fields whose value actually changed (or are newly added) get `now_ms`
+/// and the editing `device_uuid`.
 ///
 /// # Errors
 ///
@@ -114,27 +125,36 @@ pub fn edit_record(
     let created_at_ms = existing.created_at_ms;
     let tombstoned_at_ms = existing.tombstoned_at_ms;
     let record_unknown = existing.unknown.clone();
-    // Carry forward per-field `unknown` by name. A field that survives the
-    // edit keeps its forward-compat sub-keys; a field absent from the delta
-    // is dropped together with its unknowns (the user deleted it).
-    let prior_field_unknown: BTreeMap<String, BTreeMap<String, _>> = existing
-        .fields
-        .iter()
-        .map(|(name, f)| (name.clone(), f.unknown.clone()))
-        .collect();
+    // Snapshot the prior fields by name so the rebuild below can, per field:
+    // carry forward its forward-compat `unknown`, and — when the new value is
+    // byte-identical — preserve its `last_mod` / `device_uuid`. A field absent
+    // from the delta is simply not looked up here, so it (and its unknowns) is
+    // dropped — the user deleted it.
+    let prior_fields: BTreeMap<String, RecordField> = existing.fields.clone();
 
     let mut fields_map: BTreeMap<String, RecordField> = BTreeMap::new();
     for f in content.fields {
-        let unknown = prior_field_unknown
-            .get(&f.name)
-            .cloned()
-            .unwrap_or_default();
+        let value = f.value.into_core_value();
+        // `RecordFieldValue`'s `==` is constant-time (its `SecretString` /
+        // `SecretBytes` payloads compare via `subtle::ConstantTimeEq`), so the
+        // unchanged-value gate adds no value-dependent timing side channel.
+        let (last_mod, field_device_uuid, unknown) = match prior_fields.get(&f.name) {
+            // Unchanged value: keep the prior field clock + authoring device.
+            Some(prior) if prior.value == value => {
+                (prior.last_mod, prior.device_uuid, prior.unknown.clone())
+            }
+            // Changed value (same field name): bump the clock to this edit,
+            // but still carry forward the field's forward-compat `unknown`.
+            Some(prior) => (now_ms, device_uuid, prior.unknown.clone()),
+            // Newly added field: fresh clock, empty unknown.
+            None => (now_ms, device_uuid, BTreeMap::new()),
+        };
         fields_map.insert(
             f.name,
             RecordField {
-                value: f.value.into_core_value(),
-                last_mod: now_ms,
-                device_uuid,
+                value,
+                last_mod,
+                device_uuid: field_device_uuid,
                 unknown,
             },
         );
@@ -430,5 +450,122 @@ mod tests {
         assert_eq!(rec.created_at_ms, 1_000, "created_at_ms preserved on edit");
         assert_eq!(rec.last_mod_ms, 2_000, "last_mod_ms bumped to now_ms");
         assert_eq!(rec.tags, vec!["edited".to_string()]);
+    }
+
+    /// An edit must bump a field's `last_mod` / `device_uuid` ONLY when its
+    /// value actually changed. A field left byte-identical keeps its prior
+    /// clock and authoring device, so this device's untouched copy can't
+    /// clobber a concurrent edit of that field on another device under core's
+    /// field-level last-write-wins merge.
+    #[test]
+    fn edit_record_preserves_field_clock_for_unchanged_value() {
+        let (_tmp, opened) = open_writable_golden_001();
+        let block_uuid = [0x71u8; 16];
+        let record_uuid = [0x72u8; 16];
+
+        const ORIG_DEVICE: [u8; 16] = [0x07; 16];
+        const EDIT_DEVICE: [u8; 16] = [0x09; 16];
+
+        // Seed a record with two fields authored by ORIG_DEVICE at t=1000.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "keep".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::from("unchanged")),
+                last_mod: 1_000,
+                device_uuid: ORIG_DEVICE,
+                unknown: BTreeMap::new(),
+            },
+        );
+        fields.insert(
+            "change".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::from("v0")),
+                last_mod: 1_000,
+                device_uuid: ORIG_DEVICE,
+                unknown: BTreeMap::new(),
+            },
+        );
+        let plaintext = BlockPlaintext {
+            block_version: BLOCK_VERSION_V1,
+            block_uuid,
+            block_name: "Clocks".to_string(),
+            schema_version: SCHEMA_VERSION_V1,
+            records: vec![Record {
+                record_uuid,
+                record_type: "login".to_string(),
+                fields,
+                tags: vec![],
+                created_at_ms: 1_000,
+                last_mod_ms: 1_000,
+                tombstone: false,
+                tombstoned_at_ms: 0,
+                unknown: BTreeMap::new(),
+            }],
+            unknown: BTreeMap::new(),
+        };
+        save_plaintext(
+            &opened.identity,
+            &opened.manifest,
+            plaintext,
+            ORIG_DEVICE,
+            1_000,
+        )
+        .expect("seed plaintext");
+
+        // Edit on a DIFFERENT device at t=2000: "keep" identical, "change" updated.
+        edit_record(
+            &opened.identity,
+            &opened.manifest,
+            block_uuid,
+            record_uuid,
+            RecordContent {
+                record_type: "login".to_string(),
+                tags: vec!["edited".to_string()],
+                fields: vec![
+                    FieldInput {
+                        name: "keep".to_string(),
+                        value: FieldInputValue::Text(SecretString::from("unchanged")),
+                    },
+                    FieldInput {
+                        name: "change".to_string(),
+                        value: FieldInputValue::Text(SecretString::from("v1")),
+                    },
+                ],
+            },
+            EDIT_DEVICE,
+            2_000,
+        )
+        .expect("edit_record");
+
+        let after = decrypt_block_plaintext(&opened.identity, &opened.manifest, &block_uuid)
+            .expect("decrypt after edit");
+        let rec = after
+            .records
+            .iter()
+            .find(|r| r.record_uuid == record_uuid)
+            .expect("edited record present");
+
+        // Unchanged field: prior clock + authoring device survive.
+        let keep = rec.fields.get("keep").expect("kept field present");
+        assert_eq!(
+            keep.last_mod, 1_000,
+            "unchanged field must keep its prior last_mod"
+        );
+        assert_eq!(
+            keep.device_uuid, ORIG_DEVICE,
+            "unchanged field must keep its prior authoring device"
+        );
+
+        // Changed field: bumped to this edit.
+        let change = rec.fields.get("change").expect("changed field present");
+        assert_eq!(
+            change.last_mod, 2_000,
+            "changed field must bump last_mod to now_ms"
+        );
+        assert_eq!(
+            change.device_uuid, EDIT_DEVICE,
+            "changed field must record the editing device"
+        );
     }
 }
