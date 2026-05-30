@@ -40,3 +40,54 @@ describe('RecordList — show-deleted toggle', () => {
     );
   });
 });
+
+describe('RecordList — delete confirm → tombstoneRecord', () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  const LIVE_RECORD = {
+    recordUuidHex: 'cd',
+    recordType: 'login',
+    tags: [] as string[],
+    fieldCount: 2,
+    lastModMs: 5,
+    tombstoned: false
+  };
+
+  it('confirming the delete dialog invokes tombstone_record and reloads', async () => {
+    // read_block → one live record; tombstone_record resolves; reload read_block.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'read_block') {
+        return Promise.resolve({ blockUuidHex: 'ab', blockName: 'Personal logins', records: [LIVE_RECORD] });
+      }
+      if (cmd === 'tombstone_record') return Promise.resolve(null);
+      // Tolerate any incidental/teardown invoke; the assertions below pin the
+      // commands we care about.
+      return Promise.resolve(null);
+    });
+
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+
+    // Wait for the live row's Delete action to render.
+    const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
+    await fireEvent.click(deleteBtn);
+
+    // ConfirmDialog mounts; click its confirm ("Delete") button. Scope to the
+    // dialog's danger button so we don't match the row's "Delete" action,
+    // which shares the same text content.
+    const confirmBtn = await waitFor(() => {
+      const el = container.querySelector('.confirm-dialog__button--danger');
+      if (!el) throw new Error('confirm dialog not yet mounted');
+      return el as HTMLButtonElement;
+    });
+    await fireEvent.click(confirmBtn);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('tombstone_record', { blockUuidHex: 'ab', recordUuidHex: 'cd' })
+    );
+
+    // A reload follows the tombstone: read_block invoked again (mount + reload ≥ 2).
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'read_block').length).toBeGreaterThanOrEqual(2)
+    );
+  });
+});

@@ -19,6 +19,10 @@
   --color-primary-hover: #1d4ed8;
   --color-danger: #dc2626;
   --color-danger-bg: #fef2f2;
+  /* Text/foreground laid over a --color-danger fill (e.g. the confirm
+     dialog's destructive button). Kept white in both themes for contrast
+     against the saturated danger fill. */
+  --color-on-danger: #fff;
   --color-warning: #d97706;
   --color-warning-bg: #fffbeb;
 
@@ -65,6 +69,7 @@
     --color-primary-hover: #93c5fd;
     --color-danger: #f87171;
     --color-danger-bg: #2a1414;
+    --color-on-danger: #fff;
     --color-warning: #fbbf24;
     --color-warning-bg: #2a2014;
   }
@@ -581,7 +586,7 @@ body {
 .confirm-dialog__button--danger {
   background: var(--color-danger);
   border-color: var(--color-danger);
-  color: white;
+  color: var(--color-on-danger);
 }
 .confirm-dialog__button--danger:hover {
   opacity: 0.9;

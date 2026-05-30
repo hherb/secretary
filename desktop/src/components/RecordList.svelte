@@ -34,14 +34,32 @@
   }
 
   $effect(() => {
-    // Explicitly read both reactive deps in the effect body so toggling
-    // "Show deleted" OR switching blocks re-runs the load — load() reads
-    // them again internally, but reading them here is what registers the
-    // dependency for the effect (and avoids any state_referenced_locally
-    // ambiguity from the analyzer).
-    void block.blockUuidHex;
-    void showDeleted;
-    void load();
+    // Read both reactive deps in the effect body so toggling "Show deleted"
+    // OR switching blocks re-runs the fetch. The `void` reads are what
+    // register the dependency for the effect; we deliberately do NOT read
+    // `records`/`error` here (writing them is fine, reading them would make
+    // the effect self-trigger into an infinite loop).
+    const blockUuidHex = block.blockUuidHex;
+    const includeDeleted = showDeleted;
+    // Per-effect cancel guard: if the block or toggle changes while a
+    // readBlock is in flight, the superseded promise must not write state
+    // (otherwise a stale wrong-block / wrong-toggle result could clobber the
+    // newer fetch's records/error). The cleanup flips `cancelled` before the
+    // next run starts.
+    let cancelled = false;
+    void (async () => {
+      records = null;
+      error = null;
+      try {
+        const dto = await readBlock(blockUuidHex, includeDeleted);
+        if (!cancelled) records = dto.records;
+      } catch (e) {
+        if (!cancelled) error = isAppError(e) ? e : { code: 'internal' };
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   });
 
   async function onDelete(record: RecordDto) {
