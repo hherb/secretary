@@ -540,6 +540,207 @@ body {
   cursor: not-allowed;
 }
 
+/* Delete / trash UI (D.1.5) ------------------------------------------- */
+
+/* ConfirmDialog — shared destructive-action modal; models SettingsDialog. */
+.confirm-dialog {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  padding: var(--space-5);
+  min-width: 380px;
+  box-shadow: var(--shadow-lg);
+}
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+.confirm-dialog__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-lg);
+}
+.confirm-dialog__body {
+  margin: 0 0 var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.confirm-dialog__button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.confirm-dialog__button--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: white;
+}
+.confirm-dialog__button--danger:hover {
+  opacity: 0.9;
+}
+
+/* Vault trash entry — sits below "+ New block" on the blocks pane. */
+.vault__trash-entry {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  margin-left: var(--space-2);
+}
+.vault__trash-entry:hover {
+  background: var(--color-border);
+}
+.vault__trash-error {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+/* TrashView — list of trashed blocks; models RecordList. */
+.trash-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.trash-view__back {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-2);
+}
+.trash-view__back:hover {
+  background: var(--color-border);
+}
+.trash-view__error {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+.trash-view__loading,
+.trash-view__empty {
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* TrashedBlockRow — one trashed block; models record-row layout. */
+.trashed-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+.trashed-row__name {
+  font-weight: 600;
+}
+.trashed-row__when {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+.trashed-row__restore {
+  margin-left: auto;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.trashed-row__restore:hover {
+  border-color: var(--color-primary);
+}
+
+/* RecordRow wrapper + per-row actions (delete / restore). */
+.record-row-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.record-row-wrap .record-row {
+  flex: 1 1 auto;
+}
+.record-row--deleted {
+  opacity: 0.55;
+}
+.record-row__delete,
+.record-row__restore {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.record-row__delete:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.record-row__restore:hover {
+  border-color: var(--color-primary);
+}
+
+/* BlockCard wrapper + trash action. */
+.block-card-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.block-card-wrap .block-card {
+  flex: 1 1 auto;
+}
+.block-card__trash {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+}
+.block-card__trash:hover {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger);
+}
+
+/* RecordList "Show deleted" toggle. */
+.record-list__show-deleted {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
 /* App.svelte locking splash — brief between unlocked → locked. */
 .locking-splash {
   min-height: 100vh;
