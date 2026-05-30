@@ -68,21 +68,21 @@
       <FieldViewer block={$browseNav.block} record={$browseNav.record} />
     {:else if $browseNav.level === 'newBlock'}
       <NewBlock
-        onCreated={async () => { await refreshManifest(); back(); }}
+        onCreated={async () => { try { await refreshManifest(); } finally { back(); } }}
         onCancel={() => back()}
       />
     {:else if $browseNav.level === 'newRecord'}
       <RecordEditor
         block={$browseNav.block}
         record={null}
-        onSaved={async () => { await refreshManifest(); back(); }}
+        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
         onCancel={() => back()}
       />
     {:else}
       <RecordEditor
         block={$browseNav.block}
         record={$browseNav.record}
-        onSaved={async () => { await refreshManifest(); back(); }}
+        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
         onCancel={() => back()}
       />
     {/if}
