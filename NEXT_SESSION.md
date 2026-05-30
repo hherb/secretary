@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-30-d14-edit-shipped.md
+docs/handoffs/2026-05-31-d15-delete-trash-shipped.md
