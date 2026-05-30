@@ -331,9 +331,9 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(PROPTEST_CASES))]
 
     /// Property: any well-formed [`BlockInput`] saved via [`save_block`]
-    /// reads back through [`read_block`] with the same record count.
-    /// Exercises the full save → encrypt → atomic-write → re-open → decode →
-    /// decrypt path.
+    /// reads back through [`read_block`] with the same record count,
+    /// and each record's `record_type` and `tags` (#141) survive the
+    /// full save → encrypt → atomic-write → re-open → decode → decrypt path.
     #[test]
     fn block_input_round_trips_through_save_and_read(
         block_uuid in proptest::prelude::any::<[u8; 16]>(),
@@ -342,6 +342,12 @@ proptest::proptest! {
     ) {
         let (_tmp, identity, manifest) = fresh_writable_vault();
         let record_count = records.len();
+        // Snapshot the record_uuid → (record_type, tags) mapping before the
+        // BlockInput is consumed by save_block (it's moved into the call).
+        let expected_meta: Vec<([u8; 16], String, Vec<String>)> = records
+            .iter()
+            .map(|r| (r.record_uuid, r.record_type.clone(), r.tags.clone()))
+            .collect();
         let input = BlockInput {
             block_uuid,
             block_name,
@@ -353,6 +359,33 @@ proptest::proptest! {
         let output = read_block(&identity, &manifest, &block_uuid)
             .map_err(|e| proptest::test_runner::TestCaseError::fail(format!("read failed: {e:?}")))?;
         proptest::prop_assert_eq!(output.record_count() as usize, record_count);
+
+        // Guard the #141 fields: record_type and tags must round-trip.
+        // Match records by record_uuid so ordering differences don't mask bugs.
+        for (record_uuid, exp_type, exp_tags) in &expected_meta {
+            // Find the matching read-back record by UUID.
+            let maybe_rec = (0..output.record_count())
+                .map(|i| output.record_at(i).expect("record present"))
+                .find(|r| r.record_uuid() == *record_uuid);
+            let rec = match maybe_rec {
+                Some(r) => r,
+                None => {
+                    return Err(proptest::test_runner::TestCaseError::fail(
+                        format!("record_uuid {:?} missing from read-back output", record_uuid),
+                    ));
+                }
+            };
+            proptest::prop_assert_eq!(
+                &rec.record_type(),
+                exp_type,
+                "record_type mismatch for record_uuid {:?}", record_uuid,
+            );
+            proptest::prop_assert_eq!(
+                &rec.tags(),
+                exp_tags,
+                "tags mismatch for record_uuid {:?}", record_uuid,
+            );
+        }
     }
 }
 
@@ -375,18 +408,23 @@ fn arb_field_input() -> impl proptest::strategy::Strategy<Value = FieldInput> {
         .prop_map(|(name, value)| FieldInput { name, value })
 }
 
-/// Strategy: arbitrary [`RecordInput`] with 0..4 fields.
+/// Strategy: arbitrary [`RecordInput`] with 0..4 fields, an arbitrary
+/// `record_type` (lowercase letters, up to 16 chars, may be empty), and an
+/// arbitrary `tags` list (0..4 tags, each 1..8 lowercase letters). Exercises
+/// the #141 fields through the full save→read round-trip.
 fn arb_record_input() -> impl proptest::strategy::Strategy<Value = RecordInput> {
     use proptest::prelude::*;
 
     (
         any::<[u8; 16]>(),
+        "[a-z]{0,16}",
+        proptest::collection::vec("[a-z]{1,8}", 0..4),
         proptest::collection::vec(arb_field_input(), 0..4),
     )
-        .prop_map(|(record_uuid, fields)| RecordInput {
+        .prop_map(|(record_uuid, record_type, tags, fields)| RecordInput {
             record_uuid,
-            record_type: String::new(),
-            tags: Vec::new(),
+            record_type,
+            tags,
             fields,
         })
 }
