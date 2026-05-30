@@ -5,8 +5,10 @@
 //! only the block UUID + tombstone metadata; the human-readable block
 //! name lives inside the *encrypted* trashed block file. So building the
 //! Trash view requires decrypting each trashed file far enough to read
-//! its `block_name`. We decrypt the newest file per UUID (mirroring
-//! `core::vault::restore_block`'s newest-wins selection) using the shared
+//! its `block_name`. We decrypt the newest file per UUID — selecting the
+//! same file `core::vault::restore_block` would (highest canonical-decimal
+//! `<ts>` suffix; non-canonical suffixes such as leading-zero forms are
+//! skipped to match core's §7 grammar) — using the shared
 //! [`decrypt_block_file_bytes`] tail, then immediately let the decrypted
 //! plaintext drop (zeroize) — only the name is projected out. Record
 //! plaintext NEVER escapes this function.
@@ -15,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
-use crate::record::orchestration::{decrypt_block_file_bytes, uuid_hyphenated};
+use crate::record::orchestration::{decrypt_block_file_bytes, handle_wiped, uuid_hyphenated};
 use crate::vault::OpenVaultManifest;
 
 /// One trashed block, projected by name for the Trash view. Carries the
@@ -64,12 +66,9 @@ pub fn list_trashed_blocks(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
 ) -> Result<Vec<TrashedBlock>, FfiVaultError> {
-    let (manifest_body, owner_card, vault_folder) =
-        manifest
-            .snapshot_for_read_block()
-            .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "vault manifest handle has been wiped".to_string(),
-            })?;
+    let (manifest_body, owner_card, vault_folder) = manifest
+        .snapshot_for_read_block()
+        .ok_or_else(handle_wiped)?;
 
     let trash_dir = vault_folder.join("trash");
     let mut out: Vec<TrashedBlock> = Vec::with_capacity(manifest_body.trash.len());
@@ -107,8 +106,11 @@ pub fn list_trashed_blocks(
 /// matching `core::vault::restore_block`'s selection). Returns
 /// `Ok(None)` when the directory is missing or holds no matching file.
 ///
-/// Non-`u64`-parseable suffixes are skipped rather than erroring, so a
-/// single junk filename alongside a valid one cannot wedge the listing.
+/// Suffixes that are not a canonical decimal `u64` — non-`u64`-parseable
+/// forms AND non-canonical decimals such as leading-zero forms (e.g.
+/// `"00123"`) — are skipped rather than erroring, matching core's §7
+/// grammar so a single junk filename alongside a valid one cannot wedge
+/// the listing and the bridge picks the SAME file restore would.
 fn newest_trash_file(
     trash_dir: &Path,
     block_uuid: &[u8; 16],
@@ -138,6 +140,15 @@ fn newest_trash_file(
         let Ok(ts) = suffix.parse::<u64>() else {
             continue;
         };
+        // Spec §7 grammar: `<unix-millis>` is the canonical decimal
+        // ASCII form of a u64 (no leading `+`, no leading zeros except
+        // `0` itself). `u64::from_str` rejects sign-bearing forms but
+        // accepts leading-zero forms (`"00123"` → 123), so pin the
+        // canonical form explicitly — matching `core::vault::restore_block`'s
+        // identical guard so the list selects the SAME file restore would.
+        if ts.to_string() != suffix {
+            continue;
+        }
         if best.as_ref().is_none_or(|(b, _)| ts > *b) {
             best = Some((ts, dirent.path()));
         }

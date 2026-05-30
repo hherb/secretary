@@ -254,7 +254,7 @@ pub(crate) fn decrypt_block_file_bytes(
     Ok(plaintext)
 }
 
-fn handle_wiped() -> FfiVaultError {
+pub(crate) fn handle_wiped() -> FfiVaultError {
     FfiVaultError::CorruptVault {
         detail: "vault manifest handle has been wiped".to_string(),
     }
