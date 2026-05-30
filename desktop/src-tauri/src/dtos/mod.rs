@@ -17,6 +17,7 @@ mod browse;
 mod create;
 mod edit;
 mod manifest;
+mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
 pub use create::{CreateTargetProbeDto, CreateVaultDto};
@@ -25,3 +26,4 @@ pub use edit::{
     RevealedFieldWithNameDto,
 };
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
+pub use trash::TrashedBlockDto;

@@ -458,7 +458,7 @@ fn notify_activity_when_unlocked_advances_tracker() {
 #[test]
 fn read_block_projects_records_and_fields_without_secrets() {
     let (state, _device_dir) = unlocked_state();
-    let dto = browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX).expect("read_block ok");
+    let dto = browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, false).expect("read_block ok");
 
     assert_eq!(dto.block_uuid_hex, GOLDEN_BLOCK_UUID_HEX);
     assert_eq!(dto.block_name, "Personal logins");
@@ -489,7 +489,7 @@ fn read_block_projects_records_and_fields_without_secrets() {
 #[test]
 fn read_block_unknown_uuid_is_block_not_found() {
     let (state, _device_dir) = unlocked_state();
-    let err = browse::read_block_impl(&state, "ffffffffffffffffffffffffffffffff")
+    let err = browse::read_block_impl(&state, "ffffffffffffffffffffffffffffffff", false)
         .expect_err("unknown block must error");
     assert!(matches!(err, AppError::BlockNotFound { .. }));
 }
@@ -497,8 +497,8 @@ fn read_block_unknown_uuid_is_block_not_found() {
 #[test]
 fn read_block_when_locked_is_not_unlocked() {
     let (state, _device_dir) = fresh_state();
-    let err =
-        browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX).expect_err("locked must error");
+    let err = browse::read_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, false)
+        .expect_err("locked must error");
     assert!(matches!(err, AppError::NotUnlocked));
 }
 
@@ -770,9 +770,12 @@ mod edit_path {
         .expect("save_record");
 
         // read_block reflects the new record.
-        let detail =
-            secretary_desktop::commands::browse::read_block_impl(&state, &block.block_uuid_hex)
-                .expect("read");
+        let detail = secretary_desktop::commands::browse::read_block_impl(
+            &state,
+            &block.block_uuid_hex,
+            false,
+        )
+        .expect("read");
         assert_eq!(detail.records.len(), 1);
         assert_eq!(detail.records[0].record_uuid_hex, rec.record_uuid_hex);
         assert_eq!(detail.records[0].record_type, "login");
