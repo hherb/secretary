@@ -83,6 +83,15 @@ pub enum AppError {
     #[error("Record not found")]
     RecordNotFound { record_uuid_hex: String },
 
+    #[error("Field value is invalid")]
+    InvalidFieldValue { field_name: String },
+
+    #[error("Could not save the record")]
+    RecordSaveFailed {
+        #[serde(skip_serializing)]
+        detail: String,
+    },
+
     #[error("Field not found")]
     FieldNotFound { field_name: String },
 
@@ -382,6 +391,24 @@ mod tests {
             detail: "argon2id derivation OOM".to_string(),
         });
         assert_eq!(v["code"], "vault_create_failed");
+        assert!(v.get("detail").is_none(), "detail must NOT cross IPC");
+    }
+
+    #[test]
+    fn invalid_field_value_carries_field_name() {
+        let v = round_trip(&AppError::InvalidFieldValue {
+            field_name: "totp_seed".to_string(),
+        });
+        assert_eq!(v["code"], "invalid_field_value");
+        assert_eq!(v["field_name"], "totp_seed");
+    }
+
+    #[test]
+    fn record_save_failed_detail_is_stripped() {
+        let v = round_trip(&AppError::RecordSaveFailed {
+            detail: "core save_block returned Io".to_string(),
+        });
+        assert_eq!(v["code"], "record_save_failed");
         assert!(v.get("detail").is_none(), "detail must NOT cross IPC");
     }
 
