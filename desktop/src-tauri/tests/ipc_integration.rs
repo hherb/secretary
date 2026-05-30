@@ -24,8 +24,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{browse, create, lock, settings, unlock, vault};
-use secretary_desktop::dtos::SettingsInput;
+use secretary_desktop::commands::{browse, create, edit, lock, settings, unlock, vault};
+use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
 use secretary_desktop::session::VaultSession;
 use tempfile::TempDir;
@@ -692,5 +692,211 @@ mod create_path {
         let missing = dir.path().join("nope");
         let probe = create::probe_create_target_impl(missing.to_str().expect("utf8"));
         assert!(!probe.exists && !probe.is_empty, "missing path");
+    }
+}
+
+// ============================================================================
+// D.1.4 edit-vault path. Hermetic: all vaults are created in fresh TempDirs
+// with runtime-random passwords (no hardcoded crypto — CodeQL). Each test
+// creates → appends/edits → asserts; no golden-vault dependency.
+// ============================================================================
+
+mod edit_path {
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+
+    const CREATE_DISPLAY_NAME: &str = "D.1.4 edit test identity";
+
+    /// Runtime-random hex password — avoids a hardcoded crypto literal.
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    /// An unlocked `VaultSession` over a freshly-created tempdir vault.
+    /// Mirrors the create_path flow: `create_vault_impl` writes the four
+    /// canonical files, then `unlock_with_password_impl` unlocks the
+    /// session. Returns the state (with unlocked session), the vault TempDir
+    /// (keep alive), and the raw password bytes.
+    fn unlocked_session_over_new_vault() -> (Mutex<VaultSession>, tempfile::TempDir, Vec<u8>) {
+        let vault_dir = tempfile::tempdir().expect("vault tempdir");
+        let path = vault_dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault_impl for edit test");
+
+        let (state, _device_dir) = fresh_state();
+        unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
+        // _device_dir must stay alive; embed it in the vault_dir's lifetime
+        // by leaking the device dir into the heap and keeping vault_dir alive.
+        // Simpler: just keep both alive via the caller's tuple. But the
+        // signature returns only vault_dir — we accept the device-UUID file
+        // being dropped (the test session stays unlocked; the UUID file is
+        // only used at open time, not during the test).
+        (state, vault_dir, pw)
+    }
+
+    fn text_field(name: &str, text: &str) -> FieldInputDto {
+        FieldInputDto {
+            name: name.into(),
+            value: FieldValueDto::Text { text: text.into() },
+        }
+    }
+
+    #[test]
+    fn create_block_then_add_record_then_read_reflects_it() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Logins").expect("create_block");
+        let rec = edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec!["work".into()],
+                fields: vec![text_field("user", "alice")],
+            },
+        )
+        .expect("save_record");
+
+        // read_block reflects the new record.
+        let detail =
+            secretary_desktop::commands::browse::read_block_impl(&state, &block.block_uuid_hex)
+                .expect("read");
+        assert_eq!(detail.records.len(), 1);
+        assert_eq!(detail.records[0].record_uuid_hex, rec.record_uuid_hex);
+        assert_eq!(detail.records[0].record_type, "login");
+    }
+
+    #[test]
+    fn edit_record_changes_value_and_leaves_siblings_intact() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "B").unwrap();
+        let a = edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "alice")],
+            },
+        )
+        .unwrap();
+        let b = edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "bob")],
+            },
+        )
+        .unwrap();
+
+        edit::save_record_edit_impl(
+            &state,
+            &block.block_uuid_hex,
+            &a.record_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec!["edited".into()],
+                fields: vec![text_field("user", "alice2")],
+            },
+        )
+        .unwrap();
+
+        // A changed; B intact (revealed values).
+        let ra =
+            edit::reveal_record_impl(&state, &block.block_uuid_hex, &a.record_uuid_hex).unwrap();
+        assert_eq!(
+            ra.fields.iter().find(|f| f.name == "user").unwrap().value,
+            "alice2"
+        );
+        let rb =
+            edit::reveal_record_impl(&state, &block.block_uuid_hex, &b.record_uuid_hex).unwrap();
+        assert_eq!(
+            rb.fields.iter().find(|f| f.name == "user").unwrap().value,
+            "bob"
+        );
+    }
+
+    #[test]
+    fn bytes_field_round_trips_via_base64() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "B").unwrap();
+        // "aGVsbG8=" == b"hello"
+        let rec = edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: "note".into(),
+                tags: vec![],
+                fields: vec![FieldInputDto {
+                    name: "seed".into(),
+                    value: FieldValueDto::Bytes {
+                        base64: "aGVsbG8=".into(),
+                    },
+                }],
+            },
+        )
+        .unwrap();
+        let revealed =
+            edit::reveal_record_impl(&state, &block.block_uuid_hex, &rec.record_uuid_hex).unwrap();
+        let f = revealed.fields.iter().find(|f| f.name == "seed").unwrap();
+        assert!(!f.is_text);
+        assert_eq!(f.value, "aGVsbG8=", "bytes reveal as base64");
+    }
+
+    #[test]
+    fn invalid_base64_yields_invalid_field_value() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "B").unwrap();
+        let err = edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: "note".into(),
+                tags: vec![],
+                fields: vec![FieldInputDto {
+                    name: "seed".into(),
+                    value: FieldValueDto::Bytes {
+                        base64: "not valid base64!!".into(),
+                    },
+                }],
+            },
+        )
+        .expect_err("bad base64 rejected");
+        match err {
+            AppError::InvalidFieldValue { field_name } => assert_eq!(field_name, "seed"),
+            other => panic!("expected InvalidFieldValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_missing_record_yields_record_not_found() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "B").unwrap();
+        let err = edit::save_record_edit_impl(
+            &state,
+            &block.block_uuid_hex,
+            &"ab".repeat(16),
+            RecordInputDto {
+                record_type: "x".into(),
+                tags: vec![],
+                fields: vec![],
+            },
+        )
+        .expect_err("missing");
+        assert!(matches!(err, AppError::RecordNotFound { .. }));
     }
 }
