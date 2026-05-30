@@ -35,7 +35,7 @@ All commits are on `feature/d14-edit` (branched from `main` @ `d2bf764`):
 | `1e74193` | **Task 6 review fix** — pin `draftToRecordInputDto` value-not-trimmed invariant. |
 | `5790bb2` | **Task 7** — `RecordEditor`/`NewBlock`/`FieldRowEditor`/`TagsEditor` editor components. |
 | `ad17ee2` | **Task 7 review fix** — document `RecordEditor` mount-read warning + editor CSS rules + `NewBlock` trim. |
-| (ship) | **Task 8** — this commit: editor routing in `Vault.svelte` + entry buttons + `refreshManifest` + `VaultEdit.test.ts` + `ConformanceErrors.{swift,kt}` `RecordNotFound` fixes + README/ROADMAP D.1.4 ✅ + handoff baton + symlink retarget. |
+| `2769c80` | **Task 8** — editor routing in `Vault.svelte` + entry buttons + `refreshManifest` + `VaultEdit.test.ts` + `ConformanceErrors.{swift,kt}` `RecordNotFound` fixes + README/ROADMAP D.1.4 ✅ + handoff baton + symlink retarget. |
 
 **Process note:** one worktree (`.worktrees/d14-edit`, branch `feature/d14-edit`), one reviewed commit per task + inline review-fix commits. Every finding fixed before proceeding.
 
