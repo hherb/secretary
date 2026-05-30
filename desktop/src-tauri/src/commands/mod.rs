@@ -24,5 +24,6 @@ pub mod create;
 pub mod edit;
 pub mod lock;
 pub mod settings;
+pub(crate) mod shared;
 pub mod unlock;
 pub mod vault;

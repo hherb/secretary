@@ -20,6 +20,7 @@ use secretary_ffi_bridge::{
 };
 
 use crate::auto_lock::now_ms;
+use crate::commands::shared::parse_uuid_16;
 use crate::dtos::{
     BlockSummaryDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
     RevealedFieldWithNameDto,
@@ -28,18 +29,9 @@ use crate::errors::AppError;
 use crate::reveal::locate_record;
 use crate::session::VaultSession;
 
-/// 32-hex-char UUID parse. Bad hex from the frontend folds to `Internal`
-/// (the frontend only passes hex it received from a DTO).
-fn parse_uuid_16(hex_str: &str) -> Result<[u8; 16], AppError> {
-    let bytes = hex::decode(hex_str).map_err(|e| AppError::Internal {
-        detail: format!("invalid uuid hex {hex_str:?}: {e}"),
-    })?;
-    bytes.try_into().map_err(|_| AppError::Internal {
-        detail: format!("uuid hex {hex_str:?} is not 16 bytes"),
-    })
-}
-
 /// Fresh random 16-byte UUID for a new block/record.
+/// Uses `rand_core::OsRng.fill_bytes`, which panics on OS RNG failure — that
+/// is catastrophic and acceptable here (consistent with core's CSPRNG usage).
 fn new_uuid_16() -> [u8; 16] {
     use rand_core::{OsRng, RngCore};
     let mut b = [0u8; 16];
@@ -126,6 +118,8 @@ pub fn create_block_impl(
         )
         .map_err(map_save_error)?;
         // Project the new block from the refreshed manifest so the list can refresh.
+        // Sound: bridge_create_block → save_plaintext → replace_manifest_and_file
+        // updates the in-memory manifest before returning.
         let summary = u
             .manifest
             .block_summaries()
@@ -261,13 +255,26 @@ pub fn reveal_record_impl(
                 continue;
             };
             let (is_text, value) = if h.is_text() {
-                (true, h.expose_text().unwrap_or_default())
+                match h.expose_text() {
+                    Some(v) => (true, v),
+                    None => {
+                        output.wipe();
+                        return Err(AppError::Internal {
+                            detail: "expose_text returned None on is_text field".to_string(),
+                        });
+                    }
+                }
             } else {
                 // base64 the bytes; encode_revealed_bytes zeroizes the raw Vec.
-                (
-                    false,
-                    crate::reveal::encode_revealed_bytes(h.expose_bytes().unwrap_or_default()),
-                )
+                match h.expose_bytes() {
+                    Some(bytes) => (false, crate::reveal::encode_revealed_bytes(bytes)),
+                    None => {
+                        output.wipe();
+                        return Err(AppError::Internal {
+                            detail: "expose_bytes returned None on bytes field".to_string(),
+                        });
+                    }
+                }
             };
             fields.push(RevealedFieldWithNameDto {
                 name: h.name(),
