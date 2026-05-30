@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{browse, create, edit, lock, settings, unlock, vault};
+use secretary_desktop::commands::{browse, create, delete, edit, lock, settings, unlock, vault};
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
 use secretary_desktop::session::VaultSession;
@@ -900,6 +900,170 @@ mod edit_path {
             },
         )
         .expect_err("missing");
+        assert!(matches!(err, AppError::RecordNotFound { .. }));
+    }
+}
+
+/// D.1.5 delete/trash IPC commands over ephemeral tempdir vaults. Mirrors
+/// `edit_path`'s local helpers (no hardcoded crypto values; random password +
+/// fresh create+unlock per test).
+mod delete_path {
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+
+    const CREATE_DISPLAY_NAME: &str = "D.1.5 delete test identity";
+
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    fn unlocked_session_over_new_vault() -> (Mutex<VaultSession>, tempfile::TempDir, Vec<u8>) {
+        let vault_dir = tempfile::tempdir().expect("vault tempdir");
+        let path = vault_dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        create::create_vault_impl(
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault_impl for delete test");
+
+        let (state, _device_dir) = fresh_state();
+        unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
+        (state, vault_dir, pw)
+    }
+
+    fn text_field(name: &str, text: &str) -> FieldInputDto {
+        FieldInputDto {
+            name: name.into(),
+            value: FieldValueDto::Text { text: text.into() },
+        }
+    }
+
+    fn add_one_record(state: &Mutex<VaultSession>, block_hex: &str) -> String {
+        edit::save_record_impl(
+            state,
+            block_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "alice")],
+            },
+        )
+        .expect("save_record")
+        .record_uuid_hex
+    }
+
+    #[test]
+    fn tombstone_hides_by_default_and_shows_with_include_deleted() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Logins").expect("create_block");
+        let rec_hex = add_one_record(&state, &block.block_uuid_hex);
+
+        delete::tombstone_record_impl(&state, &block.block_uuid_hex, &rec_hex)
+            .expect("tombstone_record");
+
+        // Live view hides the tombstoned record.
+        let live =
+            browse::read_block_impl(&state, &block.block_uuid_hex, false).expect("read live");
+        assert_eq!(live.records.len(), 0, "tombstoned record hidden by default");
+
+        // include_deleted surfaces it, flagged.
+        let all = browse::read_block_impl(&state, &block.block_uuid_hex, true)
+            .expect("read with deleted");
+        assert_eq!(all.records.len(), 1, "tombstoned record visible with flag");
+        assert!(all.records[0].tombstoned, "record flagged tombstoned");
+    }
+
+    #[test]
+    fn resurrect_returns_record_to_live_view() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Logins").expect("create_block");
+        let rec_hex = add_one_record(&state, &block.block_uuid_hex);
+
+        delete::tombstone_record_impl(&state, &block.block_uuid_hex, &rec_hex)
+            .expect("tombstone_record");
+        delete::resurrect_record_impl(&state, &block.block_uuid_hex, &rec_hex)
+            .expect("resurrect_record");
+
+        let live =
+            browse::read_block_impl(&state, &block.block_uuid_hex, false).expect("read live");
+        assert_eq!(
+            live.records.len(),
+            1,
+            "resurrected record back in live view"
+        );
+        assert!(
+            !live.records[0].tombstoned,
+            "resurrected record not flagged"
+        );
+    }
+
+    #[test]
+    fn trash_then_list_by_name_then_restore() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Bank logins").expect("create_block");
+        let block_hex = block.block_uuid_hex.clone();
+        add_one_record(&state, &block_hex);
+
+        delete::trash_block_impl(&state, &block_hex).expect("trash_block");
+
+        let trashed = delete::list_trashed_blocks_impl(&state).expect("list_trashed");
+        let entry = trashed
+            .iter()
+            .find(|t| t.block_uuid_hex == block_hex)
+            .expect("trashed entry present");
+        assert_eq!(entry.block_name, "Bank logins");
+
+        let restored = delete::restore_block_impl(&state, &block_hex).expect("restore_block");
+        assert_eq!(
+            restored.block_uuid_hex, block_hex,
+            "restore returns the block"
+        );
+
+        let after = delete::list_trashed_blocks_impl(&state).expect("list after restore");
+        assert!(
+            !after.iter().any(|t| t.block_uuid_hex == block_hex),
+            "restored block no longer in trash list"
+        );
+    }
+
+    #[test]
+    fn restore_never_trashed_block_is_trash_entry_not_found() {
+        // A UUID that is neither live nor in trash. Core checks the live
+        // collision first (that path yields `BlockRestoreConflict`), so to
+        // exercise the `TrashEntryNotFound` path the UUID must be unknown to
+        // the vault entirely — a random, never-created block.
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        let unknown_block_hex = hex::encode(raw);
+
+        let err = delete::restore_block_impl(&state, &unknown_block_hex)
+            .expect_err("restore of never-trashed block must fail");
+        assert!(matches!(err, AppError::TrashEntryNotFound { .. }));
+    }
+
+    #[test]
+    fn tombstone_absent_record_is_record_not_found() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Logins").expect("create_block");
+
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        let random_record_hex = hex::encode(raw);
+
+        let err = delete::tombstone_record_impl(&state, &block.block_uuid_hex, &random_record_hex)
+            .expect_err("tombstone of absent record must fail");
         assert!(matches!(err, AppError::RecordNotFound { .. }));
     }
 }

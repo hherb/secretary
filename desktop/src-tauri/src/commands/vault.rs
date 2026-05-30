@@ -12,9 +12,29 @@ use std::sync::Mutex;
 
 use tauri::State;
 
+use secretary_ffi_bridge::vault::OpenVaultManifest;
+
 use crate::dtos::{BlockSummaryDto, ManifestDto};
 use crate::errors::AppError;
 use crate::session::VaultSession;
+
+/// Project the [`BlockSummaryDto`] for one live block out of a refreshed
+/// manifest, by UUID. Returns `None` when the block is not in
+/// `manifest.block_summaries()` (e.g. trashed, never created, or a stale
+/// UUID). Shared by `create_block_impl` and `restore_block_impl`, both of
+/// which need to surface the just-mutated block to the frontend — sound
+/// because the bridge mutators refresh the in-memory manifest before
+/// returning.
+pub(crate) fn block_summary_for(
+    manifest: &OpenVaultManifest,
+    block_uuid: [u8; 16],
+) -> Option<BlockSummaryDto> {
+    manifest
+        .block_summaries()
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .map(BlockSummaryDto::from)
+}
 
 #[tauri::command]
 pub async fn list_blocks(
