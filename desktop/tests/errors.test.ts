@@ -33,6 +33,8 @@ describe('userMessageFor', () => {
     { code: 'record_save_failed' },
     { code: 'vault_folder_not_empty', path: '/x' },
     { code: 'vault_create_failed' },
+    { code: 'block_restore_conflict', block_uuid_hex: 'ab' },
+    { code: 'trash_entry_not_found', block_uuid_hex: 'ab' },
     { code: 'internal' }
   ];
 
@@ -155,6 +157,20 @@ describe('edit error codes', () => {
   });
 });
 
+describe('trash error codes', () => {
+  it('block_restore_conflict has a sensible title', () => {
+    const m = userMessageFor({ code: 'block_restore_conflict', block_uuid_hex: 'ab' });
+    expect(m.title).toMatch(/restored/i);
+    expect(m.actionHint?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('trash_entry_not_found has a sensible title', () => {
+    const m = userMessageFor({ code: 'trash_entry_not_found', block_uuid_hex: 'ab' });
+    expect(m.title).toMatch(/trash/i);
+    expect(m.actionHint?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
 describe('new browse error codes', () => {
   it.each(['block_not_found', 'record_not_found', 'field_not_found'])(
     '%s maps to a non-empty title',
@@ -197,6 +213,8 @@ describe('error code allowlists', () => {
       'record_save_failed',
       'vault_folder_not_empty',
       'vault_create_failed',
+      'block_restore_conflict',
+      'trash_entry_not_found',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

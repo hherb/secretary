@@ -15,7 +15,8 @@ export type BrowseNav =
   | { level: 'fields'; block: BlockSummaryDto; record: RecordDto }
   | { level: 'newBlock' }
   | { level: 'newRecord'; block: BlockSummaryDto }
-  | { level: 'editRecord'; block: BlockSummaryDto; record: RecordDto };
+  | { level: 'editRecord'; block: BlockSummaryDto; record: RecordDto }
+  | { level: 'trash' };
 
 const store = writable<BrowseNav>({ level: 'blocks' });
 
@@ -43,6 +44,10 @@ export function openEditRecord(block: BlockSummaryDto, record: RecordDto): void 
   store.set({ level: 'editRecord', block, record });
 }
 
+export function openTrash(): void {
+  store.set({ level: 'trash' });
+}
+
 export function back(): void {
   store.update((s) => {
     if (s.level === 'editRecord') return { level: 'fields', block: s.block, record: s.record };
@@ -50,6 +55,7 @@ export function back(): void {
     if (s.level === 'newBlock') return { level: 'blocks' };
     if (s.level === 'fields') return { level: 'records', block: s.block };
     if (s.level === 'records') return { level: 'blocks' };
+    if (s.level === 'trash') return { level: 'blocks' };
     return s;
   });
 }

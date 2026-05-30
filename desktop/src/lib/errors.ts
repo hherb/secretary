@@ -30,6 +30,8 @@ export const APP_ERROR_CODES = [
   'record_save_failed',
   'vault_folder_not_empty',
   'vault_create_failed',
+  'block_restore_conflict',
+  'trash_entry_not_found',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -61,6 +63,8 @@ export type AppError =
   | { code: 'record_save_failed' }
   | { code: 'vault_folder_not_empty'; path: string }
   | { code: 'vault_create_failed' }
+  | { code: 'block_restore_conflict'; block_uuid_hex: string }
+  | { code: 'trash_entry_not_found'; block_uuid_hex: string }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -164,6 +168,16 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "Couldn't create the vault",
         actionHint: 'Please try again.'
+      };
+    case 'block_restore_conflict':
+      return {
+        title: 'Already restored',
+        actionHint: 'A block with this id is already live — it may have been restored elsewhere.'
+      };
+    case 'trash_entry_not_found':
+      return {
+        title: 'Not in trash',
+        actionHint: 'That trashed block is no longer available.'
       };
     case 'internal':
       return {

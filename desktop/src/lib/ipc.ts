@@ -48,12 +48,20 @@ export interface RecordDto {
   lastModMs: number;
   fieldCount: number;
   fields: FieldMetaDto[];
+  tombstoned?: boolean;
 }
 
 export interface BlockDetailDto {
   blockUuidHex: string;
   blockName: string;
   records: RecordDto[];
+}
+
+export interface TrashedBlockDto {
+  blockUuidHex: string;
+  blockName: string;
+  tombstonedAtMs: number;
+  tombstonedByHex: string;
 }
 
 export interface RevealedFieldDto {
@@ -153,8 +161,11 @@ export async function getManifest(): Promise<ManifestDto> {
   return call<ManifestDto>('get_manifest');
 }
 
-export async function readBlock(blockUuidHex: string): Promise<BlockDetailDto> {
-  return call<BlockDetailDto>('read_block', { blockUuidHex });
+export async function readBlock(
+  blockUuidHex: string,
+  includeDeleted = false
+): Promise<BlockDetailDto> {
+  return call<BlockDetailDto>('read_block', { blockUuidHex, includeDeleted });
 }
 
 export async function revealField(
@@ -183,6 +194,32 @@ export async function saveRecordEdit(
 
 export async function revealRecord(blockUuidHex: string, recordUuidHex: string): Promise<RecordRevealDto> {
   return call<RecordRevealDto>('reveal_record', { blockUuidHex, recordUuidHex });
+}
+
+export async function tombstoneRecord(
+  blockUuidHex: string,
+  recordUuidHex: string
+): Promise<RecordRefDto> {
+  return call<RecordRefDto>('tombstone_record', { blockUuidHex, recordUuidHex });
+}
+
+export async function resurrectRecord(
+  blockUuidHex: string,
+  recordUuidHex: string
+): Promise<RecordRefDto> {
+  return call<RecordRefDto>('resurrect_record', { blockUuidHex, recordUuidHex });
+}
+
+export async function trashBlock(blockUuidHex: string): Promise<void> {
+  return call<void>('trash_block', { blockUuidHex });
+}
+
+export async function restoreBlock(blockUuidHex: string): Promise<BlockSummaryDto> {
+  return call<BlockSummaryDto>('restore_block', { blockUuidHex });
+}
+
+export async function listTrashedBlocks(): Promise<TrashedBlockDto[]> {
+  return call<TrashedBlockDto[]>('list_trashed_blocks', {});
 }
 
 export async function getSettings(): Promise<SettingsDto> {
