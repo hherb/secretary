@@ -15,8 +15,13 @@
 
 mod browse;
 mod create;
+mod edit;
 mod manifest;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
 pub use create::{CreateTargetProbeDto, CreateVaultDto};
+pub use edit::{
+    FieldInputDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
+    RevealedFieldWithNameDto,
+};
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
