@@ -92,6 +92,12 @@ pub enum AppError {
         detail: String,
     },
 
+    #[error("Cannot restore: a block with this id is already live")]
+    BlockRestoreConflict { block_uuid_hex: String },
+
+    #[error("That trashed block is no longer available")]
+    TrashEntryNotFound { block_uuid_hex: String },
+
     #[error("Field not found")]
     FieldNotFound { field_name: String },
 
@@ -239,15 +245,25 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             record_uuid_hex: uuid_hex,
         },
 
-        // Block-share authorization failures, recipient table mismatches,
-        // and trash/restore preconditions: unreachable in D.1.1 (no
-        // share / no trash UI). Map to Internal so an accidental
-        // wiring of a share/trash command surfaces clearly.
+        // Restore precondition: the UUID has both a live and a trashed entry.
+        // Typed variant so the UI can tell the user to trash the live copy first.
+        FfiVaultError::BlockUuidAlreadyLive { detail } => AppError::BlockRestoreConflict {
+            block_uuid_hex: detail,
+        },
+
+        // Restore precondition: no TrashEntry or file exists for this UUID.
+        // Typed variant so the UI can distinguish "already restored" from corruption.
+        FfiVaultError::BlockNotInTrash { detail } => AppError::TrashEntryNotFound {
+            block_uuid_hex: detail,
+        },
+
+        // Block-share authorization failures and recipient table mismatches:
+        // unreachable in D.1.1–D.1.5 (no share UI). Map to Internal so an
+        // accidental wiring of a share command surfaces clearly. These get
+        // typed variants in D.1.6.
         other @ (FfiVaultError::NotAuthor { .. }
         | FfiVaultError::RecipientAlreadyPresent
-        | FfiVaultError::MissingRecipientCard { .. }
-        | FfiVaultError::BlockUuidAlreadyLive { .. }
-        | FfiVaultError::BlockNotInTrash { .. }) => AppError::Internal {
+        | FfiVaultError::MissingRecipientCard { .. }) => AppError::Internal {
             detail: format!("{other:?}"),
         },
     }
@@ -434,6 +450,46 @@ mod tests {
         assert!(
             v.get("detail").is_none(),
             "FfiVaultError::CorruptVault.detail must NOT cross IPC"
+        );
+    }
+
+    #[test]
+    fn block_restore_conflict_carries_hex() {
+        let v = round_trip(&AppError::BlockRestoreConflict {
+            block_uuid_hex: "ab12".into(),
+        });
+        assert_eq!(v["code"], "block_restore_conflict");
+        assert_eq!(v["block_uuid_hex"], "ab12");
+    }
+
+    #[test]
+    fn trash_entry_not_found_carries_hex() {
+        let v = round_trip(&AppError::TrashEntryNotFound {
+            block_uuid_hex: "ab12".into(),
+        });
+        assert_eq!(v["code"], "trash_entry_not_found");
+        assert_eq!(v["block_uuid_hex"], "ab12");
+    }
+
+    #[test]
+    fn ffi_block_uuid_already_live_maps_to_restore_conflict() {
+        let mapped = map_ffi_error(FfiVaultError::BlockUuidAlreadyLive {
+            detail: "abcd".into(),
+        });
+        assert!(
+            matches!(mapped, AppError::BlockRestoreConflict { block_uuid_hex } if block_uuid_hex == "abcd"),
+            "BlockUuidAlreadyLive must map to BlockRestoreConflict carrying the hex"
+        );
+    }
+
+    #[test]
+    fn ffi_block_not_in_trash_maps_to_trash_entry_not_found() {
+        let mapped = map_ffi_error(FfiVaultError::BlockNotInTrash {
+            detail: "ef01".into(),
+        });
+        assert!(
+            matches!(mapped, AppError::TrashEntryNotFound { block_uuid_hex } if block_uuid_hex == "ef01"),
+            "BlockNotInTrash must map to TrashEntryNotFound carrying the hex"
         );
     }
 }
