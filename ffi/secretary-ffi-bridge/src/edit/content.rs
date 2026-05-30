@@ -17,6 +17,7 @@ use crate::save::input::FieldInput;
 /// [`FieldInputValue`](crate::save::input::FieldInputValue); a
 /// `RecordContent` therefore zeroizes its secrets when it drops, and the
 /// edit primitives never stash it past the call.
+// `Clone` is for parity with `RecordInput`/`FieldInput`; the edit path always moves this value.
 #[derive(Clone, Debug)]
 pub struct RecordContent {
     /// Open-ended record-type discriminator (e.g. `"login"`). Empty allowed.
