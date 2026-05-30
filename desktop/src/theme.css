@@ -715,3 +715,16 @@ body {
 /* Unlock — created-vault banner and create-affordance button */
 .unlock__banner { background: var(--ok-bg, #1b4); color: #fff; border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 1rem; }
 .unlock__error-action { margin-top: 0.4rem; background: none; border: 1px solid currentColor; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; }
+
+/* Editor — RecordEditor / FieldRowEditor / TagsEditor / NewBlock */
+.editor { display: flex; flex-direction: column; gap: 0.8rem; padding: 1rem; }
+.editor__title { margin: 0; }
+.editor__back { align-self: flex-start; background: none; border: none; cursor: pointer; color: var(--accent, #69f); }
+.editor__field { display: flex; flex-direction: column; gap: 0.3rem; }
+.editor__fields { display: flex; flex-direction: column; gap: 0.5rem; }
+.editor__error { border: 1px solid var(--err, #d44); border-radius: 6px; padding: 0.5rem; }
+.editor__actions { display: flex; gap: 0.6rem; }
+.field-row-editor { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 0.4rem; align-items: center; }
+.field-row-editor__error { grid-column: 1 / -1; color: var(--err, #d44); font-size: 0.85em; }
+.tags-editor { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.tags-editor__chip { background: var(--chip-bg, #234); border-radius: 12px; padding: 0.1rem 0.5rem; }
