@@ -95,9 +95,12 @@ describe('Vault.svelte — initial render contract', () => {
   });
 
   it('renders the LockButton (via TopBar)', () => {
+    // `🔒 Lock` button rendered by TopBar. The accessible name is "🔒 Lock";
+    // matching the class pins to the correct button and avoids the regex
+    // `/lock/i` matching "+ New block" (added in D.1.4).
     unlockWith(manifestFixture({}));
-    const { getByRole } = render(Vault);
-    expect(getByRole('button', { name: /lock/i })).toBeTruthy();
+    const { container } = render(Vault);
+    expect(container.querySelector('.lock-button')).toBeTruthy();
   });
 
   it('renders a short vault UUID without a misleading ellipsis tail', () => {

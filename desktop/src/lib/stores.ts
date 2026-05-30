@@ -24,7 +24,7 @@
 
 import { writable, derived, type Readable } from 'svelte/store';
 import type { AppError } from './errors';
-import { isAppError, type ManifestDto, type SettingsDto } from './ipc';
+import { isAppError, getManifest, type ManifestDto, type SettingsDto } from './ipc';
 
 export type SessionState =
   | { status: 'locked'; lastError: AppError | null }
@@ -166,6 +166,26 @@ export function settingsUpdated(newSettings: SettingsDto): void {
       return current;
     }
     return { status: 'unlocked', manifest: current.manifest, settings: newSettings };
+  });
+}
+
+/**
+ * `unlocked → unlocked` (manifest refresh). Fetches a fresh manifest from
+ * the backend and replaces the one in the current unlocked session. Legal
+ * only while status === 'unlocked'; callers that may race with a
+ * `vault-locked` event should guard on the post-await status (if the vault
+ * locked during the IPC flight, `_internal` is already `locked` and this
+ * update is a no-op — the user will need to unlock again anyway).
+ *
+ * Called after `createBlock` / `saveRecord` / `saveRecordEdit` so the
+ * browse panes (blocks list, RecordList) reflect the write without a
+ * full re-unlock cycle.
+ */
+export async function refreshManifest(): Promise<void> {
+  const manifest = await getManifest();
+  _internal.update((current) => {
+    if (current.status !== 'unlocked') return current;
+    return { status: 'unlocked', manifest, settings: current.settings };
   });
 }
 

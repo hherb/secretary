@@ -107,10 +107,12 @@ describe('App.svelte — router', () => {
   it('renders the Vault route when sessionState is unlocked', () => {
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
-    const { getByText, getByRole } = render(App);
+    const { getByText, container } = render(App);
     // Vault renders TopBar (Lock button) and a block-count label. Both
     // are unique to Vault; the Unlock route renders neither.
-    expect(getByRole('button', { name: /lock/i })).toBeTruthy();
+    // Use the class selector to distinguish the LockButton from the
+    // "+ New block" button added in D.1.4 (both match /lock/i).
+    expect(container.querySelector('.lock-button')).toBeTruthy();
     expect(getByText(/0 blocks/i)).toBeTruthy();
   });
 
