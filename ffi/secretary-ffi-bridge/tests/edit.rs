@@ -374,6 +374,51 @@ fn tombstone_record_errors_on_absent_or_already_tombstoned() {
 }
 
 #[test]
+fn resurrect_record_errors_on_absent_or_live() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0xB1u8; 16];
+    let record_uuid = [0xB2u8; 16];
+    block_with_alice(&opened, block_uuid, record_uuid);
+
+    // Absent record UUID → RecordNotFound.
+    let err = resurrect_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        [0x99u8; 16],
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect_err("resurrecting a missing record must fail");
+    assert!(
+        matches!(
+            err,
+            secretary_ffi_bridge::FfiVaultError::RecordNotFound { .. }
+        ),
+        "expected RecordNotFound, got {err:?}"
+    );
+
+    // LIVE (never-tombstoned) record → RecordNotFound (no tombstoned record
+    // with this UUID).
+    let err = resurrect_record(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        record_uuid,
+        DEVICE_UUID,
+        4_000,
+    )
+    .expect_err("resurrecting a live record must fail");
+    assert!(
+        matches!(
+            err,
+            secretary_ffi_bridge::FfiVaultError::RecordNotFound { .. }
+        ),
+        "expected RecordNotFound, got {err:?}"
+    );
+}
+
+#[test]
 fn append_record_to_missing_block_is_block_not_found() {
     let opened = open_writable_golden_001();
     let err = append_record(

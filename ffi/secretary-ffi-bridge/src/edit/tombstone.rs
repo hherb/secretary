@@ -65,6 +65,10 @@ pub fn tombstone_record(
 /// (so a concurrent peer's later delete still wins under core's merge).
 /// Fields and all `unknown` maps survive untouched.
 ///
+/// Assumes `now_ms` is monotonic (≥ the preserved `tombstoned_at_ms`), as
+/// elsewhere in the bridge; a stale clock would momentarily produce
+/// `tombstoned_at_ms > last_mod_ms` (core defensively clamps on merge).
+///
 /// # Errors
 ///
 /// [`FfiVaultError::RecordNotFound`] (no TOMBSTONED record with this UUID —
@@ -105,12 +109,11 @@ mod tests {
     use secretary_core::vault::block::BlockPlaintext;
     use secretary_core::vault::record::{Record, RecordField, RecordFieldValue, UnknownValue};
 
+    use super::super::{BLOCK_VERSION_V1, SCHEMA_VERSION_V1};
     use crate::{open_vault_with_password, OpenVaultOutput};
 
     const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
     const DEVICE_UUID: [u8; 16] = [0x07; 16];
-    const BLOCK_VERSION_V1: u32 = 1;
-    const SCHEMA_VERSION_V1: u32 = 1;
 
     fn fixture_folder(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -248,6 +251,14 @@ mod tests {
             user.unknown.contains_key("x_fld"),
             "field-level unknown 'x_fld' must survive a tombstone"
         );
+        match &user.value {
+            RecordFieldValue::Text(s) => assert_eq!(
+                *s,
+                SecretString::from("alice"),
+                "field value must be unchanged by a tombstone"
+            ),
+            other => panic!("expected Text, got {other:?}"),
+        }
 
         // 2. Resurrect the record at a newer clock.
         resurrect_record(
