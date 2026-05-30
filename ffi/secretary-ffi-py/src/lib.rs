@@ -61,7 +61,7 @@ use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
     VaultBlockUuidAlreadyLive, VaultCardDecodeFailure, VaultCorruptVault, VaultFolderInvalid,
     VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultSaveCryptoFailure,
+    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
     VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
     WrongPasswordOrCorrupt,
 };
@@ -165,6 +165,7 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BlockReadOutput>()?;
     m.add_function(wrap_pyfunction!(read_block, m)?)?;
     m.add("VaultBlockNotFound", py.get_type::<VaultBlockNotFound>())?;
+    m.add("VaultRecordNotFound", py.get_type::<VaultRecordNotFound>())?;
 
     // B.4c surface:
     m.add(

@@ -79,6 +79,11 @@ pub struct FieldInput {
 pub struct RecordInput {
     /// 16-byte stable record UUID.
     pub record_uuid: [u8; 16],
+    /// Open-ended record-type discriminator (e.g. `"login"`). Empty string
+    /// permitted. (#141 — previously hardcoded empty in `into_core_record`.)
+    pub record_type: String,
+    /// Cross-cutting tags. Empty `Vec` = absent on the wire. (#141.)
+    pub tags: Vec<String>,
     /// Fields. Duplicate names collapse to last-write-wins inside the
     /// resulting `BTreeMap<String, RecordField>` (the deduplication
     /// matches `core::Record::fields`'s key invariant).
@@ -88,9 +93,10 @@ pub struct RecordInput {
 impl RecordInput {
     /// Crate-internal: convert into a [`Record`] populated with the given
     /// `now_ms` and `device_uuid` for both record-level and per-field
-    /// timestamps. Per-record / per-field forward-compat `unknown` maps
-    /// are empty (B.4c does not surface unknowns; round-trip of unknowns
-    /// is a B.4d-or-later concern).
+    /// timestamps. Per-record / per-field forward-compat `unknown` maps are
+    /// empty: this path builds a record FROM SCRATCH, so there are no
+    /// pre-existing unknowns to preserve (sibling/edit `unknown` preservation
+    /// is the job of the native `edit` primitives, not this path).
     #[allow(dead_code)] // consumed by crate::save::save_block in Task 2
     pub(crate) fn into_core_record(self, now_ms: u64, device_uuid: [u8; 16]) -> Record {
         let mut fields_map: BTreeMap<String, RecordField> = BTreeMap::new();
@@ -107,9 +113,9 @@ impl RecordInput {
         }
         Record {
             record_uuid: self.record_uuid,
-            record_type: String::new(),
+            record_type: self.record_type,
             fields: fields_map,
-            tags: Vec::new(),
+            tags: self.tags,
             created_at_ms: now_ms,
             last_mod_ms: now_ms,
             tombstone: false,
@@ -183,6 +189,8 @@ mod tests {
     fn record_input_into_core_record_populates_timestamps_and_device_uuid() {
         let input = RecordInput {
             record_uuid: [0xCDu8; 16],
+            record_type: String::new(),
+            tags: Vec::new(),
             fields: vec![FieldInput {
                 name: "title".to_string(),
                 value: FieldInputValue::Text(SecretString::from("hello")),
@@ -210,6 +218,8 @@ mod tests {
         // correct collapse semantics.
         let input = RecordInput {
             record_uuid: [0xCDu8; 16],
+            record_type: String::new(),
+            tags: Vec::new(),
             fields: vec![
                 FieldInput {
                     name: "k".to_string(),
@@ -255,10 +265,14 @@ mod tests {
             records: vec![
                 RecordInput {
                     record_uuid: [0x01u8; 16],
+                    record_type: String::new(),
+                    tags: Vec::new(),
                     fields: vec![],
                 },
                 RecordInput {
                     record_uuid: [0x02u8; 16],
+                    record_type: String::new(),
+                    tags: Vec::new(),
                     fields: vec![],
                 },
             ],

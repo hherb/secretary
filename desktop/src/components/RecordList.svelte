@@ -1,6 +1,6 @@
 <script lang="ts">
   import { readBlock, isAppError, type BlockSummaryDto, type RecordDto } from '../lib/ipc';
-  import { openRecord, back } from '../lib/browse';
+  import { openRecord, openNewRecord, back } from '../lib/browse';
   import { userMessageFor, type AppError } from '../lib/errors';
   import RecordRow from './RecordRow.svelte';
 
@@ -24,6 +24,7 @@
 
 <section class="record-list">
   <button type="button" class="record-list__back" onclick={() => back()}>← {block.blockName}</button>
+  <button type="button" class="record-list__add" onclick={() => openNewRecord(block)}>+ Add record</button>
 
   {#if error}
     {@const msg = userMessageFor(error)}

@@ -65,7 +65,16 @@ internal fun blockInputFromInputs(inputs: JSONObject): BlockInput {
             }
             FieldInput(fname, value)
         }
-        RecordInput(decodeHex(recordUuidStr), fields)
+        val recordType = if (rec.has("record_type")) rec.getString("record_type") else ""
+        val tags: List<String> = if (rec.has("tags")) {
+            val tagsArr = rec.getJSONArray("tags")
+            // Mirrors the Rust filter_map(|t| t.as_str()) — skip non-string elements
+            // rather than throwing, so malformed vectors degrade gracefully on both sides.
+            (0 until tagsArr.length()).mapNotNull { tagsArr.optString(it, null) }
+        } else {
+            emptyList()
+        }
+        RecordInput(decodeHex(recordUuidStr), recordType, tags, fields)
     }
     return BlockInput(decodeHex(blockUuidHex), blockName, records)
 }

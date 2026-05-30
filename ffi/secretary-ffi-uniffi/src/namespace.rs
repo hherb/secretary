@@ -422,6 +422,8 @@ fn convert_record_input(
 
     Ok(secretary_ffi_bridge::RecordInput {
         record_uuid,
+        record_type: r.record_type,
+        tags: r.tags,
         fields,
     })
 }

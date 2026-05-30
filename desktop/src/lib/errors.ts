@@ -26,6 +26,8 @@ export const APP_ERROR_CODES = [
   'block_not_found',
   'record_not_found',
   'field_not_found',
+  'invalid_field_value',
+  'record_save_failed',
   'vault_folder_not_empty',
   'vault_create_failed',
   'internal'
@@ -55,6 +57,8 @@ export type AppError =
   | { code: 'block_not_found'; block_uuid_hex: string }
   | { code: 'record_not_found'; record_uuid_hex: string }
   | { code: 'field_not_found'; field_name: string }
+  | { code: 'invalid_field_value'; field_name: string }
+  | { code: 'record_save_failed' }
   | { code: 'vault_folder_not_empty'; path: string }
   | { code: 'vault_create_failed' }
   | { code: 'internal' };
@@ -139,6 +143,17 @@ export function userMessageFor(err: AppError): UserMessage {
       return { title: 'Record not found', actionHint: 'Go back and reopen the block.' };
     case 'field_not_found':
       return { title: 'Field not found', actionHint: 'Go back and reopen the record.' };
+    case 'invalid_field_value':
+      return {
+        title: 'Invalid field value',
+        detail: `The value for "${err.field_name}" isn't valid.`,
+        actionHint: 'Check the field (bytes fields must be valid base64) and try again.'
+      };
+    case 'record_save_failed':
+      return {
+        title: "Couldn't save the record",
+        actionHint: 'Please try again.'
+      };
     case 'vault_folder_not_empty':
       return {
         title: "Folder isn't empty",

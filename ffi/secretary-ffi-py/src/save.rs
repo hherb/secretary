@@ -88,6 +88,12 @@ impl FieldInput {
 pub struct RecordInput {
     /// 16-byte stable record UUID.
     pub record_uuid: [u8; 16],
+    /// Open-ended record-type discriminator. Empty allowed. (#141)
+    #[pyo3(get, set)]
+    pub record_type: String,
+    /// Cross-cutting tags. (#141)
+    #[pyo3(get, set)]
+    pub tags: Vec<String>,
     /// Ordered list of fields.
     pub fields: Vec<FieldInput>,
 }
@@ -95,13 +101,22 @@ pub struct RecordInput {
 #[pymethods]
 impl RecordInput {
     /// Construct a new record input. `record_uuid` must be exactly 16 bytes;
-    /// otherwise raises `ValueError`.
+    /// otherwise raises `ValueError`. `record_type` defaults to "" and `tags`
+    /// to [] so existing 2-arg callers keep working.
     #[new]
-    #[allow(clippy::needless_pass_by_value)] // owned Vec<u8> for bytes ∪ bytearray accept
-    fn new(record_uuid: Vec<u8>, fields: Vec<FieldInput>) -> PyResult<Self> {
+    #[pyo3(signature = (record_uuid, fields, record_type=String::new(), tags=Vec::new()))]
+    #[allow(clippy::needless_pass_by_value)]
+    fn new(
+        record_uuid: Vec<u8>,
+        fields: Vec<FieldInput>,
+        record_type: String,
+        tags: Vec<String>,
+    ) -> PyResult<Self> {
         let record_uuid = uuid_array_or_value_error(&record_uuid, "record_uuid")?;
         Ok(Self {
             record_uuid,
+            record_type,
+            tags,
             fields,
         })
     }
@@ -185,6 +200,8 @@ pub(crate) fn save_block(
         .iter()
         .map(|r| BridgeRecordInput {
             record_uuid: r.record_uuid,
+            record_type: r.record_type.clone(),
+            tags: r.tags.clone(),
             fields: r
                 .fields
                 .iter()

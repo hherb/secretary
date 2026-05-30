@@ -43,6 +43,76 @@ pub fn read_block(
     manifest: &OpenVaultManifest,
     block_uuid: &[u8; 16],
 ) -> Result<BlockReadOutput, FfiVaultError> {
+    let plaintext = decrypt_block_plaintext(identity, manifest, block_uuid)?;
+
+    // Convert BlockPlaintext → BlockReadOutput. Preserve record order
+    // (already canonical from decode_plaintext); within each record,
+    // walk fields in BTreeMap iteration order.
+    let mut records: Vec<Record> = Vec::with_capacity(plaintext.records.len());
+    for r in plaintext.records {
+        let CoreRecord {
+            record_uuid,
+            record_type,
+            fields,
+            tags,
+            created_at_ms,
+            last_mod_ms,
+            tombstone,
+            // unknown / tombstoned_at_ms intentionally not surfaced.
+            ..
+        } = r;
+
+        let mut field_handles: Vec<FieldHandle> = Vec::with_capacity(fields.len());
+        for (name, field) in fields {
+            field_handles.push(FieldHandle::new(
+                name,
+                field.value,
+                field.last_mod,
+                field.device_uuid,
+            ));
+        }
+        records.push(Record::new(
+            record_uuid,
+            record_type,
+            tags,
+            created_at_ms,
+            last_mod_ms,
+            tombstone,
+            field_handles,
+        ));
+    }
+
+    Ok(BlockReadOutput::new(
+        plaintext.block_uuid,
+        plaintext.block_name,
+        records,
+    ))
+}
+
+/// Decrypt one block to its native [`secretary_core::vault::BlockPlaintext`],
+/// preserving ALL fields (including `unknown` maps and `tombstoned_at_ms`)
+/// that [`read_block`] drops when it lowers to foreign handles. The edit
+/// primitives ([`crate::edit`]) call this to round-trip untouched records
+/// byte-faithfully; [`read_block`] calls it and then lowers to
+/// [`Record`] / [`FieldHandle`].
+///
+/// This is the decrypt prelude that previously lived inline in
+/// [`read_block`]; factoring it out is a behaviour-preserving refactor.
+/// The secret-key drop point is pinned identically to the pre-refactor
+/// code (see the explicit `drop(reader_x_sk); drop(reader_pq_sk);` below).
+///
+/// # Errors
+///
+/// Same surface as [`read_block`]'s decrypt prelude:
+/// [`FfiVaultError::BlockNotFound`] (UUID not in `manifest.blocks`),
+/// [`FfiVaultError::CorruptVault`] (missing/malformed/unverifiable block
+/// file or wiped manifest handle), [`FfiVaultError::FolderInvalid`] (block
+/// file present but unreadable for non-NotFound IO reasons).
+pub(crate) fn decrypt_block_plaintext(
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    block_uuid: &[u8; 16],
+) -> Result<secretary_core::vault::BlockPlaintext, FfiVaultError> {
     // Single-lock atomic snapshot — folds 3 sequential lock_or_recover
     // calls into 1, closing the theoretical TOCTOU window where another
     // thread could call manifest.wipe() between accessor invocations and
@@ -145,52 +215,13 @@ pub fn read_block(
     // for bindings that aren't moved). Both Sensitive<[u8;32]> and
     // SecretBytes-wrapped MlKem768Secret implement ZeroizeOnDrop;
     // these explicit drops trigger that wipe right after decrypt
-    // returns and BEFORE BlockReadOutput is constructed.
+    // returns and BEFORE the plaintext is returned to the caller
+    // (read_block then lowers to handles; the edit primitives keep
+    // the native plaintext).
     drop(reader_x_sk);
     drop(reader_pq_sk);
 
-    // Convert BlockPlaintext → BlockReadOutput. Preserve record order
-    // (already canonical from decode_plaintext); within each record,
-    // walk fields in BTreeMap iteration order.
-    let mut records: Vec<Record> = Vec::with_capacity(plaintext.records.len());
-    for r in plaintext.records {
-        let CoreRecord {
-            record_uuid,
-            record_type,
-            fields,
-            tags,
-            created_at_ms,
-            last_mod_ms,
-            tombstone,
-            // unknown / tombstoned_at_ms intentionally not surfaced.
-            ..
-        } = r;
-
-        let mut field_handles: Vec<FieldHandle> = Vec::with_capacity(fields.len());
-        for (name, field) in fields {
-            field_handles.push(FieldHandle::new(
-                name,
-                field.value,
-                field.last_mod,
-                field.device_uuid,
-            ));
-        }
-        records.push(Record::new(
-            record_uuid,
-            record_type,
-            tags,
-            created_at_ms,
-            last_mod_ms,
-            tombstone,
-            field_handles,
-        ));
-    }
-
-    Ok(BlockReadOutput::new(
-        plaintext.block_uuid,
-        plaintext.block_name,
-        records,
-    ))
+    Ok(plaintext)
 }
 
 fn handle_wiped() -> FfiVaultError {

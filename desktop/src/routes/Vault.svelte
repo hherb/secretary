@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { sessionState } from '../lib/stores';
+  import { sessionState, refreshManifest } from '../lib/stores';
   import { userMessageForWarning } from '../lib/errors';
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
-  import { browseNav, openBlock } from '../lib/browse';
+  import { browseNav, openBlock, openNewBlock, back } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
+  import NewBlock from '../components/edit/NewBlock.svelte';
+  import RecordEditor from '../components/edit/RecordEditor.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -51,6 +53,7 @@
     {/each}
 
     {#if $browseNav.level === 'blocks'}
+      <button type="button" class="vault__new-block" onclick={() => openNewBlock()}>+ New block</button>
       <div class="vault__block-count">
         {manifest.blockCount} block{manifest.blockCount === 1 ? '' : 's'}
       </div>
@@ -61,8 +64,27 @@
       </div>
     {:else if $browseNav.level === 'records'}
       <RecordList block={$browseNav.block} />
-    {:else}
+    {:else if $browseNav.level === 'fields'}
       <FieldViewer block={$browseNav.block} record={$browseNav.record} />
+    {:else if $browseNav.level === 'newBlock'}
+      <NewBlock
+        onCreated={async () => { try { await refreshManifest(); } finally { back(); } }}
+        onCancel={() => back()}
+      />
+    {:else if $browseNav.level === 'newRecord'}
+      <RecordEditor
+        block={$browseNav.block}
+        record={null}
+        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
+        onCancel={() => back()}
+      />
+    {:else}
+      <RecordEditor
+        block={$browseNav.block}
+        record={$browseNav.record}
+        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
+        onCancel={() => back()}
+      />
     {/if}
 
     <SettingsDialog

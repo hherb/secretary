@@ -31,6 +31,8 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
                     records = listOf(
                         RecordInput(
                             recordUuid = SAVE_BLOCK_NEW_RECORD_UUID,
+                            recordType = "",
+                            tags = emptyList(),
                             fields = listOf(
                                 FieldInput("title", FieldInputValue.Text("wifi password")),
                                 FieldInput(
@@ -164,6 +166,8 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
                             listOf(
                                 RecordInput(
                                     SAVE_BLOCK_NEW_RECORD_UUID,
+                                    "",
+                                    emptyList(),
                                     listOf(FieldInput("k", FieldInputValue.Text("v"))),
                                 ),
                             ),

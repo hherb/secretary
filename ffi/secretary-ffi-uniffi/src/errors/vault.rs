@@ -36,6 +36,10 @@ pub enum VaultError {
     FolderInvalid { detail: String },
     #[error("block not found in manifest: {uuid_hex}")]
     BlockNotFound { uuid_hex: String },
+    /// Record UUID not found among the block's live records. Mirrors
+    /// `FfiVaultError::RecordNotFound` (D.1.4 `edit_record`).
+    #[error("record not found in block: {uuid_hex}")]
+    RecordNotFound { uuid_hex: String },
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
     #[error("save-time crypto failure: {detail}")]
@@ -80,6 +84,7 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::CorruptVault { detail } => VaultError::CorruptVault { detail },
             FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
             FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
+            FfiVaultError::RecordNotFound { uuid_hex } => VaultError::RecordNotFound { uuid_hex },
             FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure { detail },
             FfiVaultError::NotAuthor {
                 expected_fingerprint_hex,
@@ -166,6 +171,20 @@ mod tests {
             panic!("expected BlockNotFound");
         };
         assert_eq!(uuid_hex, "abc123");
+    }
+
+    #[test]
+    fn vault_error_record_not_found_maps_one_to_one() {
+        // Pin the D.1.4 RecordNotFound variant translation. A future
+        // rename or accidental remap to BlockNotFound would fail here.
+        use FfiVaultError as B;
+        let rnf = VaultError::from(B::RecordNotFound {
+            uuid_hex: "def456".to_string(),
+        });
+        let VaultError::RecordNotFound { uuid_hex } = rnf else {
+            panic!("expected RecordNotFound");
+        };
+        assert_eq!(uuid_hex, "def456");
     }
 
     #[test]

@@ -23,6 +23,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.CardDecodeFailure -> "CardDecodeFailure"
     is VaultException.BlockUuidAlreadyLive -> "BlockUuidAlreadyLive"
     is VaultException.BlockNotInTrash -> "BlockNotInTrash"
+    is VaultException.RecordNotFound -> "RecordNotFound"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -43,5 +44,6 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.RecipientAlreadyPresent,
     is VaultException.NotAuthor,
     is VaultException.MissingRecipientCard,
-    is VaultException.BlockNotFound -> null
+    is VaultException.BlockNotFound,
+    is VaultException.RecordNotFound -> null
 }

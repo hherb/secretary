@@ -12,7 +12,10 @@ import type { BlockSummaryDto, RecordDto } from './ipc';
 export type BrowseNav =
   | { level: 'blocks' }
   | { level: 'records'; block: BlockSummaryDto }
-  | { level: 'fields'; block: BlockSummaryDto; record: RecordDto };
+  | { level: 'fields'; block: BlockSummaryDto; record: RecordDto }
+  | { level: 'newBlock' }
+  | { level: 'newRecord'; block: BlockSummaryDto }
+  | { level: 'editRecord'; block: BlockSummaryDto; record: RecordDto };
 
 const store = writable<BrowseNav>({ level: 'blocks' });
 
@@ -28,8 +31,23 @@ export function openRecord(record: RecordDto): void {
   );
 }
 
+export function openNewBlock(): void {
+  store.set({ level: 'newBlock' });
+}
+
+export function openNewRecord(block: BlockSummaryDto): void {
+  store.set({ level: 'newRecord', block });
+}
+
+export function openEditRecord(block: BlockSummaryDto, record: RecordDto): void {
+  store.set({ level: 'editRecord', block, record });
+}
+
 export function back(): void {
   store.update((s) => {
+    if (s.level === 'editRecord') return { level: 'fields', block: s.block, record: s.record };
+    if (s.level === 'newRecord') return { level: 'records', block: s.block };
+    if (s.level === 'newBlock') return { level: 'blocks' };
     if (s.level === 'fields') return { level: 'records', block: s.block };
     if (s.level === 'records') return { level: 'blocks' };
     return s;

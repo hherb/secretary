@@ -59,7 +59,9 @@ func blockInputFromInputs(_ inputs: [String: Any]) -> BlockInput {
             }
             return FieldInput(name: fname, value: value)
         }
-        return RecordInput(recordUuid: decodeHex(recordUuidStr), fields: fields)
+        let recordType = rec["record_type"] as? String ?? ""
+        let tags: [String] = (rec["tags"] as? [String]) ?? []
+        return RecordInput(recordUuid: decodeHex(recordUuidStr), recordType: recordType, tags: tags, fields: fields)
     }
     return BlockInput(blockUuid: decodeHex(blockUuidHex), blockName: blockName, records: records)
 }

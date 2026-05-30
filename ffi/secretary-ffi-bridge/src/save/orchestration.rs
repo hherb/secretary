@@ -159,7 +159,7 @@ pub fn save_block(
 /// `VaultError` surface; if they did fire they would represent a
 /// programmer error from the save path's perspective and folding to
 /// `SaveCryptoFailure` is the right surface.
-fn map_core_vault_error(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
     match &e {
         VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
             detail: format!("{context}: {source}"),

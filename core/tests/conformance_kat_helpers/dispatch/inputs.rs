@@ -44,10 +44,11 @@ pub(super) fn uuid_from_inputs(
 }
 
 /// Build a `BlockInput` from the JSON `inputs.records` array. Each
-/// record has `record_uuid_hex` + `fields[]`; each field has `name`,
-/// `type` (`"text"` or `"bytes"`), and a value (`value_utf8` or
-/// `value_hex`). The bridge's `RecordInput` does not carry `record_type`
-/// or `tags` (both default to empty inside `into_core_record`).
+/// record has `record_uuid_hex`, optional `record_type` (defaults to
+/// `""`), optional `tags` (defaults to `[]`), and `fields[]`; each
+/// field has `name`, `type` (`"text"` or `"bytes"`), and a value
+/// (`value_utf8` or `value_hex`). (#141: `record_type` + `tags` are
+/// now threaded through `RecordInput` instead of being hardcoded empty.)
 ///
 /// Wrong-length `block_uuid_*` or `record_uuid_*` inputs synthesize
 /// `BridgeOrSyntheticErr::Synthetic { variant: "InvalidArgument" }`
@@ -118,8 +119,24 @@ pub(super) fn block_input_from_inputs(
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let record_type = rec
+                        .get("record_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tags: Vec<String> = rec
+                        .get("tags")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|t| t.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     Ok(RecordInput {
                         record_uuid,
+                        record_type,
+                        tags,
                         fields,
                     })
                 })

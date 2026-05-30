@@ -35,6 +35,7 @@ create_exception!(secretary_ffi_py, VaultMismatchFolder, PyException);
 create_exception!(secretary_ffi_py, VaultCorruptVault, PyException);
 create_exception!(secretary_ffi_py, VaultFolderInvalid, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotFound, PyException);
+create_exception!(secretary_ffi_py, VaultRecordNotFound, PyException);
 create_exception!(secretary_ffi_py, VaultSaveCryptoFailure, PyException);
 // B.4d share_block error surface — 4 typed exception classes mirroring
 // the bridge's FfiVaultError variants.
@@ -86,6 +87,11 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             // can `except VaultBlockNotFound as e: e.args[0]` to get the
             // hex string back.
             VaultBlockNotFound::new_err(uuid_hex)
+        }
+        FfiVaultError::RecordNotFound { uuid_hex } => {
+            // Same args[0] contract as VaultBlockNotFound: the record-UUID
+            // hex rides as the exception payload.
+            VaultRecordNotFound::new_err(uuid_hex)
         }
         FfiVaultError::SaveCryptoFailure { detail } => VaultSaveCryptoFailure::new_err(detail),
         // B.4d share_block error surface — same args[0] contract as the
