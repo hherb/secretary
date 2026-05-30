@@ -125,6 +125,22 @@ pub enum FfiVaultError {
         uuid_hex: String,
     },
 
+    /// The requested record UUID does not match any LIVE record in the
+    /// target block. Raised by the D.1.4 `edit_record` primitive when the
+    /// caller asks to edit a record that is absent or tombstoned. Distinct
+    /// from [`Self::BlockNotFound`] (the block itself is missing) and from
+    /// [`Self::CorruptVault`] (the block decrypted fine, the record just
+    /// isn't there). Constructed directly inside the bridge — NOT reachable
+    /// through `From<core::VaultError>`.
+    ///
+    /// `uuid_hex` is the 32-char lowercase hex of the requested 16-byte
+    /// record UUID, for parity with [`Self::BlockNotFound`]'s `uuid_hex`.
+    #[error("record not found in block: {uuid_hex}")]
+    RecordNotFound {
+        /// 32-char lowercase hex of the requested 16-byte record UUID.
+        uuid_hex: String,
+    },
+
     /// Save-time crypto failure on already-validated inputs. Distinguished
     /// from `CorruptVault` (which means on-disk bytes failed verification)
     /// because save failures here originate from in-memory state that

@@ -221,6 +221,15 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             detail: format!("block not found in manifest: {uuid_hex}"),
         },
 
+        // Record-lookup miss from the D.1.4 `edit_record` primitive: the
+        // user (or a stale frontend) asked to edit a record that is absent
+        // or tombstoned. Surface the dedicated typed variant so the editor
+        // can react (e.g. the record was deleted under it). The uuid hex is
+        // non-secret (a caller-minted UUID) and crosses the seam.
+        FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
+            record_uuid_hex: uuid_hex,
+        },
+
         // Block-share authorization failures, recipient table mismatches,
         // and trash/restore preconditions: unreachable in D.1.1 (no
         // share / no trash UI). Map to Internal so an accidental

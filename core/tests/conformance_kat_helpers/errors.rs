@@ -12,6 +12,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::CorruptVault { .. } => "CorruptVault",
         E::FolderInvalid { .. } => "FolderInvalid",
         E::BlockNotFound { .. } => "BlockNotFound",
+        E::RecordNotFound { .. } => "RecordNotFound",
         E::SaveCryptoFailure { .. } => "SaveCryptoFailure",
         E::NotAuthor { .. } => "NotAuthor",
         E::RecipientAlreadyPresent => "RecipientAlreadyPresent",
