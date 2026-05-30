@@ -19,6 +19,11 @@
 
   let draft = $state<RecordDraft>(emptyDraft());
   let submitting = $state(false);
+  // `record` is captured ONCE at mount (the parent re-mounts RecordEditor per
+  // edit session), so seeding `loading` from it is intentional — it keeps
+  // loading=true from the very first render in edit mode and avoids a flash of
+  // the empty form before revealRecord resolves. The svelte-check
+  // state_referenced_locally note here is expected and intentional.
   let loading = $state(record !== null);
   let errMsg = $state<ReturnType<typeof userMessageFor> | null>(null);
 

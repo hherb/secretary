@@ -728,3 +728,10 @@ body {
 .field-row-editor__error { grid-column: 1 / -1; color: var(--err, #d44); font-size: 0.85em; }
 .tags-editor { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .tags-editor__chip { background: var(--chip-bg, #234); border-radius: 12px; padding: 0.1rem 0.5rem; }
+.tags-editor__add { display: flex; align-items: center; gap: 0.4rem; }
+.editor__loading { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.editor__add-field { background: none; border: none; cursor: pointer; color: var(--color-primary); font-size: var(--font-size-sm); padding: var(--space-1) 0; }
+.editor__add-field:hover:not(:disabled) { color: var(--color-primary-hover); }
+.editor__error-title { font-weight: 600; }
+.editor__error-detail { margin-top: var(--space-1); font-size: var(--font-size-xs); }
+.wizard__error-detail { margin-top: var(--space-1); font-size: var(--font-size-xs); }

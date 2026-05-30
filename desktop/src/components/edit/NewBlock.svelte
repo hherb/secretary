@@ -13,7 +13,8 @@
     if (submitting) return;
     submitting = true; errMsg = null;
     try {
-      const block = await createBlock(name.trim());
+      name = name.trim();
+      const block = await createBlock(name);
       onCreated(block);
     } catch (err) {
       errMsg = userMessageFor(err as AppError);
