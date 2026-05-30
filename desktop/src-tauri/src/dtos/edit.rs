@@ -105,8 +105,8 @@ mod tests {
         assert_eq!(dto.tags, vec!["work".to_string()]);
         assert_eq!(dto.fields.len(), 2);
         assert_eq!(dto.fields[0].name, "user");
-        matches!(dto.fields[0].value, FieldValueDto::Text { .. });
-        matches!(dto.fields[1].value, FieldValueDto::Bytes { .. });
+        assert!(matches!(dto.fields[0].value, FieldValueDto::Text { .. }));
+        assert!(matches!(dto.fields[1].value, FieldValueDto::Bytes { .. }));
     }
 
     #[test]
