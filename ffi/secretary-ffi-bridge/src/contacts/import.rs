@@ -5,7 +5,7 @@ use std::io::Write;
 
 use secretary_core::vault::format_uuid_hyphenated;
 
-use crate::contacts::{read_verified_card, ContactSummary};
+use crate::contacts::{handle_wiped, read_verified_card, ContactSummary};
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -25,11 +25,7 @@ pub fn import_contact_card(
     card_bytes: &[u8],
 ) -> Result<ContactSummary, FfiVaultError> {
     let card = read_verified_card(card_bytes)?;
-    let folder = manifest
-        .vault_folder()
-        .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been wiped".to_string(),
-        })?;
+    let folder = manifest.vault_folder().ok_or_else(handle_wiped)?;
     let contacts_dir = folder.join("contacts");
     std::fs::create_dir_all(&contacts_dir).map_err(|e| FfiVaultError::FolderInvalid {
         detail: format!("ensure contacts/: {e}"),

@@ -2,7 +2,7 @@
 //! in `contacts/`, omitting the owner's own self-card, counting unreadable /
 //! unverifiable files rather than silently dropping them (spec §3, §9.5).
 
-use crate::contacts::{read_verified_card, ContactSummary};
+use crate::contacts::{handle_wiped, read_verified_card, ContactSummary};
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -53,10 +53,4 @@ pub fn enumerate_contact_cards(
         }
     }
     Ok((summaries, unreadable))
-}
-
-fn handle_wiped() -> FfiVaultError {
-    FfiVaultError::CorruptVault {
-        detail: "vault manifest handle has been wiped".to_string(),
-    }
 }

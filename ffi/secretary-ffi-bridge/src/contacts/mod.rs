@@ -43,3 +43,12 @@ pub(crate) fn read_verified_card(bytes: &[u8]) -> Result<ContactCard, FfiVaultEr
         })?;
     Ok(card)
 }
+
+/// The error returned when an `OpenVaultManifest` accessor yields `None`
+/// because the handle was wiped (zeroized on lock). Shared by every
+/// `contacts` primitive so the observable error is identical across them.
+pub(crate) fn handle_wiped() -> FfiVaultError {
+    FfiVaultError::CorruptVault {
+        detail: "vault manifest handle has been wiped".to_string(),
+    }
+}

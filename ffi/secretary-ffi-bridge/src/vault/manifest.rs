@@ -212,9 +212,9 @@ impl OpenVaultManifest {
     /// fold 3 lock acquisitions into 1. B.4c (`save_block`) and B.4d
     /// (`share_block`) ultimately landed using `snapshot_for_save_block`
     /// for the same single-lock atomicity. D.1.6's `crate::contacts`
-    /// primitives (`enumerate_contact_cards`, `import_contact_card`,
-    /// `share_block_to`) are now the live callers — they need the vault
-    /// folder path to resolve `contacts/` without the manifest body.
+    /// primitives `enumerate_contact_cards` and `import_contact_card` are
+    /// now the live callers — they need the vault folder path to resolve
+    /// `contacts/` without the manifest body.
     pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
         lock_or_recover(&self.inner)
             .as_ref()
