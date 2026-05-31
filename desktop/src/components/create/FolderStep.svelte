@@ -12,6 +12,7 @@
   // seedPath is read ONCE to seed the picker; thereafter `picked` is
   // user-driven. The svelte-check `state_referenced_locally` note is expected
   // and intentional — the seed is deliberately not reactive after mount.
+  // svelte-ignore state_referenced_locally
   let picked = $state(seedPath);
   let probed = $state<{ exists: boolean; isEmpty: boolean } | null>(null);
   let subfolderName = $state('');

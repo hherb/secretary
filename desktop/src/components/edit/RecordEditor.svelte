@@ -24,6 +24,7 @@
   // loading=true from the very first render in edit mode and avoids a flash of
   // the empty form before revealRecord resolves. The svelte-check
   // state_referenced_locally note here is expected and intentional.
+  // svelte-ignore state_referenced_locally
   let loading = $state(record !== null);
   let errMsg = $state<ReturnType<typeof userMessageFor> | null>(null);
 

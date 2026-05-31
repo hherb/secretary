@@ -16,6 +16,7 @@
   // is expected — the read is intentionally a one-time mount-time capture.
   const created = get(createdVaultPath);
   if (created.length > 0) {
+    // svelte-ignore state_referenced_locally
     if (folderPath.length === 0) {
       folderPath = created;
     }
