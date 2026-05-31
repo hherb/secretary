@@ -212,9 +212,9 @@ impl OpenVaultManifest {
     /// fold 3 lock acquisitions into 1. B.4c (`save_block`) and B.4d
     /// (`share_block`) ultimately landed using `snapshot_for_save_block`
     /// for the same single-lock atomicity. D.1.6's `crate::contacts`
-    /// primitives `enumerate_contact_cards` and `import_contact_card` are
-    /// now the live callers — they need the vault folder path to resolve
-    /// `contacts/` without the manifest body.
+    /// primitives `enumerate_contact_cards`, `import_contact_card`, and
+    /// `share_block_to` are now the live callers — they need the vault
+    /// folder path to resolve `contacts/` without the manifest body.
     pub(crate) fn vault_folder(&self) -> Option<std::path::PathBuf> {
         lock_or_recover(&self.inner)
             .as_ref()
@@ -229,13 +229,10 @@ impl OpenVaultManifest {
     /// Originally consumed by `crate::record::read_block`; B.4b's
     /// `snapshot_for_read_block` superseded the per-field call site to
     /// fold 3 lock acquisitions into 1. B.4c (`save_block`) ultimately
-    /// landed using `snapshot_for_save_block` instead, so this per-field
-    /// accessor has no live caller today — only the post-wipe contract
-    /// test in the sibling `tests` module references it. Retained for
-    /// forward-compat with Sub-project C (vector-clock comparison may
-    /// want the manifest body without the owner card); revisit for
-    /// deletion when C's surface stabilizes (issue #45).
-    #[allow(dead_code)]
+    /// landed using `snapshot_for_save_block` instead. D.1.6's
+    /// `crate::contacts::share_block_to` is now the live caller — it reads
+    /// the target block's current `recipients` set (to assemble the
+    /// existing-recipient cards) without needing the owner card.
     pub(crate) fn manifest_body(&self) -> Option<Manifest> {
         lock_or_recover(&self.inner)
             .as_ref()

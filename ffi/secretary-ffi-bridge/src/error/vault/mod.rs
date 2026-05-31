@@ -226,6 +226,15 @@ pub enum FfiVaultError {
         uuid_hex: String,
     },
 
+    /// A contact card referenced by a share operation (an existing recipient
+    /// listed in the manifest, or the new recipient) has no `.card` file in
+    /// `contacts/`. Spec §5, §9.3.
+    #[error("contact not found in vault: {uuid_hex}")]
+    ContactNotFound {
+        /// 32-char lowercase hex of the contact UUID.
+        uuid_hex: String,
+    },
+
     /// `restore_block`: the UUID has both a `TrashEntry` and a live
     /// `BlockEntry`. The caller must first trash the live copy before
     /// restoring. Folder-in counterpart to

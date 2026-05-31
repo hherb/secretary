@@ -9,9 +9,20 @@ mod share_block_helpers;
 
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::format_uuid_hyphenated;
-use secretary_ffi_bridge::{enumerate_contact_cards, import_contact_card, FfiVaultError};
-use share_block_helpers::{fresh_writable_vault, mint_external_card};
+use secretary_ffi_bridge::{
+    enumerate_contact_cards, import_contact_card, share_block_to, FfiVaultError,
+};
+use share_block_helpers::{
+    fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
+    NEW_RECORD_UUID, NOW_MS_BASE,
+};
 use std::fs;
+
+fn uuid_of(card_bytes: &[u8]) -> [u8; 16] {
+    ContactCard::from_canonical_cbor(card_bytes)
+        .unwrap()
+        .contact_uuid
+}
 
 /// Write raw card bytes into the vault's contacts/ dir under the canonical
 /// hyphenated filename. Returns the card's contact_uuid.
@@ -167,4 +178,115 @@ fn import_rejects_tampered_card() {
     tampered[n - 1] ^= 0xFF;
     let err = import_contact_card(&manifest, &tampered).expect_err("tampered must reject");
     assert!(matches!(err, FfiVaultError::CardDecodeFailure { .. }));
+}
+
+#[test]
+fn share_block_to_appends_recipient() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "password",
+        "hunter2",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("import peer");
+
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1_000,
+    )
+    .expect("share_block_to ok");
+
+    let entry = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable");
+    assert_eq!(entry.recipient_uuids.len(), 2, "owner + peer");
+    assert!(entry.recipient_uuids.contains(&peer_uuid));
+}
+
+#[test]
+fn share_block_to_unknown_recipient_card_is_contact_not_found() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let err = share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        [0x99; 16],
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("no card on disk");
+    assert!(matches!(err, FfiVaultError::ContactNotFound { .. }));
+}
+
+#[test]
+fn share_block_to_unknown_block_is_block_not_found() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).unwrap();
+    let err = share_block_to(
+        &identity,
+        &manifest,
+        [0x77; 16],
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("unknown block");
+    assert!(matches!(err, FfiVaultError::BlockNotFound { .. }));
+}
+
+#[test]
+fn share_block_to_twice_is_recipient_already_present() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).unwrap();
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .unwrap();
+    let err = share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 2,
+    )
+    .expect_err("already a recipient");
+    assert!(matches!(err, FfiVaultError::RecipientAlreadyPresent));
 }

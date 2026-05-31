@@ -12,6 +12,9 @@ pub use enumerate::enumerate_contact_cards;
 mod import;
 pub use import::import_contact_card;
 
+mod share;
+pub use share::share_block_to;
+
 use secretary_core::identity::card::ContactCard;
 
 use crate::error::FfiVaultError;
