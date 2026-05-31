@@ -69,6 +69,16 @@ export interface RevealedFieldDto {
   value: string;
 }
 
+export interface ContactSummaryDto {
+  contactUuidHex: string;
+  displayName: string;
+}
+
+export interface ListContactsDto {
+  contacts: ContactSummaryDto[];
+  unreadableCount: number;
+}
+
 export interface CreateVaultDto {
   mnemonic: string;
 }
@@ -228,6 +238,18 @@ export async function getSettings(): Promise<SettingsDto> {
 
 export async function setSettings(settings: SettingsDto): Promise<void> {
   return call<void>('set_settings', { settings });
+}
+
+export async function listContacts(): Promise<ListContactsDto> {
+  return call<ListContactsDto>('list_contacts', {});
+}
+
+export async function importContact(cardPath: string): Promise<ContactSummaryDto> {
+  return call<ContactSummaryDto>('import_contact', { cardPath });
+}
+
+export async function shareBlock(blockUuidHex: string, recipientUuidHex: string): Promise<void> {
+  return call<void>('share_block', { blockUuidHex, recipientUuidHex });
 }
 
 export async function lock(): Promise<void> {

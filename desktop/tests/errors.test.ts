@@ -35,6 +35,11 @@ describe('userMessageFor', () => {
     { code: 'vault_create_failed' },
     { code: 'block_restore_conflict', block_uuid_hex: 'ab' },
     { code: 'trash_entry_not_found', block_uuid_hex: 'ab' },
+    { code: 'not_author' },
+    { code: 'recipient_already_present' },
+    { code: 'missing_recipient_card' },
+    { code: 'contact_already_exists', contact_uuid_hex: 'ab' },
+    { code: 'contact_not_found', contact_uuid_hex: 'ab' },
     { code: 'internal' }
   ];
 
@@ -171,6 +176,36 @@ describe('trash error codes', () => {
   });
 });
 
+describe('share / contact error codes', () => {
+  it('not_author has a sensible title + author hint', () => {
+    const m = userMessageFor({ code: 'not_author' });
+    expect(m.title.length).toBeGreaterThan(0);
+    expect(m.actionHint).toMatch(/author/i);
+  });
+
+  it('recipient_already_present has a sensible title', () => {
+    const m = userMessageFor({ code: 'recipient_already_present' });
+    expect(m.title).toMatch(/already shared/i);
+  });
+
+  it('missing_recipient_card has a re-import hint', () => {
+    const m = userMessageFor({ code: 'missing_recipient_card' });
+    expect(m.title.length).toBeGreaterThan(0);
+    expect(m.actionHint).toMatch(/re-?import/i);
+  });
+
+  it('contact_already_exists has a sensible title', () => {
+    const m = userMessageFor({ code: 'contact_already_exists', contact_uuid_hex: 'ab' });
+    expect(m.title).toMatch(/already/i);
+  });
+
+  it('contact_not_found has a refresh hint', () => {
+    const m = userMessageFor({ code: 'contact_not_found', contact_uuid_hex: 'ab' });
+    expect(m.title).toMatch(/not found/i);
+    expect(m.actionHint).toMatch(/refresh/i);
+  });
+});
+
 describe('new browse error codes', () => {
   it.each(['block_not_found', 'record_not_found', 'field_not_found'])(
     '%s maps to a non-empty title',
@@ -215,6 +250,11 @@ describe('error code allowlists', () => {
       'vault_create_failed',
       'block_restore_conflict',
       'trash_entry_not_found',
+      'not_author',
+      'recipient_already_present',
+      'missing_recipient_card',
+      'contact_already_exists',
+      'contact_not_found',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());
