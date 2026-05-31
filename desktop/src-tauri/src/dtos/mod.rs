@@ -13,15 +13,18 @@
 //! Submodules: [`manifest`] (D.1.1 manifest/summary/settings DTOs),
 //! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs),
 //! [`create`] (D.1.3 vault-create DTOs), [`edit`] (D.1.4 record-edit DTOs),
-//! and [`trash`] (D.1.5 trashed-block DTO).
+//! [`trash`] (D.1.5 trashed-block DTO), and [`contact`] (D.1.6 contact-summary
+//! DTOs).
 
 mod browse;
+mod contact;
 mod create;
 mod edit;
 mod manifest;
 mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
+pub use contact::{ContactSummaryDto, ListContactsDto};
 pub use create::{CreateTargetProbeDto, CreateVaultDto};
 pub use edit::{
     FieldInputDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
