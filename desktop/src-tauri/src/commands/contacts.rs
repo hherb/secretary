@@ -108,8 +108,6 @@ pub fn share_block_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::VaultSession;
-    use std::sync::Mutex;
 
     #[test]
     fn list_contacts_locked_session_is_not_unlocked() {
