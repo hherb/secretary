@@ -105,6 +105,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod contacts;
 pub mod create;
 pub mod edit;
 pub mod error;
@@ -118,6 +119,7 @@ pub mod trash;
 pub mod unlock;
 pub mod vault;
 
+pub use contacts::{enumerate_contact_cards, ContactSummary};
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use edit::{
     append_record, create_block, edit_record, resurrect_record, tombstone_record, RecordContent,
