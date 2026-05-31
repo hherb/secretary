@@ -21,45 +21,38 @@
   // Record awaiting delete confirmation; the ConfirmDialog mounts while set.
   let pendingDelete = $state<RecordDto | null>(null);
 
+  // Monotonic generation counter guarding against out-of-order fetches: each
+  // load() bumps it and only writes state if it is still the newest call. One
+  // guard covers BOTH triggers — the $effect (block switch / "Show deleted"
+  // toggle) and the imperative reloads after a delete/resurrect — so a
+  // superseded in-flight readBlock can never clobber a newer result.
+  let loadSeq = 0;
+
   async function load() {
-    // reset before each fetch so a block change can't flash stale records
+    const seq = ++loadSeq;
+    // Snapshot the reactive deps up front; reset before each fetch so a block
+    // change can't flash stale records.
+    const blockUuidHex = block.blockUuidHex;
+    const includeDeleted = showDeleted;
     records = null;
     error = null;
     try {
-      const dto = await readBlock(block.blockUuidHex, showDeleted);
-      records = dto.records;
+      const dto = await readBlock(blockUuidHex, includeDeleted);
+      if (seq === loadSeq) records = dto.records;
     } catch (e) {
-      error = isAppError(e) ? e : { code: 'internal' };
+      if (seq === loadSeq) error = isAppError(e) ? e : { code: 'internal' };
     }
   }
 
   $effect(() => {
-    // Read both reactive deps in the effect body so toggling "Show deleted"
-    // OR switching blocks re-runs the fetch. The `void` reads are what
-    // register the dependency for the effect; we deliberately do NOT read
-    // `records`/`error` here (writing them is fine, reading them would make
-    // the effect self-trigger into an infinite loop).
-    const blockUuidHex = block.blockUuidHex;
-    const includeDeleted = showDeleted;
-    // Per-effect cancel guard: if the block or toggle changes while a
-    // readBlock is in flight, the superseded promise must not write state
-    // (otherwise a stale wrong-block / wrong-toggle result could clobber the
-    // newer fetch's records/error). The cleanup flips `cancelled` before the
-    // next run starts.
-    let cancelled = false;
-    void (async () => {
-      records = null;
-      error = null;
-      try {
-        const dto = await readBlock(blockUuidHex, includeDeleted);
-        if (!cancelled) records = dto.records;
-      } catch (e) {
-        if (!cancelled) error = isAppError(e) ? e : { code: 'internal' };
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Register both reactive deps so toggling "Show deleted" OR switching
+    // blocks re-runs the fetch. load() reads them again (synchronously, before
+    // its first await), but these `void` reads are what subscribe the effect.
+    // We deliberately do NOT read `records`/`error` here — writing them is
+    // fine, but reading would make the effect self-trigger into a loop.
+    void block.blockUuidHex;
+    void showDeleted;
+    void load();
   });
 
   async function onDelete(record: RecordDto) {

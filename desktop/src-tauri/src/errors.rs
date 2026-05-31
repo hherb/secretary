@@ -247,12 +247,19 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
 
         // Restore precondition: the UUID has both a live and a trashed entry.
         // Typed variant so the UI can tell the user to trash the live copy first.
+        //
+        // Contract: the bridge constructs both restore-precondition variants
+        // with `detail = hex::encode(block_uuid)` (see
+        // `trash::orchestration` restore-error mapping), so moving `detail`
+        // into `block_uuid_hex` is exact — NOT a prose message mislabeled as a
+        // UUID. If that bridge mapping ever changes, this relabel breaks.
         FfiVaultError::BlockUuidAlreadyLive { detail } => AppError::BlockRestoreConflict {
             block_uuid_hex: detail,
         },
 
         // Restore precondition: no TrashEntry or file exists for this UUID.
-        // Typed variant so the UI can distinguish "already restored" from corruption.
+        // Typed variant so the UI can distinguish "already restored" from
+        // corruption. Same bridge contract as above: `detail` is the bare hex.
         FfiVaultError::BlockNotInTrash { detail } => AppError::TrashEntryNotFound {
             block_uuid_hex: detail,
         },

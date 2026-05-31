@@ -15,12 +15,18 @@
   let entries = $state<TrashedBlockDto[] | null>(null);
   let error = $state<AppError | null>(null);
 
+  // Generation guard (see RecordList): the mount load and a post-restore
+  // reload can overlap, so only the newest load() writes `entries`.
+  let loadSeq = 0;
+
   async function load() {
+    const seq = ++loadSeq;
     error = null;
     try {
-      entries = sortTrashed(await listTrashedBlocks());
+      const sorted = sortTrashed(await listTrashedBlocks());
+      if (seq === loadSeq) entries = sorted;
     } catch (e) {
-      error = isAppError(e) ? e : { code: 'internal' };
+      if (seq === loadSeq) error = isAppError(e) ? e : { code: 'internal' };
     }
   }
 
