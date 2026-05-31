@@ -44,6 +44,7 @@ All commits are on `feature/d16-share` (branched from `main` @ `9b6b923`):
 | `484e590` | **Task 9** — `ShareDialog` (picker + inline import) + `BlockCard` 🔗 + Vault hosting + file-capable `PathPicker` + `theme.css`. |
 | `246c1a5` | Task 9 review fix — pin PathPicker file-mode + ShareDialog import/error paths. |
 | `3daf54a` | **Whole-branch review fix (C1)** — thread `ContactAlreadyExists`/`ContactNotFound` through uniffi + pyo3 + the core KAT helper (+ Swift/Kotlin conformance runners). |
+| _(PR review fix)_ | **`/review` blocker fix** — `share_block_to::load_card_bytes` now re-verifies BOTH self-signature halves at load time (the share path re-reads cards from disk, so import-time verification did not cover it; core's `share_block` uses a new recipient's KEM key with no fingerprint cross-check). Also splits `ContactNotFound` (file missing) from `FolderInvalid` (read failed). New regression test asserts a card swapped on disk after a genuine import is rejected with `CardDecodeFailure` and the block is not re-keyed. Rust totals 1144 → 1145. |
 | _(ship)_ | README/ROADMAP D.1.6 ✅ + this handoff + symlink retarget. |
 
 **Process note:** one worktree (`.worktrees/d16-share`), one reviewed commit per task + inline review-fix commits. Every per-task spec+quality review finding was fixed before proceeding; the final whole-branch review found the security posture clean and one cross-crate build break (C1), which was fixed and re-verified.

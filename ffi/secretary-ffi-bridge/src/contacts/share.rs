@@ -12,8 +12,14 @@ use crate::vault::OpenVaultManifest;
 
 /// Append one new recipient (by `contact_uuid`) to a block the owner authored.
 /// `existing_recipient_cards` are assembled from the manifest's
-/// `BlockEntry.recipients` (always includes the owner). Card bytes loaded here
-/// were self-verified at import time. NotAuthor / RecipientAlreadyPresent /
+/// `BlockEntry.recipients` (always includes the owner). Every card loaded from
+/// `contacts/` — existing recipients AND the new recipient — is re-verified
+/// (both Ed25519 ∧ ML-DSA-65 self-signature halves) at load time via
+/// [`load_card_bytes`] before its public keys are trusted; verification at
+/// import time does NOT cover this path because the cards are re-read from disk
+/// here, where a post-import swap (an attacker with write access to `contacts/`,
+/// the threat `core::vault::restore_block` guards against) would otherwise pass
+/// an unverified KEM key to the re-key. NotAuthor / RecipientAlreadyPresent /
 /// MissingRecipientCard surface unchanged from the underlying `share_block`.
 ///
 /// # Errors
@@ -22,6 +28,10 @@ use crate::vault::OpenVaultManifest;
 /// - [`FfiVaultError::BlockNotFound`] — `block_uuid` not in the manifest.
 /// - [`FfiVaultError::ContactNotFound`] — an existing recipient's card, or
 ///   the new recipient's card, has no `.card` file in `contacts/`.
+/// - [`FfiVaultError::CardDecodeFailure`] — a `.card` file on disk fails to
+///   parse or fails the both-halves self-signature check (tampered/forged).
+/// - [`FfiVaultError::FolderInvalid`] — a `.card` file exists but cannot be
+///   read (permissions, transient IO) — distinct from "not found".
 /// - Every error surfaced by [`crate::share::share_block`] (NotAuthor,
 ///   RecipientAlreadyPresent, MissingRecipientCard, CardDecodeFailure,
 ///   CorruptVault, FolderInvalid, SaveCryptoFailure).
@@ -63,12 +73,38 @@ pub fn share_block_to(
     )
 }
 
+/// Read a recipient card from `contacts/<hyphenated-uuid>.card` and re-verify
+/// both self-signature halves before returning its bytes for re-keying.
+///
+/// The verification here is the security gate for the share path: the bytes are
+/// re-read from disk (not carried over from a prior verified import), so without
+/// it a card swapped on disk after import — including a forged NEW recipient
+/// card with attacker-controlled KEM keys, which core's `share_block` would use
+/// directly with no fingerprint cross-check — would silently redirect the block
+/// re-key. Mirrors the `verify_self()` gate in `core::vault::restore_block`.
+///
+/// `ErrorKind::NotFound` → [`FfiVaultError::ContactNotFound`]; any other IO
+/// error (permissions, transient failure) → [`FfiVaultError::FolderInvalid`]
+/// so a genuine read failure is not misreported as a missing contact.
 fn load_card_bytes(
     contacts_dir: &std::path::Path,
     uuid: &[u8; 16],
 ) -> Result<Vec<u8>, FfiVaultError> {
     let path = contacts_dir.join(format!("{}.card", format_uuid_hyphenated(uuid)));
-    std::fs::read(&path).map_err(|_| FfiVaultError::ContactNotFound {
-        uuid_hex: hex::encode(uuid),
-    })
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FfiVaultError::ContactNotFound {
+                uuid_hex: hex::encode(uuid),
+            })
+        }
+        Err(e) => {
+            return Err(FfiVaultError::FolderInvalid {
+                detail: format!("read contact card {}: {e}", hex::encode(uuid)),
+            })
+        }
+    };
+    // Both-halves gate before any key in this card is trusted for re-keying.
+    crate::contacts::read_verified_card(&bytes)?;
+    Ok(bytes)
 }

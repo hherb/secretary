@@ -290,3 +290,65 @@ fn share_block_to_twice_is_recipient_already_present() {
     .expect_err("already a recipient");
     assert!(matches!(err, FfiVaultError::RecipientAlreadyPresent));
 }
+
+#[test]
+fn share_block_to_rejects_card_swapped_after_import() {
+    // Regression (PR #175 review): `share_block_to` re-reads recipient cards
+    // from disk, so it MUST re-verify the both-halves self-signature at load
+    // time. Verification at import does NOT protect this path — a card swapped
+    // in contacts/ after a genuine import (an attacker with write access, the
+    // threat restore_block guards against) would otherwise hand a forged
+    // KEM key to core's `share_block`, which uses a new recipient's key
+    // directly with no fingerprint cross-check.
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    // Genuine import: verified + written to contacts/<uuid>.card.
+    import_contact_card(&manifest, &peer).expect("genuine import ok");
+
+    // Post-import swap: overwrite the on-disk card with a signature-tampered
+    // variant (same contact_uuid → same filename). It still parses as CBOR but
+    // fails verify_self.
+    let mut tampered = peer.clone();
+    let n = tampered.len();
+    tampered[n - 1] ^= 0xFF;
+    let path = tmp
+        .path()
+        .join("contacts")
+        .join(format!("{}.card", format_uuid_hyphenated(&peer_uuid)));
+    fs::write(&path, &tampered).expect("overwrite imported card with tampered bytes");
+
+    let err = share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("tampered recipient card must be rejected before re-key");
+    assert!(
+        matches!(err, FfiVaultError::CardDecodeFailure { .. }),
+        "got {err:?}"
+    );
+
+    // The block must NOT have been re-keyed: still owner-only (1 recipient).
+    let entry = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable");
+    assert_eq!(
+        entry.recipient_uuids.len(),
+        1,
+        "owner only; the rejected share must not have re-keyed the block"
+    );
+    assert!(!entry.recipient_uuids.contains(&peer_uuid));
+}
