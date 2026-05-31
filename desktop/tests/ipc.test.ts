@@ -192,7 +192,7 @@ describe('ipc wrappers — readBlock', () => {
         fields: [{ name: 'password', lastModMs: 2, isText: true, isBytes: false }] }]
     });
     const dto = await readBlock('ab');
-    expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab' });
+    expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false });
     expect(dto.records[0].recordType).toBe('login');
   });
 });

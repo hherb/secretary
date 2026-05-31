@@ -1,7 +1,7 @@
 # NEXT_SESSION.md — D.1.5 ✅ delete/trash (record tombstone/resurrect + block trash/restore)
 
 **Session date:** 2026-05-31 (D.1.5 — the fifth Sub-project D feature slice, built on D.1.1–D.1.4). Authored spec + plan via brainstorming → writing-plans, then executed all 7 implementation tasks via subagent-driven development (one implementer per task + spec review + quality review after each + final whole-branch review).
-**Status:** D.1.5 ✅ complete on branch `feature/d15-delete`; **PR open** against `main` (final whole-branch review: Ready to merge / security CLEAN on all invariants). All automated gates green. The one human gate left is the **manual GUI smoke** (§(3)) — it cannot run headless; it is the pre-merge gate.
+**Status:** D.1.5 ✅ complete on branch `feature/d15-delete`; **PR open** against `main` (final whole-branch review: Ready to merge / security CLEAN on all invariants). A follow-up code review was run on the PR and its findings applied (errors.rs bridge-contract comment; RecordList/TrashView loader race guards; #172 filed). All automated gates green. The one human gate left is the **manual GUI smoke** (§(3)) — it cannot run headless; it is the pre-merge gate.
 
 ## (1) What we shipped this session
 

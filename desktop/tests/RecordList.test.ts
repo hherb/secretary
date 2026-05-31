@@ -19,7 +19,7 @@ describe('RecordList', () => {
     });
     const { getByText } = render(RecordList, { props: { block: BLOCK } });
     await waitFor(() => expect(getByText('login')).toBeTruthy());
-    expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab' });
+    expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false });
   });
 
   it('renders an empty-state when the block has no records', async () => {

@@ -20,7 +20,7 @@ use tauri::{Emitter, Manager};
 use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
-use secretary_desktop::commands::{browse, create, edit, lock, settings, unlock, vault};
+use secretary_desktop::commands::{browse, create, delete, edit, lock, settings, unlock, vault};
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
 use secretary_desktop::timer::{tick, TickOutcome};
@@ -86,6 +86,11 @@ fn main() {
             edit::save_record,
             edit::save_record_edit,
             edit::reveal_record,
+            delete::tombstone_record,
+            delete::resurrect_record,
+            delete::trash_block,
+            delete::restore_block,
+            delete::list_trashed_blocks,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of

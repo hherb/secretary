@@ -21,6 +21,7 @@
 
 pub mod browse;
 pub mod create;
+pub mod delete;
 pub mod edit;
 pub mod lock;
 pub mod settings;

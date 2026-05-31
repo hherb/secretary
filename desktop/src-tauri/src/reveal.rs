@@ -11,16 +11,23 @@ use secretary_ffi_bridge::{BlockReadOutput, FieldHandle, Record};
 
 use crate::dtos::{BlockDetailDto, FieldMetaDto, RecordDto};
 
-/// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`],
-/// **skipping tombstoned records** (trash/restore is D.1.5). Carries only
-/// plaintext metadata — never calls `expose_text`/`expose_bytes`.
-pub fn project_block_detail(block_uuid_hex: String, output: &BlockReadOutput) -> BlockDetailDto {
+/// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`]. The
+/// `include_deleted` gate decides whether tombstoned records cross the IPC
+/// seam: when `false` (default), they are skipped (live-only, the D.1.2
+/// behaviour); when `true`, they are emitted carrying `tombstoned: true` for
+/// the restore UI. Carries only plaintext metadata — never calls
+/// `expose_text`/`expose_bytes`.
+pub fn project_block_detail(
+    block_uuid_hex: String,
+    output: &BlockReadOutput,
+    include_deleted: bool,
+) -> BlockDetailDto {
     let mut records = Vec::with_capacity(output.record_count());
     for i in 0..output.record_count() {
         let Some(record) = output.record_at(i) else {
             continue;
         };
-        if record.tombstone() {
+        if record.tombstone() && !include_deleted {
             continue;
         }
         records.push(project_record(&record));
@@ -51,6 +58,7 @@ fn project_record(record: &Record) -> RecordDto {
         // with the fields array under a concurrent wipe().
         field_count: fields.len() as u64,
         fields,
+        tombstoned: record.tombstone(),
     }
 }
 

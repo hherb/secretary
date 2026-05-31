@@ -1,14 +1,17 @@
 <script lang="ts">
   import { sessionState, refreshManifest } from '../lib/stores';
-  import { userMessageForWarning } from '../lib/errors';
+  import { userMessageForWarning, userMessageFor, type AppError } from '../lib/errors';
+  import { trashBlock, isAppError, type BlockSummaryDto } from '../lib/ipc';
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
-  import { browseNav, openBlock, openNewBlock, back } from '../lib/browse';
+  import { browseNav, openBlock, openNewBlock, openTrash, back } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
   import NewBlock from '../components/edit/NewBlock.svelte';
   import RecordEditor from '../components/edit/RecordEditor.svelte';
+  import TrashView from '../components/delete/TrashView.svelte';
+  import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -33,6 +36,25 @@
   );
 
   let settingsOpen = $state(false);
+  // Block awaiting trash confirmation; ConfirmDialog mounts while set.
+  let pendingTrash = $state<BlockSummaryDto | null>(null);
+  // Trash flow is initiated here (not in a child editor) so its typed
+  // error surfaces inline on the blocks pane, mirroring how NewBlock /
+  // RecordList render their own `role="alert"` rather than a global toast.
+  let trashError = $state<AppError | null>(null);
+
+  async function confirmTrash() {
+    const target = pendingTrash;
+    if (!target) return;
+    pendingTrash = null;
+    trashError = null;
+    try {
+      await trashBlock(target.blockUuidHex);
+      await refreshManifest();
+    } catch (err) {
+      trashError = isAppError(err) ? err : { code: 'internal' };
+    }
+  }
 </script>
 
 {#if unlocked}
@@ -54,14 +76,21 @@
 
     {#if $browseNav.level === 'blocks'}
       <button type="button" class="vault__new-block" onclick={() => openNewBlock()}>+ New block</button>
+      <button type="button" class="vault__trash-entry" onclick={() => openTrash()}>🗑 Trash</button>
+      {#if trashError}
+        {@const msg = userMessageFor(trashError)}
+        <p class="vault__trash-error" role="alert">{msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}</p>
+      {/if}
       <div class="vault__block-count">
         {manifest.blockCount} block{manifest.blockCount === 1 ? '' : 's'}
       </div>
       <div class="vault__block-list">
         {#each manifest.blockSummaries as block (block.blockUuidHex)}
-          <BlockCard {block} onClick={openBlock} />
+          <BlockCard {block} onClick={openBlock} onTrash={(b) => (pendingTrash = b)} />
         {/each}
       </div>
+    {:else if $browseNav.level === 'trash'}
+      <TrashView />
     {:else if $browseNav.level === 'records'}
       <RecordList block={$browseNav.block} />
     {:else if $browseNav.level === 'fields'}
@@ -91,5 +120,15 @@
       bind:open={settingsOpen}
       onClose={() => (settingsOpen = false)}
     />
+
+    {#if pendingTrash}
+      <ConfirmDialog
+        title="Move this block to Trash?"
+        body="It moves to Trash and can be restored from there."
+        confirmLabel="Trash"
+        onConfirm={confirmTrash}
+        onCancel={() => (pendingTrash = null)}
+      />
+    {/if}
   </div>
 {/if}

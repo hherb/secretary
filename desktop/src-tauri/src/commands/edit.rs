@@ -125,12 +125,7 @@ pub fn create_block_impl(
         // Project the new block from the refreshed manifest so the list can refresh.
         // Sound: bridge_create_block → save_plaintext → replace_manifest_and_file
         // updates the in-memory manifest before returning.
-        let summary = u
-            .manifest
-            .block_summaries()
-            .iter()
-            .find(|b| b.block_uuid == block_uuid)
-            .map(BlockSummaryDto::from)
+        let summary = crate::commands::vault::block_summary_for(&u.manifest, block_uuid)
             .ok_or_else(|| AppError::Internal {
                 detail: "created block missing from manifest".into(),
             })?;

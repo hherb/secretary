@@ -10,13 +10,16 @@
 //! - `From<&BridgeType>` impls live next to the DTO.
 //! - All DTOs `#[serde(rename_all = "camelCase")]`.
 //!
-//! Submodules: [`manifest`] (D.1.1 manifest/summary/settings DTOs) and
-//! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs).
+//! Submodules: [`manifest`] (D.1.1 manifest/summary/settings DTOs),
+//! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs),
+//! [`create`] (D.1.3 vault-create DTOs), [`edit`] (D.1.4 record-edit DTOs),
+//! and [`trash`] (D.1.5 trashed-block DTO).
 
 mod browse;
 mod create;
 mod edit;
 mod manifest;
+mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
 pub use create::{CreateTargetProbeDto, CreateVaultDto};
@@ -25,3 +28,4 @@ pub use edit::{
     RevealedFieldWithNameDto,
 };
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
+pub use trash::TrashedBlockDto;

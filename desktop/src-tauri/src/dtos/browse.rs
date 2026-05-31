@@ -25,6 +25,9 @@ pub struct RecordDto {
     pub last_mod_ms: u64,
     pub field_count: u64,
     pub fields: Vec<FieldMetaDto>,
+    /// `true` when the record is tombstoned. Only ever `true` in a projection
+    /// the caller requested with `include_deleted` (the read gate is Rust's).
+    pub tombstoned: bool,
 }
 
 /// One field's plaintext metadata. The value is NOT here — it crosses only
@@ -87,12 +90,14 @@ mod tests {
             last_mod_ms: 200,
             field_count: 2,
             fields: vec![],
+            tombstoned: false,
         };
         let v = to_json(&dto);
         assert_eq!(v["recordUuidHex"], SAMPLE_UUID_HEX);
         assert_eq!(v["recordType"], "login");
         assert_eq!(v["tags"][0], "work");
         assert_eq!(v["fieldCount"], 2);
+        assert_eq!(v["tombstoned"], false);
         assert!(v.get("record_uuid_hex").is_none());
     }
 

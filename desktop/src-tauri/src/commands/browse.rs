@@ -19,15 +19,19 @@ use crate::session::VaultSession;
 pub async fn read_block(
     state: State<'_, Mutex<VaultSession>>,
     block_uuid_hex: String,
+    include_deleted: bool,
 ) -> Result<BlockDetailDto, AppError> {
-    read_block_impl(state.inner(), &block_uuid_hex)
+    read_block_impl(state.inner(), &block_uuid_hex, include_deleted)
 }
 
 /// Testable core for `read_block`. Decrypts the block, projects records +
-/// field metadata (tombstone-filtered, no secrets), wipes the handle.
+/// field metadata (no secrets), wipes the handle. The `include_deleted` gate
+/// decides whether tombstoned records cross the IPC seam (Rust gates
+/// visibility): `false` = live-only; `true` = emit tombstoned records flagged.
 pub fn read_block_impl(
     state: &Mutex<VaultSession>,
     block_uuid_hex: &str,
+    include_deleted: bool,
 ) -> Result<BlockDetailDto, AppError> {
     let uuid = parse_uuid_16(block_uuid_hex)?;
     let session = state.lock().map_err(|e| AppError::Internal {
@@ -43,7 +47,7 @@ pub fn read_block_impl(
             },
             other => AppError::from(other),
         })?;
-        let dto = project_block_detail(block_uuid_hex.to_string(), &output);
+        let dto = project_block_detail(block_uuid_hex.to_string(), &output, include_deleted);
         output.wipe();
         Ok(dto)
     })

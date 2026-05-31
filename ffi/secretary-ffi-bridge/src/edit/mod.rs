@@ -14,6 +14,9 @@
 mod content;
 pub use content::RecordContent;
 
+mod tombstone;
+pub use tombstone::{resurrect_record, tombstone_record};
+
 use std::collections::BTreeMap;
 
 use rand_core::OsRng;
