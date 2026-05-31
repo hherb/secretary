@@ -24,6 +24,8 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.BlockUuidAlreadyLive -> "BlockUuidAlreadyLive"
     is VaultException.BlockNotInTrash -> "BlockNotInTrash"
     is VaultException.RecordNotFound -> "RecordNotFound"
+    is VaultException.ContactAlreadyExists -> "ContactAlreadyExists"
+    is VaultException.ContactNotFound -> "ContactNotFound"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -45,5 +47,8 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.NotAuthor,
     is VaultException.MissingRecipientCard,
     is VaultException.BlockNotFound,
-    is VaultException.RecordNotFound -> null
+    is VaultException.RecordNotFound,
+    // ContactAlreadyExists / ContactNotFound carry uuid_hex, not detail.
+    is VaultException.ContactAlreadyExists,
+    is VaultException.ContactNotFound -> null
 }

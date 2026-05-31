@@ -25,6 +25,8 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .BlockNotInTrash: return "BlockNotInTrash"
     case .InvalidArgument: return "InvalidArgument"
     case .RecordNotFound: return "RecordNotFound"
+    case .ContactAlreadyExists: return "ContactAlreadyExists"
+    case .ContactNotFound: return "ContactNotFound"
     }
 }
 

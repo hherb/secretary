@@ -59,9 +59,10 @@ mod vault;
 
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
-    VaultBlockUuidAlreadyLive, VaultCardDecodeFailure, VaultCorruptVault, VaultFolderInvalid,
-    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
+    VaultBlockUuidAlreadyLive, VaultCardDecodeFailure, VaultContactAlreadyExists,
+    VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid, VaultInvalidMnemonic,
+    VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
+    VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
     VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
     WrongPasswordOrCorrupt,
 };
@@ -208,6 +209,17 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultBlockNotInTrash",
         py.get_type::<VaultBlockNotInTrash>(),
+    )?;
+
+    // D.1.6 share-contacts error surface — 2 typed exception classes
+    // mirroring the bridge's FfiVaultError variants.
+    m.add(
+        "VaultContactAlreadyExists",
+        py.get_type::<VaultContactAlreadyExists>(),
+    )?;
+    m.add(
+        "VaultContactNotFound",
+        py.get_type::<VaultContactNotFound>(),
     )?;
 
     Ok(())
