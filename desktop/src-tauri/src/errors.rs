@@ -15,13 +15,16 @@
 //!
 //! # Variant coverage versus FfiVaultError
 //!
-//! D.1.1 only exercises the password-unlock + read-block + save-block paths
-//! (no recovery-phrase unlock, no block-share, no trash/restore). The
-//! `From<FfiVaultError>` match is nonetheless exhaustive because new bridge
-//! variants must force a deliberate UI-mapping choice rather than silently
-//! folding to `Internal`. Variants that cannot fire in D.1.1's code paths
-//! fold to `Internal { detail }` so a regression surfaces as a clear
-//! "this is a bug" rather than a silent miscategorisation.
+//! The `map_ffi_error` match is exhaustive (no `_` catch-all) so every new
+//! bridge variant forces a deliberate UI-mapping choice rather than silently
+//! folding to `Internal`. Most bridge variants now route to a typed
+//! `AppError` — including the D.1.5 trash/restore preconditions and the
+//! D.1.6 block-share + contacts variants (`NotAuthor`,
+//! `RecipientAlreadyPresent`, `MissingRecipientCard`, `ContactAlreadyExists`,
+//! `ContactNotFound`). A residual few that should never fire on a reachable
+//! UI path (e.g. a stale block UUID into `read_block`) fold to
+//! `Internal { detail }` so a regression surfaces as a clear "this is a bug"
+//! rather than a silent miscategorisation.
 //!
 //! Note: the bridge already collapses `WeakKdfParams` into `CorruptVault`
 //! (post-unlock detail string). `AppError::KdfTooWeak` therefore has no
@@ -195,11 +198,15 @@ pub enum AppWarning {
 /// The bridge's `WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`
 /// variants are deliberately conflated per `docs/threat-model.md` §13's
 /// anti-oracle property; both fold to `WrongPassword` here (the user's
-/// affordance is "retry credential" in both cases). Bridge variants
-/// that cannot reach D.1.1's code paths (block-share authorisation,
-/// trash/restore preconditions, recovery-phrase pre-validation) fold
-/// to `Internal { detail }` so a regression that lets them fire
-/// surfaces as a clear bug-report path.
+/// affordance is "retry credential" in both cases). Block-share
+/// authorisation + contacts variants (`NotAuthor`,
+/// `RecipientAlreadyPresent`, `MissingRecipientCard`,
+/// `ContactAlreadyExists`, `ContactNotFound`) and the trash/restore
+/// preconditions route to typed `AppError`s. The few variants that
+/// should never reach a live UI path (e.g. recovery-phrase
+/// pre-validation, an unknown block UUID into `read_block`) fold to
+/// `Internal { detail }` so a regression that lets them fire surfaces
+/// as a clear bug-report path.
 ///
 /// `FolderInvalid` folds to `Io { detail }` here because the bridge
 /// surfaces the underlying IO context but not the caller's chosen path.
