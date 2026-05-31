@@ -566,6 +566,13 @@ mod tests {
             expected_fingerprint_hex: "x".into(),
             got_fingerprint_hex: "y".into(),
         });
-        assert_eq!(round_trip(&m)["code"], "not_author");
+        let v = round_trip(&m);
+        assert_eq!(v["code"], "not_author");
+        // The bridge fingerprints must be dropped at the seam — assert
+        // their ABSENCE explicitly so a future refactor that adds a payload
+        // to AppError::NotAuthor can't silently start leaking them.
+        assert!(v.get("expected_fingerprint_hex").is_none());
+        assert!(v.get("got_fingerprint_hex").is_none());
+        assert_eq!(v.as_object().expect("object").len(), 1, "code only");
     }
 }
