@@ -9,7 +9,7 @@ mod share_block_helpers;
 
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::format_uuid_hyphenated;
-use secretary_ffi_bridge::enumerate_contact_cards;
+use secretary_ffi_bridge::{enumerate_contact_cards, import_contact_card, FfiVaultError};
 use share_block_helpers::{fresh_writable_vault, mint_external_card};
 use std::fs;
 
@@ -17,9 +17,10 @@ use std::fs;
 /// hyphenated filename. Returns the card's contact_uuid.
 fn place_card(folder: &std::path::Path, card_bytes: &[u8]) -> [u8; 16] {
     let card = ContactCard::from_canonical_cbor(card_bytes).expect("valid card");
-    let path = folder
-        .join("contacts")
-        .join(format!("{}.card", format_uuid_hyphenated(&card.contact_uuid)));
+    let path = folder.join("contacts").join(format!(
+        "{}.card",
+        format_uuid_hyphenated(&card.contact_uuid)
+    ));
     fs::write(&path, card_bytes).expect("write card");
     card.contact_uuid
 }
@@ -130,4 +131,40 @@ fn enumerate_counts_unreadable_and_unverified() {
         "only the intact minted peer card is added"
     );
     assert_eq!(unreadable, 2, "garbage + tampered both counted");
+}
+
+#[test]
+fn import_writes_card_and_returns_summary() {
+    let (tmp, _identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+
+    let summary = import_contact_card(&manifest, &peer).expect("import ok");
+    assert_eq!(summary.display_name, "Carol");
+
+    // File landed under the canonical hyphenated name.
+    let path = tmp.path().join("contacts").join(format!(
+        "{}.card",
+        format_uuid_hyphenated(&summary.contact_uuid)
+    ));
+    assert!(path.exists(), "imported card written to contacts/");
+}
+
+#[test]
+fn import_rejects_duplicate_uuid() {
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    import_contact_card(&manifest, &peer).expect("first import ok");
+    let err = import_contact_card(&manifest, &peer).expect_err("dup must reject");
+    assert!(matches!(err, FfiVaultError::ContactAlreadyExists { .. }));
+}
+
+#[test]
+fn import_rejects_tampered_card() {
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let mut tampered = peer.clone();
+    let n = tampered.len();
+    tampered[n - 1] ^= 0xFF;
+    let err = import_contact_card(&manifest, &tampered).expect_err("tampered must reject");
+    assert!(matches!(err, FfiVaultError::CardDecodeFailure { .. }));
 }

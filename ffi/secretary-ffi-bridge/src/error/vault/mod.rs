@@ -217,6 +217,15 @@ pub enum FfiVaultError {
         detail: String,
     },
 
+    /// A contact card with this `contact_uuid` is already present in the
+    /// vault's `contacts/` directory. Import refuses to overwrite a trusted
+    /// card (TOFU substitution guard, spec §3).
+    #[error("contact already exists in vault: {uuid_hex}")]
+    ContactAlreadyExists {
+        /// 32-char lowercase hex of the contact UUID.
+        uuid_hex: String,
+    },
+
     /// `restore_block`: the UUID has both a `TrashEntry` and a live
     /// `BlockEntry`. The caller must first trash the live copy before
     /// restoring. Folder-in counterpart to
