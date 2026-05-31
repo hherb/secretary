@@ -252,12 +252,10 @@ impl OpenVaultManifest {
     /// Originally consumed by `crate::record::read_block`; B.4b's
     /// `snapshot_for_read_block` superseded the per-field call site to
     /// fold 3 lock acquisitions into 1. B.4d (`share_block`) ultimately
-    /// landed using `snapshot_for_save_block` instead, so this per-field
-    /// accessor has no live caller today — only the post-wipe contract
-    /// test in the sibling `tests` module references it. Retained for
-    /// forward-compat with Sub-project C; revisit for deletion when C's
-    /// surface stabilizes (issue #45).
-    #[allow(dead_code)]
+    /// landed using `snapshot_for_save_block` instead. D.1.6's
+    /// `crate::contacts::enumerate_contact_cards` is now the live caller —
+    /// it reads the owner's `contact_uuid` to omit the owner's own card
+    /// from the contacts enumeration.
     pub(crate) fn owner_card(&self) -> Option<ContactCard> {
         lock_or_recover(&self.inner)
             .as_ref()
