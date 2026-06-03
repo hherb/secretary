@@ -24,7 +24,7 @@ mod manifest;
 mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
-pub use contact::{ContactSummaryDto, ListContactsDto};
+pub use contact::{ContactSummaryDto, ExportedCardDto, ListContactsDto};
 pub use create::{CreateTargetProbeDto, CreateVaultDto};
 pub use edit::{
     FieldInputDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
