@@ -1237,4 +1237,49 @@ mod contacts_path {
             "got {err:?}"
         );
     }
+
+    // ── D.1.7 export_contact_card / delete_contact_card ─────────────────────
+
+    /// `export_contact_card_impl` writes the owner's self-card to the requested
+    /// directory and returns an `ExportedCardDto` whose `path` ends in `.card`
+    /// and points to an existing file.
+    #[test]
+    fn export_contact_card_writes_importable_file() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // Use a fresh tempdir as the export destination (user-chosen folder).
+        let dest_dir = tempfile::tempdir().expect("export destination tempdir");
+        let dest_path = dest_dir.path().to_str().expect("utf8 dest path");
+
+        let dto = contacts::export_contact_card_impl(&state, dest_path)
+            .expect("export_contact_card_impl should succeed");
+
+        assert!(
+            dto.path.ends_with(".card"),
+            "exported path must end with .card; got {:?}",
+            dto.path
+        );
+        assert!(
+            std::path::Path::new(&dto.path).exists(),
+            "exported file must exist on disk at {:?}",
+            dto.path
+        );
+    }
+
+    /// `delete_contact_card_impl` with a valid-hex UUID that has no card on
+    /// disk returns `AppError::ContactNotFound`.
+    #[test]
+    fn delete_contact_card_impl_absent_is_not_found() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // A well-formed UUID hex that has no card in the vault's contacts/.
+        let absent_uuid_hex = "00112233445566778899aabbccddeeff";
+        let err = contacts::delete_contact_card_impl(&state, absent_uuid_hex)
+            .expect_err("deleting a non-existent contact must fail");
+
+        assert!(
+            matches!(err, AppError::ContactNotFound { .. }),
+            "expected ContactNotFound, got {err:?}"
+        );
+    }
 }
