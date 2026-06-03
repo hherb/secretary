@@ -48,4 +48,10 @@ describe('browse-nav store', () => {
     openContacts();
     expect(get(browseNav).level).toBe('contacts');
   });
+
+  it('back from contacts returns to blocks', () => {
+    openContacts();
+    back();
+    expect(get(browseNav).level).toBe('blocks');
+  });
 });

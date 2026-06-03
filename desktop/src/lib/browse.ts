@@ -61,6 +61,7 @@ export function back(): void {
     if (s.level === 'fields') return { level: 'records', block: s.block };
     if (s.level === 'records') return { level: 'blocks' };
     if (s.level === 'trash') return { level: 'blocks' };
+    if (s.level === 'contacts') return { level: 'blocks' };
     return s;
   });
 }
