@@ -13,14 +13,17 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_ffi_bridge::{
-    delete_contact_card as bridge_delete, enumerate_contact_cards as bridge_enumerate,
-    import_contact_card as bridge_import, owner_card_export as bridge_owner_card_export,
+    block_recipients as bridge_block_recipients,
+    delete_contact_card as bridge_delete,
+    enumerate_contact_cards as bridge_enumerate,
+    import_contact_card as bridge_import,
+    owner_card_export as bridge_owner_card_export,
     share_block_to as bridge_share_block_to,
 };
 
 use crate::auto_lock::now_ms;
 use crate::commands::shared::parse_uuid_16;
-use crate::dtos::{ContactSummaryDto, ExportedCardDto, ListContactsDto};
+use crate::dtos::{ContactSummaryDto, ExportedCardDto, ListContactsDto, RecipientDto};
 use crate::errors::{map_ffi_error, AppError};
 use crate::session::VaultSession;
 
@@ -158,6 +161,26 @@ pub fn delete_contact_card_impl(
     })
 }
 
+#[tauri::command]
+pub async fn block_recipients(
+    state: State<'_, Mutex<VaultSession>>,
+    block_uuid_hex: String,
+) -> Result<Vec<RecipientDto>, AppError> {
+    block_recipients_impl(state.inner(), &block_uuid_hex)
+}
+
+pub fn block_recipients_impl(
+    state: &Mutex<VaultSession>,
+    block_uuid_hex: &str,
+) -> Result<Vec<RecipientDto>, AppError> {
+    let block_uuid = parse_uuid_16(block_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        let rs = bridge_block_recipients(&u.manifest, block_uuid).map_err(map_ffi_error)?;
+        Ok(rs.iter().map(RecipientDto::from).collect())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +198,15 @@ mod tests {
         // 16-byte hex UUIDs so parse_uuid_16 succeeds and we reach the lock path.
         let uuid_hex = "00112233445566778899aabbccddeeff";
         let err = share_block_impl(&state, uuid_hex, uuid_hex).expect_err("locked");
+        assert!(matches!(err, AppError::NotUnlocked));
+    }
+
+    #[test]
+    fn block_recipients_locked_session_is_not_unlocked() {
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        // 16-byte hex UUID so parse_uuid_16 succeeds and we reach the lock path.
+        let uuid_hex = "00112233445566778899aabbccddeeff";
+        let err = block_recipients_impl(&state, uuid_hex).expect_err("locked");
         assert!(matches!(err, AppError::NotUnlocked));
     }
 }
