@@ -42,6 +42,7 @@ All commits are on `feature/d17-contacts` (branched from `main` @ `6224532`):
 | `a4ed0c7` | **Task 8** — `ContactsPane` (export PathPicker + list + warn-but-allow delete via the reused `ConfirmDialog`) + `ContactRow` + Vault 👤 entry/branch + `theme.css`. |
 | `ea46c57` | Task 8 review fix — give `ContactRow` a distinct `.contact-card-row*` class (the `<div>` was inheriting ShareDialog's pre-existing `.contact-row` button styling) + clear the export notice on delete. |
 | _(ship)_ | README/ROADMAP D.1.7 ✅ + this handoff + symlink retarget. |
+| _(post-review)_ | `/review` follow-up: ContactsPane self-heals a stale row on a `contact_not_found` delete (reload + benign "already removed" notice instead of a lingering error) + a pinning test; `ContactsPane.test.ts` export fixture `.vcf` → `<uuid>.card`; `delete.rs` documents the benign owner_card()/vault_folder() wipe-gap. Frontend Vitest now **367 / 0**. |
 
 **Process note:** one worktree (`.worktrees/d17-contacts`), one reviewed commit per task + inline review-fix commits. Every per-task spec + quality review finding was fixed before proceeding (three review-fix commits: the lock-scoping, the `back()` arm, the CSS collision). The final whole-branch review found the security posture clean and zero new issues.
 
@@ -102,7 +103,7 @@ D.1.7 deliberately deferred everything beyond export + view + delete-contact. Ca
 
 ### Verified non-issues (don't re-investigate)
 - **`.contact-row` vs `.contact-card-row`:** resolved in `ea46c57` — ContactRow uses the distinct `.contact-card-row*` classes; ShareDialog's pre-existing `.contact-row`/`.contact-row--selected` rules are byte-for-byte unchanged.
-- **`ContactsPane.test.ts` export mock returns a `.vcf` path string:** cosmetic test-fixture string only; the component just displays `dto.path`. Real exports are `<uuid>.card`. Not a defect (flagged + dismissed by the final review).
+- **`ContactsPane.test.ts` export mock returns a `.vcf` path string:** cosmetic test-fixture string only; the component just displays `dto.path`. Real exports are `<uuid>.card`. The `/review` follow-up aligned the fixture to the real `<uuid>.card` shape so it no longer implies a vCard path (post-review commit).
 - **Export write outside the lock:** intentional (`6eb79b5`) — mirrors `import_contact_impl`; the card bytes are public so there is no zeroize/lifetime concern.
 - **`delete_contact_card` does not scan share membership:** intentional — warn-but-allow; the recipient count is computed by `enumerate` and the warning is a UI gate (the primitive only guards the owner + unlinks).
 

@@ -88,6 +88,40 @@ describe('ContactsPane', () => {
     );
   });
 
+  it('self-heals when a delete fails with contact_not_found (reload + benign notice, no error)', async () => {
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'aa', displayName: 'Alice', sharedBlockCount: 0 }],
+      unreadableCount: 0
+    });
+    const { getAllByText, findByText, findByRole, queryByRole } = render(ContactsPane);
+    await waitFor(() => expect(getAllByText('Alice').length).toBeGreaterThan(0));
+
+    // Open the confirm (N==0 → plain "Delete" danger button).
+    await fireEvent.click(getAllByText('Delete')[0]);
+    const confirmBtn = await findByText(
+      (text, element) =>
+        element?.tagName === 'BUTTON' &&
+        element.classList.contains('confirm-dialog__button--danger') &&
+        text === 'Delete'
+    );
+
+    // The delete rejects because the card already vanished on disk; the
+    // component should re-fetch the list so the dead row doesn't linger and
+    // show a benign notice (not an error — the user's intent is met).
+    invokeMock.mockRejectedValueOnce({ code: 'contact_not_found', contact_uuid_hex: 'aa' });
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // reload
+
+    await fireEvent.click(confirmBtn);
+
+    // list_contacts called twice total (initial mount + self-heal reload).
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'list_contacts').length).toBe(2)
+    );
+    const status = await findByRole('status');
+    expect(status.textContent).toMatch(/already removed/i);
+    expect(queryByRole('alert')).toBeNull();
+  });
+
   it('deleting a contact with 0 blocks shows plain "Delete" label on confirm', async () => {
     invokeMock.mockResolvedValueOnce({
       contacts: [{ contactUuidHex: 'bb', displayName: 'Bob', sharedBlockCount: 0 }],
@@ -118,7 +152,11 @@ describe('ContactsPane', () => {
 
     // Simulate the PathPicker folder dialog returning a path
     openMock.mockResolvedValueOnce('/tmp/exports');
-    invokeMock.mockResolvedValueOnce({ path: '/tmp/exports/mycard.vcf' }); // export_contact_card
+    // Real exports are always `<uuid>.card` (owner_card_export); keep the
+    // fixture in that shape so it doesn't imply a vCard/.vcf path.
+    invokeMock.mockResolvedValueOnce({
+      path: '/tmp/exports/00112233-4455-6677-8899-aabbccddeeff.card'
+    }); // export_contact_card
 
     // Click the "Export…" button inside the PathPicker
     const exportBtn = getByRole('button', { name: 'Export…' });

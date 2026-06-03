@@ -66,6 +66,17 @@
       await deleteContactCard(target.contactUuidHex);
       await load();
     } catch (e) {
+      // A not-found means the on-disk contacts/ already diverged from the
+      // list we rendered (the card was deleted out-of-band, or this list is
+      // stale). The user's intent — remove the row — is already satisfied,
+      // so treat it as benign: re-sync the list and note it, rather than
+      // surface an error and leave the dead row lingering. (`load()` clears
+      // `error`; set the notice after it so the message survives.)
+      if (isAppError(e) && e.code === 'contact_not_found') {
+        await load();
+        notice = `${target.displayName} was already removed.`;
+        return;
+      }
       error = isAppError(e) ? e : { code: 'internal' };
     }
   }

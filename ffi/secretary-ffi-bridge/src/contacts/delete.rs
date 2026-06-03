@@ -27,6 +27,11 @@ pub fn delete_contact_card(
     if contact_uuid == owner_uuid {
         return Err(FfiVaultError::CannotDeleteOwnerContact);
     }
+    // `owner_card()` and `vault_folder()` are two separate accessor locks.
+    // Unlike `owner_card_export` (which serializes from one lock to avoid a
+    // wipe-between-accessors gap), the gap is benign here: the owner-guard
+    // decision is already made on the first read, and a wipe between the two
+    // simply surfaces `CorruptVault` (via `handle_wiped`) before any unlink.
     let folder = manifest.vault_folder().ok_or_else(handle_wiped)?;
     let path = folder
         .join("contacts")
