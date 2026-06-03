@@ -13,14 +13,15 @@
 //! Submodules: [`manifest`] (D.1.1 manifest/summary/settings DTOs),
 //! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs),
 //! [`create`] (D.1.3 vault-create DTOs), [`edit`] (D.1.4 record-edit DTOs),
-//! [`trash`] (D.1.5 trashed-block DTO), and [`contact`] (D.1.6 contact-summary
-//! DTOs).
+//! [`trash`] (D.1.5 trashed-block DTO), [`contact`] (D.1.6 contact-summary
+//! DTOs), and [`recipient`] (D.1.8 per-block recipient DTOs).
 
 mod browse;
 mod contact;
 mod create;
 mod edit;
 mod manifest;
+mod recipient;
 mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
@@ -31,4 +32,5 @@ pub use edit::{
     RevealedFieldWithNameDto,
 };
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
+pub use recipient::{RecipientDto, RecipientKindDto};
 pub use trash::TrashedBlockDto;
