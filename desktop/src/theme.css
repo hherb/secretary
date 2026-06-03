@@ -1163,4 +1163,38 @@ body {
 .editor__add-field:hover:not(:disabled) { color: var(--color-primary-hover); }
 .editor__error-title { font-weight: 600; }
 .editor__error-detail { margin-top: var(--space-1); font-size: var(--font-size-xs); }
+
+/* D.1.8 per-block recipients ("Shared with") banner */
+.block-recipients {
+  margin: 0.25rem 0 0.5rem;
+}
+.block-recipients__toggle {
+  background: none;
+  border: none;
+  padding: 0.15rem 0;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.block-recipients__list {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0 0 0 0.75rem;
+}
+.block-recipients__row {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.block-recipients__row--unknown {
+  color: var(--color-warning);
+}
+.block-recipients__loading,
+.block-recipients__error {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+.block-recipients__error {
+  color: var(--color-danger);
+}
 .wizard__error-detail { margin-top: var(--space-1); font-size: var(--font-size-xs); }
