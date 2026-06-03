@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { sortContacts } from '../src/lib/contacts';
 import type { ContactSummaryDto } from '../src/lib/ipc';
 
-const c = (displayName: string): ContactSummaryDto => ({ contactUuidHex: displayName, displayName });
+const c = (displayName: string): ContactSummaryDto => ({ contactUuidHex: displayName, displayName, sharedBlockCount: 0 });
 
 describe('sortContacts', () => {
   it('orders case-insensitively by displayName, returns a new array', () => {

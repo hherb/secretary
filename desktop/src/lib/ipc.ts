@@ -72,6 +72,11 @@ export interface RevealedFieldDto {
 export interface ContactSummaryDto {
   contactUuidHex: string;
   displayName: string;
+  sharedBlockCount: number;
+}
+
+export interface ExportedCardDto {
+  path: string;
 }
 
 export interface ListContactsDto {
@@ -250,6 +255,14 @@ export async function importContact(cardPath: string): Promise<ContactSummaryDto
 
 export async function shareBlock(blockUuidHex: string, recipientUuidHex: string): Promise<void> {
   return call<void>('share_block', { blockUuidHex, recipientUuidHex });
+}
+
+export async function exportContactCard(destDir: string): Promise<ExportedCardDto> {
+  return call<ExportedCardDto>('export_contact_card', { destDir });
+}
+
+export async function deleteContactCard(contactUuidHex: string): Promise<void> {
+  return call<void>('delete_contact_card', { contactUuidHex });
 }
 
 export async function lock(): Promise<void> {

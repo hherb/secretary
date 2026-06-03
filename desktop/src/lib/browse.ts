@@ -16,7 +16,8 @@ export type BrowseNav =
   | { level: 'newBlock' }
   | { level: 'newRecord'; block: BlockSummaryDto }
   | { level: 'editRecord'; block: BlockSummaryDto; record: RecordDto }
-  | { level: 'trash' };
+  | { level: 'trash' }
+  | { level: 'contacts' };
 
 const store = writable<BrowseNav>({ level: 'blocks' });
 
@@ -46,6 +47,10 @@ export function openEditRecord(block: BlockSummaryDto, record: RecordDto): void 
 
 export function openTrash(): void {
   store.set({ level: 'trash' });
+}
+
+export function openContacts(): void {
+  store.set({ level: 'contacts' });
 }
 
 export function back(): void {
