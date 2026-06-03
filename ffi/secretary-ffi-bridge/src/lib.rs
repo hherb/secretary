@@ -119,7 +119,9 @@ pub mod trash;
 pub mod unlock;
 pub mod vault;
 
-pub use contacts::{enumerate_contact_cards, import_contact_card, share_block_to, ContactSummary};
+pub use contacts::{
+    enumerate_contact_cards, import_contact_card, owner_card_export, share_block_to, ContactSummary,
+};
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use edit::{
     append_record, create_block, edit_record, resurrect_record, tombstone_record, RecordContent,

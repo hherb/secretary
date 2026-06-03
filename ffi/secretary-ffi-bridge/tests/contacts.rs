@@ -400,3 +400,23 @@ fn share_block_to_rejects_card_swapped_after_import() {
     );
     assert!(!entry.recipient_uuids.contains(&peer_uuid));
 }
+
+#[test]
+fn owner_card_export_returns_canonical_name_and_round_trips() {
+    use secretary_ffi_bridge::owner_card_export;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+
+    let (file_name, bytes) = owner_card_export(&manifest).expect("export ok");
+
+    // Name is the canonical hyphenated-uuid filename a peer's import re-derives.
+    let owner = owner_uuid(&manifest);
+    assert_eq!(
+        file_name,
+        format!("{}.card", format_uuid_hyphenated(&owner))
+    );
+    // Bytes parse + self-verify back to the owner's card (public material only).
+    let card = ContactCard::from_canonical_cbor(&bytes).expect("parse");
+    card.verify_self()
+        .expect("both self-signature halves verify");
+    assert_eq!(card.contact_uuid, owner);
+}
