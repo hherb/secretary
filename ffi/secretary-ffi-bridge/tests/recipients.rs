@@ -75,13 +75,23 @@ fn shared_peer_resolves_to_contact_then_unknown_after_card_delete() {
     // Share to a minted Alice → recipients = [owner, alice]; Alice resolves.
     let (_bundle, alice_bytes) = mint_external_card(0x51, "Alice");
     let alice = place_card(&folder, &alice_bytes);
-    share_block_to(&identity, &manifest, NEW_BLOCK_UUID, alice, DEVICE_UUID, NOW_MS_BASE + 1)
-        .expect("share");
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        alice,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect("share");
 
     let rs = block_recipients(&manifest, NEW_BLOCK_UUID).expect("recipients");
     assert_eq!(rs.len(), 2);
     assert!(matches!(rs[0].kind, RecipientKind::Owner));
-    let alice_row = rs.iter().find(|r| r.recipient_uuid == alice).expect("alice row");
+    let alice_row = rs
+        .iter()
+        .find(|r| r.recipient_uuid == alice)
+        .expect("alice row");
     match &alice_row.kind {
         RecipientKind::Contact { display_name } => assert_eq!(display_name, "Alice"),
         other => panic!("expected Contact, got {other:?}"),
@@ -97,7 +107,10 @@ fn shared_peer_resolves_to_contact_then_unknown_after_card_delete() {
     .expect("rm card");
     let rs = block_recipients(&manifest, NEW_BLOCK_UUID).expect("recipients");
     assert_eq!(rs.len(), 2);
-    let alice_row = rs.iter().find(|r| r.recipient_uuid == alice).expect("alice row");
+    let alice_row = rs
+        .iter()
+        .find(|r| r.recipient_uuid == alice)
+        .expect("alice row");
     assert!(matches!(alice_row.kind, RecipientKind::Unknown));
 }
 
@@ -116,8 +129,15 @@ fn tampered_card_is_unknown_not_forged_name() {
     );
     let (_bundle, alice_bytes) = mint_external_card(0x51, "Alice");
     let alice = place_card(&folder, &alice_bytes);
-    share_block_to(&identity, &manifest, NEW_BLOCK_UUID, alice, DEVICE_UUID, NOW_MS_BASE + 1)
-        .expect("share");
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        alice,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect("share");
 
     // Corrupt Alice's card on disk so parse / verify_self() fails.
     let path = folder
@@ -129,7 +149,10 @@ fn tampered_card_is_unknown_not_forged_name() {
     fs::write(&path, &bytes).expect("write tampered card");
 
     let rs = block_recipients(&manifest, NEW_BLOCK_UUID).expect("recipients");
-    let alice_row = rs.iter().find(|r| r.recipient_uuid == alice).expect("alice row");
+    let alice_row = rs
+        .iter()
+        .find(|r| r.recipient_uuid == alice)
+        .expect("alice row");
     assert!(
         matches!(alice_row.kind, RecipientKind::Unknown),
         "a tampered card must classify Unknown, never a trusted name"

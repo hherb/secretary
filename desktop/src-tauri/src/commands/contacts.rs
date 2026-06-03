@@ -13,12 +13,9 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_ffi_bridge::{
-    block_recipients as bridge_block_recipients,
-    delete_contact_card as bridge_delete,
-    enumerate_contact_cards as bridge_enumerate,
-    import_contact_card as bridge_import,
-    owner_card_export as bridge_owner_card_export,
-    share_block_to as bridge_share_block_to,
+    block_recipients as bridge_block_recipients, delete_contact_card as bridge_delete,
+    enumerate_contact_cards as bridge_enumerate, import_contact_card as bridge_import,
+    owner_card_export as bridge_owner_card_export, share_block_to as bridge_share_block_to,
 };
 
 use crate::auto_lock::now_ms;
