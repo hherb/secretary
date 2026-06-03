@@ -1,1 +1,1 @@
-docs/handoffs/2026-05-31-d16-share-contacts-shipped.md
+docs/handoffs/2026-06-03-d17-contacts-management-shipped.md
