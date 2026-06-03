@@ -9,11 +9,16 @@ use crate::vault::OpenVaultManifest;
 /// Returns `(verified non-owner summaries, count of unreadable/unverifiable
 /// .card files)`. The owner's own card is omitted (the owner is implicitly the
 /// author/recipient of their own blocks and is never a share target).
+///
+/// Each summary includes `shared_block_count`: how many of the owner's live
+/// blocks list that contact as a recipient. This is an in-memory scan of
+/// `manifest_body().blocks[].recipients` — no decryption, no I/O.
 pub fn enumerate_contact_cards(
     manifest: &OpenVaultManifest,
 ) -> Result<(Vec<ContactSummary>, usize), FfiVaultError> {
     let folder = manifest.vault_folder().ok_or_else(handle_wiped)?;
     let owner_uuid = manifest.owner_card().ok_or_else(handle_wiped)?.contact_uuid;
+    let body = manifest.manifest_body().ok_or_else(handle_wiped)?;
     let contacts_dir = folder.join("contacts");
 
     let mut summaries = Vec::new();
@@ -45,10 +50,18 @@ pub fn enumerate_contact_cards(
         };
         match read_verified_card(&bytes) {
             Ok(card) if card.contact_uuid == owner_uuid => { /* omit owner */ }
-            Ok(card) => summaries.push(ContactSummary {
-                contact_uuid: card.contact_uuid,
-                display_name: card.display_name,
-            }),
+            Ok(card) => {
+                let shared_block_count = body
+                    .blocks
+                    .iter()
+                    .filter(|b| b.recipients.contains(&card.contact_uuid))
+                    .count() as u32;
+                summaries.push(ContactSummary {
+                    contact_uuid: card.contact_uuid,
+                    display_name: card.display_name,
+                    shared_block_count,
+                });
+            }
             Err(_) => unreadable += 1,
         }
     }

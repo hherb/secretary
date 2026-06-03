@@ -292,6 +292,54 @@ fn share_block_to_twice_is_recipient_already_present() {
 }
 
 #[test]
+fn enumerate_reports_shared_block_count_per_contact() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    // Import two peers; share the block with only the first.
+    let (_b1, shared_peer) = mint_external_card(0xC3, "Shared-Peer");
+    let (_b2, lonely_peer) = mint_external_card(0xD4, "Lonely-Peer");
+    let shared_uuid = uuid_of(&shared_peer);
+    let lonely_uuid = uuid_of(&lonely_peer);
+    import_contact_card(&manifest, &shared_peer).expect("import shared");
+    import_contact_card(&manifest, &lonely_peer).expect("import lonely");
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        shared_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1_000,
+    )
+    .expect("share");
+
+    let (summaries, _unreadable) = enumerate_contact_cards(&manifest).expect("enumerate");
+    let shared = summaries
+        .iter()
+        .find(|s| s.contact_uuid == shared_uuid)
+        .expect("shared present");
+    let lonely = summaries
+        .iter()
+        .find(|s| s.contact_uuid == lonely_uuid)
+        .expect("lonely present");
+    assert_eq!(
+        shared.shared_block_count, 1,
+        "shared peer receives exactly one block"
+    );
+    assert_eq!(
+        lonely.shared_block_count, 0,
+        "lonely peer receives no blocks"
+    );
+}
+
+#[test]
 fn share_block_to_rejects_card_swapped_after_import() {
     // Regression (PR #175 review): `share_block_to` re-reads recipient cards
     // from disk, so it MUST re-verify the both-halves self-signature at load
