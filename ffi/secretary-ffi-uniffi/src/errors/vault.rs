@@ -80,6 +80,10 @@ pub enum VaultError {
     /// in `contacts/`. Mirrors `FfiVaultError::ContactNotFound`.
     #[error("contact not found in vault: {uuid_hex}")]
     ContactNotFound { uuid_hex: String },
+    /// The owner's own contact card cannot be deleted.
+    /// Mirrors `FfiVaultError::CannotDeleteOwnerContact`.
+    #[error("the vault owner's own contact card cannot be deleted")]
+    CannotDeleteOwnerContact,
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -116,6 +120,7 @@ impl From<FfiVaultError> for VaultError {
                 VaultError::ContactAlreadyExists { uuid_hex }
             }
             FfiVaultError::ContactNotFound { uuid_hex } => VaultError::ContactNotFound { uuid_hex },
+            FfiVaultError::CannotDeleteOwnerContact => VaultError::CannotDeleteOwnerContact,
         }
     }
 }
@@ -450,5 +455,12 @@ mod tests {
             uuid_hex: "xyz".into(),
         };
         assert_eq!(e.to_string(), "contact not found in vault: xyz");
+    }
+
+    #[test]
+    fn cannot_delete_owner_contact_maps_across() {
+        let ffi = FfiVaultError::CannotDeleteOwnerContact;
+        let uniffi: VaultError = ffi.into();
+        assert!(matches!(uniffi, VaultError::CannotDeleteOwnerContact));
     }
 }

@@ -26,6 +26,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.RecordNotFound -> "RecordNotFound"
     is VaultException.ContactAlreadyExists -> "ContactAlreadyExists"
     is VaultException.ContactNotFound -> "ContactNotFound"
+    is VaultException.CannotDeleteOwnerContact -> "CannotDeleteOwnerContact"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -50,5 +51,6 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.RecordNotFound,
     // ContactAlreadyExists / ContactNotFound carry uuid_hex, not detail.
     is VaultException.ContactAlreadyExists,
-    is VaultException.ContactNotFound -> null
+    is VaultException.ContactNotFound,
+    is VaultException.CannotDeleteOwnerContact -> null
 }

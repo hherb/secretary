@@ -27,6 +27,7 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .RecordNotFound: return "RecordNotFound"
     case .ContactAlreadyExists: return "ContactAlreadyExists"
     case .ContactNotFound: return "ContactNotFound"
+    case .CannotDeleteOwnerContact: return "CannotDeleteOwnerContact"
     }
 }
 
