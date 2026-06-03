@@ -59,10 +59,10 @@ mod vault;
 
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
-    VaultBlockUuidAlreadyLive, VaultCardDecodeFailure, VaultContactAlreadyExists,
-    VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid, VaultInvalidMnemonic,
-    VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
-    VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
+    VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCardDecodeFailure,
+    VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid,
+    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
+    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
     VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
     WrongPasswordOrCorrupt,
 };
@@ -220,6 +220,12 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultContactNotFound",
         py.get_type::<VaultContactNotFound>(),
+    )?;
+
+    // D.1.7 delete-contact error surface — owner self-card deletion guard.
+    m.add(
+        "VaultCannotDeleteOwnerContact",
+        py.get_type::<VaultCannotDeleteOwnerContact>(),
     )?;
 
     Ok(())

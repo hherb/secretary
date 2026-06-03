@@ -13,13 +13,14 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_ffi_bridge::{
-    enumerate_contact_cards as bridge_enumerate, import_contact_card as bridge_import,
+    delete_contact_card as bridge_delete, enumerate_contact_cards as bridge_enumerate,
+    import_contact_card as bridge_import, owner_card_export as bridge_owner_card_export,
     share_block_to as bridge_share_block_to,
 };
 
 use crate::auto_lock::now_ms;
 use crate::commands::shared::parse_uuid_16;
-use crate::dtos::{ContactSummaryDto, ListContactsDto};
+use crate::dtos::{ContactSummaryDto, ExportedCardDto, ListContactsDto};
 use crate::errors::{map_ffi_error, AppError};
 use crate::session::VaultSession;
 
@@ -101,6 +102,58 @@ pub fn share_block_impl(
             now_ms(),
         )
         .map_err(map_ffi_error)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn export_contact_card(
+    state: State<'_, Mutex<VaultSession>>,
+    dest_dir: String,
+) -> Result<ExportedCardDto, AppError> {
+    export_contact_card_impl(state.inner(), &dest_dir)
+}
+
+pub fn export_contact_card_impl(
+    state: &Mutex<VaultSession>,
+    dest_dir: &str,
+) -> Result<ExportedCardDto, AppError> {
+    // Collect the (public) card bytes under the lock, then release it before
+    // the external write — mirroring import_contact_impl, which keeps host
+    // filesystem I/O outside the session lock so a slow destination can't
+    // block other commands (incl. the auto-lock timer).
+    let (file_name, bytes) = {
+        let session = lock_session(state)?;
+        session.with_unlocked(|u| bridge_owner_card_export(&u.manifest).map_err(map_ffi_error))?
+    };
+    let path = std::path::Path::new(dest_dir).join(&file_name);
+    // The owner card is PUBLIC material; the destination is a user-chosen
+    // external folder. Overwriting a prior export of the same card is benign
+    // (idempotent self-card). Native Rust write — no JS fs capability needed.
+    std::fs::write(&path, &bytes).map_err(|e| AppError::Io {
+        detail: format!("write exported card to {path:?}: {e}"),
+    })?;
+    Ok(ExportedCardDto {
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn delete_contact_card(
+    state: State<'_, Mutex<VaultSession>>,
+    contact_uuid_hex: String,
+) -> Result<(), AppError> {
+    delete_contact_card_impl(state.inner(), &contact_uuid_hex)
+}
+
+pub fn delete_contact_card_impl(
+    state: &Mutex<VaultSession>,
+    contact_uuid_hex: &str,
+) -> Result<(), AppError> {
+    let contact_uuid = parse_uuid_16(contact_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_delete(&u.manifest, contact_uuid).map_err(map_ffi_error)?;
         Ok(())
     })
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-import { listContacts, importContact, shareBlock } from '../src/lib/ipc';
+import { listContacts, importContact, shareBlock, exportContactCard, deleteContactCard } from '../src/lib/ipc';
 
 describe('contacts IPC wrappers', () => {
   beforeEach(() => invokeMock.mockReset());
@@ -20,5 +20,16 @@ describe('contacts IPC wrappers', () => {
     invokeMock.mockResolvedValueOnce(undefined);
     await shareBlock('blk', 'rcp');
     expect(invokeMock).toHaveBeenCalledWith('share_block', { blockUuidHex: 'blk', recipientUuidHex: 'rcp' });
+  });
+  it('exportContactCard invokes with destDir and returns path', async () => {
+    invokeMock.mockResolvedValueOnce({ path: '/tmp/contact.vcf' });
+    const result = await exportContactCard('/tmp');
+    expect(invokeMock).toHaveBeenCalledWith('export_contact_card', { destDir: '/tmp' });
+    expect(result).toEqual({ path: '/tmp/contact.vcf' });
+  });
+  it('deleteContactCard invokes with contactUuidHex', async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await deleteContactCard('abcd');
+    expect(invokeMock).toHaveBeenCalledWith('delete_contact_card', { contactUuidHex: 'abcd' });
   });
 });

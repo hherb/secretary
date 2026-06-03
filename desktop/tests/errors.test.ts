@@ -40,6 +40,7 @@ describe('userMessageFor', () => {
     { code: 'missing_recipient_card' },
     { code: 'contact_already_exists', contact_uuid_hex: 'ab' },
     { code: 'contact_not_found', contact_uuid_hex: 'ab' },
+    { code: 'cannot_delete_owner_contact' },
     { code: 'internal' }
   ];
 
@@ -204,6 +205,11 @@ describe('share / contact error codes', () => {
     expect(m.title).toMatch(/not found/i);
     expect(m.actionHint).toMatch(/refresh/i);
   });
+
+  it('cannot_delete_owner_contact returns truthy title', () => {
+    const m = userMessageFor({ code: 'cannot_delete_owner_contact' });
+    expect(m.title.length).toBeGreaterThan(0);
+  });
 });
 
 describe('new browse error codes', () => {
@@ -255,6 +261,7 @@ describe('error code allowlists', () => {
       'missing_recipient_card',
       'contact_already_exists',
       'contact_not_found',
+      'cannot_delete_owner_contact',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

@@ -22,6 +22,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::BlockNotInTrash { .. } => "BlockNotInTrash",
         E::ContactAlreadyExists { .. } => "ContactAlreadyExists",
         E::ContactNotFound { .. } => "ContactNotFound",
+        E::CannotDeleteOwnerContact => "CannotDeleteOwnerContact",
     }
 }
 

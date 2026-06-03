@@ -255,6 +255,13 @@ pub enum FfiVaultError {
         /// the API contract.
         detail: String,
     },
+
+    /// `delete_contact_card`: the requested uuid is the vault owner's own
+    /// self-card, which must never be removed (removing it corrupts the
+    /// vault's identity). Defense in depth — the contacts pane already omits
+    /// the owner, but the primitive refuses it regardless. Spec §3, §5.
+    #[error("the vault owner's own contact card cannot be deleted")]
+    CannotDeleteOwnerContact,
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {

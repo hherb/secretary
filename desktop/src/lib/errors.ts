@@ -37,6 +37,7 @@ export const APP_ERROR_CODES = [
   'missing_recipient_card',
   'contact_already_exists',
   'contact_not_found',
+  'cannot_delete_owner_contact',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -75,6 +76,7 @@ export type AppError =
   | { code: 'missing_recipient_card' }
   | { code: 'contact_already_exists'; contact_uuid_hex: string }
   | { code: 'contact_not_found'; contact_uuid_hex: string }
+  | { code: 'cannot_delete_owner_contact' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -199,6 +201,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return { title: 'Contact already imported', actionHint: 'That contact is already in your vault.' };
     case 'contact_not_found':
       return { title: 'Contact not found', actionHint: 'That contact is no longer in your vault. Refresh the list.' };
+    case 'cannot_delete_owner_contact':
+      return {
+        title: "That's your own card",
+        actionHint: 'You can export your card, but it stays in your vault.'
+      };
     case 'internal':
       return {
         title: 'Internal error',

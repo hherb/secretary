@@ -10,6 +10,7 @@ use secretary_ffi_bridge::ContactSummary;
 pub struct ContactSummaryDto {
     pub contact_uuid_hex: String,
     pub display_name: String,
+    pub shared_block_count: u32,
 }
 
 impl std::fmt::Debug for ContactSummaryDto {
@@ -17,6 +18,7 @@ impl std::fmt::Debug for ContactSummaryDto {
         f.debug_struct("ContactSummaryDto")
             .field("contact_uuid_hex", &self.contact_uuid_hex)
             .field("display_name", &"<redacted>")
+            .field("shared_block_count", &self.shared_block_count)
             .finish()
     }
 }
@@ -26,6 +28,7 @@ impl From<&ContactSummary> for ContactSummaryDto {
         ContactSummaryDto {
             contact_uuid_hex: hex::encode(s.contact_uuid),
             display_name: s.display_name.clone(),
+            shared_block_count: s.shared_block_count,
         }
     }
 }
@@ -37,6 +40,15 @@ impl From<&ContactSummary> for ContactSummaryDto {
 pub struct ListContactsDto {
     pub contacts: Vec<ContactSummaryDto>,
     pub unreadable_count: u32,
+}
+
+/// Result of `export_contact_card`: the external path the owner's card was
+/// written to (a user-chosen folder + the canonical file name). Non-secret —
+/// the user already chose this path; not redacted.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedCardDto {
+    pub path: String,
 }
 
 #[cfg(test)]
@@ -52,6 +64,7 @@ mod tests {
         let dto = ContactSummaryDto {
             contact_uuid_hex: "00112233445566778899aabbccddeeff".into(),
             display_name: "Alice".into(),
+            shared_block_count: 0,
         };
         let v = to_json(&dto);
         assert_eq!(v["contactUuidHex"], "00112233445566778899aabbccddeeff");
@@ -64,6 +77,7 @@ mod tests {
         let dto = ContactSummaryDto {
             contact_uuid_hex: "ab".into(),
             display_name: "SecretName".into(),
+            shared_block_count: 0,
         };
         let dbg = format!("{dto:?}");
         assert!(!dbg.contains("SecretName"));
@@ -79,5 +93,25 @@ mod tests {
         let v = to_json(&dto);
         assert_eq!(v["unreadableCount"], 3);
         assert!(v["contacts"].is_array());
+    }
+
+    #[test]
+    fn contact_summary_dto_carries_shared_block_count() {
+        let dto = ContactSummaryDto {
+            contact_uuid_hex: "ab".into(),
+            display_name: "Alice".into(),
+            shared_block_count: 3,
+        };
+        let v = to_json(&dto);
+        assert_eq!(v["sharedBlockCount"], 3);
+    }
+
+    #[test]
+    fn exported_card_dto_shape() {
+        let dto = ExportedCardDto {
+            path: "/tmp/x.card".into(),
+        };
+        let v = to_json(&dto);
+        assert_eq!(v["path"], "/tmp/x.card");
     }
 }

@@ -292,6 +292,54 @@ fn share_block_to_twice_is_recipient_already_present() {
 }
 
 #[test]
+fn enumerate_reports_shared_block_count_per_contact() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    // Import two peers; share the block with only the first.
+    let (_b1, shared_peer) = mint_external_card(0xC3, "Shared-Peer");
+    let (_b2, lonely_peer) = mint_external_card(0xD4, "Lonely-Peer");
+    let shared_uuid = uuid_of(&shared_peer);
+    let lonely_uuid = uuid_of(&lonely_peer);
+    import_contact_card(&manifest, &shared_peer).expect("import shared");
+    import_contact_card(&manifest, &lonely_peer).expect("import lonely");
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        shared_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1_000,
+    )
+    .expect("share");
+
+    let (summaries, _unreadable) = enumerate_contact_cards(&manifest).expect("enumerate");
+    let shared = summaries
+        .iter()
+        .find(|s| s.contact_uuid == shared_uuid)
+        .expect("shared present");
+    let lonely = summaries
+        .iter()
+        .find(|s| s.contact_uuid == lonely_uuid)
+        .expect("lonely present");
+    assert_eq!(
+        shared.shared_block_count, 1,
+        "shared peer receives exactly one block"
+    );
+    assert_eq!(
+        lonely.shared_block_count, 0,
+        "lonely peer receives no blocks"
+    );
+}
+
+#[test]
 fn share_block_to_rejects_card_swapped_after_import() {
     // Regression (PR #175 review): `share_block_to` re-reads recipient cards
     // from disk, so it MUST re-verify the both-halves self-signature at load
@@ -351,4 +399,60 @@ fn share_block_to_rejects_card_swapped_after_import() {
         "owner only; the rejected share must not have re-keyed the block"
     );
     assert!(!entry.recipient_uuids.contains(&peer_uuid));
+}
+
+#[test]
+fn owner_card_export_returns_canonical_name_and_round_trips() {
+    use secretary_ffi_bridge::owner_card_export;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+
+    let (file_name, bytes) = owner_card_export(&manifest).expect("export ok");
+
+    // Name is the canonical hyphenated-uuid filename a peer's import re-derives.
+    let owner = owner_uuid(&manifest);
+    assert_eq!(
+        file_name,
+        format!("{}.card", format_uuid_hyphenated(&owner))
+    );
+    // Bytes parse + self-verify back to the owner's card (public material only).
+    let card = ContactCard::from_canonical_cbor(&bytes).expect("parse");
+    card.verify_self()
+        .expect("both self-signature halves verify");
+    assert_eq!(card.contact_uuid, owner);
+}
+
+#[test]
+fn delete_contact_card_removes_the_file_and_enumerate_omits_it() {
+    use secretary_ffi_bridge::delete_contact_card;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("import");
+    let (before, _) = enumerate_contact_cards(&manifest).expect("enum");
+    assert!(before.iter().any(|s| s.contact_uuid == peer_uuid));
+
+    delete_contact_card(&manifest, peer_uuid).expect("delete ok");
+
+    let (after, _) = enumerate_contact_cards(&manifest).expect("enum");
+    assert!(
+        after.iter().all(|s| s.contact_uuid != peer_uuid),
+        "deleted contact gone"
+    );
+    // Second delete of the same uuid → ContactNotFound.
+    let err = delete_contact_card(&manifest, peer_uuid).expect_err("already gone");
+    assert!(matches!(err, FfiVaultError::ContactNotFound { .. }));
+}
+
+#[test]
+fn delete_contact_card_refuses_owner() {
+    use secretary_ffi_bridge::delete_contact_card;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let owner = owner_uuid(&manifest);
+    let err = delete_contact_card(&manifest, owner).expect_err("owner is undeletable");
+    assert!(matches!(err, FfiVaultError::CannotDeleteOwnerContact));
+    // The owner self-card is still intact on disk.
+    assert!(
+        manifest.owner_card_bytes().expect("ok").is_some(),
+        "owner card intact"
+    );
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { browseNav, openBlock, openRecord, back, resetBrowse } from '../src/lib/browse';
+import { browseNav, openBlock, openRecord, back, resetBrowse, openContacts } from '../src/lib/browse';
 import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'B', createdAtMs: 1, lastModifiedMs: 2 };
@@ -41,6 +41,17 @@ describe('browse-nav store', () => {
   it('resetBrowse returns to blocks from any level', () => {
     openBlock(BLOCK); openRecord(RECORD);
     resetBrowse();
+    expect(get(browseNav).level).toBe('blocks');
+  });
+
+  it('openContacts sets level to contacts', () => {
+    openContacts();
+    expect(get(browseNav).level).toBe('contacts');
+  });
+
+  it('back from contacts returns to blocks', () => {
+    openContacts();
+    back();
     expect(get(browseNav).level).toBe('blocks');
   });
 });

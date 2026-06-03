@@ -47,6 +47,8 @@ pub fn import_contact_card(
     Ok(ContactSummary {
         contact_uuid: card.contact_uuid,
         display_name: card.display_name,
+        // A freshly imported contact has no shared blocks yet.
+        shared_block_count: 0,
     })
 }
 

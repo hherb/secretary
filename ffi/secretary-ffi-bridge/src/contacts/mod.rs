@@ -12,6 +12,12 @@ pub use enumerate::enumerate_contact_cards;
 mod import;
 pub use import::import_contact_card;
 
+mod delete;
+pub use delete::delete_contact_card;
+
+mod export;
+pub use export::owner_card_export;
+
 mod share;
 pub use share::share_block_to;
 
@@ -30,6 +36,10 @@ pub struct ContactSummary {
     pub contact_uuid: [u8; 16],
     /// User-facing label from the card.
     pub display_name: String,
+    /// How many of the owner's blocks list this contact as a recipient.
+    /// In-memory scan of `manifest_body().blocks[].recipients` — no
+    /// decryption, no I/O. Feeds the contacts-pane delete warning (spec §3).
+    pub shared_block_count: u32,
 }
 
 /// Parse + cryptographically self-verify one contact card. `from_canonical_cbor`

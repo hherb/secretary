@@ -5,12 +5,13 @@
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
-  import { browseNav, openBlock, openNewBlock, openTrash, back } from '../lib/browse';
+  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
   import NewBlock from '../components/edit/NewBlock.svelte';
   import RecordEditor from '../components/edit/RecordEditor.svelte';
   import TrashView from '../components/delete/TrashView.svelte';
+  import ContactsPane from '../components/contacts/ContactsPane.svelte';
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
   import ShareDialog from '../components/share/ShareDialog.svelte';
 
@@ -80,6 +81,7 @@
     {#if $browseNav.level === 'blocks'}
       <button type="button" class="vault__new-block" onclick={() => openNewBlock()}>+ New block</button>
       <button type="button" class="vault__trash-entry" onclick={() => openTrash()}>🗑 Trash</button>
+      <button type="button" class="vault__contacts-entry" onclick={() => openContacts()}>👤 Contacts</button>
       {#if trashError}
         {@const msg = userMessageFor(trashError)}
         <p class="vault__trash-error" role="alert">{msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}</p>
@@ -99,6 +101,8 @@
       </div>
     {:else if $browseNav.level === 'trash'}
       <TrashView />
+    {:else if $browseNav.level === 'contacts'}
+      <ContactsPane />
     {:else if $browseNav.level === 'records'}
       <RecordList block={$browseNav.block} />
     {:else if $browseNav.level === 'fields'}

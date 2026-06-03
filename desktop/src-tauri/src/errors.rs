@@ -116,6 +116,9 @@ pub enum AppError {
     #[error("That contact is not in your vault")]
     ContactNotFound { contact_uuid_hex: String },
 
+    #[error("Your own contact card can't be deleted")]
+    CannotDeleteOwnerContact,
+
     #[error("Field not found")]
     FieldNotFound { field_name: String },
 
@@ -300,6 +303,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::ContactNotFound { uuid_hex } => AppError::ContactNotFound {
             contact_uuid_hex: uuid_hex,
         },
+        FfiVaultError::CannotDeleteOwnerContact => AppError::CannotDeleteOwnerContact,
     }
 }
 
@@ -548,6 +552,18 @@ mod tests {
         });
         assert_eq!(v["code"], "contact_not_found");
         assert_eq!(v["contact_uuid_hex"], "cd");
+    }
+
+    #[test]
+    fn cannot_delete_owner_contact_round_trips() {
+        let v = round_trip(&AppError::CannotDeleteOwnerContact);
+        assert_eq!(v["code"], "cannot_delete_owner_contact");
+    }
+
+    #[test]
+    fn map_cannot_delete_owner_contact() {
+        let m = map_ffi_error(FfiVaultError::CannotDeleteOwnerContact);
+        assert!(matches!(m, AppError::CannotDeleteOwnerContact));
     }
 
     #[test]

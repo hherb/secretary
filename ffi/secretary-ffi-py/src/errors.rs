@@ -51,6 +51,8 @@ create_exception!(secretary_ffi_py, VaultBlockNotInTrash, PyException);
 // the bridge's new FfiVaultError variants.
 create_exception!(secretary_ffi_py, VaultContactAlreadyExists, PyException);
 create_exception!(secretary_ffi_py, VaultContactNotFound, PyException);
+// D.1.7 delete-contact error surface — owner self-card deletion guard.
+create_exception!(secretary_ffi_py, VaultCannotDeleteOwnerContact, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -126,6 +128,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultContactAlreadyExists::new_err(uuid_hex)
         }
         FfiVaultError::ContactNotFound { uuid_hex } => VaultContactNotFound::new_err(uuid_hex),
+        FfiVaultError::CannotDeleteOwnerContact => VaultCannotDeleteOwnerContact::new_err(
+            "the vault owner's own contact card cannot be deleted",
+        ),
     }
 }
 
