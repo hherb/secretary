@@ -61,6 +61,7 @@
     pendingDelete = null;
     if (!target) return;
     error = null;
+    notice = null;
     try {
       await deleteContactCard(target.contactUuidHex);
       await load();

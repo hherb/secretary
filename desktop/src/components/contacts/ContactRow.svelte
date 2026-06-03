@@ -17,10 +17,10 @@
   );
 </script>
 
-<div class="contact-row">
-  <span class="contact-row__name">{contact.displayName}</span>
-  <span class="contact-row__count">{blocksLabel}</span>
-  <button type="button" class="contact-row__delete" onclick={() => onDelete(contact)}>
+<div class="contact-card-row">
+  <span class="contact-card-row__name">{contact.displayName}</span>
+  <span class="contact-card-row__count">{blocksLabel}</span>
+  <button type="button" class="contact-card-row__delete" onclick={() => onDelete(contact)}>
     Delete
   </button>
 </div>
