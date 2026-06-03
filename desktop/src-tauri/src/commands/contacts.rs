@@ -118,9 +118,14 @@ pub fn export_contact_card_impl(
     state: &Mutex<VaultSession>,
     dest_dir: &str,
 ) -> Result<ExportedCardDto, AppError> {
-    let session = lock_session(state)?;
-    let (file_name, bytes) =
-        session.with_unlocked(|u| bridge_owner_card_export(&u.manifest).map_err(map_ffi_error))?;
+    // Collect the (public) card bytes under the lock, then release it before
+    // the external write — mirroring import_contact_impl, which keeps host
+    // filesystem I/O outside the session lock so a slow destination can't
+    // block other commands (incl. the auto-lock timer).
+    let (file_name, bytes) = {
+        let session = lock_session(state)?;
+        session.with_unlocked(|u| bridge_owner_card_export(&u.manifest).map_err(map_ffi_error))?
+    };
     let path = std::path::Path::new(dest_dir).join(&file_name);
     // The owner card is PUBLIC material; the destination is a user-chosen
     // external folder. Overwriting a prior export of the same card is benign
