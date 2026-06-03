@@ -17,7 +17,7 @@ pub struct RecipientDto {
 
 /// Wire tag for the recipient classification. Serialized lower-case so the
 /// frontend switches on `"owner" | "contact" | "unknown"`.
-#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipientKindDto {
     Owner,
@@ -30,7 +30,7 @@ impl std::fmt::Debug for RecipientDto {
         f.debug_struct("RecipientDto")
             .field("uuid_hex", &self.uuid_hex)
             .field("kind", &self.kind)
-            .field("display_name", &self.display_name.as_ref().map(|_| "<redacted>"))
+            .field("display_name", &"<redacted>")
             .finish()
     }
 }
@@ -99,13 +99,23 @@ mod tests {
 
     #[test]
     fn debug_redacts_display_name() {
-        let dto = RecipientDto {
+        // Contact case: secret name absent, redaction marker present.
+        let contact = RecipientDto {
             uuid_hex: "ab".into(),
             kind: RecipientKindDto::Contact,
             display_name: Some("SecretName".into()),
         };
-        let dbg = format!("{dto:?}");
+        let dbg = format!("{contact:?}");
         assert!(!dbg.contains("SecretName"));
+        assert!(dbg.contains("redacted"));
+
+        // Owner case (None display_name): marker still unconditionally present.
+        let owner = RecipientDto {
+            uuid_hex: "cd".into(),
+            kind: RecipientKindDto::Owner,
+            display_name: None,
+        };
+        let dbg = format!("{owner:?}");
         assert!(dbg.contains("redacted"));
     }
 }
