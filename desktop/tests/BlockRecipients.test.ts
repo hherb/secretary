@@ -32,6 +32,42 @@ describe('BlockRecipients', () => {
     expect(invokeMock).toHaveBeenCalledWith('block_recipients', { blockUuidHex: 'deadbeef' });
   });
 
+  it('collapses the banner when the block prop changes', async () => {
+    // First block: one named contact + one unknown row (to make expanded state observable).
+    invokeMock.mockResolvedValueOnce([
+      { uuidHex: '00', kind: 'owner', displayName: null },
+      { uuidHex: 'bb', kind: 'unknown', displayName: null }
+    ]);
+    const block2 = { blockUuidHex: 'cafef00d', blockName: 'Cards', createdAtMs: 1, lastModifiedMs: 1 };
+    // Second block returns a different recipient so we can prove the new data loaded.
+    invokeMock.mockResolvedValueOnce([
+      { uuidHex: 'cc', kind: 'contact', displayName: 'Bob' }
+    ]);
+
+    const { getByRole, queryByRole, rerender } = render(BlockRecipients, { block });
+
+    // Wait for the first block to finish loading.
+    await waitFor(() => expect(getByRole('button', { name: /shared with/i })).toBeTruthy());
+
+    // Expand the banner.
+    await fireEvent.click(getByRole('button', { name: /shared with/i }));
+    // Confirm it is expanded: the toggle button now has aria-expanded=true.
+    expect(getByRole('button', { name: /shared with/i }).getAttribute('aria-expanded')).toBe('true');
+
+    // Switch to a different block.
+    await rerender({ block: block2 });
+
+    // Wait for the second block's data to arrive.
+    await waitFor(() =>
+      expect(getByRole('button', { name: /shared with/i }).textContent).toMatch(/Bob/)
+    );
+
+    // Banner must be collapsed again — aria-expanded should be false.
+    expect(getByRole('button', { name: /shared with/i }).getAttribute('aria-expanded')).toBe('false');
+    // The expanded list must not be in the DOM.
+    expect(queryByRole('list')).toBeNull();
+  });
+
   it('surfaces a typed error when the call rejects', async () => {
     invokeMock.mockRejectedValueOnce({ code: 'internal' });
     const { findByRole } = render(BlockRecipients, { block });

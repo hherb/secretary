@@ -20,6 +20,7 @@
     const blockUuidHex = block.blockUuidHex;
     recipients = null;
     error = null;
+    expanded = false;
     try {
       const rows = await listBlockRecipients(blockUuidHex);
       if (seq === loadSeq) recipients = sortRecipients(rows);
