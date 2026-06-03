@@ -12,6 +12,9 @@ pub use enumerate::enumerate_contact_cards;
 mod import;
 pub use import::import_contact_card;
 
+mod delete;
+pub use delete::delete_contact_card;
+
 mod export;
 pub use export::owner_card_export;
 

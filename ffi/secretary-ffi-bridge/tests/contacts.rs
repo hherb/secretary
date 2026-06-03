@@ -420,3 +420,39 @@ fn owner_card_export_returns_canonical_name_and_round_trips() {
         .expect("both self-signature halves verify");
     assert_eq!(card.contact_uuid, owner);
 }
+
+#[test]
+fn delete_contact_card_removes_the_file_and_enumerate_omits_it() {
+    use secretary_ffi_bridge::delete_contact_card;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("import");
+    let (before, _) = enumerate_contact_cards(&manifest).expect("enum");
+    assert!(before.iter().any(|s| s.contact_uuid == peer_uuid));
+
+    delete_contact_card(&manifest, peer_uuid).expect("delete ok");
+
+    let (after, _) = enumerate_contact_cards(&manifest).expect("enum");
+    assert!(
+        after.iter().all(|s| s.contact_uuid != peer_uuid),
+        "deleted contact gone"
+    );
+    // Second delete of the same uuid → ContactNotFound.
+    let err = delete_contact_card(&manifest, peer_uuid).expect_err("already gone");
+    assert!(matches!(err, FfiVaultError::ContactNotFound { .. }));
+}
+
+#[test]
+fn delete_contact_card_refuses_owner() {
+    use secretary_ffi_bridge::delete_contact_card;
+    let (_tmp, _identity, manifest) = fresh_writable_vault();
+    let owner = owner_uuid(&manifest);
+    let err = delete_contact_card(&manifest, owner).expect_err("owner is undeletable");
+    assert!(matches!(err, FfiVaultError::CannotDeleteOwnerContact));
+    // The owner self-card is still intact on disk.
+    assert!(
+        manifest.owner_card_bytes().expect("ok").is_some(),
+        "owner card intact"
+    );
+}
