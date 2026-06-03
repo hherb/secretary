@@ -12,6 +12,7 @@
   import RecordEditor from '../components/edit/RecordEditor.svelte';
   import TrashView from '../components/delete/TrashView.svelte';
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
+  import ShareDialog from '../components/share/ShareDialog.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -38,6 +39,8 @@
   let settingsOpen = $state(false);
   // Block awaiting trash confirmation; ConfirmDialog mounts while set.
   let pendingTrash = $state<BlockSummaryDto | null>(null);
+  // Block awaiting a share; ShareDialog mounts while set.
+  let blockToShare = $state<BlockSummaryDto | null>(null);
   // Trash flow is initiated here (not in a child editor) so its typed
   // error surfaces inline on the blocks pane, mirroring how NewBlock /
   // RecordList render their own `role="alert"` rather than a global toast.
@@ -86,7 +89,12 @@
       </div>
       <div class="vault__block-list">
         {#each manifest.blockSummaries as block (block.blockUuidHex)}
-          <BlockCard {block} onClick={openBlock} onTrash={(b) => (pendingTrash = b)} />
+          <BlockCard
+            {block}
+            onClick={openBlock}
+            onTrash={(b) => (pendingTrash = b)}
+            onShare={(b) => (blockToShare = b)}
+          />
         {/each}
       </div>
     {:else if $browseNav.level === 'trash'}
@@ -128,6 +136,13 @@
         confirmLabel="Trash"
         onConfirm={confirmTrash}
         onCancel={() => (pendingTrash = null)}
+      />
+    {/if}
+
+    {#if blockToShare}
+      <ShareDialog
+        block={blockToShare}
+        onClose={() => { blockToShare = null; refreshManifest(); }}
       />
     {/if}
   </div>

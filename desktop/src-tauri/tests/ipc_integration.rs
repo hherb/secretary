@@ -1067,3 +1067,174 @@ mod delete_path {
         assert!(matches!(err, AppError::RecordNotFound { .. }));
     }
 }
+
+// ============================================================================
+// D.1.6 contacts path. L3 coverage of the three contacts IPC commands over a
+// real vault: list / import / share.
+//
+// CRITICAL fixture facts (the contacts commands MUTATE the vault — share
+// re-keys a block, import writes into contacts/), so every test runs against
+// an EPHEMERAL COPY of the golden vault, never the tracked fixture.
+//
+// The golden vault `contacts/` ships THREE cards: the owner plus two peers.
+// `enumerate_contact_cards` OMITS the owner, so `list_contacts` on a fresh
+// golden copy returns 2 contacts (the two peers), NOT 0. These tests therefore
+// use a BASELINE + DELTA shape: capture `before.contacts.len()`, import a
+// brand-new random peer, and assert the new list has `before + 1` entries and
+// contains the imported peer by UUID — rather than pinning an absolute count.
+// ============================================================================
+
+mod contacts_path {
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+    use secretary_desktop::commands::contacts;
+
+    const PEER_DISPLAY_NAME: &str = "D.1.6 peer identity";
+
+    /// Runtime-random hex password — avoids a hardcoded crypto literal.
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    /// Create a throwaway vault via `create_vault_impl` in a fresh tempdir and
+    /// return its single owner `.card` file under `<dir>/contacts/`. The peer's
+    /// identity is random (no seed collision with the golden vault), so the
+    /// card is always importable into / shareable to the golden copy without a
+    /// duplicate or already-recipient clash. Mirrors the `create_vault_impl`
+    /// call sites in `create_path` for the `SecretBytes` / `OsRng` imports.
+    fn peer_card_file() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("peer vault tempdir");
+        let path = dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        create::create_vault_impl(
+            path,
+            PEER_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault_impl for peer card");
+
+        // A fresh vault writes exactly one card into contacts/ — the owner's
+        // own self-card. That is the card a peer would hand us to import.
+        let contacts_dir = dir.path().join("contacts");
+        let mut cards: Vec<PathBuf> = std::fs::read_dir(&contacts_dir)
+            .expect("read peer contacts/ dir")
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().map(|x| x == "card").unwrap_or(false))
+            .collect();
+        assert_eq!(
+            cards.len(),
+            1,
+            "a freshly-created vault has exactly one (owner) card in contacts/"
+        );
+        let card = cards.pop().expect("the single owner card");
+        (dir, card)
+    }
+
+    /// An unlocked `VaultSession` over an EPHEMERAL COPY of the golden vault.
+    /// Returns the state, the vault-copy TempDir guard, and the device-UUID
+    /// TempDir guard — both must stay alive for the duration of the test.
+    fn unlocked_ephemeral() -> (Mutex<VaultSession>, tempfile::TempDir, tempfile::TempDir) {
+        let (vault_dir, vault_path) = ephemeral_golden_copy();
+        let (state, device_dir) = fresh_state();
+        unlock::unlock_with_password_impl(
+            &state,
+            vault_path.to_str().expect("utf8 path"),
+            GOLDEN_VAULT_PASSWORD.as_bytes(),
+        )
+        .expect("unlock ephemeral golden copy");
+        (state, vault_dir, device_dir)
+    }
+
+    #[test]
+    fn list_contacts_excludes_owner_then_shows_imported_peer() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // Baseline: the golden copy ships two peer cards (owner is omitted by
+        // `enumerate_contact_cards`). We don't pin the absolute count — we
+        // capture it and assert the +1 delta after import.
+        let before = contacts::list_contacts_impl(&state).expect("baseline list_contacts");
+
+        // Import a brand-new random peer.
+        let (_peer_dir, card) = peer_card_file();
+        let imported = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
+            .expect("import the peer card");
+
+        // The imported peer must NOT have already been present (random identity).
+        assert!(
+            !before
+                .contacts
+                .iter()
+                .any(|c| c.contact_uuid_hex == imported.contact_uuid_hex),
+            "freshly-created peer cannot already be in the baseline list"
+        );
+
+        let after = contacts::list_contacts_impl(&state).expect("post-import list_contacts");
+        assert_eq!(
+            after.contacts.len(),
+            before.contacts.len() + 1,
+            "importing one peer adds exactly one contact"
+        );
+        assert!(
+            after
+                .contacts
+                .iter()
+                .any(|c| c.contact_uuid_hex == imported.contact_uuid_hex),
+            "the imported peer must appear in the post-import list"
+        );
+    }
+
+    #[test]
+    fn import_contact_duplicate_is_typed_error() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+        let (_peer_dir, card) = peer_card_file();
+        let card_path = card.to_str().expect("utf8 path");
+
+        contacts::import_contact_impl(&state, card_path).expect("first import succeeds");
+
+        let err = contacts::import_contact_impl(&state, card_path)
+            .expect_err("re-importing the same card must fail");
+        assert!(
+            matches!(err, AppError::ContactAlreadyExists { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn share_block_happy_and_typed_errors() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // Import a fresh peer to share with.
+        let (_peer_dir, card) = peer_card_file();
+        let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
+            .expect("import peer for share test");
+
+        // Happy path: share an owner-authored golden block to the new peer.
+        contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+            .expect("share ok");
+
+        // Re-sharing to the same (now-present) recipient is a typed error.
+        let err = contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+            .expect_err("re-share to an existing recipient must fail");
+        assert!(
+            matches!(err, AppError::RecipientAlreadyPresent),
+            "got {err:?}"
+        );
+
+        // Unknown recipient (valid hex, but no contact card on disk).
+        let unknown_recipient_hex = "99999999999999999999999999999999";
+        let err = contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, unknown_recipient_hex)
+            .expect_err("sharing to an unknown recipient must fail");
+        assert!(
+            matches!(err, AppError::ContactNotFound { .. }),
+            "got {err:?}"
+        );
+    }
+}

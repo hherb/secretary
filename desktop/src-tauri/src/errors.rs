@@ -15,13 +15,16 @@
 //!
 //! # Variant coverage versus FfiVaultError
 //!
-//! D.1.1 only exercises the password-unlock + read-block + save-block paths
-//! (no recovery-phrase unlock, no block-share, no trash/restore). The
-//! `From<FfiVaultError>` match is nonetheless exhaustive because new bridge
-//! variants must force a deliberate UI-mapping choice rather than silently
-//! folding to `Internal`. Variants that cannot fire in D.1.1's code paths
-//! fold to `Internal { detail }` so a regression surfaces as a clear
-//! "this is a bug" rather than a silent miscategorisation.
+//! The `map_ffi_error` match is exhaustive (no `_` catch-all) so every new
+//! bridge variant forces a deliberate UI-mapping choice rather than silently
+//! folding to `Internal`. Most bridge variants now route to a typed
+//! `AppError` — including the D.1.5 trash/restore preconditions and the
+//! D.1.6 block-share + contacts variants (`NotAuthor`,
+//! `RecipientAlreadyPresent`, `MissingRecipientCard`, `ContactAlreadyExists`,
+//! `ContactNotFound`). A residual few that should never fire on a reachable
+//! UI path (e.g. a stale block UUID into `read_block`) fold to
+//! `Internal { detail }` so a regression surfaces as a clear "this is a bug"
+//! rather than a silent miscategorisation.
 //!
 //! Note: the bridge already collapses `WeakKdfParams` into `CorruptVault`
 //! (post-unlock detail string). `AppError::KdfTooWeak` therefore has no
@@ -97,6 +100,21 @@ pub enum AppError {
 
     #[error("That trashed block is no longer available")]
     TrashEntryNotFound { block_uuid_hex: String },
+
+    #[error("Only the block's author can share it")]
+    NotAuthor,
+
+    #[error("This block is already shared with that contact")]
+    RecipientAlreadyPresent,
+
+    #[error("A recipient's contact card is missing")]
+    MissingRecipientCard,
+
+    #[error("That contact is already in your vault")]
+    ContactAlreadyExists { contact_uuid_hex: String },
+
+    #[error("That contact is not in your vault")]
+    ContactNotFound { contact_uuid_hex: String },
 
     #[error("Field not found")]
     FieldNotFound { field_name: String },
@@ -180,11 +198,15 @@ pub enum AppWarning {
 /// The bridge's `WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt`
 /// variants are deliberately conflated per `docs/threat-model.md` §13's
 /// anti-oracle property; both fold to `WrongPassword` here (the user's
-/// affordance is "retry credential" in both cases). Bridge variants
-/// that cannot reach D.1.1's code paths (block-share authorisation,
-/// trash/restore preconditions, recovery-phrase pre-validation) fold
-/// to `Internal { detail }` so a regression that lets them fire
-/// surfaces as a clear bug-report path.
+/// affordance is "retry credential" in both cases). Block-share
+/// authorisation + contacts variants (`NotAuthor`,
+/// `RecipientAlreadyPresent`, `MissingRecipientCard`,
+/// `ContactAlreadyExists`, `ContactNotFound`) and the trash/restore
+/// preconditions route to typed `AppError`s. The few variants that
+/// should never reach a live UI path (e.g. recovery-phrase
+/// pre-validation, an unknown block UUID into `read_block`) fold to
+/// `Internal { detail }` so a regression that lets them fire surfaces
+/// as a clear bug-report path.
 ///
 /// `FolderInvalid` folds to `Io { detail }` here because the bridge
 /// surfaces the underlying IO context but not the caller's chosen path.
@@ -264,14 +286,19 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             block_uuid_hex: detail,
         },
 
-        // Block-share authorization failures and recipient table mismatches:
-        // unreachable in D.1.1–D.1.5 (no share UI). Map to Internal so an
-        // accidental wiring of a share command surfaces clearly. These get
-        // typed variants in D.1.6.
-        other @ (FfiVaultError::NotAuthor { .. }
-        | FfiVaultError::RecipientAlreadyPresent
-        | FfiVaultError::MissingRecipientCard { .. }) => AppError::Internal {
-            detail: format!("{other:?}"),
+        // Block-share authorization failures and recipient table mismatches,
+        // plus contact-table preconditions: now typed (D.1.6 share UI). The
+        // recipient fingerprints in `NotAuthor` are dropped at the seam — the
+        // user's affordance ("you aren't the author") needs no payload; the
+        // contact UUID hex (caller-minted, non-secret) crosses for the others.
+        FfiVaultError::NotAuthor { .. } => AppError::NotAuthor,
+        FfiVaultError::RecipientAlreadyPresent => AppError::RecipientAlreadyPresent,
+        FfiVaultError::MissingRecipientCard { .. } => AppError::MissingRecipientCard,
+        FfiVaultError::ContactAlreadyExists { uuid_hex } => AppError::ContactAlreadyExists {
+            contact_uuid_hex: uuid_hex,
+        },
+        FfiVaultError::ContactNotFound { uuid_hex } => AppError::ContactNotFound {
+            contact_uuid_hex: uuid_hex,
         },
     }
 }
@@ -498,5 +525,54 @@ mod tests {
             matches!(mapped, AppError::TrashEntryNotFound { block_uuid_hex } if block_uuid_hex == "ef01"),
             "BlockNotInTrash must map to TrashEntryNotFound carrying the hex"
         );
+    }
+
+    #[test]
+    fn share_errors_serialize_typed() {
+        assert_eq!(round_trip(&AppError::NotAuthor)["code"], "not_author");
+        assert_eq!(
+            round_trip(&AppError::RecipientAlreadyPresent)["code"],
+            "recipient_already_present"
+        );
+        assert_eq!(
+            round_trip(&AppError::MissingRecipientCard)["code"],
+            "missing_recipient_card"
+        );
+        let v = round_trip(&AppError::ContactAlreadyExists {
+            contact_uuid_hex: "ab".into(),
+        });
+        assert_eq!(v["code"], "contact_already_exists");
+        assert_eq!(v["contact_uuid_hex"], "ab");
+        let v = round_trip(&AppError::ContactNotFound {
+            contact_uuid_hex: "cd".into(),
+        });
+        assert_eq!(v["code"], "contact_not_found");
+        assert_eq!(v["contact_uuid_hex"], "cd");
+    }
+
+    #[test]
+    fn ffi_share_variants_route_to_typed_app_errors() {
+        let m: AppError = map_ffi_error(FfiVaultError::RecipientAlreadyPresent);
+        assert_eq!(round_trip(&m)["code"], "recipient_already_present");
+        let m = map_ffi_error(FfiVaultError::ContactAlreadyExists {
+            uuid_hex: "ab".into(),
+        });
+        assert_eq!(round_trip(&m)["contact_uuid_hex"], "ab");
+        let m = map_ffi_error(FfiVaultError::ContactNotFound {
+            uuid_hex: "cd".into(),
+        });
+        assert_eq!(round_trip(&m)["contact_uuid_hex"], "cd");
+        let m = map_ffi_error(FfiVaultError::NotAuthor {
+            expected_fingerprint_hex: "x".into(),
+            got_fingerprint_hex: "y".into(),
+        });
+        let v = round_trip(&m);
+        assert_eq!(v["code"], "not_author");
+        // The bridge fingerprints must be dropped at the seam — assert
+        // their ABSENCE explicitly so a future refactor that adds a payload
+        // to AppError::NotAuthor can't silently start leaking them.
+        assert!(v.get("expected_fingerprint_hex").is_none());
+        assert!(v.get("got_fingerprint_hex").is_none());
+        assert_eq!(v.as_object().expect("object").len(), 1, "code only");
     }
 }

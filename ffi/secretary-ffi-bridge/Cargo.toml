@@ -29,14 +29,20 @@ hex = "0.4"
 # impls. Same discipline as core/Cargo.toml; same reason — the failure
 # mode is silent.
 zeroize = "=1.8.2"
+# `tempfile` is on the security-critical atomic-write path: `import_contact_card`
+# (D.1.6) writes `contacts/<uuid>.card` via `NamedTempFile::new_in + sync_all +
+# persist` (rename(2) semantics) because core's `write_atomic` is `pub(crate)`
+# and unreachable from this crate. Pinned to an EXACT version (matching
+# core/Cargo.toml) — not a caret range — so any bump requires a deliberate
+# changelog review, since a regression in `persist` semantics (silent fallback
+# to a non-atomic copy) would weaken the §5 atomicity guarantee. Same discipline
+# and reason as core/Cargo.toml. Also covers the `[dev-dependencies]` TempDir
+# usage (a runtime dep is visible to test targets), so no separate dev entry.
+tempfile = "=3.27.0"
 
 [dev-dependencies]
 # Match the version pinned in core/Cargo.toml so we share the lock entry.
 rand_chacha = "0.3"
-# exact pin matching core/Cargo.toml so the workspace shares one resolved
-# version; TempDir is used here only for ephemeral test directories (no
-# atomicity invariants — that's the runtime dep's contract).
-tempfile = "=3.27.0"
 # used by block_summaries_returns_pinned_layout_for_v1 to parse the
 # golden_vault_001_inputs.json cross-check.
 serde_json = "1"

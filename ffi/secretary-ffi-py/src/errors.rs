@@ -47,6 +47,10 @@ create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
 // classes mirroring the bridge's new FfiVaultError variants.
 create_exception!(secretary_ffi_py, VaultBlockUuidAlreadyLive, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotInTrash, PyException);
+// D.1.6 share-contacts error surface — 2 typed exception classes mirroring
+// the bridge's new FfiVaultError variants.
+create_exception!(secretary_ffi_py, VaultContactAlreadyExists, PyException);
+create_exception!(secretary_ffi_py, VaultContactNotFound, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -116,6 +120,12 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultBlockUuidAlreadyLive::new_err(detail)
         }
         FfiVaultError::BlockNotInTrash { detail } => VaultBlockNotInTrash::new_err(detail),
+        // D.1.6 share-contacts error surface — same args[0] contract: the
+        // contact-UUID hex rides as the exception payload.
+        FfiVaultError::ContactAlreadyExists { uuid_hex } => {
+            VaultContactAlreadyExists::new_err(uuid_hex)
+        }
+        FfiVaultError::ContactNotFound { uuid_hex } => VaultContactNotFound::new_err(uuid_hex),
     }
 }
 

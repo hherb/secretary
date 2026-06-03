@@ -122,4 +122,50 @@ describe('PathPicker', () => {
     await Promise.resolve();
     expect(onSelect).not.toHaveBeenCalled();
   });
+
+  // --- File mode (D.1.6 contact-card import) ---------------------------
+  // `directory={false}` + `filters`/`title`/`label` is the contact-import
+  // path; the assertions below pin the branching that folder-mode tests
+  // never exercise. The folder default must stay byte-identical (covered
+  // above), so these only assert the file-mode deltas.
+
+  it('file mode: opens the dialog with directory:false and the given filters', async () => {
+    openMock.mockResolvedValueOnce('/home/alice/bob.card');
+    const onSelect = vi.fn();
+    const filters = [{ name: 'Contact card', extensions: ['card'] }];
+    const { getByRole } = render(PathPicker, {
+      props: { value: '', onSelect, directory: false, filters, title: 'Import a contact card' }
+    });
+    await fireEvent.click(getByRole('button'));
+    expect(openMock).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: 'Import a contact card',
+      filters
+    });
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('/home/alice/bob.card'));
+  });
+
+  it('file mode: title falls back to undefined (not the folder prompt) when omitted', async () => {
+    openMock.mockResolvedValueOnce(null);
+    const { getByRole } = render(PathPicker, {
+      props: { value: '', onSelect: vi.fn(), directory: false, filters: [] }
+    });
+    await fireEvent.click(getByRole('button'));
+    expect(openMock).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: undefined,
+      filters: []
+    });
+  });
+
+  it('file mode: placeholder and custom button label switch for files', () => {
+    const { getByRole } = render(PathPicker, {
+      props: { value: '', onSelect: vi.fn(), directory: false, label: 'Import a contact…' }
+    });
+    const input = getByRole('textbox') as HTMLInputElement;
+    expect(input.placeholder).toMatch(/no file/i);
+    expect(getByRole('button').textContent).toContain('Import a contact…');
+  });
 });

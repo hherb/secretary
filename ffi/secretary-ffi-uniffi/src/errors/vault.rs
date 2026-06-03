@@ -72,6 +72,14 @@ pub enum VaultError {
     /// on a UUID with no `TrashEntry` and no matching trash file.
     #[error("block is not in trash: {detail}")]
     BlockNotInTrash { detail: String },
+    /// A contact card with this `contact_uuid` is already present in the
+    /// vault's `contacts/` directory. Mirrors `FfiVaultError::ContactAlreadyExists`.
+    #[error("contact already exists in vault: {uuid_hex}")]
+    ContactAlreadyExists { uuid_hex: String },
+    /// A contact card referenced by a share operation has no `.card` file
+    /// in `contacts/`. Mirrors `FfiVaultError::ContactNotFound`.
+    #[error("contact not found in vault: {uuid_hex}")]
+    ContactNotFound { uuid_hex: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -104,6 +112,10 @@ impl From<FfiVaultError> for VaultError {
                 VaultError::BlockUuidAlreadyLive { detail }
             }
             FfiVaultError::BlockNotInTrash { detail } => VaultError::BlockNotInTrash { detail },
+            FfiVaultError::ContactAlreadyExists { uuid_hex } => {
+                VaultError::ContactAlreadyExists { uuid_hex }
+            }
+            FfiVaultError::ContactNotFound { uuid_hex } => VaultError::ContactNotFound { uuid_hex },
         }
     }
 }
@@ -394,5 +406,49 @@ mod tests {
             detail: "xyz".into(),
         };
         assert_eq!(e.to_string(), "block is not in trash: xyz");
+    }
+
+    // -------------------------------------------------------------------
+    // D.1.6: pin the 2 contacts share variants — Display + From mapping.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ffi_to_uniffi_contact_already_exists() {
+        let ffi = FfiVaultError::ContactAlreadyExists {
+            uuid_hex: "aa".repeat(16),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::ContactAlreadyExists { uuid_hex } = uniffi else {
+            panic!("expected ContactAlreadyExists");
+        };
+        assert_eq!(uuid_hex, "aa".repeat(16));
+    }
+
+    #[test]
+    fn ffi_to_uniffi_contact_not_found() {
+        let ffi = FfiVaultError::ContactNotFound {
+            uuid_hex: "bb".repeat(16),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::ContactNotFound { uuid_hex } = uniffi else {
+            panic!("expected ContactNotFound");
+        };
+        assert_eq!(uuid_hex, "bb".repeat(16));
+    }
+
+    #[test]
+    fn uniffi_contact_already_exists_display() {
+        let e = VaultError::ContactAlreadyExists {
+            uuid_hex: "abc".into(),
+        };
+        assert_eq!(e.to_string(), "contact already exists in vault: abc");
+    }
+
+    #[test]
+    fn uniffi_contact_not_found_display() {
+        let e = VaultError::ContactNotFound {
+            uuid_hex: "xyz".into(),
+        };
+        assert_eq!(e.to_string(), "contact not found in vault: xyz");
     }
 }

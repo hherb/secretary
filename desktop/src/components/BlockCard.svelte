@@ -2,14 +2,15 @@
   import type { BlockSummaryDto } from '../lib/ipc';
   import { formatShortDate } from '../lib/format';
 
-  // onTrash is optional so browse-only call sites stay unchanged. When
-  // supplied, a Trash action sits alongside the navigable card button.
+  // onTrash / onShare are optional so browse-only call sites stay unchanged.
+  // When supplied, each renders an action alongside the navigable card button.
   type Props = {
     block: BlockSummaryDto;
     onClick: (block: BlockSummaryDto) => void;
     onTrash?: (block: BlockSummaryDto) => void;
+    onShare?: (block: BlockSummaryDto) => void;
   };
-  let { block, onClick, onTrash }: Props = $props();
+  let { block, onClick, onTrash, onShare }: Props = $props();
 </script>
 
 <div class="block-card-wrap">
@@ -22,6 +23,17 @@
     <div class="block-card__name">{block.blockName}</div>
     <div class="block-card__meta">modified {formatShortDate(block.lastModifiedMs)}</div>
   </button>
+
+  {#if onShare}
+    <button
+      type="button"
+      class="block-card__share"
+      aria-label="Share block"
+      onclick={() => onShare(block)}
+    >
+      🔗
+    </button>
+  {/if}
 
   {#if onTrash}
     <button

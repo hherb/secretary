@@ -32,6 +32,11 @@ export const APP_ERROR_CODES = [
   'vault_create_failed',
   'block_restore_conflict',
   'trash_entry_not_found',
+  'not_author',
+  'recipient_already_present',
+  'missing_recipient_card',
+  'contact_already_exists',
+  'contact_not_found',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -65,6 +70,11 @@ export type AppError =
   | { code: 'vault_create_failed' }
   | { code: 'block_restore_conflict'; block_uuid_hex: string }
   | { code: 'trash_entry_not_found'; block_uuid_hex: string }
+  | { code: 'not_author' }
+  | { code: 'recipient_already_present' }
+  | { code: 'missing_recipient_card' }
+  | { code: 'contact_already_exists'; contact_uuid_hex: string }
+  | { code: 'contact_not_found'; contact_uuid_hex: string }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -179,6 +189,16 @@ export function userMessageFor(err: AppError): UserMessage {
         title: 'Not in trash',
         actionHint: 'That trashed block is no longer available.'
       };
+    case 'not_author':
+      return { title: "You can't share this block", actionHint: 'Only the block author can share it.' };
+    case 'recipient_already_present':
+      return { title: 'Already shared', actionHint: 'This block is already shared with that contact.' };
+    case 'missing_recipient_card':
+      return { title: 'Recipient card missing', actionHint: 'A recipient on this block has no contact card. Re-import it.' };
+    case 'contact_already_exists':
+      return { title: 'Contact already imported', actionHint: 'That contact is already in your vault.' };
+    case 'contact_not_found':
+      return { title: 'Contact not found', actionHint: 'That contact is no longer in your vault. Refresh the list.' };
     case 'internal':
       return {
         title: 'Internal error',
