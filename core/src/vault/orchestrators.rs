@@ -1114,7 +1114,8 @@ fn rewrite_block_with_recipients(
 
     // Step 7: decrypt the existing block under the author's reader
     // identity. The author MUST be a current recipient (operational
-    // restriction documented above) — `decrypt_block` returns
+    // restriction documented at the `share_block` /
+    // `revoke_block_recipient` call sites) — `decrypt_block` returns
     // `NotARecipient` otherwise, which propagates as
     // `VaultError::Block`.
     //
@@ -1126,8 +1127,9 @@ fn rewrite_block_with_recipients(
     // TODO(share-as-fork): the reader-side arguments below
     // (`&author_fp`, `&author_pk_bundle`, `&reader_x_sk`,
     // `&reader_pq_sk`) are the second touchpoint of the single-owner
-    // restriction pinned at the `contact_uuid == user_uuid` guard
-    // above. When share-as-fork lands, the reader fingerprint /
+    // restriction pinned at the `contact_uuid == user_uuid` guard at
+    // the `share_block` / `revoke_block_recipient` call sites. When
+    // share-as-fork lands, the reader fingerprint /
     // pk-bundle pair must come from `open.owner_card` (the calling
     // owner) rather than from the original author, and the reader
     // secret-keys already do come from `open.identity` — the pairing
