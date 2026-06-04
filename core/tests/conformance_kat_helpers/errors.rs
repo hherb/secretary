@@ -17,6 +17,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::NotAuthor { .. } => "NotAuthor",
         E::RecipientAlreadyPresent => "RecipientAlreadyPresent",
         E::RecipientNotPresent => "RecipientNotPresent",
+        E::CannotRevokeOwner => "CannotRevokeOwner",
         E::MissingRecipientCard { .. } => "MissingRecipientCard",
         E::CardDecodeFailure { .. } => "CardDecodeFailure",
         E::BlockUuidAlreadyLive { .. } => "BlockUuidAlreadyLive",

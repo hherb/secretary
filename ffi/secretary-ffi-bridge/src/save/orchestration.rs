@@ -154,7 +154,7 @@ pub fn save_block(
 /// silently folding to `SaveCryptoFailure`, forcing a deliberate routing
 /// decision at the save-mapper boundary. The share-validation variants
 /// (`NotAuthor` / `RecipientAlreadyPresent` / `RecipientNotPresent` /
-/// `MissingRecipientCard` / `BlockNotFound`) are unreachable from
+/// `CannotRevokeOwner` / `MissingRecipientCard` / `BlockNotFound`) are unreachable from
 /// `core::save_block` today but are
 /// listed explicitly to keep the match exhaustive across the full
 /// `VaultError` surface; if they did fire they would represent a
@@ -182,6 +182,7 @@ pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
         | VaultError::BlockNotFound { .. }
         | VaultError::RecipientAlreadyPresent
         | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }

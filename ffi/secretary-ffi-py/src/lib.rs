@@ -59,12 +59,13 @@ mod vault;
 
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
-    VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCardDecodeFailure,
-    VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid,
-    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
-    VaultSaveCryptoFailure, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
+    VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
+    VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
+    VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
+    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
+    VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
+    WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -194,6 +195,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultRecipientNotPresent",
         py.get_type::<VaultRecipientNotPresent>(),
+    )?;
+    m.add(
+        "VaultCannotRevokeOwner",
+        py.get_type::<VaultCannotRevokeOwner>(),
     )?;
     m.add(
         "VaultMissingRecipientCard",

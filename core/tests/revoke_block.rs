@@ -634,6 +634,118 @@ fn revoke_block_manifest_recipients_shrink() {
     let _ = bob_id;
 }
 
+// ---------------------------------------------------------------------------
+// 5. Owner-revoke rejected: share to [owner, alice], attempt to revoke the
+//    OWNER's uuid. Assert Err(CannotRevokeOwner) AND the block is untouched
+//    (block bytes byte-identical, manifest BlockEntry.recipients unchanged,
+//    contacts/ byte-identical). The guard must fail fast — no re-key, no
+//    write.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revoke_block_owner_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(5, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa5; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+
+    // Save block with [owner, alice].
+    let block_uuid = [0x55u8; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "owner-revoke");
+    let device_uuid = [0xd1u8; 16];
+
+    save_block(
+        dir.path(),
+        &mut open,
+        plaintext.clone(),
+        &[owner_card.clone(), alice_card.clone()],
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = dir
+        .path()
+        .join("blocks")
+        .join(format!("{block_uuid_hex}.cbor.enc"));
+
+    // Snapshot the on-disk state the guard must not touch.
+    let block_bytes_before = fs::read(&block_path).unwrap();
+    let manifest_bytes_before = fs::read(dir.path().join("manifest.cbor.enc")).unwrap();
+    let contacts_before = contacts_listing(dir.path());
+
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    // The owner uuid the guard rejects (== owner card's contact_uuid).
+    let owner_uuid = open.identity.user_uuid;
+
+    // Attempt to revoke the OWNER (open.identity.user_uuid == owner card's
+    // contact_uuid). Must be rejected up-front.
+    let err = revoke_block_recipient(
+        dir.path(),
+        &mut open,
+        block_uuid,
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        &[owner_card.clone(), alice_card.clone()],
+        owner_uuid,
+        device_uuid,
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("revoking the owner must be rejected");
+    assert!(
+        matches!(err, secretary_core::vault::VaultError::CannotRevokeOwner),
+        "expected CannotRevokeOwner, got {err:?}"
+    );
+
+    // Block file is byte-identical — no re-key, no write.
+    let block_bytes_after = fs::read(&block_path).unwrap();
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "rejected owner-revoke must not rewrite the block file"
+    );
+
+    // Manifest file is byte-identical.
+    let manifest_bytes_after = fs::read(dir.path().join("manifest.cbor.enc")).unwrap();
+    assert_eq!(
+        manifest_bytes_before, manifest_bytes_after,
+        "rejected owner-revoke must not rewrite the manifest"
+    );
+
+    // Recipient wire table still holds owner + alice (both present).
+    let fps = block_recipient_fingerprints(&block_path);
+    assert_eq!(fps.len(), 2, "owner + alice recipients must remain");
+
+    // Manifest BlockEntry.recipients still holds owner + alice. Re-open to
+    // re-verify the (unchanged) manifest signature too.
+    drop(open);
+    let reopened = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let entry = &reopened.manifest.blocks[0];
+    assert!(entry.recipients.contains(&owner_card.contact_uuid));
+    assert!(entry.recipients.contains(&alice_card.contact_uuid));
+    assert_eq!(entry.recipients.len(), 2);
+
+    // contacts/ byte-identical (unchanged set of filenames; revoke writes
+    // nothing here even on the happy path).
+    let contacts_after = contacts_listing(dir.path());
+    assert_eq!(
+        contacts_before, contacts_after,
+        "rejected owner-revoke must not touch contacts/"
+    );
+
+    // Pin alice_id type (not used for decrypt here).
+    let _ = alice_id;
+}
+
 // Suppress unused-import warnings for items only consumed by some tests.
 #[allow(dead_code)]
 fn _unused() {

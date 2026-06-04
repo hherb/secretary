@@ -1606,6 +1606,9 @@ pub fn share_block(
 /// # Errors
 /// - [`VaultError::BlockNotFound`] — `block_uuid` absent from the manifest.
 /// - [`VaultError::NotAuthor`] — caller is not the block's single-owner author.
+/// - [`VaultError::CannotRevokeOwner`] — `revoked_recipient_uuid` is the owner;
+///   the owner is always a recipient and must remain one (rejected up-front,
+///   before any re-key).
 /// - [`VaultError::MissingRecipientCard`] — a current wrap has no supplying card.
 /// - [`VaultError::RecipientNotPresent`] — `revoked_recipient_uuid` is not a
 ///   current recipient.
@@ -1669,7 +1672,15 @@ pub fn revoke_block_recipient(
         });
     }
 
-    // Step 5 (INVERTED vs share): resolve every wrap to a supplying card
+    // Step 5 (owner-revoke guard): the owner/author is ALWAYS a recipient
+    // and must remain one — re-keying without them would brick the block
+    // (no future decrypt-as-author for re-key/re-share). Reject up-front,
+    // before any re-key.
+    if revoked_recipient_uuid == open.identity.user_uuid {
+        return Err(VaultError::CannotRevokeOwner);
+    }
+
+    // Step 6 (INVERTED vs share): resolve every wrap to a supplying card
     // AND locate the revoke target. Build the (fingerprint → card)
     // lookup (like share step 6), walk the wire table, split resolved
     // cards into the final "keep" set vs the single revoked card. The
@@ -1700,7 +1711,7 @@ pub fn revoke_block_recipient(
         return Err(VaultError::RecipientNotPresent);
     }
 
-    // Step 6: final manifest recipient uuids = current minus the target.
+    // Step 7: final manifest recipient uuids = current minus the target.
     let final_uuids: Vec<[u8; 16]> = open.manifest.blocks[entry_idx]
         .recipients
         .iter()
@@ -1708,7 +1719,7 @@ pub fn revoke_block_recipient(
         .filter(|u| *u != revoked_recipient_uuid)
         .collect();
 
-    // Steps 7–18: delegate to the shared re-key engine. `card_to_persist`
+    // Steps 8–18: delegate to the shared re-key engine. `card_to_persist`
     // is `None` — revoke grants no new access, so no contact card is
     // written or deleted.
     rewrite_block_with_recipients(

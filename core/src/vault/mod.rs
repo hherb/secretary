@@ -238,6 +238,15 @@ pub enum VaultError {
     #[error("recipient is not present on the block")]
     RecipientNotPresent,
 
+    /// The caller asked to revoke the block owner/author. The owner is
+    /// always a recipient of a shareable block (`share_block` decrypts
+    /// under the author's reader identity, `NotARecipient` otherwise),
+    /// so re-keying without them would brick the block — no
+    /// future decrypt-as-author for re-key / re-share. Surfaced by
+    /// `revoke_block_recipient`, which rejects this up-front.
+    #[error("cannot revoke the block owner")]
+    CannotRevokeOwner,
+
     /// [`share_block`] precondition: the supplied `existing_recipients`
     /// list does not include a card whose fingerprint matches a wrap
     /// in the block. The orchestrator rebuilds the new block by re-

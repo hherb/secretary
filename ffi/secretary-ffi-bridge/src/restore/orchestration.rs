@@ -122,8 +122,8 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         },
         // The remaining variants either cannot fire from
         // core::restore_block (NotAuthor, RecipientAlreadyPresent,
-        // RecipientNotPresent — those are share/revoke-only; BlockNotFound —
-        // restore doesn't
+        // RecipientNotPresent, CannotRevokeOwner — those are
+        // share/revoke-only; BlockNotFound — restore doesn't
         // look up a live BlockEntry by UUID) or are crypto / encoding
         // failures on already-validated inputs.
         VaultError::Record(_)
@@ -143,6 +143,7 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         | VaultError::BlockNotFound { .. }
         | VaultError::RecipientAlreadyPresent
         | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
         // Unreachable from restore_block (open_vault always precedes
         // and would have surfaced this earlier), but listed for
         // exhaustiveness per issue #40. The generic `From<VaultError>`

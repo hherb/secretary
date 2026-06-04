@@ -20,7 +20,8 @@
 //! folding to `Internal`. Most bridge variants now route to a typed
 //! `AppError` — including the D.1.5 trash/restore preconditions and the
 //! D.1.6 block-share + contacts variants (`NotAuthor`,
-//! `RecipientAlreadyPresent`, `RecipientNotPresent`, `MissingRecipientCard`,
+//! `RecipientAlreadyPresent`, `RecipientNotPresent`, `CannotRevokeOwner`,
+//! `MissingRecipientCard`,
 //! `ContactAlreadyExists`, `ContactNotFound`). A residual few that should never fire on a reachable
 //! UI path (e.g. a stale block UUID into `read_block`) fold to
 //! `Internal { detail }` so a regression surfaces as a clear "this is a bug"
@@ -109,6 +110,9 @@ pub enum AppError {
 
     #[error("That contact is not currently a recipient of this block")]
     RecipientNotPresent,
+
+    #[error("You cannot remove yourself as the owner of this block")]
+    CannotRevokeOwner,
 
     #[error("A recipient's contact card is missing")]
     MissingRecipientCard,
@@ -206,7 +210,7 @@ pub enum AppWarning {
 /// anti-oracle property; both fold to `WrongPassword` here (the user's
 /// affordance is "retry credential" in both cases). Block-share
 /// authorisation + contacts variants (`NotAuthor`,
-/// `RecipientAlreadyPresent`, `RecipientNotPresent`,
+/// `RecipientAlreadyPresent`, `RecipientNotPresent`, `CannotRevokeOwner`,
 /// `MissingRecipientCard`,
 /// `ContactAlreadyExists`, `ContactNotFound`) and the trash/restore
 /// preconditions route to typed `AppError`s. The few variants that
@@ -301,6 +305,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::NotAuthor { .. } => AppError::NotAuthor,
         FfiVaultError::RecipientAlreadyPresent => AppError::RecipientAlreadyPresent,
         FfiVaultError::RecipientNotPresent => AppError::RecipientNotPresent,
+        FfiVaultError::CannotRevokeOwner => AppError::CannotRevokeOwner,
         FfiVaultError::MissingRecipientCard { .. } => AppError::MissingRecipientCard,
         FfiVaultError::ContactAlreadyExists { uuid_hex } => AppError::ContactAlreadyExists {
             contact_uuid_hex: uuid_hex,
@@ -548,6 +553,10 @@ mod tests {
             "recipient_not_present"
         );
         assert_eq!(
+            round_trip(&AppError::CannotRevokeOwner)["code"],
+            "cannot_revoke_owner"
+        );
+        assert_eq!(
             round_trip(&AppError::MissingRecipientCard)["code"],
             "missing_recipient_card"
         );
@@ -581,6 +590,8 @@ mod tests {
         assert_eq!(round_trip(&m)["code"], "recipient_already_present");
         let m: AppError = map_ffi_error(FfiVaultError::RecipientNotPresent);
         assert_eq!(round_trip(&m)["code"], "recipient_not_present");
+        let m: AppError = map_ffi_error(FfiVaultError::CannotRevokeOwner);
+        assert_eq!(round_trip(&m)["code"], "cannot_revoke_owner");
         let m = map_ffi_error(FfiVaultError::ContactAlreadyExists {
             uuid_hex: "ab".into(),
         });

@@ -173,7 +173,7 @@ pub fn share_block(
 /// IO failures fold to `FolderInvalid`. On-disk block-decode failures
 /// (Step 2 of core::share_block reads the block file) fold to
 /// `CorruptVault`. NotAuthor / RecipientAlreadyPresent /
-/// RecipientNotPresent / MissingRecipientCard / BlockNotFound delegate to the existing
+/// RecipientNotPresent / CannotRevokeOwner / MissingRecipientCard / BlockNotFound delegate to the existing
 /// `From<core::VaultError>` impl in [`crate::error`], which maps them to
 /// the matching typed FFI variants. Everything else (typed crypto /
 /// encoder failures on already-validated inputs) folds to
@@ -192,12 +192,13 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
             detail: format!("{e}"),
         },
         // Typed share-validation variants delegate to the From impl.
-        // RecipientNotPresent is the revoke-path sibling of
-        // RecipientAlreadyPresent; it too delegates so the typed variant
-        // surfaces rather than folding to SaveCryptoFailure.
+        // RecipientNotPresent / CannotRevokeOwner are the revoke-path
+        // siblings of RecipientAlreadyPresent; they too delegate so the
+        // typed variant surfaces rather than folding to SaveCryptoFailure.
         VaultError::NotAuthor { .. }
         | VaultError::RecipientAlreadyPresent
         | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockNotFound { .. } => e.into(),
         // Crypto / encoding / structural failures on already-validated
