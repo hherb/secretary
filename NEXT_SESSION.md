@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-04-d19-per-contact-reverse-map-shipped.md
+docs/handoffs/2026-06-05-d110-revoke-block-recipient-shipped.md
