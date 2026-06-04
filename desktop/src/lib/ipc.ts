@@ -261,6 +261,10 @@ export async function listBlockRecipients(blockUuidHex: string): Promise<Recipie
   return call<RecipientDto[]>('block_recipients', { blockUuidHex });
 }
 
+export async function listContactBlocks(contactUuidHex: string): Promise<BlockSummaryDto[]> {
+  return call<BlockSummaryDto[]>('list_contact_blocks', { contactUuidHex });
+}
+
 export async function importContact(cardPath: string): Promise<ContactSummaryDto> {
   return call<ContactSummaryDto>('import_contact', { cardPath });
 }

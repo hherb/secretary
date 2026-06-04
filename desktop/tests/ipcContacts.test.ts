@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-import { listContacts, importContact, shareBlock, exportContactCard, deleteContactCard } from '../src/lib/ipc';
+import { listContacts, importContact, shareBlock, exportContactCard, deleteContactCard, listContactBlocks } from '../src/lib/ipc';
 
 describe('contacts IPC wrappers', () => {
   beforeEach(() => invokeMock.mockReset());
@@ -31,5 +31,15 @@ describe('contacts IPC wrappers', () => {
     invokeMock.mockResolvedValueOnce(undefined);
     await deleteContactCard('abcd');
     expect(invokeMock).toHaveBeenCalledWith('delete_contact_card', { contactUuidHex: 'abcd' });
+  });
+  it('listContactBlocks forwards contactUuidHex', async () => {
+    invokeMock.mockResolvedValueOnce([
+      { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+    ]);
+    const out = await listContactBlocks('abcd');
+    expect(invokeMock).toHaveBeenCalledWith('list_contact_blocks', { contactUuidHex: 'abcd' });
+    expect(out).toEqual([
+      { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+    ]);
   });
 });
