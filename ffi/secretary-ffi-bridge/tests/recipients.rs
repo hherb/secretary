@@ -10,23 +10,10 @@ use secretary_ffi_bridge::{
     block_recipients, share_block_to, FfiVaultError, OpenVaultManifest, RecipientKind,
 };
 use share_block_helpers::{
-    fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
-    NEW_RECORD_UUID, NOW_MS_BASE,
+    fresh_writable_vault, mint_external_card, place_card, save_one_record_block, DEVICE_UUID,
+    NEW_BLOCK_UUID, NEW_RECORD_UUID, NOW_MS_BASE,
 };
 use std::fs;
-use std::path::Path;
-
-/// Write raw card bytes into the vault's `contacts/` dir under the canonical
-/// hyphenated filename. Returns the card's `contact_uuid`.
-fn place_card(folder: &Path, card_bytes: &[u8]) -> [u8; 16] {
-    let card = ContactCard::from_canonical_cbor(card_bytes).expect("valid card");
-    let path = folder.join("contacts").join(format!(
-        "{}.card",
-        format_uuid_hyphenated(&card.contact_uuid)
-    ));
-    fs::write(&path, card_bytes).expect("write card");
-    card.contact_uuid
-}
 
 /// Resolve the owner's `contact_uuid` from the live manifest.
 fn owner_uuid(manifest: &OpenVaultManifest) -> [u8; 16] {

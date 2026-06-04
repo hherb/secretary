@@ -120,8 +120,9 @@ pub mod unlock;
 pub mod vault;
 
 pub use contacts::{
-    block_recipients, delete_contact_card, enumerate_contact_cards, import_contact_card,
-    owner_card_export, share_block_to, ContactSummary, RecipientKind, RecipientSummary,
+    block_recipients, contact_blocks, delete_contact_card, enumerate_contact_cards,
+    import_contact_card, owner_card_export, share_block_to, ContactSummary, RecipientKind,
+    RecipientSummary,
 };
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use edit::{

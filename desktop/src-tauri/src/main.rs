@@ -99,6 +99,7 @@ fn main() {
             contacts::export_contact_card,
             contacts::delete_contact_card,
             contacts::block_recipients,
+            contacts::list_contact_blocks,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of

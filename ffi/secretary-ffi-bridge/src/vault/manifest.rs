@@ -424,7 +424,7 @@ impl std::fmt::Display for ReplaceManifestError {
 /// Internal projection: `core::BlockEntry` → [`BlockSummary`] (drops
 /// internal-only fields: `fingerprint`, `vector_clock_summary`, `suite_id`,
 /// `unknown`).
-pub(super) fn block_entry_to_summary(b: &secretary_core::vault::BlockEntry) -> BlockSummary {
+pub(crate) fn block_entry_to_summary(b: &secretary_core::vault::BlockEntry) -> BlockSummary {
     BlockSummary {
         block_uuid: b.block_uuid,
         block_name: b.block_name.clone(),

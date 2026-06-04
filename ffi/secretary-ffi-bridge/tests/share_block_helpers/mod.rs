@@ -117,3 +117,17 @@ pub fn save_one_record_block(
     };
     save_block(identity, manifest, input, DEVICE_UUID, now_ms).expect("save_block");
 }
+
+/// Write raw card bytes into the vault's `contacts/` dir under the canonical
+/// hyphenated filename. Returns the card's `contact_uuid`.
+#[allow(dead_code)]
+pub fn place_card(folder: &Path, card_bytes: &[u8]) -> [u8; 16] {
+    use secretary_core::vault::format_uuid_hyphenated;
+    let card = ContactCard::from_canonical_cbor(card_bytes).expect("valid card");
+    let path = folder.join("contacts").join(format!(
+        "{}.card",
+        format_uuid_hyphenated(&card.contact_uuid)
+    ));
+    fs::write(&path, card_bytes).expect("write card");
+    card.contact_uuid
+}
