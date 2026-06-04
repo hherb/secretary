@@ -1,4 +1,4 @@
-go# D.1.10 — `revoke_block_recipient` (frozen-core revoke / unshare primitive)
+# D.1.10 — `revoke_block_recipient` (frozen-core revoke / unshare primitive)
 
 **Date:** 2026-06-04
 **Sub-project:** A/B (Rust crypto core + bridge), the revoke primitive deferred out of D.1.7–D.1.9.

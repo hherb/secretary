@@ -1594,14 +1594,22 @@ pub fn share_block(
 /// revoke target (needed to resolve the table). The revoked contact's card is
 /// left in `contacts/` untouched — card deletion is a separate concern.
 ///
-/// Mirrors `share_block`'s steps 1–6 exactly, with step 5 INVERTED:
-/// `share_block` rejects an already-present recipient
-/// ([`VaultError::RecipientAlreadyPresent`]); revoke instead requires the
-/// target be present and splits the resolved cards into the "keep" set vs the
-/// revoked one. The shared re-key engine
+/// Mirrors `share_block`'s validation (locate → read+decode → author check)
+/// but adds a fail-fast owner-revoke guard and inverts share's duplicate-
+/// recipient check into a require-present + split. Where `share_block` rejects
+/// an *already-present* recipient ([`VaultError::RecipientAlreadyPresent`]),
+/// revoke instead requires the target *be* present
+/// ([`VaultError::RecipientNotPresent`] otherwise) and splits the resolved
+/// cards into the "keep" set vs the revoked one. The shared re-key engine
 /// ([`rewrite_block_with_recipients`]) is then invoked with
 /// `card_to_persist = None` — revoke grants no new access, so no contact card
 /// is written.
+///
+/// Body step numbering follows the design spec
+/// (`docs/superpowers/specs/2026-06-04-d110-revoke-block-recipient-design.md`
+/// §4.2): (1) locate entry, (2) read + decode, (3) author check, (4) owner-
+/// revoke guard, (5) resolve wraps → cards, (6) target-present check, (7) build
+/// the final recipient set, (8) delegate to the re-key engine.
 ///
 /// # Errors
 /// - [`VaultError::BlockNotFound`] — `block_uuid` absent from the manifest.
@@ -1649,8 +1657,9 @@ pub fn revoke_block_recipient(
     })?;
     let block_file = block::decode_block_file(&block_file_bytes)?;
 
-    // Step 3: author check — re-derive author fingerprint, compare to the
-    // on-disk `author_fingerprint` (mirror share_block step 3 exactly).
+    // Step 3 (author check, part 1 of 2): re-derive author fingerprint,
+    // compare to the on-disk `author_fingerprint` (mirror share_block's
+    // fingerprint check).
     let author_card_bytes = author_card.to_canonical_cbor()?;
     let author_fp = fingerprint(&author_card_bytes);
     if author_fp != block_file.author_fingerprint {
@@ -1660,11 +1669,11 @@ pub fn revoke_block_recipient(
         });
     }
 
-    // Step 4: PR-B single-owner restriction (mirror share_block step 4
-    // exactly). The §6.4 decrypt inside the helper pairs
-    // `open.identity` reader secret-keys with `author_fp`; that pairing
-    // is sound only when caller == author. See the matching
-    // `share-as-fork` TODO at the `share_block` call site.
+    // Step 3 (author check, part 2 of 2): PR-B single-owner restriction
+    // (mirror share_block's single-owner check). The §6.4 decrypt inside
+    // the helper pairs `open.identity` reader secret-keys with
+    // `author_fp`; that pairing is sound only when caller == author. See
+    // the matching `share-as-fork` TODO at the `share_block` call site.
     if author_card.contact_uuid != open.identity.user_uuid {
         return Err(VaultError::NotAuthor {
             expected: block_file.author_fingerprint,
@@ -1672,19 +1681,22 @@ pub fn revoke_block_recipient(
         });
     }
 
-    // Step 5 (owner-revoke guard): the owner/author is ALWAYS a recipient
+    // Step 4 (owner-revoke guard): the owner/author is ALWAYS a recipient
     // and must remain one — re-keying without them would brick the block
     // (no future decrypt-as-author for re-key/re-share). Reject up-front,
-    // before any re-key.
+    // before any re-key. This is the guard that has no `share_block`
+    // analogue, hence the spec numbering diverges from share here.
     if revoked_recipient_uuid == open.identity.user_uuid {
         return Err(VaultError::CannotRevokeOwner);
     }
 
-    // Step 6 (INVERTED vs share): resolve every wrap to a supplying card
-    // AND locate the revoke target. Build the (fingerprint → card)
-    // lookup (like share step 6), walk the wire table, split resolved
-    // cards into the final "keep" set vs the single revoked card. The
-    // target MUST be present, else `RecipientNotPresent`.
+    // Steps 5 + 6: resolve every wrap to a supplying card (step 5, the
+    // same resolve as share's wrap-resolution) AND locate the revoke
+    // target (step 6). Build the (fingerprint → card) lookup, walk the
+    // wire table, and split resolved cards into the final "keep" set vs
+    // the single revoked card. The split is the INVERSION of share's
+    // duplicate-recipient check: share rejects a present recipient, revoke
+    // requires one. The target MUST be present, else `RecipientNotPresent`.
     let mut card_lookup: Vec<(crate::identity::fingerprint::Fingerprint, &ContactCard)> =
         Vec::with_capacity(existing_recipient_cards.len());
     for c in existing_recipient_cards {

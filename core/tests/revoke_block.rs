@@ -27,7 +27,7 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use rand_core::RngCore;
 
 use secretary_core::crypto::kdf::Argon2idParams;
-use secretary_core::crypto::kem::{self, MlKem768Public, MlKem768Secret};
+use secretary_core::crypto::kem::{self, MlKem768Secret};
 use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 use secretary_core::crypto::sig::{
     Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
@@ -558,9 +558,6 @@ fn revoke_block_re_sign_verifies() {
         .join(format!("{block_uuid_hex}.cbor.enc"));
     let recovered = decrypt_block_file_as(&block_path, &owner_card, &alice_card, &alice_id);
     assert_eq!(recovered.block_uuid, block_uuid);
-
-    // Pin bob_id type (revoked; not used for decrypt here).
-    let _ = bob_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,9 +626,6 @@ fn revoke_block_manifest_recipients_shrink() {
         "recipients must shrink to exactly [owner, alice]"
     );
     assert!(!entry.recipients.contains(&bob_card.contact_uuid));
-
-    // Pin bob_id type.
-    let _ = bob_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -741,13 +735,4 @@ fn revoke_block_owner_rejected() {
         contacts_before, contacts_after,
         "rejected owner-revoke must not touch contacts/"
     );
-
-    // Pin alice_id type (not used for decrypt here).
-    let _ = alice_id;
-}
-
-// Suppress unused-import warnings for items only consumed by some tests.
-#[allow(dead_code)]
-fn _unused() {
-    let _: Option<MlKem768Public> = None;
 }
