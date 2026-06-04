@@ -1301,7 +1301,7 @@ fn rewrite_block_with_recipients(
     // ordering matches save_block + §9 line 430).
     let manifest_path = folder.join(MANIFEST_FILENAME);
     io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
-        context: "failed to write manifest.cbor.enc after share_block",
+        context: "failed to write manifest.cbor.enc after block re-key",
         source: e,
     })?;
 
