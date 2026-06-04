@@ -334,6 +334,10 @@ If either KEM decap fails or the AEAD tag fails, the wrap is rejected.
 
 Including both KEM ciphertexts in the HKDF input binds the wrap key to the exact transcript: an adversary who attempts to substitute one half of the hybrid (e.g., replace `ct_pq` with their own) will produce a different transcript, hence a different wrap key, hence AEAD tag failure. This defends against a class of "KEM-sneak" attacks where a flawed combiner allows an attacker to bypass the post-quantum half by malleating the classical half (or vice versa).
 
+### 7.3 Re-keying on share and revoke
+
+Both the share and revoke operations generate a fresh `block_content_key` (`K`) and re-wrap it via §7 for the full *post-operation* recipient set (the prior set plus one on share, minus one on revoke). Every share and every revoke therefore rotates the content key: an attacker who recorded a prior on-disk block version still holds the §7 wraps to the *prior* `K`, so revocation is forward-only — it protects only block-versions written after it (see [vault-format.md](vault-format.md) §6.5.1). The block owner is always among the recipients (§9) and cannot be revoked, so the re-wrap set is never empty. The hybrid wrap construction itself — X25519-Encap + ML-KEM-768-Encaps, mixed through the BLAKE3 transcript and HKDF-SHA-256 into an XChaCha20-Poly1305 wrap — is unchanged by either operation.
+
 ---
 
 ## 8. Hybrid signatures

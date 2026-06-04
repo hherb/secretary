@@ -395,6 +395,14 @@ A block whose recipient table does not include the reading user is unreadable by
 
 Steps 9 and 10 must be atomic-as-a-pair from the user's perspective: a crash between writing the block and updating the manifest leaves the manifest pointing at an old block fingerprint (which fails verification on next read). The recovery path is: detect the inconsistency on next read, re-load the block, re-fingerprint, and offer to update the manifest.
 
+#### 6.5.1 Revocation (removing a recipient)
+
+Revoking a recipient re-keys the block: a fresh `block_content_key` is generated, the block body is re-encrypted under it, and fresh §6.2 recipient entries are produced for the **remaining** recipients only. The revoked recipient's entry is absent from the new §6.2 recipient table, and the manifest `BlockEntry.recipients` drops the revoked contact UUID. The block is written first, then the manifest (§9), and both are re-signed (Ed25519 ∧ ML-DSA-65). The on-disk format is identical to a §6.5 write to a smaller recipient set — there is no new field and no `format_version` bump.
+
+The block owner/author is **always** a recipient (the author must be able to decrypt the block to re-key it — see §6.2, which rejects an owner-less recipient table as malformed) and **cannot** be revoked; an attempt to do so is rejected. Consequently the recipient set is never empty — revoking the last *non-owner* recipient leaves the block owner-only.
+
+**Forward-secrecy boundary.** Revocation protects only block-versions written *after* it. The revoked party may retain plaintext it already decrypted and the prior `block_content_key` it already unwrapped; nothing in this format makes those unrecoverable. A conforming reader holding only the *new* on-disk bytes cannot decrypt as the revoked recipient — no §6.2 entry exists for them under the new `block_content_key`.
+
 ---
 
 ## 7. Tombstones and deletion
