@@ -4,7 +4,7 @@
   // summary, and expands to a per-recipient list. Self-contained load/loadSeq
   // guard keyed by block.blockUuidHex (mirrors RecordList's own pattern).
   import { listBlockRecipients, isAppError, type BlockSummaryDto, type RecipientDto } from '../lib/ipc';
-  import { sortRecipients, recipientLabel } from '../lib/recipients';
+  import { sortRecipients, recipientLabel, summarizeRecipients } from '../lib/recipients';
   import { userMessageFor, type AppError } from '../lib/errors';
 
   type Props = { block: BlockSummaryDto };
@@ -34,15 +34,9 @@
     void load();
   });
 
-  // Collapsed summary: name resolved recipients, fold unknowns into a count.
-  const summary = $derived.by(() => {
-    if (!recipients) return '';
-    const named = recipients.filter((r) => r.kind !== 'unknown').map(recipientLabel);
-    const unknownCount = recipients.filter((r) => r.kind === 'unknown').length;
-    const parts = [...named];
-    if (unknownCount > 0) parts.push(`+${unknownCount} unknown`);
-    return parts.join(', ');
-  });
+  // Collapsed summary: name up to a few resolved recipients, fold the rest of
+  // the named ones into "+N more" and unknowns into "+N unknown".
+  const summary = $derived(recipients ? summarizeRecipients(recipients) : '');
 </script>
 
 <div class="block-recipients">

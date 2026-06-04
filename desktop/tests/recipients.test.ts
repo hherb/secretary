@@ -1,6 +1,6 @@
 // D.1.8 — pure recipient helpers: display ordering + label resolution.
 import { describe, it, expect } from 'vitest';
-import { sortRecipients, recipientLabel } from '../src/lib/recipients';
+import { sortRecipients, recipientLabel, summarizeRecipients } from '../src/lib/recipients';
 import type { RecipientDto } from '../src/lib/ipc';
 
 const owner: RecipientDto = { uuidHex: '00', kind: 'owner', displayName: null };
@@ -38,5 +38,36 @@ describe('recipientLabel', () => {
 
   it('labels an unknown with an 8-hex uuid prefix', () => {
     expect(recipientLabel(unknown)).toBe('Unknown contact (a1b2c3d4…)');
+  });
+});
+
+describe('summarizeRecipients', () => {
+  const contact = (i: number): RecipientDto => ({
+    uuidHex: `c${i}`,
+    kind: 'contact',
+    displayName: `Contact ${i}`
+  });
+
+  it('lists owner + contacts and folds unknowns into a count', () => {
+    expect(summarizeRecipients([owner, alice, unknown])).toBe('You, Alice, +1 unknown');
+  });
+
+  it('reads "Shared with: You" for an owner-only block (no fold)', () => {
+    expect(summarizeRecipients([owner])).toBe('You');
+  });
+
+  it('caps named recipients at 3 and folds the rest into "+N more"', () => {
+    const rs = [owner, contact(1), contact(2), contact(3), contact(4)];
+    // 3 named shown (You + first two contacts), remaining 2 named → "+2 more".
+    expect(summarizeRecipients(rs)).toBe('You, Contact 1, Contact 2, +2 more');
+  });
+
+  it('combines "+N more" and "+N unknown" when both overflow', () => {
+    const rs = [owner, contact(1), contact(2), contact(3), unknown];
+    expect(summarizeRecipients(rs)).toBe('You, Contact 1, Contact 2, +1 more, +1 unknown');
+  });
+
+  it('shows only the unknown fold when there are no named recipients', () => {
+    expect(summarizeRecipients([unknown])).toBe('+1 unknown');
   });
 });
