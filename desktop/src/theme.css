@@ -913,6 +913,8 @@ body {
   font-size: var(--font-size-sm);
 }
 
+/* `.contact-card` is the intentional outer wrapper (row + expanded block list);
+   `.contact-card-row` below carries the row's border-bottom. */
 /* ContactRow — one imported contact in the contacts pane (distinct from
    ShareDialog's .contact-row button rows; div-based flat list row). */
 .contact-card-row {
@@ -960,6 +962,9 @@ body {
   padding: var(--space-1) 0 var(--space-2) var(--space-4);
 }
 .contact-blocks__item {
+  display: block;
+  width: 100%;
+  text-align: left;
   padding: var(--space-1) 0;
   border: none;
   background: transparent;

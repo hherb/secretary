@@ -4,6 +4,9 @@
   // map: click the row to expand the list of blocks this contact receives;
   // click a block to open it. Mirrors BlockRecipients' load/error/empty shape,
   // but fetches on first expand (not on mount) and caches the result.
+  // Caches the fetched list for the component's lifetime; assumes one instance
+  // per contactUuidHex — ContactsPane's keyed {#each} is the invalidation
+  // mechanism (a new uuid remounts the row).
   import { listContactBlocks, isAppError, type BlockSummaryDto, type ContactSummaryDto } from '../../lib/ipc';
   import { sortBlocks } from '../../lib/blocks';
   import { openBlock } from '../../lib/browse';

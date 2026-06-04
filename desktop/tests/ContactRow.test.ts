@@ -86,6 +86,22 @@ describe('ContactRow reverse map', () => {
     expect(alert.textContent).toMatch(/internal error/i);
   });
 
+  it('retries the fetch after an error on next expand', async () => {
+    invokeMock
+      .mockRejectedValueOnce({ code: 'internal' })
+      .mockResolvedValueOnce([
+        { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 }
+      ]);
+    const { getByRole, findByRole, findByText } = render(ContactRow, { contact, onDelete: noDelete });
+    const toggle = getByRole('button', { name: /Alice/ });
+    await fireEvent.click(toggle); // expand → error
+    await findByRole('alert');
+    await fireEvent.click(toggle); // collapse
+    await fireEvent.click(toggle); // re-expand → retry
+    await findByText('Cards');
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
   it('the delete button does not toggle expand', async () => {
     const onDelete = vi.fn();
     const { getByRole, queryByRole } = render(ContactRow, { contact, onDelete });
