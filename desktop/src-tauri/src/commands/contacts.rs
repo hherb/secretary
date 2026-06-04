@@ -1,4 +1,6 @@
-//! D.1.6 contacts IPC commands: list_contacts / import_contact / share_block.
+//! Contacts IPC commands (D.1.6 – D.1.9): list_contacts / import_contact /
+//! share_block / export_contact_card / delete_contact_card / block_recipients /
+//! list_contact_blocks.
 //! Thin shells over the bridge primitives (spec §6). `import_contact` reads the
 //! user-chosen `.card` file at the desktop edge; the bridge takes bytes.
 //!

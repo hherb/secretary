@@ -1260,6 +1260,7 @@ mod contacts_path {
             "peer receives exactly the one shared block"
         );
         assert_eq!(blocks[0].block_uuid_hex, GOLDEN_BLOCK_UUID_HEX);
+        assert_eq!(blocks[0].block_name, "Personal logins");
 
         // A peer with no shares (use a random valid uuid) gets an empty list.
         let empty = contacts::list_contact_blocks_impl(&state, "99999999999999999999999999999999")
