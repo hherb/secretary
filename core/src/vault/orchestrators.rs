@@ -1579,6 +1579,157 @@ pub fn share_block(
 }
 
 // ---------------------------------------------------------------------------
+// revoke_block_recipient — D.1.10 revoke / unshare primitive
+// ---------------------------------------------------------------------------
+
+/// Revoke a recipient from a shared block (§6 revoke / unshare primitive).
+///
+/// The inverse of [`share_block`]: rotates the block content key, re-wraps for
+/// the remaining recipients only, drops `revoked_recipient_uuid` from the
+/// manifest `BlockEntry.recipients`, ticks the manifest clock, re-signs
+/// (Ed25519 ∧ ML-DSA-65) and writes atomically (block then manifest).
+///
+/// Author-only (single-owner, like `share_block`). `existing_recipient_cards`
+/// must cover every recipient currently in the §6.2 wire table, INCLUDING the
+/// revoke target (needed to resolve the table). The revoked contact's card is
+/// left in `contacts/` untouched — card deletion is a separate concern.
+///
+/// Mirrors `share_block`'s steps 1–6 exactly, with step 5 INVERTED:
+/// `share_block` rejects an already-present recipient
+/// ([`VaultError::RecipientAlreadyPresent`]); revoke instead requires the
+/// target be present and splits the resolved cards into the "keep" set vs the
+/// revoked one. The shared re-key engine
+/// ([`rewrite_block_with_recipients`]) is then invoked with
+/// `card_to_persist = None` — revoke grants no new access, so no contact card
+/// is written.
+///
+/// # Errors
+/// - [`VaultError::BlockNotFound`] — `block_uuid` absent from the manifest.
+/// - [`VaultError::NotAuthor`] — caller is not the block's single-owner author.
+/// - [`VaultError::MissingRecipientCard`] — a current wrap has no supplying card.
+/// - [`VaultError::RecipientNotPresent`] — `revoked_recipient_uuid` is not a
+///   current recipient.
+///
+/// # Forward secrecy
+/// Revocation protects FUTURE block-versions only. The revoked party may retain
+/// plaintext/keys already seen; `core` cannot un-see them. See `docs/`.
+#[allow(clippy::too_many_arguments)]
+pub fn revoke_block_recipient(
+    folder: &Path,
+    open: &mut OpenVault,
+    block_uuid: [u8; 16],
+    author_card: &ContactCard,
+    author_sk_ed: &Ed25519Secret,
+    author_sk_pq: &MlDsa65Secret,
+    existing_recipient_cards: &[ContactCard],
+    revoked_recipient_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    now_ms: u64,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<(), VaultError> {
+    // Step 1: locate the manifest BlockEntry (mirror share_block step 1).
+    let entry_idx = open
+        .manifest
+        .blocks
+        .iter()
+        .position(|b| b.block_uuid == block_uuid)
+        .ok_or(VaultError::BlockNotFound { block_uuid })?;
+
+    // Step 2: read the on-disk block file and decode the §6.1 envelope
+    // (mirror share_block step 2, revoke-specific Io context string).
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = blocks_dir.join(format!("{block_uuid_hex}.cbor.enc"));
+    let block_file_bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
+        context: "failed to read block file for revoke_block_recipient",
+        source: e,
+    })?;
+    let block_file = block::decode_block_file(&block_file_bytes)?;
+
+    // Step 3: author check — re-derive author fingerprint, compare to the
+    // on-disk `author_fingerprint` (mirror share_block step 3 exactly).
+    let author_card_bytes = author_card.to_canonical_cbor()?;
+    let author_fp = fingerprint(&author_card_bytes);
+    if author_fp != block_file.author_fingerprint {
+        return Err(VaultError::NotAuthor {
+            expected: block_file.author_fingerprint,
+            got: author_fp,
+        });
+    }
+
+    // Step 4: PR-B single-owner restriction (mirror share_block step 4
+    // exactly). The §6.4 decrypt inside the helper pairs
+    // `open.identity` reader secret-keys with `author_fp`; that pairing
+    // is sound only when caller == author. See the matching
+    // `share-as-fork` TODO at the `share_block` call site.
+    if author_card.contact_uuid != open.identity.user_uuid {
+        return Err(VaultError::NotAuthor {
+            expected: block_file.author_fingerprint,
+            got: author_fp,
+        });
+    }
+
+    // Step 5 (INVERTED vs share): resolve every wrap to a supplying card
+    // AND locate the revoke target. Build the (fingerprint → card)
+    // lookup (like share step 6), walk the wire table, split resolved
+    // cards into the final "keep" set vs the single revoked card. The
+    // target MUST be present, else `RecipientNotPresent`.
+    let mut card_lookup: Vec<(crate::identity::fingerprint::Fingerprint, &ContactCard)> =
+        Vec::with_capacity(existing_recipient_cards.len());
+    for c in existing_recipient_cards {
+        let fp = fingerprint(&c.to_canonical_cbor()?);
+        card_lookup.push((fp, c));
+    }
+    let mut final_cards: Vec<&ContactCard> = Vec::with_capacity(block_file.recipients.len());
+    let mut found_target = false;
+    for wrap in &block_file.recipients {
+        let card = card_lookup
+            .iter()
+            .find(|(fp, _)| *fp == wrap.recipient_fingerprint)
+            .map(|(_, c)| *c)
+            .ok_or(VaultError::MissingRecipientCard {
+                fingerprint: wrap.recipient_fingerprint,
+            })?;
+        if card.contact_uuid == revoked_recipient_uuid {
+            found_target = true; // drop from the final set
+        } else {
+            final_cards.push(card);
+        }
+    }
+    if !found_target {
+        return Err(VaultError::RecipientNotPresent);
+    }
+
+    // Step 6: final manifest recipient uuids = current minus the target.
+    let final_uuids: Vec<[u8; 16]> = open.manifest.blocks[entry_idx]
+        .recipients
+        .iter()
+        .copied()
+        .filter(|u| *u != revoked_recipient_uuid)
+        .collect();
+
+    // Steps 7–18: delegate to the shared re-key engine. `card_to_persist`
+    // is `None` — revoke grants no new access, so no contact card is
+    // written or deleted.
+    rewrite_block_with_recipients(
+        folder,
+        open,
+        &block_file,
+        entry_idx,
+        author_card,
+        author_fp,
+        author_sk_ed,
+        author_sk_pq,
+        &final_cards,
+        final_uuids,
+        None,
+        device_uuid,
+        now_ms,
+        rng,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // trash_block — B.5 lifecycle pair (with restore_block below)
 // ---------------------------------------------------------------------------
 

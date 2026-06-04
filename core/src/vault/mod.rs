@@ -47,8 +47,8 @@ pub use manifest::{
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second
 // re-export here — the type is already re-exported above via block.rs.
 pub use orchestrators::{
-    create_vault, open_vault, read_vault_manifest, restore_block, save_block, share_block,
-    trash_block, OpenVault, Unlocker,
+    create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
+    save_block, share_block, trash_block, OpenVault, Unlocker,
 };
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
