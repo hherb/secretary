@@ -389,7 +389,7 @@ fn generate_revoke_kat() {
             "fingerprint": hex::encode(alice_fp),
             "x25519_sk": hex::encode(alice_id.x25519_sk.expose()),
             "ml_kem_768_sk": hex::encode(alice_id.ml_kem_768_sk.expose()),
-            "pk_bundle": hex::encode(pk_bundle_of(&alice_card)),
+            "pk_bundle": hex::encode(alice_card.pk_bundle_bytes().unwrap()),
         },
         "revoked_recipient": {
             "_doc": "Bob — revoked. His wrap is PRESENT in before_block and ABSENT from after_block. The reader asserts his fingerprint is gone from after_block's §6.2 table.",
@@ -401,7 +401,7 @@ fn generate_revoke_kat() {
             "_doc": "Owner — the block author (sender side of the §7 transcript) and the §8 block-signature signer. pk_bundle is the sender-side transcript input; ed25519_pk + ml_dsa_65_pk verify the block signature.",
             "contact_uuid": hex::encode(owner_card.contact_uuid),
             "fingerprint": hex::encode(owner_fp),
-            "pk_bundle": hex::encode(pk_bundle_of(&owner_card)),
+            "pk_bundle": hex::encode(owner_card.pk_bundle_bytes().unwrap()),
             "ed25519_pk": hex::encode(owner_card.ed25519_pk),
             "ml_dsa_65_pk": hex::encode(&owner_card.ml_dsa_65_pk),
         },
@@ -442,16 +442,6 @@ fn generate_revoke_kat() {
         after_bytes.len(),
         inputs_path().display(),
     );
-
-    // Explicit drop ordering for clarity in a long generator fn.
-    drop(open);
-    drop(vault_dir);
-}
-
-/// `card.pk_bundle_bytes()` unwrapped — the canonical pk-bundle bytes used as
-/// the §7 KEM transcript input.
-fn pk_bundle_of(card: &ContactCard) -> Vec<u8> {
-    card.pk_bundle_bytes().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +490,6 @@ fn revoke_kat_after_block_matches_inputs() {
         MlKem768Secret::from_bytes(&hex_bytes(&inputs["remaining_recipient"]["ml_kem_768_sk"]))
             .expect("ml_kem_768_sk must parse");
     let alice_pk_bundle = hex_bytes(&inputs["remaining_recipient"]["pk_bundle"]);
-    let alice_fp_arr = alice_fp;
 
     let author_fp = hex16(&inputs["author"]["fingerprint"]);
     let author_pk_bundle = hex_bytes(&inputs["author"]["pk_bundle"]);
@@ -517,7 +506,7 @@ fn revoke_kat_after_block_matches_inputs() {
         &author_pk_bundle,
         &author_ed_pk,
         &author_dsa_pk,
-        &alice_fp_arr,
+        &alice_fp,
         &alice_pk_bundle,
         &alice_x_sk,
         &alice_pq_sk,
