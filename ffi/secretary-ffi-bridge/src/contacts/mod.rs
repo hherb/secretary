@@ -18,6 +18,9 @@ pub use delete::delete_contact_card;
 mod export;
 pub use export::owner_card_export;
 
+mod recipients;
+pub use recipients::{block_recipients, RecipientKind, RecipientSummary};
+
 mod share;
 pub use share::share_block_to;
 

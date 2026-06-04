@@ -84,6 +84,14 @@ export interface ListContactsDto {
   unreadableCount: number;
 }
 
+export type RecipientKind = 'owner' | 'contact' | 'unknown';
+
+export interface RecipientDto {
+  uuidHex: string;
+  kind: RecipientKind;
+  displayName: string | null;
+}
+
 export interface CreateVaultDto {
   mnemonic: string;
 }
@@ -247,6 +255,10 @@ export async function setSettings(settings: SettingsDto): Promise<void> {
 
 export async function listContacts(): Promise<ListContactsDto> {
   return call<ListContactsDto>('list_contacts', {});
+}
+
+export async function listBlockRecipients(blockUuidHex: string): Promise<RecipientDto[]> {
+  return call<RecipientDto[]>('block_recipients', { blockUuidHex });
 }
 
 export async function importContact(cardPath: string): Promise<ContactSummaryDto> {

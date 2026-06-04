@@ -10,6 +10,7 @@
   import { openRecord, openNewRecord, back } from '../lib/browse';
   import { userMessageFor, type AppError } from '../lib/errors';
   import RecordRow from './RecordRow.svelte';
+  import BlockRecipients from './BlockRecipients.svelte';
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
 
   type Props = { block: BlockSummaryDto };
@@ -85,6 +86,7 @@
 
 <section class="record-list">
   <button type="button" class="record-list__back" onclick={() => back()}>← {block.blockName}</button>
+  <BlockRecipients {block} />
   <button type="button" class="record-list__add" onclick={() => openNewRecord(block)}>+ Add record</button>
 
   <label class="record-list__show-deleted">

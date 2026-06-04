@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-03-d17-contacts-management-shipped.md
+docs/handoffs/2026-06-04-d18-per-block-recipients-shipped.md
