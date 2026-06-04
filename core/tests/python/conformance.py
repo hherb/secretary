@@ -1831,50 +1831,55 @@ def section_revoke_kat() -> tuple[bool, list[str]]:
         if e.fingerprint == remaining_fp:
             after_entry = e
             break
-    if after_entry is None:
-        # Already reported by (a); cannot continue the decap leg.
-        for i in issues:
-            lines.append(f"      - {i}")
-        lines.append("FAIL  revoke_kat::after_block_rekeyed")
-        return False, lines
 
-    sender_fp = bytes.fromhex(inputs["author"]["fingerprint"])
-    sender_pk_bundle = bytes.fromhex(inputs["author"]["pk_bundle"])
-    recipient_pk_bundle = bytes.fromhex(inputs["remaining_recipient"]["pk_bundle"])
-    try:
-        bck = hybrid_decap(
-            ct_x=after_entry.ct_x,
-            ct_pq=after_entry.ct_pq,
-            nonce_w=after_entry.nonce_w,
-            ct_w_with_tag=after_entry.ct_w,
-            sender_fp=sender_fp,
-            recipient_fp=remaining_fp,
-            sender_pk_bundle=sender_pk_bundle,
-            recipient_pk_bundle=recipient_pk_bundle,
-            recipient_x_sk=bytes.fromhex(inputs["remaining_recipient"]["x25519_sk"]),
-            recipient_pq_sk=bytes.fromhex(
-                inputs["remaining_recipient"]["ml_kem_768_sk"]
-            ),
-            block_uuid=block_uuid,
+    # Skip the decap leg when the remaining wrap is absent (already reported by
+    # (a)); there is nothing to decap. Control falls through to the single
+    # terminal report block, which prints FAIL then the accumulated issues.
+    if after_entry is not None:
+        sender_fp = bytes.fromhex(inputs["author"]["fingerprint"])
+        sender_pk_bundle = bytes.fromhex(inputs["author"]["pk_bundle"])
+        recipient_pk_bundle = bytes.fromhex(
+            inputs["remaining_recipient"]["pk_bundle"]
         )
-    except ValueError as e:
-        issues.append(f"(b) hybrid-decap of new BCK failed: {e}")
-        bck = None
-
-    if bck is not None:
-        body_aad = block_aead_aad(after, after_bytes)
-        body_ct_with_tag = after.aead.ct + after.aead.tag
         try:
-            recovered = aead_decrypt(bck, after.aead.nonce, body_aad, body_ct_with_tag)
+            bck = hybrid_decap(
+                ct_x=after_entry.ct_x,
+                ct_pq=after_entry.ct_pq,
+                nonce_w=after_entry.nonce_w,
+                ct_w_with_tag=after_entry.ct_w,
+                sender_fp=sender_fp,
+                recipient_fp=remaining_fp,
+                sender_pk_bundle=sender_pk_bundle,
+                recipient_pk_bundle=recipient_pk_bundle,
+                recipient_x_sk=bytes.fromhex(
+                    inputs["remaining_recipient"]["x25519_sk"]
+                ),
+                recipient_pq_sk=bytes.fromhex(
+                    inputs["remaining_recipient"]["ml_kem_768_sk"]
+                ),
+                block_uuid=block_uuid,
+            )
         except ValueError as e:
-            issues.append(f"(b) body AEAD-decrypt under new BCK failed: {e}")
-            recovered = None
-        if recovered is not None:
-            expected_cbor = bytes.fromhex(inputs["expected_plaintext"]["cbor"])
-            if recovered != expected_cbor:
-                issues.append(
-                    "(b) recovered plaintext bytes != committed expected_plaintext.cbor"
+            issues.append(f"(b) hybrid-decap of new BCK failed: {e}")
+            bck = None
+
+        if bck is not None:
+            body_aad = block_aead_aad(after, after_bytes)
+            body_ct_with_tag = after.aead.ct + after.aead.tag
+            try:
+                recovered = aead_decrypt(
+                    bck, after.aead.nonce, body_aad, body_ct_with_tag
                 )
+            except ValueError as e:
+                issues.append(f"(b) body AEAD-decrypt under new BCK failed: {e}")
+                recovered = None
+            if recovered is not None:
+                expected_cbor = bytes.fromhex(inputs["expected_plaintext"]["cbor"])
+                if recovered != expected_cbor:
+                    issues.append(
+                        "(b) recovered plaintext bytes != committed "
+                        "expected_plaintext.cbor"
+                    )
 
     # (c) before held the revoked wrap; body ciphertext changed (real re-key).
     if revoked_fp not in before_fps:
