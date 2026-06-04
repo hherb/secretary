@@ -19,6 +19,8 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.SaveCryptoFailure -> "SaveCryptoFailure"
     is VaultException.NotAuthor -> "NotAuthor"
     is VaultException.RecipientAlreadyPresent -> "RecipientAlreadyPresent"
+    is VaultException.RecipientNotPresent -> "RecipientNotPresent"
+    is VaultException.CannotRevokeOwner -> "CannotRevokeOwner"
     is VaultException.MissingRecipientCard -> "MissingRecipientCard"
     is VaultException.CardDecodeFailure -> "CardDecodeFailure"
     is VaultException.BlockUuidAlreadyLive -> "BlockUuidAlreadyLive"
@@ -45,6 +47,8 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.WrongMnemonicOrCorrupt,
     is VaultException.VaultMismatch,
     is VaultException.RecipientAlreadyPresent,
+    is VaultException.RecipientNotPresent,
+    is VaultException.CannotRevokeOwner,
     is VaultException.NotAuthor,
     is VaultException.MissingRecipientCard,
     is VaultException.BlockNotFound,
