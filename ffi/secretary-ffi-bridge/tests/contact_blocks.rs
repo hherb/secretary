@@ -6,30 +6,13 @@
 #[allow(dead_code)]
 mod share_block_helpers;
 
-use secretary_core::identity::card::ContactCard;
-use secretary_core::vault::format_uuid_hyphenated;
 use secretary_ffi_bridge::{
     contact_blocks, enumerate_contact_cards, share_block_to, trash_block, OpenVaultManifest,
 };
 use share_block_helpers::{
-    fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
-    NEW_RECORD_UUID, NOW_MS_BASE,
+    fresh_writable_vault, mint_external_card, place_card, save_one_record_block, DEVICE_UUID,
+    NEW_BLOCK_UUID, NEW_RECORD_UUID, NOW_MS_BASE,
 };
-use std::fs;
-use std::path::Path;
-
-/// Write raw card bytes into the vault's `contacts/` dir under the canonical
-/// hyphenated filename. Returns the card's `contact_uuid`. (Local copy of the
-/// `recipients.rs` helper — the shared harness mod doesn't expose it.)
-fn place_card(folder: &Path, card_bytes: &[u8]) -> [u8; 16] {
-    let card = ContactCard::from_canonical_cbor(card_bytes).expect("valid card");
-    let path = folder.join("contacts").join(format!(
-        "{}.card",
-        format_uuid_hyphenated(&card.contact_uuid)
-    ));
-    fs::write(&path, card_bytes).expect("write card");
-    card.contact_uuid
-}
 
 /// Shared setup: a writable golden copy with one owner-authored block saved
 /// and a minted "Alice" peer card placed in contacts/ (NOT yet a recipient).
