@@ -153,8 +153,9 @@ pub fn save_block(
 /// `core::VaultError` variant becomes a *compile* error here rather than
 /// silently folding to `SaveCryptoFailure`, forcing a deliberate routing
 /// decision at the save-mapper boundary. The share-validation variants
-/// (`NotAuthor` / `RecipientAlreadyPresent` / `MissingRecipientCard` /
-/// `BlockNotFound`) are unreachable from `core::save_block` today but are
+/// (`NotAuthor` / `RecipientAlreadyPresent` / `RecipientNotPresent` /
+/// `MissingRecipientCard` / `BlockNotFound`) are unreachable from
+/// `core::save_block` today but are
 /// listed explicitly to keep the match exhaustive across the full
 /// `VaultError` surface; if they did fire they would represent a
 /// programmer error from the save path's perspective and folding to

@@ -248,7 +248,7 @@ fn vault_error_recipient_already_present_from_core_preserves_variant() {
 }
 
 #[test]
-fn recipient_not_present_maps_to_ffi_variant() {
+fn vault_error_recipient_not_present_from_core_preserves_variant() {
     let ffi: FfiVaultError = VaultError::RecipientNotPresent.into();
     assert!(matches!(ffi, FfiVaultError::RecipientNotPresent));
 }
