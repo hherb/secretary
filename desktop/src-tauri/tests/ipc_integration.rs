@@ -1238,6 +1238,38 @@ mod contacts_path {
         );
     }
 
+    // ── D.1.9 list_contact_blocks ────────────────────────────────────────────
+
+    #[test]
+    fn list_contact_blocks_lists_shared_block_for_peer() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // Import a fresh peer and share an owner-authored golden block to it.
+        let (_peer_dir, card) = peer_card_file();
+        let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
+            .expect("import peer");
+        contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+            .expect("share golden block to peer");
+
+        // The peer's reverse map now contains exactly that block.
+        let blocks = contacts::list_contact_blocks_impl(&state, &peer.contact_uuid_hex)
+            .expect("list_contact_blocks ok");
+        assert_eq!(
+            blocks.len(),
+            1,
+            "peer receives exactly the one shared block"
+        );
+        assert_eq!(blocks[0].block_uuid_hex, GOLDEN_BLOCK_UUID_HEX);
+
+        // A peer with no shares (use a random valid uuid) gets an empty list.
+        let empty = contacts::list_contact_blocks_impl(&state, "99999999999999999999999999999999")
+            .expect("list_contact_blocks ok for unknown uuid");
+        assert!(
+            empty.is_empty(),
+            "an unshared/unknown uuid receives no blocks"
+        );
+    }
+
     // ── D.1.7 export_contact_card / delete_contact_card ─────────────────────
 
     /// `export_contact_card_impl` writes the owner's self-card to the requested

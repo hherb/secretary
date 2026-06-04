@@ -13,14 +13,17 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_ffi_bridge::{
-    block_recipients as bridge_block_recipients, delete_contact_card as bridge_delete,
-    enumerate_contact_cards as bridge_enumerate, import_contact_card as bridge_import,
-    owner_card_export as bridge_owner_card_export, share_block_to as bridge_share_block_to,
+    block_recipients as bridge_block_recipients, contact_blocks as bridge_contact_blocks,
+    delete_contact_card as bridge_delete, enumerate_contact_cards as bridge_enumerate,
+    import_contact_card as bridge_import, owner_card_export as bridge_owner_card_export,
+    share_block_to as bridge_share_block_to,
 };
 
 use crate::auto_lock::now_ms;
 use crate::commands::shared::parse_uuid_16;
-use crate::dtos::{ContactSummaryDto, ExportedCardDto, ListContactsDto, RecipientDto};
+use crate::dtos::{
+    BlockSummaryDto, ContactSummaryDto, ExportedCardDto, ListContactsDto, RecipientDto,
+};
 use crate::errors::{map_ffi_error, AppError};
 use crate::session::VaultSession;
 
@@ -178,6 +181,26 @@ pub fn block_recipients_impl(
     })
 }
 
+#[tauri::command]
+pub async fn list_contact_blocks(
+    state: State<'_, Mutex<VaultSession>>,
+    contact_uuid_hex: String,
+) -> Result<Vec<BlockSummaryDto>, AppError> {
+    list_contact_blocks_impl(state.inner(), &contact_uuid_hex)
+}
+
+pub fn list_contact_blocks_impl(
+    state: &Mutex<VaultSession>,
+    contact_uuid_hex: &str,
+) -> Result<Vec<BlockSummaryDto>, AppError> {
+    let contact_uuid = parse_uuid_16(contact_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        let blocks = bridge_contact_blocks(&u.manifest, contact_uuid).map_err(map_ffi_error)?;
+        Ok(blocks.iter().map(BlockSummaryDto::from).collect())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +227,15 @@ mod tests {
         // 16-byte hex UUID so parse_uuid_16 succeeds and we reach the lock path.
         let uuid_hex = "00112233445566778899aabbccddeeff";
         let err = block_recipients_impl(&state, uuid_hex).expect_err("locked");
+        assert!(matches!(err, AppError::NotUnlocked));
+    }
+
+    #[test]
+    fn list_contact_blocks_locked_session_is_not_unlocked() {
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        // 16-byte hex UUID so parse_uuid_16 succeeds and we reach the lock path.
+        let uuid_hex = "00112233445566778899aabbccddeeff";
+        let err = list_contact_blocks_impl(&state, uuid_hex).expect_err("locked");
         assert!(matches!(err, AppError::NotUnlocked));
     }
 }
