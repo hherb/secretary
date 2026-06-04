@@ -10,7 +10,7 @@ mod share_block_helpers;
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::format_uuid_hyphenated;
 use secretary_ffi_bridge::{
-    enumerate_contact_cards, import_contact_card, share_block_to, FfiVaultError,
+    enumerate_contact_cards, import_contact_card, revoke_block_from, share_block_to, FfiVaultError,
 };
 use share_block_helpers::{
     fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
@@ -399,6 +399,215 @@ fn share_block_to_rejects_card_swapped_after_import() {
         "owner only; the rejected share must not have re-keyed the block"
     );
     assert!(!entry.recipient_uuids.contains(&peer_uuid));
+}
+
+#[test]
+fn revoke_block_from_removes_recipient() {
+    // Happy-path twin of `share_block_to_appends_recipient`: share a block to a
+    // peer (by UUID), then revoke that peer (by UUID) and assert the manifest's
+    // BlockEntry.recipients no longer lists them, leaving owner-only.
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "password",
+        "hunter2",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("import peer");
+
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1_000,
+    )
+    .expect("share_block_to ok");
+
+    let pre = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable after share");
+    assert_eq!(pre.recipient_uuids.len(), 2, "owner + peer before revoke");
+    assert!(pre.recipient_uuids.contains(&peer_uuid));
+
+    revoke_block_from(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 2_000,
+    )
+    .expect("revoke_block_from ok");
+
+    let post = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable after revoke");
+    assert_eq!(
+        post.recipient_uuids.len(),
+        1,
+        "revoke must drop the peer from the manifest entry (owner only)"
+    );
+    assert!(
+        !post.recipient_uuids.contains(&peer_uuid),
+        "revoked peer must not remain a recipient"
+    );
+}
+
+#[test]
+fn revoke_block_from_unknown_block_rejected() {
+    // Twin of `share_block_to_unknown_block_is_block_not_found`: a block_uuid not
+    // in the manifest surfaces BlockNotFound before any card load / re-key.
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).unwrap();
+    let err = revoke_block_from(
+        &identity,
+        &manifest,
+        [0x77; 16],
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("unknown block");
+    assert!(
+        matches!(err, FfiVaultError::BlockNotFound { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn revoke_block_from_rejects_card_swapped_after_import() {
+    // Regression twin of `share_block_to_rejects_card_swapped_after_import`:
+    // `revoke_block_from` re-reads EVERY current recipient card from disk
+    // (including the revoke target — it is a current recipient, needed to
+    // resolve the §6.2 wire table) and re-verifies the both-halves
+    // self-signature at load time via `load_card_bytes`. A card swapped in
+    // contacts/ after a genuine import (attacker with write access) must be
+    // rejected before the re-key, exactly as on the share path — verification
+    // at import time does NOT protect this disk-re-read path.
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("genuine import ok");
+
+    // Establish the block→peer share with the genuine (verified) card on disk.
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect("share_block_to ok");
+
+    // Post-import/share swap: overwrite the on-disk card with a
+    // signature-tampered variant (same contact_uuid → same filename). It still
+    // parses as CBOR but fails verify_self.
+    let mut tampered = peer.clone();
+    let n = tampered.len();
+    tampered[n - 1] ^= 0xFF;
+    let path = tmp
+        .path()
+        .join("contacts")
+        .join(format!("{}.card", format_uuid_hyphenated(&peer_uuid)));
+    fs::write(&path, &tampered).expect("overwrite imported card with tampered bytes");
+
+    let err = revoke_block_from(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 2,
+    )
+    .expect_err("tampered recipient card must be rejected before re-key");
+    assert!(
+        matches!(err, FfiVaultError::CardDecodeFailure { .. }),
+        "got {err:?}"
+    );
+
+    // The block must NOT have been re-keyed: the peer is still a recipient
+    // (the rejected revoke left the manifest entry untouched).
+    let entry = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable");
+    assert_eq!(
+        entry.recipient_uuids.len(),
+        2,
+        "owner + peer; the rejected revoke must not have re-keyed the block"
+    );
+    assert!(entry.recipient_uuids.contains(&peer_uuid));
+}
+
+#[test]
+fn revoke_block_from_missing_recipient_card_is_contact_not_found() {
+    // A current recipient whose `.card` vanished from contacts/ before the
+    // revoke surfaces ContactNotFound (per the wrapper's doc contract). Mirror
+    // of `share_block_to_unknown_recipient_card_is_contact_not_found`, but for
+    // the revoke path the missing card must belong to a CURRENT recipient (the
+    // wrapper loads every recipient card, so deleting the revoke target's own
+    // card triggers it).
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let (_b, peer) = mint_external_card(0xC3, "Carol");
+    let peer_uuid = uuid_of(&peer);
+    import_contact_card(&manifest, &peer).expect("import peer");
+    share_block_to(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect("share_block_to ok");
+
+    // Remove the recipient's on-disk card after the share is established.
+    let path = tmp
+        .path()
+        .join("contacts")
+        .join(format!("{}.card", format_uuid_hyphenated(&peer_uuid)));
+    fs::remove_file(&path).expect("remove imported card");
+
+    let err = revoke_block_from(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        peer_uuid,
+        DEVICE_UUID,
+        NOW_MS_BASE + 2,
+    )
+    .expect_err("missing recipient card must be rejected");
+    assert!(
+        matches!(err, FfiVaultError::ContactNotFound { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
