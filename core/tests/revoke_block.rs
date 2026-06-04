@@ -870,11 +870,14 @@ fn revoke_block_non_author_rejected() {
 
 // ---------------------------------------------------------------------------
 // 8. RecipientNotPresent: share to [owner, alice] ONLY, then attempt to
-//    revoke bob (never a recipient). Bob's card IS supplied in
-//    existing_recipient_cards so every actual wrap resolves; the failure is
-//    specifically "bob isn't in the wire table" → RecipientNotPresent. This
-//    PINS the ordering distinction vs MissingRecipientCard (test 9). Block
-//    left unchanged.
+//    revoke bob (never a recipient). Every ACTUAL wrap (owner, alice)
+//    resolves to a supplied card, so the wire-table walk completes without a
+//    MissingRecipientCard; bob is then found absent from the table →
+//    RecipientNotPresent. (Bob's card is also supplied, but it is never
+//    consulted — he has no wrap — so it is incidental to the outcome; what
+//    matters is that the REAL wraps all resolve.) This PINS the ordering
+//    distinction vs MissingRecipientCard (test 9), where a real wrap is left
+//    unresolvable. Block left unchanged.
 // ---------------------------------------------------------------------------
 
 #[test]
