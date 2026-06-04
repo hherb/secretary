@@ -736,3 +736,298 @@ fn revoke_block_owner_rejected() {
         "rejected owner-revoke must not touch contacts/"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6. BlockNotFound: an unknown block_uuid (not in the manifest) → reject at
+//    step 1, before any block file is read.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revoke_block_not_found_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(6, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa6; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    // No block with this uuid exists in the manifest → step-1 rejection.
+    let bogus_uuid = [0xABu8; 16];
+    let err = revoke_block_recipient(
+        dir.path(),
+        &mut open,
+        bogus_uuid,
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        &[owner_card.clone(), alice_card.clone()],
+        alice_card.contact_uuid,
+        [0xd1u8; 16],
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("revoke with an unknown block_uuid must be rejected");
+
+    assert!(
+        matches!(
+            err,
+            secretary_core::vault::VaultError::BlockNotFound { block_uuid } if block_uuid == bogus_uuid
+        ),
+        "expected BlockNotFound for the bogus uuid, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. NotAuthor: a caller who is NOT the block's single-owner author attempts
+//    a revoke. Passing an author_card whose contact_uuid != open.identity
+//    .user_uuid (and whose fingerprint != the block's author_fingerprint)
+//    trips the author check. Assert the block + manifest are UNCHANGED — the
+//    guard fails fast, no re-key, no write.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revoke_block_non_author_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa7; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+
+    // Save block authored by the owner, shared to [owner, alice].
+    let block_uuid = [0x71u8; 16];
+    let device_uuid = [0xd1u8; 16];
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "owner-authored"),
+        &[owner_card.clone(), alice_card.clone()],
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = dir
+        .path()
+        .join("blocks")
+        .join(format!("{block_uuid_hex}.cbor.enc"));
+
+    // Snapshot the on-disk state the guard must not touch.
+    let block_bytes_before = fs::read(&block_path).unwrap();
+    let manifest_bytes_before = fs::read(dir.path().join("manifest.cbor.enc")).unwrap();
+
+    // Attempt to revoke alice using author_card = alice_card (wrong author).
+    // alice's fingerprint != block.author_fingerprint → NotAuthor (and her
+    // contact_uuid != open.identity.user_uuid would also trip the PR-B
+    // single-owner check; the fingerprint mismatch fires first). SKs are
+    // still the owner's.
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    let err = revoke_block_recipient(
+        dir.path(),
+        &mut open,
+        block_uuid,
+        &alice_card, // wrong author card!
+        &owner_sk_ed,
+        &owner_sk_pq,
+        &[owner_card.clone(), alice_card.clone()],
+        alice_card.contact_uuid,
+        device_uuid,
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("revoke must reject when author_card is not the block author");
+
+    assert!(
+        matches!(err, secretary_core::vault::VaultError::NotAuthor { .. }),
+        "expected NotAuthor, got {err:?}"
+    );
+
+    // Block + manifest byte-identical — rejected path performs no write.
+    let block_bytes_after = fs::read(&block_path).unwrap();
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "rejected non-author revoke must not rewrite the block file"
+    );
+    let manifest_bytes_after = fs::read(dir.path().join("manifest.cbor.enc")).unwrap();
+    assert_eq!(
+        manifest_bytes_before, manifest_bytes_after,
+        "rejected non-author revoke must not rewrite the manifest"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 8. RecipientNotPresent: share to [owner, alice] ONLY, then attempt to
+//    revoke bob (never a recipient). Bob's card IS supplied in
+//    existing_recipient_cards so every actual wrap resolves; the failure is
+//    specifically "bob isn't in the wire table" → RecipientNotPresent. This
+//    PINS the ordering distinction vs MissingRecipientCard (test 9). Block
+//    left unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revoke_block_non_recipient_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(8, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa8; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+
+    // Bob is minted but NEVER shared the block — he has no wrap.
+    let mut bob_rng = ChaCha20Rng::from_seed([0xb2; 32]);
+    let bob_id = unlock::bundle::generate("Bob", 1_714_060_800_000, &mut bob_rng);
+    let bob_card = make_signed_card(&bob_id);
+
+    // Save block shared to [owner, alice] only.
+    let block_uuid = [0x81u8; 16];
+    let device_uuid = [0xd1u8; 16];
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "not-shared-to-bob"),
+        &[owner_card.clone(), alice_card.clone()],
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = dir
+        .path()
+        .join("blocks")
+        .join(format!("{block_uuid_hex}.cbor.enc"));
+    let block_bytes_before = fs::read(&block_path).unwrap();
+
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    // Supply bob's card alongside the real recipients so the wire-table walk
+    // resolves EVERY actual wrap (owner + alice). Bob simply never appears as
+    // a wrap → RecipientNotPresent, NOT MissingRecipientCard.
+    let err = revoke_block_recipient(
+        dir.path(),
+        &mut open,
+        block_uuid,
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
+        bob_card.contact_uuid,
+        device_uuid,
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("revoke of a non-recipient must be rejected");
+
+    assert!(
+        matches!(err, secretary_core::vault::VaultError::RecipientNotPresent),
+        "expected RecipientNotPresent (supplied-but-not-a-recipient), got {err:?}"
+    );
+
+    // Block byte-identical — rejected path performs no write.
+    let block_bytes_after = fs::read(&block_path).unwrap();
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "rejected non-recipient revoke must not rewrite the block file"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. MissingRecipientCard: share to [owner, alice, bob], attempt to revoke
+//    bob but supply existing_recipient_cards = [bob's card] ONLY (WITHHOLD
+//    alice's, and the owner's). A remaining wrap can't be resolved during
+//    the wire-table walk → MissingRecipientCard. This is the ordering
+//    counterpart of test 8 (the absent party's CARD is withheld here, so
+//    resolution fails before the present/absent split). Block unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revoke_block_missing_remaining_card_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa9; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb1; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+
+    let mut bob_rng = ChaCha20Rng::from_seed([0xb2; 32]);
+    let bob_id = unlock::bundle::generate("Bob", 1_714_060_800_000, &mut bob_rng);
+    let bob_card = make_signed_card(&bob_id);
+
+    // Save block shared to [owner, alice, bob].
+    let block_uuid = [0x91u8; 16];
+    let device_uuid = [0xd1u8; 16];
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "withhold-alice-card"),
+        &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = dir
+        .path()
+        .join("blocks")
+        .join(format!("{block_uuid_hex}.cbor.enc"));
+    let block_bytes_before = fs::read(&block_path).unwrap();
+
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    // Supply ONLY bob's card. The owner's and alice's wraps can't be
+    // resolved during the wire-table walk → MissingRecipientCard fires
+    // before the present/absent split that test 8 exercises.
+    let err = revoke_block_recipient(
+        dir.path(),
+        &mut open,
+        block_uuid,
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        std::slice::from_ref(&bob_card),
+        bob_card.contact_uuid,
+        device_uuid,
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("revoke must reject when a remaining wrap has no supplying card");
+
+    assert!(
+        matches!(
+            err,
+            secretary_core::vault::VaultError::MissingRecipientCard { .. }
+        ),
+        "expected MissingRecipientCard (a remaining wrap is unresolved), got {err:?}"
+    );
+
+    // Block byte-identical — rejected path performs no write.
+    let block_bytes_after = fs::read(&block_path).unwrap();
+    assert_eq!(
+        block_bytes_before, block_bytes_after,
+        "rejected revoke (missing card) must not rewrite the block file"
+    );
+}
