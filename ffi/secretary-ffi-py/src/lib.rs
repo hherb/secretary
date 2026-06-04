@@ -62,9 +62,9 @@ use errors::{
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCardDecodeFailure,
     VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid,
     VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
-    VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
-    WrongPasswordOrCorrupt,
+    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
+    VaultSaveCryptoFailure, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
+    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -190,6 +190,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultRecipientAlreadyPresent",
         py.get_type::<VaultRecipientAlreadyPresent>(),
+    )?;
+    m.add(
+        "VaultRecipientNotPresent",
+        py.get_type::<VaultRecipientNotPresent>(),
     )?;
     m.add(
         "VaultMissingRecipientCard",

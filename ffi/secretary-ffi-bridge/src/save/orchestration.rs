@@ -180,6 +180,7 @@ pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
         | VaultError::NotAuthor { .. }
         | VaultError::BlockNotFound { .. }
         | VaultError::RecipientAlreadyPresent
+        | VaultError::RecipientNotPresent
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }

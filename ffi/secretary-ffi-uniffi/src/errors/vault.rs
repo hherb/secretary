@@ -55,6 +55,10 @@ pub enum VaultError {
     /// block's recipient table. Mirrors `FfiVaultError::RecipientAlreadyPresent`.
     #[error("recipient is already present in the block's recipient set")]
     RecipientAlreadyPresent,
+    /// Revoke target is not a current recipient of the block. Mirrors
+    /// `FfiVaultError::RecipientNotPresent`.
+    #[error("recipient is not present on the block")]
+    RecipientNotPresent,
     /// Caller's `existing_recipient_cards` is missing a card whose
     /// fingerprint appears on disk. Mirrors `FfiVaultError::MissingRecipientCard`.
     #[error("missing contact card for recipient: {recipient_fingerprint_hex}")]
@@ -106,6 +110,7 @@ impl From<FfiVaultError> for VaultError {
                 got_fingerprint_hex,
             },
             FfiVaultError::RecipientAlreadyPresent => VaultError::RecipientAlreadyPresent,
+            FfiVaultError::RecipientNotPresent => VaultError::RecipientNotPresent,
             FfiVaultError::MissingRecipientCard {
                 recipient_fingerprint_hex,
             } => VaultError::MissingRecipientCard {

@@ -192,8 +192,12 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
             detail: format!("{e}"),
         },
         // Typed share-validation variants delegate to the From impl.
+        // RecipientNotPresent is the revoke-path sibling of
+        // RecipientAlreadyPresent; it too delegates so the typed variant
+        // surfaces rather than folding to SaveCryptoFailure.
         VaultError::NotAuthor { .. }
         | VaultError::RecipientAlreadyPresent
+        | VaultError::RecipientNotPresent
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockNotFound { .. } => e.into(),
         // Crypto / encoding / structural failures on already-validated

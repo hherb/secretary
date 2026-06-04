@@ -41,6 +41,7 @@ create_exception!(secretary_ffi_py, VaultSaveCryptoFailure, PyException);
 // the bridge's FfiVaultError variants.
 create_exception!(secretary_ffi_py, VaultNotAuthor, PyException);
 create_exception!(secretary_ffi_py, VaultRecipientAlreadyPresent, PyException);
+create_exception!(secretary_ffi_py, VaultRecipientNotPresent, PyException);
 create_exception!(secretary_ffi_py, VaultMissingRecipientCard, PyException);
 create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
 // B.5 trash_block / restore_block error surface — 2 typed exception
@@ -113,6 +114,7 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::RecipientAlreadyPresent => {
             VaultRecipientAlreadyPresent::new_err(e.to_string())
         }
+        FfiVaultError::RecipientNotPresent => VaultRecipientNotPresent::new_err(e.to_string()),
         FfiVaultError::MissingRecipientCard {
             recipient_fingerprint_hex,
         } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex),

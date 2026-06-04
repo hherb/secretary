@@ -231,6 +231,13 @@ pub enum VaultError {
     #[error("share_block: recipient is already in the block's recipient list")]
     RecipientAlreadyPresent,
 
+    /// The caller asked to revoke a recipient that is not currently a
+    /// recipient of the block (absent from the §6.2 wire table / the
+    /// manifest `BlockEntry.recipients`). Symmetric with
+    /// [`Self::RecipientAlreadyPresent`]. Surfaced by `revoke_block_recipient`.
+    #[error("recipient is not present on the block")]
+    RecipientNotPresent,
+
     /// [`share_block`] precondition: the supplied `existing_recipients`
     /// list does not include a card whose fingerprint matches a wrap
     /// in the block. The orchestrator rebuilds the new block by re-
