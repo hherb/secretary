@@ -14,8 +14,13 @@
 //!
 //! Failure invariant: bridge in-memory state is byte-identical to pre-call
 //! on Err. On-disk state may have a partial write (block file rewritten
-//! but manifest re-sign failed) — harmless because `open_vault` reads
-//! only entries listed in the manifest.
+//! but manifest re-sign failed): the manifest still points at the OLD
+//! block fingerprint while the file holds the new bytes, so the next
+//! `open_vault` read surfaces this as a `BlockFingerprintMismatch` and
+//! the owner recovers it via the `vault-format.md` §6.5 re-fingerprint
+//! path — identical to the `share_block` partial-write story. No silent
+//! corruption: the inconsistency is detected, not swallowed. (The revoked
+//! recipient is already gone from the re-keyed block on disk regardless.)
 
 use rand_core::OsRng;
 use secretary_core::crypto::secret::Sensitive;

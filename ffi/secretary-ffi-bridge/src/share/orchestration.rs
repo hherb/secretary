@@ -173,7 +173,8 @@ pub fn share_block(
 /// IO failures fold to `FolderInvalid`. On-disk block-decode failures
 /// (Step 2 of core::share_block reads the block file) fold to
 /// `CorruptVault`. NotAuthor / RecipientAlreadyPresent /
-/// RecipientNotPresent / CannotRevokeOwner / MissingRecipientCard / BlockNotFound delegate to the existing
+/// RecipientNotPresent / CannotRevokeOwner / MissingRecipientCard /
+/// BlockNotFound delegate to the existing
 /// `From<core::VaultError>` impl in [`crate::error`], which maps them to
 /// the matching typed FFI variants. Everything else (typed crypto /
 /// encoder failures on already-validated inputs) folds to

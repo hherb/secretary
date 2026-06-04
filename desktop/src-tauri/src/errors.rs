@@ -21,8 +21,8 @@
 //! `AppError` — including the D.1.5 trash/restore preconditions and the
 //! D.1.6 block-share + contacts variants (`NotAuthor`,
 //! `RecipientAlreadyPresent`, `RecipientNotPresent`, `CannotRevokeOwner`,
-//! `MissingRecipientCard`,
-//! `ContactAlreadyExists`, `ContactNotFound`). A residual few that should never fire on a reachable
+//! `MissingRecipientCard`, `ContactAlreadyExists`, `ContactNotFound`). A
+//! residual few that should never fire on a reachable
 //! UI path (e.g. a stale block UUID into `read_block`) fold to
 //! `Internal { detail }` so a regression surfaces as a clear "this is a bug"
 //! rather than a silent miscategorisation.
@@ -211,8 +211,8 @@ pub enum AppWarning {
 /// affordance is "retry credential" in both cases). Block-share
 /// authorisation + contacts variants (`NotAuthor`,
 /// `RecipientAlreadyPresent`, `RecipientNotPresent`, `CannotRevokeOwner`,
-/// `MissingRecipientCard`,
-/// `ContactAlreadyExists`, `ContactNotFound`) and the trash/restore
+/// `MissingRecipientCard`, `ContactAlreadyExists`, `ContactNotFound`) and
+/// the trash/restore
 /// preconditions route to typed `AppError`s. The few variants that
 /// should never reach a live UI path (e.g. recovery-phrase
 /// pre-validation, an unknown block UUID into `read_block`) fold to

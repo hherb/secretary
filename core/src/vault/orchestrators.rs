@@ -1724,6 +1724,13 @@ pub fn revoke_block_recipient(
     }
 
     // Step 7: final manifest recipient uuids = current minus the target.
+    // This list is built from `manifest.recipients` (manifest order),
+    // whereas `final_cards` above is built from `block_file.recipients`
+    // (wire-table order). The two orderings need not match — the manifest
+    // `recipients` list is SET-semantics (a UUID set for enumeration), not
+    // positionally aligned with the §6.2 wire table. Correctness depends
+    // only on both describing the same recipient *set*; the re-key uses
+    // `final_cards` (wire order) and the manifest stores `final_uuids`.
     let final_uuids: Vec<[u8; 16]> = open.manifest.blocks[entry_idx]
         .recipients
         .iter()
