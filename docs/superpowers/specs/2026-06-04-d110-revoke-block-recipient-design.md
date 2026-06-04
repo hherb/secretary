@@ -1,4 +1,4 @@
-# D.1.10 — `revoke_block_recipient` (frozen-core revoke / unshare primitive)
+go# D.1.10 — `revoke_block_recipient` (frozen-core revoke / unshare primitive)
 
 **Date:** 2026-06-04
 **Sub-project:** A/B (Rust crypto core + bridge), the revoke primitive deferred out of D.1.7–D.1.9.
@@ -130,29 +130,44 @@ Sequence:
 2. Read + decode the on-disk block (§6.1) → `CorruptVault` on decode failure.
 3. Verify author: `fingerprint(author_card) == block_file.author_fingerprint` **and** the PR-B
    single-owner restriction (`author_card.contact_uuid == open.identity.user_uuid`) → `NotAuthor`.
-4. Resolve every wire-level recipient (§6.2) to a supplying card in `existing_recipient_cards` →
+4. **Owner-revoke guard:** `revoked_recipient_uuid != open.identity.user_uuid` → else
+   **`VaultError::CannotRevokeOwner`**. The owner/author is **always** a recipient of any
+   shareable block — `share_block` decrypts the block under the author's reader identity (§6.4)
+   and fails with `NotARecipient` if the author is absent from the §6.2 table (orchestrators.rs:
+   "The author MUST be a current recipient"). Re-keying a block *without* the owner would
+   therefore brick it: the owner could never again decrypt it to re-key/re-share, and a transient
+   `Ok` would mask a permanent loss of control. Reject up-front. (Because the owner can never be
+   revoked, the final recipient set is **never empty** — there is no `EmptyRecipientList` path to
+   worry about, and "revoke the last recipient" means the last *non-owner* recipient.)
+5. Resolve every wire-level recipient (§6.2) to a supplying card in `existing_recipient_cards` →
    `MissingRecipientCard` if any is unresolved.
-5. **Target-present check:** `revoked_recipient_uuid` must correspond to a current recipient
+6. **Target-present check:** `revoked_recipient_uuid` must correspond to a current recipient
    (present in `BlockEntry.recipients` **and** the §6.2 wire table) → else
    **`VaultError::RecipientNotPresent`**.
-6. Build `final_recipient_cards` = existing minus the target; `final_recipient_uuids` =
+7. Build `final_recipient_cards` = existing minus the target; `final_recipient_uuids` =
    `BlockEntry.recipients` minus the target.
-7. `rewrite_block_with_recipients(...)`.
+8. `rewrite_block_with_recipients(...)`.
 
 The manifest `recipients` shrinks → `shared_block_count` falls → the D.1.9 reverse map reflects
 the change with no UI work. The contact card is left untouched.
 
-### 4.3 Typed error `RecipientNotPresent`
+### 4.3 Typed errors `RecipientNotPresent` and `CannotRevokeOwner`
 
-- `core/src/vault/mod.rs`: add `VaultError::RecipientNotPresent` (unit variant, mirroring
-  `RecipientAlreadyPresent` at mod.rs:232).
-- `ffi/secretary-ffi-bridge/src/error/vault/mod.rs`: add `FfiVaultError::RecipientNotPresent`
-  (unit variant, mirroring `RecipientAlreadyPresent` at error/vault/mod.rs:195).
-- `ffi/secretary-ffi-uniffi/src/secretary.udl`: add `RecipientNotPresent();` (mirroring
-  `RecipientAlreadyPresent()` at udl:174).
+Two new unit variants, each mirroring `RecipientAlreadyPresent`'s wiring across every layer:
+
+- `core/src/vault/mod.rs`: add `VaultError::RecipientNotPresent` and `VaultError::CannotRevokeOwner`
+  (unit variants, mirroring `RecipientAlreadyPresent` at mod.rs:232).
+- `ffi/secretary-ffi-bridge/src/error/vault/mod.rs`: add the matching `FfiVaultError` variants
+  (mirroring `RecipientAlreadyPresent` at error/vault/mod.rs:195).
+- `ffi/secretary-ffi-uniffi/src/secretary.udl`: add `RecipientNotPresent();` and
+  `CannotRevokeOwner();` (mirroring `RecipientAlreadyPresent()` at udl:174).
 - `From<VaultError> for FfiVaultError` and every exhaustive `match VaultError { … }` /
   `match FfiVaultError { … }` site in the workspace (share, trash, save, restore orchestrations;
-  Swift/Kotlin/pyo3 conformance) must gain the new arm.
+  pyo3, uniffi, desktop tauri `map_ffi_error`, conformance helpers) must gain both new arms.
+
+`CannotRevokeOwner` is **not** `RecipientNotPresent` (the owner *is* present) and **not**
+`NotAuthor` (the caller *is* the author) — it is a distinct "you may not revoke the one recipient
+that must remain" condition, so it earns its own typed variant rather than overloading either.
 
 ⚠️ **This error variant is the one binding-surface change** even though the revoke *function*
 stays bridge-only: adding a `FfiVaultError`/UDL variant regenerates the Swift/Kotlin bindings and
@@ -181,8 +196,8 @@ A `contacts/`-level wrapper `revoke_block_from(block_uuid, revoked_recipient_uui
 `existing_recipient_cards` from the persisted `contacts/*.card` set (the union needed to resolve
 the wire table, including the target's card), then calls the orchestration wrapper, mapping
 `VaultError → FfiVaultError` exactly as `share` does (IO → `FolderInvalid`; decode →
-`CorruptVault`; `NotAuthor` / `MissingRecipientCard` / `RecipientNotPresent` / `BlockNotFound`
-→ typed; residual crypto failures on validated inputs → `SaveCryptoFailure`). On success it
+`CorruptVault`; `NotAuthor` / `MissingRecipientCard` / `RecipientNotPresent` / `CannotRevokeOwner`
+/ `BlockNotFound` → typed; residual crypto failures on validated inputs → `SaveCryptoFailure`). On success it
 writes the refreshed manifest back into the in-memory handle.
 
 **Mutation-path strictness (carried from the D.1.9 review):** the revoke path must **not** adopt
@@ -195,11 +210,11 @@ swallowed.
 | Situation | Behaviour |
 |---|---|
 | Revoke one of N recipients | Remaining N−1 re-wrapped under a fresh BCK; revoked old wrap fails on the new body. |
-| Revoke the **last** recipient | `recipients` becomes empty; block returns to owner-only. **Allowed.** |
+| Revoke the **last non-owner** recipient | `recipients` shrinks to the owner only; the block is owner-only again (never empty — the owner always remains). **Allowed.** |
 | Revoke a **non-recipient** uuid | `RecipientNotPresent` (typed). No write. |
 | Caller is **not** the owner/author | `NotAuthor`. No write. |
 | A **remaining** recipient's card missing from `contacts/` | `MissingRecipientCard` — cannot re-wrap. No write. |
-| Revoke the **author/owner** | Impossible by construction — the author is never in the §6.2 recipient table; such a uuid is simply not present → `RecipientNotPresent`. |
+| Revoke the **author/owner** | `CannotRevokeOwner` (typed). The owner is *always* a recipient (must be, to decrypt + re-key); re-keying without them would brick the block, so this is rejected up-front (§4.2 step 4). No write. |
 | `block_uuid` not in manifest | `BlockNotFound`. |
 
 **Atomicity:** block-first → manifest-second (§9). A crash between leaves a re-keyed block + a
@@ -238,9 +253,12 @@ Author tests first, mirroring `core/tests/share_block.rs`.
 **Core — `core/tests/revoke_block.rs`:**
 - `revoke_block_round_trip` — revoke one of two; remaining decrypts under the new BCK; the
   revoked party's pre-revoke wrap fails on the new body.
-- `revoke_block_last_recipient_returns_owner_only` — empty `recipients`; author still decrypts.
+- `revoke_block_last_recipient_returns_owner_only` — revoking the last *non-owner* recipient
+  leaves the owner-only set; author still decrypts.
 - `revoke_block_non_author_rejected` — `NotAuthor`.
 - `revoke_block_non_recipient_rejected` — `RecipientNotPresent`.
+- `revoke_block_owner_rejected` — revoking the owner/author uuid → `CannotRevokeOwner`; the block
+  is left untouched (no re-key, no write).
 - `revoke_block_missing_remaining_card_rejected` — `MissingRecipientCard`.
 - `revoke_block_not_found_rejected` — `BlockNotFound`.
 - `revoke_block_re_sign_verifies` — manifest + block signatures verify post-revoke.
@@ -279,8 +297,9 @@ existing clock and shrinks a set under the existing canonical encoding). No prop
 
 - `revoke_block_recipient` in `core` with the §4.2 validation surface and the `rewrite_block_with_
   recipients` helper; `share_block` refactored onto the helper with byte-equivalent output.
-- `VaultError::RecipientNotPresent` + `FfiVaultError::RecipientNotPresent` + UDL variant, threaded
-  through every workspace match site.
+- `VaultError::RecipientNotPresent` + `VaultError::CannotRevokeOwner` (+ their `FfiVaultError` +
+  UDL variants), threaded through every workspace match site. The owner-revoke guard is enforced
+  in `revoke_block_recipient` (§4.2 step 4) and pinned by `revoke_block_owner_rejected`.
 - `revoke_block` / `revoke_block_from` bridge wrappers mirroring `share`.
 - `vault-format.md` §6.5 + `crypto-design.md` §7 updated (revocation + forward-secrecy); no format
   version bump.
