@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Lock from './icons/Lock.svelte';
   import { get } from 'svelte/store';
   import { lock } from '../lib/ipc';
   import { sessionState, beginLock, lockFailed } from '../lib/stores';
@@ -23,5 +24,5 @@
 </script>
 
 <button type="button" class="lock-button" onclick={handleClick}>
-  🔒 Lock
+  <Lock />Lock
 </button>

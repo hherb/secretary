@@ -154,4 +154,15 @@ describe('BlockRecipients', () => {
     await fireEvent.click(getByRole('button', { name: /shared with/i }));
     expect(queryByRole('button', { name: /Revoke You/i })).toBeNull();
   });
+
+  it('#180 — toggle aria-controls equals the expanded region id (uuid-derived)', async () => {
+    invokeMock.mockResolvedValueOnce([{ uuidHex: '00', kind: 'owner', displayName: null }]);
+    const { container, getByRole } = render(BlockRecipients, { block });
+    const toggle = await waitFor(() => getByRole('button', { name: /shared with/i }));
+    const controls = toggle.getAttribute('aria-controls');
+    expect(controls).toBe(`recipients-${block.blockUuidHex}`);
+    await fireEvent.click(toggle); // expand so the region renders
+    const region = container.querySelector(`#${controls}`);
+    expect(region).not.toBeNull();
+  });
 });

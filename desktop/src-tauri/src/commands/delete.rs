@@ -26,7 +26,7 @@ use secretary_ffi_bridge::{
 };
 
 use crate::auto_lock::now_ms;
-use crate::commands::shared::parse_uuid_16;
+use crate::commands::shared::{lock_session, parse_uuid_16};
 use crate::commands::vault::block_summary_for;
 use crate::dtos::{BlockSummaryDto, RecordRefDto, TrashedBlockDto};
 use crate::errors::{map_ffi_error, AppError};
@@ -52,16 +52,6 @@ fn map_record_delete_error(e: FfiVaultError) -> AppError {
             }
         }
     }
-}
-
-/// Lock the session mutex, folding poison to `Internal`. Shared by every
-/// `*_impl` below.
-fn lock_session(
-    state: &Mutex<VaultSession>,
-) -> Result<std::sync::MutexGuard<'_, VaultSession>, AppError> {
-    state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })
 }
 
 #[tauri::command]

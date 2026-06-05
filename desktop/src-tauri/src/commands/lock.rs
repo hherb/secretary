@@ -21,6 +21,7 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::shared::lock_session;
 use crate::errors::AppError;
 use crate::session::VaultSession;
 
@@ -72,9 +73,7 @@ pub async fn notify_activity(state: State<'_, Mutex<VaultSession>>) -> Result<()
 /// before this call (so the wrapper knows whether to emit the event),
 /// `false` if it was already locked (idempotent no-op).
 pub fn lock_impl(state: &Mutex<VaultSession>) -> Result<bool, AppError> {
-    let mut session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let mut session = lock_session(state)?;
     let was_unlocked = session.is_unlocked();
     session.lock();
     Ok(was_unlocked)
@@ -86,9 +85,7 @@ pub fn lock_impl(state: &Mutex<VaultSession>) -> Result<bool, AppError> {
 /// acquisition here is the IPC-state mutex, not a vault-state lock; the
 /// session-side locked/unlocked guard happens inside the call.
 pub fn notify_activity_impl(state: &Mutex<VaultSession>) -> Result<(), AppError> {
-    let mut session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let mut session = lock_session(state)?;
     session.notify_activity();
     Ok(())
 }

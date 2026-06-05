@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Contacts pane (spec D.1.7) — reached from the Vault "👤 Contacts" entry.
+  // Contacts pane (spec D.1.7) — reached from the Vault "Contacts" entry.
   // Mirrors TrashView's load/error/empty + loadSeq generation guard. Hosts
   // "Export my card" (PathPicker folder mode → exportContactCard) and the
   // contact list with per-contact delete (warn-but-allow via ConfirmDialog).

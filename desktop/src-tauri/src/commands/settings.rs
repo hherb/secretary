@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 use tauri::State;
 
+use crate::commands::shared::lock_session;
 use crate::dtos::{SettingsDto, SettingsInput};
 use crate::errors::AppError;
 use crate::session::VaultSession;
@@ -33,9 +34,7 @@ pub async fn set_settings(
 /// Testable core for `get_settings`. Explicit `NotUnlocked` error on the
 /// locked path rather than silently returning defaults.
 pub fn get_settings_impl(state: &Mutex<VaultSession>) -> Result<SettingsDto, AppError> {
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     if !session.is_unlocked() {
         return Err(AppError::NotUnlocked);
     }
@@ -50,9 +49,7 @@ pub fn set_settings_impl(
     state: &Mutex<VaultSession>,
     input: &SettingsInput,
 ) -> Result<(), AppError> {
-    let mut session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let mut session = lock_session(state)?;
     let new_settings = Settings::from(input);
     session.set_settings(&new_settings)
 }

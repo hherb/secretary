@@ -9,7 +9,7 @@ use tauri::State;
 use secretary_ffi_bridge::error::FfiVaultError;
 use secretary_ffi_bridge::read_block as bridge_read_block;
 
-use crate::commands::shared::parse_uuid_16;
+use crate::commands::shared::{lock_session, parse_uuid_16};
 use crate::dtos::{BlockDetailDto, RevealedFieldDto};
 use crate::errors::AppError;
 use crate::reveal::{encode_revealed_bytes, locate_record, project_block_detail};
@@ -34,9 +34,7 @@ pub fn read_block_impl(
     include_deleted: bool,
 ) -> Result<BlockDetailDto, AppError> {
     let uuid = parse_uuid_16(block_uuid_hex)?;
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         let output = bridge_read_block(&u.identity, &u.manifest, &uuid).map_err(|e| match e {
             // Now user-reachable (any block card click) — surface a typed
@@ -79,9 +77,7 @@ pub fn reveal_field_impl(
     field_name: &str,
 ) -> Result<RevealedFieldDto, AppError> {
     let uuid = parse_uuid_16(block_uuid_hex)?;
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         let output = bridge_read_block(&u.identity, &u.manifest, &uuid).map_err(|e| match e {
             FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {

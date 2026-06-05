@@ -124,6 +124,23 @@ describe('ContactRow reverse map', () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
+  it('#180 — toggle aria-controls equals the expanded region id (uuid-derived)', async () => {
+    invokeMock.mockResolvedValueOnce([
+      { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 }
+    ]);
+    const { container, getByRole } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
+    const toggle = getByRole('button', { name: /Alice/ });
+    expect(toggle.getAttribute('aria-controls')).toBe(`contact-blocks-${contact.contactUuidHex}`);
+    await fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(container.querySelector(`#contact-blocks-${contact.contactUuidHex}`)).not.toBeNull()
+    );
+  });
+
   it('the delete button does not toggle expand', async () => {
     const onDelete = vi.fn();
     const { getByRole, queryByRole } = render(ContactRow, {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LockKeyhole from '../components/icons/LockKeyhole.svelte';
   import PathPicker from '../components/PathPicker.svelte';
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
   import { unlockWithPassword, getSettings } from '../lib/ipc';
@@ -77,7 +78,7 @@
      visual rules are centralised. -->
 <main class="unlock">
   <div class="unlock__card">
-    <div class="unlock__icon" aria-hidden="true">🔐</div>
+    <div class="unlock__icon" aria-hidden="true"><LockKeyhole size={48} /></div>
     <h1 class="unlock__title">Secretary</h1>
     <p class="unlock__subtitle">Open a vault</p>
 

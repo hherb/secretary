@@ -14,6 +14,7 @@ use tauri::State;
 
 use secretary_ffi_bridge::vault::OpenVaultManifest;
 
+use crate::commands::shared::lock_session;
 use crate::dtos::{BlockSummaryDto, ManifestDto};
 use crate::errors::AppError;
 use crate::session::VaultSession;
@@ -54,9 +55,7 @@ pub async fn get_manifest(state: State<'_, Mutex<VaultSession>>) -> Result<Manif
 ///
 /// [`BlockSummary`]: secretary_ffi_bridge::vault::BlockSummary
 pub fn list_blocks_impl(state: &Mutex<VaultSession>) -> Result<Vec<BlockSummaryDto>, AppError> {
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         let summaries = u.manifest.block_summaries();
         Ok(summaries.iter().map(BlockSummaryDto::from).collect())
@@ -66,9 +65,7 @@ pub fn list_blocks_impl(state: &Mutex<VaultSession>) -> Result<Vec<BlockSummaryD
 /// Testable core for `get_manifest`. Returns a fresh [`ManifestDto`] with
 /// no warnings — see module-level docs for rationale.
 pub fn get_manifest_impl(state: &Mutex<VaultSession>) -> Result<ManifestDto, AppError> {
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         Ok(ManifestDto::from_manifest_with_warnings(
             &u.manifest,

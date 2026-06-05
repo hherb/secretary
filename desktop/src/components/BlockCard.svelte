@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { BlockSummaryDto } from '../lib/ipc';
   import { formatShortDate } from '../lib/format';
+  import Link from './icons/Link.svelte';
+  import Trash from './icons/Trash.svelte';
 
   // onTrash / onShare are optional so browse-only call sites stay unchanged.
   // When supplied, each renders an action alongside the navigable card button.
@@ -31,7 +33,7 @@
       aria-label="Share block"
       onclick={() => onShare(block)}
     >
-      🔗
+      <Link />
     </button>
   {/if}
 
@@ -42,7 +44,7 @@
       aria-label="Trash block"
       onclick={() => onTrash(block)}
     >
-      🗑
+      <Trash />
     </button>
   {/if}
 </div>

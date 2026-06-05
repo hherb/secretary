@@ -20,7 +20,7 @@ use secretary_ffi_bridge::{
 };
 
 use crate::auto_lock::now_ms;
-use crate::commands::shared::parse_uuid_16;
+use crate::commands::shared::{lock_session, parse_uuid_16};
 use crate::dtos::{
     BlockSummaryDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
     RevealedFieldWithNameDto,
@@ -109,9 +109,7 @@ pub fn create_block_impl(
     block_name: &str,
 ) -> Result<BlockSummaryDto, AppError> {
     let block_uuid = new_uuid_16();
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         bridge_create_block(
             &u.identity,
@@ -150,9 +148,7 @@ pub fn save_record_impl(
     let block_uuid = parse_uuid_16(block_uuid_hex)?;
     let content = dto_to_record_content(record)?;
     let record_uuid = new_uuid_16();
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         bridge_append_record(
             &u.identity,
@@ -190,9 +186,7 @@ pub fn save_record_edit_impl(
     let block_uuid = parse_uuid_16(block_uuid_hex)?;
     let record_uuid = parse_uuid_16(record_uuid_hex)?;
     let content = dto_to_record_content(record)?;
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         bridge_edit_record(
             &u.identity,
@@ -229,9 +223,7 @@ pub fn reveal_record_impl(
     record_uuid_hex: &str,
 ) -> Result<RecordRevealDto, AppError> {
     let block_uuid = parse_uuid_16(block_uuid_hex)?;
-    let session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let session = lock_session(state)?;
     session.with_unlocked(|u| {
         let output =
             bridge_read_block(&u.identity, &u.manifest, &block_uuid).map_err(|e| match e {

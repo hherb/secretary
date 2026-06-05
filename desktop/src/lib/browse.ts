@@ -69,3 +69,18 @@ export function back(): void {
 export function resetBrowse(): void {
   store.set({ level: 'blocks' });
 }
+
+// #164 - decide whether an Escape keypress should pop one browse level.
+// Pure so the guard matrix is unit-tested in isolation; Vault.svelte supplies
+// the live level + the two environment booleans. Pops ONLY at the read-only
+// browse levels 'records'/'fields' - never at the root, never at a form level
+// (Esc there would risk discarding unsaved input; those keep their back/Cancel),
+// and never when a dialog or a focused form control already owns Escape.
+export function shouldPopOnEscape(
+  level: BrowseNav['level'],
+  dialogOpen: boolean,
+  inFormControl: boolean
+): boolean {
+  if (dialogOpen || inFormControl) return false;
+  return level === 'records' || level === 'fields';
+}

@@ -5,7 +5,8 @@
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
-  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back } from '../lib/browse';
+  import { get } from 'svelte/store';
+  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back, shouldPopOnEscape } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
   import NewBlock from '../components/edit/NewBlock.svelte';
@@ -14,6 +15,8 @@
   import ContactsPane from '../components/contacts/ContactsPane.svelte';
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
   import ShareDialog from '../components/share/ShareDialog.svelte';
+  import Trash from '../components/icons/Trash.svelte';
+  import Users from '../components/icons/Users.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -59,6 +62,29 @@
       trashError = isAppError(err) ? err : { code: 'internal' };
     }
   }
+
+  // #164 - Esc pops one browse level. Window-level so it works regardless of
+  // focus; the pure guard decides. Vault mounts only when unlocked, so the
+  // Unlock screen is excluded structurally. Native <dialog>s own their own
+  // Esc, so we no-op when one is open; likewise when a form control has focus.
+  function handleKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    const dialogOpen = document.querySelector('dialog[open]') !== null;
+    const el = document.activeElement;
+    const inFormControl =
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement;
+    if (shouldPopOnEscape(get(browseNav).level, dialogOpen, inFormControl)) {
+      e.preventDefault();
+      back();
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if unlocked}
@@ -80,8 +106,8 @@
 
     {#if $browseNav.level === 'blocks'}
       <button type="button" class="vault__new-block" onclick={() => openNewBlock()}>+ New block</button>
-      <button type="button" class="vault__trash-entry" onclick={() => openTrash()}>🗑 Trash</button>
-      <button type="button" class="vault__contacts-entry" onclick={() => openContacts()}>👤 Contacts</button>
+      <button type="button" class="vault__trash-entry" onclick={() => openTrash()}><Trash />Trash</button>
+      <button type="button" class="vault__contacts-entry" onclick={() => openContacts()}><Users />Contacts</button>
       {#if trashError}
         {@const msg = userMessageFor(trashError)}
         <p class="vault__trash-error" role="alert">{msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}</p>
