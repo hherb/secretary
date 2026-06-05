@@ -38,7 +38,10 @@ typed error surfacing.
 - An always-visible per-row **Revoke** control on each non-owner recipient row (BlockRecipients)
   and each block row (ContactRow), gated behind the existing
   [ConfirmDialog](../../../desktop/src/components/delete/ConfirmDialog.svelte).
-- Cross-surface consistency after a successful revoke via `refreshManifest()` plus a local reload.
+- Surface-local refresh after a successful revoke: BlockRecipients reloads its own recipient list;
+  ContactRow refreshes its block list and calls a new `onRevoked()` prop so ContactsPane re-runs
+  `listContacts()` to update the contact's `sharedBlockCount` badge (the established
+  `onDelete`→`load()` convention; no `refreshManifest()`).
 - Tests at every layer (pure helper, IPC wrapper, Rust command, both components).
 
 **Out of scope (deferred)**
@@ -166,9 +169,11 @@ ContactRow), so the helper is framing-agnostic.
 - Click → `pendingRevoke = { recipientUuidHex, label }` → mount `ConfirmDialog` with
   `revokeConfirmCopy(block.blockName, label)`.
 - **Confirm** → `revokeBlockFrom(block.blockUuidHex, recipientUuidHex)` → on success: reload the
-  banner's own recipient list (existing `load()`) **and** `refreshManifest()`; on failure: set the
-  typed `AppError` and render it via `userMessageFor` — **no read-path leniency** (a transient I/O
-  fault is fatal for a mutation, not folded to an empty list).
+  banner's own recipient list (existing `load()`). Nothing else in the records view shows a
+  recipient count, and the records-view block list is unaffected by a revoke (no rename/removal),
+  so **no manifest refresh is needed** — the self-contained `load()` is sufficient. On failure:
+  set the typed `AppError` and render it via `userMessageFor` — **no read-path leniency** (a
+  transient I/O fault is fatal for a mutation, not folded to an empty list).
 - The unknown-recipient rows (`r.kind === 'unknown'`) are revocable like any non-owner recipient
   (a uuid with no local card is still a recipient that can be removed).
 
@@ -177,21 +182,34 @@ ContactRow), so the helper is framing-agnostic.
 - Each block in the expanded block list renders an always-visible Revoke control (the contact is
   never the owner, so every listed block is revocable). `aria-label`:
   `Stop sharing “${block.blockName}” with ${contact.displayName}`.
-- Click → `pendingRevoke = { blockUuidHex, blockName }` → `ConfirmDialog` with
+- New prop `onRevoked: () => void` (passed by ContactsPane), called after a successful revoke so
+  the **parent** re-runs `listContacts()` and the `sharedBlockCount` badge drops — exactly mirroring
+  the existing `onDelete` → `confirmDelete` → `load()` flow. (The badge is `list_contacts`-derived
+  ContactsPane state, **not** manifest state, so a manifest refresh would not update it.)
+- Click → `pendingRevoke = block` → `ConfirmDialog` with
   `revokeConfirmCopy(block.blockName, contact.displayName)`.
-- **Confirm** → `revokeBlockFrom(block.blockUuidHex, contact.contactUuidHex)` → on success:
-  re-fetch this row's block list (drop the `fetched` cache) **and** `refreshManifest()` so the
-  contact's `sharedBlockCount` badge drops; on failure: typed `AppError`, strict surfacing.
+- **Confirm** → `revokeBlockFrom(block.blockUuidHex, contact.contactUuidHex)` → on success: refresh
+  this row's own block list (reset the `fetched` guard and re-run `ensureLoaded()`) **and** call
+  `onRevoked()` so the badge updates; on failure: typed `AppError`, strict surfacing.
 - Revoking a contact's **last** block leaves the contact in the list with a zero count (a contact
   with no shared blocks is still a valid contact — D.1.7 owns contact deletion).
 
 ### 5.3 Refresh / consistency
 
-A revoke drops the uuid from `manifest.BlockEntry.recipients`, so `sharedBlockCount` falls and the
-block's recipient set shrinks. After every successful revoke, the surface does **both**: a local
-reload for immediate feedback, and `refreshManifest()` so cross-surface counts (the ContactsPane
-badges, any open banner) stay consistent. This is the same post-mutation convention `Vault.svelte`
-already uses after create/save/trash — not a new store-level abstraction.
+A revoke shrinks a block's recipient set, which lowers the per-contact `sharedBlockCount` reported
+by `list_contacts`. Refresh is **surface-local**, mirroring existing conventions — no new
+store-level abstraction, and **no `refreshManifest()`** (the manifest store drives the records-view
+block list and is unaffected by a revoke; the contact badge is ContactsPane's `list_contacts`
+state, not manifest state):
+
+- **BlockRecipients** reloads its own recipient list via `load()`.
+- **ContactRow** refreshes its own block list (reset `fetched`, re-run `ensureLoaded()`) and calls
+  `onRevoked()`, which makes **ContactsPane** re-run `load()` (`listContacts`) to update the badge —
+  the same parent-owns-the-refresh shape as the existing per-contact delete.
+
+The two surfaces live in different views (records view vs Contacts pane) and are never mounted
+simultaneously, so there is no live cross-surface staleness to reconcile beyond each surface's own
+reload.
 
 ## 6. Error handling
 
