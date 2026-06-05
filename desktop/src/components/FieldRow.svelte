@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Eye from './icons/Eye.svelte';
+  import EyeOff from './icons/EyeOff.svelte';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import { revealField, isAppError, type FieldMetaDto } from '../lib/ipc';
   import { createAutoHideTimer } from '../lib/reveal';
@@ -91,10 +93,10 @@
 
   {#if revealed === null}
     <span class="field-row__masked">{field.isBytes ? 'binary' : '••••••••'}</span>
-    <button type="button" class="field-row__btn" aria-label={`reveal ${field.name}`} onclick={reveal} disabled={busy}>👁</button>
+    <button type="button" class="field-row__btn" aria-label={`reveal ${field.name}`} onclick={reveal} disabled={busy}><Eye /></button>
   {:else}
     <code class="field-row__value">{revealed}{isTextValue ? '' : ' (base64)'}</code>
-    <button type="button" class="field-row__btn" aria-label={`hide ${field.name}`} onclick={mask}>🙈</button>
+    <button type="button" class="field-row__btn" aria-label={`hide ${field.name}`} onclick={mask}><EyeOff /></button>
     <button type="button" class="field-row__btn" aria-label={`copy ${field.name}`} onclick={copy}>⧉</button>
   {/if}
 
