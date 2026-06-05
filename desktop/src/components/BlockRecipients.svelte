@@ -80,12 +80,13 @@
       type="button"
       class="block-recipients__toggle"
       aria-expanded={expanded}
+      aria-controls={`recipients-${block.blockUuidHex}`}
       onclick={() => (expanded = !expanded)}
     >
       Shared with: {summary} {expanded ? '▴' : '▾'}
     </button>
     {#if expanded}
-      <ul class="block-recipients__list">
+      <ul class="block-recipients__list" id={`recipients-${block.blockUuidHex}`}>
         {#each recipients as r (r.uuidHex)}
           <li class="block-recipients__row" class:block-recipients__row--unknown={r.kind === 'unknown'}>
             <span class="block-recipients__label">{recipientLabel(r)}</span>

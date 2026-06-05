@@ -84,6 +84,7 @@
       type="button"
       class="contact-card-row__toggle"
       aria-expanded={expanded}
+      aria-controls={`contact-blocks-${contact.contactUuidHex}`}
       onclick={toggle}
     >
       <span class="contact-card-row__name">{contact.displayName}</span>
@@ -96,34 +97,36 @@
   </div>
 
   {#if expanded}
-    {#if error}
-      {@const msg = userMessageFor(error)}
-      <p class="contact-blocks__error" role="alert">
-        {msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}
-      </p>
-    {:else if loading || blocks === null}
-      <p class="contact-blocks__loading">Loading blocks…</p>
-    {:else if blocks.length === 0}
-      <p class="contact-blocks__empty">No shared blocks.</p>
-    {:else}
-      <ul class="contact-blocks__list">
-        {#each blocks as b (b.blockUuidHex)}
-          <li class="contact-blocks__row">
-            <button type="button" class="contact-blocks__item" onclick={() => openBlock(b)}>
-              {b.blockName}
-            </button>
-            <button
-              type="button"
-              class="contact-blocks__revoke"
-              aria-label={`Stop sharing “${b.blockName}” with ${contact.displayName}`}
-              onclick={() => (pendingRevoke = b)}
-            >
-              ✕
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <div id={`contact-blocks-${contact.contactUuidHex}`}>
+      {#if error}
+        {@const msg = userMessageFor(error)}
+        <p class="contact-blocks__error" role="alert">
+          {msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}
+        </p>
+      {:else if loading || blocks === null}
+        <p class="contact-blocks__loading">Loading blocks…</p>
+      {:else if blocks.length === 0}
+        <p class="contact-blocks__empty">No shared blocks.</p>
+      {:else}
+        <ul class="contact-blocks__list">
+          {#each blocks as b (b.blockUuidHex)}
+            <li class="contact-blocks__row">
+              <button type="button" class="contact-blocks__item" onclick={() => openBlock(b)}>
+                {b.blockName}
+              </button>
+              <button
+                type="button"
+                class="contact-blocks__revoke"
+                aria-label={`Stop sharing "${b.blockName}" with ${contact.displayName}`}
+                onclick={() => (pendingRevoke = b)}
+              >
+                ✕
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
   {/if}
 
   {#if pendingRevoke}
