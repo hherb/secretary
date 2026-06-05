@@ -7,16 +7,25 @@
   // Caches the fetched list for the component's lifetime; assumes one instance
   // per contactUuidHex — ContactsPane's keyed {#each} is the invalidation
   // mechanism (a new uuid remounts the row).
-  import { listContactBlocks, isAppError, type BlockSummaryDto, type ContactSummaryDto } from '../../lib/ipc';
+  import {
+    listContactBlocks,
+    revokeBlockFrom,
+    isAppError,
+    type BlockSummaryDto,
+    type ContactSummaryDto
+  } from '../../lib/ipc';
   import { sortBlocks } from '../../lib/blocks';
   import { openBlock } from '../../lib/browse';
+  import { revokeConfirmCopy } from '../../lib/revoke';
   import { userMessageFor, type AppError } from '../../lib/errors';
+  import ConfirmDialog from '../delete/ConfirmDialog.svelte';
 
   type Props = {
     contact: ContactSummaryDto;
     onDelete: (c: ContactSummaryDto) => void;
+    onRevoked: () => void;
   };
-  let { contact, onDelete }: Props = $props();
+  let { contact, onDelete, onRevoked }: Props = $props();
 
   const blocksLabel = $derived(
     contact.sharedBlockCount === 1
@@ -50,6 +59,23 @@
     expanded = !expanded;
     if (expanded) void ensureLoaded();
   }
+
+  let pendingRevoke = $state<BlockSummaryDto | null>(null);
+
+  async function confirmRevoke() {
+    const target = pendingRevoke;
+    pendingRevoke = null;
+    if (!target) return;
+    error = null;
+    try {
+      await revokeBlockFrom(target.blockUuidHex, contact.contactUuidHex);
+      fetched = false; // drop the lazy-fetch cache so the list re-loads fresh
+      await ensureLoaded();
+      onRevoked(); // parent re-runs listContacts → sharedBlockCount badge drops
+    } catch (e) {
+      error = isAppError(e) ? e : { code: 'internal' };
+    }
+  }
 </script>
 
 <div class="contact-card">
@@ -82,13 +108,32 @@
     {:else}
       <ul class="contact-blocks__list">
         {#each blocks as b (b.blockUuidHex)}
-          <li>
+          <li class="contact-blocks__row">
             <button type="button" class="contact-blocks__item" onclick={() => openBlock(b)}>
               {b.blockName}
+            </button>
+            <button
+              type="button"
+              class="contact-blocks__revoke"
+              aria-label={`Stop sharing “${b.blockName}” with ${contact.displayName}`}
+              onclick={() => (pendingRevoke = b)}
+            >
+              ✕
             </button>
           </li>
         {/each}
       </ul>
     {/if}
+  {/if}
+
+  {#if pendingRevoke}
+    {@const copy = revokeConfirmCopy(pendingRevoke.blockName, contact.displayName)}
+    <ConfirmDialog
+      title={copy.title}
+      body={copy.body}
+      confirmLabel={copy.confirmLabel}
+      onConfirm={confirmRevoke}
+      onCancel={() => (pendingRevoke = null)}
+    />
   {/if}
 </div>

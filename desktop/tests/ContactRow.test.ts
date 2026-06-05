@@ -14,6 +14,7 @@ import ContactRow from '../src/components/contacts/ContactRow.svelte';
 
 const contact = { contactUuidHex: 'abcd', displayName: 'Alice', sharedBlockCount: 2 };
 const noDelete = () => {};
+const noRevoke = () => {};
 
 describe('ContactRow reverse map', () => {
   beforeEach(() => {
@@ -26,7 +27,11 @@ describe('ContactRow reverse map', () => {
       { blockUuidHex: 'b2', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 },
       { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 }
     ]);
-    const { getByRole, getByText, queryByText } = render(ContactRow, { contact, onDelete: noDelete });
+    const { getByRole, getByText, queryByText } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
 
     // Not fetched until expanded.
     expect(invokeMock).not.toHaveBeenCalled();
@@ -45,7 +50,11 @@ describe('ContactRow reverse map', () => {
     invokeMock.mockResolvedValueOnce([
       { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 }
     ]);
-    const { getByRole, getByText } = render(ContactRow, { contact, onDelete: noDelete });
+    const { getByRole, getByText } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
     const toggle = getByRole('button', { name: /Alice/ });
 
     await fireEvent.click(toggle); // expand → fetch
@@ -59,7 +68,11 @@ describe('ContactRow reverse map', () => {
   it('clicking a block calls openBlock with that block', async () => {
     const block = { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 };
     invokeMock.mockResolvedValueOnce([block]);
-    const { getByRole, getByText } = render(ContactRow, { contact, onDelete: noDelete });
+    const { getByRole, getByText } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
 
     await fireEvent.click(getByRole('button', { name: /Alice/ }));
     await waitFor(() => expect(getByText('Cards')).toBeTruthy());
@@ -72,7 +85,8 @@ describe('ContactRow reverse map', () => {
     invokeMock.mockResolvedValueOnce([]);
     const { getByRole, getByText } = render(ContactRow, {
       contact: { contactUuidHex: 'ee', displayName: 'Eve', sharedBlockCount: 0 },
-      onDelete: noDelete
+      onDelete: noDelete,
+      onRevoked: noRevoke
     });
     await fireEvent.click(getByRole('button', { name: /Eve/ }));
     await waitFor(() => expect(getByText(/No shared blocks/i)).toBeTruthy());
@@ -80,7 +94,11 @@ describe('ContactRow reverse map', () => {
 
   it('surfaces an error when the fetch rejects', async () => {
     invokeMock.mockRejectedValueOnce({ code: 'internal' });
-    const { getByRole, findByRole } = render(ContactRow, { contact, onDelete: noDelete });
+    const { getByRole, findByRole } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
     await fireEvent.click(getByRole('button', { name: /Alice/ }));
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/internal error/i);
@@ -92,7 +110,11 @@ describe('ContactRow reverse map', () => {
       .mockResolvedValueOnce([
         { blockUuidHex: 'b1', blockName: 'Cards', createdAtMs: 0, lastModifiedMs: 0 }
       ]);
-    const { getByRole, findByRole, findByText } = render(ContactRow, { contact, onDelete: noDelete });
+    const { getByRole, findByRole, findByText } = render(ContactRow, {
+      contact,
+      onDelete: noDelete,
+      onRevoked: noRevoke
+    });
     const toggle = getByRole('button', { name: /Alice/ });
     await fireEvent.click(toggle); // expand → error
     await findByRole('alert');
@@ -104,10 +126,71 @@ describe('ContactRow reverse map', () => {
 
   it('the delete button does not toggle expand', async () => {
     const onDelete = vi.fn();
-    const { getByRole, queryByRole } = render(ContactRow, { contact, onDelete });
+    const { getByRole, queryByRole } = render(ContactRow, {
+      contact,
+      onDelete,
+      onRevoked: noRevoke
+    });
     await fireEvent.click(getByRole('button', { name: /^Delete$/ }));
     expect(onDelete).toHaveBeenCalledWith(contact);
     expect(invokeMock).not.toHaveBeenCalled(); // expand did not trigger a fetch
     expect(queryByRole('list')).toBeNull();
+  });
+
+  it('revokes a block from the contact, reloads, and notifies the parent', async () => {
+    const onRevoked = vi.fn();
+    invokeMock
+      .mockResolvedValueOnce([
+        { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+      ]) // ensureLoaded: contact's blocks
+      .mockResolvedValueOnce(undefined) // revoke_block_from
+      .mockResolvedValueOnce([]); // reload after revoke (now empty)
+
+    const contact = { contactUuidHex: 'c1', displayName: 'Alice', sharedBlockCount: 1 };
+    const { getByRole, getByText } = render(ContactRow, {
+      contact,
+      onDelete: vi.fn(),
+      onRevoked
+    });
+
+    await fireEvent.click(getByRole('button', { name: /receives 1 block/i })); // expand
+    await waitFor(() => expect(getByText('Logins')).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: /Stop sharing .*Logins.* with Alice/i }));
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('revoke_block_from', {
+        blockUuidHex: 'b1',
+        recipientUuidHex: 'c1'
+      })
+    );
+    await waitFor(() => expect(onRevoked).toHaveBeenCalled());
+  });
+
+  it('surfaces a typed error when a revoke rejects, without notifying the parent', async () => {
+    const onRevoked = vi.fn();
+    invokeMock
+      .mockResolvedValueOnce([
+        { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+      ]) // ensureLoaded: contact's blocks
+      .mockRejectedValueOnce({ code: 'recipient_not_present' }); // revoke_block_from fails
+
+    const contact = { contactUuidHex: 'c1', displayName: 'Alice', sharedBlockCount: 1 };
+    const { getByRole, getByText, findByRole } = render(ContactRow, {
+      contact,
+      onDelete: vi.fn(),
+      onRevoked
+    });
+
+    await fireEvent.click(getByRole('button', { name: /receives 1 block/i })); // expand
+    await waitFor(() => expect(getByText('Logins')).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Stop sharing .*Logins.* with Alice/i }));
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    // The typed error is surfaced; the parent badge is NOT refreshed on failure.
+    const alert = await findByRole('alert');
+    expect(alert.textContent).toMatch(/no longer a recipient/i);
+    expect(onRevoked).not.toHaveBeenCalled();
   });
 });
