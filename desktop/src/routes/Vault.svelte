@@ -5,7 +5,8 @@
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
-  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back } from '../lib/browse';
+  import { get } from 'svelte/store';
+  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back, shouldPopOnEscape } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
   import NewBlock from '../components/edit/NewBlock.svelte';
@@ -61,6 +62,29 @@
       trashError = isAppError(err) ? err : { code: 'internal' };
     }
   }
+
+  // #164 - Esc pops one browse level. Window-level so it works regardless of
+  // focus; the pure guard decides. Vault mounts only when unlocked, so the
+  // Unlock screen is excluded structurally. Native <dialog>s own their own
+  // Esc, so we no-op when one is open; likewise when a form control has focus.
+  function handleKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    const dialogOpen = document.querySelector('dialog[open]') !== null;
+    const el = document.activeElement;
+    const inFormControl =
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement;
+    if (shouldPopOnEscape(get(browseNav).level, dialogOpen, inFormControl)) {
+      e.preventDefault();
+      back();
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if unlocked}

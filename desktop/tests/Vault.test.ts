@@ -8,13 +8,14 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import Vault from '../src/routes/Vault.svelte';
 import {
   beginUnlock,
   unlockSucceeded,
   _resetSessionStateForTest
 } from '../src/lib/stores';
-import { openBlock, resetBrowse } from '../src/lib/browse';
+import { openBlock, resetBrowse, browseNav } from '../src/lib/browse';
 import type { ManifestDto, SettingsDto, BlockSummaryDto } from '../src/lib/ipc';
 import type { AppWarning } from '../src/lib/errors';
 
@@ -221,6 +222,41 @@ describe('Vault.svelte — defensive non-unlocked render', () => {
     // on `manifest` access.
     const { container } = render(Vault);
     expect(container.querySelector('.vault')).toBeNull();
+  });
+});
+
+describe('Vault.svelte — #164 Esc pops a browse level', () => {
+  it('Escape at records pops to blocks', async () => {
+    const block = blockFixture('B', 'ab');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    render(Vault);
+    openBlock(block);
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await waitFor(() => expect(get(browseNav).level).toBe('blocks'));
+  });
+
+  it('Escape at blocks is a no-op (nothing to pop)', async () => {
+    unlockWith(manifestFixture({ blocks: [blockFixture('B', 'ab')] }));
+    render(Vault);
+    expect(get(browseNav).level).toBe('blocks');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(get(browseNav).level).toBe('blocks');
+  });
+
+  it('Escape with the settings dialog open closes only the dialog (no pop)', async () => {
+    const block = blockFixture('B', 'ab');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    const { getByRole } = render(Vault);
+    openBlock(block);
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /settings/i }));
+    await waitFor(() => expect(document.querySelector('dialog[open]')).toBeTruthy());
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(get(browseNav).level).toBe('records'); // did NOT pop
   });
 });
 
