@@ -18,7 +18,7 @@ use secretary_ffi_bridge::{
     block_recipients as bridge_block_recipients, contact_blocks as bridge_contact_blocks,
     delete_contact_card as bridge_delete, enumerate_contact_cards as bridge_enumerate,
     import_contact_card as bridge_import, owner_card_export as bridge_owner_card_export,
-    share_block_to as bridge_share_block_to,
+    revoke_block_from as bridge_revoke_block_from, share_block_to as bridge_share_block_to,
 };
 
 use crate::auto_lock::now_ms;
@@ -99,6 +99,42 @@ pub fn share_block_impl(
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
         bridge_share_block_to(
+            &u.identity,
+            &u.manifest,
+            block_uuid,
+            recipient_uuid,
+            u.device_uuid,
+            now_ms(),
+        )
+        .map_err(map_ffi_error)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn revoke_block_from(
+    state: State<'_, Mutex<VaultSession>>,
+    block_uuid_hex: String,
+    recipient_uuid_hex: String,
+) -> Result<(), AppError> {
+    revoke_block_from_impl(state.inner(), &block_uuid_hex, &recipient_uuid_hex)
+}
+
+/// Revoke one recipient from a block the unlocked user authored, re-keying for
+/// the remaining recipients. The inverse of [`share_block_impl`]; delegates to
+/// the bridge `revoke_block_from`. `CannotRevokeOwner` / `RecipientNotPresent`
+/// / `NotAuthor` surface as typed [`AppError`]s (D.1.10). The mutation path is
+/// strict — every bridge error is mapped, nothing swallowed.
+pub fn revoke_block_from_impl(
+    state: &Mutex<VaultSession>,
+    block_uuid_hex: &str,
+    recipient_uuid_hex: &str,
+) -> Result<(), AppError> {
+    let block_uuid = parse_uuid_16(block_uuid_hex)?;
+    let recipient_uuid = parse_uuid_16(recipient_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_revoke_block_from(
             &u.identity,
             &u.manifest,
             block_uuid,

@@ -96,6 +96,7 @@ fn main() {
             contacts::list_contacts,
             contacts::import_contact,
             contacts::share_block,
+            contacts::revoke_block_from,
             contacts::export_contact_card,
             contacts::delete_contact_card,
             contacts::block_recipients,
