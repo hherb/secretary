@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-05-d111-revoke-ui-shipped.md
+docs/handoffs/2026-06-05-d112-desktop-polish-shipped.md
