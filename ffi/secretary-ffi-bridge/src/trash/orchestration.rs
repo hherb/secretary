@@ -106,8 +106,9 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
             uuid_hex: hex::encode(block_uuid),
         },
         // The remaining variants either cannot fire from
-        // core::trash_block (e.g. NotAuthor, RecipientAlreadyPresent —
-        // those are share_block-only) or are crypto / encoding failures
+        // core::trash_block (e.g. NotAuthor, RecipientAlreadyPresent,
+        // RecipientNotPresent, CannotRevokeOwner — those are
+        // share/revoke-only) or are crypto / encoding failures
         // on already-validated inputs. All fold to SaveCryptoFailure as
         // the umbrella variant: a typed FfiVaultError variant for each
         // would be drift surface with no foreign-side recovery story.
@@ -126,6 +127,8 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
         | VaultError::ClockOverflow { .. }
         | VaultError::NotAuthor { .. }
         | VaultError::RecipientAlreadyPresent
+        | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
         | VaultError::MissingRecipientCard { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }

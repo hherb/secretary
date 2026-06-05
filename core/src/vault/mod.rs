@@ -47,8 +47,8 @@ pub use manifest::{
 // there via `pub use super::block::VectorClockEntry`). Do NOT add a second
 // re-export here — the type is already re-exported above via block.rs.
 pub use orchestrators::{
-    create_vault, open_vault, read_vault_manifest, restore_block, save_block, share_block,
-    trash_block, OpenVault, Unlocker,
+    create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
+    save_block, share_block, trash_block, OpenVault, Unlocker,
 };
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
@@ -230,6 +230,22 @@ pub enum VaultError {
     /// error.
     #[error("share_block: recipient is already in the block's recipient list")]
     RecipientAlreadyPresent,
+
+    /// The caller asked to revoke a recipient that is not currently a
+    /// recipient of the block (absent from the §6.2 wire table / the
+    /// manifest `BlockEntry.recipients`). Symmetric with
+    /// [`Self::RecipientAlreadyPresent`]. Surfaced by `revoke_block_recipient`.
+    #[error("recipient is not present on the block")]
+    RecipientNotPresent,
+
+    /// The caller asked to revoke the block owner/author. The owner is
+    /// always a recipient of a shareable block (`share_block` decrypts
+    /// under the author's reader identity, `NotARecipient` otherwise),
+    /// so re-keying without them would brick the block — no
+    /// future decrypt-as-author for re-key / re-share. Surfaced by
+    /// `revoke_block_recipient`, which rejects this up-front.
+    #[error("cannot revoke the block owner")]
+    CannotRevokeOwner,
 
     /// [`share_block`] precondition: the supplied `existing_recipients`
     /// list does not include a card whose fingerprint matches a wrap

@@ -112,6 +112,7 @@ pub mod error;
 pub mod identity;
 pub mod record;
 pub mod restore;
+pub mod revoke;
 pub mod save;
 pub mod share;
 mod sync_helpers;
@@ -121,8 +122,8 @@ pub mod vault;
 
 pub use contacts::{
     block_recipients, contact_blocks, delete_contact_card, enumerate_contact_cards,
-    import_contact_card, owner_card_export, share_block_to, ContactSummary, RecipientKind,
-    RecipientSummary,
+    import_contact_card, owner_card_export, revoke_block_from, share_block_to, ContactSummary,
+    RecipientKind, RecipientSummary,
 };
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
 pub use edit::{
@@ -132,6 +133,7 @@ pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use restore::restore_block;
+pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use share::share_block;
 pub use trash::{list_trashed_blocks, trash_block, TrashedBlock};

@@ -19,6 +19,8 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .SaveCryptoFailure: return "SaveCryptoFailure"
     case .NotAuthor: return "NotAuthor"
     case .RecipientAlreadyPresent: return "RecipientAlreadyPresent"
+    case .RecipientNotPresent: return "RecipientNotPresent"
+    case .CannotRevokeOwner: return "CannotRevokeOwner"
     case .MissingRecipientCard: return "MissingRecipientCard"
     case .CardDecodeFailure: return "CardDecodeFailure"
     case .BlockUuidAlreadyLive: return "BlockUuidAlreadyLive"

@@ -248,6 +248,18 @@ fn vault_error_recipient_already_present_from_core_preserves_variant() {
 }
 
 #[test]
+fn vault_error_recipient_not_present_from_core_preserves_variant() {
+    let ffi: FfiVaultError = VaultError::RecipientNotPresent.into();
+    assert!(matches!(ffi, FfiVaultError::RecipientNotPresent));
+}
+
+#[test]
+fn vault_error_cannot_revoke_owner_from_core_preserves_variant() {
+    let ffi: FfiVaultError = VaultError::CannotRevokeOwner.into();
+    assert!(matches!(ffi, FfiVaultError::CannotRevokeOwner));
+}
+
+#[test]
 fn vault_error_missing_recipient_card_display_pins_hex() {
     let e = FfiVaultError::MissingRecipientCard {
         recipient_fingerprint_hex: "cc".repeat(16),

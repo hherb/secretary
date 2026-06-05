@@ -86,7 +86,7 @@ pub fn share_block_to(
 /// `ErrorKind::NotFound` → [`FfiVaultError::ContactNotFound`]; any other IO
 /// error (permissions, transient failure) → [`FfiVaultError::FolderInvalid`]
 /// so a genuine read failure is not misreported as a missing contact.
-fn load_card_bytes(
+pub(crate) fn load_card_bytes(
     contacts_dir: &std::path::Path,
     uuid: &[u8; 16],
 ) -> Result<Vec<u8>, FfiVaultError> {

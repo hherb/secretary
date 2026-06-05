@@ -395,6 +395,16 @@ A block whose recipient table does not include the reading user is unreadable by
 
 Steps 9 and 10 must be atomic-as-a-pair from the user's perspective: a crash between writing the block and updating the manifest leaves the manifest pointing at an old block fingerprint (which fails verification on next read). The recovery path is: detect the inconsistency on next read, re-load the block, re-fingerprint, and offer to update the manifest.
 
+#### 6.5.1 Revocation (removing a recipient)
+
+Revoking a recipient re-keys the block: a fresh `block_content_key` is generated, the block body is re-encrypted under it, and fresh §6.2 recipient entries are produced for the **remaining** recipients only. The revoked recipient's entry is absent from the new §6.2 recipient table, and the manifest `BlockEntry.recipients` drops the revoked contact UUID. The block is written first, then the manifest (§9), and both are re-signed (Ed25519 ∧ ML-DSA-65). The on-disk format is identical to a §6.5 write to a smaller recipient set — there is no new field and no `format_version` bump.
+
+The block owner/author is **always** a recipient (the author must be able to decrypt the block to re-key it — see §6.2, which rejects an owner-less recipient table as malformed) and **cannot** be revoked; an attempt to do so is rejected. Consequently the recipient set is never empty — revoking the last *non-owner* recipient leaves the block owner-only.
+
+**Forward-secrecy boundary.** Revocation protects only block-versions written *after* it. The revoked party may retain plaintext it already decrypted and the prior `block_content_key` it already unwrapped; nothing in this format makes those unrecoverable. A conforming reader holding only the *new* on-disk bytes cannot decrypt as the revoked recipient — no §6.2 entry exists for them under the new `block_content_key`.
+
+Conformance: `revoke_kat::after_block_rekeyed` (`core/tests/python/conformance.py`, stdlib clean-room) and `core/tests/revoke_block.rs::revoke_block_round_trip` / `core/tests/revoke_block.rs::revoke_block_non_recipient_rejected` / `core/tests/revoke_block.rs::revoke_block_owner_rejected` pin this re-key behavior. The Rust always-run guard `core/tests/revoke_kat.rs::revoke_kat_after_block_matches_inputs` and the conformance section both verify, from the committed `core/tests/data/revoke_kat/` fixture alone, that the revoked recipient's §6.2 wrap is gone, the remaining recipient decaps the new `block_content_key` and recovers the expected plaintext, and the body ciphertext changed (a real re-key, not just a table edit).
+
 ---
 
 ## 7. Tombstones and deletion

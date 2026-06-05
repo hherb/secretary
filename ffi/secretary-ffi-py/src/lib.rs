@@ -59,10 +59,11 @@ mod vault;
 
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
-    VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCardDecodeFailure,
-    VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault, VaultFolderInvalid,
-    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
+    VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
+    VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
+    VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
+    VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
+    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
     VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
     WrongPasswordOrCorrupt,
 };
@@ -190,6 +191,14 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultRecipientAlreadyPresent",
         py.get_type::<VaultRecipientAlreadyPresent>(),
+    )?;
+    m.add(
+        "VaultRecipientNotPresent",
+        py.get_type::<VaultRecipientNotPresent>(),
+    )?;
+    m.add(
+        "VaultCannotRevokeOwner",
+        py.get_type::<VaultCannotRevokeOwner>(),
     )?;
     m.add(
         "VaultMissingRecipientCard",

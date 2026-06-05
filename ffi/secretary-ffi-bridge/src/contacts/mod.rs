@@ -27,6 +27,9 @@ pub use contact_blocks::contact_blocks;
 mod share;
 pub use share::share_block_to;
 
+mod revoke;
+pub use revoke::revoke_block_from;
+
 use secretary_core::identity::card::ContactCard;
 
 use crate::error::FfiVaultError;

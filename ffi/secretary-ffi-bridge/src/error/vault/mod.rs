@@ -194,6 +194,18 @@ pub enum FfiVaultError {
     #[error("recipient is already present in the block's recipient set")]
     RecipientAlreadyPresent,
 
+    /// Revoke target is not a current recipient of the block. Mirrors
+    /// [`Self::RecipientAlreadyPresent`]; surfaced by the revoke path.
+    #[error("recipient is not present on the block")]
+    RecipientNotPresent,
+
+    /// The caller asked to revoke the block owner/author, who is always a
+    /// recipient and must remain one. Mirrors
+    /// [`secretary_core::vault::VaultError::CannotRevokeOwner`]; surfaced
+    /// by the revoke path.
+    #[error("cannot revoke the block owner")]
+    CannotRevokeOwner,
+
     /// The caller's `existing_recipient_cards` did not cover every
     /// recipient currently in the block's wire-level recipient table.
     /// `recipient_fingerprint_hex` is the 32-char lowercase hex of the
@@ -316,6 +328,16 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // Block-share dedup failure: caller is trying to add a recipient
             // that already has access. Foreign UX: idempotent.
             VE::RecipientAlreadyPresent => FfiVaultError::RecipientAlreadyPresent,
+
+            // Revoke precondition: caller asked to revoke a recipient that is
+            // not on the block. Mirrors `RecipientAlreadyPresent`; surfaced by
+            // the revoke path.
+            VE::RecipientNotPresent => FfiVaultError::RecipientNotPresent,
+
+            // Revoke precondition: caller asked to revoke the block owner,
+            // who is always a recipient and must remain one. Surfaced by
+            // the revoke path.
+            VE::CannotRevokeOwner => FfiVaultError::CannotRevokeOwner,
 
             // Block-share input shape failure: caller's
             // `existing_recipient_cards` did not cover every recipient on
