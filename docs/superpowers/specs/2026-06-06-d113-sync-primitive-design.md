@@ -127,7 +127,7 @@ pub enum SyncOutcomeDto {
 }
 ```
 
-**State directory.** The public FFI functions resolve the state dir via `cli::state::default_state_dir()` (the same OS-data-dir path the daemon uses), so the desktop and a running `secretary-sync` share one state file. They delegate to internal `sync_status_in(state_dir, ..)` / `sync_vault_in(state_dir, ..)` helpers that take an explicit dir, so tests drive a `TempDir` without polluting `~/Library/Application Support/` — the same injection pattern the bridge/desktop already use (`settings::load_or_create_device_uuid_in`, `VaultSession::new(device_data_dir)`). The test-only dir is **not** part of the public uniffi/pyo3 surface.
+**State directory.** The public FFI functions resolve the state dir via `cli::state::default_state_dir()` (the same OS-data-dir path the daemon uses), so the desktop and a running `secretary-sync` share one state file. They delegate to internal `sync_status_in(state_dir, ..)` / `sync_vault_in(state_dir, ..)` helpers that take an explicit dir, so tests drive a `TempDir` without polluting `~/Library/Application Support/` — the same injection pattern the bridge/desktop already use (`settings::load_or_create_device_uuid_in`, `VaultSession::new(device_data_dir)`). The test-only `*_in` helpers are internal; the public bridge functions take no state-dir argument.
 
 **Lockfile.** `sync_vault` acquires `cli::state::LockfileGuard` before the pass. If a `secretary-sync` daemon (or another desktop call) holds it, return the typed `FfiVaultError::SyncLockHeld` rather than blocking — the UI surfaces "another sync is in progress."
 
@@ -146,13 +146,15 @@ New `FfiVaultError` variants in `ffi/secretary-ffi-bridge/src/error/vault/mod.rs
 | `Vault(VaultError)` | reuse existing `VaultError → FfiVaultError` mapping | — |
 | `InvalidArgument` / `ConflictCopyScanIoFailed` / `Unknown`/`Missing`/`DraftRecordsEmpty` veto invariants | `SyncFailed { #[serde(skip)] detail }` | catch-all internal |
 
-Then, threaded through **every** binding (functions propagated, not just errors — full bridge-thick surface, like D.1.10):
+**Scope correction vs an earlier draft.** D.1.10 (and every contacts function) threaded the new **error variants** through every binding — mandatory, because the cargo-visible exhaustive matches (`From<FfiVaultError>` on the uniffi side, the pyo3 `ffi_vault_error_to_pyerr` match) won't compile until updated — but kept the **functions** bridge-only (`revoke_block` / `revoke_block_from` are **not** in the UDL namespace or pyo3; projecting them is deferred to [#167](https://github.com/hherb/secretary/issues/167)). D.1.13 follows the same precedent: the **desktop consumes `secretary-ffi-bridge` as a Rust crate**, so D.1.14 calls `sync_vault` / `sync_status` directly — no uniffi/pyo3 projection is needed by any current consumer.
 
-- `ffi/secretary-ffi-uniffi/src/secretary.udl` — the two functions + DTO records/enums + the new error variants.
-- pyo3 (`ffi/secretary-ffi-py`) — exhaustive match over the new error variants + the function wrappers.
-- uniffi (`ffi/secretary-ffi-uniffi`) — same.
-- `ffi/secretary-ffi-uniffi/tests/{swift,kotlin}/Conformance*.{swift,kt}` — the conformance error harnesses (cargo/clippy **cannot** see these; only `run_conformance.sh` does — [[project_secretary_ffivaulterror_workspace_match]]).
-- `core/tests/...` KAT-helper exhaustive matches over `FfiVaultError`, if any.
+- **Mandatory (the gauntlet) — thread the new error variants through every exhaustive-match site:**
+  - `ffi/secretary-ffi-bridge/src/error/vault/mod.rs` — the `FfiVaultError` enum (sync errors map in the bridge sync module, not via `From<core::VaultError>`).
+  - `ffi/secretary-ffi-uniffi/src/errors/vault.rs` — the uniffi-side `VaultError` enum + `From<FfiVaultError>` (cargo-visible — must move with the enum or the build breaks).
+  - `ffi/secretary-ffi-py/src/errors.rs` — `create_exception!` + the `ffi_vault_error_to_pyerr` match (cargo-visible).
+  - `ffi/secretary-ffi-uniffi/src/secretary.udl` — the `[Error] interface VaultError { … }` variant list.
+  - `ffi/secretary-ffi-uniffi/tests/{swift,kotlin}/ConformanceErrors.{swift,kt}` — the exhaustive `switch`/`when` (cargo/clippy **cannot** see these; only `run_conformance.sh` does — [[project_secretary_ffivaulterror_workspace_match]]).
+- **Deferred (file a #167-sibling issue):** projecting the `sync_vault` / `sync_status` **functions** onto the uniffi namespace + pyo3, for when a mobile or Python consumer needs sync. The DTOs (`SyncStatusDto` / `SyncOutcomeDto` / `DeviceClockDto`) are therefore **plain Rust bridge types** in this slice, not UDL `dictionary`/`enum` records.
 
 **Clean-room conformance KAT.** Add a scoped `sync_pass` KAT to `core/tests/python/conformance.py` proving the **outcome classification + post-merge clock** cross-language: a JSON fixture of `(disk_clock, local_highest_seen, copy_clocks, has_vetoes)` cases → expected `(SyncPassOutcome, post_clock)`, asserted by a Rust always-run guard (à la `revoke_kat_after_block_matches_inputs`) **and** by a stdlib-only Python replay. This pins the truth-table above without a full crypto replay (the merge math itself is already covered by the 11 `conflict_kat` vectors + the `revoke_kat`).
 
