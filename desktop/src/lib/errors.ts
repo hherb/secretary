@@ -38,6 +38,8 @@ export const APP_ERROR_CODES = [
   'contact_already_exists',
   'contact_not_found',
   'cannot_delete_owner_contact',
+  'recipient_not_present',
+  'cannot_revoke_owner',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -77,6 +79,8 @@ export type AppError =
   | { code: 'contact_already_exists'; contact_uuid_hex: string }
   | { code: 'contact_not_found'; contact_uuid_hex: string }
   | { code: 'cannot_delete_owner_contact' }
+  | { code: 'recipient_not_present' }
+  | { code: 'cannot_revoke_owner' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -205,6 +209,17 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "That's your own card",
         actionHint: 'You can export your card, but it stays in your vault.'
+      };
+    case 'recipient_not_present':
+      return {
+        title: 'No longer a recipient',
+        actionHint:
+          'That contact already does not receive this block — refresh the list and try again.'
+      };
+    case 'cannot_revoke_owner':
+      return {
+        title: "You can't remove yourself",
+        actionHint: 'You are the owner of this block.'
       };
     case 'internal':
       return {
