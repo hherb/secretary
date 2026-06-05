@@ -56,6 +56,9 @@
     try {
       await revokeBlockFrom(block.blockUuidHex, target.uuidHex);
       await load(); // re-fetch this banner's recipient list from disk
+      // load() collapses the banner; re-expand so the list stays open for a
+      // follow-up revoke — matches ContactRow, which keeps its list expanded.
+      expanded = true;
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
     }

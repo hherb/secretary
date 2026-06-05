@@ -97,6 +97,13 @@ describe('BlockRecipients', () => {
         recipientUuidHex: 'a1'
       })
     );
+    // The banner stays expanded after the reload (consistent with ContactRow),
+    // so a follow-up revoke doesn't require re-expanding.
+    await waitFor(() =>
+      expect(getByRole('button', { name: /shared with/i }).getAttribute('aria-expanded')).toBe(
+        'true'
+      )
+    );
   });
 
   it('surfaces a typed error when a revoke rejects (no mutation-path leniency)', async () => {
