@@ -14,6 +14,7 @@ use std::sync::Mutex;
 
 use tauri::State;
 
+use crate::commands::shared::lock_session;
 use crate::dtos::ManifestDto;
 use crate::errors::AppError;
 use crate::secret_arg::Password;
@@ -65,9 +66,7 @@ pub fn unlock_with_password_impl(
     let folder = PathBuf::from(folder_path);
     validate_vault_path(&folder, folder_path)?;
 
-    let mut session = state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })?;
+    let mut session = lock_session(state)?;
 
     session.unlock(&folder, password)?;
 

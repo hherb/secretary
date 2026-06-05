@@ -6,9 +6,7 @@
 //!
 //! Same split as [`super::delete`]: each `#[tauri::command]` wrapper extracts
 //! state + args and delegates to a testable `*_impl` that locks the session and
-//! runs the bridge call inside [`VaultSession::with_unlocked`]. `lock_session`
-//! is defined locally here, mirroring the local copy in `delete.rs` (it is not
-//! yet hoisted into `commands::shared`; see issue #170).
+//! runs the bridge call inside [`VaultSession::with_unlocked`].
 
 use std::sync::Mutex;
 
@@ -22,23 +20,12 @@ use secretary_ffi_bridge::{
 };
 
 use crate::auto_lock::now_ms;
-use crate::commands::shared::parse_uuid_16;
+use crate::commands::shared::{lock_session, parse_uuid_16};
 use crate::dtos::{
     BlockSummaryDto, ContactSummaryDto, ExportedCardDto, ListContactsDto, RecipientDto,
 };
 use crate::errors::{map_ffi_error, AppError};
 use crate::session::VaultSession;
-
-/// Lock the session mutex, folding poison to `Internal`. Shared by every
-/// `*_impl` below. Local copy of the `delete.rs` helper (not yet hoisted into
-/// `commands::shared`; issue #170).
-fn lock_session(
-    state: &Mutex<VaultSession>,
-) -> Result<std::sync::MutexGuard<'_, VaultSession>, AppError> {
-    state.lock().map_err(|e| AppError::Internal {
-        detail: format!("session mutex poisoned: {e}"),
-    })
-}
 
 #[tauri::command]
 pub async fn list_contacts(
