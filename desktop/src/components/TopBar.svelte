@@ -1,5 +1,6 @@
 <script lang="ts">
   import LockButton from './LockButton.svelte';
+  import Settings from './icons/Settings.svelte';
 
   type Props = {
     vaultLabel: string;
@@ -21,7 +22,7 @@
       title="Settings"
       aria-label="Settings"
     >
-      ⚙️ Settings
+      <Settings />Settings
     </button>
     <LockButton />
   </div>

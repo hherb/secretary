@@ -117,7 +117,7 @@
               <button
                 type="button"
                 class="contact-blocks__revoke"
-                aria-label={`Stop sharing "${b.blockName}" with ${contact.displayName}`}
+                aria-label={`Stop sharing “${b.blockName}” with ${contact.displayName}`}
                 onclick={() => (pendingRevoke = b)}
               >
                 ✕
