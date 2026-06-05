@@ -58,7 +58,9 @@
       await load(); // re-fetch this banner's recipient list from disk
       // load() collapses the banner; re-expand so the list stays open for a
       // follow-up revoke — matches ContactRow, which keeps its list expanded.
-      expanded = true;
+      // Only on a clean reload: if load() set an error, leave the banner
+      // collapsed so the re-expand can't fight the error branch.
+      if (!error) expanded = true;
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
     }

@@ -125,6 +125,28 @@ describe('BlockRecipients', () => {
     expect(alert.textContent).toMatch(/no longer a recipient/i);
   });
 
+  it('does not force-expand when the post-revoke reload fails', async () => {
+    invokeMock
+      .mockResolvedValueOnce([
+        { uuidHex: '00', kind: 'owner', displayName: null },
+        { uuidHex: 'a1', kind: 'contact', displayName: 'Alice' }
+      ]) // initial load
+      .mockResolvedValueOnce(undefined) // revoke_block_from succeeds
+      .mockRejectedValueOnce({ code: 'internal' }); // reload fails
+
+    const { getByRole, getByText, findByRole, queryByRole } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i })); // expand
+    await fireEvent.click(getByRole('button', { name: /Revoke Alice/i })); // row ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    // The reload error is surfaced; the banner is not force-expanded into the
+    // error branch (no toggle/list rendered while an error is showing).
+    const alert = await findByRole('alert');
+    expect(alert.textContent).toMatch(/internal error/i);
+    expect(queryByRole('button', { name: /shared with/i })).toBeNull();
+  });
+
   it('renders no revoke control on the owner row', async () => {
     invokeMock.mockResolvedValueOnce([{ uuidHex: '00', kind: 'owner', displayName: null }]);
     const { getByRole, queryByRole, getByText } = render(BlockRecipients, { block });
