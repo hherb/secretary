@@ -3,9 +3,17 @@
   // Loads block_recipients for the current block, shows a collapsed one-line
   // summary, and expands to a per-recipient list. Self-contained load/loadSeq
   // guard keyed by block.blockUuidHex (mirrors RecordList's own pattern).
-  import { listBlockRecipients, isAppError, type BlockSummaryDto, type RecipientDto } from '../lib/ipc';
+  import {
+    listBlockRecipients,
+    revokeBlockFrom,
+    isAppError,
+    type BlockSummaryDto,
+    type RecipientDto
+  } from '../lib/ipc';
   import { sortRecipients, recipientLabel, summarizeRecipients } from '../lib/recipients';
+  import { revokeConfirmCopy } from '../lib/revoke';
   import { userMessageFor, type AppError } from '../lib/errors';
+  import ConfirmDialog from './delete/ConfirmDialog.svelte';
 
   type Props = { block: BlockSummaryDto };
   let { block }: Props = $props();
@@ -37,6 +45,21 @@
   // Collapsed summary: name up to a few resolved recipients, fold the rest of
   // the named ones into "+N more" and unknowns into "+N unknown".
   const summary = $derived(recipients ? summarizeRecipients(recipients) : '');
+
+  let pendingRevoke = $state<RecipientDto | null>(null);
+
+  async function confirmRevoke() {
+    const target = pendingRevoke;
+    pendingRevoke = null;
+    if (!target) return;
+    error = null;
+    try {
+      await revokeBlockFrom(block.blockUuidHex, target.uuidHex);
+      await load(); // re-fetch this banner's recipient list from disk
+    } catch (e) {
+      error = isAppError(e) ? e : { code: 'internal' };
+    }
+  }
 </script>
 
 <div class="block-recipients">
@@ -60,10 +83,31 @@
       <ul class="block-recipients__list">
         {#each recipients as r (r.uuidHex)}
           <li class="block-recipients__row" class:block-recipients__row--unknown={r.kind === 'unknown'}>
-            {recipientLabel(r)}
+            <span class="block-recipients__label">{recipientLabel(r)}</span>
+            {#if r.kind !== 'owner'}
+              <button
+                type="button"
+                class="block-recipients__revoke"
+                aria-label={`Revoke ${recipientLabel(r)}’s access to “${block.blockName}”`}
+                onclick={() => (pendingRevoke = r)}
+              >
+                ✕
+              </button>
+            {/if}
           </li>
         {/each}
       </ul>
     {/if}
+  {/if}
+
+  {#if pendingRevoke}
+    {@const copy = revokeConfirmCopy(block.blockName, recipientLabel(pendingRevoke))}
+    <ConfirmDialog
+      title={copy.title}
+      body={copy.body}
+      confirmLabel={copy.confirmLabel}
+      onConfirm={confirmRevoke}
+      onCancel={() => (pendingRevoke = null)}
+    />
   {/if}
 </div>

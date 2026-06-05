@@ -74,4 +74,55 @@ describe('BlockRecipients', () => {
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/internal error/i);
   });
+
+  it('revokes a non-owner recipient and reloads', async () => {
+    invokeMock
+      .mockResolvedValueOnce([
+        { uuidHex: '00', kind: 'owner', displayName: null },
+        { uuidHex: 'a1', kind: 'contact', displayName: 'Alice' }
+      ]) // initial load
+      .mockResolvedValueOnce(undefined) // revoke_block_from
+      .mockResolvedValueOnce([{ uuidHex: '00', kind: 'owner', displayName: null }]); // reload
+
+    const { getByRole, getByText } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i })); // expand
+
+    await fireEvent.click(getByRole('button', { name: /Revoke Alice/i })); // row ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('revoke_block_from', {
+        blockUuidHex: 'deadbeef',
+        recipientUuidHex: 'a1'
+      })
+    );
+  });
+
+  it('surfaces a typed error when a revoke rejects (no mutation-path leniency)', async () => {
+    invokeMock
+      .mockResolvedValueOnce([
+        { uuidHex: '00', kind: 'owner', displayName: null },
+        { uuidHex: 'a1', kind: 'contact', displayName: 'Alice' }
+      ]) // initial load
+      .mockRejectedValueOnce({ code: 'recipient_not_present' }); // revoke_block_from fails
+
+    const { getByRole, getByText, findByRole } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i })); // expand
+    await fireEvent.click(getByRole('button', { name: /Revoke Alice/i })); // row ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    // The typed error is surfaced, not swallowed or folded to an empty list.
+    const alert = await findByRole('alert');
+    expect(alert.textContent).toMatch(/no longer a recipient/i);
+  });
+
+  it('renders no revoke control on the owner row', async () => {
+    invokeMock.mockResolvedValueOnce([{ uuidHex: '00', kind: 'owner', displayName: null }]);
+    const { getByRole, queryByRole, getByText } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i }));
+    expect(queryByRole('button', { name: /Revoke You/i })).toBeNull();
+  });
 });
