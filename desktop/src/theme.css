@@ -1282,3 +1282,11 @@ body {
   color: var(--color-danger);
 }
 .wizard__error-detail { margin-top: var(--space-1); font-size: var(--font-size-xs); }
+
+/* Vendored inline-SVG icons (#154). currentColor inherits the surrounding
+   text token; vertical-align keeps the glyph centred next to text labels. */
+.icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
