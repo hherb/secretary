@@ -180,3 +180,4 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 
+.claude/settings.local.json
