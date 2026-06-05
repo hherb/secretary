@@ -1238,6 +1238,39 @@ mod contacts_path {
         );
     }
 
+    #[test]
+    fn revoke_block_from_happy_and_typed_errors() {
+        let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
+
+        // Import a fresh peer and share an owner-authored golden block to it.
+        let (_peer_dir, card) = peer_card_file();
+        let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
+            .expect("import peer for revoke test");
+        contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+            .expect("share before revoke");
+
+        // Happy path: revoke the recipient we just shared to.
+        contacts::revoke_block_from_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+            .expect("revoke ok");
+
+        // Revoking the same peer again — no longer a recipient — is a typed error.
+        let err =
+            contacts::revoke_block_from_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
+                .expect_err("revoking a non-recipient must fail");
+        assert!(matches!(err, AppError::RecipientNotPresent), "got {err:?}");
+
+        // Revoking the owner is rejected fail-fast (owner is always a recipient
+        // and cannot be removed; D.1.10 CannotRevokeOwner guard).
+        let manifest = vault::get_manifest_impl(&state).expect("get_manifest");
+        let err = contacts::revoke_block_from_impl(
+            &state,
+            GOLDEN_BLOCK_UUID_HEX,
+            &manifest.owner_user_uuid_hex,
+        )
+        .expect_err("revoking the owner must fail");
+        assert!(matches!(err, AppError::CannotRevokeOwner), "got {err:?}");
+    }
+
     // ── D.1.9 list_contact_blocks ────────────────────────────────────────────
 
     #[test]

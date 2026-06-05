@@ -124,7 +124,7 @@
     <p class="contacts-pane__empty">No contacts imported yet.</p>
   {:else}
     {#each contacts as contact (contact.contactUuidHex)}
-      <ContactRow {contact} onDelete={requestDelete} />
+      <ContactRow {contact} onDelete={requestDelete} onRevoked={load} />
     {/each}
   {/if}
 

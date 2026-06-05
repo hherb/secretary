@@ -273,6 +273,13 @@ export async function shareBlock(blockUuidHex: string, recipientUuidHex: string)
   return call<void>('share_block', { blockUuidHex, recipientUuidHex });
 }
 
+export async function revokeBlockFrom(
+  blockUuidHex: string,
+  recipientUuidHex: string
+): Promise<void> {
+  return call<void>('revoke_block_from', { blockUuidHex, recipientUuidHex });
+}
+
 export async function exportContactCard(destDir: string): Promise<ExportedCardDto> {
   return call<ExportedCardDto>('export_contact_card', { destDir });
 }

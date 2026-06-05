@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-05-d110-revoke-block-recipient-shipped.md
+docs/handoffs/2026-06-05-d111-revoke-ui-shipped.md
