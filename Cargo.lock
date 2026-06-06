@@ -3850,6 +3850,7 @@ dependencies = [
  "notify",
  "predicates",
  "rand",
+ "rand_chacha 0.3.1",
  "rpassword",
  "secretary-core",
  "serde_json",
@@ -3858,6 +3859,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

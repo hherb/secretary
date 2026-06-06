@@ -82,6 +82,33 @@ pub enum RunOutcome {
     RollbackRejected,
 }
 
+/// Outcome of one [`sync_pass_pause_on_conflict`] pass. Mirrors
+/// [`RunOutcome`] for the safe arms, but replaces the always-commit
+/// `MergedAndCommitted` with two outcomes: [`Self::MergedClean`] (a
+/// concurrent state that merged with zero tombstone vetoes, committed) and
+/// [`Self::ConflictsPending`] (a concurrent state whose merge raised
+/// tombstone vetoes — **not** committed; the caller surfaces the count and
+/// defers to interactive resolution).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncPassOutcome {
+    /// Disk clock == local highest-seen. No state mutation, no write.
+    NothingToDo,
+    /// Disk strictly dominates local. `state` advanced; no vault write.
+    AppliedAutomatically,
+    /// Concurrent, `diverging_blocks` empty → silent-merge clock advance.
+    /// `state` advanced; no vault write.
+    SilentMerge,
+    /// Concurrent, `diverging_blocks` non-empty, **zero** vetoes →
+    /// `commit_with_decisions(.., [])` wrote the merged result. `state` advanced.
+    MergedClean,
+    /// Concurrent, `diverging_blocks` non-empty, **non-empty** vetoes →
+    /// nothing committed, `state` NOT advanced. `veto_count` is the number of
+    /// tombstone disputes awaiting a human decision.
+    ConflictsPending { veto_count: usize },
+    /// Disk clock strictly dominated by local (rollback). `state` unchanged.
+    RollbackRejected,
+}
+
 /// Run one sync attempt against `vault_folder` using `identity` for
 /// reads, `password` for the commit-side re-open, and `state` as both
 /// input ("what clock have we already seen?") and output (mutated in
@@ -185,6 +212,68 @@ pub fn run_one(
             Ok(RunOutcome::MergedAndCommitted {
                 vetoes_resolved: vetoes_count,
             })
+        }
+    }
+}
+
+/// Run one sync pass that auto-applies every safe arm and **pauses**
+/// (commits nothing, advances no state) the instant a tombstone veto needs
+/// human judgement. Unlike [`run_one`], it drives no [`crate::veto::VetoUx`]:
+/// the `ConcurrentDetected` arm commits only when the prepared draft has an
+/// empty veto set, and otherwise returns [`SyncPassOutcome::ConflictsPending`]
+/// without writing.
+///
+/// State-mutation contract matches [`run_one`] on the shared arms; on the
+/// `ConflictsPending` arm `state` is byte-identical and the vault unwritten.
+///
+/// # Errors
+/// Any [`SyncError`] from the underlying `sync_once` / `prepare_merge` /
+/// `commit_with_decisions` bubbles up verbatim.
+pub fn sync_pass_pause_on_conflict(
+    vault_folder: &Path,
+    identity: &UnlockedIdentity,
+    password: &SecretBytes,
+    state: &mut SyncState,
+    now_ms: u64,
+) -> Result<SyncPassOutcome, SyncError> {
+    let outcome = sync_once(vault_folder, identity, state, now_ms)?;
+    match outcome {
+        SyncOutcome::NothingToDo => Ok(SyncPassOutcome::NothingToDo),
+        SyncOutcome::AppliedAutomatically { new_state } => {
+            *state = new_state;
+            Ok(SyncPassOutcome::AppliedAutomatically)
+        }
+        SyncOutcome::RollbackRejected(_evidence) => Ok(SyncPassOutcome::RollbackRejected),
+        SyncOutcome::ConcurrentDetected {
+            bundle,
+            plan,
+            manifest_hash: _,
+            disk_vector_clock,
+            local_highest_seen: _,
+        } => {
+            if plan.diverging_blocks.is_empty() {
+                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
+                    .copies
+                    .iter()
+                    .map(|c| c.manifest.vector_clock.as_slice())
+                    .collect();
+                state.highest_vector_clock_seen = silent_merge_clock(
+                    &disk_vector_clock,
+                    &copy_clocks,
+                    &state.highest_vector_clock_seen,
+                );
+                return Ok(SyncPassOutcome::SilentMerge);
+            }
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            if !draft.vetoes.is_empty() {
+                return Ok(SyncPassOutcome::ConflictsPending {
+                    veto_count: draft.vetoes.len(),
+                });
+            }
+            let new_state =
+                commit_with_decisions(vault_folder, password, draft, Vec::new(), now_ms)?;
+            *state = new_state;
+            Ok(SyncPassOutcome::MergedClean)
         }
     }
 }
@@ -415,6 +504,40 @@ mod tests {
         let result = silent_merge_clock(&disk, &copies, &prior);
         // 0xAA: max(1, 5, 3) = 5. 0xBB: max(9, 2, 4) = 9.
         assert_eq!(result, vec![vc(0xAA, 5), vc(0xBB, 9)]);
+    }
+
+    #[test]
+    fn sync_pass_outcome_variants_are_self_equal() {
+        assert_eq!(SyncPassOutcome::NothingToDo, SyncPassOutcome::NothingToDo);
+        assert_eq!(
+            SyncPassOutcome::AppliedAutomatically,
+            SyncPassOutcome::AppliedAutomatically
+        );
+        assert_eq!(SyncPassOutcome::SilentMerge, SyncPassOutcome::SilentMerge);
+        assert_eq!(SyncPassOutcome::MergedClean, SyncPassOutcome::MergedClean);
+        assert_eq!(
+            SyncPassOutcome::RollbackRejected,
+            SyncPassOutcome::RollbackRejected
+        );
+        assert_eq!(
+            SyncPassOutcome::ConflictsPending { veto_count: 3 },
+            SyncPassOutcome::ConflictsPending { veto_count: 3 }
+        );
+    }
+    #[test]
+    fn sync_pass_outcome_conflicts_pending_discriminates_on_count() {
+        assert_ne!(
+            SyncPassOutcome::ConflictsPending { veto_count: 1 },
+            SyncPassOutcome::ConflictsPending { veto_count: 2 }
+        );
+    }
+    #[test]
+    fn sync_pass_outcome_debug_includes_variant_name() {
+        assert!(format!("{:?}", SyncPassOutcome::SilentMerge).contains("SilentMerge"));
+        let c = SyncPassOutcome::ConflictsPending { veto_count: 7 };
+        let dbg = format!("{c:?}");
+        assert!(dbg.contains("ConflictsPending"));
+        assert!(dbg.contains('7'));
     }
 
     /// `Clone` round-trip preserves variant + payload. Pins the

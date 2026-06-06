@@ -78,6 +78,13 @@ tempfile = "=3.27.0"
 # repeatedly, so test inputs that exercise crypto sinks must be
 # runtime-generated (see CLAUDE.md memory `feedback_test_crypto_random_not_hardcoded`).
 rand = "0.9"
+# `rand_chacha` + `zeroize` are dev-only, used by
+# `tests/sync_pass_integration.rs` to rebuild the per-block-divergent
+# veto fixture from public `secretary_core` APIs (deterministic
+# ChaCha20Rng seeding for block/manifest AEAD; zeroizing the exposed
+# Ed25519 secret-key stack copy). Versions track `core/Cargo.toml`.
+rand_chacha = "0.3"
+zeroize = { version = "=1.8.2", features = ["zeroize_derive"] }
 
 [lints]
 workspace = true
