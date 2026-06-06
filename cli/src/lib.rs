@@ -8,13 +8,20 @@
 //!
 //! Spec: [`docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`](../../docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md).
 
-pub mod args;
-pub mod daemon;
 pub mod exit;
-pub mod logging;
 pub mod pipeline;
-pub mod signal;
 pub mod state;
-pub mod unlock;
 pub mod veto;
+
+#[cfg(feature = "daemon")]
+pub mod args;
+#[cfg(feature = "daemon")]
+pub mod daemon;
+#[cfg(feature = "daemon")]
+pub mod logging;
+#[cfg(feature = "daemon")]
+pub mod signal;
+#[cfg(feature = "daemon")]
+pub mod unlock;
+#[cfg(feature = "daemon")]
 pub mod watcher;

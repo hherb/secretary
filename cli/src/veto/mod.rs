@@ -15,6 +15,7 @@
 
 use secretary_core::sync::{RecordTombstoneVeto, VetoDecision};
 
+#[cfg(feature = "daemon")]
 pub mod interactive;
 pub mod noninteractive;
 
