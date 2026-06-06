@@ -142,7 +142,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::CannotDeleteOwnerContact => VaultCannotDeleteOwnerContact::new_err(
             "the vault owner's own contact card cannot be deleted",
         ),
-        FfiVaultError::SyncStateVaultMismatch => VaultSyncStateVaultMismatch::new_err(e.to_string()),
+        FfiVaultError::SyncStateVaultMismatch => {
+            VaultSyncStateVaultMismatch::new_err(e.to_string())
+        }
         FfiVaultError::SyncStateCorrupt { .. } => VaultSyncStateCorrupt::new_err(e.to_string()),
         FfiVaultError::SyncEvidenceStale => VaultSyncEvidenceStale::new_err(e.to_string()),
         FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),

@@ -115,8 +115,8 @@ pub mod restore;
 pub mod revoke;
 pub mod save;
 pub mod share;
-mod sync_helpers;
 pub mod sync;
+mod sync_helpers;
 pub mod trash;
 pub mod unlock;
 pub mod vault;
@@ -137,9 +137,9 @@ pub use restore::restore_block;
 pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use share::share_block;
+pub use sync::{sync_status, sync_vault, DeviceClockDto, SyncOutcomeDto, SyncStatusDto};
 pub use trash::{list_trashed_blocks, trash_block, TrashedBlock};
 pub use unlock::{open_with_password, open_with_recovery};
-pub use sync::{sync_status, DeviceClockDto, SyncStatusDto};
 pub use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
     OpenVaultOutput,

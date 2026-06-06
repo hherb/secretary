@@ -63,10 +63,10 @@ use errors::{
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
     VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
-    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
-    VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt,
-    VaultSyncStateVaultMismatch, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure, VaultSyncEvidenceStale,
+    VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
+    VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
+    WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -252,14 +252,8 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultSyncEvidenceStale",
         py.get_type::<VaultSyncEvidenceStale>(),
     )?;
-    m.add(
-        "VaultSyncInProgress",
-        py.get_type::<VaultSyncInProgress>(),
-    )?;
-    m.add(
-        "VaultSyncFailed",
-        py.get_type::<VaultSyncFailed>(),
-    )?;
+    m.add("VaultSyncInProgress", py.get_type::<VaultSyncInProgress>())?;
+    m.add("VaultSyncFailed", py.get_type::<VaultSyncFailed>())?;
 
     Ok(())
 }

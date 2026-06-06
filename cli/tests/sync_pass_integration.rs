@@ -31,8 +31,8 @@ use secretary_core::unlock::{open_with_password, vault_toml, UnlockedIdentity};
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{
     encode_block_file, encode_manifest_file, encrypt_block, format_uuid_hyphenated, open_vault,
-    sign_manifest, BlockHeader, BlockPlaintext, ManifestHeader, OpenVault, Record, RecordField,
-    RecordFieldValue, RecipientPublicKeys, Unlocker, FILE_KIND_BLOCK,
+    sign_manifest, BlockHeader, BlockPlaintext, ManifestHeader, OpenVault, RecipientPublicKeys,
+    Record, RecordField, RecordFieldValue, Unlocker, FILE_KIND_BLOCK,
 };
 use zeroize::Zeroize as _;
 

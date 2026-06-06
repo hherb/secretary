@@ -3,6 +3,8 @@
 //! are bridge-only — the desktop consumes them as a Rust crate; uniffi/pyo3
 //! projection is deferred (#167-sibling).
 
+pub mod orchestration;
 pub mod status;
 
+pub use orchestration::{sync_vault, SyncOutcomeDto};
 pub use status::{sync_status, DeviceClockDto, SyncStatusDto};

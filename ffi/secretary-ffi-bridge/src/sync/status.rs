@@ -69,18 +69,24 @@ pub(crate) fn sync_status_in(
             counter: e.counter,
         })
         .collect();
-    Ok(SyncStatusDto { has_state, device_clocks, last_state_write_ms })
+    Ok(SyncStatusDto {
+        has_state,
+        device_clocks,
+        last_state_write_ms,
+    })
 }
 
 /// Map `cli::state::StateError` → `FfiVaultError`. Shared with `sync_vault` (Task 5).
 pub(crate) fn map_state_error(e: StateError) -> FfiVaultError {
     match e {
         StateError::VaultUuidMismatch { .. } => FfiVaultError::SyncStateVaultMismatch,
-        StateError::Decode(_) | StateError::Encode(_) => {
-            FfiVaultError::SyncStateCorrupt { detail: e.to_string() }
-        }
+        StateError::Decode(_) | StateError::Encode(_) => FfiVaultError::SyncStateCorrupt {
+            detail: e.to_string(),
+        },
         StateError::LockfileHeld(_) => FfiVaultError::SyncInProgress,
-        StateError::Io(_) => FfiVaultError::SyncFailed { detail: e.to_string() },
+        StateError::Io(_) => FfiVaultError::SyncFailed {
+            detail: e.to_string(),
+        },
     }
 }
 
