@@ -44,7 +44,7 @@ pub fn sync_status(vault_uuid: [u8; 16]) -> Result<SyncStatusDto, FfiVaultError>
 }
 
 /// Crate-internal seam taking an explicit state dir — used by the unit tests
-/// and (Task 5) by `sync_vault`. Mirrors `settings::load_or_create_device_uuid_in`.
+/// and by `sync_vault`. Mirrors `settings::load_or_create_device_uuid_in`.
 pub(crate) fn sync_status_in(
     state_dir: &Path,
     vault_uuid: [u8; 16],
