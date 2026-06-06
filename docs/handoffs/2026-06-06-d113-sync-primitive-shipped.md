@@ -32,6 +32,7 @@ Commits on `feature/d113-sync-primitive` (branched from `main` @ `4e80604`):
 | `dbb7253` | README + ROADMAP D.1.13 ✅; next → D.1.14; issue #187 filed. |
 | `1d7d60d` | final-review nit: sync deferral doc refs → #187. |
 | _(ship)_ | this handoff + symlink retarget. |
+| _(/fixall)_ | post-review: `map_sync_error` made exhaustive (no `_` catch-all → a new `SyncError` variant now fails to compile here); two non-blocking follow-ons filed (#189 lean-binding CI guard, #190 bridge `MergedClean`-under-lock test). |
 
 **Process note:** one worktree (`.worktrees/d113-sync-primitive`), one reviewed commit per task + inline review-fix amends. Every per-task spec + quality finding fixed before proceeding. Two plan-improvements applied during execution (both documented): the implementers found **2 exhaustive-match sites the plan missed** (`desktop AppError`, `core/tests/conformance_kat_helpers`) and threaded them; `sync_vault` gained a caller-supplied `now_ms` (vs the plan's hardcoded 0) so the `MergedClean` merge timestamp is real. Spec: [docs/superpowers/specs/2026-06-06-d113-sync-primitive-design.md](../superpowers/specs/2026-06-06-d113-sync-primitive-design.md); plan: [docs/superpowers/plans/2026-06-06-d113-sync-primitive.md](../superpowers/plans/2026-06-06-d113-sync-primitive.md).
 
@@ -115,9 +116,9 @@ git worktree prune && git worktree list
 - **Branch on close:** `main` @ `4e80604`. `feature/d113-sync-primitive` carries the spec + plan + 7 task commits + the doc-ref nit + the ship commit (this handoff + symlink). Squash-merge collapses to one commit on `main`.
 - **Automated gauntlet:** green across the workspace (Rust test/clippy/fmt, desktop build, conformance.py incl. sync_pass_kat, freshness, Swift+Kotlin 22/22, lean-binding check).
 - **Final whole-branch review:** **APPROVE TO MERGE** — zero Critical/Important; the sole Minor (doc refs → #187) fixed in `1d7d60d`.
-- **PR:** not yet opened. **No outstanding gate** (headless slice).
+- **PR:** [#188](https://github.com/hherb/secretary/pull/188) open. **No outstanding gate** (headless slice).
 - **README.md / ROADMAP.md:** D.1.13 ✅ shipped 2026-06-06; "next" advanced to D.1.14.
 - **CLAUDE.md / `docs/adr/`:** unchanged (no new architecture decision; no on-disk-format/crypto change).
-- **Issues:** **#187** filed (project sync onto uniffi/pyo3, deferred); **#186** filed (dedup bridge test helpers). #161/#162/#167 stay open.
+- **Issues:** **#187** filed (project sync onto uniffi/pyo3, deferred); **#186** filed (dedup bridge test helpers); **#189** (lean-binding CI guard — no notify/clap in mobile bindings; awaits a CI workflow) + **#190** (bridge `MergedClean`-under-lock test) filed post-review. #161/#162/#167 stay open.
 - **NEXT_SESSION.md:** symlink retargeted to this file.
 - **This file:** the live D.1.13 ship baton. The next slice opens with `docs/handoffs/<date>-d114-*.md`.

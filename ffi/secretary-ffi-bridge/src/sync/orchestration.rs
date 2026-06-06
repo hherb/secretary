@@ -145,13 +145,19 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         }
         SyncError::EvidenceStale => FfiVaultError::SyncEvidenceStale,
         SyncError::Vault(ve) => ve.into(),
-        // The remaining SyncError variants (InvalidArgument, ConflictCopyScanIoFailed,
-        // UnknownVetoDecision, MissingVetoDecision, EmptyDraftWithVetoes) are all
-        // internal-consistency guards the caller cannot act on — they fold to the
-        // generic SyncFailed. If a future SyncError variant IS caller-actionable,
-        // add an explicit arm above this catch-all.
-        other => FfiVaultError::SyncFailed {
-            detail: other.to_string(),
+        // The remaining SyncError variants are internal-consistency guards the
+        // caller cannot act on — they fold to the generic SyncFailed. Listed
+        // EXHAUSTIVELY (no `_` catch-all) on purpose: when a future SyncError
+        // variant is added, this match fails to compile, forcing a deliberate
+        // triage decision (is the new variant caller-actionable → its own arm,
+        // or another opaque guard → add it here) rather than silently folding
+        // it to SyncFailed.
+        SyncError::InvalidArgument { .. }
+        | SyncError::ConflictCopyScanIoFailed { .. }
+        | SyncError::UnknownVetoDecision { .. }
+        | SyncError::MissingVetoDecision { .. }
+        | SyncError::EmptyDraftWithVetoes => FfiVaultError::SyncFailed {
+            detail: e.to_string(),
         },
     }
 }
