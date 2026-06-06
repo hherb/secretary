@@ -274,6 +274,38 @@ pub enum FfiVaultError {
     /// the owner, but the primitive refuses it regardless. Spec §3, §5.
     #[error("the vault owner's own contact card cannot be deleted")]
     CannotDeleteOwnerContact,
+
+    /// The on-disk `SyncState` cache (`<state-dir>/<vault_uuid>.state.cbor`)
+    /// is for a different vault than the one being synced.
+    #[error("sync state file belongs to a different vault")]
+    SyncStateVaultMismatch,
+
+    /// The `SyncState` CBOR could not be decoded or re-encoded — the local
+    /// sync cache is corrupt. The vault itself is untouched.
+    #[error("sync state cache is corrupt: {detail}")]
+    SyncStateCorrupt {
+        /// Diagnostic text (clock metadata only); kept off the wire for
+        /// consistency with the other `detail` variants.
+        detail: String,
+    },
+
+    /// A concurrent writer changed the canonical manifest between the read and
+    /// the commit of a sync pass. No write occurred; retry the pass.
+    #[error("vault changed on disk during sync; retry")]
+    SyncEvidenceStale,
+
+    /// Another process (a `secretary-sync` daemon, or a second client) holds
+    /// the per-vault sync lockfile. No write occurred.
+    #[error("another sync is already in progress for this vault")]
+    SyncInProgress,
+
+    /// A sync pass failed for an internal/unexpected reason (argument or
+    /// invariant violation, conflict-copy scan I/O, etc.). The vault is unchanged.
+    #[error("sync failed: {detail}")]
+    SyncFailed {
+        /// Diagnostic text. Free-form; not part of the API contract.
+        detail: String,
+    },
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {

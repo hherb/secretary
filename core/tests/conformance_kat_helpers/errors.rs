@@ -25,6 +25,11 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::ContactAlreadyExists { .. } => "ContactAlreadyExists",
         E::ContactNotFound { .. } => "ContactNotFound",
         E::CannotDeleteOwnerContact => "CannotDeleteOwnerContact",
+        E::SyncStateVaultMismatch => "SyncStateVaultMismatch",
+        E::SyncStateCorrupt { .. } => "SyncStateCorrupt",
+        E::SyncEvidenceStale => "SyncEvidenceStale",
+        E::SyncInProgress => "SyncInProgress",
+        E::SyncFailed { .. } => "SyncFailed",
     }
 }
 

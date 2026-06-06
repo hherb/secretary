@@ -92,6 +92,26 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::CannotDeleteOwnerContact`.
     #[error("the vault owner's own contact card cannot be deleted")]
     CannotDeleteOwnerContact,
+    /// The on-disk `SyncState` cache is for a different vault than the one being synced.
+    /// Mirrors `FfiVaultError::SyncStateVaultMismatch`.
+    #[error("sync state file belongs to a different vault")]
+    SyncStateVaultMismatch,
+    /// The `SyncState` CBOR failed to decode or re-encode; local cache is corrupt, vault untouched.
+    /// Mirrors `FfiVaultError::SyncStateCorrupt`.
+    #[error("sync state cache is corrupt: {detail}")]
+    SyncStateCorrupt { detail: String },
+    /// A concurrent writer changed the manifest mid-pass; no write occurred, retry.
+    /// Mirrors `FfiVaultError::SyncEvidenceStale`.
+    #[error("vault changed on disk during sync; retry")]
+    SyncEvidenceStale,
+    /// Another process holds the per-vault sync lockfile; no write occurred.
+    /// Mirrors `FfiVaultError::SyncInProgress`.
+    #[error("another sync is already in progress for this vault")]
+    SyncInProgress,
+    /// Internal or unexpected sync failure; vault unchanged.
+    /// Mirrors `FfiVaultError::SyncFailed`.
+    #[error("sync failed: {detail}")]
+    SyncFailed { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -131,6 +151,11 @@ impl From<FfiVaultError> for VaultError {
             }
             FfiVaultError::ContactNotFound { uuid_hex } => VaultError::ContactNotFound { uuid_hex },
             FfiVaultError::CannotDeleteOwnerContact => VaultError::CannotDeleteOwnerContact,
+            FfiVaultError::SyncStateVaultMismatch => VaultError::SyncStateVaultMismatch,
+            FfiVaultError::SyncStateCorrupt { detail } => VaultError::SyncStateCorrupt { detail },
+            FfiVaultError::SyncEvidenceStale => VaultError::SyncEvidenceStale,
+            FfiVaultError::SyncInProgress => VaultError::SyncInProgress,
+            FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed { detail },
         }
     }
 }
