@@ -1,0 +1,16 @@
+{
+  "schema": "sync_pass_kat/v1",
+  "comment": [
+    "Pure clock-classification vectors for sync_pass_pause_on_conflict. No crypto; the per-record merge math is covered separately by conflict_kat.",
+    "Each device_uuid is encoded as a single-byte hex fill (e.g. 'aa' expands to the 16-byte value 0xAA...AA); this keeps cases compact while remaining unambiguous.",
+    "clock_relation is called as clock_relation(local_seen, disk_clock); variant names are from the disk (incoming) perspective: Equal->NothingToDo, IncomingDominates->AppliedAutomatically, IncomingDominated->RollbackRejected, Concurrent->{SilentMerge|MergedClean|ConflictsPending}."
+  ],
+  "cases": [
+    {"name": "equal_clocks_nothing_to_do", "disk_clock": [["aa", 5]], "local_seen": [["aa", 5]], "copy_clocks": [], "diverging_blocks": 0, "veto_count": 0, "expected_outcome": "NothingToDo", "expected_post_clock": [["aa", 5]]},
+    {"name": "disk_dominates_fast_forward", "disk_clock": [["aa", 7]], "local_seen": [["aa", 5]], "copy_clocks": [], "diverging_blocks": 0, "veto_count": 0, "expected_outcome": "AppliedAutomatically", "expected_post_clock": [["aa", 7]]},
+    {"name": "concurrent_no_diverging_silent_merge_folds_copy", "disk_clock": [["aa", 5]], "local_seen": [["bb", 2]], "copy_clocks": [[["aa", 7], ["cc", 2]]], "diverging_blocks": 0, "veto_count": 0, "expected_outcome": "SilentMerge", "expected_post_clock": [["aa", 7], ["bb", 2], ["cc", 2]]},
+    {"name": "concurrent_diverging_zero_vetoes_merged_clean", "disk_clock": [["aa", 5], ["bb", 1]], "local_seen": [["bb", 3]], "copy_clocks": [], "diverging_blocks": 1, "veto_count": 0, "expected_outcome": "MergedClean", "expected_post_clock": [["aa", 5], ["bb", 3]]},
+    {"name": "concurrent_diverging_with_vetoes_pauses", "disk_clock": [["aa", 5]], "local_seen": [["bb", 3]], "copy_clocks": [], "diverging_blocks": 1, "veto_count": 2, "expected_outcome": "ConflictsPending", "expected_post_clock": null},
+    {"name": "disk_dominated_rollback_rejected", "disk_clock": [["aa", 3]], "local_seen": [["aa", 5]], "copy_clocks": [], "diverging_blocks": 0, "veto_count": 0, "expected_outcome": "RollbackRejected", "expected_post_clock": null}
+  ]
+}
