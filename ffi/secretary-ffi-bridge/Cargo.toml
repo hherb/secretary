@@ -10,6 +10,12 @@ workspace = true
 
 [dependencies]
 secretary-core = { path = "../../core" }
+# `secretary-cli` provides the sync orchestration (pipeline::sync_pass_*) and
+# the single-source SyncState CBOR + lockfile persistence (state::*). Pulled
+# with default-features=false so the daemon deps (notify/clap) are NOT compiled
+# into this bridge or the mobile bindings beneath it. See the cli `daemon`
+# feature (cli/Cargo.toml) + the D.1.13 spec §"Code layering".
+secretary-cli = { path = "../../cli", default-features = false }
 # `rand_core::OsRng` feeds the OS CSPRNG into core's `create_vault`. Match
 # the version pinned in core/Cargo.toml so we share the lock entry. The
 # `getrandom` feature is required to enable the `OsRng` type.
