@@ -63,7 +63,8 @@ use errors::{
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
     VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
-    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
+    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure, VaultSyncEvidenceStale,
+    VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
     VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
     WrongPasswordOrCorrupt,
 };
@@ -236,6 +237,23 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultCannotDeleteOwnerContact",
         py.get_type::<VaultCannotDeleteOwnerContact>(),
     )?;
+
+    // D.1.13 sync error surface — 5 typed exception classes mirroring the
+    // bridge's new FfiVaultError sync variants.
+    m.add(
+        "VaultSyncStateVaultMismatch",
+        py.get_type::<VaultSyncStateVaultMismatch>(),
+    )?;
+    m.add(
+        "VaultSyncStateCorrupt",
+        py.get_type::<VaultSyncStateCorrupt>(),
+    )?;
+    m.add(
+        "VaultSyncEvidenceStale",
+        py.get_type::<VaultSyncEvidenceStale>(),
+    )?;
+    m.add("VaultSyncInProgress", py.get_type::<VaultSyncInProgress>())?;
+    m.add("VaultSyncFailed", py.get_type::<VaultSyncFailed>())?;
 
     Ok(())
 }

@@ -55,6 +55,13 @@ create_exception!(secretary_ffi_py, VaultContactAlreadyExists, PyException);
 create_exception!(secretary_ffi_py, VaultContactNotFound, PyException);
 // D.1.7 delete-contact error surface — owner self-card deletion guard.
 create_exception!(secretary_ffi_py, VaultCannotDeleteOwnerContact, PyException);
+// D.1.13 sync error surface — 5 typed exception classes mirroring the bridge's
+// new FfiVaultError sync variants.
+create_exception!(secretary_ffi_py, VaultSyncStateVaultMismatch, PyException);
+create_exception!(secretary_ffi_py, VaultSyncStateCorrupt, PyException);
+create_exception!(secretary_ffi_py, VaultSyncEvidenceStale, PyException);
+create_exception!(secretary_ffi_py, VaultSyncInProgress, PyException);
+create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -135,6 +142,13 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::CannotDeleteOwnerContact => VaultCannotDeleteOwnerContact::new_err(
             "the vault owner's own contact card cannot be deleted",
         ),
+        FfiVaultError::SyncStateVaultMismatch => {
+            VaultSyncStateVaultMismatch::new_err(e.to_string())
+        }
+        FfiVaultError::SyncStateCorrupt { .. } => VaultSyncStateCorrupt::new_err(e.to_string()),
+        FfiVaultError::SyncEvidenceStale => VaultSyncEvidenceStale::new_err(e.to_string()),
+        FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),
+        FfiVaultError::SyncFailed { .. } => VaultSyncFailed::new_err(e.to_string()),
     }
 }
 

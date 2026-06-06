@@ -161,6 +161,27 @@ pub enum AppError {
         #[serde(skip_serializing)]
         detail: String,
     },
+
+    #[error("Sync state file belongs to a different vault")]
+    SyncStateVaultMismatch,
+
+    #[error("Sync state cache is corrupt")]
+    SyncStateCorrupt {
+        #[serde(skip_serializing)]
+        detail: String,
+    },
+
+    #[error("Vault changed on disk during sync; retry")]
+    SyncEvidenceStale,
+
+    #[error("Another sync is already in progress for this vault")]
+    SyncInProgress,
+
+    #[error("Sync failed")]
+    SyncFailed {
+        #[serde(skip_serializing)]
+        detail: String,
+    },
 }
 
 // All three variants are part of the IPC wire-format schema; renaming to
@@ -314,6 +335,11 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             contact_uuid_hex: uuid_hex,
         },
         FfiVaultError::CannotDeleteOwnerContact => AppError::CannotDeleteOwnerContact,
+        FfiVaultError::SyncStateVaultMismatch => AppError::SyncStateVaultMismatch,
+        FfiVaultError::SyncStateCorrupt { detail } => AppError::SyncStateCorrupt { detail },
+        FfiVaultError::SyncEvidenceStale => AppError::SyncEvidenceStale,
+        FfiVaultError::SyncInProgress => AppError::SyncInProgress,
+        FfiVaultError::SyncFailed { detail } => AppError::SyncFailed { detail },
     }
 }
 

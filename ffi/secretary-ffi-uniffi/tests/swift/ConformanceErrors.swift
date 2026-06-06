@@ -30,6 +30,11 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .ContactAlreadyExists: return "ContactAlreadyExists"
     case .ContactNotFound: return "ContactNotFound"
     case .CannotDeleteOwnerContact: return "CannotDeleteOwnerContact"
+    case .SyncStateVaultMismatch: return "SyncStateVaultMismatch"
+    case .SyncStateCorrupt: return "SyncStateCorrupt"
+    case .SyncEvidenceStale: return "SyncEvidenceStale"
+    case .SyncInProgress: return "SyncInProgress"
+    case .SyncFailed: return "SyncFailed"
     }
 }
 
@@ -43,6 +48,8 @@ func vaultErrorDetail(_ e: VaultError) -> String? {
     case .BlockUuidAlreadyLive(let d): return d
     case .BlockNotInTrash(let d): return d
     case .InvalidArgument(let d): return d
+    case .SyncStateCorrupt(let d): return d
+    case .SyncFailed(let d): return d
     default: return nil
     }
 }

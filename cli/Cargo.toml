@@ -18,13 +18,23 @@ path = "src/lib.rs"
 [[bin]]
 name = "secretary-sync"
 path = "src/main.rs"
+required-features = ["daemon"]
+
+[features]
+default = ["daemon"]
+# The headless secretary-sync binary + its file-watch daemon loop, arg parsing,
+# TTY veto/password prompts, and structured logging. Gated so secretary-ffi-bridge
+# (and the mobile bindings beneath it) can depend on secretary-cli with
+# default-features=false and reach only the lean pipeline + state lib surface,
+# without compiling notify (inotify/FSEvents/kqueue) or clap into the artifacts.
+daemon = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:rpassword", "dep:serde_json"]
 
 [dependencies]
 secretary-core = { path = "../core" }
-clap = { version = "4", features = ["derive"] }
-notify = "6"
+clap = { version = "4", features = ["derive"], optional = true }
+notify = { version = "6", optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"], optional = true }
 dirs = "5"
 # `tempfile` exact-pinned to match `core/Cargo.toml`. The CLI's state file
 # (per docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md §"State persistence")
@@ -33,8 +43,14 @@ dirs = "5"
 # the SyncState file. Same exact-pin rule as `core` — bump only via
 # deliberate changelog review (CLAUDE.md "exact pins on security-critical paths").
 tempfile = "=3.27.0"
-rpassword = "7"
-serde_json = "1"
+rpassword = { version = "7", optional = true }
+# `serde_json` is a forward-reservation: no file in `cli/src/` currently
+# calls it directly, but C.2 spec §D12 specifies structured JSON output for
+# veto decisions and future machine-readable reporting.  `tracing-subscriber`'s
+# `json` feature already pulls it transitively; listing it explicitly here
+# keeps the `daemon` feature boundary honest and prevents a cleanup pass
+# from removing it as "dead" before §D12 is implemented.
+serde_json = { version = "1", optional = true }
 # `fs4` is a maintained fork of the unmaintained `fs2` crate (fs2's last
 # release was 2019). Used by Task 2's host-local lockfile through the
 # `fs4::FileExt::try_lock` trait method. NOTE: stdlib stabilized an
@@ -62,6 +78,13 @@ tempfile = "=3.27.0"
 # repeatedly, so test inputs that exercise crypto sinks must be
 # runtime-generated (see CLAUDE.md memory `feedback_test_crypto_random_not_hardcoded`).
 rand = "0.9"
+# `rand_chacha` + `zeroize` are dev-only, used by
+# `tests/sync_pass_integration.rs` to rebuild the per-block-divergent
+# veto fixture from public `secretary_core` APIs (deterministic
+# ChaCha20Rng seeding for block/manifest AEAD; zeroizing the exposed
+# Ed25519 secret-key stack copy). Versions track `core/Cargo.toml`.
+rand_chacha = "0.3"
+zeroize = { version = "=1.8.2", features = ["zeroize_derive"] }
 
 [lints]
 workspace = true

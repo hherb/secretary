@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-05-d112-desktop-polish-shipped.md
+docs/handoffs/2026-06-06-d113-sync-primitive-shipped.md

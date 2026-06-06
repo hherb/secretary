@@ -29,6 +29,11 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.ContactAlreadyExists -> "ContactAlreadyExists"
     is VaultException.ContactNotFound -> "ContactNotFound"
     is VaultException.CannotDeleteOwnerContact -> "CannotDeleteOwnerContact"
+    is VaultException.SyncStateVaultMismatch -> "SyncStateVaultMismatch"
+    is VaultException.SyncStateCorrupt -> "SyncStateCorrupt"
+    is VaultException.SyncEvidenceStale -> "SyncEvidenceStale"
+    is VaultException.SyncInProgress -> "SyncInProgress"
+    is VaultException.SyncFailed -> "SyncFailed"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -42,6 +47,8 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.CardDecodeFailure -> e.detail
     is VaultException.BlockUuidAlreadyLive -> e.detail
     is VaultException.BlockNotInTrash -> e.detail
+    is VaultException.SyncStateCorrupt -> e.detail
+    is VaultException.SyncFailed -> e.detail
     // The remaining variants carry no detail string.
     is VaultException.WrongPasswordOrCorrupt,
     is VaultException.WrongMnemonicOrCorrupt,
@@ -56,5 +63,8 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     // ContactAlreadyExists / ContactNotFound carry uuid_hex, not detail.
     is VaultException.ContactAlreadyExists,
     is VaultException.ContactNotFound,
-    is VaultException.CannotDeleteOwnerContact -> null
+    is VaultException.CannotDeleteOwnerContact,
+    is VaultException.SyncStateVaultMismatch,
+    is VaultException.SyncEvidenceStale,
+    is VaultException.SyncInProgress -> null
 }
