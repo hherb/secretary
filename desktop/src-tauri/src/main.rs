@@ -21,7 +21,7 @@ use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
 use secretary_desktop::commands::{
-    browse, contacts, create, delete, edit, lock, settings, unlock, vault,
+    browse, contacts, create, delete, edit, lock, settings, sync, unlock, vault,
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
@@ -101,6 +101,8 @@ fn main() {
             contacts::delete_contact_card,
             contacts::block_recipients,
             contacts::list_contact_blocks,
+            sync::sync_status,
+            sync::sync_now,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of
