@@ -137,7 +137,10 @@ pub use restore::restore_block;
 pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use share::share_block;
-pub use sync::{sync_status, sync_vault, DeviceClockDto, SyncOutcomeDto, SyncStatusDto};
+pub use sync::{
+    sync_status, sync_vault, CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto,
+    VetoDecisionDto, VetoDto,
+};
 pub use trash::{list_trashed_blocks, trash_block, TrashedBlock};
 pub use unlock::{open_with_password, open_with_recovery};
 pub use vault::{
