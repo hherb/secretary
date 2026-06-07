@@ -27,7 +27,11 @@ pub struct SyncStatusDto {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SyncOutcomeDto {
     /// No remote state to ingest; vault and state unchanged.
     NothingToDo,
@@ -84,12 +88,18 @@ mod tests {
             v,
             json!({ "hasState": true, "lastStateWriteMs": 1_700_000_000_000u64 })
         );
-        assert!(v.get("deviceClocks").is_none(), "device_clocks must be dropped");
+        assert!(
+            v.get("deviceClocks").is_none(),
+            "device_clocks must be dropped"
+        );
     }
 
     #[test]
     fn status_dto_null_write_ms_when_never_synced() {
-        let dto = SyncStatusDto { has_state: false, last_state_write_ms: None };
+        let dto = SyncStatusDto {
+            has_state: false,
+            last_state_write_ms: None,
+        };
         let v = serde_json::to_value(&dto).unwrap();
         // `None` must serialize as explicit `null`, not be omitted — the TS side
         // distinguishes `null` ("never synced here") from a missing key.

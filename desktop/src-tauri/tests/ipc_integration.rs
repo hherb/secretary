@@ -24,10 +24,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{browse, create, delete, edit, lock, settings, sync, unlock, vault};
+use secretary_desktop::commands::{
+    browse, create, delete, edit, lock, settings, sync, unlock, vault,
+};
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
-use secretary_desktop::secret_arg::Password;
 use secretary_desktop::errors::AppError;
+use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
 use tempfile::TempDir;
 

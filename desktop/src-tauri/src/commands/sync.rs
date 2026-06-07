@@ -19,11 +19,8 @@ use crate::errors::{map_ffi_error, AppError};
 use crate::secret_arg::Password;
 use crate::session::VaultSession;
 
-
 #[tauri::command]
-pub async fn sync_status(
-    state: State<'_, Mutex<VaultSession>>,
-) -> Result<SyncStatusDto, AppError> {
+pub async fn sync_status(state: State<'_, Mutex<VaultSession>>) -> Result<SyncStatusDto, AppError> {
     sync_status_impl(state.inner())
 }
 
@@ -59,9 +56,12 @@ pub fn sync_now_impl(
 ) -> Result<SyncOutcomeDto, AppError> {
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let outcome =
-            bridge_sync_vault(&u.vault_folder, SecretBytes::from(password.expose()), now_ms)
-                .map_err(map_ffi_error)?;
+        let outcome = bridge_sync_vault(
+            &u.vault_folder,
+            SecretBytes::from(password.expose()),
+            now_ms,
+        )
+        .map_err(map_ffi_error)?;
         Ok(SyncOutcomeDto::from(outcome))
     })
 }

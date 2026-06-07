@@ -21,9 +21,9 @@ pub(crate) fn parse_uuid_16(hex_str: &str) -> Result<[u8; 16], AppError> {
 /// always 16 bytes); returns a typed `Internal` rather than panicking if it
 /// ever isn't. (Sibling of `parse_uuid_16`, which narrows from hex.)
 pub(crate) fn vault_uuid_bytes_16(bytes: &[u8]) -> Result<[u8; 16], AppError> {
-    bytes
-        .try_into()
-        .map_err(|_| AppError::Internal { detail: "manifest vault_uuid is not 16 bytes".to_string() })
+    bytes.try_into().map_err(|_| AppError::Internal {
+        detail: "manifest vault_uuid is not 16 bytes".to_string(),
+    })
 }
 
 /// Lock the session mutex, folding a poisoned lock to `Internal`. Shared by
