@@ -342,12 +342,24 @@ issued. The pill's own label always refreshes via `syncStatus()` regardless of o
   expected `{title, actionHint}` for each (extends `errors.test.ts` / a new `errorsSync.test.ts`).
 - **`ipc.ts`**: `syncStatus` invokes `invoke('sync_status')`; `syncNow` invokes
   `invoke('sync_now', { password })`; typed-error re-throw on both.
-- **`sync_status_impl` / `sync_now_impl`** (Rust `ipc_integration.rs`, against a **`cp -R` temp copy**
-  of the golden vault per [[feedback_smoke_test_temp_copy_golden_vault]]): `NotUnlocked` when
-  locked; `sync_status` shape on an opened vault; `sync_now` returns a `NothingToDo`/applied outcome
-  on a real vault and a wrong-password failure surfaces as a typed error (not a panic / not a silent
-  success). Tests generate any crypto inputs at runtime, never hardcoded
-  ([[feedback_test_crypto_random_not_hardcoded]]).
+- **Desktop sync commands — seam-only, hermetic** (decision: keep the slice pure-desktop, no bridge
+  change). The bridge's public `sync_status` / `sync_vault` use the **default OS state dir**, and the
+  temp-dir-injecting `sync_status_in` / `sync_vault_in` are `pub(crate)` (invisible to the desktop
+  crate), so a desktop *integration* test that drove real sync would touch the real OS state dir —
+  violating this repo's "every test injects its own TempDir" discipline. The end-to-end sync path
+  (folder + password → outcome, all six arms, wrong-password, lockfile-held) is already exhaustively
+  covered hermetically by **D.1.13's bridge tests** (`ffi/secretary-ffi-bridge/src/sync/*` with
+  `TempDir` state dirs) and is re-verified by the **mandatory manual GUI smoke**. The desktop layer
+  therefore tests only its own seam, hermetically:
+  - **`commands/sync.rs`** (`ipc_integration.rs`): `sync_status` and `sync_now` both return
+    `NotUnlocked` when the session is locked (no bridge call, no state-dir touch).
+  - **`dtos/sync.rs`** (`#[cfg(test)]` unit tests): the `From<bridge::…>` conversions + serde
+    wire-format pinning — `SyncStatusDto` drops `device_clocks` and emits `camelCase`; the tagged
+    `SyncOutcomeDto` emits `{ "kind": "conflictsPending", "vetoCount": N }` (the
+    `rename_all_fields` check) and the unit variants emit `{ "kind": "nothingToDo" }` etc. This is
+    the wire-contract gate the bridge↔TS union depends on.
+  - Tests generate any crypto inputs at runtime, never hardcoded
+    ([[feedback_test_crypto_random_not_hardcoded]]).
 - **SyncPill.svelte**: renders the `lastSyncedLabel`; click opens the dialog; on `onSynced` it
   toasts, re-reads status, and triggers a manifest refresh iff `syncChangedData`; "Syncing…"
   disabled state during flight.
