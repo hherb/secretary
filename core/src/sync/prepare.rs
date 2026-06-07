@@ -9,7 +9,7 @@
 //! [`tombstone_veto_set`] (pure-function veto detector, `pub(crate)` —
 //! kept internal and consumed by `prepare_merge` per record).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use zeroize::Zeroize;
@@ -384,7 +384,7 @@ pub fn prepare_merge(
     // deduped set of colliding field names across the per-copy fold.
     // Projected into `DraftMerge.collisions` at the end — carries no
     // secret values (the `merge_block` step keeps `winner`/`loser`).
-    let mut collisions: BTreeMap<[u8; 16], std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut collisions: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
 
     for block_uuid in &plan.diverging_blocks {
         let divergence =
