@@ -11,6 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { APP_ERROR_CODES, type AppError, type AppErrorCode, type AppWarning } from './errors';
+import type { SyncStatusDto, SyncOutcome } from './sync';
 
 const KNOWN_ERROR_CODES: ReadonlySet<AppErrorCode> = new Set(APP_ERROR_CODES);
 
@@ -294,4 +295,12 @@ export async function lock(): Promise<void> {
 
 export async function notifyActivity(): Promise<void> {
   return call<void>('notify_activity');
+}
+
+export async function syncStatus(): Promise<SyncStatusDto> {
+  return call<SyncStatusDto>('sync_status');
+}
+
+export async function syncNow(password: string): Promise<SyncOutcome> {
+  return call<SyncOutcome>('sync_now', { password });
 }

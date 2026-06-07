@@ -29,7 +29,9 @@ import {
   notifyActivity,
   readBlock,
   createVault,
-  probeCreateTarget
+  probeCreateTarget,
+  syncStatus,
+  syncNow
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -194,6 +196,31 @@ describe('ipc wrappers — readBlock', () => {
     const dto = await readBlock('ab');
     expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false });
     expect(dto.records[0].recordType).toBe('login');
+  });
+});
+
+describe('ipc.ts — sync wrappers', () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  it('syncStatus invokes the sync_status command', async () => {
+    invokeMock.mockResolvedValue({ hasState: true, lastStateWriteMs: 123 });
+    const dto = await syncStatus();
+    expect(invokeMock).toHaveBeenCalledWith('sync_status', undefined);
+    expect(dto).toEqual({ hasState: true, lastStateWriteMs: 123 });
+  });
+
+  it('syncNow invokes sync_now with the password arg', async () => {
+    invokeMock.mockResolvedValue({ kind: 'nothingToDo' });
+    const outcome = await syncNow('hunter2');
+    expect(invokeMock).toHaveBeenCalledWith('sync_now', { password: 'hunter2' });
+    expect(outcome).toEqual({ kind: 'nothingToDo' });
+  });
+
+  it('syncNow re-throws a typed AppError on rejection', async () => {
+    // `...Once` (not the persistent `mockRejectedValue`) avoids a Vitest
+    // unhandled-rejection that fails this test even though `call` catches it.
+    invokeMock.mockRejectedValueOnce({ code: 'sync_in_progress' });
+    await expect(syncNow('hunter2')).rejects.toMatchObject({ code: 'sync_in_progress' });
   });
 });
 
