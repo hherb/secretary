@@ -40,6 +40,11 @@ export const APP_ERROR_CODES = [
   'cannot_delete_owner_contact',
   'recipient_not_present',
   'cannot_revoke_owner',
+  'sync_in_progress',
+  'sync_evidence_stale',
+  'sync_state_vault_mismatch',
+  'sync_state_corrupt',
+  'sync_failed',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -81,6 +86,11 @@ export type AppError =
   | { code: 'cannot_delete_owner_contact' }
   | { code: 'recipient_not_present' }
   | { code: 'cannot_revoke_owner' }
+  | { code: 'sync_in_progress' }
+  | { code: 'sync_evidence_stale' }
+  | { code: 'sync_state_vault_mismatch' }
+  | { code: 'sync_state_corrupt' }
+  | { code: 'sync_failed' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -220,6 +230,31 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "You can't remove yourself",
         actionHint: 'You are the owner of this block.'
+      };
+    case 'sync_in_progress':
+      return {
+        title: 'Another sync is in progress',
+        actionHint: 'Wait for it to finish, then try again.'
+      };
+    case 'sync_evidence_stale':
+      return {
+        title: 'The vault changed during sync',
+        actionHint: 'The vault was modified by another process during sync. Try again.'
+      };
+    case 'sync_state_vault_mismatch':
+      return {
+        title: 'Sync state belongs to a different vault',
+        actionHint: "The local sync cache doesn't match this vault. Make sure this is the right vault, then try again."
+      };
+    case 'sync_state_corrupt':
+      return {
+        title: 'Sync state cache is unreadable',
+        actionHint: 'The local sync cache is corrupt and will be rebuilt on the next sync.'
+      };
+    case 'sync_failed':
+      return {
+        title: "Sync didn't complete",
+        actionHint: 'Something went wrong during sync. Try again.'
       };
     case 'internal':
       return {
