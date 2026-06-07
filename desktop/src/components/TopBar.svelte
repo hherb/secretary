@@ -1,6 +1,7 @@
 <script lang="ts">
   import LockButton from './LockButton.svelte';
   import Settings from './icons/Settings.svelte';
+  import SyncPill from './SyncPill.svelte';
 
   type Props = {
     vaultLabel: string;
@@ -15,6 +16,7 @@
     <span class="top-bar__vault-label">{vaultLabel}</span>
   </div>
   <div class="top-bar__right">
+    <SyncPill />
     <button
       type="button"
       class="top-bar__settings"

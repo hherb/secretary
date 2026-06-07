@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-06-d113-sync-primitive-shipped.md
+docs/handoffs/2026-06-07-d114-desktop-sync-ui-shipped.md

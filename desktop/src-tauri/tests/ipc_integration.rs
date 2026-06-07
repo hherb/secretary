@@ -24,9 +24,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use secretary_desktop::commands::{browse, create, delete, edit, lock, settings, unlock, vault};
+use secretary_desktop::commands::{
+    browse, create, delete, edit, lock, settings, sync, unlock, vault,
+};
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
+use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
 use tempfile::TempDir;
 
@@ -1348,4 +1351,25 @@ mod contacts_path {
             "expected ContactNotFound, got {err:?}"
         );
     }
+}
+
+// ---- D.1.14 sync commands: seam-only hermetic coverage (NotUnlocked). ----
+// The end-to-end sync path is covered hermetically by the bridge's own
+// TempDir tests (ffi/secretary-ffi-bridge/src/sync/*) and by the mandatory
+// manual GUI smoke; the bridge's public sync_status/sync_vault use the
+// default OS state dir, so driving them here would be non-hermetic.
+
+#[test]
+fn sync_status_on_locked_session_yields_not_unlocked() {
+    let (state, _device_dir) = fresh_state();
+    let err = sync::sync_status_impl(&state).expect_err("locked session must error");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+#[test]
+fn sync_now_on_locked_session_yields_not_unlocked() {
+    let (state, _device_dir) = fresh_state();
+    let pw = Password::from_bytes(b"unused while locked");
+    let err = sync::sync_now_impl(&state, &pw, 0).expect_err("locked session must error");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }

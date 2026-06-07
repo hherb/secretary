@@ -14,7 +14,8 @@
 //! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs),
 //! [`create`] (D.1.3 vault-create DTOs), [`edit`] (D.1.4 record-edit DTOs),
 //! [`trash`] (D.1.5 trashed-block DTO), [`contact`] (D.1.6 contact-summary
-//! DTOs), and [`recipient`] (D.1.8 per-block recipient DTOs).
+//! DTOs), [`recipient`] (D.1.8 per-block recipient DTOs), and [`sync`]
+//! (D.1.14 sync-status / outcome DTOs).
 
 mod browse;
 mod contact;
@@ -22,6 +23,7 @@ mod create;
 mod edit;
 mod manifest;
 mod recipient;
+mod sync;
 mod trash;
 
 pub use browse::{BlockDetailDto, FieldMetaDto, RecordDto, RevealedFieldDto};
@@ -33,4 +35,5 @@ pub use edit::{
 };
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
 pub use recipient::{RecipientDto, RecipientKindDto};
+pub use sync::{SyncOutcomeDto, SyncStatusDto};
 pub use trash::TrashedBlockDto;

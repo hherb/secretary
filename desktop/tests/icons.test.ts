@@ -13,6 +13,7 @@ import Link from '../src/components/icons/Link.svelte';
 import Trash from '../src/components/icons/Trash.svelte';
 import Users from '../src/components/icons/Users.svelte';
 import Settings from '../src/components/icons/Settings.svelte';
+import Sync from '../src/components/icons/Sync.svelte';
 
 describe('icons — render contract', () => {
   it('Lock renders a decorative, currentColor SVG at the default size (20)', () => {
@@ -34,7 +35,7 @@ describe('icons — render contract', () => {
   });
 
   it('every icon renders a non-empty SVG', () => {
-    for (const Icon of [Eye, EyeOff, Link, Trash, Users, Settings]) {
+    for (const Icon of [Eye, EyeOff, Link, Trash, Users, Settings, Sync]) {
       const { container } = render(Icon);
       const svg = container.querySelector('svg');
       expect(svg).not.toBeNull();

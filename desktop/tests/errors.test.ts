@@ -266,6 +266,11 @@ describe('error code allowlists', () => {
       'cannot_delete_owner_contact',
       'recipient_not_present',
       'cannot_revoke_owner',
+      'sync_in_progress',
+      'sync_evidence_stale',
+      'sync_state_vault_mismatch',
+      'sync_state_corrupt',
+      'sync_failed',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

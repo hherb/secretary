@@ -26,12 +26,16 @@ const MANIFEST: ManifestDto = {
 };
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
 
-// LockButton imports `lock` from ipc; stub it so the rendered TopBar
-// can mount without exploding when the actual button isn't clicked.
+// LockButton imports `lock` from ipc; SyncPill imports `syncStatus` —
+// stub both so the rendered TopBar mounts without side-effects.
 const { lockMock } = vi.hoisted(() => ({ lockMock: vi.fn() }));
 vi.mock('../src/lib/ipc', async () => {
   const real = await vi.importActual<typeof import('../src/lib/ipc')>('../src/lib/ipc');
-  return { ...real, lock: lockMock };
+  return {
+    ...real,
+    lock: lockMock,
+    syncStatus: vi.fn().mockResolvedValue({ hasState: false, lastStateWriteMs: null })
+  };
 });
 
 beforeEach(() => {
@@ -87,6 +91,11 @@ describe('TopBar.svelte — rendering', () => {
     const settings = getByRole('button', { name: /settings/i });
     const title = settings.getAttribute('title') ?? '';
     expect(title.length).toBeGreaterThan(0);
+  });
+
+  it('mounts the sync pill with a Sync control', async () => {
+    const { findByRole } = renderBar();
+    expect(await findByRole('button', { name: /sync now/i })).toBeTruthy();
   });
 });
 
