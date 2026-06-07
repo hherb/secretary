@@ -62,6 +62,9 @@ create_exception!(secretary_ffi_py, VaultSyncStateCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultSyncEvidenceStale, PyException);
 create_exception!(secretary_ffi_py, VaultSyncInProgress, PyException);
 create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
+// Interactive conflict-resolution commit path — decisions did not cover the
+// recomputed veto set. Mirrors the bridge's FfiVaultError::SyncDecisionsIncomplete.
+create_exception!(secretary_ffi_py, VaultSyncDecisionsIncomplete, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -149,6 +152,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::SyncEvidenceStale => VaultSyncEvidenceStale::new_err(e.to_string()),
         FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),
         FfiVaultError::SyncFailed { .. } => VaultSyncFailed::new_err(e.to_string()),
+        FfiVaultError::SyncDecisionsIncomplete => {
+            VaultSyncDecisionsIncomplete::new_err(e.to_string())
+        }
     }
 }
 

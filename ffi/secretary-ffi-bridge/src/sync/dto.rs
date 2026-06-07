@@ -82,10 +82,6 @@ impl VetoDecisionDto {
     /// Parse the 32-char hex `record_uuid` into a core [`VetoDecision`].
     ///
     /// [`VetoDecision`]: secretary_core::sync::VetoDecision
-    // Exercised by the unit test today; wired into `sync_commit_decisions`
-    // (Task 5 commit 2). Allow until that caller lands so the refactor commit
-    // stays a pure move.
-    #[allow(dead_code)]
     pub(crate) fn to_core(&self) -> Result<secretary_core::sync::VetoDecision, FfiVaultError> {
         let bytes = hex_to_16(&self.record_uuid_hex)?;
         Ok(if self.keep_local {
@@ -97,8 +93,6 @@ impl VetoDecisionDto {
 }
 
 /// 16-byte hex → [u8;16]; typed error otherwise (exactly 16 bytes / 32 hex chars).
-// Reached only via `VetoDecisionDto::to_core`, itself dead until Task 5 commit 2.
-#[allow(dead_code)]
 pub(crate) fn hex_to_16(s: &str) -> Result<[u8; 16], FfiVaultError> {
     let bytes = hex::decode(s).map_err(|_| FfiVaultError::SyncFailed {
         detail: "invalid record_uuid hex".into(),

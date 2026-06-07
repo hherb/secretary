@@ -6,14 +6,16 @@
 
 use std::path::Path;
 
-use secretary_cli::pipeline::{sync_pass_inspect, InspectOutcome};
+use secretary_cli::pipeline::{
+    sync_pass_commit_decisions, sync_pass_inspect, InspectOutcome, SyncPassOutcome,
+};
 use secretary_cli::state::{default_state_dir, load, save, LockfileGuard};
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::sync::SyncError;
+use secretary_core::sync::{ManifestHash, SyncError};
 use secretary_core::vault::Unlocker;
 
 use crate::error::FfiVaultError;
-use crate::sync::dto::SyncOutcomeDto;
+use crate::sync::dto::{SyncOutcomeDto, VetoDecisionDto};
 use crate::sync::status::map_state_error;
 
 /// Run one manual sync pass against `vault_folder`, unlocking with `password`.
@@ -99,6 +101,146 @@ pub(crate) fn sync_vault_in(
     // here → ZeroizeOnDrop wipes both. `_guard` drops → lockfile released.
 }
 
+/// Commit the caller's tombstone-veto `decisions` for a sync pass that paused on
+/// `ConflictsPending` — the stateless **call-2** of the interactive resolution
+/// flow. [`sync_vault`] is call-1: it inspects, surfaces the pending vetoes +
+/// the `manifest_hash` freshness token, and writes nothing. The desktop renders
+/// the resolution modal, collects one [`VetoDecisionDto`] per veto, then calls
+/// this with those decisions plus the opaque `manifest_hash` from call-1.
+///
+/// `manifest_hash` is the 32-byte BLAKE3 token returned in
+/// [`SyncOutcomeDto::ConflictsPending`]; it gates freshness. If the canonical
+/// manifest changed on disk between call-1 and this call (another writer, or a
+/// daemon merged first), the token no longer matches and the commit returns
+/// [`FfiVaultError::SyncEvidenceStale`] without writing — the caller must
+/// re-run [`sync_vault`] and re-prompt. `now_ms` is the caller's wall-clock
+/// (Unix ms), used as the merge timestamp for the committed result.
+///
+/// On success the merged result is written to the vault and the advanced
+/// `SyncState` is persisted; the returned [`SyncOutcomeDto`] is `MergedClean`
+/// in the common case (or another clean arm if the disk state changed to a
+/// non-diverging shape in the interim). This path never returns
+/// `ConflictsPending` — committing decisions resolves the vetoes.
+///
+/// # Errors
+/// - `SyncFailed` — `manifest_hash` is not exactly 32 bytes, or an internal
+///   guard fired (e.g. the commit unexpectedly reported `ConflictsPending`).
+/// - `SyncDecisionsIncomplete` — the supplied decisions did not bijectively
+///   cover the recomputed veto set (a UI bug, or the on-disk veto set shifted).
+/// - `SyncEvidenceStale` — the manifest changed on disk since call-1; retry.
+/// - `SyncInProgress` — the per-vault lockfile is held.
+/// - `WrongPasswordOrCorrupt` — `password` failed to unlock.
+/// - `SyncStateVaultMismatch` / `SyncStateCorrupt` — local sync cache for
+///   another vault / corrupt.
+pub fn sync_commit_decisions(
+    vault_folder: &Path,
+    password: SecretBytes,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, FfiVaultError> {
+    let state_dir = default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
+        detail: "no platform data directory available for the sync state cache".into(),
+    })?;
+    sync_commit_decisions_in(
+        &state_dir,
+        vault_folder,
+        password,
+        decisions,
+        manifest_hash,
+        now_ms,
+    )
+}
+
+/// Crate-internal seam taking an explicit state dir — used by the unit tests
+/// and by [`sync_commit_decisions`]. Mirrors [`sync_vault_in`].
+pub(crate) fn sync_commit_decisions_in(
+    state_dir: &Path,
+    vault_folder: &Path,
+    password: SecretBytes,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, FfiVaultError> {
+    // 1. Reconstruct the freshness token. A wrong length is a caller/UI bug
+    //    (the bytes did not round-trip from call-1's ConflictsPending), not a
+    //    data-integrity failure, so it surfaces as SyncFailed with a precise
+    //    detail rather than a panic.
+    let expected = ManifestHash(<[u8; 32]>::try_from(manifest_hash.as_slice()).map_err(|_| {
+        FfiVaultError::SyncFailed {
+            detail: "manifest_hash must be 32 bytes".into(),
+        }
+    })?);
+
+    // 2. Convert each DTO decision to its core form. A malformed record_uuid
+    //    hex surfaces as SyncFailed (see VetoDecisionDto::to_core).
+    let core_decisions = decisions
+        .iter()
+        .map(VetoDecisionDto::to_core)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // 3. Open the vault → owned identity + vault_uuid (same as sync_vault_in).
+    let core_out =
+        secretary_core::vault::open_vault(vault_folder, Unlocker::Password(&password), None)?;
+    let vault_uuid = core_out.manifest.vault_uuid;
+    let identity = secretary_core::unlock::UnlockedIdentity {
+        identity_block_key: core_out.identity_block_key,
+        identity: core_out.identity,
+    };
+
+    // 4. Acquire the per-vault lockfile + load state.
+    let _guard = LockfileGuard::acquire(state_dir, vault_uuid).map_err(map_state_error)?;
+    let mut state = load(state_dir, vault_uuid).map_err(map_state_error)?;
+
+    // 5. Run the commit pass. It re-opens the vault commit-side and re-verifies
+    //    the freshness token, returning EvidenceStale if the disk moved.
+    let outcome = sync_pass_commit_decisions(
+        vault_folder,
+        &identity,
+        &password,
+        &mut state,
+        expected,
+        core_decisions,
+        now_ms,
+    )
+    .map_err(map_sync_error)?;
+
+    // 6. Persist on the advancing arms, then map to the DTO. Save BEFORE
+    //    building the dto, matching sync_vault_in's order.
+    match outcome {
+        SyncPassOutcome::AppliedAutomatically
+        | SyncPassOutcome::SilentMerge
+        | SyncPassOutcome::MergedClean => {
+            save(state_dir, &state).map_err(map_state_error)?;
+        }
+        SyncPassOutcome::NothingToDo
+        | SyncPassOutcome::RollbackRejected
+        | SyncPassOutcome::ConflictsPending { .. } => {}
+    }
+
+    // The `From<SyncPassOutcome>` impl was deliberately removed in Task 4 — the
+    // two callers (inspect / commit) map their own outcome enums explicitly so a
+    // future arm cannot silently flow into the wrong DTO. The commit path can
+    // never legitimately return ConflictsPending (committing decisions resolves
+    // the vetoes); if it does, that's an internal-consistency violation, surfaced
+    // as an Err rather than a silently-empty ConflictsPending DTO.
+    let dto = match outcome {
+        SyncPassOutcome::NothingToDo => SyncOutcomeDto::NothingToDo,
+        SyncPassOutcome::AppliedAutomatically => SyncOutcomeDto::AppliedAutomatically,
+        SyncPassOutcome::SilentMerge => SyncOutcomeDto::SilentMerge,
+        SyncPassOutcome::MergedClean => SyncOutcomeDto::MergedClean,
+        SyncPassOutcome::RollbackRejected => SyncOutcomeDto::RollbackRejected,
+        SyncPassOutcome::ConflictsPending { .. } => {
+            return Err(FfiVaultError::SyncFailed {
+                detail: "commit unexpectedly returned ConflictsPending".into(),
+            })
+        }
+    };
+    Ok(dto)
+    // `identity` + `password` drop here → ZeroizeOnDrop wipes both.
+    // `_guard` drops → lockfile released.
+}
+
 /// Map `secretary_core::sync::SyncError` → `FfiVaultError`.
 fn map_sync_error(e: SyncError) -> FfiVaultError {
     match e {
@@ -110,6 +252,14 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         }
         SyncError::EvidenceStale => FfiVaultError::SyncEvidenceStale,
         SyncError::Vault(ve) => ve.into(),
+        // Decision-coverage failures on the commit path: the supplied
+        // decisions did not bijectively cover the recomputed veto set (a UI
+        // bug, or the on-disk veto set shifted under a stale token). Caller-
+        // actionable — the desktop should re-run inspect and re-prompt — so
+        // these get their own typed surface instead of folding to SyncFailed.
+        SyncError::MissingVetoDecision { .. } | SyncError::UnknownVetoDecision { .. } => {
+            FfiVaultError::SyncDecisionsIncomplete
+        }
         // The remaining SyncError variants are internal-consistency guards the
         // caller cannot act on — they fold to the generic SyncFailed. Listed
         // EXHAUSTIVELY (no `_` catch-all) on purpose: when a future SyncError
@@ -119,8 +269,6 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         // it to SyncFailed.
         SyncError::InvalidArgument { .. }
         | SyncError::ConflictCopyScanIoFailed { .. }
-        | SyncError::UnknownVetoDecision { .. }
-        | SyncError::MissingVetoDecision { .. }
         | SyncError::EmptyDraftWithVetoes => FfiVaultError::SyncFailed {
             detail: e.to_string(),
         },
@@ -209,6 +357,98 @@ mod tests {
         assert!(
             matches!(err, FfiVaultError::WrongPasswordOrCorrupt),
             "got {err:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Commit-path (call-2) bridge-glue tests.
+    //
+    // The end-to-end happy path (ConflictsPending → commit decisions →
+    // MergedClean) and the stale-token rejection are covered at the cli
+    // layer (`cli/tests/sync_pass_integration.rs::
+    // commit_decisions_keep_local_keeps_record_live` /
+    // `commit_decisions_stale_token_is_rejected`), which has the 89-line
+    // two-device-veto fixture builder. Reproducing that fixture in the
+    // bridge test would duplicate it wholesale for no extra coverage of the
+    // bridge-specific glue. So here we pin only what the bridge owns and the
+    // cli tests do NOT exercise: the 32-byte manifest_hash reconstruction
+    // guard, the per-decision hex-parse guard, and the un-collapsed
+    // decision-error mapping. All three fail-fast before vault open, so no
+    // fixture is needed.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn commit_decisions_bad_manifest_hash_length_is_sync_failed() {
+        let (_vault_tmp, vault_folder, password, _uuid) = stage_golden_writable_and_password();
+        let state_dir = TempDir::new().unwrap();
+        // 5 bytes ≠ 32 → token reconstruction fails before the vault is opened.
+        let err = sync_commit_decisions_in(
+            state_dir.path(),
+            &vault_folder,
+            password,
+            vec![],
+            vec![0u8; 5],
+            0,
+        )
+        .unwrap_err();
+        let FfiVaultError::SyncFailed { detail } = err else {
+            panic!("expected SyncFailed, got {err:?}");
+        };
+        assert!(
+            detail.contains("manifest_hash must be 32 bytes"),
+            "got detail {detail:?}"
+        );
+    }
+
+    #[test]
+    fn commit_decisions_malformed_decision_hex_is_sync_failed() {
+        let (_vault_tmp, vault_folder, password, _uuid) = stage_golden_writable_and_password();
+        let state_dir = TempDir::new().unwrap();
+        // Valid 32-byte token, but a decision whose record_uuid_hex is not
+        // valid hex → VetoDecisionDto::to_core fails before the vault is opened.
+        let decisions = vec![VetoDecisionDto {
+            record_uuid_hex: "not-hex".into(),
+            keep_local: true,
+        }];
+        let err = sync_commit_decisions_in(
+            state_dir.path(),
+            &vault_folder,
+            password,
+            decisions,
+            vec![0u8; 32],
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, FfiVaultError::SyncFailed { .. }),
+            "expected SyncFailed, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn map_sync_error_uncollapses_decision_errors() {
+        // The un-collapse: MissingVetoDecision / UnknownVetoDecision now route
+        // to their own typed surface instead of folding into SyncFailed.
+        let missing = map_sync_error(SyncError::MissingVetoDecision {
+            record_id: [0u8; 16],
+        });
+        assert!(
+            matches!(missing, FfiVaultError::SyncDecisionsIncomplete),
+            "got {missing:?}"
+        );
+        let unknown = map_sync_error(SyncError::UnknownVetoDecision {
+            record_id: [1u8; 16],
+        });
+        assert!(
+            matches!(unknown, FfiVaultError::SyncDecisionsIncomplete),
+            "got {unknown:?}"
+        );
+        // A still-folded variant stays SyncFailed (pins the un-collapse didn't
+        // accidentally widen the SyncDecisionsIncomplete bucket).
+        let other = map_sync_error(SyncError::EmptyDraftWithVetoes);
+        assert!(
+            matches!(other, FfiVaultError::SyncFailed { .. }),
+            "got {other:?}"
         );
     }
 }

@@ -306,6 +306,12 @@ pub enum FfiVaultError {
         /// Diagnostic text. Free-form; not part of the API contract.
         detail: String,
     },
+
+    /// `commit_with_decisions` could not match the supplied decisions to the
+    /// recomputed veto set (a UI bug or a race). Distinct from `SyncFailed`
+    /// so the desktop can show "couldn't apply your choices — try again".
+    #[error("sync decisions did not cover the pending conflicts")]
+    SyncDecisionsIncomplete,
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
