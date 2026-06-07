@@ -435,3 +435,22 @@ fn timer_tick_reads_threshold_from_current_settings() {
     // would lock the session and fail.
     assert_eq!(tick(&mutex), TickOutcome::NoAction);
 }
+
+#[test]
+fn unlock_retains_vault_folder_on_the_unlocked_session() {
+    let (mut session, _device_dir) = fresh_session();
+    let folder = golden_vault_path();
+    session
+        .unlock(&folder, GOLDEN_VAULT_PASSWORD)
+        .expect("unlock golden vault");
+
+    let retained: PathBuf = session
+        .with_unlocked(|u| Ok(u.vault_folder.clone()))
+        .expect("session must be unlocked");
+
+    assert_eq!(
+        retained, folder,
+        "unlock() must retain the vault folder on the UnlockedSession so \
+         sync_now can pass it to the bridge sync_vault"
+    );
+}
