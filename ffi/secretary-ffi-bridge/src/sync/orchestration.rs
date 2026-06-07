@@ -1,12 +1,12 @@
-//! `sync_vault` — one manual, pause-on-conflict sync pass. Opens a core
+//! `sync_vault` — one manual, inspect-based sync pass. Opens a core
 //! identity from the re-prompted password, holds the per-vault lockfile, runs
-//! `secretary_cli::pipeline::sync_pass_pause_on_conflict`, persists `SyncState`
+//! `secretary_cli::pipeline::sync_pass_inspect`, persists `SyncState`
 //! on the advancing arms, maps errors. The cli pass owns vault disk I/O; the
 //! bridge owns identity lifetime + state persistence.
 
 use std::path::Path;
 
-use secretary_cli::pipeline::{sync_pass_inspect, InspectOutcome, SyncPassOutcome};
+use secretary_cli::pipeline::{sync_pass_inspect, InspectOutcome};
 use secretary_cli::state::{default_state_dir, load, save, LockfileGuard};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::SyncError;
@@ -15,7 +15,7 @@ use secretary_core::vault::Unlocker;
 use crate::error::FfiVaultError;
 use crate::sync::status::map_state_error;
 
-/// Result of one [`sync_vault`] pass. Mirrors `SyncPassOutcome` as a bridge DTO.
+/// Result of one [`sync_vault`] pass. Mirrors `InspectOutcome` as a bridge DTO.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncOutcomeDto {
     /// No remote state to ingest; vault and state unchanged.
@@ -97,57 +97,27 @@ impl VetoDecisionDto {
     }
 }
 
-/// 16-byte hex → [u8;16]; typed error otherwise (exactly 32 hex chars).
+/// 16-byte hex → [u8;16]; typed error otherwise (exactly 16 bytes / 32 hex chars).
 // Reached only via `VetoDecisionDto::to_core`, itself dead until Task 5.
 #[allow(dead_code)]
 fn hex_to_16(s: &str) -> Result<[u8; 16], FfiVaultError> {
-    if s.len() != 32 {
-        return Err(FfiVaultError::SyncFailed {
-            detail: "record_uuid must be 32 hex chars".into(),
-        });
-    }
-    let mut out = [0u8; 16];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| {
-            FfiVaultError::SyncFailed {
-                detail: "invalid record_uuid hex".into(),
-            }
-        })?;
-    }
-    Ok(out)
-}
-
-/// 16 bytes → lowercase hex.
-fn hex16(b: &[u8; 16]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-impl From<SyncPassOutcome> for SyncOutcomeDto {
-    fn from(o: SyncPassOutcome) -> Self {
-        match o {
-            SyncPassOutcome::NothingToDo => SyncOutcomeDto::NothingToDo,
-            SyncPassOutcome::AppliedAutomatically => SyncOutcomeDto::AppliedAutomatically,
-            SyncPassOutcome::SilentMerge => SyncOutcomeDto::SilentMerge,
-            SyncPassOutcome::MergedClean => SyncOutcomeDto::MergedClean,
-            SyncPassOutcome::ConflictsPending { .. } => SyncOutcomeDto::ConflictsPending {
-                vetoes: Vec::new(),
-                collisions: Vec::new(),
-                manifest_hash: Vec::new(),
-            },
-            SyncPassOutcome::RollbackRejected => SyncOutcomeDto::RollbackRejected,
-        }
-    }
+    let bytes = hex::decode(s).map_err(|_| FfiVaultError::SyncFailed {
+        detail: "invalid record_uuid hex".into(),
+    })?;
+    bytes.try_into().map_err(|_| FfiVaultError::SyncFailed {
+        detail: "record_uuid must be 16 bytes".into(),
+    })
 }
 
 fn project_veto(v: &secretary_core::sync::RecordTombstoneVeto) -> VetoDto {
     VetoDto {
-        record_uuid_hex: hex16(&v.record_id),
+        record_uuid_hex: hex::encode(v.record_id),
         record_type: v.local_state.record_type.clone(),
         tags: v.local_state.tags.clone(),
         field_names: v.local_state.fields.keys().cloned().collect(),
         local_last_mod_ms: v.local_state.last_mod_ms,
         peer_tombstoned_at_ms: v.disk_tombstone_at_ms,
-        peer_device_hex: hex16(&v.disk_tombstoner_device),
+        peer_device_hex: hex::encode(v.disk_tombstoner_device),
     }
 }
 
@@ -168,7 +138,7 @@ impl From<InspectOutcome> for SyncOutcomeDto {
                 collisions: collisions
                     .iter()
                     .map(|c| CollisionDto {
-                        record_uuid_hex: hex16(&c.record_id),
+                        record_uuid_hex: hex::encode(c.record_id),
                         field_names: c.field_names.clone(),
                     })
                     .collect(),
@@ -237,7 +207,7 @@ pub(crate) fn sync_vault_in(
     // 3. Load the SyncState (missing file ⇒ empty state).
     let mut state = load(state_dir, vault_uuid).map_err(map_state_error)?;
 
-    // 4. Run the pause-on-conflict pass. It re-opens the vault commit-side, so
+    // 4. Run the inspect pass. It re-opens the vault commit-side, so
     //    it needs `&password` AND the by-ref identity.
     let outcome: InspectOutcome =
         sync_pass_inspect(vault_folder, &identity, &password, &mut state, now_ms)
