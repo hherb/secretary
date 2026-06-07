@@ -22,7 +22,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use secretary_cli::pipeline::{sync_pass_pause_on_conflict, SyncPassOutcome};
+use secretary_cli::pipeline::{
+    sync_pass_inspect, sync_pass_pause_on_conflict, InspectOutcome, SyncPassOutcome,
+};
 use secretary_core::crypto::secret::{SecretBytes, SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
@@ -522,5 +524,108 @@ fn sync_pass_pauses_on_tombstone_veto_without_writing() {
     assert_eq!(
         block_bytes_after, block_bytes_before,
         "pause must not rewrite the conflicting block"
+    );
+}
+
+// --- Inspect-path (stateless call-1) tests -----------------------------
+
+/// BLAKE3-256 over every file in `folder` (recursive), folding each
+/// file's relative path then its bytes into one rolling hasher. The
+/// path is folded so a rename — not just a content change — registers
+/// as a difference. Iteration order is sorted (by full path) so the
+/// digest is deterministic across `read_dir` orderings. Uses
+/// `secretary_core::crypto::hash` (already a proven import in this test
+/// binary) rather than adding a `blake3` dev-dependency.
+fn hash_dir(folder: &Path) -> [u8; 32] {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(folder, &mut files);
+    files.sort();
+    let mut acc = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(folder)
+            .expect("collected path is under folder");
+        acc.extend_from_slice(rel.to_string_lossy().as_bytes());
+        acc.push(0); // path/content separator
+        acc.extend_from_slice(&fs::read(path).expect("read file for hash_dir"));
+        acc.push(0); // record separator
+    }
+    *secretary_core::crypto::hash::hash(&acc).as_bytes()
+}
+
+/// Recursively collect every regular file under `folder` into `out`.
+fn collect_files(folder: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(folder).expect("read_dir for hash_dir") {
+        let entry = entry.expect("dir entry for hash_dir");
+        let path = entry.path();
+        if entry.file_type().expect("file_type for hash_dir").is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// The inspect contract: a concurrent state whose merge raises a
+/// tombstone veto returns [`InspectOutcome::ConflictsPending`] carrying
+/// the full draft detail (vetoes + collision summaries + the
+/// manifest-hash freshness token) and writes NOTHING — every file under
+/// the vault folder is byte-identical, and the caller's `SyncState` is
+/// unchanged.
+///
+/// Collision note: the reused `stage_concurrent_veto_vault` fixture
+/// stages a tombstone-vs-live divergence. `merge_record` returns an
+/// empty `collisions` set whenever the merge resolves to a tombstone
+/// (see `core/src/vault/conflict.rs` — the `if tombstone` arm), so this
+/// fixture yields a veto but no field-level collision. The
+/// `collisions`-population path is therefore left to be covered at the
+/// bridge/desktop layer with a non-tombstone concurrent-edit fixture.
+#[test]
+fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
+    let (_tmp, vault_dir, identity, password, vault_uuid, _block_uuid) =
+        stage_concurrent_veto_vault();
+
+    // Local clock references a device absent from both disk manifests so
+    // `sync_once` classifies the disk state as Concurrent (not dominated).
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let mut state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+    let state_before = state.clone();
+
+    let before = hash_dir(&vault_dir);
+
+    let outcome = sync_pass_inspect(&vault_dir, &identity, &password, &mut state, 0)
+        .expect("inspect must return Ok (a pending conflict is not an error)");
+
+    match outcome {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            collisions,
+            manifest_hash,
+        } => {
+            assert!(!vetoes.is_empty(), "expected at least one veto");
+            // `ManifestHash(pub [u8; 32])` — the freshness token is a
+            // fixed-width digest; a non-empty fingerprint is the
+            // contract the UI consumes.
+            assert_eq!(manifest_hash.0.len(), 32);
+            assert_ne!(
+                manifest_hash.0, [0u8; 32],
+                "manifest hash must be a real BLAKE3 digest, not the zero default"
+            );
+            // No field collision in this tombstone-vs-live fixture (see
+            // the doc comment); the bridge/desktop layer covers a
+            // collision-populated case.
+            let _ = collisions;
+        }
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    }
+
+    assert_eq!(state, state_before, "inspect must not advance state");
+    assert_eq!(
+        hash_dir(&vault_dir),
+        before,
+        "inspect must not write to disk"
     );
 }
