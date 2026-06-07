@@ -134,6 +134,18 @@ pub enum InspectOutcome {
     /// detail the UI needs to render the resolution modal.
     ConflictsPending {
         /// Tombstone disputes awaiting a human decision.
+        ///
+        /// **Secret hygiene.** Each [`RecordTombstoneVeto`] carries
+        /// `local_state: Record` — the AEAD-decrypted canonical record,
+        /// i.e. plaintext secret material. It is wiped on drop by
+        /// `RecordTombstoneVeto`'s own `ZeroizeOnDrop` (firing whenever this
+        /// `Vec` drops), and the secret field *values* redact under `Debug`
+        /// (`SecretString`/`SecretBytes` print `<redacted>`), so only
+        /// metadata is loggable. `InspectOutcome` is deliberately NOT
+        /// `ZeroizeOnDrop` itself — that would forbid the bridge from moving
+        /// these fields out when projecting to its DTO. Consumers MUST NOT
+        /// cache, stash, or widen the lifetime of this `Vec` beyond the
+        /// resolution flow.
         vetoes: Vec<RecordTombstoneVeto>,
         /// Metadata-only field-level LWW collisions surfaced for display.
         collisions: Vec<RecordCollisionSummary>,
