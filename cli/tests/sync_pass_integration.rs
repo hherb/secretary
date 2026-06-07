@@ -23,12 +23,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use secretary_cli::pipeline::{
-    sync_pass_inspect, sync_pass_pause_on_conflict, InspectOutcome, SyncPassOutcome,
+    sync_pass_commit_decisions, sync_pass_inspect, sync_pass_pause_on_conflict, InspectOutcome,
+    SyncPassOutcome,
 };
 use secretary_core::crypto::secret::{SecretBytes, SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
-use secretary_core::sync::SyncState;
+use secretary_core::sync::{SyncError, SyncState, VetoDecision};
 use secretary_core::unlock::{open_with_password, vault_toml, UnlockedIdentity};
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{
@@ -628,4 +629,131 @@ fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
         before,
         "inspect must not write to disk"
     );
+}
+
+// --- Commit-decisions (stateless call-2) tests -------------------------
+
+/// Build the canonical Concurrent-classifying `SyncState` for the
+/// `stage_concurrent_veto_vault` fixture: a local clock referencing a
+/// device absent from both disk manifests, so `sync_once` sees the disk
+/// state as Concurrent (not dominated).
+fn concurrent_state(vault_uuid: [u8; 16]) -> SyncState {
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    SyncState::new(vault_uuid, local_clock).expect("SyncState::new")
+}
+
+/// The call-2 happy path: inspect (call-1) yields a veto set + freshness
+/// token; resolving every veto as `KeepLocal` and feeding that back to
+/// `sync_pass_commit_decisions` lands `MergedClean`. A follow-up inspect
+/// against the committed state no longer reports a pending conflict (the
+/// conflict copies were consumed and the canonical record stayed live).
+#[test]
+fn commit_decisions_keep_local_keeps_record_live() {
+    let (_tmp, vault_folder, identity, password, vault_uuid, _block_uuid) =
+        stage_concurrent_veto_vault();
+    let mut state = concurrent_state(vault_uuid);
+
+    // Read the veto set + token from a clone of the state so the real
+    // `state` stays at its pre-commit value to commit against below.
+    let mut probe_state = state.clone();
+    let (vetoes, manifest_hash) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut probe_state,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
+    let decisions: Vec<VetoDecision> = vetoes
+        .iter()
+        .map(|v| VetoDecision::KeepLocal {
+            record_id: v.record_id,
+        })
+        .collect();
+
+    let outcome = sync_pass_commit_decisions(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut state,
+        manifest_hash,
+        decisions,
+        1,
+    )
+    .expect("commit must succeed");
+    assert_eq!(outcome, SyncPassOutcome::MergedClean);
+
+    // After committing the merge the conflict copies are consumed; a
+    // fresh inspect against the advanced state no longer raises a veto.
+    let follow_up = sync_pass_inspect(&vault_folder, &identity, &password, &mut state, 2)
+        .expect("follow-up inspect must return Ok");
+    assert!(
+        !matches!(follow_up, InspectOutcome::ConflictsPending { .. }),
+        "after KeepLocal commit the conflict must be resolved, got {follow_up:?}"
+    );
+}
+
+/// The TOCTOU freshness gate: a stale (bytewise-flipped) freshness token
+/// is rejected with `EvidenceStale` BEFORE any write — the vault folder
+/// is byte-identical afterwards. Flipping a byte of a real derived token
+/// simulates a concurrent writer having advanced the manifest between
+/// call-1 and call-2 without depending on the exact on-disk layout.
+#[test]
+fn commit_decisions_stale_token_is_rejected() {
+    let (_tmp, vault_folder, identity, password, vault_uuid, _block_uuid) =
+        stage_concurrent_veto_vault();
+    let mut state = concurrent_state(vault_uuid);
+
+    let mut probe_state = state.clone();
+    let (vetoes, manifest_hash) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut probe_state,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
+    let decisions: Vec<VetoDecision> = vetoes
+        .iter()
+        .map(|v| VetoDecision::AcceptTombstone {
+            record_id: v.record_id,
+        })
+        .collect();
+
+    // Deliberately wrong expected token: flip one byte of the real one.
+    let mut bad = manifest_hash.clone();
+    bad.0[0] ^= 0xff;
+    let before = hash_dir(&vault_folder);
+
+    let err = sync_pass_commit_decisions(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut state,
+        bad,
+        decisions,
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
+    assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
 }
