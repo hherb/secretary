@@ -25,6 +25,8 @@
   --color-on-danger: #fff;
   --color-warning: #d97706;
   --color-warning-bg: #fffbeb;
+  --color-success: #15803d;
+  --color-success-bg: #f0fdf4;
 
   /* Spacing scale — 4 px base; powers-of-2-ish to keep the rhythm
      consistent across components without exhausting the design space. */
@@ -72,6 +74,8 @@
     --color-on-danger: #fff;
     --color-warning: #fbbf24;
     --color-warning-bg: #2a2014;
+    --color-success: #4ade80;
+    --color-success-bg: #14241a;
   }
 }
 
@@ -597,6 +601,129 @@ body {
 }
 .confirm-dialog__button--danger:hover {
   opacity: 0.9;
+}
+
+/* Sync UI (D.1.14) ---------------------------------------------------- */
+
+/* SyncPill — combined sync indicator + "Sync now" trigger in the TopBar.
+   The button models .top-bar__settings / .lock-button; the inline notice
+   reuses the success/warning/danger token pairs, keyed by outcome kind. */
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.sync-pill__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.sync-pill__button:hover:not(:disabled) {
+  background: var(--color-border);
+}
+.sync-pill__notice {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+.sync-pill__notice--success {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+.sync-pill__notice--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+.sync-pill__notice--error {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+/* SyncPasswordDialog — native <dialog> re-prompt; models ConfirmDialog. */
+.sync-dialog {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  padding: var(--space-5);
+  min-width: 380px;
+  box-shadow: var(--shadow-lg);
+}
+.sync-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+.sync-dialog__form {
+  display: flex;
+  flex-direction: column;
+}
+.sync-dialog__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-lg);
+}
+.sync-dialog__subtitle {
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+.sync-dialog__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+.sync-dialog__input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+}
+.sync-dialog__error {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+.sync-dialog__actions {
+  margin-top: var(--space-5);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.sync-dialog__button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.sync-dialog__button--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+.sync-dialog__button--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+.sync-dialog__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Vault trash entry — sits below "+ New block" on the blocks pane. */

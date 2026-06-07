@@ -28,6 +28,10 @@
   let notice = $state<SyncMessage | null>(null);
 
   const label = $derived(status ? lastSyncedLabel(status, Date.now()) : 'Sync…');
+  // Only fold the status into the accessible name once it has loaded — before
+  // then `label` is the "Sync…" placeholder, which would announce as a
+  // meaningless "Sync now — sync…".
+  const ariaLabel = $derived(status ? `Sync now — ${label.toLowerCase()}` : 'Sync now');
 
   async function loadStatus() {
     try {
@@ -63,7 +67,7 @@
     type="button"
     class="sync-pill__button"
     onclick={() => { notice = null; dialogOpen = true; }}
-    aria-label={`Sync now — ${label.toLowerCase()}`}
+    aria-label={ariaLabel}
     title="Sync now"
   >
     <Sync />
