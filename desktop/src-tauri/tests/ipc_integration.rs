@@ -1373,3 +1373,12 @@ fn sync_now_on_locked_session_yields_not_unlocked() {
     let err = sync::sync_now_impl(&state, &pw, 0).expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
+
+#[test]
+fn sync_commit_decisions_impl_requires_unlock() {
+    let (state, _device_dir) = fresh_state();
+    let pw = Password::from_bytes(b"unused while locked");
+    let err = sync::sync_commit_decisions_impl(&state, &pw, Vec::new(), Vec::new(), 0)
+        .expect_err("locked session must error");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}

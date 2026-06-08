@@ -112,6 +112,10 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::SyncFailed`.
     #[error("sync failed: {detail}")]
     SyncFailed { detail: String },
+    /// `commit_with_decisions` could not match the supplied decisions to the
+    /// recomputed veto set. Mirrors `FfiVaultError::SyncDecisionsIncomplete`.
+    #[error("sync decisions did not cover the pending conflicts")]
+    SyncDecisionsIncomplete,
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -156,6 +160,7 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::SyncEvidenceStale => VaultError::SyncEvidenceStale,
             FfiVaultError::SyncInProgress => VaultError::SyncInProgress,
             FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed { detail },
+            FfiVaultError::SyncDecisionsIncomplete => VaultError::SyncDecisionsIncomplete,
         }
     }
 }

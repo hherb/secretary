@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-07-d114-desktop-sync-ui-shipped.md
+docs/handoffs/2026-06-08-interactive-conflict-resolution-shipped.md

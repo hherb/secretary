@@ -11,9 +11,12 @@ const mockSyncNow = vi.mocked(ipc.syncNow);
 
 function renderDialog(overrides: Record<string, unknown> = {}) {
   const onSynced = vi.fn();
+  const onConflicts = vi.fn();
   const onCancel = vi.fn();
-  const utils = render(SyncPasswordDialog, { props: { onSynced, onCancel, ...overrides } });
-  return { ...utils, onSynced, onCancel };
+  const utils = render(SyncPasswordDialog, {
+    props: { onSynced, onConflicts, onCancel, ...overrides }
+  });
+  return { ...utils, onSynced, onConflicts, onCancel };
 }
 
 describe('SyncPasswordDialog.svelte', () => {
@@ -47,6 +50,31 @@ describe('SyncPasswordDialog.svelte', () => {
     await fireEvent.click(getByRole('button', { name: /^sync$/i }));
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/wrong password/i);
+    expect(onSynced).not.toHaveBeenCalled();
+  });
+
+  it('routes a conflictsPending outcome to onConflicts with the password', async () => {
+    const outcome = {
+      kind: 'conflictsPending' as const,
+      vetoes: [
+        {
+          recordUuidHex: 'aa',
+          recordType: 'login',
+          tags: [],
+          fieldNames: ['password'],
+          localLastModMs: 1,
+          peerTombstonedAtMs: 2,
+          peerDeviceHex: 'beef'
+        }
+      ],
+      collisions: [],
+      manifestHash: [1]
+    };
+    mockSyncNow.mockResolvedValueOnce(outcome);
+    const { getByLabelText, getByRole, onConflicts, onSynced } = renderDialog();
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'thepassword' } });
+    await fireEvent.click(getByRole('button', { name: /^sync$/i }));
+    await waitFor(() => expect(onConflicts).toHaveBeenCalledWith(outcome, 'thepassword'));
     expect(onSynced).not.toHaveBeenCalled();
   });
 

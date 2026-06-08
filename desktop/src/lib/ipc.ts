@@ -11,7 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { APP_ERROR_CODES, type AppError, type AppErrorCode, type AppWarning } from './errors';
-import type { SyncStatusDto, SyncOutcome } from './sync';
+import type { SyncStatusDto, SyncOutcome, VetoDecisionDto } from './sync';
 
 const KNOWN_ERROR_CODES: ReadonlySet<AppErrorCode> = new Set(APP_ERROR_CODES);
 
@@ -303,4 +303,12 @@ export async function syncStatus(): Promise<SyncStatusDto> {
 
 export async function syncNow(password: string): Promise<SyncOutcome> {
   return call<SyncOutcome>('sync_now', { password });
+}
+
+export async function syncCommitDecisions(
+  password: string,
+  decisions: VetoDecisionDto[],
+  manifestHash: number[]
+): Promise<SyncOutcome> {
+  return call<SyncOutcome>('sync_commit_decisions', { password, decisions, manifestHash });
 }

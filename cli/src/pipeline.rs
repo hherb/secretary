@@ -23,8 +23,10 @@
 use std::path::Path;
 
 use secretary_core::crypto::secret::SecretBytes;
+use secretary_core::sync::draft::RecordCollisionSummary;
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, SyncError, SyncOutcome, SyncState,
+    commit_with_decisions, prepare_merge, sync_once, ManifestHash, RecordTombstoneVeto, SyncError,
+    SyncOutcome, SyncState, VetoDecision,
 };
 use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
@@ -105,6 +107,51 @@ pub enum SyncPassOutcome {
     /// nothing committed, `state` NOT advanced. `veto_count` is the number of
     /// tombstone disputes awaiting a human decision.
     ConflictsPending { veto_count: usize },
+    /// Disk clock strictly dominated by local (rollback). `state` unchanged.
+    RollbackRejected,
+}
+
+/// Outcome of one [`sync_pass_inspect`] pass — the stateless call-1 of the
+/// interactive resolution flow. Identical to [`SyncPassOutcome`] on every arm
+/// except `ConflictsPending`, which carries the full draft detail (vetoes +
+/// collision summaries + the manifest-hash freshness token) the UI needs to
+/// render the resolution modal. Nothing is committed on this arm and `state`
+/// is not advanced — the commit happens in `sync_pass_commit_decisions` (Task 3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum InspectOutcome {
+    /// Disk clock == local highest-seen. No state mutation, no write.
+    NothingToDo,
+    /// Disk strictly dominates local. `state` advanced; no vault write.
+    AppliedAutomatically,
+    /// Concurrent, `diverging_blocks` empty -> silent-merge clock advance.
+    /// `state` advanced; no vault write.
+    SilentMerge,
+    /// Concurrent, `diverging_blocks` non-empty, **zero** vetoes ->
+    /// `commit_with_decisions(.., [])` wrote the merged result. `state` advanced.
+    MergedClean,
+    /// Concurrent, `diverging_blocks` non-empty, **non-empty** vetoes ->
+    /// nothing committed, `state` NOT advanced. Carries the full draft
+    /// detail the UI needs to render the resolution modal.
+    ConflictsPending {
+        /// Tombstone disputes awaiting a human decision.
+        ///
+        /// **Secret hygiene.** Each [`RecordTombstoneVeto`] carries
+        /// `local_state: Record` — the AEAD-decrypted canonical record,
+        /// i.e. plaintext secret material. It is wiped on drop by
+        /// `RecordTombstoneVeto`'s own `ZeroizeOnDrop` (firing whenever this
+        /// `Vec` drops), and the secret field *values* redact under `Debug`
+        /// (`SecretString`/`SecretBytes` print `<redacted>`), so only
+        /// metadata is loggable. `InspectOutcome` is deliberately NOT
+        /// `ZeroizeOnDrop` itself — that would forbid the bridge from moving
+        /// these fields out when projecting to its DTO. Consumers MUST NOT
+        /// cache, stash, or widen the lifetime of this `Vec` beyond the
+        /// resolution flow.
+        vetoes: Vec<RecordTombstoneVeto>,
+        /// Metadata-only field-level LWW collisions surfaced for display.
+        collisions: Vec<RecordCollisionSummary>,
+        /// Freshness token (TOCTOU anchor) the commit step re-checks.
+        manifest_hash: ManifestHash,
+    },
     /// Disk clock strictly dominated by local (rollback). `state` unchanged.
     RollbackRejected,
 }
@@ -272,6 +319,189 @@ pub fn sync_pass_pause_on_conflict(
             }
             let new_state =
                 commit_with_decisions(vault_folder, password, draft, Vec::new(), now_ms)?;
+            *state = new_state;
+            Ok(SyncPassOutcome::MergedClean)
+        }
+    }
+}
+
+/// Run one **stateless inspect** pass — the call-1 of the interactive
+/// resolution flow. Structurally parallel to
+/// [`sync_pass_pause_on_conflict`] on every arm except the conflict arm:
+/// where the pause helper returns just a `veto_count`, this helper
+/// returns the full draft detail (`vetoes` + `collisions` +
+/// `manifest_hash`) the UI needs to render the resolution modal. It
+/// commits nothing and advances no state on the conflict arm, and it
+/// drives no [`crate::veto::VetoUx`].
+///
+/// State-mutation contract matches [`sync_pass_pause_on_conflict`] on the
+/// shared arms (`AppliedAutomatically` / `SilentMerge` advance `state`,
+/// `MergedClean` advances after a zero-veto commit); on the
+/// `ConflictsPending` arm `state` is byte-identical and the vault
+/// unwritten — the commit happens later in `sync_pass_commit_decisions`
+/// (Task 3) re-checking `manifest_hash` for freshness.
+///
+/// # Errors
+/// Any [`SyncError`] from the underlying `sync_once` / `prepare_merge` /
+/// `commit_with_decisions` bubbles up verbatim.
+pub fn sync_pass_inspect(
+    vault_folder: &Path,
+    identity: &UnlockedIdentity,
+    password: &SecretBytes,
+    state: &mut SyncState,
+    now_ms: u64,
+) -> Result<InspectOutcome, SyncError> {
+    let outcome = sync_once(vault_folder, identity, state, now_ms)?;
+    match outcome {
+        SyncOutcome::NothingToDo => Ok(InspectOutcome::NothingToDo),
+        SyncOutcome::AppliedAutomatically { new_state } => {
+            *state = new_state;
+            Ok(InspectOutcome::AppliedAutomatically)
+        }
+        SyncOutcome::RollbackRejected(_evidence) => Ok(InspectOutcome::RollbackRejected),
+        SyncOutcome::ConcurrentDetected {
+            bundle,
+            plan,
+            manifest_hash: _,
+            disk_vector_clock,
+            local_highest_seen: _,
+        } => {
+            if plan.diverging_blocks.is_empty() {
+                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
+                    .copies
+                    .iter()
+                    .map(|c| c.manifest.vector_clock.as_slice())
+                    .collect();
+                state.highest_vector_clock_seen = silent_merge_clock(
+                    &disk_vector_clock,
+                    &copy_clocks,
+                    &state.highest_vector_clock_seen,
+                );
+                return Ok(InspectOutcome::SilentMerge);
+            }
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            if !draft.vetoes.is_empty() {
+                // Read the detail BEFORE `draft` is consumed below. On the
+                // no-veto branch `commit_with_decisions` takes `draft` by
+                // value; here we clone the display detail and return it.
+                return Ok(InspectOutcome::ConflictsPending {
+                    vetoes: draft.vetoes.clone(),
+                    collisions: draft.collisions.clone(),
+                    manifest_hash: draft.manifest_hash.clone(),
+                });
+            }
+            let new_state =
+                commit_with_decisions(vault_folder, password, draft, Vec::new(), now_ms)?;
+            *state = new_state;
+            Ok(InspectOutcome::MergedClean)
+        }
+    }
+}
+
+/// Run one **stateless commit** pass — the call-2 of the interactive
+/// resolution flow, the counterpart to [`sync_pass_inspect`]. The UI
+/// first calls `sync_pass_inspect` (call-1) to obtain the veto set and a
+/// `manifest_hash` freshness token, lets the operator adjudicate each
+/// veto, then calls this function with those `decisions` and the token.
+///
+/// This helper is **stateless** in the same sense as its sibling: it
+/// recomputes the merge draft from scratch via `sync_once` /
+/// `prepare_merge` (call-1's draft is never carried across the
+/// round-trip) and then re-validates freshness before writing.
+///
+/// # Freshness contract (TOCTOU gate)
+/// On the `ConcurrentDetected` arm — the only arm a real resolution
+/// round-trip reaches — the recomputed `manifest_hash` is compared
+/// against `expected_manifest_hash` (the token call-1 handed the UI).
+/// If a concurrent writer advanced the on-disk manifest between call-1
+/// and call-2, the recomputed hash differs and this returns
+/// [`SyncError::EvidenceStale`] **before** `prepare_merge` /
+/// `commit_with_decisions` run — so a stale token never writes a byte.
+/// (`commit_with_decisions` re-checks the hash internally as a second,
+/// independent gate; this early check keeps the failure cheap and makes
+/// the no-write guarantee hold even on the recompute path.)
+///
+/// **Scope of the gate — auto-advance arms discard the decisions.** The
+/// token is only consulted on the diverging (`ConcurrentDetected` +
+/// non-empty `diverging_blocks`) arm. If a concurrent writer races the
+/// disk forward so that `sync_once` now re-classifies the state as a
+/// non-diverging arm — `NothingToDo`, `AppliedAutomatically`, or
+/// `SilentMerge` — this returns that arm directly and the caller's
+/// `decisions` are **silently dropped** (the merge that produced the
+/// veto no longer exists in the same shape). This is CRDT-correct: on
+/// those arms the disk's vector clock has moved to a state that already
+/// subsumes the local one, so adopting it is the right resolution
+/// regardless of what the operator chose in the now-stale modal — but it
+/// does mean a `KeepLocal` choice can be overridden by an incoming
+/// dominating update that carries the tombstone. Nothing *incorrect* is
+/// written; the modal's intent is simply moot. A caller that needs the
+/// operator's choice to be authoritative must re-inspect and re-prompt.
+///
+/// # Decision coverage
+/// `decisions` must exactly cover the **recomputed** veto set:
+/// `commit_with_decisions` enforces a bijection between decision and
+/// veto `record_id`s, failing with [`SyncError::MissingVetoDecision`] /
+/// [`SyncError::UnknownVetoDecision`] otherwise. Because the draft is
+/// recomputed, the freshness gate above is what guarantees the veto set
+/// the caller adjudicated still matches the one being committed against.
+///
+/// # State mutation
+/// Mirrors [`sync_pass_inspect`] on the shared arms
+/// (`AppliedAutomatically` / `SilentMerge` advance `state`,
+/// `MergedClean` advances after the decision-driven commit). On the
+/// stale-token path nothing is written and `state` is left untouched.
+///
+/// # Errors
+/// Returns [`SyncError::EvidenceStale`] if the freshness token no longer
+/// matches the on-disk manifest. Any other [`SyncError`] from the
+/// underlying `sync_once` / `prepare_merge` / `commit_with_decisions`
+/// (including the veto-coverage errors above) bubbles up verbatim.
+pub fn sync_pass_commit_decisions(
+    vault_folder: &Path,
+    identity: &UnlockedIdentity,
+    password: &SecretBytes,
+    state: &mut SyncState,
+    expected_manifest_hash: ManifestHash,
+    decisions: Vec<VetoDecision>,
+    now_ms: u64,
+) -> Result<SyncPassOutcome, SyncError> {
+    let outcome = sync_once(vault_folder, identity, state, now_ms)?;
+    match outcome {
+        SyncOutcome::NothingToDo => Ok(SyncPassOutcome::NothingToDo),
+        SyncOutcome::AppliedAutomatically { new_state } => {
+            *state = new_state;
+            Ok(SyncPassOutcome::AppliedAutomatically)
+        }
+        SyncOutcome::RollbackRejected(_evidence) => Ok(SyncPassOutcome::RollbackRejected),
+        SyncOutcome::ConcurrentDetected {
+            bundle,
+            plan,
+            manifest_hash,
+            disk_vector_clock,
+            local_highest_seen: _,
+        } => {
+            if plan.diverging_blocks.is_empty() {
+                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
+                    .copies
+                    .iter()
+                    .map(|c| c.manifest.vector_clock.as_slice())
+                    .collect();
+                state.highest_vector_clock_seen = silent_merge_clock(
+                    &disk_vector_clock,
+                    &copy_clocks,
+                    &state.highest_vector_clock_seen,
+                );
+                return Ok(SyncPassOutcome::SilentMerge);
+            }
+            // Freshness gate FIRST: if a concurrent writer advanced the
+            // manifest since call-1, reject before any write so a stale
+            // token can never mutate the vault.
+            if manifest_hash != expected_manifest_hash {
+                return Err(SyncError::EvidenceStale);
+            }
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            let new_state =
+                commit_with_decisions(vault_folder, password, draft, decisions, now_ms)?;
             *state = new_state;
             Ok(SyncPassOutcome::MergedClean)
         }

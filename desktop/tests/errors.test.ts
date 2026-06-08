@@ -271,6 +271,7 @@ describe('error code allowlists', () => {
       'sync_state_vault_mismatch',
       'sync_state_corrupt',
       'sync_failed',
+      'sync_decisions_incomplete',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

@@ -177,6 +177,9 @@ pub enum AppError {
     #[error("Another sync is already in progress for this vault")]
     SyncInProgress,
 
+    #[error("Some conflicts weren't resolved")]
+    SyncDecisionsIncomplete,
+
     #[error("Sync failed")]
     SyncFailed {
         #[serde(skip_serializing)]
@@ -340,6 +343,11 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::SyncEvidenceStale => AppError::SyncEvidenceStale,
         FfiVaultError::SyncInProgress => AppError::SyncInProgress,
         FfiVaultError::SyncFailed { detail } => AppError::SyncFailed { detail },
+        // The committed decisions did not cover the recomputed veto set (UI bug
+        // or a race against a concurrent change). Typed variant so the UI can
+        // distinguish "couldn't apply your choices, retry" from a generic sync
+        // failure and re-open the conflict resolver.
+        FfiVaultError::SyncDecisionsIncomplete => AppError::SyncDecisionsIncomplete,
     }
 }
 
@@ -596,6 +604,21 @@ mod tests {
         });
         assert_eq!(v["code"], "contact_not_found");
         assert_eq!(v["contact_uuid_hex"], "cd");
+    }
+
+    #[test]
+    fn sync_decisions_incomplete_serializes_code() {
+        let v = serde_json::to_value(AppError::SyncDecisionsIncomplete).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "code": "sync_decisions_incomplete" })
+        );
+    }
+
+    #[test]
+    fn map_ffi_error_promotes_sync_decisions_incomplete() {
+        let mapped = map_ffi_error(FfiVaultError::SyncDecisionsIncomplete);
+        assert!(matches!(mapped, AppError::SyncDecisionsIncomplete));
     }
 
     #[test]

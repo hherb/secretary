@@ -9,7 +9,7 @@
 //! [`tombstone_veto_set`] (pure-function veto detector, `pub(crate)` —
 //! kept internal and consumed by `prepare_merge` per record).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use zeroize::Zeroize;
@@ -20,7 +20,9 @@ use crate::crypto::secret::Sensitive;
 use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
 use crate::sync::bundle::{compute_manifest_hash, ManifestSnapshot, VaultBundle};
-use crate::sync::draft::{BlockId, DraftMerge, RecordId, RecordTombstoneVeto};
+use crate::sync::draft::{
+    BlockId, DraftMerge, RecordCollisionSummary, RecordId, RecordTombstoneVeto,
+};
 use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
 use crate::unlock::UnlockedIdentity;
@@ -378,6 +380,11 @@ pub fn prepare_merge(
     let mut vetoes: Vec<RecordTombstoneVeto> = Vec::new();
     let mut per_block_clocks: BTreeMap<[u8; 16], Vec<VectorClockEntry>> = BTreeMap::new();
     let mut per_block_records: BTreeMap<[u8; 16], Vec<RecordId>> = BTreeMap::new();
+    // Metadata-only field-collision accumulator: record_uuid → sorted,
+    // deduped set of colliding field names across the per-copy fold.
+    // Projected into `DraftMerge.collisions` at the end — carries no
+    // secret values (the `merge_block` step keeps `winner`/`loser`).
+    let mut collisions: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
 
     for block_uuid in &plan.diverging_blocks {
         let divergence =
@@ -443,6 +450,17 @@ pub fn prepare_merge(
                 detail: format!("merge_block: {e}"),
             })?;
 
+            // Capture metadata-only field collisions BEFORE `merged` is
+            // moved into `acc_records`. Projects already-computed LWW
+            // collision metadata into the accumulator; touches no merge
+            // logic and copies only field-name strings, never values.
+            for rc in &merged.collisions {
+                let entry = collisions.entry(rc.record_uuid).or_default();
+                for fc in &rc.field_collisions {
+                    entry.insert(fc.field_name.clone());
+                }
+            }
+
             acc_records = merged
                 .merged
                 .records
@@ -507,12 +525,21 @@ pub fn prepare_merge(
         post_merge_clock = merge_vector_clocks(&post_merge_clock, &copy.manifest.vector_clock);
     }
 
+    let collisions: Vec<RecordCollisionSummary> = collisions
+        .into_iter()
+        .map(|(record_id, names)| RecordCollisionSummary {
+            record_id,
+            field_names: names.into_iter().collect(),
+        })
+        .collect();
+
     Ok(DraftMerge {
         vault_uuid: bundle.canonical.manifest.vault_uuid,
         plan: plan.clone(),
         manifest_hash: compute_manifest_hash(&bundle.canonical.raw_envelope_bytes),
         merged_records: merged_records.into_values().collect(),
         vetoes,
+        collisions,
         post_merge_clock,
         per_block_clocks,
         per_block_records,

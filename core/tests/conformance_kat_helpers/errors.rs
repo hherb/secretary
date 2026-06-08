@@ -30,6 +30,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::SyncEvidenceStale => "SyncEvidenceStale",
         E::SyncInProgress => "SyncInProgress",
         E::SyncFailed { .. } => "SyncFailed",
+        E::SyncDecisionsIncomplete => "SyncDecisionsIncomplete",
     }
 }
 

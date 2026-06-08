@@ -35,5 +35,5 @@ pub use edit::{
 };
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
 pub use recipient::{RecipientDto, RecipientKindDto};
-pub use sync::{SyncOutcomeDto, SyncStatusDto};
+pub use sync::{CollisionDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto};
 pub use trash::TrashedBlockDto;

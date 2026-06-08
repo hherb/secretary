@@ -89,6 +89,12 @@ pub struct DraftMerge {
     /// supply one [`VetoDecision`] per entry. Empty vec = silent merge.
     #[zeroize(skip)]
     pub vetoes: Vec<RecordTombstoneVeto>,
+    /// Metadata-only field-collision summaries for the informational
+    /// "auto-merged silently" notice. One entry per record that had ≥1
+    /// field LWW collision in this merge. `#[zeroize(skip)]` — values
+    /// are plaintext field names, not secret material.
+    #[zeroize(skip)]
+    pub collisions: Vec<RecordCollisionSummary>,
     /// Component-wise max of canonical + every copy's manifest-level
     /// vector clock. Becomes the manifest's `vector_clock` post-commit
     /// (caller's local `SyncState.highest_vector_clock_seen` advances
@@ -150,6 +156,23 @@ pub struct RecordTombstoneVeto {
     pub disk_tombstone_at_ms: u64,
     /// 16-byte UUID of the device that recorded the tombstone.
     pub disk_tombstoner_device: [u8; 16],
+}
+
+/// Metadata-only summary of one record's field-level LWW collisions
+/// during a concurrent merge. Surfaced for an informational
+/// "auto-merged" notice. Carries **no values** —
+/// [`crate::vault::conflict::FieldCollision`]'s `winner`/`loser`
+/// (`RecordField`, secret-bearing) stay inside the merge step. The
+/// `field_names` are plaintext metadata (like the browse-path
+/// `FieldMetaDto`), so no zeroize obligation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordCollisionSummary {
+    /// 16-byte UUID of the record whose fields collided.
+    pub record_id: RecordId,
+    /// Names of the fields where both sides held differing values and
+    /// LWW silently picked a winner. Sorted ascending; deduped across
+    /// the per-copy fold.
+    pub field_names: Vec<String>,
 }
 
 /// Caller's decision on a single tombstone veto.
@@ -243,6 +266,20 @@ mod tests {
         assert_eq!(veto.local_state.record_type, "kv");
     }
 
+    /// [`RecordCollisionSummary`] is metadata-only: it carries a record
+    /// UUID and a list of plaintext field names, and no secret-bearing
+    /// `RecordField` values. This test pins the shape so a future edit
+    /// can't silently widen it to carry `winner`/`loser` payloads.
+    #[test]
+    fn record_collision_summary_is_metadata_only() {
+        let s = RecordCollisionSummary {
+            record_id: [7u8; 16],
+            field_names: vec!["password".to_string(), "url".to_string()],
+        };
+        assert_eq!(s.record_id, [7u8; 16]);
+        assert_eq!(s.field_names, vec!["password", "url"]);
+    }
+
     /// [`VetoDecision`] equality is structural over the variant
     /// discriminant and the embedded `record_id`. Two `KeepLocal`s on
     /// the same record_id compare equal; a `KeepLocal` and an
@@ -302,6 +339,7 @@ mod tests {
             manifest_hash: ManifestHash([0; 32]),
             merged_records: Vec::new(),
             vetoes: Vec::new(),
+            collisions: Vec::new(),
             post_merge_clock: Vec::new(),
             per_block_clocks: per_block_clocks.clone(),
             per_block_records: per_block_records.clone(),

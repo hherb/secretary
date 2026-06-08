@@ -158,6 +158,7 @@ mod tests {
             manifest_hash: ManifestHash([0; 32]),
             merged_records: merged,
             vetoes,
+            collisions: vec![],
             post_merge_clock: vec![],
             per_block_clocks: BTreeMap::new(),
             per_block_records: BTreeMap::new(),

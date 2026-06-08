@@ -12,9 +12,13 @@
 
   type Props = {
     onSynced: (outcome: SyncOutcome) => void;
+    onConflicts: (
+      outcome: Extract<SyncOutcome, { kind: 'conflictsPending' }>,
+      password: string
+    ) => void;
     onCancel: () => void;
   };
-  let { onSynced, onCancel }: Props = $props();
+  let { onSynced, onConflicts, onCancel }: Props = $props();
 
   let dialogEl: HTMLDialogElement | undefined = $state();
   let password = $state('');
@@ -44,6 +48,12 @@
     error = null;
     try {
       const outcome = await syncNow(password);
+      if (outcome.kind === 'conflictsPending') {
+        const pw = password; // hand the entered password to the resolution flow
+        password = ''; // clear our own copy; the parent now owns it
+        onConflicts(outcome, pw);
+        return;
+      }
       password = '';
       onSynced(outcome);
     } catch (err) {
