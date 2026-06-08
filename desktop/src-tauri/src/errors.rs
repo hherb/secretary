@@ -340,6 +340,13 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::SyncEvidenceStale => AppError::SyncEvidenceStale,
         FfiVaultError::SyncInProgress => AppError::SyncInProgress,
         FfiVaultError::SyncFailed { detail } => AppError::SyncFailed { detail },
+        // The committed decisions did not cover the recomputed veto set (UI bug
+        // or a race against a concurrent change). Fold to the generic SyncFailed
+        // bucket with the intended user-facing message; Task 8's interactive
+        // resolution command may promote this to a dedicated typed variant.
+        FfiVaultError::SyncDecisionsIncomplete => AppError::SyncFailed {
+            detail: "couldn't apply your choices — try again".to_string(),
+        },
     }
 }
 
