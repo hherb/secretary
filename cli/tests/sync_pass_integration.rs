@@ -862,3 +862,91 @@ fn stage_smoke_vault() {
     println!("enter the password, and resolve the tombstone veto in the modal.");
     println!("(After the smoke, delete the seeded state file above to leave no trace.)\n");
 }
+
+// --- Committed fixture generator (#187 Python round-trip) ---------------
+
+/// Generator (run on demand, human-reviewed diff) for the committed
+/// two-device divergence fixture consumed by the Python #187 round-trip
+/// test. Reuses `stage_concurrent_veto_vault` + a seeded Concurrent
+/// `SyncState`, self-validates that the pair yields `ConflictsPending`,
+/// then copies the vault folder + the serialized state into
+/// `core/tests/data/sync_conflict_fixture/`.
+///
+/// Run:
+///   cargo test --release -p secretary-cli --test sync_pass_integration -- \
+///       --ignored generate_sync_conflict_fixture --nocapture
+///
+/// Diff is human-reviewed before commit; expected diff is scoped to
+/// `core/tests/data/sync_conflict_fixture/` and nothing else.
+#[test]
+#[ignore]
+fn generate_sync_conflict_fixture() {
+    let (_tmp, vault_dir, identity, password, vault_uuid, _block_uuid) =
+        stage_concurrent_veto_vault();
+
+    // Seeded local clock: a device absent from both disk manifests -> the
+    // disk state classifies as Concurrent and the merge raises a veto.
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+
+    // Self-validate: the fixture must actually pause on a veto, else it is
+    // not a valid ConflictsPending fixture. Inspect writes nothing.
+    let mut probe = state.clone();
+    match sync_pass_inspect(&vault_dir, &identity, &password, &mut probe, 0)
+        .expect("inspect must return Ok")
+    {
+        InspectOutcome::ConflictsPending { vetoes, .. } => {
+            assert!(!vetoes.is_empty(), "fixture must yield >=1 veto");
+        }
+        other => panic!("fixture did not pause on a veto: {other:?}"),
+    }
+
+    // Destination tree under core/tests/data/.
+    let dest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/tests/data/sync_conflict_fixture");
+    let _ = fs::remove_dir_all(&dest);
+    let vault_dest = dest.join("vault");
+    let state_dest = dest.join("state");
+    fs::create_dir_all(&state_dest).expect("create_dir_all state/");
+    copy_dir_recursive_fixture(&vault_dir, &vault_dest);
+
+    // Persist the seeded concurrent SyncState into state/ (the exact bytes
+    // the Python test will load as its state_dir).
+    secretary_cli::state::save(&state_dest, &state).expect("save SyncState");
+
+    fs::write(
+        dest.join("README.md"),
+        "# sync_conflict_fixture (#187, generated)\n\n\
+         Two-device divergence: `vault/` holds a canonical manifest + a sibling\n\
+         conflict-copy manifest that tombstones a record the canonical side\n\
+         still has live; `state/<uuid>.state.cbor` is a seeded SyncState whose\n\
+         clock is Concurrent with both manifests. Loading `vault/` with password\n\
+         \"correct horse battery staple\" and `state/` as the state dir makes\n\
+         `sync_vault` return ConflictsPending (vetoes non-empty, collisions\n\
+         empty — the tombstone merge yields no field collision; see #192).\n\n\
+         Regenerate via: cargo test --release -p secretary-cli --test \
+         sync_pass_integration -- --ignored generate_sync_conflict_fixture \
+         --nocapture\n",
+    )
+    .expect("write fixture README");
+
+    eprintln!("wrote sync_conflict_fixture to {}", dest.display());
+}
+
+/// Local recursive dir copy for the generator (test-only).
+fn copy_dir_recursive_fixture(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_recursive_fixture(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+}
