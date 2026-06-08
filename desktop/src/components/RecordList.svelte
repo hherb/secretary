@@ -12,6 +12,7 @@
   import RecordRow from './RecordRow.svelte';
   import BlockRecipients from './BlockRecipients.svelte';
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
+  import { isContentlessTombstone } from '../lib/records';
 
   type Props = { block: BlockSummaryDto };
   let { block }: Props = $props();
@@ -21,6 +22,9 @@
   let showDeleted = $state(false);
   // Record awaiting delete confirmation; the ConfirmDialog mounts while set.
   let pendingDelete = $state<RecordDto | null>(null);
+  // Record awaiting resurrect confirmation (only set for a contentless
+  // tombstone — a resurrect that would bring back an empty shell).
+  let pendingRestore = $state<RecordDto | null>(null);
 
   // Monotonic generation counter guarding against out-of-order fetches: each
   // load() bumps it and only writes state if it is still the newest call. One
@@ -73,7 +77,18 @@
     }
   }
 
-  async function onRestore(record: RecordDto) {
+  function onRestore(record: RecordDto) {
+    // A contentless tombstone resurrects to an empty shell — confirm first so
+    // the empty result is expected, not a surprise. A still-filled tombstone
+    // resurrects one-click (lossless undelete, unchanged behaviour).
+    if (isContentlessTombstone(record)) {
+      pendingRestore = record;
+      return;
+    }
+    void doRestore(record);
+  }
+
+  async function doRestore(record: RecordDto) {
     error = null;
     try {
       await resurrectRecord(block.blockUuidHex, record.recordUuidHex);
@@ -81,6 +96,13 @@
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
     }
+  }
+
+  async function confirmRestore() {
+    const target = pendingRestore;
+    if (!target) return;
+    pendingRestore = null;
+    await doRestore(target);
   }
 </script>
 
@@ -110,10 +132,20 @@
 
 {#if pendingDelete}
   <ConfirmDialog
-    title="Delete this record?"
-    body="It moves to deleted and can be restored via “Show deleted”."
-    confirmLabel="Delete"
+    title=”Delete this record?”
+    body=”It moves to deleted and can be restored via “Show deleted”.”
+    confirmLabel=”Delete”
     onConfirm={confirmDelete}
     onCancel={() => (pendingDelete = null)}
+  />
+{/if}
+
+{#if pendingRestore}
+  <ConfirmDialog
+    title=”Resurrect an empty record?”
+    body=”This record has no stored contents to recover — resurrecting brings it back with only its type and tags. Contents are discarded when a record&apos;s deletion is merged from another device.”
+    confirmLabel=”Resurrect”
+    onConfirm={confirmRestore}
+    onCancel={() => (pendingRestore = null)}
   />
 {/if}
