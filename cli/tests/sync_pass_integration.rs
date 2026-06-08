@@ -879,7 +879,7 @@ fn stage_smoke_vault() {
 /// Diff is human-reviewed before commit; expected diff is scoped to
 /// `core/tests/data/sync_conflict_fixture/` and nothing else.
 #[test]
-#[ignore]
+#[ignore = "fixture generator; run with --ignored generate_sync_conflict_fixture --nocapture"]
 fn generate_sync_conflict_fixture() {
     let (_tmp, vault_dir, identity, password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
