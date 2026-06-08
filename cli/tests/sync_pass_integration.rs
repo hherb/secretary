@@ -26,6 +26,7 @@ use secretary_cli::pipeline::{
     sync_pass_commit_decisions, sync_pass_inspect, sync_pass_pause_on_conflict, InspectOutcome,
     SyncPassOutcome,
 };
+use secretary_cli::state::{default_state_dir, load, save, state_file_path};
 use secretary_core::crypto::secret::{SecretBytes, SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
@@ -758,4 +759,106 @@ fn commit_decisions_stale_token_is_rejected() {
     .unwrap_err();
     assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
     assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
+}
+
+// --- Manual-smoke staging helper (#161) --------------------------------
+
+/// Materialize the two-device tombstone-veto divergence into a *persistent*
+/// vault folder the desktop dev app can open, so the D.1.15 conflict-
+/// resolution UI can be smoke-tested on a single machine with no second
+/// device and no network — the "divergence" is purely the canonical +
+/// sibling conflict-copy files `stage_concurrent_veto_vault` already writes.
+///
+/// **A staged vault alone does not fire a veto.** `sync_once` only
+/// classifies the disk as `ConcurrentDetected` (the arm that raises the
+/// tombstone veto) when the caller's local `SyncState` is *concurrent*
+/// with the on-disk vector clocks — neither dominates. The desktop app
+/// loads that state from the platform sync cache
+/// ([`default_state_dir`]); for a never-synced vault it's **empty**, so
+/// the disk strictly dominates and the pass auto-applies (`it just
+/// synced`, no modal). So this helper also seeds a concurrent `SyncState`
+/// (a local device absent from both manifests, mirroring the
+/// `inspect_returns_veto_detail_*` test) into that same cache, keyed by
+/// the staged vault's uuid. The desktop's first "Sync now" then loads it
+/// and the veto fires.
+///
+/// `#[ignore]` so it never runs in the normal suite (it would otherwise
+/// require `SMOKE_OUT` and write to the platform cache). Invoke explicitly:
+///
+/// ```bash
+/// SMOKE_OUT=/tmp/veto_smoke cargo test --release -p secretary-cli \
+///   --test sync_pass_integration -- --ignored stage_smoke_vault --nocapture
+/// ```
+///
+/// It clears `$SMOKE_OUT` (so a re-run starts clean), copies the staged
+/// divergent golden vault into it, seeds the concurrent sync state, and
+/// prints the folder path + unlock password + the seeded state-file path
+/// (so it can be deleted afterward). Then `cd desktop && pnpm tauri dev`,
+/// open that folder, and click "Sync now" → the resolution modal lists the
+/// disputed record.
+///
+/// The printed password is the *golden test vault's* fixture password, not
+/// a real secret — printing it here is intentional and smoke-only.
+#[test]
+#[ignore = "manual smoke staging helper; set SMOKE_OUT and run with --ignored --nocapture"]
+fn stage_smoke_vault() {
+    let dest = std::env::var("SMOKE_OUT").expect(
+        "set SMOKE_OUT to the destination vault folder, e.g. \
+         SMOKE_OUT=/tmp/veto_smoke cargo test ... -- --ignored stage_smoke_vault --nocapture",
+    );
+    let dest = PathBuf::from(dest);
+
+    // Stage the divergence in a tempdir (kept alive via `_tmp` until the copy
+    // below completes), then persist a clean copy to $SMOKE_OUT.
+    let (_tmp, vault_dir, identity, password, vault_uuid, block_uuid) =
+        stage_concurrent_veto_vault();
+
+    if dest.exists() {
+        fs::remove_dir_all(&dest).expect("clear existing SMOKE_OUT folder for a clean re-run");
+    }
+    copy_dir_recursive(&vault_dir, &dest);
+
+    // Seed the concurrent sync state into the SAME platform cache the desktop
+    // app reads (default_state_dir, keyed by vault_uuid). Local device 0x0C is
+    // absent from both disk manifests, so sync_once sees the disk as Concurrent
+    // and the merge raises the veto. Without this the app's empty state lets
+    // the disk dominate and the pass auto-applies (no modal).
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+    let state_dir = default_state_dir()
+        .expect("platform data dir for the sync-state cache (the desktop app uses the same path)");
+    save(&state_dir, &state).expect("seed concurrent sync state");
+    let state_file = state_file_path(&state_dir, vault_uuid);
+
+    // Self-check: reload the seeded state from disk (exactly the read path the
+    // desktop takes) and confirm an inspect against the persisted vault fires
+    // the veto — so the smoke can't silently "just sync" again. The
+    // ConflictsPending arm writes nothing and advances no state, so this does
+    // not consume the conflict copies or disturb the seeded state file.
+    let mut reloaded = load(&state_dir, vault_uuid).expect("reload seeded state");
+    let veto_count = match sync_pass_inspect(&dest, &identity, &password, &mut reloaded, 0)
+        .expect("inspect on the staged vault")
+    {
+        InspectOutcome::ConflictsPending { vetoes, .. } => vetoes.len(),
+        other => panic!(
+            "self-check FAILED: expected ConflictsPending, got {other:?} — \
+             the GUI would not fire a veto. Did the staged vault or seeded \
+             state drift?"
+        ),
+    };
+
+    let pw = String::from_utf8_lossy(password.expose()).into_owned();
+    println!("\n=== D.1.15 conflict-resolution smoke vault staged ===");
+    println!("  vault folder : {}", dest.display());
+    println!("  password     : {pw}");
+    println!("  vault uuid   : {}", format_uuid_hyphenated(&vault_uuid));
+    println!("  disputed blk : {}", format_uuid_hyphenated(&block_uuid));
+    println!("  seeded state : {}", state_file.display());
+    println!("  self-check   : inspect fires ConflictsPending with {veto_count} veto(es) ✓");
+    println!("\nNext: `cd desktop && pnpm tauri dev`, open the folder above, click \"Sync now\",");
+    println!("enter the password, and resolve the tombstone veto in the modal.");
+    println!("(After the smoke, delete the seeded state file above to leave no trace.)\n");
 }
