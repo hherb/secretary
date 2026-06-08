@@ -8,17 +8,27 @@
 
 D.1.13–D.1.15 shipped the full sync surface (`sync_status`, `sync_vault`,
 `sync_commit_decisions` + the interactive conflict-resolution DTOs) as **bridge
-Rust functions** consumed directly by the desktop `src-tauri` crate. The native
-mobile apps (Sub-project D, Swift/Kotlin via uniffi) and any Python consumer
-(via pyo3) cannot sync at all: the **function/DTO surface is 100% greenfield on
-both bindings**. The sync `FfiVaultError` variants are already threaded through
-both bindings (D.1.13); this slice adds the **functions + DTOs**.
+Rust functions** consumed directly by the desktop `src-tauri` crate. The
+uniffi (Swift/Kotlin) and pyo3 (Python) bindings cannot sync at all: the
+**function/DTO surface is 100% greenfield on both bindings**. The sync
+`FfiVaultError` variants are already threaded through both bindings (D.1.13);
+this slice adds the **functions + DTOs**.
+
+Binding consumers, per [ADR 0007](../../adr/0007-d-row-tauri.md): Sub-project D's
+first-party UI is now a single **Tauri** universal client (Rust core consumed
+directly, *not* via uniffi), so the bindings serve **third-party / alternate
+consumers** — Python automation (pyo3) and Swift/Kotlin host integrations
+(Shortcuts, AutoFill, scripts) — plus they keep the binding surface at parity
+with the bridge and exercise the sync + conflict DTOs cross-language (the
+clean-room differential value). This slice does **not** assume native SwiftUI /
+Compose UI apps; if that ever changes it only strengthens the case for this
+surface.
 
 Projecting only `sync_vault`/`sync_status` (issue #187's original text) would
-recreate the `ConflictsPending` dead-end on mobile/Python that D.1.13–14 had on
-desktop before D.1.15, and would leave the conflict DTOs (`VetoDto` etc.) never
-exercised cross-language. So the slice projects **all three** functions and the
-**full DTO set**.
+recreate the `ConflictsPending` dead-end on those consumers that D.1.13–14 had
+on desktop before D.1.15, and would leave the conflict DTOs (`VetoDto` etc.)
+never exercised cross-language. So the slice projects **all three** functions
+and the **full DTO set**.
 
 ## Architecture decision: explicit `state_dir` parameter
 
@@ -26,8 +36,9 @@ The public bridge sync functions hardcode `default_state_dir()` =
 `dirs::data_dir()/secretary/sync` — a **desktop** path, with no parameter and no
 env override. That path is wrong for the slice's actual consumers:
 
-- **Mobile** (the point of #187): `dirs::data_dir()` is wrong/unavailable inside
-  an iOS/Android sandbox — sync state must live at a path only the caller knows.
+- **Sandboxed / non-desktop consumers**: `dirs::data_dir()` is
+  wrong/unavailable inside an iOS/Android sandbox (or any host that controls its
+  own data location) — sync state must live at a path only the caller knows.
 - **Tests** (Python/Swift/Kotlin): the param-free functions would read/write the
   developer's *real* `~/Library/Application Support/secretary/sync/` —
   non-hermetic and collision-prone.
