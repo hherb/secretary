@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from secretary_ffi_py import (
+    VaultSyncDecisionsIncomplete,
     VaultSyncFailed,
+    VetoDecisionDto,
     sync_commit_decisions,
     sync_status,
     sync_vault,
@@ -76,4 +78,65 @@ def test_sync_commit_decisions_bad_manifest_hash_raises_sync_failed(
     with pytest.raises(VaultSyncFailed):
         sync_commit_decisions(
             str(state_dir), str(vault), VAULT_001_PASSWORD, [], bytes(5), NOW_MS
+        )
+
+
+def _fixture_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[3]
+        / "core"
+        / "tests"
+        / "data"
+        / "sync_conflict_fixture"
+    )
+
+
+def _stage_conflict(tmp_path: Path) -> tuple[Path, Path]:
+    """Copy the committed divergence fixture into writable tempdirs.
+
+    Returns (state_dir, vault_folder) ready for sync_vault.
+    """
+    root = _fixture_root()
+    state_dir = tmp_path / "state"
+    vault = tmp_path / "vault"
+    shutil.copytree(root / "state", state_dir)
+    shutil.copytree(root / "vault", vault)
+    return state_dir, vault
+
+
+def test_conflict_round_trip_keep_local(tmp_path: Path) -> None:
+    state_dir, vault = _stage_conflict(tmp_path)
+
+    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    assert pending.kind == "ConflictsPending"
+    assert len(pending.vetoes) >= 1
+    # Tombstone divergence yields no field collision (see #192).
+    assert pending.collisions == []
+    assert pending.manifest_hash is not None and len(pending.manifest_hash) == 32
+
+    decisions = [VetoDecisionDto(v.record_uuid_hex, True) for v in pending.vetoes]
+    committed = sync_commit_decisions(
+        str(state_dir),
+        str(vault),
+        VAULT_001_PASSWORD,
+        decisions,
+        bytes(pending.manifest_hash),
+        NOW_MS,
+    )
+    assert committed.kind == "MergedClean"
+
+
+def test_commit_decisions_incomplete_raises(tmp_path: Path) -> None:
+    state_dir, vault = _stage_conflict(tmp_path)
+    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    assert pending.kind == "ConflictsPending"
+    # Empty decisions cannot cover a non-empty veto set -> typed error.
+    with pytest.raises(VaultSyncDecisionsIncomplete):
+        sync_commit_decisions(
+            str(state_dir),
+            str(vault),
+            VAULT_001_PASSWORD,
+            [],
+            bytes(pending.manifest_hash),
+            NOW_MS,
         )
