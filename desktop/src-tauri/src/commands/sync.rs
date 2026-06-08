@@ -10,11 +10,14 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_ffi_bridge::{sync_status as bridge_sync_status, sync_vault as bridge_sync_vault};
+use secretary_ffi_bridge::{
+    sync_commit_decisions as bridge_sync_commit_decisions, sync_status as bridge_sync_status,
+    sync_vault as bridge_sync_vault,
+};
 
 use crate::auto_lock::now_ms;
 use crate::commands::shared::{lock_session, vault_uuid_bytes_16};
-use crate::dtos::{SyncOutcomeDto, SyncStatusDto};
+use crate::dtos::{SyncOutcomeDto, SyncStatusDto, VetoDecisionDto};
 use crate::errors::{map_ffi_error, AppError};
 use crate::secret_arg::Password;
 use crate::session::VaultSession;
@@ -59,6 +62,49 @@ pub fn sync_now_impl(
         let outcome = bridge_sync_vault(
             &u.vault_folder,
             SecretBytes::from(password.expose()),
+            now_ms,
+        )
+        .map_err(map_ffi_error)?;
+        Ok(SyncOutcomeDto::from(outcome))
+    })
+}
+
+#[tauri::command]
+pub async fn sync_commit_decisions(
+    state: State<'_, Mutex<VaultSession>>,
+    password: Password,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+) -> Result<SyncOutcomeDto, AppError> {
+    sync_commit_decisions_impl(state.inner(), &password, decisions, manifest_hash, now_ms())
+}
+
+/// Testable core for `sync_commit_decisions` (call-2 of interactive resolution).
+/// Converts the renderer's decisions to the bridge DTO, re-opens an identity
+/// from `password`, and commits over the session's retained vault folder.
+/// `now_ms` is supplied by the wrapper (deterministic in tests). Strict: every
+/// bridge error is mapped, nothing swallowed.
+pub fn sync_commit_decisions_impl(
+    state: &Mutex<VaultSession>,
+    password: &Password,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, AppError> {
+    let bridge_decisions: Vec<secretary_ffi_bridge::VetoDecisionDto> = decisions
+        .into_iter()
+        .map(|d| secretary_ffi_bridge::VetoDecisionDto {
+            record_uuid_hex: d.record_uuid_hex,
+            keep_local: d.keep_local,
+        })
+        .collect();
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        let outcome = bridge_sync_commit_decisions(
+            &u.vault_folder,
+            SecretBytes::from(password.expose()),
+            bridge_decisions,
+            manifest_hash,
             now_ms,
         )
         .map_err(map_ffi_error)?;

@@ -103,6 +103,7 @@ fn main() {
             contacts::list_contact_blocks,
             sync::sync_status,
             sync::sync_now,
+            sync::sync_commit_decisions,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of
