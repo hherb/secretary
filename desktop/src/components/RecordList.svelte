@@ -60,7 +60,7 @@
     void load();
   });
 
-  async function onDelete(record: RecordDto) {
+  function onDelete(record: RecordDto) {
     pendingDelete = record;
   }
 
