@@ -18,9 +18,7 @@
   let deleted = $derived(record.tombstoned === true);
   let contentless = $derived(isContentlessTombstone(record));
   let ariaLabel = $derived(
-    contentless
-      ? `${record.recordType} record, ${countLabel}, no recoverable contents`
-      : `${record.recordType} record, ${countLabel}`
+    `${record.recordType} record, ${countLabel}${contentless ? ', no recoverable contents' : ''}`
   );
 </script>
 
