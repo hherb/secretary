@@ -32,4 +32,10 @@ describe('errors.ts — D.1.14 sync variants', () => {
     expect(msg.title).toBe("Sync didn't complete");
     expect(msg.actionHint).toMatch(/try again/i);
   });
+
+  it('maps sync_decisions_incomplete to a retry message', () => {
+    const msg = userMessageFor({ code: 'sync_decisions_incomplete' });
+    expect(msg.title).toMatch(/couldn.t apply/i);
+    expect(msg.actionHint).toBeDefined();
+  });
 });

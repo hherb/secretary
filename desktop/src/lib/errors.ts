@@ -45,6 +45,7 @@ export const APP_ERROR_CODES = [
   'sync_state_vault_mismatch',
   'sync_state_corrupt',
   'sync_failed',
+  'sync_decisions_incomplete',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -91,6 +92,7 @@ export type AppError =
   | { code: 'sync_state_vault_mismatch' }
   | { code: 'sync_state_corrupt' }
   | { code: 'sync_failed' }
+  | { code: 'sync_decisions_incomplete' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -255,6 +257,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "Sync didn't complete",
         actionHint: 'Something went wrong during sync. Try again.'
+      };
+    case 'sync_decisions_incomplete':
+      return {
+        title: "Couldn't apply your choices",
+        actionHint: 'Some conflicts weren’t resolved — please try syncing again.'
       };
     case 'internal':
       return {
