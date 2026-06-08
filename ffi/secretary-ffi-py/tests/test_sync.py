@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-import secretary_ffi_py
 from secretary_ffi_py import (
     VaultSyncFailed,
     sync_commit_decisions,
