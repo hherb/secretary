@@ -759,3 +759,55 @@ fn commit_decisions_stale_token_is_rejected() {
     assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
     assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
 }
+
+// --- Manual-smoke staging helper (#161) --------------------------------
+
+/// Materialize the two-device tombstone-veto divergence into a *persistent*
+/// vault folder the desktop dev app can open, so the D.1.15 conflict-
+/// resolution UI can be smoke-tested on a single machine with no second
+/// device and no network — the "divergence" is purely the canonical +
+/// sibling conflict-copy files `stage_concurrent_veto_vault` already writes.
+///
+/// `#[ignore]` so it never runs in the normal suite (it would otherwise
+/// require `SMOKE_OUT` and leave files on disk). Invoke explicitly:
+///
+/// ```bash
+/// SMOKE_OUT=/tmp/veto_smoke cargo test --release -p secretary-cli \
+///   --test sync_pass_integration -- --ignored stage_smoke_vault --nocapture
+/// ```
+///
+/// It clears `$SMOKE_OUT` (so a re-run starts clean), copies the staged
+/// divergent golden vault into it, and prints the folder path + the unlock
+/// password. Then `cd desktop && pnpm tauri dev`, open that folder, and
+/// click "Sync now" → the resolution modal lists the disputed record.
+///
+/// The printed password is the *golden test vault's* fixture password, not
+/// a real secret — printing it here is intentional and smoke-only.
+#[test]
+#[ignore = "manual smoke staging helper; set SMOKE_OUT and run with --ignored --nocapture"]
+fn stage_smoke_vault() {
+    let dest = std::env::var("SMOKE_OUT").expect(
+        "set SMOKE_OUT to the destination vault folder, e.g. \
+         SMOKE_OUT=/tmp/veto_smoke cargo test ... -- --ignored stage_smoke_vault --nocapture",
+    );
+    let dest = PathBuf::from(dest);
+
+    // Stage the divergence in a tempdir (kept alive via `_tmp` until the copy
+    // below completes), then persist a clean copy to $SMOKE_OUT.
+    let (_tmp, vault_dir, _identity, password, vault_uuid, block_uuid) =
+        stage_concurrent_veto_vault();
+
+    if dest.exists() {
+        fs::remove_dir_all(&dest).expect("clear existing SMOKE_OUT folder for a clean re-run");
+    }
+    copy_dir_recursive(&vault_dir, &dest);
+
+    let pw = String::from_utf8_lossy(password.expose()).into_owned();
+    println!("\n=== D.1.15 conflict-resolution smoke vault staged ===");
+    println!("  vault folder : {}", dest.display());
+    println!("  password     : {pw}");
+    println!("  vault uuid   : {}", format_uuid_hyphenated(&vault_uuid));
+    println!("  disputed blk : {}", format_uuid_hyphenated(&block_uuid));
+    println!("\nNext: `cd desktop && pnpm tauri dev`, open the folder above, click \"Sync now\",");
+    println!("enter the password, and resolve the tombstone veto in the modal.\n");
+}
