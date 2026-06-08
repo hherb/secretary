@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-08-interactive-conflict-resolution-shipped.md
+docs/handoffs/2026-06-08-honest-resurrect-shipped.md
