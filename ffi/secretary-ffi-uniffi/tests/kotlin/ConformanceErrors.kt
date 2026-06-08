@@ -34,6 +34,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.SyncEvidenceStale -> "SyncEvidenceStale"
     is VaultException.SyncInProgress -> "SyncInProgress"
     is VaultException.SyncFailed -> "SyncFailed"
+    is VaultException.SyncDecisionsIncomplete -> "SyncDecisionsIncomplete"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -66,5 +67,6 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.CannotDeleteOwnerContact,
     is VaultException.SyncStateVaultMismatch,
     is VaultException.SyncEvidenceStale,
-    is VaultException.SyncInProgress -> null
+    is VaultException.SyncInProgress,
+    is VaultException.SyncDecisionsIncomplete -> null
 }
