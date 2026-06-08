@@ -28,6 +28,7 @@ fun main() {
     runSaveBlockAsserts(env)
     runShareBlockAsserts(env)
     runTrashRestoreAsserts(env)
+    runSyncAsserts(env)
 
     if (failures.isNotEmpty()) {
         System.err.println("FAIL: ${failures.size} of $assertsRun assertion(s) failed")
