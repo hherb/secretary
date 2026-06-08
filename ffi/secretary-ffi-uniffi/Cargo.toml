@@ -42,6 +42,11 @@ uniffi = { version = "0.31", features = ["build"] }
 # the lock entry.
 rand_chacha = "0.3"
 
+# Tempdir for the sync namespace-fn unit tests (state-dir seam). Exact pin
+# to match core/Cargo.toml so we share the lock entry — tempfile is on the
+# atomic-write security path, so no caret range.
+tempfile = "=3.27.0"
+
 # In-crate uniffi-bindgen binary. Mozilla's recommended approach: ship
 # the bindgen as a `cargo run --bin` target so the bindgen version is
 # locked to the crate's `uniffi` dep. No global install required.

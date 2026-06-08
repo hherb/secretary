@@ -67,11 +67,15 @@ uniffi::include_scaffolding!("secretary");
 pub use errors::{UnlockError, VaultError};
 pub use namespace::{
     create_vault, open_vault_with_password, open_vault_with_recovery, open_with_password,
-    open_with_recovery, read_block, restore_block, save_block, share_block, trash_block,
+    open_with_recovery, read_block, restore_block, save_block, share_block, sync_commit_decisions,
+    sync_status, sync_vault, trash_block,
 };
 pub use wrappers::block::{BlockReadOutput, FieldHandle, Record};
 pub use wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdentity};
 pub use wrappers::save::{BlockInput, FieldInput, FieldInputValue, RecordInput};
+pub use wrappers::sync::{
+    CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
+};
 pub use wrappers::vault::{BlockSummary, OpenVaultManifest, OpenVaultOutput};
 
 /// Smoke test: returns the vault format version exposed by the core crate.
