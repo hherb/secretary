@@ -41,9 +41,11 @@ pub fn sync_vault(
     sync_vault_in(&state_dir, vault_folder, password, now_ms)
 }
 
-/// Crate-internal seam taking an explicit state dir — used by the unit tests
-/// and by [`sync_vault`]. Mirrors `sync::status::sync_status_in`.
-pub(crate) fn sync_vault_in(
+/// Public explicit-`state_dir` seam — the API the uniffi/pyo3 bindings project
+/// (mobile passes its sandbox path; tests pass a tempdir). The param-free
+/// [`sync_vault`] is the desktop default-dir convenience wrapper. Mirrors
+/// [`crate::sync::status::sync_status_in`].
+pub fn sync_vault_in(
     state_dir: &Path,
     vault_folder: &Path,
     password: SecretBytes,
@@ -152,9 +154,11 @@ pub fn sync_commit_decisions(
     )
 }
 
-/// Crate-internal seam taking an explicit state dir — used by the unit tests
-/// and by [`sync_commit_decisions`]. Mirrors [`sync_vault_in`].
-pub(crate) fn sync_commit_decisions_in(
+/// Public explicit-`state_dir` seam — the API the uniffi/pyo3 bindings project
+/// (mobile passes its sandbox path; tests pass a tempdir). The param-free
+/// [`sync_commit_decisions`] is the desktop default-dir convenience wrapper.
+/// Mirrors [`sync_vault_in`].
+pub fn sync_commit_decisions_in(
     state_dir: &Path,
     vault_folder: &Path,
     password: SecretBytes,
