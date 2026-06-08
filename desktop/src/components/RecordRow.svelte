@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RecordDto } from '../lib/ipc';
   import { formatShortDate } from '../lib/format';
+  import { isContentlessTombstone } from '../lib/records';
 
   // onDelete / onRestore are optional so existing call sites that only
   // browse (no write actions wired) keep working unchanged. When supplied,
@@ -15,13 +16,17 @@
 
   let countLabel = $derived(`${record.fieldCount} field${record.fieldCount === 1 ? '' : 's'}`);
   let deleted = $derived(record.tombstoned === true);
+  let contentless = $derived(isContentlessTombstone(record));
+  let ariaLabel = $derived(
+    `${record.recordType} record, ${countLabel}${contentless ? ', no recoverable contents' : ''}`
+  );
 </script>
 
 <div class="record-row-wrap" class:record-row--deleted={deleted}>
   <button
     type="button"
     class="record-row"
-    aria-label={`${record.recordType} record, ${countLabel}`}
+    aria-label={ariaLabel}
     disabled={deleted}
     onclick={() => onClick(record)}
   >
@@ -30,6 +35,9 @@
       <span class="record-row__tag">{tag}</span>
     {/each}
     <span class="record-row__meta">{countLabel} · modified {formatShortDate(record.lastModMs)}</span>
+    {#if contentless}
+      <span class="record-row__no-content">· no recoverable contents</span>
+    {/if}
   </button>
 
   {#if deleted && onRestore}

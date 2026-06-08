@@ -468,6 +468,11 @@ body {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }
+.record-row__no-content {
+  color: var(--color-text-muted);
+  font-style: italic;
+  margin-left: 0.25rem;
+}
 
 /* SettingsDialog — native <dialog> modal. backdrop is the auto
    pseudo-element rendered by the platform when showModal() is called. */
