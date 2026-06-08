@@ -92,7 +92,11 @@ export function lastSyncedLabel(status: SyncStatusDto, nowMs: number): string {
   return `Synced ${formatRelativeTime(status.lastStateWriteMs, nowMs)}`;
 }
 
-/** Build the decision array for `sync_commit_decisions`, in veto order. */
+/** Build the decision array for `sync_commit_decisions`, in veto order.
+ *  Expects a *total* `choices` map (one entry per veto) — callers must gate on
+ *  `decisionsComplete` first; a sparse map would emit `keepLocal: undefined`
+ *  for the missing records. (The dialog passes a derived map that defaults
+ *  every veto to Keep mine, so it is always total.) */
 export function collectDecisions(vetoes: VetoDto[], choices: VetoChoices): VetoDecisionDto[] {
   return vetoes.map((v) => ({ recordUuidHex: v.recordUuidHex, keepLocal: choices[v.recordUuidHex] }));
 }
