@@ -27,8 +27,10 @@ fn sync_vault_in_and_commit_decisions_in_are_public_symbols() {
         &std::path::Path,
         secretary_core::crypto::secret::SecretBytes,
         u64,
-    ) -> Result<secretary_ffi_bridge::SyncOutcomeDto, secretary_ffi_bridge::FfiVaultError> =
-        sync_vault_in;
+    ) -> Result<
+        secretary_ffi_bridge::SyncOutcomeDto,
+        secretary_ffi_bridge::FfiVaultError,
+    > = sync_vault_in;
     #[allow(clippy::type_complexity)]
     let _c: fn(
         &std::path::Path,
@@ -37,6 +39,8 @@ fn sync_vault_in_and_commit_decisions_in_are_public_symbols() {
         Vec<secretary_ffi_bridge::VetoDecisionDto>,
         Vec<u8>,
         u64,
-    ) -> Result<secretary_ffi_bridge::SyncOutcomeDto, secretary_ffi_bridge::FfiVaultError> =
-        sync_commit_decisions_in;
+    ) -> Result<
+        secretary_ffi_bridge::SyncOutcomeDto,
+        secretary_ffi_bridge::FfiVaultError,
+    > = sync_commit_decisions_in;
 }
