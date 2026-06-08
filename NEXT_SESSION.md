@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-08-honest-resurrect-shipped.md
+docs/handoffs/2026-06-09-sync-ffi-projection-shipped.md
