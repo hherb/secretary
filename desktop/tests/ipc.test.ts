@@ -31,7 +31,8 @@ import {
   createVault,
   probeCreateTarget,
   syncStatus,
-  syncNow
+  syncNow,
+  syncCommitDecisions
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -221,6 +222,17 @@ describe('ipc.ts — sync wrappers', () => {
     // unhandled-rejection that fails this test even though `call` catches it.
     invokeMock.mockRejectedValueOnce({ code: 'sync_in_progress' });
     await expect(syncNow('hunter2')).rejects.toMatchObject({ code: 'sync_in_progress' });
+  });
+
+  it('syncCommitDecisions invokes the command with decisions + token', async () => {
+    invokeMock.mockResolvedValueOnce({ kind: 'mergedClean' });
+    const out = await syncCommitDecisions('pw', [{ recordUuidHex: '0a', keepLocal: true }], [1, 2, 3]);
+    expect(invokeMock).toHaveBeenCalledWith('sync_commit_decisions', {
+      password: 'pw',
+      decisions: [{ recordUuidHex: '0a', keepLocal: true }],
+      manifestHash: [1, 2, 3]
+    });
+    expect(out).toEqual({ kind: 'mergedClean' });
   });
 });
 
