@@ -16,6 +16,7 @@
     type SyncMessage
   } from '../lib/sync';
   import SyncPasswordDialog from './SyncPasswordDialog.svelte';
+  import ConflictResolutionDialog from './ConflictResolutionDialog.svelte';
   import Sync from './icons/Sync.svelte';
 
   // Single-call-site constant — keep local rather than promoting to
@@ -26,6 +27,12 @@
   let status = $state<SyncStatusDto | null>(null);
   let dialogOpen = $state(false);
   let notice = $state<SyncMessage | null>(null);
+  // The pending conflict detail + the password entered in the password dialog,
+  // handed up so the resolution dialog can commit without a second prompt. The
+  // password lives transiently in $state (JS can't zeroize) and is nulled on
+  // every terminal path (resolved, cancel, Esc).
+  let conflicts = $state<Extract<SyncOutcome, { kind: 'conflictsPending' }> | null>(null);
+  let conflictPassword = $state<string | null>(null);
 
   const label = $derived(status ? lastSyncedLabel(status, Date.now()) : 'Sync…');
   // Only fold the status into the accessible name once it has loaded — before
@@ -50,6 +57,26 @@
     if (syncChangedData(outcome)) {
       await refreshManifest();
     }
+  }
+
+  function onConflicts(
+    outcome: Extract<SyncOutcome, { kind: 'conflictsPending' }>,
+    password: string
+  ) {
+    dialogOpen = false;
+    conflicts = outcome;
+    conflictPassword = password;
+  }
+
+  async function onResolved(outcome: SyncOutcome) {
+    conflicts = null;
+    conflictPassword = null; // drop the password (cannot zeroize in JS; null it ASAP)
+    await onSynced(outcome); // reuse the post-sync handler (notice + status reload + manifest refresh)
+  }
+
+  function onResolveCancel() {
+    conflicts = null;
+    conflictPassword = null;
   }
 
   // Auto-dismiss: when a notice appears, clear it after SYNC_NOTICE_DISMISS_MS.
@@ -85,5 +112,16 @@
 </div>
 
 {#if dialogOpen}
-  <SyncPasswordDialog {onSynced} onCancel={() => (dialogOpen = false)} />
+  <SyncPasswordDialog {onSynced} {onConflicts} onCancel={() => (dialogOpen = false)} />
+{/if}
+
+{#if conflicts && conflictPassword !== null}
+  <ConflictResolutionDialog
+    vetoes={conflicts.vetoes}
+    collisions={conflicts.collisions}
+    manifestHash={conflicts.manifestHash}
+    password={conflictPassword}
+    {onResolved}
+    onCancel={onResolveCancel}
+  />
 {/if}

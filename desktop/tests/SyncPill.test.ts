@@ -7,7 +7,8 @@ import * as stores from '../src/lib/stores';
 vi.mock('../src/lib/ipc', async (orig) => ({
   ...(await orig<typeof ipc>()),
   syncStatus: vi.fn(),
-  syncNow: vi.fn()
+  syncNow: vi.fn(),
+  syncCommitDecisions: vi.fn()
 }));
 vi.mock('../src/lib/stores', async (orig) => ({
   ...(await orig<typeof stores>()),
@@ -15,12 +16,14 @@ vi.mock('../src/lib/stores', async (orig) => ({
 }));
 const mockStatus = vi.mocked(ipc.syncStatus);
 const mockSyncNow = vi.mocked(ipc.syncNow);
+const mockCommit = vi.mocked(ipc.syncCommitDecisions);
 const mockRefresh = vi.mocked(stores.refreshManifest);
 
 describe('SyncPill.svelte', () => {
   beforeEach(() => {
     mockStatus.mockReset();
     mockSyncNow.mockReset();
+    mockCommit.mockReset();
     mockRefresh.mockReset();
   });
 
@@ -68,6 +71,49 @@ describe('SyncPill.svelte', () => {
     expect(mockRefresh).not.toHaveBeenCalled();
     expect(mockSyncNow).toHaveBeenCalledTimes(1);
     expect(mockSyncNow).toHaveBeenCalledWith('pw');
+  });
+
+  it('on conflictsPending: opens the resolution dialog; onResolved toasts + reloads', async () => {
+    mockStatus
+      .mockResolvedValueOnce({ hasState: true, lastStateWriteMs: null })          // mount
+      .mockResolvedValueOnce({ hasState: true, lastStateWriteMs: Date.now() });    // post-resolve
+    mockSyncNow.mockResolvedValue({
+      kind: 'conflictsPending',
+      vetoes: [
+        {
+          recordUuidHex: 'aa',
+          recordType: 'login',
+          tags: [],
+          fieldNames: ['password'],
+          localLastModMs: 1,
+          peerTombstonedAtMs: 2,
+          peerDeviceHex: 'beef'
+        }
+      ],
+      collisions: [],
+      manifestHash: [1]
+    });
+    mockCommit.mockResolvedValue({ kind: 'mergedClean' });
+    const { findByRole, getByLabelText, findByText } = render(SyncPill);
+
+    // Open password dialog, enter password, sync → conflictsPending.
+    await fireEvent.click(await findByRole('button', { name: /sync/i }));
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+    await fireEvent.click(await findByRole('button', { name: /^sync$/i }));
+
+    // The resolution dialog renders.
+    expect(await findByText(/resolve sync conflicts/i)).toBeTruthy();
+
+    // Apply the (default Keep-mine) decisions → mergedClean.
+    await fireEvent.click(await findByRole('button', { name: /apply & finish sync/i }));
+
+    // Synced notice + status reload + manifest refresh (mergedClean changes data).
+    expect(await findByText(/your vault is up to date/i)).toBeTruthy();
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalledTimes(1));
+    expect(mockStatus).toHaveBeenCalledTimes(2);
+    // The password entered in the password dialog is reused for the commit.
+    expect(mockCommit).toHaveBeenCalledTimes(1);
+    expect(mockCommit).toHaveBeenCalledWith('pw', [{ recordUuidHex: 'aa', keepLocal: true }], [1]);
   });
 
   it('auto-dismisses the notice after SYNC_NOTICE_DISMISS_MS', async () => {
