@@ -132,9 +132,9 @@
 
 {#if pendingDelete}
   <ConfirmDialog
-    title=”Delete this record?”
-    body=”It moves to deleted and can be restored via “Show deleted”.”
-    confirmLabel=”Delete”
+    title="Delete this record?"
+    body="It moves to deleted and can be restored via “Show deleted”."
+    confirmLabel="Delete"
     onConfirm={confirmDelete}
     onCancel={() => (pendingDelete = null)}
   />
@@ -142,9 +142,9 @@
 
 {#if pendingRestore}
   <ConfirmDialog
-    title=”Resurrect an empty record?”
-    body=”This record has no stored contents to recover — resurrecting brings it back with only its type and tags. Contents are discarded when a record&apos;s deletion is merged from another device.”
-    confirmLabel=”Resurrect”
+    title="Resurrect an empty record?"
+    body="This record has no stored contents to recover — resurrecting brings it back with only its type and tags. Contents are discarded when a record's deletion is merged from another device."
+    confirmLabel="Resurrect"
     onConfirm={confirmRestore}
     onCancel={() => (pendingRestore = null)}
   />
