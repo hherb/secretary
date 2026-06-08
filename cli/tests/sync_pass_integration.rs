@@ -615,9 +615,11 @@ fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
                 manifest_hash.0, [0u8; 32],
                 "manifest hash must be a real BLAKE3 digest, not the zero default"
             );
-            // No field collision in this tombstone-vs-live fixture (see
-            // the doc comment); the bridge/desktop layer covers a
-            // collision-populated case.
+            // No field collision in this tombstone-vs-live fixture: the
+            // merge resolves to a tombstone, whose `merge_record` arm
+            // returns an empty collision set. Asserting that
+            // `prepare_merge` actually POPULATES `collisions` needs a
+            // non-tombstone concurrent-edit fixture — tracked in #192.
             let _ = collisions;
         }
         other => panic!("expected ConflictsPending, got {other:?}"),
