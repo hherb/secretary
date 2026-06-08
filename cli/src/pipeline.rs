@@ -421,6 +421,22 @@ pub fn sync_pass_inspect(
 /// independent gate; this early check keeps the failure cheap and makes
 /// the no-write guarantee hold even on the recompute path.)
 ///
+/// **Scope of the gate — auto-advance arms discard the decisions.** The
+/// token is only consulted on the diverging (`ConcurrentDetected` +
+/// non-empty `diverging_blocks`) arm. If a concurrent writer races the
+/// disk forward so that `sync_once` now re-classifies the state as a
+/// non-diverging arm — `NothingToDo`, `AppliedAutomatically`, or
+/// `SilentMerge` — this returns that arm directly and the caller's
+/// `decisions` are **silently dropped** (the merge that produced the
+/// veto no longer exists in the same shape). This is CRDT-correct: on
+/// those arms the disk's vector clock has moved to a state that already
+/// subsumes the local one, so adopting it is the right resolution
+/// regardless of what the operator chose in the now-stale modal — but it
+/// does mean a `KeepLocal` choice can be overridden by an incoming
+/// dominating update that carries the tombstone. Nothing *incorrect* is
+/// written; the modal's intent is simply moot. A caller that needs the
+/// operator's choice to be authoritative must re-inspect and re-prompt.
+///
 /// # Decision coverage
 /// `decisions` must exactly cover the **recomputed** veto set:
 /// `commit_with_decisions` enforces a bijection between decision and

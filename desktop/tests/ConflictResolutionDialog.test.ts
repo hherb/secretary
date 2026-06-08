@@ -62,7 +62,8 @@ describe('ConflictResolutionDialog.svelte', () => {
     expect(alert.textContent).toMatch(/couldn.t apply your choices/i);
     expect(onResolved).not.toHaveBeenCalled();
     // busy reset: the Apply button is enabled again for a retry
-    expect(getByRole('button', { name: /apply & finish sync/i })).not.toHaveProperty('disabled', true);
+    const applyBtn = getByRole('button', { name: /apply & finish sync/i }) as HTMLButtonElement;
+    expect(applyBtn.disabled).toBe(false);
   });
 
   it('toggling "Accept delete" sends keepLocal:false for that veto', async () => {
