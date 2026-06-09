@@ -90,7 +90,14 @@ cp "$BIND_OUT/secretary.swift" "$PKG_SRC/secretary.swift"
 # uniffi rename surfaces as a build error here, not silently.
 HDRS="$STAGING/headers"; mkdir -p "$HDRS"
 cp "$BIND_OUT"/*.h "$HDRS/"
-cp "$BIND_OUT"/*.modulemap "$HDRS/module.modulemap"
+# Destination is a single file, so exactly one modulemap must match — assert it
+# explicitly rather than relying on cp's opaque "not a directory" error if a
+# future uniffi ever emits more than one.
+MODULEMAPS=("$BIND_OUT"/*.modulemap)
+if [[ ${#MODULEMAPS[@]} -ne 1 || ! -f "${MODULEMAPS[0]}" ]]; then
+    echo "ERROR: expected exactly one .modulemap in $BIND_OUT, found: ${MODULEMAPS[*]}" >&2; exit 3
+fi
+cp "${MODULEMAPS[0]}" "$HDRS/module.modulemap"
 
 # --- Step 5: assemble the XCFramework (clean-rebuild; -create refuses overwrite) ---
 echo "==> xcodebuild -create-xcframework"

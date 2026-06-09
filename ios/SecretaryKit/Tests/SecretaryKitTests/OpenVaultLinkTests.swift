@@ -70,7 +70,10 @@ final class OpenVaultLinkTests: XCTestCase {
         var bytes = [UInt8]()
         var i = hex.startIndex
         while i < hex.endIndex {
-            let j = hex.index(i, offsetBy: 2)
+            // `limitedBy:` returns nil (→ a clean XCTUnwrap failure) on an
+            // odd-length string rather than trapping past endIndex.
+            let j = try XCTUnwrap(hex.index(i, offsetBy: 2, limitedBy: hex.endIndex),
+                                  "vault_uuid hex must have an even number of digits")
             bytes.append(try XCTUnwrap(UInt8(hex[i..<j], radix: 16)))
             i = j
         }

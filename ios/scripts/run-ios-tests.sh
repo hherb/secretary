@@ -30,6 +30,11 @@ echo "==> resolving simulator: $SIM_NAME"
 # NB: $SIM_NAME is interpolated into an ERE, so a device name containing regex
 # metacharacters (. + ( etc.) could mis-match — fine for real device names
 # ("iPhone 16", "iPhone 15"), which contain none.
+# `head -1` takes the FIRST matching device regardless of which iOS runtime it
+# is paired with. `simctl` lists devices grouped by runtime, so this is whatever
+# runtime simctl emits first; it assumes every installed runtime is >= the
+# Package.swift deployment floor (iOS 17). If a sub-floor runtime is ever
+# installed and emitted first, pin the runtime via IOS_SIM or extend this match.
 DEVICES="$(xcrun simctl list devices available)"
 SIM_ID="$(printf '%s\n' "$DEVICES" \
     | grep -E "^[[:space:]]*${SIM_NAME} \(" \
