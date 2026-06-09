@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-09-sync-ffi-projection-shipped.md
+docs/handoffs/2026-06-10-d3-ios-xcframework-linkproof-shipped.md

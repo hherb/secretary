@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "uniffi bindings for secretary-core. Exposes vault unlock and the UnlockedIdentity handle; full per-platform bindings live in the iOS/Android sub-projects."
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
 default = []
