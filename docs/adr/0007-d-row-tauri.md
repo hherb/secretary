@@ -1,8 +1,8 @@
 # ADR 0007 — Sub-project D pivots to Tauri-based universal client
 
-**Status:** Accepted (2026-05-27)
+**Status:** Accepted (2026-05-27); **mobile portion superseded (2026-06-09)**
 **Supersedes:** ADR 0001 (Sub-project D portion only — desktop / mobile UI choices; the Rust-core decision in ADR 0001 stands unchanged)
-**Superseded by:** none
+**Superseded by:** ADR 0008 — **mobile (D.3) only**. The desktop decision below (D.1 / D.2 — the Tauri universal client for macOS / Linux / Windows, shipped through D.1.15) **stands unchanged**. ADR 0008 reverts iOS / Android to native SwiftUI / Compose apps via uniffi after a 2026-06 evaluation found Tauri-2-mobile's hardware-backed-key-storage and biometric-bound-key-release story inadequate for this threat model.
 
 ## Context
 
@@ -31,7 +31,7 @@ Sub-project D's slicing is restructured:
 - **D.1** — Tauri walking skeleton on macOS + Linux (current slice; design in `docs/superpowers/specs/2026-05-27-d11-tauri-walking-skeleton-design.md`).
 - **D.1.x** — feature breadth: browse (D.1.2), create vault (D.1.3), edit (D.1.4), share / trash / restore (D.1.5).
 - **D.2** — Linux + Windows desktop maturation (CI matrix, distribution packaging, code signing).
-- **D.3** — Tauri 2 mobile (iOS + Android) using the same Rust + TypeScript codebase. Replaces the original D.2 (SwiftUI) + D.3 (Compose) plan.
+- **D.3** — Tauri 2 mobile (iOS + Android) using the same Rust + TypeScript codebase. Replaces the original D.2 (SwiftUI) + D.3 (Compose) plan. **⚠️ Superseded by ADR 0008 (2026-06-09): mobile reverts to native SwiftUI + Compose via uniffi; this D.3 line no longer holds. Desktop (D.1 / D.2) below is unaffected.**
 
 The original D.4 (browser autofill extensions) remains unchanged in scope — separate slice, post-D.3.
 
