@@ -23,13 +23,21 @@ bash "$SCRIPT_DIR/build-xcframework.sh"
 # Anchor the match to "<name> (" so an exact name like "iPhone 16" does not also
 # match "iPhone 16 Pro" / "iPhone 16 Plus" / "iPhone 16e".
 echo "==> resolving simulator: $SIM_NAME"
-SIM_ID="$(xcrun simctl list devices available \
+# Capture the device list ONCE: a genuine `simctl` failure aborts here under
+# `set -e` (rather than being swallowed by the `|| true` below and misreported
+# as a missing device). The `|| true` then guards ONLY the grep pipeline, where
+# a no-match is legitimately empty.
+# NB: $SIM_NAME is interpolated into an ERE, so a device name containing regex
+# metacharacters (. + ( etc.) could mis-match — fine for real device names
+# ("iPhone 16", "iPhone 15"), which contain none.
+DEVICES="$(xcrun simctl list devices available)"
+SIM_ID="$(printf '%s\n' "$DEVICES" \
     | grep -E "^[[:space:]]*${SIM_NAME} \(" \
     | head -1 \
     | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' || true)"
 if [[ -z "$SIM_ID" ]]; then
     echo "ERROR: no available simulator named '$SIM_NAME'. Available devices:" >&2
-    xcrun simctl list devices available >&2
+    printf '%s\n' "$DEVICES" >&2
     echo "Set IOS_SIM to one of the device names listed above." >&2
     exit 2
 fi
