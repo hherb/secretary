@@ -8,5 +8,7 @@ pub mod orchestration;
 pub mod status;
 
 pub use dto::{CollisionDto, SyncOutcomeDto, VetoDecisionDto, VetoDto};
-pub use orchestration::{sync_commit_decisions, sync_vault};
-pub use status::{sync_status, DeviceClockDto, SyncStatusDto};
+pub use orchestration::{
+    sync_commit_decisions, sync_commit_decisions_in, sync_vault, sync_vault_in,
+};
+pub use status::{sync_status, sync_status_in, DeviceClockDto, SyncStatusDto};

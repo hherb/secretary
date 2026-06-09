@@ -14,4 +14,5 @@
 pub mod block;
 pub mod identity;
 pub mod save;
+pub mod sync;
 pub mod vault;
