@@ -243,8 +243,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<VaultCannotDeleteOwnerContact>(),
     )?;
 
-    // D.1.13 sync error surface — 5 typed exception classes mirroring the
-    // bridge's new FfiVaultError sync variants.
+    // Sync error surface — 6 typed exception classes mirroring the bridge's
+    // FfiVaultError sync variants: the five from D.1.13 (StateVaultMismatch /
+    // StateCorrupt / EvidenceStale / InProgress / Failed) plus
+    // SyncDecisionsIncomplete from D.1.15.
     m.add(
         "VaultSyncStateVaultMismatch",
         py.get_type::<VaultSyncStateVaultMismatch>(),
@@ -264,8 +266,8 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<VaultSyncDecisionsIncomplete>(),
     )?;
 
-    // #187 sync surface — 3 functions + 6 DTO classes (error classes
-    // already registered in the D.1.13 block above).
+    // #187 sync surface — 3 functions + 6 DTO classes (the sync error
+    // classes are already registered in the block above).
     m.add_class::<DeviceClockDto>()?;
     m.add_class::<SyncStatusDto>()?;
     m.add_class::<VetoDto>()?;

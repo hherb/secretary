@@ -91,22 +91,28 @@ impl VetoDecisionDto {
 
 fn outcome_from_bridge(o: secretary_ffi_bridge::SyncOutcomeDto) -> SyncOutcomeDto {
     use secretary_ffi_bridge::SyncOutcomeDto as B;
-    let kind = match &o {
-        B::NothingToDo => "NothingToDo",
-        B::AppliedAutomatically => "AppliedAutomatically",
-        B::SilentMerge => "SilentMerge",
-        B::MergedClean => "MergedClean",
-        B::ConflictsPending { .. } => "ConflictsPending",
-        B::RollbackRejected => "RollbackRejected",
-    }
-    .to_string();
+    // Each arm is listed explicitly (no `_` catch-all) so a future
+    // payload-carrying variant fails to compile here rather than silently
+    // flattening into an empty `kind`-only DTO. Mirrors the uniffi
+    // `sync_outcome_from_bridge` converter's exhaustiveness.
+    let empty = |kind: &str| SyncOutcomeDto {
+        kind: kind.to_string(),
+        vetoes: Vec::new(),
+        collisions: Vec::new(),
+        manifest_hash: None,
+    };
     match o {
+        B::NothingToDo => empty("NothingToDo"),
+        B::AppliedAutomatically => empty("AppliedAutomatically"),
+        B::SilentMerge => empty("SilentMerge"),
+        B::MergedClean => empty("MergedClean"),
+        B::RollbackRejected => empty("RollbackRejected"),
         B::ConflictsPending {
             vetoes,
             collisions,
             manifest_hash,
         } => SyncOutcomeDto {
-            kind,
+            kind: "ConflictsPending".to_string(),
             vetoes: vetoes
                 .into_iter()
                 .map(|v| VetoDto {
@@ -127,15 +133,6 @@ fn outcome_from_bridge(o: secretary_ffi_bridge::SyncOutcomeDto) -> SyncOutcomeDt
                 })
                 .collect(),
             manifest_hash: Some(manifest_hash),
-        },
-        // Non-`ConflictsPending` arms carry no payload; `kind` was set
-        // correctly by the match above. Exhaustive-by-design: a future arm
-        // that DOES carry payload needs its own explicit arm above this one.
-        _ => SyncOutcomeDto {
-            kind,
-            vetoes: Vec::new(),
-            collisions: Vec::new(),
-            manifest_hash: None,
         },
     }
 }
