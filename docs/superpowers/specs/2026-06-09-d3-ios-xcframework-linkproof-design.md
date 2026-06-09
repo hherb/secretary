@@ -89,7 +89,7 @@ Script-relative paths, `set -euo pipefail`, macOS + Xcode preflight guards (mirr
 - `binaryTarget(name: "SecretaryFFI", path: "../Secretary.xcframework")` — the XCFramework.
 - `target(name: "SecretaryKit", dependencies: ["SecretaryFFI"])` — wraps the generated `secretary.swift` high-level Swift API.
 - `testTarget(name: "SecretaryKitTests", dependencies: ["SecretaryKit"], resources: [.copy("Resources/golden_vault_001"), .copy("Resources/golden_vault_001_inputs.json")])` — bundles the staged fixture so it is reachable inside the simulator sandbox via `Bundle.module`.
-- Platform floor: `.iOS(.v15)` (a conservative modern floor; revisit when the app slice sets a real minimum).
+- Platform floor: `.iOS(.v17)`. The floor is nearly irrelevant to this test-only slice (XCTest / `Bundle.module` / the generated Swift all work from iOS 13 up); it is set forward-looking. With no legacy users to support, iOS 17 still covers ~5 years of devices (iPhone XS / 2018 and later) while keeping slice 2's richer `LocalAuthentication` / Keychain / Secure-Enclave APIs and modern Swift concurrency defaults in reach without a later bump. Trivially revisitable when the app slice sets a real minimum.
 
 ## The XCTest — `OpenVaultLinkTests.swift`
 
