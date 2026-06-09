@@ -3,7 +3,7 @@
 # secretary-ffi-uniffi crate, generate the Swift bindings, and stage the
 # golden-vault test fixture into the SPM test target's resources.
 #
-# Produces (all gitignored):
+# Produces these build artifacts (excluded from git via ios/.gitignore):
 #   ios/Secretary.xcframework/
 #   ios/SecretaryKit/Sources/SecretaryKit/secretary.swift
 #   ios/SecretaryKit/Tests/SecretaryKitTests/Resources/{golden_vault_001, golden_vault_001_inputs.json}
@@ -54,23 +54,26 @@ lipo -create \
 DEVICE_LIB="$REPO_ROOT/target/$DEVICE_TARGET/release/$LIB"
 
 # --- Step 4: generate Swift bindings (uniffi-bindgen) ---
-# ADAPTATION (see report): uniffi 0.31's `--library` mode reads the crate's
-# component metadata out of the binary's symbol table. The iOS *staticlib*
-# slices are cross-compiled archives whose metadata uniffi-bindgen (a host
-# tool) cannot read on this host, so we generate the bindings from the HOST
-# cdylib instead. The generated Swift + the C header/modulemap are pure
+# Why a host cdylib for bindgen: uniffi 0.31's `--library` mode reads the
+# crate's component metadata out of the binary's symbol table. The iOS
+# *staticlib* slices are cross-compiled archives whose metadata uniffi-bindgen
+# (a host tool) cannot read on this host, so we generate the bindings from the
+# HOST cdylib instead. The generated Swift + the C header/modulemap are pure
 # source artifacts — identical regardless of which slice they're read from —
 # so packaging the iOS `.a` slices into the XCFramework below remains correct.
 # This mirrors the desktop tests/swift/run.sh, which also reads the cdylib.
 echo "==> cargo build host cdylib (for bindgen metadata)"
 (cd "$REPO_ROOT" && cargo build --release -p "$CRATE")
-HOST_CDYLIB="$REPO_ROOT/target/release/libsecretary_ffi_uniffi.dylib"
+HOST_CDYLIB="$REPO_ROOT/target/release/${LIB%.a}.dylib"
 if [[ ! -f "$HOST_CDYLIB" ]]; then
     echo "ERROR: host cdylib not produced at $HOST_CDYLIB" >&2; exit 3
 fi
 
 echo "==> uniffi-bindgen generate (Swift)"
 BIND_OUT="$STAGING/bindings"; mkdir -p "$BIND_OUT"
+# --release here matches the cdylib build above: reusing the release profile
+# reuses the already-compiled dependency tree, avoiding a multi-minute
+# dev-profile recompile (same rationale as ffi/secretary-ffi-uniffi/tests/swift/run.sh).
 (cd "$REPO_ROOT" && cargo run --release --features cli -p "$CRATE" \
     --bin uniffi-bindgen -- generate \
     --library "$HOST_CDYLIB" \
