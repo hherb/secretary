@@ -71,9 +71,10 @@ final class OpenVaultLinkTests: XCTestCase {
         var i = hex.startIndex
         while i < hex.endIndex {
             let j = hex.index(i, offsetBy: 2)
-            bytes.append(UInt8(hex[i..<j], radix: 16)!)
+            bytes.append(try XCTUnwrap(UInt8(hex[i..<j], radix: 16)))
             i = j
         }
+        XCTAssertEqual(bytes.count, 16, "vault UUID must decode to 16 bytes")
         return Data(bytes)
     }
 }
