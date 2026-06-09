@@ -53,6 +53,7 @@ mod record;
 mod restore;
 mod save;
 mod share;
+mod sync;
 mod trash;
 mod unlock;
 mod vault;
@@ -73,6 +74,10 @@ use record::{read_block, BlockReadOutput, FieldHandle, Record};
 use restore::restore_block;
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
+use sync::{
+    sync_commit_decisions, sync_status, sync_vault, CollisionDto, DeviceClockDto, SyncOutcomeDto,
+    SyncStatusDto, VetoDecisionDto, VetoDto,
+};
 use trash::trash_block;
 use unlock::{
     create_vault, open_with_password, open_with_recovery, CreateVaultOutput, MnemonicOutput,
@@ -238,8 +243,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<VaultCannotDeleteOwnerContact>(),
     )?;
 
-    // D.1.13 sync error surface — 5 typed exception classes mirroring the
-    // bridge's new FfiVaultError sync variants.
+    // Sync error surface — 6 typed exception classes mirroring the bridge's
+    // FfiVaultError sync variants: the five from D.1.13 (StateVaultMismatch /
+    // StateCorrupt / EvidenceStale / InProgress / Failed) plus
+    // SyncDecisionsIncomplete from D.1.15.
     m.add(
         "VaultSyncStateVaultMismatch",
         py.get_type::<VaultSyncStateVaultMismatch>(),
@@ -258,6 +265,18 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultSyncDecisionsIncomplete",
         py.get_type::<VaultSyncDecisionsIncomplete>(),
     )?;
+
+    // #187 sync surface — 3 functions + 6 DTO classes (the sync error
+    // classes are already registered in the block above).
+    m.add_class::<DeviceClockDto>()?;
+    m.add_class::<SyncStatusDto>()?;
+    m.add_class::<VetoDto>()?;
+    m.add_class::<CollisionDto>()?;
+    m.add_class::<SyncOutcomeDto>()?;
+    m.add_class::<VetoDecisionDto>()?;
+    m.add_function(wrap_pyfunction!(sync_status, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_vault, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_commit_decisions, m)?)?;
 
     Ok(())
 }

@@ -10,6 +10,9 @@ use crate::wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdent
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
+mod sync;
+pub use sync::{sync_commit_decisions, sync_status, sync_vault};
+
 /// Unlock a vault using its master password. uniffi-projected.
 ///
 /// # Errors
@@ -389,7 +392,7 @@ pub fn restore_block(
 
 /// Validate a 16-byte UUID slice; surface wrong length as
 /// [`VaultError::InvalidArgument`] with the field name in the detail.
-fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
+pub(super) fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
     bytes.try_into().map_err(|_| VaultError::InvalidArgument {
         detail: format!("{field} must be 16 bytes, got {}", bytes.len()),
     })

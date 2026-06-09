@@ -43,9 +43,11 @@ pub fn sync_status(vault_uuid: [u8; 16]) -> Result<SyncStatusDto, FfiVaultError>
     sync_status_in(&state_dir, vault_uuid)
 }
 
-/// Crate-internal seam taking an explicit state dir — used by the unit tests
-/// and by `sync_vault`. Mirrors `settings::load_or_create_device_uuid_in`.
-pub(crate) fn sync_status_in(
+/// Public explicit-`state_dir` seam — the API the uniffi/pyo3 bindings project
+/// (mobile passes its sandbox path; tests pass a tempdir). The param-free
+/// [`sync_status`] is the desktop default-dir convenience wrapper. Also used by
+/// the in-crate unit tests.
+pub fn sync_status_in(
     state_dir: &Path,
     vault_uuid: [u8; 16],
 ) -> Result<SyncStatusDto, FfiVaultError> {

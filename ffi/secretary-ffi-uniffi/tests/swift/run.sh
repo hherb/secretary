@@ -86,6 +86,7 @@ swiftc \
     "$SCRIPT_DIR/SmokeSaveBlock.swift" \
     "$SCRIPT_DIR/SmokeShareBlock.swift" \
     "$SCRIPT_DIR/SmokeTrashRestore.swift" \
+    "$SCRIPT_DIR/SmokeSync.swift" \
     "$SCRIPT_DIR/main.swift" \
     -o "$BIN_OUT"
 
