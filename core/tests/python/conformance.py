@@ -1626,8 +1626,7 @@ def verify_device_slot(base: "Path", inputs: "dict[str, Any]", ibk_expected: byt
     secret = bytes.fromhex(inputs["device_slot_secret_hex"])
     uuid_hex = inputs["device_slot_uuid_hex"]
     # filename is the lowercase-hyphenated 8-4-4-4-12 form (vault-format §1)
-    h = uuid_hex
-    fname = f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}.wrap"
+    fname = f"{uuid_hex[0:8]}-{uuid_hex[8:12]}-{uuid_hex[12:16]}-{uuid_hex[16:20]}-{uuid_hex[20:32]}.wrap"
     with open(base / "devices" / fname, "rb") as fh:
         blob = fh.read()
 
@@ -1635,6 +1634,11 @@ def verify_device_slot(base: "Path", inputs: "dict[str, Any]", ibk_expected: byt
     assert int.from_bytes(blob[4:6], "big") == 1, "format_version"
     assert int.from_bytes(blob[6:8], "big") == 0x0004, "file_kind device-wrap"
     vault_uuid = blob[8:24]
+    device_uuid_in_header = blob[24:40]
+    # §3a: the header device_uuid MUST equal the filename's UUID (pinned in inputs JSON).
+    assert device_uuid_in_header == bytes.fromhex(uuid_hex), (
+        f"device_uuid header/filename mismatch: {device_uuid_in_header.hex()} != {uuid_hex}"
+    )
     nonce = blob[40:64]
     assert int.from_bytes(blob[64:68], "big") == 32, "wrap_dev_ct_len"
     ct_with_tag = blob[68:68 + 48]
@@ -1747,8 +1751,8 @@ def section2_golden_vault_001() -> tuple[bool, list[str]]:
         return False, lines
 
     # Device-slot §3a/§5a clean-room replay.
-    # Derive the IBK via the password path (same as verify_block_and_manifest does
-    # internally) then assert the device-slot path recovers the same IBK.
+    # Re-derive the IBK from the password path independently, so verify_device_slot
+    # cross-checks the device path against a spec-derived value (not a shared local).
     password = inputs["password"].encode("utf-8")
     master_kek = argon2id_raw(
         password,
