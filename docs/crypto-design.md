@@ -240,8 +240,8 @@ As with the recovery KEK (§4), Argon2id is deliberately NOT used: the device se
 
 Decryption: derive `device_kek` from the supplied `device_secret`, then AEAD-decrypt
 `(ct_dev, tag_dev)` to recover the IBK. AEAD tag failure means a wrong device secret (or
-corruption — indistinguishable to the cryptography, matching §13), surfaced to the UI as
-wrong-secret. The on-disk container is `docs/vault-format.md` §3a.
+corruption — indistinguishable to the cryptography; see §5 and vault-format §3), surfaced to the UI as
+wrong-secret. The on-disk container is [vault-format.md](vault-format.md) §3a.
 
 ---
 

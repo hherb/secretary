@@ -128,7 +128,7 @@ same header discipline as §3. A vault with no enrolled devices has no `devices/
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ magic              (4 bytes)  = MAGIC                         │
+│ magic              (4 bytes)  = 0x53454352 ("SECR")          │
 │ format_version     (2 bytes)  = u16, v1: 0x0001              │
 │ file_kind          (2 bytes)  = u16, device-wrap: 0x0004     │
 │ vault_uuid         (16 bytes)                                 │
@@ -142,8 +142,7 @@ same header discipline as §3. A vault with no enrolled devices has no `devices/
 
 - `suite_id` is omitted, matching §3 (identity-layer files fix the suite at v1; only
   manifest/block *content* files carry `suite_id`).
-- `wrap_dev_ct_len` records the **unwrapped** key length (32), matching §3's
-  `wrap_pw_ct_len` / `wrap_rec_ct_len` convention.
+- `wrap_dev_ct_len` MUST equal 32 (XChaCha20-Poly1305 ciphertext length equals plaintext length for the 32-byte IBK), matching the `wrap_pw_ct_len` / `wrap_rec_ct_len` convention in §3.
 - `vault_uuid` MUST equal the vault's `vault.toml` `vault_uuid`; a mismatch is rejected.
 - `device_uuid` in the header MUST equal the `<device-uuid>` in the filename.
 - AEAD AAD = `"secretary-v1-id-wrap-dev" || vault_uuid`; `device_kek` derivation is
