@@ -35,7 +35,7 @@ pub(super) fn uuid_from_inputs(
     if bytes.len() != 16 {
         return Err(BridgeOrSyntheticErr::Synthetic {
             variant: "InvalidArgument",
-            detail: format!("{label} must be exactly 16 bytes, got {}", bytes.len()),
+            detail: format!("{label} must be 16 bytes, got {}", bytes.len()),
         });
     }
     let mut out = [0u8; 16];

@@ -29,6 +29,8 @@ pub struct Vector {
 pub enum Operation {
     OpenVaultWithPassword,
     OpenVaultWithRecovery,
+    // Device-slot open path — ADR 0009 / B.2.
+    OpenWithDeviceSecret,
     ReadBlock,
     // v2 lifecycle ops — issue #59.
     OpenVaultWithPasswordWritable,

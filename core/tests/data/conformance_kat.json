@@ -397,6 +397,64 @@
         "kind": "err",
         "variant": "InvalidArgument"
       }
+    },
+    {
+      "name": "open_device_secret_happy",
+      "description": "open_with_device_secret against golden_vault_001 using the pinned device slot uuid + secret from golden_vault_001_inputs.json. Replays through bridge::device::open_with_device_secret; same observable open output as open_password_happy (display_name Owner, single block).",
+      "operation": "open_with_device_secret",
+      "inputs": {
+        "vault_dir": "golden_vault_001",
+        "device_uuid_source": "golden_vault_001_inputs.json:device_slot_uuid_hex",
+        "device_secret_source": "golden_vault_001_inputs.json:device_slot_secret_hex"
+      },
+      "expected": {
+        "kind": "ok",
+        "display_name": "Owner",
+        "block_count": 1,
+        "block_uuid_hex": "112233445566778899aabbccddeeff00"
+      }
+    },
+    {
+      "name": "open_device_secret_wrong_secret",
+      "description": "open_with_device_secret with the correct slot uuid but a wrong 32-byte device secret (all 0xff) → typed VaultError.WrongDeviceSecretOrCorrupt (the device_kek AEAD unwrap fails).",
+      "operation": "open_with_device_secret",
+      "inputs": {
+        "vault_dir": "golden_vault_001",
+        "device_uuid_source": "golden_vault_001_inputs.json:device_slot_uuid_hex",
+        "device_secret_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "WrongDeviceSecretOrCorrupt"
+      }
+    },
+    {
+      "name": "open_device_secret_absent_slot",
+      "description": "open_with_device_secret with a device uuid that has no devices/<uuid>.wrap file → typed VaultError.DeviceSlotNotFound. device_secret is the pinned correct secret (irrelevant: the missing-slot error fires before any unwrap).",
+      "operation": "open_with_device_secret",
+      "inputs": {
+        "vault_dir": "golden_vault_001",
+        "device_uuid_hex": "99999999999999999999999999999999",
+        "device_secret_source": "golden_vault_001_inputs.json:device_slot_secret_hex"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "DeviceSlotNotFound"
+      }
+    },
+    {
+      "name": "open_device_secret_short_secret",
+      "description": "open_with_device_secret with a 31-byte device secret (must be 32). Rust dispatch synthesizes InvalidArgument at the test layer (the bridge crate's open_with_device_secret signature is type-bounded to &[u8; 32] so wrong length never reaches it); Swift + Kotlin pass the raw bytes through and uniffi's namespace-layer length check surfaces real VaultError.InvalidArgument. Symmetric with read_block_wrong_length_uuid / save_block_invalid_input.",
+      "operation": "open_with_device_secret",
+      "inputs": {
+        "vault_dir": "golden_vault_001",
+        "device_uuid_source": "golden_vault_001_inputs.json:device_slot_uuid_hex",
+        "device_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e"
+      },
+      "expected": {
+        "kind": "err",
+        "variant": "InvalidArgument"
+      }
     }
   ]
 }

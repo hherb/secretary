@@ -59,6 +59,60 @@ pub fn resolve_password(inputs: &serde_json::Value) -> Vec<u8> {
     panic!("open_vault_with_password vector missing password_* input");
 }
 
+/// Resolve a `*_source` ref (e.g. `golden_vault_001_inputs.json:device_slot_uuid_hex`)
+/// to the **decoded bytes** of the named JSON hex-string field. Distinct from
+/// [`resolve_source`], which returns the UTF-8 bytes of the field verbatim:
+/// device inputs are hex-encoded in the inputs file and must be decoded.
+fn resolve_source_hex(source: &str) -> Vec<u8> {
+    let utf8 = resolve_source(source);
+    let s = std::str::from_utf8(&utf8)
+        .unwrap_or_else(|e| panic!("source ref {source} is not valid UTF-8: {e}"));
+    hex::decode(s.trim()).unwrap_or_else(|e| panic!("source ref {source} is not valid hex: {e}"))
+}
+
+/// Resolve a device-slot uuid input. Accepts either `device_uuid_source`
+/// (JSON hex field) or `device_uuid_hex` (inline hex). On a non-16-byte
+/// decode, returns `Err(actual_len)` so the caller can synthesize the
+/// `InvalidArgument` outcome the type-bounded `&[u8; 16]` bridge signature
+/// produces at the binding layer (mirrors the read_block / save_block
+/// wrong-length synthetic precedent).
+pub fn resolve_device_uuid(inputs: &serde_json::Value) -> Result<[u8; 16], usize> {
+    let bytes = if let Some(s) = inputs.get("device_uuid_source").and_then(|v| v.as_str()) {
+        resolve_source_hex(s)
+    } else if let Some(s) = inputs.get("device_uuid_hex").and_then(|v| v.as_str()) {
+        hex::decode(s.trim()).expect("device_uuid_hex must decode")
+    } else {
+        panic!("open_with_device_secret vector missing device_uuid_source / device_uuid_hex");
+    };
+    if bytes.len() != 16 {
+        return Err(bytes.len());
+    }
+    let mut uuid = [0u8; 16];
+    uuid.copy_from_slice(&bytes);
+    Ok(uuid)
+}
+
+/// Resolve a device-slot secret input. Accepts either `device_secret_source`
+/// (JSON hex field) or `device_secret_hex` (inline hex). On a non-32-byte
+/// decode, returns `Err(actual_len)` so the caller can synthesize the
+/// `InvalidArgument` outcome the type-bounded `&[u8; 32]` bridge signature
+/// produces at the binding layer.
+pub fn resolve_device_secret(inputs: &serde_json::Value) -> Result<[u8; 32], usize> {
+    let bytes = if let Some(s) = inputs.get("device_secret_source").and_then(|v| v.as_str()) {
+        resolve_source_hex(s)
+    } else if let Some(s) = inputs.get("device_secret_hex").and_then(|v| v.as_str()) {
+        hex::decode(s.trim()).expect("device_secret_hex must decode")
+    } else {
+        panic!("open_with_device_secret vector missing device_secret_source / device_secret_hex");
+    };
+    if bytes.len() != 32 {
+        return Err(bytes.len());
+    }
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&bytes);
+    Ok(secret)
+}
+
 pub fn resolve_mnemonic(inputs: &serde_json::Value) -> Vec<u8> {
     if let Some(s) = inputs.get("mnemonic_source").and_then(|v| v.as_str()) {
         return resolve_source(s);

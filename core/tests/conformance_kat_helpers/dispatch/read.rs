@@ -23,7 +23,7 @@ pub fn run_read_block(
     if bytes.len() != 16 {
         return Err(BridgeOrSyntheticErr::Synthetic {
             variant: "InvalidArgument",
-            detail: format!("block_uuid must be exactly 16 bytes, got {}", bytes.len()),
+            detail: format!("block_uuid must be 16 bytes, got {}", bytes.len()),
         });
     }
     let mut uuid = [0u8; 16];
