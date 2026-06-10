@@ -33,6 +33,9 @@ pub enum DeviceFileError {
     UnsupportedFormatVersion(u16),
     #[error("unsupported file kind: {0}")]
     UnsupportedFileKind(u16),
+    /// Only one wrap field exists in §3a; `field` and `expected` are constants,
+    /// so they are inlined into the message rather than carried as struct fields
+    /// (unlike `bundle_file::BundleFileError::WrapLengthMismatch`).
     #[error("declared length for wrap_dev: expected 32, got {declared}")]
     WrapLengthMismatch { declared: u32 },
 }
@@ -147,6 +150,10 @@ mod tests {
             decode(&bytes).unwrap_err(),
             DeviceFileError::UnsupportedFileKind(1)
         ));
+        let mut bytes2 = encode(&sample());
+        bytes2[6] = 0xFF;
+        bytes2[7] = 0x00;
+        assert!(matches!(decode(&bytes2).unwrap_err(), DeviceFileError::UnsupportedFileKind(0xFF00)));
     }
 
     #[test]
@@ -168,6 +175,14 @@ mod tests {
         let mut bytes = encode(&sample());
         bytes.push(0xAA);
         assert!(matches!(decode(&bytes).unwrap_err(), DeviceFileError::TrailingBytes { .. }));
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_equal_uuids() {
+        let mut f = sample();
+        f.vault_uuid = [0xAB; 16];
+        f.device_uuid = [0xAB; 16];
+        assert_eq!(decode(&encode(&f)).unwrap(), f);
     }
 
     #[test]
