@@ -5,6 +5,8 @@
   "vault_uuid": "00112233-4455-6677-8899-aabbccddeeff",
   "block_uuid": "11223344-5566-7788-99aa-bbccddeeff00",
   "device_uuid": "22334455-6677-8899-aabb-ccddeeff0011",
+  "device_slot_uuid_hex": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+  "device_slot_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "created_at_ms": 2000000000000,
   "last_mod_ms": 2000000000000,
   "password": "correct horse battery staple",

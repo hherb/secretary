@@ -1618,6 +1618,35 @@ def verify_block_and_manifest(
     return (not issues), issues
 
 
+def verify_device_slot(base: "Path", inputs: "dict[str, Any]", ibk_expected: bytes) -> None:
+    """Clean-room vault-format §3a / crypto-design §5a: derive device_kek via
+    HKDF-SHA-256 and AEAD-unwrap the IBK from devices/<uuid>.wrap, asserting it
+    matches the IBK recovered via the password path. Proves §3a is implementable
+    from docs/ alone."""
+    secret = bytes.fromhex(inputs["device_slot_secret_hex"])
+    uuid_hex = inputs["device_slot_uuid_hex"]
+    # filename is the lowercase-hyphenated 8-4-4-4-12 form (vault-format §1)
+    h = uuid_hex
+    fname = f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}.wrap"
+    with open(base / "devices" / fname, "rb") as fh:
+        blob = fh.read()
+
+    assert int.from_bytes(blob[0:4], "big") == MAGIC, "device wrap magic"
+    assert int.from_bytes(blob[4:6], "big") == 1, "format_version"
+    assert int.from_bytes(blob[6:8], "big") == 0x0004, "file_kind device-wrap"
+    vault_uuid = blob[8:24]
+    nonce = blob[40:64]
+    assert int.from_bytes(blob[64:68], "big") == 32, "wrap_dev_ct_len"
+    ct_with_tag = blob[68:68 + 48]
+
+    device_kek = hkdf_sha256(
+        salt=b"\x00" * 32, ikm=secret, info=b"secretary-v1-device-kek", length=32
+    )
+    aad = b"secretary-v1-id-wrap-dev" + vault_uuid
+    ibk = aead_decrypt(device_kek, nonce, aad, ct_with_tag)
+    assert ibk == ibk_expected, "device-slot IBK must match the password/recovery IBK"
+
+
 def section2_golden_vault_001() -> tuple[bool, list[str]]:
     """Run Task 15's full crypto verify against golden_vault_001.
 
@@ -1715,6 +1744,34 @@ def section2_golden_vault_001() -> tuple[bool, list[str]]:
         lines.append("FAIL  golden_vault_001 hybrid-decap + AEAD-decrypt + hybrid-verify")
         for i in issues:
             lines.append(f"      - {i}")
+        return False, lines
+
+    # Device-slot §3a/§5a clean-room replay.
+    # Derive the IBK via the password path (same as verify_block_and_manifest does
+    # internally) then assert the device-slot path recovers the same IBK.
+    password = inputs["password"].encode("utf-8")
+    master_kek = argon2id_raw(
+        password,
+        vt.kdf_salt,
+        memory_kib=vt.kdf_memory_kib,
+        iterations=vt.kdf_iterations,
+        parallelism=vt.kdf_parallelism,
+    )
+    try:
+        ibk_from_pw = aead_decrypt(
+            master_kek,
+            bundle.wrap_pw_nonce,
+            compose_aad(TAG_ID_WRAP_PW, vt.vault_uuid),
+            bundle.wrap_pw_ct_with_tag,
+        )
+    except ValueError as e:
+        lines.append(f"FAIL  device-slot: IBK re-derivation from password path: {e}")
+        return False, lines
+    try:
+        verify_device_slot(base, inputs, ibk_from_pw)
+        lines.append("PASS  device-slot (§3a/§5a): OK")
+    except (AssertionError, FileNotFoundError, ValueError) as e:
+        lines.append(f"FAIL  device-slot (§3a/§5a): {e}")
         return False, lines
 
     # Tamper checks: every mutation must trigger a FAIL.
