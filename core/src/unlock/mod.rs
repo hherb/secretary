@@ -34,6 +34,12 @@ pub enum UnlockError {
     MalformedDeviceFile(#[from] device_file::DeviceFileError),
     #[error("device secret must be exactly 32 bytes, got {len}")]
     MalformedDeviceSecret { len: usize },
+    /// The device wrap file's header `device_uuid` does not equal the
+    /// `<device-uuid>` it was looked up by (vault-format §3a). Rejects a
+    /// relabeled wrap file within the same vault (`device_uuid` is not in
+    /// the AEAD AAD, so this is a structural integrity check).
+    #[error("device wrap file device_uuid does not match the requested device")]
+    DeviceUuidMismatch,
     #[error("invalid mnemonic: {0}")]
     InvalidMnemonic(#[from] mnemonic::MnemonicError),
     #[error("vault data integrity failure")]

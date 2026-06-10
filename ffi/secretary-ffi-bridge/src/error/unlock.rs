@@ -115,7 +115,8 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             // premature FFI-surface additions.
             E::WrongDeviceSecretOrCorrupt
             | E::MalformedDeviceFile(_)
-            | E::MalformedDeviceSecret { .. } => Self::CorruptVault {
+            | E::MalformedDeviceSecret { .. }
+            | E::DeviceUuidMismatch => Self::CorruptVault {
                 detail: e.to_string(),
             },
         }
@@ -291,13 +292,13 @@ mod tests {
 
     #[test]
     fn device_slot_variants_remain_defensively_mapped_to_corrupt_vault() {
-        // SECURITY: the three device-slot variants — WrongDeviceSecretOrCorrupt,
-        // MalformedDeviceFile, and MalformedDeviceSecret — are not yet exposed
-        // through any FFI surface (that is B.2 #201). They share one match arm
-        // that folds into CorruptVault. This test pins all three so a future
-        // refactor that splits the arm (e.g. promotes WrongDeviceSecretOrCorrupt
-        // to its own variant) is a deliberate decision rather than a silent
-        // regression.
+        // SECURITY: the four device-slot variants — WrongDeviceSecretOrCorrupt,
+        // MalformedDeviceFile, MalformedDeviceSecret, and DeviceUuidMismatch —
+        // are not yet exposed through any FFI surface (that is B.2 #201). They
+        // share one match arm that folds into CorruptVault. This test pins all
+        // four so a future refactor that splits the arm (e.g. promotes
+        // WrongDeviceSecretOrCorrupt to its own variant) is a deliberate
+        // decision rather than a silent regression.
         use secretary_core::unlock::device_file::DeviceFileError;
 
         let wrong_dev = UnlockError::WrongDeviceSecretOrCorrupt;
@@ -319,6 +320,13 @@ mod tests {
         assert!(
             matches!(ffi, FfiUnlockError::CorruptVault { .. }),
             "MalformedDeviceSecret must fold to CorruptVault"
+        );
+
+        let uuid_mismatch = UnlockError::DeviceUuidMismatch;
+        let ffi: FfiUnlockError = uuid_mismatch.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "DeviceUuidMismatch must fold to CorruptVault"
         );
     }
 

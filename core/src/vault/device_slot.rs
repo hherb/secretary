@@ -123,8 +123,14 @@ pub fn open_identity_with_device_secret(
         IDENTITY_BUNDLE_FILENAME,
         "failed to read identity.bundle.enc",
     )?;
-    open_with_device_secret(&vt_bytes, &wrap_bytes, &ib_bytes, device_secret)
-        .map_err(VaultError::Unlock)
+    open_with_device_secret(
+        &vt_bytes,
+        &wrap_bytes,
+        &ib_bytes,
+        device_uuid,
+        device_secret,
+    )
+    .map_err(VaultError::Unlock)
 }
 
 /// Revoke a device by deleting its wrap file. Idempotent only in the sense that

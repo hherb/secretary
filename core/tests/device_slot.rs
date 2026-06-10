@@ -141,6 +141,41 @@ fn open_with_valid_length_but_wrong_secret_surfaces_typed_error() {
     ));
 }
 
+#[test]
+fn renamed_wrap_file_is_rejected_by_device_uuid_mismatch() {
+    // vault-format §3a: header device_uuid must equal the filename's UUID.
+    // Simulate a wrap file copied to a different device's filename: opening it
+    // under that other device_uuid must be rejected (relabeled-file integrity),
+    // even with the correct secret.
+    let (dir, password) = make_vault(6);
+    let mut rng = ChaCha20Rng::from_seed([25u8; 32]);
+    let enrolled = add_device_slot(dir.path(), &password, &mut rng).expect("enroll");
+
+    let devices = dir.path().join("devices");
+    let real = devices.join(format!(
+        "{}.wrap",
+        secretary_core::vault::format_uuid_hyphenated(&enrolled.device_uuid)
+    ));
+    let bytes = std::fs::read(&real).expect("read enrolled wrap");
+    // Copy the bytes (header device_uuid = the enrolled device) to a DIFFERENT
+    // device's filename, then open under that other uuid.
+    let other_uuid = [0x99u8; 16];
+    let fake = devices.join(format!(
+        "{}.wrap",
+        secretary_core::vault::format_uuid_hyphenated(&other_uuid)
+    ));
+    std::fs::write(&fake, &bytes).expect("write relabeled wrap");
+
+    let err = open_identity_with_device_secret(dir.path(), &other_uuid, &enrolled.device_secret)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        secretary_core::vault::VaultError::Unlock(
+            secretary_core::unlock::UnlockError::DeviceUuidMismatch
+        )
+    ));
+}
+
 /// Local helper mirroring the password open path to get an UnlockedIdentity from a folder.
 fn open_identity_with_password(
     folder: &Path,

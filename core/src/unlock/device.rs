@@ -82,10 +82,17 @@ pub fn unwrap_device_slot(
 
 /// Open a vault from a device secret (the §5a device-slot unlock path). Pure:
 /// operates on the three files' bytes, mirroring `open_with_recovery`.
+///
+/// `expected_device_uuid` is the device UUID the caller looked the file up by
+/// (the `<device-uuid>` in the `devices/<device-uuid>.wrap` filename). vault-format
+/// §3a requires the header `device_uuid` to equal it; since `device_uuid` is not
+/// in the AEAD AAD, this structural check rejects a relabeled wrap file within the
+/// same vault. (`conformance.py` enforces the same invariant clean-room.)
 pub fn open_with_device_secret(
     vault_toml_bytes: &[u8],
     device_wrap_bytes: &[u8],
     identity_bundle_bytes: &[u8],
+    expected_device_uuid: &[u8; 16],
     device_secret: &SecretBytes,
 ) -> Result<UnlockedIdentity, UnlockError> {
     let vt_str = std::str::from_utf8(vault_toml_bytes).map_err(|_| vault_toml_not_utf8())?;
@@ -95,6 +102,10 @@ pub fn open_with_device_secret(
     // vault_uuid is AEAD-checked when we decrypt the bundle below.)
     if df.vault_uuid != vt.vault_uuid {
         return Err(UnlockError::VaultMismatch);
+    }
+    // §3a: the header device_uuid MUST equal the filename's device_uuid.
+    if &df.device_uuid != expected_device_uuid {
+        return Err(UnlockError::DeviceUuidMismatch);
     }
     let bf = super::bundle_file::decode(identity_bundle_bytes)?;
     if bf.vault_uuid != vt.vault_uuid || bf.created_at_ms != vt.created_at_ms {
@@ -205,6 +216,7 @@ mod tests {
             &v.vault_toml_bytes,
             &device_wrap_bytes,
             &v.identity_bundle_bytes,
+            &[0x42; 16],
             &secret_bytes,
         )
         .expect("open with device secret");
@@ -255,6 +267,7 @@ mod tests {
             &v.vault_toml_bytes,
             &device_wrap_bytes,
             &v.identity_bundle_bytes,
+            &[0x42; 16],
             &secret_bytes,
         )
         .unwrap_err();
@@ -290,6 +303,7 @@ mod tests {
             &v.vault_toml_bytes,
             &device_wrap_bytes,
             &v.identity_bundle_bytes,
+            &[0x42; 16],
             &short,
         )
         .unwrap_err();
@@ -297,5 +311,42 @@ mod tests {
             err,
             UnlockError::MalformedDeviceSecret { len: 31 }
         ));
+    }
+
+    #[test]
+    fn open_with_device_secret_rejects_device_uuid_mismatch() {
+        // vault-format §3a: the header device_uuid must equal the device the
+        // file was looked up by. A wrap whose header says device A, opened as a
+        // different device, is rejected (relabeled-file integrity check).
+        let mut rng = ChaCha20Rng::from_seed([13u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let v = create_vault_unchecked(
+            &password,
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
+        let secret = fresh_secret(0x77);
+        let file = wrap_device_slot(
+            &v.identity_block_key,
+            super::device_file_vault_uuid(&v.identity_bundle_bytes),
+            [0x42; 16], // header device_uuid = A
+            &secret,
+            random_nonce(&mut rng),
+        );
+        let device_wrap_bytes = device_file::encode(&file);
+        let secret_bytes = SecretBytes::new(secret.expose().to_vec());
+        // Open as a DIFFERENT device (B), as if the A.wrap file were renamed to B.wrap.
+        let err = open_with_device_secret(
+            &v.vault_toml_bytes,
+            &device_wrap_bytes,
+            &v.identity_bundle_bytes,
+            &[0x99; 16], // expected device_uuid = B (≠ header A)
+            &secret_bytes,
+        )
+        .unwrap_err();
+        assert!(matches!(err, UnlockError::DeviceUuidMismatch));
     }
 }
