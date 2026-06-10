@@ -40,6 +40,23 @@ fn device_wrap_path(folder: &Path, device_uuid: &[u8; 16]) -> std::path::PathBuf
         .join(format!("{}.wrap", format_uuid_hyphenated(device_uuid)))
 }
 
+/// Read `devices/<uuid>.wrap` relative to `folder`. Absent → [`VaultError::DeviceSlotNotFound`];
+/// any other I/O error → [`VaultError::Io`]. Shared by `open_identity_with_device_secret`
+/// (this module) and the `Unlocker::DeviceSecret` arm in `orchestrators::open_vault`.
+pub(crate) fn read_device_wrap_bytes(
+    folder: &Path,
+    device_uuid: &[u8; 16],
+) -> Result<Vec<u8>, VaultError> {
+    match std::fs::read(device_wrap_path(folder, device_uuid)) {
+        Ok(b) => Ok(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(VaultError::DeviceSlotNotFound),
+        Err(e) => Err(VaultError::Io {
+            context: "failed to read device wrap file",
+            source: e,
+        }),
+    }
+}
+
 /// Enroll a new device: recover the IBK with `password`, mint a fresh device
 /// secret + UUID, and write `devices/<uuid>.wrap` atomically. Returns the
 /// device UUID and secret. A wrong password errors before any file is written.
@@ -104,19 +121,7 @@ pub fn open_identity_with_device_secret(
     device_uuid: &[u8; 16],
     device_secret: &SecretBytes,
 ) -> Result<UnlockedIdentity, VaultError> {
-    let wrap_path = device_wrap_path(folder, device_uuid);
-    let wrap_bytes = match std::fs::read(&wrap_path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(VaultError::DeviceSlotNotFound)
-        }
-        Err(e) => {
-            return Err(VaultError::Io {
-                context: "failed to read device wrap file",
-                source: e,
-            })
-        }
-    };
+    let wrap_bytes = read_device_wrap_bytes(folder, device_uuid)?;
     let vt_bytes = read_vault_file(folder, VAULT_TOML_FILENAME, "failed to read vault.toml")?;
     let ib_bytes = read_vault_file(
         folder,
