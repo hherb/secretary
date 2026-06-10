@@ -290,3 +290,79 @@ pub fn hkdf_sha256_extract_and_expand(salt: &[u8], ikm: &[u8], info: &[u8], len:
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Device KEK (§5a)
+// ---------------------------------------------------------------------------
+
+/// HKDF info for Device KEK derivation (§5a). Distinct from [`TAG_RECOVERY_KEK`]
+/// so the same 32 bytes never derive the same KEK in both roles.
+pub const TAG_DEVICE_KEK: &[u8] = b"secretary-v1-device-kek";
+
+/// AEAD AAD prefix for wrapping the Identity Block Key under a Device KEK (§5a).
+pub const TAG_ID_WRAP_DEV: &[u8] = b"secretary-v1-id-wrap-dev";
+
+/// Derive a Device KEK from a 32-byte device secret, per crypto-design §5a.
+///
+/// HKDF-SHA-256 with `salt = [0u8; 32]` and `info = "secretary-v1-device-kek"`.
+/// The device secret carries 256 bits of CSPRNG entropy, so — exactly like the
+/// recovery mnemonic (§4) — no Argon2id stretching is performed.
+///
+/// SECURITY: same `hkdf` 0.12 PRK-residue caveat documented on
+/// [`derive_recovery_kek`]; the `Hkdf` instance is tightly scoped.
+#[must_use]
+pub fn derive_device_kek(secret: &Sensitive<[u8; 32]>) -> Sensitive<[u8; 32]> {
+    let salt = [0u8; 32];
+    let mut out = [0u8; 32];
+    {
+        let hk = Hkdf::<Sha256>::new(Some(&salt), secret.expose());
+        hk.expand(TAG_DEVICE_KEK, &mut out)
+            .expect("32 bytes is well within HKDF-SHA-256 output limits");
+    }
+    let kek = Sensitive::new(out);
+    out.zeroize();
+    kek
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_kek_is_deterministic_and_independent_of_recovery_kek() {
+        // Same secret → same device_kek (deterministic HKDF).
+        let secret = Sensitive::new([0x5Au8; 32]);
+        let a = derive_device_kek(&secret);
+        let b = derive_device_kek(&secret);
+        assert_eq!(a.expose(), b.expose());
+
+        // The device-KEK info string differs from the recovery-KEK info string, so the
+        // two KEKs derived from the SAME 32 bytes must differ (domain separation).
+        let recovery = derive_recovery_kek(&secret);
+        assert_ne!(a.expose(), recovery.expose());
+    }
+
+    #[test]
+    fn device_kek_matches_independent_hkdf_reference() {
+        // Independent recomputation from the spec (crypto-design §5a) using the same
+        // primitive, asserting the info string and salt are exactly as documented.
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let secret = Sensitive::new([0x11u8; 32]);
+        let mut expected = [0u8; 32];
+        Hkdf::<Sha256>::new(Some(&[0u8; 32]), secret.expose())
+            .expand(b"secretary-v1-device-kek", &mut expected)
+            .unwrap();
+        assert_eq!(derive_device_kek(&secret).expose(), &expected);
+    }
+
+    #[test]
+    fn device_kek_tag_value_matches_spec() {
+        assert_eq!(TAG_DEVICE_KEK, b"secretary-v1-device-kek");
+        assert_eq!(TAG_ID_WRAP_DEV, b"secretary-v1-id-wrap-dev");
+    }
+}
