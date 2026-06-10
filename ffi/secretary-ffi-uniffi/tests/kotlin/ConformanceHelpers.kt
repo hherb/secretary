@@ -61,6 +61,40 @@ internal fun resolveMnemonic(inputs: JSONObject, goldenVaultDir: String): ByteAr
     exitProcess(1)
 }
 
+// Resolve a `*_source` ref to the DECODED bytes of the named JSON hex field.
+// Distinct from resolveSource, which returns the field's UTF-8 bytes
+// verbatim: device inputs are hex-encoded in the inputs file and must be
+// hex-decoded. Mirrors resolve_source_hex in
+// core/tests/conformance_kat_helpers/fixtures.rs.
+internal fun resolveSourceHex(source: String, goldenVaultDir: String): ByteArray {
+    val utf8 = resolveSource(source, goldenVaultDir)
+    return decodeHex(String(utf8, Charsets.UTF_8).trim())
+}
+
+// Resolve a device-slot uuid input. Accepts either device_uuid_source (JSON
+// hex field) or device_uuid_hex (inline hex). Returns the decoded bytes
+// verbatim (no length check) — the dispatch arm length-checks and
+// synthesizes the InvalidArgument outcome the type-bounded &[u8; 16] bridge
+// signature produces. Mirrors resolve_device_uuid in
+// core/tests/conformance_kat_helpers/fixtures.rs.
+internal fun resolveDeviceUuid(inputs: JSONObject, goldenVaultDir: String): ByteArray {
+    if (inputs.has("device_uuid_source")) return resolveSourceHex(inputs.getString("device_uuid_source"), goldenVaultDir)
+    if (inputs.has("device_uuid_hex")) return decodeHex(inputs.getString("device_uuid_hex"))
+    System.err.println("open_with_device_secret vector missing device_uuid_source / device_uuid_hex")
+    exitProcess(1)
+}
+
+// Resolve a device-slot secret input. Accepts either device_secret_source
+// (JSON hex field) or device_secret_hex (inline hex). Returns the decoded
+// bytes verbatim (no length check) — see resolveDeviceUuid. Mirrors
+// resolve_device_secret in core/tests/conformance_kat_helpers/fixtures.rs.
+internal fun resolveDeviceSecret(inputs: JSONObject, goldenVaultDir: String): ByteArray {
+    if (inputs.has("device_secret_source")) return resolveSourceHex(inputs.getString("device_secret_source"), goldenVaultDir)
+    if (inputs.has("device_secret_hex")) return decodeHex(inputs.getString("device_secret_hex"))
+    System.err.println("open_with_device_secret vector missing device_secret_source / device_secret_hex")
+    exitProcess(1)
+}
+
 // --- Hex codec ---
 
 // Decode a lower-case hex string to a ByteArray. Exits on malformed input.

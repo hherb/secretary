@@ -20,8 +20,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.VaultException
+import uniffi.secretary.addDeviceSlot
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
+import uniffi.secretary.openWithDeviceSecret
 import uniffi.secretary.readBlock
 import uniffi.secretary.restoreBlock
 import uniffi.secretary.saveBlock
@@ -139,6 +141,36 @@ fun main() {
                     handleVaultError(e, expected, name, kind, ::check)
                 } catch (e: Throwable) {
                     check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "open_with_device_secret" && after == null -> {
+                // Device-slot open path (ADR 0009 / B.2). Resolve uuid + secret
+                // first. A wrong-length input cannot reach the bridge's
+                // type-bounded `&[u8; 16]` / `&[u8; 32]` signature, so the
+                // binding-layer length pre-check is replicated here as a
+                // SYNTHETIC InvalidArgument outcome (mirrors the read_block /
+                // save_block wrong-length precedent — the open_device_secret_
+                // short_secret vector passes a 31-byte secret). The synthetic
+                // branch asserts directly against the vector's expected variant.
+                val deviceUuid = resolveDeviceUuid(inputs, goldenVaultDir)
+                val deviceSecret = resolveDeviceSecret(inputs, goldenVaultDir)
+                if (deviceUuid.size != 16) {
+                    check(kind == "err" && expected.optString("variant", null) == "InvalidArgument",
+                        name, "wrong-length device_uuid expected synthetic InvalidArgument")
+                } else if (deviceSecret.size != 32) {
+                    check(kind == "err" && expected.optString("variant", null) == "InvalidArgument",
+                        name, "wrong-length device_secret expected synthetic InvalidArgument")
+                } else {
+                    val vaultDir = resolveVaultDir(inputs, goldenVaultDir)
+                    try {
+                        val out = openWithDeviceSecret(vaultDir, deviceUuid, deviceSecret)
+                        handleOpenOk(out, expected, name, kind, cache, ::check)
+                    } catch (e: VaultException) {
+                        handleVaultError(e, expected, name, kind, ::check)
+                    } catch (e: Throwable) {
+                        check(false, name, "unexpected non-VaultException: $e")
+                    }
                 }
             }
 
@@ -426,6 +458,56 @@ fun main() {
         // failures (see preFailureCount snapshot above).
         if (failures.size == preFailureCount) {
             println("PASS: $name")
+        }
+    }
+
+    // --- Standalone enrol round-trip (B.2) ---
+    //
+    // Not a JSON vector: exercises the one-shot addDeviceSlot → takeSecret →
+    // openWithDeviceSecret handle end-to-end. Enrol MUST run against a temp
+    // copy — adding a slot writes a new devices/<uuid>.wrap into the vault,
+    // and golden_vault_001 is a frozen KAT fixture that must never be
+    // mutated. Counted as one extra "vector" in the summary.
+    run {
+        vectorsRun++
+        val enrolName = "enrol_round_trip"
+        val preEnrolFailures = failures.size
+        val src = java.nio.file.Paths.get(goldenVaultDir, "golden_vault_001")
+        val tmp = java.nio.file.Files.createTempDirectory("secretary_enrol_")
+        tempdirs.add(tmp)
+        try {
+            recursiveCopy(src, tmp)
+        } catch (e: Throwable) {
+            check(false, enrolName, "recursive copy failed: $e")
+            return@run
+        }
+        val folderPath = tmp.toString().toByteArray(Charsets.UTF_8)
+        val password = resolveSource("golden_vault_001_inputs.json:password", goldenVaultDir)
+        try {
+            val enroll = addDeviceSlot(folderPath, password)
+            check(enroll.deviceUuid.size == 16, enrolName, "device_uuid expected 16 bytes, got ${enroll.deviceUuid.size}")
+            val secret = enroll.deviceSecret.takeSecret()
+            check(secret != null, enrolName, "takeSecret() returned null on first call")
+            check(secret?.size == 32, enrolName, "device_secret expected 32 bytes, got ${secret?.size ?: -1}")
+            check(enroll.deviceSecret.takeSecret() == null, enrolName, "takeSecret() second call expected null (one-shot)")
+            if (secret != null) {
+                val secretBytes = ByteArray(secret.size) { secret[it].toByte() }
+                try {
+                    val out = openWithDeviceSecret(folderPath, enroll.deviceUuid, secretBytes)
+                    check(out.identity.displayName() == "Owner", enrolName,
+                        "enrol-then-open display_name mismatch (got '${out.identity.displayName()}', want 'Owner')")
+                    check(out.manifest.blockCount().toInt() == 1, enrolName,
+                        "enrol-then-open block_count mismatch (got ${out.manifest.blockCount()}, want 1)")
+                    out.destroy()
+                } catch (e: Throwable) {
+                    check(false, enrolName, "openWithDeviceSecret after enrol threw $e")
+                }
+            }
+        } catch (e: Throwable) {
+            check(false, enrolName, "addDeviceSlot threw $e")
+        }
+        if (failures.size == preEnrolFailures) {
+            println("PASS: $enrolName")
         }
     }
 

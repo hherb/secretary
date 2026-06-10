@@ -52,6 +52,44 @@ func resolveMnemonic(_ inputs: [String: Any], goldenVaultDir: String) -> Data {
     exit(1)
 }
 
+/// Resolve a `*_source` ref to the **decoded bytes** of the named JSON hex
+/// field. Distinct from `resolveSource`, which returns the field's UTF-8
+/// bytes verbatim: device inputs are hex-encoded in the inputs file and
+/// must be hex-decoded. Mirrors `resolve_source_hex` in
+/// core/tests/conformance_kat_helpers/fixtures.rs.
+func resolveSourceHex(_ source: String, goldenVaultDir: String) -> Data {
+    let utf8 = resolveSource(source, goldenVaultDir: goldenVaultDir)
+    guard let str = String(data: utf8, encoding: .utf8) else {
+        FileHandle.standardError.write(Data("source ref \(source) is not valid UTF-8\n".utf8))
+        exit(1)
+    }
+    return decodeHex(str.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+/// Resolve a device-slot uuid input. Accepts either `device_uuid_source`
+/// (JSON hex field) or `device_uuid_hex` (inline hex). Returns the decoded
+/// bytes verbatim (no length check) — the dispatch arm length-checks and
+/// synthesizes the `InvalidArgument` outcome the type-bounded `&[u8; 16]`
+/// bridge signature produces, mirroring `resolve_device_uuid` in
+/// core/tests/conformance_kat_helpers/fixtures.rs.
+func resolveDeviceUuid(_ inputs: [String: Any], goldenVaultDir: String) -> Data {
+    if let s = inputs["device_uuid_source"] as? String { return resolveSourceHex(s, goldenVaultDir: goldenVaultDir) }
+    if let s = inputs["device_uuid_hex"] as? String { return decodeHex(s) }
+    FileHandle.standardError.write(Data("open_with_device_secret vector missing device_uuid_source / device_uuid_hex\n".utf8))
+    exit(1)
+}
+
+/// Resolve a device-slot secret input. Accepts either `device_secret_source`
+/// (JSON hex field) or `device_secret_hex` (inline hex). Returns the decoded
+/// bytes verbatim (no length check) — see `resolveDeviceUuid`. Mirrors
+/// `resolve_device_secret` in core/tests/conformance_kat_helpers/fixtures.rs.
+func resolveDeviceSecret(_ inputs: [String: Any], goldenVaultDir: String) -> Data {
+    if let s = inputs["device_secret_source"] as? String { return resolveSourceHex(s, goldenVaultDir: goldenVaultDir) }
+    if let s = inputs["device_secret_hex"] as? String { return decodeHex(s) }
+    FileHandle.standardError.write(Data("open_with_device_secret vector missing device_secret_source / device_secret_hex\n".utf8))
+    exit(1)
+}
+
 // --- Hex codec ---
 
 func decodeHex(_ s: String) -> Data {
