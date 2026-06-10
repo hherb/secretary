@@ -54,6 +54,17 @@ pub struct Inputs {
     /// entries reference the same device for this single-device vector.
     /// Kept at the top level so a Python parser can cross-check.
     pub device_uuid: String,
+    /// Pinned device-slot KAT inputs (vault-format §3a / crypto-design §5a):
+    /// the per-device wrap fixture `devices/<uuid>.wrap` is regenerated from
+    /// these, and the always-run open test reads them too — so this JSON is
+    /// the single source of truth (no duplicated Rust const). `_hex` form:
+    /// 32-char UUID and 64-char 32-byte secret, both lowercase hex. Optional
+    /// because the device slot is itself optional (a vault may enroll no
+    /// devices — e.g. golden_vault_002 carries no slot).
+    #[serde(default)]
+    pub device_slot_uuid_hex: Option<String>,
+    #[serde(default)]
+    pub device_slot_secret_hex: Option<String>,
     pub created_at_ms: u64,
     pub last_mod_ms: u64,
     pub password: String,

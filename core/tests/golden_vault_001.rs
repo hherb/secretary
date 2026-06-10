@@ -50,7 +50,8 @@
 
 mod common;
 use common::fixture_builder::{
-    build_golden_vault, format_uuid_hyphenated, hex_encode, load_inputs, parse_uuid,
+    build_golden_vault, format_uuid_hyphenated, hex_encode, load_inputs, parse_hex_array,
+    parse_uuid,
 };
 
 use std::path::PathBuf;
@@ -293,18 +294,26 @@ fn golden_vault_001_opens_with_password() {
 // Device-slot KAT: §3a / §5a conformance generator + always-run guard
 // ---------------------------------------------------------------------------
 
-/// Golden device-slot KAT inputs — MUST match `device_slot_*_hex` in the inputs JSON.
-const GOLDEN_DEVICE_SECRET: [u8; 32] = {
-    let mut s = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        s[i] = i as u8;
-        i += 1;
-    }
-    s
-};
-/// MUST match `device_slot_uuid_hex` in `golden_vault_001_inputs.json`.
-const GOLDEN_DEVICE_UUID: [u8; 16] = [0xD0; 16];
+// The golden device-slot secret and UUID are pinned in
+// `golden_vault_001_inputs.json` (`device_slot_secret_hex` / `device_slot_uuid_hex`)
+// and read at runtime — the JSON is the single source of truth, with no
+// hardcoded Rust const to keep in sync ([[feedback_test_crypto_random_not_hardcoded]]).
+
+/// Pull the (uuid_hex, secret_hex) device-slot inputs out of the loaded JSON.
+/// They are `Option` on `Inputs` because the device slot is optional in general
+/// (golden_vault_002 has none), but golden_vault_001 always pins both — a
+/// missing field here means the inputs JSON drifted.
+fn device_slot_inputs(inputs: &common::fixture_builder::Inputs) -> (String, String) {
+    let uuid = inputs
+        .device_slot_uuid_hex
+        .clone()
+        .expect("device_slot_uuid_hex pinned in golden_vault_001_inputs.json");
+    let secret = inputs
+        .device_slot_secret_hex
+        .clone()
+        .expect("device_slot_secret_hex pinned in golden_vault_001_inputs.json");
+    (uuid, secret)
+}
 
 #[test]
 #[ignore = "regenerates the golden device-slot fixture; run explicitly + human-review the diff: \
@@ -319,25 +328,29 @@ fn generate_golden_device_slot() {
         secretary_core::crypto::secret::SecretBytes::new(inputs.password.clone().into_bytes());
     let opened = open_with_password(&vt, &ib, &password).expect("golden password opens");
 
-    let mut vault_uuid = [0u8; 16];
-    vault_uuid.copy_from_slice(&ib[8..24]); // magic(4)+ver(2)+kind(2)=8, then vault_uuid(16)
+    // Decode the bundle through the real codec rather than hand-slicing the header.
+    let vault_uuid = secretary_core::unlock::bundle_file::decode(&ib)
+        .expect("golden identity bundle decodes")
+        .vault_uuid;
+    let (device_uuid_hex, device_secret_hex) = device_slot_inputs(&inputs);
+    let device_uuid = parse_uuid(&device_uuid_hex);
 
-    let secret = secretary_core::crypto::secret::Sensitive::new(GOLDEN_DEVICE_SECRET);
+    let secret = secretary_core::crypto::secret::Sensitive::new(parse_hex_array::<32>(
+        &device_secret_hex,
+        "device_slot_secret_hex",
+    ));
     let mut rng = ChaCha20Rng::from_seed([0xAB; 32]);
     let file = secretary_core::unlock::device::wrap_device_slot(
         &opened.identity_block_key,
         vault_uuid,
-        GOLDEN_DEVICE_UUID,
+        device_uuid,
         &secret,
         secretary_core::crypto::aead::random_nonce(&mut rng),
     );
     let bytes = secretary_core::unlock::device_file::encode(&file);
     let devices = dir.join("devices");
     std::fs::create_dir_all(&devices).unwrap();
-    let path = devices.join(format!(
-        "{}.wrap",
-        format_uuid_hyphenated(&GOLDEN_DEVICE_UUID)
-    ));
+    let path = devices.join(format!("{}.wrap", format_uuid_hyphenated(&device_uuid)));
     std::fs::write(&path, &bytes).unwrap();
     eprintln!("wrote golden device slot: {}", path.display());
 }
@@ -345,16 +358,20 @@ fn generate_golden_device_slot() {
 #[test]
 fn golden_device_slot_opens_to_same_identity() {
     let dir = fixture_root();
-    let secret = secretary_core::crypto::secret::SecretBytes::new(GOLDEN_DEVICE_SECRET.to_vec());
+    let inputs = load_inputs(&inputs_path());
+    let (device_uuid_hex, device_secret_hex) = device_slot_inputs(&inputs);
+    let device_uuid = parse_uuid(&device_uuid_hex);
+    let secret = secretary_core::crypto::secret::SecretBytes::new(
+        parse_hex_array::<32>(&device_secret_hex, "device_slot_secret_hex").to_vec(),
+    );
     let opened = secretary_core::vault::device_slot::open_identity_with_device_secret(
         &dir,
-        &GOLDEN_DEVICE_UUID,
+        &device_uuid,
         &secret,
     )
     .expect("golden device slot opens");
 
     // Must recover the SAME IBK as the published password path.
-    let inputs = load_inputs(&inputs_path());
     let vt = std::fs::read(dir.join("vault.toml")).unwrap();
     let ib = std::fs::read(dir.join("identity.bundle.enc")).unwrap();
     let password =
