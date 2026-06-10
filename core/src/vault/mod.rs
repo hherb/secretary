@@ -23,6 +23,7 @@
 pub mod block;
 pub(crate) mod canonical;
 pub mod conflict;
+pub mod device_slot;
 pub(crate) mod io;
 pub mod manifest;
 pub(crate) mod orchestrators;
@@ -290,6 +291,15 @@ pub enum VaultError {
         block_uuid: [u8; 16],
         detail: String,
     },
+
+    /// No `devices/<device-uuid>.wrap` file found for the requested device
+    /// (ADR 0009 / vault-format §3a). Returned by
+    /// [`device_slot::open_identity_with_device_secret`] and
+    /// [`device_slot::remove_device_slot`] when the wrap file is absent.
+    /// Distinct from a generic I/O error so callers can distinguish
+    /// "device never enrolled / already revoked" from "disk failure".
+    #[error("device slot not found")]
+    DeviceSlotNotFound,
 
     /// Added in C.1.1b: per-block fingerprint check inside
     /// [`open_vault`] detected that an on-disk block file's bytes do

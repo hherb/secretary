@@ -444,7 +444,12 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // fingerprint. Same "data on disk doesn't match what we
             // signed" semantic as RestoreVerificationFailed → fold to
             // CorruptVault.
-            | VE::BlockFingerprintMismatch { .. }) => FfiVaultError::CorruptVault {
+            | VE::BlockFingerprintMismatch { .. }
+            // ADR 0009 (B.1): device-slot not found. No FFI surface for
+            // device ops yet (that's B.2); fold to CorruptVault so the
+            // generic From path is exhaustive. The typed device-slot FFI
+            // variant lands in the B.2 FFI projection task.
+            | VE::DeviceSlotNotFound) => FfiVaultError::CorruptVault {
                 detail: format!("{e}"),
             },
         }

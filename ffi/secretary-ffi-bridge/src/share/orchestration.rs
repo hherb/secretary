@@ -224,7 +224,10 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         // and would have surfaced this earlier), but listed for
         // exhaustiveness per issue #40. The generic `From<VaultError>`
         // impl routes this to `CorruptVault` on the read path.
-        | VaultError::BlockFingerprintMismatch { .. } => FfiVaultError::SaveCryptoFailure {
+        | VaultError::BlockFingerprintMismatch { .. }
+        // ADR 0009 (B.1): unreachable from share_block; listed for
+        // exhaustiveness per issue #40.
+        | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
             detail: format!("{e}"),
         },
     }
