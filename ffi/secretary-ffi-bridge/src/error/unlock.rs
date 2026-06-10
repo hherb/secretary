@@ -103,16 +103,14 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
                 detail: e.to_string(),
             },
 
-            // SECURITY: forward-compat stubs for the B.1 device-slot
-            // variants (`open_with_device_secret` is not yet exposed
-            // through any FFI surface; that is B.2 #201). When B.2
-            // projects these, promote `WrongDeviceSecretOrCorrupt` to its
-            // own `FfiUnlockError` variant (parallel to
-            // `WrongMnemonicOrCorrupt`) and expose `MalformedDeviceSecret`
-            // as its own variant or fold into `InvalidMnemonic`/`CorruptVault`
-            // as the B.2 threat model requires. Until then, fold to
-            // `CorruptVault` so the exhaustive match stays current without
-            // premature FFI-surface additions.
+            // SECURITY: the FfiUnlockError-layer fold to CorruptVault is
+            // INTENTIONALLY RETAINED. The pure-bytes `open_with_device_secret`
+            // is not FFI-surfaced; only the folder-in path is, and that path
+            // promotes `WrongDeviceSecretOrCorrupt` / `DeviceUuidMismatch` to
+            // typed `FfiVaultError` variants at the FfiVaultError layer before
+            // these arms are ever reached — see `error/vault/mod.rs`. Folding
+            // here remains correct forward-compat coverage for any future
+            // surface that bypasses that promotion.
             E::WrongDeviceSecretOrCorrupt
             | E::MalformedDeviceFile(_)
             | E::MalformedDeviceSecret { .. }

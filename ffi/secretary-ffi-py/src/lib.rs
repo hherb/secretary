@@ -62,12 +62,13 @@ use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
-    VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
-    VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
-    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
-    VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress,
-    VaultSyncStateCorrupt, VaultSyncStateVaultMismatch, VaultWrongMnemonicOrCorrupt,
-    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultInvalidMnemonic,
+    VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
+    VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
+    VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
+    VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
+    VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
+    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -264,6 +265,21 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultSyncDecisionsIncomplete",
         py.get_type::<VaultSyncDecisionsIncomplete>(),
+    )?;
+
+    // ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
+    // mirroring the bridge's FfiVaultError device variants.
+    m.add(
+        "VaultDeviceSlotNotFound",
+        py.get_type::<VaultDeviceSlotNotFound>(),
+    )?;
+    m.add(
+        "VaultWrongDeviceSecretOrCorrupt",
+        py.get_type::<VaultWrongDeviceSecretOrCorrupt>(),
+    )?;
+    m.add(
+        "VaultDeviceUuidMismatch",
+        py.get_type::<VaultDeviceUuidMismatch>(),
     )?;
 
     // #187 sync surface — 3 functions + 6 DTO classes (the sync error

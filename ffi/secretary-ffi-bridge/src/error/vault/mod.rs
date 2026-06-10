@@ -312,18 +312,44 @@ pub enum FfiVaultError {
     /// so the desktop can show "couldn't apply your choices — try again".
     #[error("sync decisions did not cover the pending conflicts")]
     SyncDecisionsIncomplete,
+
+    /// ADR 0009 (B.2): the requested device slot (`devices/<uuid>.wrap`) does
+    /// not exist. Returned by `open_with_device_secret` / `remove_device_slot`.
+    /// Benign "unknown device" caller condition, not a data-integrity failure.
+    #[error("device slot not found")]
+    DeviceSlotNotFound,
+
+    /// ADR 0009 (B.2): wrong device secret OR wrap-file corruption — deliberately
+    /// conflated (anti-oracle, parallel to `WrongPasswordOrCorrupt`).
+    #[error("wrong device secret or vault corruption")]
+    WrongDeviceSecretOrCorrupt,
+
+    /// ADR 0009 (B.2): the wrap file's header `device_uuid` does not equal the
+    /// device UUID it was looked up by (vault-format §3a relabel-integrity check).
+    #[error("device UUID mismatch: {detail}")]
+    DeviceUuidMismatch {
+        /// Diagnostic text; free-form, not part of the API contract.
+        detail: String,
+    },
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
     fn from(e: secretary_core::vault::VaultError) -> Self {
+        use secretary_core::unlock::UnlockError as UE;
         use secretary_core::vault::VaultError as VE;
 
         match e {
-            // Unlock-class errors: delegate to the FfiUnlockError translation
-            // logic so the 5 mirrored variants stay drift-free. If a future
-            // refactor adds a 6th variant to FfiUnlockError, the new variant
-            // automatically picks up the right FfiVaultError mapping via the
-            // private From<FfiUnlockError> arm in the conversions submodule.
+            // ADR 0009 (B.2): device unlock errors intercepted before the
+            // generic FfiUnlockError delegation, so they surface as typed
+            // FfiVaultError variants rather than folding to CorruptVault.
+            VE::Unlock(UE::WrongDeviceSecretOrCorrupt) => FfiVaultError::WrongDeviceSecretOrCorrupt,
+            VE::Unlock(UE::DeviceUuidMismatch) => FfiVaultError::DeviceUuidMismatch {
+                detail: "device wrap header UUID does not match the requested device".to_string(),
+            },
+            // All other unlock-class errors delegate to the FfiUnlockError
+            // translation logic so the 5 mirrored variants stay drift-free.
+            // (MalformedDeviceFile + the structurally-unreachable
+            // MalformedDeviceSecret fold to CorruptVault via this path.)
             VE::Unlock(unlock_err) => {
                 let intermediate: super::FfiUnlockError = unlock_err.into();
                 intermediate.into()
@@ -414,6 +440,10 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 ),
             },
 
+            // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault
+            // fold in B.1 before the device-slot FFI surface existed).
+            VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,
+
             // Post-unlock integrity / structural failures and IO kinds the
             // guarded `Io` arm above did not catch: fold to `CorruptVault`.
             // These cannot leak unlock-secret information (the IBK was
@@ -444,12 +474,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // fingerprint. Same "data on disk doesn't match what we
             // signed" semantic as RestoreVerificationFailed → fold to
             // CorruptVault.
-            | VE::BlockFingerprintMismatch { .. }
-            // ADR 0009 (B.1): device-slot not found. No FFI surface for
-            // device ops yet (that's B.2); fold to CorruptVault so the
-            // generic From path is exhaustive. The typed device-slot FFI
-            // variant lands in the B.2 FFI projection task.
-            | VE::DeviceSlotNotFound) => FfiVaultError::CorruptVault {
+            | VE::BlockFingerprintMismatch { .. }) => FfiVaultError::CorruptVault {
                 detail: format!("{e}"),
             },
         }

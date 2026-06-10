@@ -36,6 +36,9 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .SyncInProgress: return "SyncInProgress"
     case .SyncFailed: return "SyncFailed"
     case .SyncDecisionsIncomplete: return "SyncDecisionsIncomplete"
+    case .DeviceSlotNotFound: return "DeviceSlotNotFound"
+    case .WrongDeviceSecretOrCorrupt: return "WrongDeviceSecretOrCorrupt"
+    case .DeviceUuidMismatch: return "DeviceUuidMismatch"
     }
 }
 
@@ -51,6 +54,7 @@ func vaultErrorDetail(_ e: VaultError) -> String? {
     case .InvalidArgument(let d): return d
     case .SyncStateCorrupt(let d): return d
     case .SyncFailed(let d): return d
+    case .DeviceUuidMismatch(let d): return d
     default: return nil
     }
 }

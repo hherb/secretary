@@ -65,6 +65,15 @@ create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
 // Interactive conflict-resolution commit path — decisions did not cover the
 // recomputed veto set. Mirrors the bridge's FfiVaultError::SyncDecisionsIncomplete.
 create_exception!(secretary_ffi_py, VaultSyncDecisionsIncomplete, PyException);
+// ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
+// mirroring the bridge's new FfiVaultError device variants.
+create_exception!(secretary_ffi_py, VaultDeviceSlotNotFound, PyException);
+create_exception!(
+    secretary_ffi_py,
+    VaultWrongDeviceSecretOrCorrupt,
+    PyException
+);
+create_exception!(secretary_ffi_py, VaultDeviceUuidMismatch, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -155,6 +164,12 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::SyncDecisionsIncomplete => {
             VaultSyncDecisionsIncomplete::new_err(e.to_string())
         }
+        // ADR 0009 (B.2) device-slot error surface.
+        FfiVaultError::DeviceSlotNotFound => VaultDeviceSlotNotFound::new_err(e.to_string()),
+        FfiVaultError::WrongDeviceSecretOrCorrupt => {
+            VaultWrongDeviceSecretOrCorrupt::new_err(e.to_string())
+        }
+        FfiVaultError::DeviceUuidMismatch { detail } => VaultDeviceUuidMismatch::new_err(detail),
     }
 }
 

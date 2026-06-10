@@ -185,6 +185,16 @@ pub enum AppError {
         #[serde(skip_serializing)]
         detail: String,
     },
+
+    /// ADR 0009 (B.2): the requested device slot does not exist in the vault.
+    /// Benign caller condition ("this device hasn't been registered yet").
+    #[error("Device slot not found")]
+    DeviceSlotNotFound,
+
+    /// ADR 0009 (B.2): wrong device secret or wrap-file corruption —
+    /// conflated anti-oracle (parallel to `WrongPassword`).
+    #[error("Wrong device secret")]
+    WrongDeviceSecret,
 }
 
 // All three variants are part of the IPC wire-format schema; renaming to
@@ -348,6 +358,13 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // distinguish "couldn't apply your choices, retry" from a generic sync
         // failure and re-open the conflict resolver.
         FfiVaultError::SyncDecisionsIncomplete => AppError::SyncDecisionsIncomplete,
+
+        // ADR 0009 (B.2) device-slot errors: promoted to typed AppError variants
+        // so the desktop UI can render the appropriate affordance when B.2's
+        // open_with_device_secret / remove_device_slot surfaces are wired in.
+        FfiVaultError::DeviceSlotNotFound => AppError::DeviceSlotNotFound,
+        FfiVaultError::WrongDeviceSecretOrCorrupt => AppError::WrongDeviceSecret,
+        FfiVaultError::DeviceUuidMismatch { detail } => AppError::VaultCorrupt { detail },
     }
 }
 

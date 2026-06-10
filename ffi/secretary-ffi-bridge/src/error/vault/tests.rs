@@ -111,15 +111,61 @@ fn from_core_vault_error_kdf_params_mismatch_maps_to_corrupt_vault() {
 }
 
 #[test]
-fn from_core_vault_error_device_slot_not_found_maps_to_corrupt_vault() {
-    // ADR 0009 (B.1): no FFI surface opens via device secret yet (B.2 #201),
-    // so VaultError::DeviceSlotNotFound is unreachable from the current
-    // orchestrators and folds defensively into CorruptVault. Pin the fold so a
-    // future B.2 surface that should promote it to its own FfiVaultError variant
-    // is a deliberate change, not a silent regression.
-    let core_err = VaultError::DeviceSlotNotFound;
-    let ffi: FfiVaultError = core_err.into();
-    assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+fn device_slot_not_found_promotes_to_dedicated_variant() {
+    // ADR 0009 (B.2): DeviceSlotNotFound is now a first-class FfiVaultError
+    // variant (was folded to CorruptVault in B.1 before the device-slot FFI
+    // surface existed). The B.1 CorruptVault fold is intentionally inverted here.
+    let core = VaultError::DeviceSlotNotFound;
+    let ffi: FfiVaultError = core.into();
+    assert!(
+        matches!(ffi, FfiVaultError::DeviceSlotNotFound),
+        "got {ffi:?}"
+    );
+}
+
+#[test]
+fn unlock_wrong_device_secret_promotes_on_vault_error() {
+    let core = VaultError::Unlock(UnlockError::WrongDeviceSecretOrCorrupt);
+    let ffi: FfiVaultError = core.into();
+    assert!(
+        matches!(ffi, FfiVaultError::WrongDeviceSecretOrCorrupt),
+        "got {ffi:?}"
+    );
+}
+
+#[test]
+fn unlock_device_uuid_mismatch_promotes_on_vault_error() {
+    let core = VaultError::Unlock(UnlockError::DeviceUuidMismatch);
+    let ffi: FfiVaultError = core.into();
+    assert!(
+        matches!(ffi, FfiVaultError::DeviceUuidMismatch { .. }),
+        "got {ffi:?}"
+    );
+}
+
+#[test]
+fn unlock_malformed_device_file_folds_to_corrupt_vault() {
+    use secretary_core::unlock::device_file::DeviceFileError;
+    let core = VaultError::Unlock(UnlockError::MalformedDeviceFile(
+        DeviceFileError::BadMagic { got: 0 },
+    ));
+    let ffi: FfiVaultError = core.into();
+    assert!(
+        matches!(ffi, FfiVaultError::CorruptVault { .. }),
+        "got {ffi:?}"
+    );
+}
+
+#[test]
+fn unlock_malformed_device_secret_folds_to_corrupt_vault_unreachable() {
+    // Structurally unreachable through any FFI surface (bridge takes &[u8;32]);
+    // the binding raises InvalidArgument first. Pinned like WeakKdfParams.
+    let core = VaultError::Unlock(UnlockError::MalformedDeviceSecret { len: 7 });
+    let ffi: FfiVaultError = core.into();
+    assert!(
+        matches!(ffi, FfiVaultError::CorruptVault { .. }),
+        "got {ffi:?}"
+    );
 }
 
 #[test]

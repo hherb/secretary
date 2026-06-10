@@ -535,7 +535,10 @@ pub fn open_vault(
         Unlocker::Recovery(words) => {
             unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
         }
-        Unlocker::DeviceSecret { device_uuid, secret } => {
+        Unlocker::DeviceSecret {
+            device_uuid,
+            secret,
+        } => {
             let wrap_bytes =
                 crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
             unlock::device::open_with_device_secret(
