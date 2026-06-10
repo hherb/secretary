@@ -25,14 +25,9 @@ fn make_vault(seed: u8) -> (tempfile::TempDir, SecretBytes) {
     let dir = tempfile::tempdir().unwrap();
     let password = SecretBytes::new(b"hunter2".to_vec());
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
-    let created = secretary_core::unlock::create_vault_unchecked(
-        &password,
-        "Alice",
-        0,
-        fast_kdf(),
-        &mut rng,
-    )
-    .expect("create_vault_unchecked");
+    let created =
+        secretary_core::unlock::create_vault_unchecked(&password, "Alice", 0, fast_kdf(), &mut rng)
+            .expect("create_vault_unchecked");
     std::fs::write(dir.path().join("vault.toml"), &created.vault_toml_bytes)
         .expect("write vault.toml");
     std::fs::write(
@@ -57,9 +52,12 @@ fn enroll_then_open_with_device_secret_roundtrips() {
     assert!(wrap.exists(), "device wrap file should be written");
 
     // Opening with the returned secret yields the same identity as the password path.
-    let opened =
-        open_identity_with_device_secret(dir.path(), &enrolled.device_uuid, &enrolled.device_secret)
-            .expect("open by device secret");
+    let opened = open_identity_with_device_secret(
+        dir.path(),
+        &enrolled.device_uuid,
+        &enrolled.device_secret,
+    )
+    .expect("open by device secret");
     let by_pw = open_identity_with_password(dir.path(), &password);
     assert_eq!(
         opened.identity_block_key.expose(),
@@ -73,9 +71,12 @@ fn revoke_then_open_fails_not_found() {
     let mut rng = ChaCha20Rng::from_seed([21u8; 32]);
     let enrolled = add_device_slot(dir.path(), &password, &mut rng).expect("enroll");
     remove_device_slot(dir.path(), &enrolled.device_uuid).expect("revoke");
-    let err =
-        open_identity_with_device_secret(dir.path(), &enrolled.device_uuid, &enrolled.device_secret)
-            .unwrap_err();
+    let err = open_identity_with_device_secret(
+        dir.path(),
+        &enrolled.device_uuid,
+        &enrolled.device_secret,
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         secretary_core::vault::VaultError::DeviceSlotNotFound
@@ -104,9 +105,7 @@ fn two_devices_open_independently() {
     assert!(
         open_identity_with_device_secret(dir.path(), &a.device_uuid, &a.device_secret).is_err()
     );
-    assert!(
-        open_identity_with_device_secret(dir.path(), &b.device_uuid, &b.device_secret).is_ok()
-    );
+    assert!(open_identity_with_device_secret(dir.path(), &b.device_uuid, &b.device_secret).is_ok());
 }
 
 #[test]
@@ -122,6 +121,24 @@ fn enroll_with_wrong_password_writes_nothing() {
         0
     };
     assert_eq!(count, 0, "no wrap file may be written on a failed enroll");
+}
+
+#[test]
+fn open_with_valid_length_but_wrong_secret_surfaces_typed_error() {
+    // A valid-LENGTH (32-byte) but wrong device secret must surface the typed
+    // wrong-secret error through the folder layer — distinct from DeviceSlotNotFound.
+    let (dir, password) = make_vault(5);
+    let mut rng = ChaCha20Rng::from_seed([24u8; 32]);
+    let enrolled = add_device_slot(dir.path(), &password, &mut rng).expect("enroll");
+    let bad_secret = SecretBytes::new(vec![0xFFu8; 32]);
+    let err = open_identity_with_device_secret(dir.path(), &enrolled.device_uuid, &bad_secret)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        secretary_core::vault::VaultError::Unlock(
+            secretary_core::unlock::UnlockError::WrongDeviceSecretOrCorrupt
+        )
+    ));
 }
 
 /// Local helper mirroring the password open path to get an UnlockedIdentity from a folder.

@@ -46,11 +46,12 @@ use super::{
 };
 
 /// Filename of the cleartext metadata file (§2 / vault-format.md §1).
-const VAULT_TOML_FILENAME: &str = "vault.toml";
+/// `pub(crate)` so sibling folder ops (`device_slot`) share the single source.
+pub(crate) const VAULT_TOML_FILENAME: &str = "vault.toml";
 
 /// Filename of the encrypted dual-wrapped identity bundle file
-/// (§3 / vault-format.md §1).
-const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
+/// (§3 / vault-format.md §1). `pub(crate)` — see [`VAULT_TOML_FILENAME`].
+pub(crate) const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 
 /// Filename of the encrypted, signed manifest (§4 / vault-format.md §1).
 /// `pub(crate)` so the sync-orchestration layer

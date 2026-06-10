@@ -9,15 +9,13 @@ use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroize as _;
 
 use super::io::write_atomic;
-use super::orchestrators::format_uuid_hyphenated;
+use super::orchestrators::{format_uuid_hyphenated, IDENTITY_BUNDLE_FILENAME, VAULT_TOML_FILENAME};
 use super::VaultError;
 use crate::crypto::aead::random_nonce;
 use crate::crypto::secret::{SecretBytes, Sensitive};
 use crate::unlock::device::{open_with_device_secret, wrap_device_slot};
 use crate::unlock::{device_file, open_with_password, UnlockedIdentity};
 
-const VAULT_TOML_FILENAME: &str = "vault.toml";
-const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 const DEVICES_SUBDIR: &str = "devices";
 
 /// The outcome of enrolling a device. `device_secret` is the only copy that
@@ -28,11 +26,12 @@ pub struct EnrolledDevice {
     pub device_secret: SecretBytes,
 }
 
-fn read_vault_file(folder: &Path, name: &str) -> Result<Vec<u8>, VaultError> {
-    std::fs::read(folder.join(name)).map_err(|e| VaultError::Io {
-        context: "failed to read vault file for device-slot op",
-        source: e,
-    })
+fn read_vault_file(
+    folder: &Path,
+    name: &str,
+    context: &'static str,
+) -> Result<Vec<u8>, VaultError> {
+    std::fs::read(folder.join(name)).map_err(|e| VaultError::Io { context, source: e })
 }
 
 fn device_wrap_path(folder: &Path, device_uuid: &[u8; 16]) -> std::path::PathBuf {
@@ -49,8 +48,12 @@ pub fn add_device_slot(
     password: &SecretBytes,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<EnrolledDevice, VaultError> {
-    let vt_bytes = read_vault_file(folder, VAULT_TOML_FILENAME)?;
-    let ib_bytes = read_vault_file(folder, IDENTITY_BUNDLE_FILENAME)?;
+    let vt_bytes = read_vault_file(folder, VAULT_TOML_FILENAME, "failed to read vault.toml")?;
+    let ib_bytes = read_vault_file(
+        folder,
+        IDENTITY_BUNDLE_FILENAME,
+        "failed to read identity.bundle.enc",
+    )?;
 
     // Recover the IBK (and validate the password) before generating any secret.
     let opened = open_with_password(&vt_bytes, &ib_bytes, password).map_err(VaultError::Unlock)?;
@@ -58,9 +61,13 @@ pub fn add_device_slot(
 
     let mut device_uuid = [0u8; 16];
     rng.fill_bytes(&mut device_uuid);
+    // `Sensitive::new` copies the stack array (`[u8; 32]: Copy`); zeroize the
+    // source slot IMMEDIATELY so the secret lives only inside `device_secret`
+    // through the wrap + file I/O below (CLAUDE.md zeroize discipline).
     let mut secret_arr = [0u8; 32];
     rng.fill_bytes(&mut secret_arr);
     let device_secret = Sensitive::new(secret_arr);
+    secret_arr.zeroize();
 
     let file = wrap_device_slot(
         &opened.identity_block_key,
@@ -81,9 +88,9 @@ pub fn add_device_slot(
         source: e,
     })?;
 
-    // Hand the secret out as the boundary SecretBytes type; zeroize the stack copy.
-    let out = SecretBytes::new(secret_arr.to_vec());
-    secret_arr.zeroize();
+    // Hand the secret out as the boundary SecretBytes type, copied from the
+    // live `device_secret` (the stack `secret_arr` was already zeroized above).
+    let out = SecretBytes::new(device_secret.expose().to_vec());
     Ok(EnrolledDevice {
         device_uuid,
         device_secret: out,
@@ -110,8 +117,12 @@ pub fn open_identity_with_device_secret(
             })
         }
     };
-    let vt_bytes = read_vault_file(folder, VAULT_TOML_FILENAME)?;
-    let ib_bytes = read_vault_file(folder, IDENTITY_BUNDLE_FILENAME)?;
+    let vt_bytes = read_vault_file(folder, VAULT_TOML_FILENAME, "failed to read vault.toml")?;
+    let ib_bytes = read_vault_file(
+        folder,
+        IDENTITY_BUNDLE_FILENAME,
+        "failed to read identity.bundle.enc",
+    )?;
     open_with_device_secret(&vt_bytes, &wrap_bytes, &ib_bytes, device_secret)
         .map_err(VaultError::Unlock)
 }
