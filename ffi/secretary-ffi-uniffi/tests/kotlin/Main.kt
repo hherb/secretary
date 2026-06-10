@@ -28,6 +28,7 @@ fun main() {
     runSaveBlockAsserts(env)
     runShareBlockAsserts(env)
     runTrashRestoreAsserts(env)
+    runDeviceSlotAsserts(env)
     runSyncAsserts(env)
 
     if (failures.isNotEmpty()) {

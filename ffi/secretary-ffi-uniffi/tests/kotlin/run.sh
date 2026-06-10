@@ -171,6 +171,7 @@ kotlinc \
     "$SCRIPT_DIR/SmokeSaveBlock.kt" \
     "$SCRIPT_DIR/SmokeShareBlock.kt" \
     "$SCRIPT_DIR/SmokeTrashRestore.kt" \
+    "$SCRIPT_DIR/SmokeDeviceSlot.kt" \
     "$SCRIPT_DIR/SmokeSync.kt" \
     "$SCRIPT_DIR/Main.kt"
 
