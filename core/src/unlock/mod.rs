@@ -4,6 +4,7 @@
 
 pub mod bundle;
 pub mod bundle_file;
+pub mod device;
 pub mod device_file;
 pub mod mnemonic;
 pub mod vault_toml;
@@ -27,6 +28,12 @@ pub enum UnlockError {
     WrongPasswordOrCorrupt,
     #[error("wrong recovery mnemonic or vault corruption")]
     WrongMnemonicOrCorrupt,
+    #[error("wrong device secret or vault corruption")]
+    WrongDeviceSecretOrCorrupt,
+    #[error("malformed device wrap file: {0}")]
+    MalformedDeviceFile(#[from] device_file::DeviceFileError),
+    #[error("device secret must be exactly 32 bytes, got {len}")]
+    MalformedDeviceSecret { len: usize },
     #[error("invalid mnemonic: {0}")]
     InvalidMnemonic(#[from] mnemonic::MnemonicError),
     #[error("vault data integrity failure")]
@@ -287,7 +294,7 @@ pub fn create_vault_unchecked(
 }
 
 /// Concatenate a domain-separation tag with a vault UUID to form the AEAD AAD.
-fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(tag.len() + vault_uuid.len());
     out.extend_from_slice(tag);
     out.extend_from_slice(vault_uuid);
