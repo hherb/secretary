@@ -86,7 +86,7 @@ pub fn open_vault_with_recovery(
 /// bytes out via `expose()` and mint a second `Sensitive` for the manifest
 /// handle.  Both copies carry `ZeroizeOnDrop`; the intermediate stack array
 /// is explicitly zeroized per `CLAUDE.md`'s stack-residue discipline.
-fn split_core_open_vault(
+pub(crate) fn split_core_open_vault(
     core_out: secretary_core::vault::OpenVault,
     vault_folder: std::path::PathBuf,
 ) -> OpenVaultOutput {
