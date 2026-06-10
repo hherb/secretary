@@ -20,6 +20,9 @@ A vault is a directory. The user chooses where it lives — typically inside the
   contacts/
     <contact-uuid>.card                   # imported contact cards (signed, public); see §5
     ...
+  devices/
+    <device-uuid>.wrap                    # per-device IBK wrap (file_kind 0x0004); see §3a
+    ...
   blocks/
     <block-uuid>.cbor.enc                 # one file per block; see §6
     ...
@@ -115,6 +118,38 @@ The ASCII tag bytes are concatenated directly with the 16 raw UUID bytes; no len
 The file has no signature of its own. Its integrity is protected by AEAD tags on each component; substituting any byte invalidates a tag on read. (The Identity Bundle does not need a separate signature because only the owner ever writes it — there is no cross-user authentication concern at this layer.)
 
 A reader unable to decrypt either `wrap_pw` (master password) or `wrap_rec` (recovery mnemonic) cannot proceed. AEAD tag failure is reported to the UI as "wrong password" rather than "corrupt vault" — a wrong key produces tag failure indistinguishable from corruption to cryptography but the UI assumes wrong-key first.
+
+---
+
+## 3a. `devices/<device-uuid>.wrap` — per-device IBK wrap
+
+An optional, additive file (ADR 0009). Each enrolled device has one. Big-endian integers,
+same header discipline as §3. A vault with no enrolled devices has no `devices/` directory.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ magic              (4 bytes)  = MAGIC                         │
+│ format_version     (2 bytes)  = u16, v1: 0x0001              │
+│ file_kind          (2 bytes)  = u16, device-wrap: 0x0004     │
+│ vault_uuid         (16 bytes)                                 │
+│ device_uuid        (16 bytes)                                 │
+│ wrap_dev_nonce     (24 bytes) = XChaCha20 nonce              │
+│ wrap_dev_ct_len    (4 bytes)  = u32, must be 32              │
+│ wrap_dev_ct        (32 bytes) = AEAD ciphertext of the IBK   │
+│ wrap_dev_tag       (16 bytes) = Poly1305 tag                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- `suite_id` is omitted, matching §3 (identity-layer files fix the suite at v1; only
+  manifest/block *content* files carry `suite_id`).
+- `wrap_dev_ct_len` records the **unwrapped** key length (32), matching §3's
+  `wrap_pw_ct_len` / `wrap_rec_ct_len` convention.
+- `vault_uuid` MUST equal the vault's `vault.toml` `vault_uuid`; a mismatch is rejected.
+- `device_uuid` in the header MUST equal the `<device-uuid>` in the filename.
+- AEAD AAD = `"secretary-v1-id-wrap-dev" || vault_uuid`; `device_kek` derivation is
+  `docs/crypto-design.md` §5a.
+
+Filenames use the lowercase-hyphenated 8-4-4-4-12 UUID form, as for blocks/contacts (§1).
 
 ---
 

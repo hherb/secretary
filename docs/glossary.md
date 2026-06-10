@@ -113,3 +113,13 @@ Definitions of terms used throughout the Secretary specifications. This file is 
 **XChaCha20-Poly1305** — Authenticated encryption with associated data, using the XChaCha20 stream cipher (24-byte nonces) and Poly1305 MAC. Secretary's symmetric AEAD throughout.
 
 **Zeroize** — The act of overwriting a memory buffer with zeros to remove secret material before it is freed. The Rust crate `zeroize` provides `Drop` impls that do this automatically; Secretary's *Secret type* wrappers use it.
+
+**Device secret** — 32 bytes of OS-CSPRNG entropy generated when a device enrolls for
+hardware-backed/biometric unlock. Recovers the IBK via the device slot. Never stored in
+the vault; held off-device (e.g. iOS Secure Enclave) by the platform layer. See ADR 0009.
+
+**Device slot** — a `devices/<uuid>.wrap` file wrapping the IBK under a device KEK; a
+third unlock path alongside the master-password and recovery slots. See vault-format §3a.
+
+**Device KEK** — `HKDF-SHA-256(device_secret)`; the AEAD key for a device slot
+(crypto-design §5a).
