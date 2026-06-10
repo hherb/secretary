@@ -32,6 +32,16 @@ Definitions of terms used throughout the Secretary specifications. This file is 
 
 **Device** — A single installation of Secretary on a single hardware device (laptop, phone, etc.). Distinct from a *User*: one user owns multiple devices and they share one *Identity*.
 
+**Device KEK** — `HKDF-SHA-256(device_secret)`; the AEAD key for a device slot
+(crypto-design §5a).
+
+**Device secret** — 32 bytes of OS-CSPRNG entropy generated when a device enrolls for
+hardware-backed/biometric unlock. Recovers the IBK via the device slot. Never stored in
+the vault; held off-device (e.g. iOS Secure Enclave) by the platform layer. See ADR 0009.
+
+**Device slot** — A `devices/<uuid>.wrap` file wrapping the IBK under a device KEK; a
+third unlock path alongside the master-password and recovery slots. See vault-format §3a.
+
 **Domain separation** — Prefixing a signed or hashed message with a fixed string identifying the protocol context, so a signature for one purpose cannot be replayed in another. Secretary uses tags such as `"secretary-v1-block-sig"`.
 
 **Ed25519** — Elliptic-curve digital signature algorithm. Classical-half of Secretary's *Hybrid Signature*.

@@ -4,6 +4,8 @@
 
 pub mod bundle;
 pub mod bundle_file;
+pub mod device;
+pub mod device_file;
 pub mod mnemonic;
 pub mod vault_toml;
 
@@ -26,6 +28,18 @@ pub enum UnlockError {
     WrongPasswordOrCorrupt,
     #[error("wrong recovery mnemonic or vault corruption")]
     WrongMnemonicOrCorrupt,
+    #[error("wrong device secret or vault corruption")]
+    WrongDeviceSecretOrCorrupt,
+    #[error("malformed device wrap file: {0}")]
+    MalformedDeviceFile(#[from] device_file::DeviceFileError),
+    #[error("device secret must be exactly 32 bytes, got {len}")]
+    MalformedDeviceSecret { len: usize },
+    /// The device wrap file's header `device_uuid` does not equal the
+    /// `<device-uuid>` it was looked up by (vault-format §3a). Rejects a
+    /// relabeled wrap file within the same vault (`device_uuid` is not in
+    /// the AEAD AAD, so this is a structural integrity check).
+    #[error("device wrap file device_uuid does not match the requested device")]
+    DeviceUuidMismatch,
     #[error("invalid mnemonic: {0}")]
     InvalidMnemonic(#[from] mnemonic::MnemonicError),
     #[error("vault data integrity failure")]
@@ -286,11 +300,36 @@ pub fn create_vault_unchecked(
 }
 
 /// Concatenate a domain-separation tag with a vault UUID to form the AEAD AAD.
-fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn compose_aad(tag: &[u8], vault_uuid: &[u8; 16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(tag.len() + vault_uuid.len());
     out.extend_from_slice(tag);
     out.extend_from_slice(vault_uuid);
     out
+}
+
+/// Final stage shared by all unlock paths: AEAD-decrypt the identity bundle
+/// under the recovered IBK and CBOR-decode it. Any failure post-IBK-recovery
+/// is corruption, not user error. Takes ownership of the IBK so the returned
+/// `UnlockedIdentity` holds the single live copy.
+pub(crate) fn decrypt_bundle_to_identity(
+    identity_block_key: Sensitive<[u8; 32]>,
+    bundle_nonce: &[u8; bundle_file::NONCE_LEN],
+    bundle_ct_with_tag: &[u8],
+    vault_uuid: &[u8; 16],
+) -> Result<UnlockedIdentity, UnlockError> {
+    let bundle_aad = compose_aad(TAG_ID_BUNDLE, vault_uuid);
+    let bundle_plaintext = decrypt(
+        &identity_block_key,
+        bundle_nonce,
+        &bundle_aad,
+        bundle_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::CorruptVault)?;
+    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
+    Ok(UnlockedIdentity {
+        identity_block_key,
+        identity,
+    })
 }
 
 /// Construct the layered error returned when vault.toml bytes aren't UTF-8.
@@ -340,7 +379,7 @@ pub fn open_with_password(
 
     // Step 4: AEAD-decrypt wrap_pw → IBK bytes. AEAD failure here means
     // wrong password (or vault corruption — indistinguishable on auth-tag
-    // failure, which is the design for §13's "wrong key looks like
+    // failure, which is the design for §5's "wrong key looks like
     // corruption to crypto" property). UI surfaces this as wrong-password.
     let wrap_pw_aad = compose_aad(TAG_ID_WRAP_PW, &vt.vault_uuid);
     let ibk_bytes = decrypt(
@@ -365,25 +404,15 @@ pub fn open_with_password(
     let identity_block_key = Sensitive::new(ibk_arr);
     ibk_arr.zeroize();
 
-    // Step 5: AEAD-decrypt the bundle plaintext under the IBK. AEAD failure
-    // here is post-IBK-recovery: any failure is unequivocally corruption,
-    // not user error.
-    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
-    let bundle_plaintext = decrypt(
-        &identity_block_key,
-        &bf.bundle_nonce,
-        &bundle_aad,
-        &bf.bundle_ct_with_tag,
-    )
-    .map_err(|_| UnlockError::CorruptVault)?;
-
-    // Step 6: CBOR decode (the From<BundleError> impl maps malformed CBOR cleanly).
-    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
-
-    Ok(UnlockedIdentity {
+    // Steps 5-6: AEAD-decrypt the bundle plaintext under the IBK and
+    // CBOR-decode it. Post-IBK-recovery failure is unequivocally corruption,
+    // not user error. Shared with open_with_recovery and open_with_device_secret.
+    decrypt_bundle_to_identity(
         identity_block_key,
-        identity,
-    })
+        &bf.bundle_nonce,
+        &bf.bundle_ct_with_tag,
+        &vt.vault_uuid,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +443,7 @@ pub fn open_with_recovery(
 
     // Step 5: AEAD-decrypt wrap_rec → IBK bytes. AEAD failure here means wrong
     // mnemonic (or vault corruption — indistinguishable on auth-tag failure,
-    // matching the §13 "wrong key looks like corruption" property). UI surfaces
+    // matching the §5's "wrong key looks like corruption" property). UI surfaces
     // this as wrong-mnemonic.
     let wrap_rec_aad = compose_aad(TAG_ID_WRAP_REC, &vt.vault_uuid);
     let ibk_bytes = decrypt(
@@ -435,22 +464,15 @@ pub fn open_with_recovery(
     let identity_block_key = Sensitive::new(ibk_arr);
     ibk_arr.zeroize();
 
-    // Step 6: AEAD-decrypt the bundle plaintext under IBK. Post-IBK-recovery
-    // failure is unequivocally tampering, not user error.
-    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
-    let bundle_plaintext = decrypt(
-        &identity_block_key,
-        &bf.bundle_nonce,
-        &bundle_aad,
-        &bf.bundle_ct_with_tag,
-    )
-    .map_err(|_| UnlockError::CorruptVault)?;
-
-    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
-    Ok(UnlockedIdentity {
+    // Steps 6-7: AEAD-decrypt the bundle plaintext under IBK and CBOR-decode
+    // it. Post-IBK-recovery failure is unequivocally tampering, not user error.
+    // Shared with open_with_password and open_with_device_secret.
+    decrypt_bundle_to_identity(
         identity_block_key,
-        identity,
-    })
+        &bf.bundle_nonce,
+        &bf.bundle_ct_with_tag,
+        &vt.vault_uuid,
+    )
 }
 
 // ---------------------------------------------------------------------------

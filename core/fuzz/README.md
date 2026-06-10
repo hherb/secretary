@@ -1,6 +1,6 @@
 # Fuzz harness
 
-Coverage-guided fuzz harness for the six wire-format decoders that ingest
+Coverage-guided fuzz harness for the seven wire-format decoders that ingest
 attacker-controlled bytes from disk. See the design spec at
 [docs/superpowers/specs/2026-04-30-fuzz-harness-design.md](../../docs/superpowers/specs/2026-04-30-fuzz-harness-design.md)
 for goals and exit criteria.
@@ -15,6 +15,7 @@ for goals and exit criteria.
 | `bundle_file`   | `unlock::bundle_file::decode`                        | crash + roundtrip-eq  |
 | `manifest_file` | `vault::manifest::decode_manifest_file`              | crash + roundtrip-eq  |
 | `block_file`    | `vault::block::decode_block_file`                    | crash + roundtrip-eq  |
+| `device_file`   | `unlock::device_file::decode`                        | crash + roundtrip-eq  |
 
 ## One-time setup
 
@@ -80,6 +81,7 @@ new `cov` and `corp` for the last >=10% of executions.
 | `bundle_file`   | _TBD_           | _TBD_            | _TBD_                           |
 | `manifest_file` | _TBD_           | _TBD_            | _TBD_                           |
 | `block_file`    | _TBD_           | _TBD_            | _TBD_                           |
+| `device_file`   | _TBD_           | _TBD_            | _TBD_                           |
 
 To run to floor:
 
@@ -137,7 +139,7 @@ Per-target card has:
 
 Plateau detection: auto-SIGTERM after K=10 consecutive libFuzzer pulse
 lines with no growth in `cov` or `corp`. Adjustable in the source if
-needed; default works for the six fuzz targets in this repo.
+needed; default works for the seven fuzz targets in this repo.
 
 The monitor is operator quality-of-life — the harness it drives stays
 fully usable from the CLI (`cargo fuzz run <target>`) for any future

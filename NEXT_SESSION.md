@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-10-d3-ios-xcframework-linkproof-shipped.md
+docs/handoffs/2026-06-10-b1-device-wrap-slot-shipped.md

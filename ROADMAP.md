@@ -92,6 +92,7 @@ Phase plan (all ✅):
 - **B.4d** — `share_block`. First call with `ContactCard` bytes-in; 4 typed share variants (`NotAuthor`, `RecipientAlreadyPresent`, `MissingRecipientCard`, `CardDecodeFailure`) for foreign-side UX dispatch. v1 single-author only (share-as-fork deferred).
 - **B.5** — `trash_block` / `restore_block`. First lifecycle pair. `core::vault::trash_block` uses `rename(2)` to `trash/<uuid>.cbor.enc.<unix-millis>`; `restore_block` scans for largest-timestamp file and verifies + AEAD-decrypts + hybrid-verifies before rename-back. New `docs/vault-format.md` §7.1 normative sequence.
 - **B.6 v1 / v2** — Cross-language conformance KAT. 22 vectors at [core/tests/data/conformance_kat.json](core/tests/data/conformance_kat.json) (open + read in v1; lifecycle — save / share / trash / restore — in v2). Swift + Kotlin host runners ([ffi/secretary-ffi-uniffi/tests/{swift,kotlin}/run_conformance.sh](ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh)) both replay 22/22 PASS. Replay pins typed Ok/Err + post-call manifest shape rather than AEAD-nonce bytes (all three host runners share the same Rust bridge, so byte parity does not require nonce pinning).
+- [x] **B.1 — Per-device wrap-slot format & crypto** (2026-06-10) — `devices/<uuid>.wrap`, `file_kind 0x0004`; HKDF device KEK; enroll/open/revoke; conformance KAT ([ADR 0009](docs/adr/0009-per-device-wrap-slot.md)). → B.2 #201, B.3 #202.
 
 Specs and per-phase plans live under [docs/superpowers/specs/](docs/superpowers/specs/) and [docs/superpowers/plans/](docs/superpowers/plans/).
 

@@ -68,3 +68,10 @@ path = "fuzz_targets/block_file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "device_file"
+path = "fuzz_targets/device_file.rs"
+test = false
+doc = false
+bench = false

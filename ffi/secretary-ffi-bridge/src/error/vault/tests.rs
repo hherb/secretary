@@ -111,6 +111,18 @@ fn from_core_vault_error_kdf_params_mismatch_maps_to_corrupt_vault() {
 }
 
 #[test]
+fn from_core_vault_error_device_slot_not_found_maps_to_corrupt_vault() {
+    // ADR 0009 (B.1): no FFI surface opens via device secret yet (B.2 #201),
+    // so VaultError::DeviceSlotNotFound is unreachable from the current
+    // orchestrators and folds defensively into CorruptVault. Pin the fold so a
+    // future B.2 surface that should promote it to its own FfiVaultError variant
+    // is a deliberate change, not a silent regression.
+    let core_err = VaultError::DeviceSlotNotFound;
+    let ffi: FfiVaultError = core_err.into();
+    assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+}
+
+#[test]
 fn from_core_vault_error_manifest_author_mismatch_maps_to_corrupt_vault() {
     // Issue #40 explicit-arm pin: post-unlock structural mismatch
     // between manifest header `author_fingerprint` and owner card

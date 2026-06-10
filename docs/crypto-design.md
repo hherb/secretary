@@ -53,6 +53,8 @@ All KDF inputs, signature inputs, and AEAD AAD values are prefixed with a fixed 
 | `secretary-v1-id-wrap-pw` | AEAD AAD prefix | Wrapping Identity Block Key under Master KEK (§5) |
 | `secretary-v1-id-wrap-rec` | AEAD AAD prefix | Wrapping Identity Block Key under Recovery KEK (§5) |
 | `secretary-v1-id-bundle` | AEAD AAD prefix | Identity Bundle encryption (§5) |
+| `secretary-v1-device-kek` | HKDF info | Deriving Device KEK from device secret (§5a) |
+| `secretary-v1-id-wrap-dev` | AEAD AAD prefix | Wrapping Identity Block Key under Device KEK (§5a) |
 | `secretary-v1-hybrid-kem` | HKDF salt | Combining classical and PQ shared secrets (§7) |
 | `secretary-v1-hybrid-kem-transcript` | BLAKE3 prefix | Hybrid-KEM transcript hash (§7) |
 | `secretary-v1-block-content-key-wrap` | HKDF info | Producing wrap key from hybrid-KEM combiner output (§7) |
@@ -205,6 +207,41 @@ Then the Identity Block Key is wrapped twice:
 The `identity.bundle.enc` file structure is given in [vault-format.md](vault-format.md) §3.
 
 Decryption is the obvious reverse: try `master_kek` first; on AEAD failure, try `recovery_kek`. AEAD failure with the correct password means file corruption, not wrong password — a wrong password produces tag failure, which is indistinguishable from corruption to the cryptography but distinguishable to the user (the UI prompts to re-enter the password before reporting corruption).
+
+---
+
+## 5a. Device-slot wrap (per-device credential)
+
+A vault MAY carry zero or more *device slots*, each an independent way to recover the
+Identity Block Key (IBK) defined in §5. A device slot is created when a device enrolls for
+hardware-backed/biometric unlock (ADR 0009).
+
+Given a fresh `device_secret` (32 bytes from the OS CSPRNG, generated at enrollment and
+never persisted inside the vault):
+
+```
+device_kek = HKDF-SHA-256(
+    ikm  = device_secret,
+    salt = 32 bytes of 0x00,
+    info = "secretary-v1-device-kek",
+    len  = 32,
+)
+(ct_dev, tag_dev) = XChaCha20-Poly1305-Encrypt(
+    key       = device_kek,
+    nonce     = 24 bytes from the OS CSPRNG,
+    aad       = "secretary-v1-id-wrap-dev" || vault_uuid,
+    plaintext = identity_block_key,        # the SAME 32-byte IBK as wrap_pw / wrap_rec (§5)
+)
+```
+
+As with the recovery KEK (§4), Argon2id is deliberately NOT used: the device secret carries
+256 bits of CSPRNG entropy, so stretching is unnecessary. The `device_secret` and
+`device_kek` are zeroized after wrapping/unwrapping.
+
+Decryption: derive `device_kek` from the supplied `device_secret`, then AEAD-decrypt
+`(ct_dev, tag_dev)` to recover the IBK. AEAD tag failure means a wrong device secret (or
+corruption — indistinguishable to the cryptography; see §5 and vault-format §3), surfaced to the UI as
+wrong-secret. The on-disk container is [vault-format.md](vault-format.md) §3a.
 
 ---
 

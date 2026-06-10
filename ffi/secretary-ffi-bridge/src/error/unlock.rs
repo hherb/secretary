@@ -102,6 +102,23 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             E::WeakKdfParams { .. } => Self::CorruptVault {
                 detail: e.to_string(),
             },
+
+            // SECURITY: forward-compat stubs for the B.1 device-slot
+            // variants (`open_with_device_secret` is not yet exposed
+            // through any FFI surface; that is B.2 #201). When B.2
+            // projects these, promote `WrongDeviceSecretOrCorrupt` to its
+            // own `FfiUnlockError` variant (parallel to
+            // `WrongMnemonicOrCorrupt`) and expose `MalformedDeviceSecret`
+            // as its own variant or fold into `InvalidMnemonic`/`CorruptVault`
+            // as the B.2 threat model requires. Until then, fold to
+            // `CorruptVault` so the exhaustive match stays current without
+            // premature FFI-surface additions.
+            E::WrongDeviceSecretOrCorrupt
+            | E::MalformedDeviceFile(_)
+            | E::MalformedDeviceSecret { .. }
+            | E::DeviceUuidMismatch => Self::CorruptVault {
+                detail: e.to_string(),
+            },
         }
     }
 }
@@ -271,6 +288,46 @@ mod tests {
         };
         let ffi: FfiUnlockError = core_err.into();
         assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
+    }
+
+    #[test]
+    fn device_slot_variants_remain_defensively_mapped_to_corrupt_vault() {
+        // SECURITY: the four device-slot variants — WrongDeviceSecretOrCorrupt,
+        // MalformedDeviceFile, MalformedDeviceSecret, and DeviceUuidMismatch —
+        // are not yet exposed through any FFI surface (that is B.2 #201). They
+        // share one match arm that folds into CorruptVault. This test pins all
+        // four so a future refactor that splits the arm (e.g. promotes
+        // WrongDeviceSecretOrCorrupt to its own variant) is a deliberate
+        // decision rather than a silent regression.
+        use secretary_core::unlock::device_file::DeviceFileError;
+
+        let wrong_dev = UnlockError::WrongDeviceSecretOrCorrupt;
+        let ffi: FfiUnlockError = wrong_dev.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "WrongDeviceSecretOrCorrupt must fold to CorruptVault"
+        );
+
+        let bad_file = UnlockError::MalformedDeviceFile(DeviceFileError::BadMagic { got: 0 });
+        let ffi: FfiUnlockError = bad_file.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "MalformedDeviceFile must fold to CorruptVault"
+        );
+
+        let bad_secret = UnlockError::MalformedDeviceSecret { len: 7 };
+        let ffi: FfiUnlockError = bad_secret.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "MalformedDeviceSecret must fold to CorruptVault"
+        );
+
+        let uuid_mismatch = UnlockError::DeviceUuidMismatch;
+        let ffi: FfiUnlockError = uuid_mismatch.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "DeviceUuidMismatch must fold to CorruptVault"
+        );
     }
 
     #[test]
