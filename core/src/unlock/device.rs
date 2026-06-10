@@ -5,12 +5,12 @@
 //! See `docs/crypto-design.md` §5a and `docs/vault-format.md` §3a.
 
 use crate::crypto::aead::{decrypt, encrypt, AeadNonce};
-use crate::crypto::kdf::{derive_device_kek, TAG_ID_BUNDLE, TAG_ID_WRAP_DEV};
+use crate::crypto::kdf::{derive_device_kek, TAG_ID_WRAP_DEV};
 use crate::crypto::secret::{SecretBytes, Sensitive};
 use zeroize::Zeroize as _;
 
-use super::bundle;
 use super::compose_aad;
+use super::decrypt_bundle_to_identity;
 use super::device_file::{self, DeviceWrapFile, WRAP_CT_PLUS_TAG_LEN};
 use super::vault_toml;
 use super::{vault_toml_not_utf8, UnlockError, UnlockedIdentity};
@@ -57,15 +57,20 @@ pub fn wrap_device_slot(
 
 /// Recover the IBK from a device slot using `device_secret`. AEAD tag failure →
 /// [`UnlockError::WrongDeviceSecretOrCorrupt`] (wrong secret, header tampering,
-/// or corruption — indistinguishable to the cryptography, per §13).
+/// or corruption — indistinguishable to the cryptography, per §5a).
 pub fn unwrap_device_slot(
     file: &DeviceWrapFile,
     device_secret: &Sensitive<[u8; 32]>,
 ) -> Result<Sensitive<[u8; 32]>, UnlockError> {
     let device_kek = derive_device_kek(device_secret);
     let aad = compose_aad(TAG_ID_WRAP_DEV, &file.vault_uuid);
-    let ibk_bytes = decrypt(&device_kek, &file.wrap_dev_nonce, &aad, &file.wrap_dev_ct_with_tag)
-        .map_err(|_| UnlockError::WrongDeviceSecretOrCorrupt)?;
+    let ibk_bytes = decrypt(
+        &device_kek,
+        &file.wrap_dev_nonce,
+        &aad,
+        &file.wrap_dev_ct_with_tag,
+    )
+    .map_err(|_| UnlockError::WrongDeviceSecretOrCorrupt)?;
     let mut ibk_arr: [u8; 32] = ibk_bytes
         .expose()
         .try_into()
@@ -99,19 +104,14 @@ pub fn open_with_device_secret(
     let secret = secret_to_array(device_secret)?;
     let identity_block_key = unwrap_device_slot(&df, &secret)?;
 
-    let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vt.vault_uuid);
-    let bundle_plaintext = decrypt(
-        &identity_block_key,
-        &bf.bundle_nonce,
-        &bundle_aad,
-        &bf.bundle_ct_with_tag,
-    )
-    .map_err(|_| UnlockError::CorruptVault)?;
-    let identity = bundle::IdentityBundle::from_canonical_cbor(bundle_plaintext.expose())?;
-    Ok(UnlockedIdentity {
+    // Final stage: AEAD-decrypt bundle under IBK and CBOR-decode it.
+    // Shared with open_with_password and open_with_recovery.
+    decrypt_bundle_to_identity(
         identity_block_key,
-        identity,
-    })
+        &bf.bundle_nonce,
+        &bf.bundle_ct_with_tag,
+        &vt.vault_uuid,
+    )
 }
 
 /// Test-only helper: read just the `vault_uuid` out of an encoded identity
@@ -149,7 +149,13 @@ mod tests {
     fn unwrap_with_wrong_secret_is_typed_error() {
         let mut rng = ChaCha20Rng::from_seed([4u8; 32]);
         let ibk = fresh_secret(0xCD);
-        let file = wrap_device_slot(&ibk, [9u8; 16], [7u8; 16], &fresh_secret(0x01), random_nonce(&mut rng));
+        let file = wrap_device_slot(
+            &ibk,
+            [9u8; 16],
+            [7u8; 16],
+            &fresh_secret(0x01),
+            random_nonce(&mut rng),
+        );
         let err = unwrap_device_slot(&file, &fresh_secret(0x02)).unwrap_err();
         assert!(matches!(err, UnlockError::WrongDeviceSecretOrCorrupt));
     }
@@ -161,7 +167,8 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
         let ibk = fresh_secret(0xEF);
         let secret = fresh_secret(0x5A);
-        let mut file = wrap_device_slot(&ibk, [0xAA; 16], [7u8; 16], &secret, random_nonce(&mut rng));
+        let mut file =
+            wrap_device_slot(&ibk, [0xAA; 16], [7u8; 16], &secret, random_nonce(&mut rng));
         file.vault_uuid = [0xBB; 16]; // pretend it belongs to another vault
         let err = unwrap_device_slot(&file, &secret).unwrap_err();
         assert!(matches!(err, UnlockError::WrongDeviceSecretOrCorrupt));
@@ -171,8 +178,14 @@ mod tests {
     fn open_with_device_secret_yields_same_identity_as_password() {
         let mut rng = ChaCha20Rng::from_seed([6u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
-        let v = create_vault_unchecked(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng)
-            .unwrap();
+        let v = create_vault_unchecked(
+            &password,
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
 
         // Enroll a device by wrapping the just-created IBK.
         let secret = fresh_secret(0x77);
@@ -195,17 +208,74 @@ mod tests {
             &secret_bytes,
         )
         .expect("open with device secret");
-        let by_pw = open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
-        assert_eq!(by_dev.identity_block_key.expose(), by_pw.identity_block_key.expose());
+        let by_pw =
+            open_with_password(&v.vault_toml_bytes, &v.identity_bundle_bytes, &password).unwrap();
+        assert_eq!(
+            by_dev.identity_block_key.expose(),
+            by_pw.identity_block_key.expose()
+        );
         assert_eq!(by_dev.identity.user_uuid, by_pw.identity.user_uuid);
+    }
+
+    #[test]
+    fn open_with_device_secret_rejects_vault_uuid_mismatch_in_device_wrap() {
+        // Exercises the `df.vault_uuid != vt.vault_uuid` early check at the
+        // open_with_device_secret level — distinct from the AEAD-level cross-vault
+        // test (`unwrap_rejects_cross_vault_aad`), which verifies the inner
+        // unwrap_device_slot path. Here we confirm the open-level check fires
+        // BEFORE any IBK recovery attempt.
+        let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
+        let password = SecretBytes::new(b"hunter2".to_vec());
+        let v = create_vault_unchecked(
+            &password,
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
+
+        let secret = fresh_secret(0x77);
+        let real_uuid = device_file_vault_uuid(&v.identity_bundle_bytes);
+        let file = wrap_device_slot(
+            &v.identity_block_key,
+            real_uuid,
+            [0x42; 16],
+            &secret,
+            random_nonce(&mut rng),
+        );
+        // Re-encode the file with a tampered vault_uuid so it claims to belong
+        // to a different vault than vault.toml records.
+        let mut tampered_file = file;
+        tampered_file.vault_uuid = [0xFF; 16]; // different vault
+        let device_wrap_bytes = device_file::encode(&tampered_file);
+
+        let secret_bytes = SecretBytes::new(secret.expose().to_vec());
+        let err = open_with_device_secret(
+            &v.vault_toml_bytes,
+            &device_wrap_bytes,
+            &v.identity_bundle_bytes,
+            &secret_bytes,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UnlockError::VaultMismatch),
+            "expected VaultMismatch, got {err:?}"
+        );
     }
 
     #[test]
     fn open_with_device_secret_rejects_wrong_length_secret() {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let password = SecretBytes::new(b"hunter2".to_vec());
-        let v = create_vault_unchecked(&password, "Alice", 0, Argon2idParams::new(8, 1, 1), &mut rng)
-            .unwrap();
+        let v = create_vault_unchecked(
+            &password,
+            "Alice",
+            0,
+            Argon2idParams::new(8, 1, 1),
+            &mut rng,
+        )
+        .unwrap();
         let secret = fresh_secret(0x77);
         let file = wrap_device_slot(
             &v.identity_block_key,
@@ -223,6 +293,9 @@ mod tests {
             &short,
         )
         .unwrap_err();
-        assert!(matches!(err, UnlockError::MalformedDeviceSecret { len: 31 }));
+        assert!(matches!(
+            err,
+            UnlockError::MalformedDeviceSecret { len: 31 }
+        ));
     }
 }

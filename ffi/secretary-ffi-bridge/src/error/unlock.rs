@@ -290,6 +290,39 @@ mod tests {
     }
 
     #[test]
+    fn device_slot_variants_remain_defensively_mapped_to_corrupt_vault() {
+        // SECURITY: the three device-slot variants — WrongDeviceSecretOrCorrupt,
+        // MalformedDeviceFile, and MalformedDeviceSecret — are not yet exposed
+        // through any FFI surface (that is B.2 #201). They share one match arm
+        // that folds into CorruptVault. This test pins all three so a future
+        // refactor that splits the arm (e.g. promotes WrongDeviceSecretOrCorrupt
+        // to its own variant) is a deliberate decision rather than a silent
+        // regression.
+        use secretary_core::unlock::device_file::DeviceFileError;
+
+        let wrong_dev = UnlockError::WrongDeviceSecretOrCorrupt;
+        let ffi: FfiUnlockError = wrong_dev.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "WrongDeviceSecretOrCorrupt must fold to CorruptVault"
+        );
+
+        let bad_file = UnlockError::MalformedDeviceFile(DeviceFileError::BadMagic { got: 0 });
+        let ffi: FfiUnlockError = bad_file.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "MalformedDeviceFile must fold to CorruptVault"
+        );
+
+        let bad_secret = UnlockError::MalformedDeviceSecret { len: 7 };
+        let ffi: FfiUnlockError = bad_secret.into();
+        assert!(
+            matches!(ffi, FfiUnlockError::CorruptVault { .. }),
+            "MalformedDeviceSecret must fold to CorruptVault"
+        );
+    }
+
+    #[test]
     fn corrupt_vault_field_renamed_to_detail() {
         // Pin the field rename: B.2 used `message`, B.3a renames to `detail`
         // for uniformity with InvalidMnemonic { detail }. This test is a

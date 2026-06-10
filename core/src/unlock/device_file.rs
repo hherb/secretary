@@ -74,7 +74,9 @@ pub fn decode(bytes: &[u8]) -> Result<DeviceWrapFile, DeviceFileError> {
     let wrap_dev_nonce = read_array::<NONCE_LEN>(bytes, &mut pos)?;
     let wrap_dev_ct_len = read_u32_be(bytes, &mut pos)?;
     if wrap_dev_ct_len != 32 {
-        return Err(DeviceFileError::WrapLengthMismatch { declared: wrap_dev_ct_len });
+        return Err(DeviceFileError::WrapLengthMismatch {
+            declared: wrap_dev_ct_len,
+        });
     }
     let wrap_dev_ct_with_tag = read_array::<WRAP_CT_PLUS_TAG_LEN>(bytes, &mut pos)?;
 
@@ -129,7 +131,10 @@ mod tests {
     fn decode_rejects_bad_magic() {
         let mut bytes = encode(&sample());
         bytes[0] ^= 0xFF;
-        assert!(matches!(decode(&bytes).unwrap_err(), DeviceFileError::BadMagic { .. }));
+        assert!(matches!(
+            decode(&bytes).unwrap_err(),
+            DeviceFileError::BadMagic { .. }
+        ));
     }
 
     #[test]
@@ -153,7 +158,10 @@ mod tests {
         let mut bytes2 = encode(&sample());
         bytes2[6] = 0xFF;
         bytes2[7] = 0x00;
-        assert!(matches!(decode(&bytes2).unwrap_err(), DeviceFileError::UnsupportedFileKind(0xFF00)));
+        assert!(matches!(
+            decode(&bytes2).unwrap_err(),
+            DeviceFileError::UnsupportedFileKind(0xFF00)
+        ));
     }
 
     #[test]
@@ -174,7 +182,10 @@ mod tests {
     fn decode_rejects_trailing_bytes() {
         let mut bytes = encode(&sample());
         bytes.push(0xAA);
-        assert!(matches!(decode(&bytes).unwrap_err(), DeviceFileError::TrailingBytes { .. }));
+        assert!(matches!(
+            decode(&bytes).unwrap_err(),
+            DeviceFileError::TrailingBytes { .. }
+        ));
     }
 
     #[test]
