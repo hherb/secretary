@@ -209,13 +209,18 @@ Swift + Kotlin runners, replaying through `bridge::device::open_with_device_secr
 - **happy:** open against the B.1 fixture `golden_vault_001/devices/d0d0…d0.wrap` with the
   pinned `device_uuid` + `device_secret` → asserts the same `display_name` / `block_uuid` as
   `open_password_happy` (deterministic, fixed-output).
-- **errors:** wrong secret (32 bytes, wrong value) → `WrongDeviceSecretOrCorrupt`; relabeled
-  uuid → `DeviceUuidMismatch`; absent slot → `DeviceSlotNotFound` (all three are real bridge
-  errors). Short secret (≠32 bytes) → `InvalidArgument` via the existing **synthetic** path
-  (`BridgeOrSyntheticErr::Synthetic { variant: "InvalidArgument" }`) — the bridge `&[u8; 32]`
-  signature makes a wrong length unrepresentable, so the Rust replay + Swift/Kotlin runners each
-  do the length pre-check and synthesize the variant name, exactly as they already do for
-  wrong-length `block_uuid`.
+- **errors:** wrong secret (32 bytes, wrong value) → `WrongDeviceSecretOrCorrupt`; absent slot
+  → `DeviceSlotNotFound` (both real bridge errors). Short secret (≠32 bytes) → `InvalidArgument`
+  via the existing **synthetic** path (`BridgeOrSyntheticErr::Synthetic { variant:
+  "InvalidArgument" }`) — the bridge `&[u8; 32]` signature makes a wrong length unrepresentable,
+  so the Rust replay + Swift/Kotlin runners each do the length pre-check and synthesize the
+  variant name, exactly as they already do for wrong-length `block_uuid`. **`DeviceUuidMismatch`
+  is intentionally NOT a cross-language JSON KAT vector** — exercising it needs a wrap file whose
+  header `device_uuid` disagrees with its filename, i.e. a relabeled-wrap fixture, which would
+  pollute the frozen golden vault. It is instead covered by the core crypto unit test
+  (`unlock/device.rs`), the bridge mapping test (`error/vault/tests.rs`), and the `conformance.py`
+  clean-room (which asserts header-uuid == filename-uuid in `unwrap_device_slot`). The KAT vector
+  set is therefore exactly four (happy + wrong_secret + absent_slot + short_secret).
 
 **Enrol round-trip (not a fixed-output KAT).** `add_device_slot` uses OsRng, so it has no fixed
 output and does **not** fit the fixed-input/fixed-output vector schema. It is proven by
