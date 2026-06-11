@@ -44,8 +44,10 @@ public struct DeviceUnlockCoordinator {
     }
 
     /// True iff both the enclave holds a secret AND enrollment metadata exists.
+    /// Non-throwing by contract, so a metadata read error reads as "not enrolled"
+    /// (`try?` flattens both a thrown error and a nil load to `nil`).
     public var isEnrolled: Bool {
-        enclave.isEnrolled && ((try? metadata.load()) ?? nil) != nil
+        enclave.isEnrolled && (try? metadata.load()) != nil
     }
 
     /// Disenroll this device: remove the vault slot (tolerating an already-gone

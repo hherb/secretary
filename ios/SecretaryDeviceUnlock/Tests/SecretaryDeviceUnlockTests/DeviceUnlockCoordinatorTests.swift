@@ -209,11 +209,20 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         XCTAssertEqual(metadata.clearCount, 1)
     }
 
-    func testDisenrollWhenNotEnrolledIsNoop() throws {
+    func testDisenrollWhenNotEnrolledSkipsRemoveButStillClearsLocalState() throws {
+        // No enrollment → no slot to remove, but the local clears still run
+        // unconditionally (the "no orphan survives" contract is idempotent on
+        // an already-empty store).
         let port = FakeVaultDeviceSlotPort()
-        let coord = makeCoordinator(port: port) // empty metadata + enclave
+        let enclave = InMemoryDeviceSecretEnclave()
+        let metadata = InMemoryEnrollmentMetadataStore()
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: metadata)
+
         try coord.disenroll(vaultPath: vaultPath)
-        XCTAssertTrue(port.removedUuids.isEmpty)
+
+        XCTAssertTrue(port.removedUuids.isEmpty, "nothing to remove when not enrolled")
+        XCTAssertEqual(enclave.clearCount, 1, "clear runs unconditionally")
+        XCTAssertEqual(metadata.clearCount, 1, "clear runs unconditionally")
     }
 
     func testDisenrollPropagatesNonNotFoundRemoveError() throws {
