@@ -1,4 +1,4 @@
-import Foundation
+import Darwin // for memset_s; this package targets Apple platforms only (macOS/iOS)
 
 /// Overwrite `bytes` with zeros in place. Best-effort secret hygiene: it clears
 /// only this array's backing buffer, so any *other* copies a caller made (e.g.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SecretaryDeviceUnlock
+import SecretaryDeviceUnlock
 
 final class ZeroizingTests: XCTestCase {
     func testZeroizeOverwritesBuffer() {
