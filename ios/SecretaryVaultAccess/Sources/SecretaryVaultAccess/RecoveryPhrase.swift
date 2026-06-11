@@ -1,5 +1,3 @@
-import Foundation
-
 /// Normalizes user-typed BIP-39 recovery phrases before handing them to the
 /// FFI: trims, lowercases, and collapses any run of whitespace to one space.
 /// The canonical BIP-39 word list is all-lowercase and single-space-joined, so
