@@ -66,11 +66,15 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: keyTag,
         ]
+        // Attempt BOTH deletes before throwing so a transient failure on one
+        // cannot strand the other: disenroll is a revocation primitive and must
+        // make maximal progress (a left-behind blob keeps the device reading as
+        // enrolled). We surface the first hard failure only after both ran.
         let keyStatus = SecItemDelete(keyQuery as CFDictionary)
+        let blobStatus = SecItemDelete(blobQuery() as CFDictionary)
         guard keyStatus == errSecSuccess || keyStatus == errSecItemNotFound else {
             throw DeviceUnlockError.enclave("SecItemDelete(key) failed: \(keyStatus)")
         }
-        let blobStatus = SecItemDelete(blobQuery() as CFDictionary)
         guard blobStatus == errSecSuccess || blobStatus == errSecItemNotFound else {
             throw DeviceUnlockError.enclave("SecItemDelete(blob) failed: \(blobStatus)")
         }
