@@ -29,12 +29,23 @@ final class FakesTests: XCTestCase {
 
     func testFakePortRecordsAndInjects() throws {
         let port = FakeVaultDeviceSlotPort(removeError: .deviceSlotNotFound)
-        _ = try port.addDeviceSlot(vaultPath: Data(), password: [])
+        _ = try port.addDeviceSlot(vaultPath: Data("/v".utf8), password: [0x70])
         XCTAssertEqual(port.addCalls, 1)
+        XCTAssertEqual(port.addCalledWith?.vaultPath, Data("/v".utf8))
+        XCTAssertEqual(port.addCalledWith?.password, [0x70])
         XCTAssertThrowsError(try port.removeDeviceSlot(vaultPath: Data(), deviceUuid: [1])) { err in
             XCTAssertEqual(err as? VaultSlotError, .deviceSlotNotFound)
         }
         XCTAssertEqual(port.removedUuids, [[1]])
+    }
+
+    func testFakeOpenedVaultCountsWipes() {
+        let opened = FakeOpenedVault(vaultUuid: [0xAA, 0xBB])
+        XCTAssertEqual(opened.vaultUuid, [0xAA, 0xBB])
+        XCTAssertEqual(opened.wipeCount, 0)
+        opened.wipe()
+        opened.wipe()
+        XCTAssertEqual(opened.wipeCount, 2)
     }
 
     func testInMemoryMetadataStore() throws {

@@ -1,5 +1,3 @@
-import Foundation
-
 /// An opened vault, abstracted so the pure package never names the uniffi
 /// `OpenVaultOutput`. The real adapter conforms `OpenVaultOutput` to this.
 public protocol OpenedVault {

@@ -11,6 +11,7 @@ public final class FakeVaultDeviceSlotPort: VaultDeviceSlotPort {
 
     // Call recorders.
     public private(set) var addCalls = 0
+    public private(set) var addCalledWith: (vaultPath: Data, password: [UInt8])?
     public private(set) var openedWith: (deviceUuid: [UInt8], deviceSecret: [UInt8])?
     public private(set) var removedUuids: [[UInt8]] = []
 
@@ -29,6 +30,7 @@ public final class FakeVaultDeviceSlotPort: VaultDeviceSlotPort {
 
     public func addDeviceSlot(vaultPath: Data, password: [UInt8]) throws -> EnrolledSlot {
         addCalls += 1
+        addCalledWith = (vaultPath, password)
         return try addResult.get()
     }
 
