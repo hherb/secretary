@@ -67,6 +67,30 @@ final class DeviceUnlockViewModelTests: XCTestCase {
         XCTAssertEqual(vm.state, .failed(.notEnrolled, detail: nil))
     }
 
+    /// A pre-release guard failure (`.notEnrolled` / `.vaultSlotMismatch` are
+    /// thrown before `release` runs) must NOT surface a diagnostic left over from
+    /// an earlier attempt — `release` is the only thing that refreshes it.
+    func testPreReleaseGuardFailureSuppressesStaleDiagnostic() async {
+        let stale = "domain=NSOSStatusErrorDomain code=-128 mappedTo=userCancelled"
+
+        // .notEnrolled (empty metadata), but the enclave still reports a stale
+        // diagnostic from a prior release.
+        let notEnrolledEnclave = InMemoryDeviceSecretEnclave()
+        notEnrolledEnclave.releaseDiagnostic = stale
+        let vmNotEnrolled = makeVM(enclave: notEnrolledEnclave)
+        await vmNotEnrolled.unlock(reason: "Unlock")
+        XCTAssertEqual(vmNotEnrolled.state, .failed(.notEnrolled, detail: nil))
+
+        // .vaultSlotMismatch (metadata for a different vault), same stale leftover.
+        let mismatchEnclave = InMemoryDeviceSecretEnclave()
+        mismatchEnclave.releaseDiagnostic = stale
+        let mismatchMetadata = InMemoryEnrollmentMetadataStore(
+            enrollment: DeviceEnrollment(vaultId: "other", deviceUuid: Array(repeating: 0xAB, count: 16)))
+        let vmMismatch = makeVM(enclave: mismatchEnclave, metadata: mismatchMetadata)
+        await vmMismatch.unlock(reason: "Unlock")
+        XCTAssertEqual(vmMismatch.state, .failed(.vaultSlotMismatch, detail: nil))
+    }
+
     func testDisenrollReturnsToNotEnrolled() async {
         let metadata = InMemoryEnrollmentMetadataStore(
             enrollment: DeviceEnrollment(vaultId: "v", deviceUuid: Array(repeating: 0xAB, count: 16)))

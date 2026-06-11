@@ -45,10 +45,25 @@ public final class DeviceUnlockViewModel: ObservableObject {
             opened.wipe()  // release the opened vault's secret material immediately
             state = .unlocked(vaultUuidHex: hex)
         } catch {
-            // Read the diagnostic right after the failed release (synchronous on
-            // the main actor — no interleaving).
-            state = .failed(asDeviceUnlockError(error),
-                            detail: coordinator.lastReleaseDiagnostic)
+            let err = asDeviceUnlockError(error)
+            // The enclave's `lastReleaseDiagnostic` is only refreshed inside
+            // `release()`. `unlock`'s metadata guards throw `.notEnrolled` /
+            // `.vaultSlotMismatch` BEFORE release is ever called, so for those a
+            // non-nil diagnostic could only be a stale leftover from an earlier
+            // attempt — suppress it. Every other failure occurs at/after release
+            // (which clears-then-maybe-sets the diagnostic), so it is fresh.
+            // Read is synchronous on the main actor after the await — no interleaving.
+            let detail = reachedRelease(err) ? coordinator.lastReleaseDiagnostic : nil
+            state = .failed(err, detail: detail)
+        }
+    }
+
+    /// Whether a failed `unlock` got as far as `enclave.release()` — false only
+    /// for the two pre-release coordinator guards, whose diagnostic would be stale.
+    private func reachedRelease(_ error: DeviceUnlockError) -> Bool {
+        switch error {
+        case .notEnrolled, .vaultSlotMismatch: return false
+        default:                               return true
         }
     }
 
