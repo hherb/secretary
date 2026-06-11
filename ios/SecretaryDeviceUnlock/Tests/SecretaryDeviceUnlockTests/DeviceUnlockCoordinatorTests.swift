@@ -58,4 +58,21 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         XCTAssertEqual(enclave.clearCount, 1, "enclave must be cleared on metadata failure")
         XCTAssertEqual(port.removedUuids, [uuid], "slot must be removed on metadata failure")
     }
+
+    func testEnrollMapsAddSlotErrorAndDoesNotRollBack() throws {
+        // When minting the slot itself fails, there is nothing to roll back
+        // (no slot, no stored secret) and the VaultSlotError is mapped to a
+        // typed DeviceUnlockError through `mapSlotErrors`.
+        let port = FakeVaultDeviceSlotPort(addResult: .failure(.invalidArgument("bad path")))
+        let enclave = InMemoryDeviceSecretEnclave()
+        let metadata = InMemoryEnrollmentMetadataStore()
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: metadata)
+
+        XCTAssertThrowsError(try coord.enroll(vaultPath: vaultPath, vaultId: "v1", password: [0x50])) { err in
+            XCTAssertEqual(err as? DeviceUnlockError, .vault(.invalidArgument("bad path")))
+        }
+        XCTAssertTrue(port.removedUuids.isEmpty, "nothing to roll back when add itself fails")
+        XCTAssertFalse(enclave.isEnrolled)
+        XCTAssertNil(try metadata.load())
+    }
 }

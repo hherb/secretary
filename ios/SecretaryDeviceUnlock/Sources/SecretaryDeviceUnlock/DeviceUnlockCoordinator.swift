@@ -31,6 +31,12 @@ public struct DeviceUnlockCoordinator {
         do {
             try metadata.save(DeviceEnrollment(vaultId: vaultId, deviceUuid: slot.deviceUuid))
         } catch {
+            // Roll back best-effort and rethrow the ORIGINAL save error. The
+            // rollback failures are swallowed (`try?`) deliberately: enrollment
+            // already did not complete, so a residual SE key / wrap file is
+            // recoverable — the next enroll's `store` replaces the key and mints
+            // a fresh slot — and masking the real cause with a rollback error
+            // would be worse than leaving a recoverable remnant.
             try? enclave.clear()
             try? slotPort.removeDeviceSlot(vaultPath: vaultPath, deviceUuid: slot.deviceUuid)
             throw error
@@ -39,9 +45,9 @@ public struct DeviceUnlockCoordinator {
 }
 
 /// Run a port call, translating `VaultSlotError` into the coordinator's typed
-/// `DeviceUnlockError` semantics. (Used by unlock; enroll's add path re-throws
-/// the mapped error directly.)
-func mapSlotErrors<R>(_ body: () throws -> R) throws -> R {
+/// `DeviceUnlockError` semantics. Module-internal: `unlock` reuses it, and
+/// `enroll`'s add path re-throws the mapped error through the caller's `try`.
+internal func mapSlotErrors<R>(_ body: () throws -> R) throws -> R {
     do {
         return try body()
     } catch let e as VaultSlotError {
