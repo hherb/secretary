@@ -9,6 +9,8 @@ packages:
     path: ../SecretaryKit
   SecretaryDeviceUnlock:
     path: ../SecretaryDeviceUnlock
+  SecretaryVaultAccess:
+    path: ../SecretaryVaultAccess
 targets:
   Secretary:
     type: application
@@ -29,6 +31,10 @@ targets:
         product: SecretaryDeviceUnlock
       - package: SecretaryDeviceUnlock
         product: SecretaryDeviceUnlockUI
+      - package: SecretaryVaultAccess
+        product: SecretaryVaultAccess
+      - package: SecretaryVaultAccess
+        product: SecretaryVaultAccessUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.secretary.app

@@ -18,6 +18,12 @@ SIM_NAME="${IOS_SIM:-iPhone 16}"
 echo "==> swift test (pure SecretaryDeviceUnlock — host)"
 ( cd "$IOS_DIR/SecretaryDeviceUnlock" && swift test )
 
+# Same rationale: the pure vault-access package (unlock + browse view models)
+# has no XCFramework dependency, so a logic regression fails here in
+# milliseconds, before the multi-minute framework build.
+echo "==> swift test (pure SecretaryVaultAccess — host)"
+( cd "$IOS_DIR/SecretaryVaultAccess" && swift test )
+
 # --- Step 2: build the framework + stage fixtures ---
 echo "==> build-xcframework.sh"
 bash "$SCRIPT_DIR/build-xcframework.sh"

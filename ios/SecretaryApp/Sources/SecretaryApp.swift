@@ -1,7 +1,7 @@
 import SwiftUI
 import SecretaryKit
-import SecretaryDeviceUnlock
-import SecretaryDeviceUnlockUI
+import SecretaryVaultAccess
+import SecretaryVaultAccessUI
 
 @main
 struct SecretaryApp: App {
@@ -10,39 +10,55 @@ struct SecretaryApp: App {
     }
 }
 
-/// Builds the REAL coordinator (Secure Enclave + uniffi port + Keychain) over a
-/// staged writable copy of golden_vault_001, or shows a provisioning error.
+/// Routes between the unlock screen and the browse screen, and LOCKS (wipes the
+/// session) when the app backgrounds — re-unlock is required on return. Builds
+/// the real `UniffiVaultOpenPort` over a staged writable copy of golden_vault_001.
 private struct RootView: View {
-    /// SwiftUI keeps the FIRST stored `@State` value across `RootView`
-    /// re-creations, so the coordinator + ViewModel the views observe are
-    /// effectively built once. (The default expression itself can re-run on a
-    /// later `RootView` init — SwiftUI discards those extra results — which is
-    /// harmless here because `build`'s only side effect, `stageGoldenVault`, is
-    /// idempotent.)
-    @State private var built = build()
+    private enum Route {
+        case unlock
+        /// Carries the live browse VM (not just the session) so backgrounding can
+        /// route teardown through its authoritative `lock()` (drop reveals + wipe).
+        case browse(VaultBrowseViewModel)
+    }
+
+    @State private var route: Route = .unlock
+    @State private var staged: Result<Data, Error> = RootView.stageVaultPath()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        switch built {
-        case .success(let (vm, pinned)):
-            DeviceUnlockScreen(viewModel: vm, pinnedVaultUuidHex: pinned)
-        case .failure(let error):
-            Text("Setup failed: \(error.localizedDescription)").padding()
+        Group {
+            switch staged {
+            case .failure(let error):
+                Text("Setup failed: \(error.localizedDescription)").padding()
+            case .success(let vaultPath):
+                switch route {
+                case .unlock:
+                    UnlockScreen(
+                        viewModel: UnlockViewModel(port: UniffiVaultOpenPort(), vaultPath: vaultPath),
+                        onUnlocked: { session in route = .browse(VaultBrowseViewModel(session: session)) })
+                case .browse(let browseModel):
+                    VaultBrowseScreen(viewModel: browseModel)
+                }
+            }
+        }
+        // Lock on background: the VM's lock() drops all revealed plaintext AND
+        // wipes the session in one authoritative step; then return to unlock.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, case .browse(let browseModel) = route {
+                browseModel.lock()
+                route = .unlock
+            }
         }
     }
 
-    private static func build() -> Result<(DeviceUnlockViewModel, String?), Error> {
+    /// Computed once as a `@State` default: SwiftUI keeps the FIRST stored value
+    /// across `RootView` re-creations, so the staging runs effectively once. The
+    /// default expression may re-run on a later init (SwiftUI discards the extra
+    /// results), which is harmless because `stageGoldenVault` is idempotent.
+    private static func stageVaultPath() -> Result<Data, Error> {
         do {
-            let vaultURL = try AppVaultProvisioning.stageGoldenVault()
-            let pinned = try? AppVaultProvisioning.pinnedVaultUuidHex()
-            let coordinator = DeviceUnlockCoordinator(
-                slotPort: UniffiVaultDeviceSlotPort(),
-                enclave: SecureEnclaveDeviceSecretStore(),
-                metadata: KeychainEnrollmentMetadataStore())
-            let vm = DeviceUnlockViewModel(
-                coordinator: coordinator,
-                vaultPath: Data(vaultURL.path.utf8),
-                vaultId: "golden")
-            return .success((vm, pinned))
+            let url = try AppVaultProvisioning.stageGoldenVault()
+            return .success(Data(url.path.utf8))
         } catch {
             return .failure(error)
         }

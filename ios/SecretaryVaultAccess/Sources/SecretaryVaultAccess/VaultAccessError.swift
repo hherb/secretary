@@ -1,0 +1,29 @@
+import Foundation
+
+/// Typed failures from opening or browsing a vault. The two "…OrCorrupt" cases
+/// deliberately fold "wrong credential" together with "vault corruption": the
+/// core (see `docs/.../crypto-design.md` + `error/unlock.rs`) refuses to let a
+/// caller distinguish a wrong password from a tampered vault (anti-oracle).
+/// Do NOT add a separate "wrong credential" case — that would reintroduce the
+/// oracle this conflation exists to prevent.
+public enum VaultAccessError: Error, Equatable {
+    /// Password open failed: wrong password OR vault corruption (indistinguishable).
+    case wrongPasswordOrCorrupt
+    /// Recovery open failed: wrong phrase OR vault corruption (indistinguishable).
+    case wrongMnemonicOrCorrupt
+    /// Recovery phrase was malformed (bad word/length/UTF-8) — a format error,
+    /// not a credential check, so it is safe to surface distinctly.
+    case invalidMnemonic(String)
+    /// The opened vault's UUID did not match the expected one.
+    case vaultMismatch
+    /// A block file was present but undecryptable/undecodable.
+    case corruptVault(String)
+    /// Block UUID not found in the manifest's live blocks.
+    case blockNotFound(String)
+    /// FFI input-shape error (e.g. wrong-length UUID).
+    case invalidArgument(String)
+    /// Vault folder missing or unreadable.
+    case folderInvalid(String)
+    /// Any other / unmapped failure, carried as a string (never a raw panic).
+    case other(String)
+}
