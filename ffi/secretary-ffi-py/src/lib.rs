@@ -47,6 +47,7 @@
 
 use pyo3::prelude::*;
 
+mod device;
 mod errors;
 mod identity;
 mod record;
@@ -58,16 +59,21 @@ mod trash;
 mod unlock;
 mod vault;
 
+use device::{
+    add_device_slot, open_with_device_secret, remove_device_slot, DeviceEnrollOutput,
+    DeviceSecretOutput,
+};
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
-    VaultFolderInvalid, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
-    VaultMissingRecipientCard, VaultNotAuthor, VaultRecipientAlreadyPresent,
-    VaultRecipientNotPresent, VaultRecordNotFound, VaultSaveCryptoFailure,
-    VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress,
-    VaultSyncStateCorrupt, VaultSyncStateVaultMismatch, VaultWrongMnemonicOrCorrupt,
-    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultInvalidMnemonic,
+    VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
+    VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
+    VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
+    VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
+    VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
+    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -265,6 +271,30 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultSyncDecisionsIncomplete",
         py.get_type::<VaultSyncDecisionsIncomplete>(),
     )?;
+
+    // ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
+    // mirroring the bridge's FfiVaultError device variants.
+    m.add(
+        "VaultDeviceSlotNotFound",
+        py.get_type::<VaultDeviceSlotNotFound>(),
+    )?;
+    m.add(
+        "VaultWrongDeviceSecretOrCorrupt",
+        py.get_type::<VaultWrongDeviceSecretOrCorrupt>(),
+    )?;
+    m.add(
+        "VaultDeviceUuidMismatch",
+        py.get_type::<VaultDeviceUuidMismatch>(),
+    )?;
+
+    // ADR 0009 (B.2) device-slot ops — 2 pyclasses + 3 pyfunctions.
+    // The 3 exception classes (DeviceSlotNotFound / WrongDeviceSecretOrCorrupt /
+    // DeviceUuidMismatch) are registered in the error surface block above.
+    m.add_class::<DeviceSecretOutput>()?;
+    m.add_class::<DeviceEnrollOutput>()?;
+    m.add_function(wrap_pyfunction!(add_device_slot, m)?)?;
+    m.add_function(wrap_pyfunction!(open_with_device_secret, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_device_slot, m)?)?;
 
     // #187 sync surface — 3 functions + 6 DTO classes (the sync error
     // classes are already registered in the block above).

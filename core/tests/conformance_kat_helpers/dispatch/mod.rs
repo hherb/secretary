@@ -24,5 +24,7 @@ pub mod read;
 pub use lifecycle::{
     assert_post_state, run_restore_block, run_save_block, run_share_block, run_trash_block,
 };
-pub use open::{assert_open_ok, run_open_password, run_open_recovery, run_open_writable};
+pub use open::{
+    assert_open_ok, run_open_device_secret, run_open_password, run_open_recovery, run_open_writable,
+};
 pub use read::{assert_read_block_ok, run_read_block};

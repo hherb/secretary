@@ -12,6 +12,7 @@
 //! that match the UDL declarations.
 
 pub mod block;
+pub mod device;
 pub mod identity;
 pub mod save;
 pub mod sync;

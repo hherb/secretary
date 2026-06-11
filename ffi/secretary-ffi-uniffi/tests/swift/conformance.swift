@@ -128,6 +128,35 @@ struct ConformanceRunner {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
 
+            case ("open_with_device_secret", nil):
+                // Device-slot open path (ADR 0009 / B.2). Resolve uuid + secret
+                // first. A wrong-length input cannot reach the bridge's
+                // type-bounded `&[u8; 16]` / `&[u8; 32]` signature, so the
+                // binding-layer length pre-check is replicated here as a
+                // SYNTHETIC `InvalidArgument` outcome (mirrors the read_block /
+                // save_block wrong-length precedent — the open_device_secret_
+                // short_secret vector passes a 31-byte secret). The synthetic
+                // branch asserts directly against the vector's expected variant.
+                let deviceUuid = resolveDeviceUuid(inputs, goldenVaultDir: goldenVaultDir)
+                let deviceSecret = resolveDeviceSecret(inputs, goldenVaultDir: goldenVaultDir)
+                if deviceUuid.count != 16 {
+                    _ = check(kind == "err" && (expected["variant"] as? String) == "InvalidArgument",
+                              name, "wrong-length device_uuid expected synthetic InvalidArgument")
+                } else if deviceSecret.count != 32 {
+                    _ = check(kind == "err" && (expected["variant"] as? String) == "InvalidArgument",
+                              name, "wrong-length device_secret expected synthetic InvalidArgument")
+                } else {
+                    let vaultDir = resolveVaultDir(inputs, goldenVaultDir: goldenVaultDir)
+                    do {
+                        let out = try openWithDeviceSecret(folderPath: vaultDir, deviceUuid: deviceUuid, deviceSecret: deviceSecret)
+                        handleOpenOk(out: out, expected: expected, name: name, kind: kind, cache: &cache, check: check)
+                    } catch let e as VaultError {
+                        handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
+                    } catch {
+                        _ = check(false, name, "unexpected non-VaultError exception: \(error)")
+                    }
+                }
+
             case ("read_block", let predecessor?):
                 guard let cached = cache[predecessor] else {
                     _ = check(false, name, "predecessor '\(predecessor)' did not produce a cacheable Ok")
@@ -386,6 +415,59 @@ struct ConformanceRunner {
             // failures (see preFailureCount snapshot above).
             if failures.count == preFailureCount {
                 print("PASS: \(name)")
+            }
+        }
+
+        // --- Standalone enrol round-trip (B.2) ---
+        //
+        // Not a JSON vector: exercises the one-shot add_device_slot →
+        // take_secret → open_with_device_secret handle end-to-end. Enrol
+        // MUST run against a temp copy — adding a slot writes a new
+        // devices/<uuid>.wrap into the vault, and golden_vault_001 is a
+        // frozen KAT fixture that must never be mutated. Counted as one
+        // extra "vector" in the summary so the pass count reflects it.
+        do {
+            vectorsRun += 1
+            let enrolName = "enrol_round_trip"
+            let preEnrolFailures = failures.count
+            let src = URL(fileURLWithPath: goldenVaultDir).appendingPathComponent("golden_vault_001")
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("secretary_enrol_\(UUID().uuidString)")
+            tempdirs.append(tmp)
+            do {
+                try recursiveCopy(src, tmp)
+            } catch {
+                _ = check(false, enrolName, "recursive copy failed: \(error)")
+            }
+            let folderPath = Data(tmp.path.utf8)
+            let password = resolveSource("golden_vault_001_inputs.json:password", goldenVaultDir: goldenVaultDir)
+            do {
+                let enroll = try addDeviceSlot(folderPath: folderPath, password: password)
+                _ = check(enroll.deviceUuid.count == 16, enrolName, "device_uuid expected 16 bytes, got \(enroll.deviceUuid.count)")
+                let secret = enroll.deviceSecret.takeSecret()
+                _ = check(secret != nil, enrolName, "takeSecret() returned nil on first call")
+                _ = check(secret?.count == 32, enrolName, "device_secret expected 32 bytes, got \(secret?.count ?? -1)")
+                _ = check(enroll.deviceSecret.takeSecret() == nil, enrolName, "takeSecret() second call expected nil (one-shot)")
+                if let secret = secret {
+                    do {
+                        let out = try openWithDeviceSecret(
+                            folderPath: folderPath,
+                            deviceUuid: enroll.deviceUuid,
+                            deviceSecret: Data(secret)
+                        )
+                        _ = check(out.identity.displayName() == "Owner", enrolName,
+                                  "enrol-then-open display_name mismatch (got '\(out.identity.displayName())', want 'Owner')")
+                        _ = check(Int(out.manifest.blockCount()) == 1, enrolName,
+                                  "enrol-then-open block_count mismatch (got \(out.manifest.blockCount()), want 1)")
+                    } catch {
+                        _ = check(false, enrolName, "open_with_device_secret after enrol threw \(error)")
+                    }
+                }
+            } catch {
+                _ = check(false, enrolName, "add_device_slot threw \(error)")
+            }
+            if failures.count == preEnrolFailures {
+                print("PASS: \(enrolName)")
             }
         }
 

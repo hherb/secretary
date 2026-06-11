@@ -166,6 +166,19 @@ pub struct OpenVaultOutput {
     manifest: Option<OpenVaultManifest>,
 }
 
+impl OpenVaultOutput {
+    /// Crate-internal constructor: wrap the two bridge-side handles into the
+    /// pyo3 `OpenVaultOutput`. Used by [`crate::device`] (and the two
+    /// vault-module folder-in functions) to avoid repeating the destructuring
+    /// idiom and to keep the field-assignment centralised.
+    pub(crate) fn from_bridge(identity: UnlockedIdentity, manifest: OpenVaultManifest) -> Self {
+        Self {
+            identity: Some(identity),
+            manifest: Some(manifest),
+        }
+    }
+}
+
 #[pymethods]
 impl OpenVaultOutput {
     /// Take ownership of the live `UnlockedIdentity` handle. ONE-SHOT —
@@ -256,10 +269,10 @@ pub(crate) fn open_vault_with_password(
     password.zeroize();
     let bridge_out = result?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
-    Ok(OpenVaultOutput {
-        identity: Some(UnlockedIdentity(identity)),
-        manifest: Some(OpenVaultManifest(manifest)),
-    })
+    Ok(OpenVaultOutput::from_bridge(
+        UnlockedIdentity(identity),
+        OpenVaultManifest(manifest),
+    ))
 }
 
 /// Open a vault folder using its 24-word BIP-39 recovery phrase (B.4a).
@@ -300,8 +313,8 @@ pub(crate) fn open_vault_with_recovery(
     mnemonic.zeroize();
     let bridge_out = result?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
-    Ok(OpenVaultOutput {
-        identity: Some(UnlockedIdentity(identity)),
-        manifest: Some(OpenVaultManifest(manifest)),
-    })
+    Ok(OpenVaultOutput::from_bridge(
+        UnlockedIdentity(identity),
+        OpenVaultManifest(manifest),
+    ))
 }

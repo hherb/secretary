@@ -23,15 +23,17 @@
 mod conformance_kat_helpers;
 
 use conformance_kat_helpers::dispatch::{
-    assert_open_ok, assert_post_state, assert_read_block_ok, run_open_password, run_open_recovery,
-    run_open_writable, run_read_block, run_restore_block, run_save_block, run_share_block,
-    run_trash_block,
+    assert_open_ok, assert_post_state, assert_read_block_ok, run_open_device_secret,
+    run_open_password, run_open_recovery, run_open_writable, run_read_block, run_restore_block,
+    run_save_block, run_share_block, run_trash_block,
 };
 use conformance_kat_helpers::errors::{
     assert_err, read_block_err_detail, read_block_err_variant, variant_name_vault,
     vault_error_detail,
 };
-use conformance_kat_helpers::fixtures::{fixtures_dir, kat_path, resolve_source};
+use conformance_kat_helpers::fixtures::{
+    fixtures_dir, kat_path, resolve_device_secret, resolve_device_uuid, resolve_source,
+};
 use conformance_kat_helpers::types::{Expected, Kat, Operation};
 
 use std::collections::HashMap;
@@ -71,6 +73,53 @@ fn replay_conformance_kat() {
             }
             (Operation::OpenVaultWithRecovery, None) => {
                 let result = run_open_recovery(&vector.inputs);
+                match (&vector.expected, result) {
+                    (Expected::Ok(payload), Ok(out)) => {
+                        assert_open_ok(label, &out, payload);
+                        cache.insert(label.clone(), out);
+                    }
+                    (Expected::Err { .. }, Err(e)) => {
+                        let v = variant_name_vault(&e);
+                        let d = vault_error_detail(&e);
+                        assert_err(label, v, d, &vector.expected);
+                    }
+                    (Expected::Ok(_), Err(e)) => panic!("{label}: expected Ok, got Err {e:?}"),
+                    (Expected::Err { .. }, Ok(_)) => panic!("{label}: expected Err, got Ok"),
+                }
+            }
+            (Operation::OpenWithDeviceSecret, None) => {
+                // Resolve uuid + secret first. A wrong-length input cannot
+                // reach the bridge's type-bounded `&[u8; 16]` / `&[u8; 32]`
+                // signature, so the binding-layer length pre-check is
+                // replicated here as a SYNTHETIC `InvalidArgument` outcome
+                // (mirrors the read_block / save_block wrong-length
+                // precedent). The synthetic branch asserts directly against
+                // the vector's expected variant.
+                let uuid = match resolve_device_uuid(&vector.inputs) {
+                    Ok(u) => u,
+                    Err(len) => {
+                        assert_err(
+                            label,
+                            "InvalidArgument",
+                            Some(&format!("device_uuid must be 16 bytes, got {len}")),
+                            &vector.expected,
+                        );
+                        continue;
+                    }
+                };
+                let secret = match resolve_device_secret(&vector.inputs) {
+                    Ok(s) => s,
+                    Err(len) => {
+                        assert_err(
+                            label,
+                            "InvalidArgument",
+                            Some(&format!("device_secret must be 32 bytes, got {len}")),
+                            &vector.expected,
+                        );
+                        continue;
+                    }
+                };
+                let result = run_open_device_secret(&vector.inputs, &uuid, &secret);
                 match (&vector.expected, result) {
                     (Expected::Ok(payload), Ok(out)) => {
                         assert_open_ok(label, &out, payload);
@@ -170,7 +219,12 @@ fn replay_conformance_kat() {
             (Operation::ReadBlock, None) => {
                 panic!("{label}: ReadBlock vectors must specify `after:`")
             }
-            (Operation::OpenVaultWithPassword | Operation::OpenVaultWithRecovery, Some(_)) => {
+            (
+                Operation::OpenVaultWithPassword
+                | Operation::OpenVaultWithRecovery
+                | Operation::OpenWithDeviceSecret,
+                Some(_),
+            ) => {
                 panic!("{label}: open_vault_* vectors must not specify `after:`")
             }
             (Operation::OpenVaultWithPasswordWritable, Some(_)) => {

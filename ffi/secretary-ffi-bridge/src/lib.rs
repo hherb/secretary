@@ -107,6 +107,7 @@
 
 pub mod contacts;
 pub mod create;
+pub mod device;
 pub mod edit;
 pub mod error;
 pub mod identity;
@@ -127,6 +128,10 @@ pub use contacts::{
     RecipientKind, RecipientSummary,
 };
 pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
+pub use device::{
+    add_device_slot, open_with_device_secret, remove_device_slot, DeviceEnrollOutput,
+    DeviceSecretOutput,
+};
 pub use edit::{
     append_record, create_block, edit_record, resurrect_record, tombstone_record, RecordContent,
 };

@@ -6,6 +6,7 @@
 
 use crate::errors::{UnlockError, VaultError};
 use crate::wrappers::block::BlockReadOutput;
+use crate::wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
 use crate::wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdentity};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
@@ -388,6 +389,141 @@ pub fn restore_block(
     let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::restore_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
         .map_err(VaultError::from)
+}
+
+/// Enrol a new device slot, writing `devices/<uuid>.wrap`. uniffi-projected. (B.2)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path as bytes.
+/// `password` is the master password; zeroized unconditionally on return.
+///
+/// # Errors
+///
+/// - [`VaultError::FolderInvalid`] — `folder_path` contains invalid UTF-8, or
+///   an IO failure occurred during the atomic write.
+/// - [`VaultError::WrongPasswordOrCorrupt`] — wrong password or corrupt vault files.
+pub fn add_device_slot(
+    folder_path: Vec<u8>,
+    mut password: Vec<u8>,
+) -> Result<DeviceEnrollOutput, VaultError> {
+    // Compute the full result chain into a single binding so we can zeroize
+    // the password BEFORE any `?`-propagation — mirrors open_vault_with_password.
+    let result: Result<secretary_ffi_bridge::DeviceEnrollOutput, VaultError> =
+        match std::str::from_utf8(&folder_path) {
+            Ok(s) => {
+                let path = std::path::PathBuf::from(s);
+                secretary_ffi_bridge::add_device_slot(&path, &password).map_err(VaultError::from)
+            }
+            Err(_) => Err(VaultError::FolderInvalid {
+                detail: "folder path contained invalid UTF-8".to_string(),
+            }),
+        };
+
+    // Zeroize unconditionally — runs on both success and error paths.
+    password.zeroize();
+
+    let bridge_out = result?;
+    Ok(DeviceEnrollOutput {
+        device_uuid: bridge_out.device_uuid,
+        device_secret: std::sync::Arc::new(DeviceSecretOutput(bridge_out.device_secret)),
+    })
+}
+
+/// Open a vault folder using a per-device secret. uniffi-projected. (B.2)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path as bytes.
+/// `device_uuid` must be exactly 16 bytes; `device_secret` must be exactly 32 bytes.
+/// Both are validated before the bridge call; `device_secret` is zeroized on all paths.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — `device_uuid` ≠ 16 bytes or `device_secret` ≠ 32 bytes.
+/// - [`VaultError::FolderInvalid`] — `folder_path` contains invalid UTF-8.
+/// - [`VaultError::DeviceSlotNotFound`] — no wrap file for this UUID.
+/// - [`VaultError::WrongDeviceSecretOrCorrupt`] — AEAD tag failure.
+/// - [`VaultError::DeviceUuidMismatch`] — vault-format §3a relabel integrity check failure.
+pub fn open_with_device_secret(
+    folder_path: Vec<u8>,
+    device_uuid: Vec<u8>,
+    mut device_secret: Vec<u8>,
+) -> Result<OpenVaultOutput, VaultError> {
+    // Length pre-checks BEFORE UTF-8 validation so we can zeroize device_secret
+    // on all early-return paths.
+    if device_uuid.len() != 16 {
+        device_secret.zeroize();
+        return Err(VaultError::InvalidArgument {
+            detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
+        });
+    }
+    if device_secret.len() != 32 {
+        device_secret.zeroize();
+        return Err(VaultError::InvalidArgument {
+            detail: format!(
+                "device_secret must be 32 bytes, got {}",
+                device_secret.len()
+            ),
+        });
+    }
+
+    // Compute the full result chain into a single binding so we can zeroize
+    // device_secret BEFORE any `?`-propagation — mirrors open_vault_with_password.
+    let uuid_arr: [u8; 16] = device_uuid
+        .as_slice()
+        .try_into()
+        .expect("len checked above");
+    let secret_arr: [u8; 32] = device_secret
+        .as_slice()
+        .try_into()
+        .expect("len checked above");
+
+    let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
+        match std::str::from_utf8(&folder_path) {
+            Ok(s) => {
+                let path = std::path::PathBuf::from(s);
+                secretary_ffi_bridge::open_with_device_secret(&path, &uuid_arr, &secret_arr)
+                    .map_err(VaultError::from)
+            }
+            Err(_) => Err(VaultError::FolderInvalid {
+                detail: "folder path contained invalid UTF-8".to_string(),
+            }),
+        };
+
+    // Zeroize unconditionally — runs on both success and error paths.
+    // Note: secret_arr is [u8; 32] (Copy), so we must zeroize both the array
+    // and the source Vec to prevent stack residue — same discipline as the
+    // bridge's derive_wrap_key / derive_master_kek pattern in CLAUDE.md.
+    let mut secret_arr = secret_arr;
+    secret_arr.zeroize();
+    device_secret.zeroize();
+
+    let bridge_out = result?;
+    Ok(OpenVaultOutput {
+        identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
+        manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
+    })
+}
+
+/// Revoke a device slot by deleting `devices/<uuid>.wrap`. uniffi-projected. (B.2)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path as bytes.
+/// `device_uuid` must be exactly 16 bytes; otherwise returns
+/// [`VaultError::InvalidArgument`].
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — `device_uuid` ≠ 16 bytes.
+/// - [`VaultError::FolderInvalid`] — `folder_path` contains invalid UTF-8 or IO failure.
+/// - [`VaultError::DeviceSlotNotFound`] — no wrap file for this UUID.
+pub fn remove_device_slot(folder_path: Vec<u8>, device_uuid: Vec<u8>) -> Result<(), VaultError> {
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
+    match std::str::from_utf8(&folder_path) {
+        Ok(s) => {
+            let path = std::path::PathBuf::from(s);
+            secretary_ffi_bridge::remove_device_slot(&path, &uuid_arr).map_err(VaultError::from)
+        }
+        Err(_) => Err(VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }),
+    }
 }
 
 /// Validate a 16-byte UUID slice; surface wrong length as

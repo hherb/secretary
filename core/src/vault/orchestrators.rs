@@ -403,6 +403,17 @@ pub enum Unlocker<'a> {
     /// tolerant — [`unlock::mnemonic::parse`] splits on ASCII
     /// whitespace.
     Recovery(&'a str),
+    /// Per-device wrap secret (ADR 0009 / §5a). Recovers the IBK from
+    /// `devices/<device_uuid>.wrap` via `unlock::device::open_with_device_secret`.
+    /// `device_uuid` locates the wrap file AND is the §3a structural check
+    /// (header device_uuid must equal it). The 32-byte secret is what B.3's
+    /// Secure Enclave releases after a biometric check.
+    DeviceSecret {
+        /// 16-byte device UUID — the `devices/<uuid>.wrap` filename + §3a header check.
+        device_uuid: &'a [u8; 16],
+        /// 32-byte device secret (high-entropy random; not password-derived).
+        secret: &'a SecretBytes,
+    },
 }
 
 /// Live, in-memory state after a successful [`open_vault`].
@@ -523,6 +534,20 @@ pub fn open_vault(
         }
         Unlocker::Recovery(words) => {
             unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
+        }
+        Unlocker::DeviceSecret {
+            device_uuid,
+            secret,
+        } => {
+            let wrap_bytes =
+                crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
+            unlock::device::open_with_device_secret(
+                &vault_toml_bytes,
+                &wrap_bytes,
+                &identity_bundle_bytes,
+                device_uuid,
+                secret,
+            )?
         }
     };
 
@@ -2469,5 +2494,99 @@ mod orchestrator_tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Unlocker::DeviceSecret — B.2 Task 1
+    // ------------------------------------------------------------------
+
+    /// Build a complete on-disk vault in a fresh tempdir from the
+    /// `golden_vault_001` fixture (copy to tempdir so mutations don't
+    /// affect the tracked KAT), open it via password to confirm the
+    /// baseline, then enrol a device and assert that
+    /// `Unlocker::DeviceSecret` recovers the same IBK, user_uuid, and
+    /// vector_clock as `Unlocker::Password`.
+    #[test]
+    fn open_vault_with_device_secret_matches_password_open() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join("golden_vault_001");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().to_path_buf();
+        copy_recursive(&src, &dest);
+
+        let password = SecretBytes::new(read_golden_vault_001_password());
+
+        // Baseline: open via password to collect reference values.
+        let pw_open = open_vault(&dest, Unlocker::Password(&password), None)
+            .expect("password open must succeed on golden fixture");
+
+        // Enrol a device using a seeded RNG for determinism.
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let enrolled = crate::vault::device_slot::add_device_slot(&dest, &password, &mut rng)
+            .expect("add_device_slot must succeed with the correct password");
+
+        // Open via the new DeviceSecret path.
+        let ds_open = open_vault(
+            &dest,
+            Unlocker::DeviceSecret {
+                device_uuid: &enrolled.device_uuid,
+                secret: &enrolled.device_secret,
+            },
+            None,
+        )
+        .expect("open_vault via DeviceSecret must succeed");
+
+        // All three observable outputs must be equal to the password-open.
+        assert_eq!(
+            ds_open.identity_block_key.expose(),
+            pw_open.identity_block_key.expose(),
+            "IBK from DeviceSecret open must equal IBK from password open"
+        );
+        assert_eq!(
+            ds_open.identity.user_uuid, pw_open.identity.user_uuid,
+            "user_uuid must be preserved across unlock paths"
+        );
+        assert_eq!(
+            ds_open.manifest.vector_clock, pw_open.manifest.vector_clock,
+            "vector_clock must be the same regardless of unlock path"
+        );
+    }
+
+    /// Build a vault on disk with no enrolled device, then call
+    /// `open_vault` with `Unlocker::DeviceSecret` for an arbitrary
+    /// device_uuid that was never enrolled.  Expect the typed
+    /// `VaultError::DeviceSlotNotFound` — not a generic I/O error.
+    #[test]
+    fn open_vault_with_device_secret_absent_slot_is_device_slot_not_found() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join("golden_vault_001");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().to_path_buf();
+        copy_recursive(&src, &dest);
+
+        // No device has been enrolled — devices/ directory is absent.
+        let absent_uuid = [0xABu8; 16];
+        let dummy_secret = SecretBytes::new(vec![0u8; 32]);
+
+        let err = open_vault(
+            &dest,
+            Unlocker::DeviceSecret {
+                device_uuid: &absent_uuid,
+                secret: &dummy_secret,
+            },
+            None,
+        )
+        .expect_err("absent device slot must return an error");
+
+        assert!(
+            matches!(err, VaultError::DeviceSlotNotFound),
+            "expected VaultError::DeviceSlotNotFound, got {err:?}"
+        );
     }
 }

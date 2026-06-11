@@ -31,6 +31,9 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::SyncInProgress => "SyncInProgress",
         E::SyncFailed { .. } => "SyncFailed",
         E::SyncDecisionsIncomplete => "SyncDecisionsIncomplete",
+        E::DeviceSlotNotFound => "DeviceSlotNotFound",
+        E::WrongDeviceSecretOrCorrupt => "WrongDeviceSecretOrCorrupt",
+        E::DeviceUuidMismatch { .. } => "DeviceUuidMismatch",
     }
 }
 
@@ -44,6 +47,7 @@ pub fn vault_error_detail(e: &secretary_ffi_bridge::error::FfiVaultError) -> Opt
         E::CardDecodeFailure { detail } => Some(detail.as_str()),
         E::BlockUuidAlreadyLive { detail } => Some(detail.as_str()),
         E::BlockNotInTrash { detail } => Some(detail.as_str()),
+        E::DeviceUuidMismatch { detail } => Some(detail.as_str()),
         _ => None,
     }
 }

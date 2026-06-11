@@ -26,6 +26,7 @@ runReadBlockAsserts(env: env)
 runSaveBlockAsserts(env: env)
 runShareBlockAsserts(env: env)
 runTrashRestoreAsserts(env: env)
+runDeviceSlotAsserts(env: env)
 runSyncAsserts(env: env)
 
 if !failures.isEmpty {

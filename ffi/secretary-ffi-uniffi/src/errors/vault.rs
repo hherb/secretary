@@ -116,6 +116,21 @@ pub enum VaultError {
     /// recomputed veto set. Mirrors `FfiVaultError::SyncDecisionsIncomplete`.
     #[error("sync decisions did not cover the pending conflicts")]
     SyncDecisionsIncomplete,
+
+    /// ADR 0009 (B.2): the requested device slot does not exist.
+    /// Mirrors `FfiVaultError::DeviceSlotNotFound`.
+    #[error("device slot not found")]
+    DeviceSlotNotFound,
+
+    /// ADR 0009 (B.2): wrong device secret OR wrap-file corruption.
+    /// Mirrors `FfiVaultError::WrongDeviceSecretOrCorrupt`.
+    #[error("wrong device secret or vault corruption")]
+    WrongDeviceSecretOrCorrupt,
+
+    /// ADR 0009 (B.2): the wrap file's header `device_uuid` does not match
+    /// the UUID it was looked up by. Mirrors `FfiVaultError::DeviceUuidMismatch`.
+    #[error("device UUID mismatch: {detail}")]
+    DeviceUuidMismatch { detail: String },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -161,6 +176,11 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::SyncInProgress => VaultError::SyncInProgress,
             FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed { detail },
             FfiVaultError::SyncDecisionsIncomplete => VaultError::SyncDecisionsIncomplete,
+            FfiVaultError::DeviceSlotNotFound => VaultError::DeviceSlotNotFound,
+            FfiVaultError::WrongDeviceSecretOrCorrupt => VaultError::WrongDeviceSecretOrCorrupt,
+            FfiVaultError::DeviceUuidMismatch { detail } => {
+                VaultError::DeviceUuidMismatch { detail }
+            }
         }
     }
 }
@@ -502,5 +522,64 @@ mod tests {
         let ffi = FfiVaultError::CannotDeleteOwnerContact;
         let uniffi: VaultError = ffi.into();
         assert!(matches!(uniffi, VaultError::CannotDeleteOwnerContact));
+    }
+
+    // -------------------------------------------------------------------
+    // ADR 0009 (B.2): pin the 3 device-slot variant translations.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ffi_to_uniffi_device_slot_not_found() {
+        let ffi = FfiVaultError::DeviceSlotNotFound;
+        let uniffi: VaultError = ffi.into();
+        assert!(matches!(uniffi, VaultError::DeviceSlotNotFound));
+    }
+
+    #[test]
+    fn ffi_to_uniffi_wrong_device_secret_or_corrupt() {
+        let ffi = FfiVaultError::WrongDeviceSecretOrCorrupt;
+        let uniffi: VaultError = ffi.into();
+        assert!(matches!(uniffi, VaultError::WrongDeviceSecretOrCorrupt));
+    }
+
+    #[test]
+    fn ffi_to_uniffi_device_uuid_mismatch_preserves_detail() {
+        let ffi = FfiVaultError::DeviceUuidMismatch {
+            detail: "wrap uuid != lookup uuid".to_string(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::DeviceUuidMismatch { detail } = uniffi else {
+            panic!("expected DeviceUuidMismatch");
+        };
+        assert_eq!(detail, "wrap uuid != lookup uuid");
+    }
+
+    #[test]
+    fn device_slot_not_found_display_pins_text() {
+        assert_eq!(
+            VaultError::DeviceSlotNotFound.to_string(),
+            "device slot not found"
+        );
+    }
+
+    #[test]
+    fn wrong_device_secret_or_corrupt_display_pins_text() {
+        assert_eq!(
+            VaultError::WrongDeviceSecretOrCorrupt.to_string(),
+            "wrong device secret or vault corruption"
+        );
+    }
+
+    #[test]
+    fn device_uuid_mismatch_display_pins_detail() {
+        let err = VaultError::DeviceUuidMismatch {
+            detail: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("device UUID mismatch"),
+            "Display did not contain expected prefix: {rendered}",
+        );
+        assert!(rendered.contains("fnord"), "Display did not include detail");
     }
 }

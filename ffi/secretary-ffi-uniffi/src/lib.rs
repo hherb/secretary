@@ -66,11 +66,13 @@ uniffi::include_scaffolding!("secretary");
 
 pub use errors::{UnlockError, VaultError};
 pub use namespace::{
-    create_vault, open_vault_with_password, open_vault_with_recovery, open_with_password,
-    open_with_recovery, read_block, restore_block, save_block, share_block, sync_commit_decisions,
-    sync_status, sync_vault, trash_block,
+    add_device_slot, create_vault, open_vault_with_password, open_vault_with_recovery,
+    open_with_device_secret, open_with_password, open_with_recovery, read_block,
+    remove_device_slot, restore_block, save_block, share_block, sync_commit_decisions, sync_status,
+    sync_vault, trash_block,
 };
 pub use wrappers::block::{BlockReadOutput, FieldHandle, Record};
+pub use wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
 pub use wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdentity};
 pub use wrappers::save::{BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use wrappers::sync::{

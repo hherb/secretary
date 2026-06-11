@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-10-b1-device-wrap-slot-shipped.md
+docs/handoffs/2026-06-11-b2-device-slot-ffi-shipped.md
