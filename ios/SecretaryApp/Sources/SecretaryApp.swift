@@ -13,9 +13,12 @@ struct SecretaryApp: App {
 /// Builds the REAL coordinator (Secure Enclave + uniffi port + Keychain) over a
 /// staged writable copy of golden_vault_001, or shows a provisioning error.
 private struct RootView: View {
-    /// Built exactly once (the `@State` default initializer runs on first init),
-    /// so the coordinator + ViewModel are not reconstructed on every body
-    /// re-evaluation.
+    /// SwiftUI keeps the FIRST stored `@State` value across `RootView`
+    /// re-creations, so the coordinator + ViewModel the views observe are
+    /// effectively built once. (The default expression itself can re-run on a
+    /// later `RootView` init — SwiftUI discards those extra results — which is
+    /// harmless here because `build`'s only side effect, `stageGoldenVault`, is
+    /// idempotent.)
     @State private var built = build()
 
     var body: some View {
