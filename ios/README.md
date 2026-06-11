@@ -4,11 +4,13 @@ Native iOS client for Secretary (Sub-project D.3), per
 [ADR 0008](../docs/adr/0008-native-mobile-via-uniffi.md): a Swift app
 consuming `secretary-core` through the `ffi/secretary-ffi-uniffi` bindings.
 
-## Status — D.3 slice 1 ✅ + B.3 (Secure-Enclave device unlock) ✅
+## Status — D.3 slice 1 ✅ + B.3 (Secure-Enclave device unlock) ✅ + password/recovery unlock + read-only browse ✅
 
 The first slice established the iOS build pipeline and proves the core runs
 on-device. B.3 adds biometric-gated, Secure-Enclave-backed release of the
-per-device secret (the ADR 0009 wrap slot → vault unlock).
+per-device secret (the ADR 0009 wrap slot → vault unlock). The latest slice
+opens the vault by **password or recovery phrase** and **browses blocks /
+records read-only** with reveal-on-demand secret fields.
 
 - `scripts/build-xcframework.sh` — cross-compiles the uniffi staticlib for the
   three iOS triples, generates the Swift bindings, and assembles
@@ -30,21 +32,33 @@ per-device secret (the ADR 0009 wrap slot → vault unlock).
   SE conformer compiles and is exercised on the simulator with a fake enclave;
   real Face ID / Touch ID release was verified on an iPhone 13 Pro Max
   (#202 ✅ — see `SecretaryApp/` below).
-- `SecretaryApp/` — a XcodeGen SwiftUI walking-skeleton app driving the full
-  enroll / unlock / disenroll flow through the real `DeviceUnlockCoordinator`.
-  Built (and the demo vault staged) via `scripts/build-app.sh`. Its
-  `SecretaryDeviceUnlockUI` product (a UI-only sibling of `SecretaryDeviceUnlock`)
-  provides the host-tested `DeviceUnlockViewModel` that backs the app's views.
-  The SE store records the raw `domain`+`code` diagnostic on each unlock
-  attempt. [#202](https://github.com/hherb/secretary/issues/202) ✅ **proven on
-  an iPhone 13 Pro Max** (2026-06-11): real SE + Face ID released the secret and
+- `SecretaryVaultAccess/` — a pure, FFI-free Swift package for unlock + browse:
+  ports (`VaultOpenPort`, `VaultSession`), pure models, a typed `VaultAccessError`
+  (whose `…OrCorrupt` cases preserve the core's anti-oracle conflation), and the
+  host-tested `UnlockViewModel` / `VaultBrowseViewModel`. A
+  `SecretaryVaultAccessTesting` product provides in-memory fakes. Reveal is
+  on-demand only; `lock()` drops all revealed plaintext and wipes the session.
+- `SecretaryKit/Sources/SecretaryKit/VaultAccess/` — the real adapters:
+  `UniffiVaultOpenPort` / `UniffiVaultSession` over the projected
+  `open_vault_with_password` / `open_vault_with_recovery` + `read_block`, plus a
+  simulator integration test that opens golden_vault_001 by password and recovery.
+- `SecretaryApp/` — a XcodeGen SwiftUI app. The current root flow is **unlock
+  (password or 24-word recovery) → read-only browse** (blocks → records →
+  tap-to-reveal a field), locking the vault on background. The earlier
+  device-unlock walking-skeleton (`DeviceUnlockScreen` over the real
+  `DeviceUnlockCoordinator`) remains in the package as a reference flow.
+  Built (and the demo vault staged) via `scripts/build-app.sh`. The SE store
+  records the raw `domain`+`code` diagnostic on each unlock attempt.
+  [#202](https://github.com/hherb/secretary/issues/202) ✅ **proven on an
+  iPhone 13 Pro Max** (2026-06-11): real SE + Face ID released the secret and
   opened the vault (uuid matched the pinned fixture); biometric cancel/non-match
   surface in `LAError` (`userCancel`) → `userCancelled`, never as tamper.
 - `scripts/run-ios-tests.sh` — the acceptance entry point: builds the framework,
-  runs the pure package's host `swift test`, runs the XCTest on a simulator
-  (`IOS_SIM` overrides the device; default `iPhone 16`), then builds the app
-  (`scripts/build-app.sh`). Requires macOS + Xcode; the first run fetches the iOS
-  Rust std via `rustup target add`.
+  runs both pure packages' host `swift test` (`SecretaryDeviceUnlock` +
+  `SecretaryVaultAccess`), runs the XCTest on a simulator (`IOS_SIM` overrides
+  the device; default `iPhone 16`), then builds the app (`scripts/build-app.sh`).
+  Requires macOS + Xcode; the first run fetches the iOS Rust std via
+  `rustup target add`.
 
 ```bash
 bash ios/scripts/run-ios-tests.sh   # host swift test + simulator XCTest + app build
