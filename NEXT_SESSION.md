@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-11-ios-app-device-unlock-shipped.md
+docs/handoffs/2026-06-12-ios-vault-unlock-browse-shipped.md
