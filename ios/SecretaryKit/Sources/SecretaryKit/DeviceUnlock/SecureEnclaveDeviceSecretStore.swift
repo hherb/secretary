@@ -21,7 +21,12 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
         self.blobAccount = blobAccount
     }
 
-    public var isEnrolled: Bool { loadKey() != nil && ((try? loadBlob()) ?? nil) != nil }
+    /// Whether a wrapped secret is enrolled. Checks ONLY the (non-secret) blob —
+    /// deliberately NOT the SE key — so this status check never risks a biometric
+    /// prompt or `errSecUserAuthenticationRequired` from querying a biometry-bound
+    /// key. A blob present but key missing is a corrupt state that `release`
+    /// surfaces as `.notEnrolled`, so the blob is a safe, prompt-free proxy.
+    public var isEnrolled: Bool { (try? loadBlob()) != nil }
 
     public func store(secret: [UInt8]) throws {
         let key = try ensureKey()
@@ -160,7 +165,13 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     private func mapDecryptError(_ error: Unmanaged<CFError>?) -> DeviceUnlockError {
         guard let cf = error?.takeRetainedValue() else { return .wrappedSecretCorrupt }
         let nsError = cf as Error as NSError
-        if nsError.domain == LAError.errorDomain, let code = LAError.Code(rawValue: nsError.code) {
+        // Any LAError-domain error is an authentication failure, not ciphertext
+        // corruption: map known codes, and an unknown LA code to .enclave (never
+        // to .wrappedSecretCorrupt, which would mislabel an auth issue as tamper).
+        if nsError.domain == LAError.errorDomain {
+            guard let code = LAError.Code(rawValue: nsError.code) else {
+                return .enclave(nsError.localizedDescription) // unknown future LA code
+            }
             switch code {
             case .biometryNotAvailable:                         return .biometryUnavailable
             case .biometryNotEnrolled:                          return .biometryNotEnrolled
@@ -170,6 +181,7 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
             default:                                            return .enclave(nsError.localizedDescription)
             }
         }
+        // A non-LA decrypt failure means the SE could not unwrap the ciphertext.
         return .wrappedSecretCorrupt
     }
 
