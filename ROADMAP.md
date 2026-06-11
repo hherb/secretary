@@ -46,7 +46,7 @@ NIST KAT-pinned v1 cipher suite: Argon2id (RFC 9106), XChaCha20-Poly1305, HKDF-S
 
 ### Phase A.4 — Vault block format ✅
 
-`secretary_core::vault::{record, block}`: typed records with canonical CBOR (RFC 8949 §4.2.1) and a forward-compat `UnknownValue` for bit-identical round-trips; binary block file (header + recipient table + AEAD body + hybrid signature suffix); verify-before-decap structurally enforced. §15 conformance via [block_kat.json](core/tests/data/block_kat.json) replayed by the stdlib-only Python verifier.
+`secretary_core::vault::{record, block}`: typed records with canonical CBOR (RFC 8949 §4.2.1) and a forward-compat `UnknownValue` for bit-identical round-trips; binary block file (header + recipient table + AEAD body + hybrid signature suffix); verify-before-decap structurally enforced. §15 conformance via [block_kat.json](core/tests/data/block_kat.json) replayed by the clean-room Python verifier.
 
 ### Phase A.5 — Vault manifest + orchestrators ✅
 
@@ -159,7 +159,7 @@ These are explicit non-goals for the first release. Some may move into v2; some 
 The project is currently a solo effort and intentionally gated on cryptographic correctness — most work happens behind specifications and audited PRs rather than through ad-hoc contributions. That said, helpful avenues right now:
 
 - **Review the design docs.** [docs/threat-model.md](docs/threat-model.md), [docs/crypto-design.md](docs/crypto-design.md), [docs/vault-format.md](docs/vault-format.md), and [docs/adr/](docs/adr/) are the source of truth. Ambiguities or errors there have outsized impact. Open issues against the docs.
-- **Build a clean-room implementation.** Use only `docs/` and verify against [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify against `golden_vault_001/`, stdlib-only). If your implementation works without reading the Rust source, the spec is doing its job. If it doesn't, please open an issue.
+- **Build a clean-room implementation.** Use only `docs/` and verify against [core/tests/python/conformance.py](core/tests/python/conformance.py) (full hybrid-decap + AEAD-decrypt + hybrid-verify against `golden_vault_001/`, using generic crypto primitives via PEP 723 with no dependency on `secretary-core`). If your implementation works without reading the Rust source, the spec is doing its job. If it doesn't, please open an issue.
 - **Cryptographic review.** Independent scrutiny of the hybrid constructions, KAT coverage, and AAD/signed-range definitions is welcome. Especially valuable: someone with FIPS 203 / FIPS 204 implementer experience.
 - **Wait for Sub-project D.** If your interest is the platform UI layer, that phase hasn't started. Star the repo and check back.
 

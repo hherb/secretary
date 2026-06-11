@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-11-b2-device-slot-ffi-shipped.md
+docs/handoffs/2026-06-11-conformance-cleanroom-wording-shipped.md
