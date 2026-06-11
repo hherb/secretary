@@ -59,6 +59,9 @@ public struct KeychainEnrollmentMetadataStore: DeviceEnrollmentMetadataStore {
         }
     }
 
+    /// The device uuid is a fixed 16-byte value (32 hex chars on the wire).
+    private static let deviceUuidByteCount = 16
+
     private struct Wire: Codable { let vaultId: String; let deviceUuidHex: String }
 
     private func encode(_ e: DeviceEnrollment) throws -> Data {
@@ -68,13 +71,31 @@ public struct KeychainEnrollmentMetadataStore: DeviceEnrollmentMetadataStore {
 
     private func decode(_ data: Data) throws -> DeviceEnrollment {
         let wire = try JSONDecoder().decode(Wire.self, from: data)
+        let hex = wire.deviceUuidHex
+        // Reject a corrupt/tampered item loudly rather than fabricating a wrong
+        // uuid: a wrong-length or non-hex string must throw, not silently decode
+        // to zero/truncated bytes (which would only surface as a confusing
+        // vaultSlotMismatch much later).
+        guard hex.count == Self.deviceUuidByteCount * 2 else {
+            throw Self.decodeError("deviceUuid hex must be \(Self.deviceUuidByteCount * 2) chars, got \(hex.count)")
+        }
         var bytes = [UInt8]()
-        var i = wire.deviceUuidHex.startIndex
-        while i < wire.deviceUuidHex.endIndex {
-            let j = wire.deviceUuidHex.index(i, offsetBy: 2)
-            bytes.append(UInt8(wire.deviceUuidHex[i..<j], radix: 16) ?? 0)
+        bytes.reserveCapacity(Self.deviceUuidByteCount)
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2) // safe: count is even (guarded above)
+            guard let byte = UInt8(hex[i..<j], radix: 16) else {
+                throw Self.decodeError("deviceUuid contains non-hex characters")
+            }
+            bytes.append(byte)
             i = j
         }
         return DeviceEnrollment(vaultId: wire.vaultId, deviceUuid: bytes)
+    }
+
+    private static func decodeError(_ message: String) -> NSError {
+        NSError(domain: "KeychainEnrollmentMetadataStore",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

@@ -128,6 +128,10 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     }
 
     private func saveBlob(_ blob: Data) throws {
+        // Defensive delete-before-add so `store` replaces any existing blob. The
+        // status is intentionally not inspected: the only outcomes are success
+        // or errSecItemNotFound, and any other real failure resurfaces as a
+        // thrown error from the SecItemAdd below (e.g. errSecDuplicateItem).
         SecItemDelete(blobQuery() as CFDictionary)
         var attrs = blobQuery()
         attrs[kSecValueData as String] = blob
