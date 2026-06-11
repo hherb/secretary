@@ -29,13 +29,21 @@ per-device secret (the ADR 0009 wrap slot → vault unlock).
   `SecAccessControl` + ECIES wrap), and `KeychainEnrollmentMetadataStore`. The
   SE conformer compiles and is exercised on the simulator with a fake enclave;
   real Face ID / Touch ID verification on a device is the #202 follow-up.
+- `SecretaryApp/` — a XcodeGen SwiftUI walking-skeleton app driving the full
+  enroll / unlock / disenroll flow through the real `DeviceUnlockCoordinator`.
+  Built (and the demo vault staged) via `scripts/build-app.sh`. The
+  `SecretaryDeviceUnlockUI` product provides the host-tested `DeviceUnlockViewModel`
+  that backs the app's views. The SE store records the raw `domain`+`code`
+  diagnostic on each unlock attempt for the [#202](https://github.com/hherb/secretary/issues/202)
+  on-device biometric proof.
 - `scripts/run-ios-tests.sh` — the acceptance entry point: builds the framework,
-  runs the pure package's host `swift test`, then runs the XCTest on a simulator
-  (`IOS_SIM` overrides the device; default `iPhone 16`). Requires macOS + Xcode;
-  the first run fetches the iOS Rust std via `rustup target add`.
+  runs the pure package's host `swift test`, runs the XCTest on a simulator,
+  then builds the app (`scripts/build-app.sh`). (`IOS_SIM` overrides the device;
+  default `iPhone 16`.) Requires macOS + Xcode; the first run fetches the iOS
+  Rust std via `rustup target add`.
 
 ```bash
-bash ios/scripts/run-ios-tests.sh   # host swift test + simulator XCTest
+bash ios/scripts/run-ios-tests.sh   # host swift test + simulator XCTest + app build
 ```
 
 The XCFramework, generated `secretary.swift`, and staged fixtures are

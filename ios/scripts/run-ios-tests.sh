@@ -62,3 +62,7 @@ echo "==> xcodebuild test (simulator: $SIM_NAME / $SIM_ID)"
 cd "$PKG_DIR"
 xcodebuild test -scheme SecretaryKit \
     -destination "platform=iOS Simulator,id=$SIM_ID"
+
+# --- Step 5: build the SwiftUI walking-skeleton app ---
+echo "==> build the Secretary app (XcodeGen + simulator compile proof)"
+bash "$SCRIPT_DIR/build-app.sh"
