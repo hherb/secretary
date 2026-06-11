@@ -185,8 +185,29 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
             default:                                            return .enclave(nsError.localizedDescription)
             }
         }
-        // A non-LA decrypt failure means the SE could not unwrap the ciphertext.
-        return .wrappedSecretCorrupt
+        // SecKeyCreateDecryptedData drives the biometric evaluation implicitly
+        // (the SecKey op, not a direct LAContext.evaluatePolicy), so auth/
+        // availability outcomes frequently arrive in NSOSStatusErrorDomain
+        // rather than LAError's domain. Map the known auth codes here too. The
+        // exact on-device OSStatus taxonomy is confirmed under the #202 manual
+        // proof; the safety property below does not depend on it.
+        if nsError.domain == NSOSStatusErrorDomain {
+            switch nsError.code {
+            case Int(errSecUserCanceled):           return .userCancelled
+            case Int(errSecAuthFailed):             return .authenticationFailed
+            case Int(errSecNotAvailable),
+                 Int(errSecInteractionNotAllowed):  return .biometryUnavailable
+            default:                                return .enclave(nsError.localizedDescription)
+            }
+        }
+        // Any other / unidentified failure is surfaced as a generic enclave
+        // error — NEVER .wrappedSecretCorrupt. We only assert ciphertext
+        // corruption above when there is no CFError at all (decrypt returned
+        // nil outright); labelling an unidentified auth/OS failure as tamper
+        // would be a data-loss signal that pushes a user to re-mint their slot
+        // over a benign cancel. Mirrors the conservative default already used
+        // for unknown LAError/OSStatus codes.
+        return .enclave(nsError.localizedDescription)
     }
 
     private func cfErrorString(_ error: Unmanaged<CFError>?) -> String {
