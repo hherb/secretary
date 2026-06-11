@@ -216,6 +216,19 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         XCTAssertTrue(port.removedUuids.isEmpty)
     }
 
+    func testDisenrollPropagatesNonNotFoundRemoveError() throws {
+        // The catch is intentionally narrow: only deviceSlotNotFound is tolerated.
+        // Any other remove failure must propagate, NOT be swallowed (guards against
+        // a future `catch { }` that would hide a real revocation failure).
+        let port = FakeVaultDeviceSlotPort(removeError: .other("disk full"))
+        let enclave = InMemoryDeviceSecretEnclave(); try enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+
+        XCTAssertThrowsError(try coord.disenroll(vaultPath: vaultPath)) { err in
+            XCTAssertEqual(err as? VaultSlotError, .other("disk full"))
+        }
+    }
+
     func testIsEnrolledRequiresBothEnclaveAndMetadata() throws {
         let enclave = InMemoryDeviceSecretEnclave()
         let metadata = InMemoryEnrollmentMetadataStore()
