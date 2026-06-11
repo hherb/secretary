@@ -7,6 +7,10 @@ public final class InMemoryDeviceSecretEnclave: DeviceSecretEnclave {
     private var secret: [UInt8]?
     public var storeError: DeviceUnlockError?
     public var releaseError: DeviceUnlockError?
+    /// Injected value returned by `lastReleaseDiagnostic` (simulates the real
+    /// store's captured domain+code). Default nil.
+    public var releaseDiagnostic: String?
+    public var lastReleaseDiagnostic: String? { releaseDiagnostic }
     public private(set) var clearCount = 0
 
     public init() {}
