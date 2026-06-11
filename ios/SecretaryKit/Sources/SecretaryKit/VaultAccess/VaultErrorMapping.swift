@@ -7,7 +7,12 @@ import SecretaryVaultAccess
 /// CRITICAL: `WrongPasswordOrCorrupt` / `WrongMnemonicOrCorrupt` are the core's
 /// deliberately-conflated anti-oracle variants. They map 1:1 and must NOT be
 /// split into a "wrong credential" vs "corrupt" distinction here.
-func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
+///
+/// `internal` (must be cross-file: both the open port and the session call it),
+/// NOT `public`: do not call from non-vault-access paths (e.g. a future sync or
+/// save path) — that would funnel a structurally-different `VaultError` through
+/// these vault-access typed cases and misattribute the error.
+internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     switch e {
     case .WrongPasswordOrCorrupt:           return .wrongPasswordOrCorrupt
     case .WrongMnemonicOrCorrupt:           return .wrongMnemonicOrCorrupt

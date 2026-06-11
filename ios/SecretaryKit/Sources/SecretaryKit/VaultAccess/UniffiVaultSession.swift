@@ -44,22 +44,30 @@ public final class UniffiVaultSession: VaultSession {
         records.reserveCapacity(Int(count))
         var i: UInt64 = 0
         while i < count {
-            guard let rec = out.recordAt(idx: i) else { i += 1; continue }
-            records.append(makeRecordView(rec))
+            // An in-range `nil` on a freshly-decrypted, non-wiped block is not a
+            // routine skip — it signals corruption or an FFI bug. Surface it as a
+            // typed error rather than silently returning fewer records than the
+            // block declares (a silent drop could hide a tampered record).
+            guard let rec = out.recordAt(idx: i) else {
+                throw VaultAccessError.corruptVault("recordAt(\(i)) returned nil on an open block")
+            }
+            records.append(try makeRecordView(rec))
             i += 1
         }
         return records
     }
 
-    private func makeRecordView(_ rec: Record) -> RecordView {
+    private func makeRecordView(_ rec: Record) throws -> RecordView {
         let fieldCount = rec.fieldCount()
         var fields: [FieldView] = []
         fields.reserveCapacity(Int(fieldCount))
         var j: UInt64 = 0
         while j < fieldCount {
-            if let handle = rec.fieldAt(idx: j) {
-                fields.append(makeFieldView(handle))
+            // Same rationale as `recordAt`: an in-range `nil` field is corruption.
+            guard let handle = rec.fieldAt(idx: j) else {
+                throw VaultAccessError.corruptVault("fieldAt(\(j)) returned nil on an open record")
             }
+            fields.append(makeFieldView(handle))
             j += 1
         }
         return RecordView(
