@@ -181,3 +181,6 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 
 .claude/settings.local.json
+
+# Xcode/SwiftPM per-user workspace metadata (created when opening the SPM packages)
+.swiftpm/
