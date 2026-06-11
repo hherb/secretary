@@ -26,5 +26,6 @@ final class ModelsTests: XCTestCase {
     func testRevealedValueEquatable() {
         XCTAssertEqual(RevealedValue.bytes([1, 2, 3]), .bytes([1, 2, 3]))
         XCTAssertNotEqual(RevealedValue.text("a"), .text("b"))
+        XCTAssertNotEqual(RevealedValue.text("a"), .bytes([0x61]))
     }
 }
