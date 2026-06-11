@@ -43,6 +43,11 @@ public struct DeviceUnlockCoordinator {
         }
     }
 
+    /// The most recent release diagnostic from the enclave (raw domain+code on a
+    /// biometric/decrypt failure), for a UI to surface. Read immediately after a
+    /// failed `unlock`; nil after a successful release.
+    public var lastReleaseDiagnostic: String? { enclave.lastReleaseDiagnostic }
+
     /// True iff both the enclave holds a secret AND enrollment metadata exists.
     /// Non-throwing by contract, so a metadata read error reads as "not enrolled"
     /// (`try?` flattens both a thrown error and a nil load to `nil`).

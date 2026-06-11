@@ -13,6 +13,11 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     private let blobAccount: String
     private let algorithm: SecKeyAlgorithm = .eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
+    /// Raw diagnostic from the most recent `release` failure (domain+code +
+    /// mapped case). Surfaced via the `DeviceSecretEnclave` protocol so the UI
+    /// can display the real Security-framework taxonomy (#202). nil after success.
+    public private(set) var lastReleaseDiagnostic: String?
+
     public init(keyTag: String = "com.secretary.deviceSecret.seKey",
                 blobService: String = "com.secretary.deviceSecret",
                 blobAccount: String = "wrappedDeviceSecret") {
@@ -45,6 +50,7 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     }
 
     public func release(reason: String) async throws -> [UInt8] {
+        lastReleaseDiagnostic = nil
         guard let blob = try loadBlob() else { throw DeviceUnlockError.notEnrolled }
         let context = LAContext()
         context.localizedReason = reason
@@ -167,8 +173,18 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     // MARK: - Error mapping
 
     private func mapDecryptError(_ error: Unmanaged<CFError>?) -> DeviceUnlockError {
-        guard let cf = error?.takeRetainedValue() else { return .wrappedSecretCorrupt }
+        guard let cf = error?.takeRetainedValue() else {
+            record(domain: "nil", code: 0, mappedTo: "wrappedSecretCorrupt")
+            return .wrappedSecretCorrupt
+        }
         let nsError = cf as Error as NSError
+        let mapped = classify(nsError)
+        record(domain: nsError.domain, code: nsError.code, mappedTo: "\(mapped)")
+        return mapped
+    }
+
+    /// Pure classification (no side effects) — the mapping hardened in #214.
+    private func classify(_ nsError: NSError) -> DeviceUnlockError {
         // Any LAError-domain error is an authentication failure, not ciphertext
         // corruption: map known codes, and an unknown LA code to .enclave (never
         // to .wrappedSecretCorrupt, which would mislabel an auth issue as tamper).
@@ -177,12 +193,12 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
                 return .enclave(nsError.localizedDescription) // unknown future LA code
             }
             switch code {
-            case .biometryNotAvailable:                         return .biometryUnavailable
-            case .biometryNotEnrolled:                          return .biometryNotEnrolled
-            case .biometryLockout:                              return .biometryLockout
-            case .userCancel, .appCancel, .systemCancel:        return .userCancelled
-            case .authenticationFailed:                         return .authenticationFailed
-            default:                                            return .enclave(nsError.localizedDescription)
+            case .biometryNotAvailable:                  return .biometryUnavailable
+            case .biometryNotEnrolled:                   return .biometryNotEnrolled
+            case .biometryLockout:                       return .biometryLockout
+            case .userCancel, .appCancel, .systemCancel: return .userCancelled
+            case .authenticationFailed:                  return .authenticationFailed
+            default:                                     return .enclave(nsError.localizedDescription)
             }
         }
         // SecKeyCreateDecryptedData drives the biometric evaluation implicitly
@@ -193,11 +209,11 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
         // proof; the safety property below does not depend on it.
         if nsError.domain == NSOSStatusErrorDomain {
             switch nsError.code {
-            case Int(errSecUserCanceled):           return .userCancelled
-            case Int(errSecAuthFailed):             return .authenticationFailed
+            case Int(errSecUserCanceled):                return .userCancelled
+            case Int(errSecAuthFailed):                  return .authenticationFailed
             case Int(errSecNotAvailable),
-                 Int(errSecInteractionNotAllowed):  return .biometryUnavailable
-            default:                                return .enclave(nsError.localizedDescription)
+                 Int(errSecInteractionNotAllowed):       return .biometryUnavailable
+            default:                                     return .enclave(nsError.localizedDescription)
             }
         }
         // Any other / unidentified failure is surfaced as a generic enclave
@@ -208,6 +224,10 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
         // over a benign cancel. Mirrors the conservative default already used
         // for unknown LAError/OSStatus codes.
         return .enclave(nsError.localizedDescription)
+    }
+
+    private func record(domain: String, code: Int, mappedTo: String) {
+        lastReleaseDiagnostic = "domain=\(domain) code=\(code) mappedTo=\(mappedTo)"
     }
 
     private func cfErrorString(_ error: Unmanaged<CFError>?) -> String {
