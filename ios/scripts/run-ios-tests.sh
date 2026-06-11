@@ -12,11 +12,17 @@ IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_DIR="$IOS_DIR/SecretaryKit"
 SIM_NAME="${IOS_SIM:-iPhone 16}"
 
-# --- Step 1: build the framework + stage fixtures ---
+# --- Step 1: host-run the pure SecretaryDeviceUnlock package (fast, no simulator) ---
+# Runs FIRST: the pure package has no XCFramework dependency, so a logic
+# regression fails here in milliseconds, before the multi-minute framework build.
+echo "==> swift test (pure SecretaryDeviceUnlock — host)"
+( cd "$IOS_DIR/SecretaryDeviceUnlock" && swift test )
+
+# --- Step 2: build the framework + stage fixtures ---
 echo "==> build-xcframework.sh"
 bash "$SCRIPT_DIR/build-xcframework.sh"
 
-# --- Step 2: resolve the simulator name to a concrete UDID ---
+# --- Step 3: resolve the simulator name to a concrete UDID ---
 # The bare `name=` destination is ambiguous when multiple runtimes/arches share
 # a device name (xcodebuild errors with "Unable to find a device matching the
 # provided destination specifier"), so we resolve to a UDID and target by id=.
@@ -48,7 +54,7 @@ if [[ -z "$SIM_ID" ]]; then
 fi
 echo "    -> $SIM_ID"
 
-# --- Step 3: run the XCTest on the simulator ---
+# --- Step 4: run the XCTest on the simulator ---
 # xcodebuild's exit status is the acceptance result; it is the last command, so
 # `set -e` propagates a non-zero test failure as this script's exit code. (We do
 # NOT pipe it through tail/tee, which would mask the real status.)
