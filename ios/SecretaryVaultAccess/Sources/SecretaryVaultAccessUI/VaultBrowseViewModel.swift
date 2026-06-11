@@ -35,10 +35,18 @@ public final class VaultBrowseViewModel: ObservableObject {
         }
     }
 
+    /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always
+    /// exactly 32 lowercase hex chars (hex of a 16-byte UUID, charset [0-9a-f]),
+    /// so it can never contain the "/" separator nor be confused with a field
+    /// name — no `(record, field)` pair can alias another's key even though
+    /// field names are arbitrary vault-supplied strings.
     private func key(_ recordUuidHex: String, _ fieldName: String) -> String {
         "\(recordUuidHex)/\(fieldName)"
     }
 
+    /// Materialize one field's plaintext on explicit user action. Takes the full
+    /// `FieldView` (not just string ids) because it must call `field.reveal()` —
+    /// the on-demand closure that pulls plaintext across the FFI boundary.
     public func reveal(record: RecordView, field: FieldView) {
         do {
             revealed[key(record.uuidHex, field.name)] = try field.reveal()

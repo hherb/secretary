@@ -58,6 +58,20 @@ final class VaultBrowseViewModelTests: XCTestCase {
         XCTAssertEqual(session.wipeCount, 1)
     }
 
+    func testHideAllClearsRevealedWithoutWipingSession() throws {
+        let (session, block, rec) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session)
+        vm.loadBlocks(); vm.selectBlock(block)
+        let field = try XCTUnwrap(vm.records?.first?.fields.first)
+        vm.reveal(record: rec, field: field)
+        XCTAssertNotNil(vm.revealedValue(recordUuidHex: rec.uuidHex, fieldName: "password"))
+
+        // Backgrounding path: drop plaintext but DO NOT wipe/lock the session.
+        vm.hideAll()
+        XCTAssertNil(vm.revealedValue(recordUuidHex: rec.uuidHex, fieldName: "password"))
+        XCTAssertEqual(session.wipeCount, 0, "hideAll must not wipe the session")
+    }
+
     func testSelectUnknownBlockSurfacesTypedError() {
         let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [], recordsByBlock: [:])
         let vm = VaultBrowseViewModel(session: session)
