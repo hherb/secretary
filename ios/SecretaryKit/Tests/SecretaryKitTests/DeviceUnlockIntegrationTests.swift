@@ -53,11 +53,14 @@ final class DeviceUnlockIntegrationTests: XCTestCase {
         XCTAssertFalse(coord.isEnrolled)
 
         // (a) A subsequent coordinator unlock is .notEnrolled (metadata cleared).
+        // Catch ANY error and assert the type+value, so a wrong error type fails
+        // the test loudly rather than slipping past a typed catch.
         do {
             _ = try await coord.unlock(vaultPath: path, vaultId: "golden", reason: "Unlock")
             XCTFail("expected .notEnrolled after disenroll")
-        } catch let e as DeviceUnlockError {
-            XCTAssertEqual(e, .notEnrolled)
+        } catch {
+            XCTAssertEqual(error as? DeviceUnlockError, .notEnrolled,
+                           "expected DeviceUnlockError.notEnrolled, got \(error)")
         }
 
         // (b) The wrap file is actually gone: the real port now throws DeviceSlotNotFound.
