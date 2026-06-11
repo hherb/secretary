@@ -1,0 +1,35 @@
+name: Secretary
+options:
+  bundleIdPrefix: com.secretary
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  SecretaryKit:
+    path: ../SecretaryKit
+  SecretaryDeviceUnlock:
+    path: ../SecretaryDeviceUnlock
+targets:
+  Secretary:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+        type: folder
+        optional: true
+    dependencies:
+      - package: SecretaryKit
+        product: SecretaryKit
+      - package: SecretaryDeviceUnlock
+        product: SecretaryDeviceUnlockUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.secretary.app
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Unlock your Secretary vault with Face ID."
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "$(DEVELOPMENT_TEAM)"
+        SWIFT_VERSION: "5.9"
