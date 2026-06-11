@@ -75,4 +75,93 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         XCTAssertFalse(enclave.isEnrolled)
         XCTAssertNil(try metadata.load())
     }
+
+    // MARK: unlock
+
+    private func enrolledMetadata(vaultId: String = "v1") -> InMemoryEnrollmentMetadataStore {
+        InMemoryEnrollmentMetadataStore(enrollment: DeviceEnrollment(vaultId: vaultId, deviceUuid: uuid))
+    }
+
+    func testUnlockHappyPathOpensVaultAndZeroizes() async throws {
+        let opened = FakeOpenedVault(vaultUuid: Array(repeating: 0x33, count: 16))
+        let port = FakeVaultDeviceSlotPort(openResult: .success(opened))
+        let enclave = InMemoryDeviceSecretEnclave()
+        try enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+
+        let out = try await coord.unlock(vaultPath: vaultPath, vaultId: "v1", reason: "Unlock")
+
+        XCTAssertEqual(out.vaultUuid, Array(repeating: 0x33, count: 16))
+        XCTAssertEqual(port.openedWith?.deviceUuid, uuid)
+        XCTAssertEqual(port.openedWith?.deviceSecret, secret)
+    }
+
+    func testUnlockNotEnrolledWhenNoMetadata() async {
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort())
+        await assertThrowsDeviceUnlock(.notEnrolled) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
+    func testUnlockVaultSlotMismatchOnWrongVaultId() async {
+        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
+                                    metadata: enrolledMetadata(vaultId: "v1"))
+        await assertThrowsDeviceUnlock(.vaultSlotMismatch) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "DIFFERENT", reason: "x")
+        }
+    }
+
+    func testUnlockMapsDeviceSlotNotFoundToMismatch() async {
+        let port = FakeVaultDeviceSlotPort(openResult: .failure(.deviceSlotNotFound))
+        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.vaultSlotMismatch) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
+    func testUnlockSurfacesWrongDeviceSecretOrCorrupt() async {
+        let port = FakeVaultDeviceSlotPort(openResult: .failure(.wrongDeviceSecretOrCorrupt))
+        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.wrongDeviceSecretOrCorrupt) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
+    func testUnlockPassesThroughOtherVaultError() async {
+        let port = FakeVaultDeviceSlotPort(openResult: .failure(.other("disk gone")))
+        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.vault(.other("disk gone"))) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
+    func testUnlockPropagatesBiometricError() async {
+        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        enclave.releaseError = .biometryLockout
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
+                                    metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.biometryLockout) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
+    /// Helper: assert an async throwing block throws a specific DeviceUnlockError.
+    private func assertThrowsDeviceUnlock(
+        _ expected: DeviceUnlockError,
+        _ body: () async throws -> Void,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        do {
+            try await body()
+            XCTFail("expected \(expected) but no error thrown", file: file, line: line)
+        } catch let e as DeviceUnlockError {
+            XCTAssertEqual(e, expected, file: file, line: line)
+        } catch {
+            XCTFail("expected DeviceUnlockError.\(expected), got \(error)", file: file, line: line)
+        }
+    }
 }

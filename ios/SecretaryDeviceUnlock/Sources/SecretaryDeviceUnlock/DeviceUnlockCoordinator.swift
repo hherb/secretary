@@ -42,6 +42,21 @@ public struct DeviceUnlockCoordinator {
             throw error
         }
     }
+
+    /// Unlock: biometric-release the secret, then open the vault with it.
+    public func unlock(vaultPath: Data, vaultId: String, reason: String) async throws -> OpenedVault {
+        guard let enrollment = try metadata.load() else { throw DeviceUnlockError.notEnrolled }
+        guard enrollment.vaultId == vaultId else { throw DeviceUnlockError.vaultSlotMismatch }
+
+        var secret = try await enclave.release(reason: reason) // throws DeviceUnlockError
+        defer { zeroize(&secret) }
+
+        return try mapSlotErrors {
+            try slotPort.openWithDeviceSecret(vaultPath: vaultPath,
+                                              deviceUuid: enrollment.deviceUuid,
+                                              deviceSecret: secret)
+        }
+    }
 }
 
 /// Run a port call, translating `VaultSlotError` into the coordinator's typed
