@@ -9,10 +9,13 @@ public struct UniffiVaultDeviceSlotPort: VaultDeviceSlotPort {
     public func addDeviceSlot(vaultPath: Data, password: [UInt8]) throws -> EnrolledSlot {
         do {
             let out = try SecretaryKit.addDeviceSlot(folderPath: vaultPath, password: Data(password))
+            // Wipe the one-shot handle on EVERY exit (success, throw, or any
+            // future fallible code inserted below), so the secret is never left
+            // recoverable in the bridge handle.
+            defer { out.deviceSecret.wipe() }
             guard let secret = out.deviceSecret.takeSecret() else {
                 throw VaultSlotError.other("device secret handle was empty")
             }
-            out.deviceSecret.wipe()
             return EnrolledSlot(deviceUuid: [UInt8](out.deviceUuid), deviceSecret: secret)
         } catch let e as VaultError {
             throw mapVaultError(e)
@@ -40,7 +43,9 @@ public struct UniffiVaultDeviceSlotPort: VaultDeviceSlotPort {
 }
 
 /// Map the uniffi `VaultError` onto the pure `VaultSlotError` mirror.
-func mapVaultError(_ e: VaultError) -> VaultSlotError {
+/// File-private: the device-slot error translation must not be reused to map a
+/// `VaultError` from a non-device-slot path through these typed cases.
+private func mapVaultError(_ e: VaultError) -> VaultSlotError {
     switch e {
     case .DeviceSlotNotFound:                       return .deviceSlotNotFound
     case .WrongDeviceSecretOrCorrupt:               return .wrongDeviceSecretOrCorrupt
