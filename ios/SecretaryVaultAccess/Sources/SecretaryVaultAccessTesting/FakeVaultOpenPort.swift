@@ -5,6 +5,8 @@ import SecretaryVaultAccess
 public final class FakeVaultOpenPort: VaultOpenPort {
     private let passwordResult: Result<VaultSession, VaultAccessError>
     private let recoveryResult: Result<VaultSession, VaultAccessError>
+    /// Spies asserted by the UnlockViewModel tests (which credential bytes the
+    /// VM forwarded for each mode).
     public private(set) var lastPassword: [UInt8]?
     public private(set) var lastPhrase: [UInt8]?
 
