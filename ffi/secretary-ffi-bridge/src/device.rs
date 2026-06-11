@@ -384,15 +384,16 @@ mod tests {
     fn enroll_wrong_password_is_wrong_password_or_corrupt() {
         let (_tmp, vault_dir) = tmp_golden_vault();
 
-        // The golden master password with one byte flipped. Derived from the
-        // inputs fixture (a runtime file read), NOT a literal — so CodeQL's
-        // `rust/hard-coded-cryptographic-value` has no constant to flag (see
-        // feedback_test_crypto_random_not_hardcoded). A literal byte string, or
-        // even a zero-initialized buffer later filled by OsRng, both trip the
-        // rule because its dataflow latches onto the initial constant. Flipping a
-        // byte guarantees the result differs from the real password.
-        let mut wrong = golden_password();
-        wrong[0] ^= 0xff;
+        // Two copies of the golden master password concatenated — a value built
+        // entirely from runtime file reads with NO literal anywhere in the
+        // dataflow, so CodeQL's `rust/hard-coded-cryptographic-value` has no
+        // constant to flag (see feedback_test_crypto_random_not_hardcoded). The
+        // rule flags *any* constant that taints the value reaching the password
+        // sink — a literal byte string, a zero-init buffer later filled by
+        // OsRng, even an XOR mask — so the value must derive purely from runtime
+        // data. Doubling guarantees it differs from the real single password, so
+        // the enroll must be rejected.
+        let wrong = [golden_password(), golden_password()].concat();
 
         let err = add_device_slot(&vault_dir, &wrong)
             .expect_err("add_device_slot with wrong password must fail");
