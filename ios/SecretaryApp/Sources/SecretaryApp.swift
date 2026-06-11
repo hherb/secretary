@@ -16,7 +16,9 @@ struct SecretaryApp: App {
 private struct RootView: View {
     private enum Route {
         case unlock
-        case browse(VaultSession)
+        /// Carries the live browse VM (not just the session) so backgrounding can
+        /// route teardown through its authoritative `lock()` (drop reveals + wipe).
+        case browse(VaultBrowseViewModel)
     }
 
     @State private var route: Route = .unlock
@@ -33,21 +35,26 @@ private struct RootView: View {
                 case .unlock:
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(), vaultPath: vaultPath),
-                        onUnlocked: { session in route = .browse(session) })
-                case .browse(let session):
-                    VaultBrowseScreen(viewModel: VaultBrowseViewModel(session: session))
+                        onUnlocked: { session in route = .browse(VaultBrowseViewModel(session: session)) })
+                case .browse(let browseModel):
+                    VaultBrowseScreen(viewModel: browseModel)
                 }
             }
         }
-        // Lock on background: wipe the live session and return to unlock.
+        // Lock on background: the VM's lock() drops all revealed plaintext AND
+        // wipes the session in one authoritative step; then return to unlock.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background, case .browse(let session) = route {
-                session.wipe()
+            if phase == .background, case .browse(let browseModel) = route {
+                browseModel.lock()
                 route = .unlock
             }
         }
     }
 
+    /// Computed once as a `@State` default: SwiftUI keeps the FIRST stored value
+    /// across `RootView` re-creations, so the staging runs effectively once. The
+    /// default expression may re-run on a later init (SwiftUI discards the extra
+    /// results), which is harmless because `stageGoldenVault` is idempotent.
     private static func stageVaultPath() -> Result<Data, Error> {
         do {
             let url = try AppVaultProvisioning.stageGoldenVault()
