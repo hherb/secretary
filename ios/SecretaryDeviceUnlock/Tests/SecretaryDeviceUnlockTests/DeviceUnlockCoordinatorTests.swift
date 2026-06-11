@@ -180,4 +180,52 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
             XCTFail("expected DeviceUnlockError.\(expected), got \(error)", file: file, line: line)
         }
     }
+
+    // MARK: disenroll + isEnrolled
+
+    func testDisenrollRemovesSlotClearsEnclaveAndMetadata() throws {
+        let port = FakeVaultDeviceSlotPort()
+        let enclave = InMemoryDeviceSecretEnclave(); try enclave.store(secret: secret)
+        let metadata = enrolledMetadata()
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: metadata)
+
+        try coord.disenroll(vaultPath: vaultPath)
+
+        XCTAssertEqual(port.removedUuids, [uuid])
+        XCTAssertEqual(enclave.clearCount, 1)
+        XCTAssertEqual(metadata.clearCount, 1)
+        XCTAssertNil(try metadata.load())
+    }
+
+    func testDisenrollToleratesAlreadyRemovedSlot() throws {
+        let port = FakeVaultDeviceSlotPort(removeError: .deviceSlotNotFound)
+        let enclave = InMemoryDeviceSecretEnclave(); try enclave.store(secret: secret)
+        let metadata = enrolledMetadata()
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: metadata)
+
+        try coord.disenroll(vaultPath: vaultPath) // must NOT throw
+
+        XCTAssertEqual(enclave.clearCount, 1, "enclave still cleared even when slot was already gone")
+        XCTAssertEqual(metadata.clearCount, 1)
+    }
+
+    func testDisenrollWhenNotEnrolledIsNoop() throws {
+        let port = FakeVaultDeviceSlotPort()
+        let coord = makeCoordinator(port: port) // empty metadata + enclave
+        try coord.disenroll(vaultPath: vaultPath)
+        XCTAssertTrue(port.removedUuids.isEmpty)
+    }
+
+    func testIsEnrolledRequiresBothEnclaveAndMetadata() throws {
+        let enclave = InMemoryDeviceSecretEnclave()
+        let metadata = InMemoryEnrollmentMetadataStore()
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave, metadata: metadata)
+        XCTAssertFalse(coord.isEnrolled)
+
+        try enclave.store(secret: secret)
+        XCTAssertFalse(coord.isEnrolled, "enclave-only is not enrolled")
+
+        try metadata.save(DeviceEnrollment(vaultId: "v1", deviceUuid: uuid))
+        XCTAssertTrue(coord.isEnrolled)
+    }
 }

@@ -43,6 +43,25 @@ public struct DeviceUnlockCoordinator {
         }
     }
 
+    /// True iff both the enclave holds a secret AND enrollment metadata exists.
+    public var isEnrolled: Bool {
+        enclave.isEnrolled && ((try? metadata.load()) ?? nil) != nil
+    }
+
+    /// Disenroll this device: remove the vault slot (tolerating an already-gone
+    /// slot), then clear the enclave key and metadata so no orphan survives.
+    public func disenroll(vaultPath: Data) throws {
+        if let enrollment = try metadata.load() {
+            do {
+                try slotPort.removeDeviceSlot(vaultPath: vaultPath, deviceUuid: enrollment.deviceUuid)
+            } catch VaultSlotError.deviceSlotNotFound {
+                // already gone — fine
+            }
+        }
+        try enclave.clear()
+        try metadata.clear()
+    }
+
     /// Unlock: biometric-release the secret, then open the vault with it.
     public func unlock(vaultPath: Data, vaultId: String, reason: String) async throws -> OpenedVault {
         guard let enrollment = try metadata.load() else { throw DeviceUnlockError.notEnrolled }
