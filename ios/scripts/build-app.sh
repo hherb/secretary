@@ -8,7 +8,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_DIR="$REPO_ROOT/ios/SecretaryApp"
-RES_DIR="$APP_DIR/Resources"
+# Staged under "Fixtures", NOT "Resources": a folder named "Resources" in a flat
+# iOS .app breaks on-device codesign (the seal logic mis-detects it). Any other
+# name signs cleanly; the app loads it via Bundle subdirectory: "Fixtures".
+RES_DIR="$APP_DIR/Fixtures"
 XCFRAMEWORK="$REPO_ROOT/ios/Secretary.xcframework"
 
 command -v xcodegen >/dev/null || { echo "ERROR: xcodegen not found — 'brew install xcodegen'"; exit 1; }
@@ -18,7 +21,7 @@ if [[ ! -d "$XCFRAMEWORK" ]]; then
     bash "$SCRIPT_DIR/build-xcframework.sh"
 fi
 
-echo "==> stage golden_vault_001 fixture into the app bundle resources"
+echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/)"
 rm -rf "$RES_DIR"
 mkdir -p "$RES_DIR"
 cp -R "$REPO_ROOT/core/tests/data/golden_vault_001" "$RES_DIR/golden_vault_001"

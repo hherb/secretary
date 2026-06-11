@@ -17,7 +17,11 @@ enum AppVaultProvisioning {
         let dest = support.appendingPathComponent("golden_vault_001", isDirectory: true)
         if fm.fileExists(atPath: dest.path) { return dest }
 
-        guard let bundled = Bundle.main.url(forResource: "golden_vault_001", withExtension: nil) else {
+        // Bundled under the "Fixtures" folder reference (not "Resources" — see
+        // project.yml; that name breaks on-device codesign).
+        guard let bundled = Bundle.main.url(forResource: "golden_vault_001",
+                                            withExtension: nil,
+                                            subdirectory: "Fixtures") else {
             throw ProvisioningError(message: "golden_vault_001 not bundled — run ios/scripts/build-app.sh")
         }
         try fm.copyItem(at: bundled, to: dest)
@@ -27,7 +31,9 @@ enum AppVaultProvisioning {
     /// The pinned vault_uuid (lowercase hex, no dashes) from the bundled inputs
     /// JSON, for the on-screen happy-path assertion.
     static func pinnedVaultUuidHex() throws -> String {
-        guard let url = Bundle.main.url(forResource: "golden_vault_001_inputs", withExtension: "json") else {
+        guard let url = Bundle.main.url(forResource: "golden_vault_001_inputs",
+                                        withExtension: "json",
+                                        subdirectory: "Fixtures") else {
             throw ProvisioningError(message: "golden_vault_001_inputs.json not bundled")
         }
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
