@@ -9,6 +9,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../SecretaryDeviceUnlock"),
+        .package(path: "../SecretaryVaultAccess"),
     ],
     targets: [
         .binaryTarget(name: "SecretaryFFI", path: "../Secretary.xcframework"),
@@ -17,6 +18,7 @@ let package = Package(
             dependencies: [
                 "SecretaryFFI",
                 .product(name: "SecretaryDeviceUnlock", package: "SecretaryDeviceUnlock"),
+                .product(name: "SecretaryVaultAccess", package: "SecretaryVaultAccess"),
             ]
         ),
         .testTarget(
@@ -24,6 +26,7 @@ let package = Package(
             dependencies: [
                 "SecretaryKit",
                 .product(name: "SecretaryDeviceUnlockTesting", package: "SecretaryDeviceUnlock"),
+                .product(name: "SecretaryVaultAccessTesting", package: "SecretaryVaultAccess"),
             ],
             resources: [
                 .copy("Resources/golden_vault_001"),
