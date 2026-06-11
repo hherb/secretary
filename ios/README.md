@@ -28,15 +28,18 @@ per-device secret (the ADR 0009 wrap slot → vault unlock).
   `SecureEnclaveDeviceSecretStore` (non-exportable P-256 + biometric
   `SecAccessControl` + ECIES wrap), and `KeychainEnrollmentMetadataStore`. The
   SE conformer compiles and is exercised on the simulator with a fake enclave;
-  real Face ID / Touch ID verification on a device is the #202 follow-up.
+  real Face ID / Touch ID release was verified on an iPhone 13 Pro Max
+  (#202 ✅ — see `SecretaryApp/` below).
 - `SecretaryApp/` — a XcodeGen SwiftUI walking-skeleton app driving the full
   enroll / unlock / disenroll flow through the real `DeviceUnlockCoordinator`.
   Built (and the demo vault staged) via `scripts/build-app.sh`. Its
   `SecretaryDeviceUnlockUI` product (a UI-only sibling of `SecretaryDeviceUnlock`)
   provides the host-tested `DeviceUnlockViewModel` that backs the app's views.
-  The SE store records the raw `domain`+`code`
-  diagnostic on each unlock attempt for the [#202](https://github.com/hherb/secretary/issues/202)
-  on-device biometric proof.
+  The SE store records the raw `domain`+`code` diagnostic on each unlock
+  attempt. [#202](https://github.com/hherb/secretary/issues/202) ✅ **proven on
+  an iPhone 13 Pro Max** (2026-06-11): real SE + Face ID released the secret and
+  opened the vault (uuid matched the pinned fixture); biometric cancel/non-match
+  surface in `LAError` (`userCancel`) → `userCancelled`, never as tamper.
 - `scripts/run-ios-tests.sh` — the acceptance entry point: builds the framework,
   runs the pure package's host `swift test`, runs the XCTest on a simulator
   (`IOS_SIM` overrides the device; default `iPhone 16`), then builds the app
