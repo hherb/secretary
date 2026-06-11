@@ -16,6 +16,10 @@ SIM_NAME="${IOS_SIM:-iPhone 16}"
 echo "==> build-xcframework.sh"
 bash "$SCRIPT_DIR/build-xcframework.sh"
 
+# --- Step 1b: host-run the pure SecretaryDeviceUnlock package (fast, no simulator) ---
+echo "==> swift test (pure SecretaryDeviceUnlock — host)"
+( cd "$IOS_DIR/SecretaryDeviceUnlock" && swift test )
+
 # --- Step 2: resolve the simulator name to a concrete UDID ---
 # The bare `name=` destination is ambiguous when multiple runtimes/arches share
 # a device name (xcodebuild errors with "Unable to find a device matching the
