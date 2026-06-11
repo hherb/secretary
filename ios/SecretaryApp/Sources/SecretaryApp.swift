@@ -13,8 +13,13 @@ struct SecretaryApp: App {
 /// Builds the REAL coordinator (Secure Enclave + uniffi port + Keychain) over a
 /// staged writable copy of golden_vault_001, or shows a provisioning error.
 private struct RootView: View {
+    /// Built exactly once (the `@State` default initializer runs on first init),
+    /// so the coordinator + ViewModel are not reconstructed on every body
+    /// re-evaluation.
+    @State private var built = build()
+
     var body: some View {
-        switch Self.build() {
+        switch built {
         case .success(let (vm, pinned)):
             DeviceUnlockScreen(viewModel: vm, pinnedVaultUuidHex: pinned)
         case .failure(let error):
