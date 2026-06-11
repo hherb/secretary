@@ -9,7 +9,7 @@ import SecretaryVaultAccess
 /// is a noted follow-up).
 @MainActor
 public final class UnlockViewModel: ObservableObject {
-    public enum Mode { case password, recovery }
+    public enum Mode: Equatable { case password, recovery }
 
     @Published public private(set) var state: UnlockState = .idle
     /// Which credential the next `unlock` uses. Set by the segmented control.

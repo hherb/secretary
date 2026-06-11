@@ -33,6 +33,14 @@ final class UnlockViewModelTests: XCTestCase {
         XCTAssertEqual(port.lastPhrase, Array("phrase".utf8))
     }
 
+    func testDefaultModeIsPassword() {
+        let vm = UnlockViewModel(
+            port: FakeVaultOpenPort(passwordResult: .success(session()),
+                                    recoveryResult: .failure(.wrongMnemonicOrCorrupt)),
+            vaultPath: Data("p".utf8))
+        XCTAssertEqual(vm.mode, .password)
+    }
+
     func testWrongPasswordSurfacesConflatedVariant() async {
         let port = FakeVaultOpenPort(passwordResult: .failure(.wrongPasswordOrCorrupt),
                                      recoveryResult: .failure(.wrongMnemonicOrCorrupt))
