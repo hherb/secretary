@@ -36,6 +36,32 @@ public final class DeviceUnlockViewModel: ObservableObject {
         }
     }
 
+    public func unlock(reason: String) async {
+        state = .busy(.unlocking)
+        do {
+            let opened = try await coordinator.unlock(
+                vaultPath: vaultPath, vaultId: vaultId, reason: reason)
+            let hex = opened.vaultUuid.map { String(format: "%02x", $0) }.joined()
+            opened.wipe()  // release the opened vault's secret material immediately
+            state = .unlocked(vaultUuidHex: hex)
+        } catch {
+            // Read the diagnostic right after the failed release (synchronous on
+            // the main actor — no interleaving).
+            state = .failed(asDeviceUnlockError(error),
+                            detail: coordinator.lastReleaseDiagnostic)
+        }
+    }
+
+    public func disenroll() async {
+        state = .busy(.disenrolling)
+        do {
+            try coordinator.disenroll(vaultPath: vaultPath)
+            state = .notEnrolled
+        } catch {
+            state = .failed(asDeviceUnlockError(error), detail: nil)
+        }
+    }
+
     /// The coordinator surfaces `DeviceUnlockError` for enclave/slot failures and
     /// rethrows the metadata store's untyped error as-is; wrap the latter so the
     /// UI always has a typed case to render.

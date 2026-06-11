@@ -34,4 +34,46 @@ final class DeviceUnlockViewModelTests: XCTestCase {
         await vm.enroll(password: pw)
         XCTAssertEqual(vm.state, .failed(.vault(.invalidArgument("bad")), detail: nil))
     }
+
+    func testUnlockSuccessShowsVaultUuidHex() async {
+        // Default fake open returns vaultUuid = 16 × 0xEF. The enclave must hold a
+        // secret, else `release` throws .notEnrolled before the open is reached.
+        let enclave = InMemoryDeviceSecretEnclave()
+        try? enclave.store(secret: Array(repeating: 0xCD, count: 32))
+        let metadata = InMemoryEnrollmentMetadataStore(
+            enrollment: DeviceEnrollment(vaultId: "v", deviceUuid: Array(repeating: 0xAB, count: 16)))
+        let vm = makeVM(enclave: enclave, metadata: metadata)
+        await vm.unlock(reason: "Unlock")
+        XCTAssertEqual(vm.state, .unlocked(vaultUuidHex: String(repeating: "ef", count: 16)))
+    }
+
+    func testUnlockFailureCarriesReleaseDiagnostic() async {
+        let enclave = InMemoryDeviceSecretEnclave()
+        enclave.releaseError = .userCancelled
+        enclave.releaseDiagnostic = "domain=NSOSStatusErrorDomain code=-128 mappedTo=userCancelled"
+        let metadata = InMemoryEnrollmentMetadataStore(
+            enrollment: DeviceEnrollment(vaultId: "v", deviceUuid: Array(repeating: 0xAB, count: 16)))
+        let vm = makeVM(enclave: enclave, metadata: metadata)
+        await vm.unlock(reason: "Unlock")
+        XCTAssertEqual(
+            vm.state,
+            .failed(.userCancelled,
+                    detail: "domain=NSOSStatusErrorDomain code=-128 mappedTo=userCancelled"))
+    }
+
+    func testUnlockNotEnrolled() async {
+        let vm = makeVM()  // empty metadata
+        await vm.unlock(reason: "Unlock")
+        XCTAssertEqual(vm.state, .failed(.notEnrolled, detail: nil))
+    }
+
+    func testDisenrollReturnsToNotEnrolled() async {
+        let metadata = InMemoryEnrollmentMetadataStore(
+            enrollment: DeviceEnrollment(vaultId: "v", deviceUuid: Array(repeating: 0xAB, count: 16)))
+        let enclave = InMemoryDeviceSecretEnclave()
+        try? enclave.store(secret: Array(repeating: 0xCD, count: 32))
+        let vm = makeVM(enclave: enclave, metadata: metadata)
+        await vm.disenroll()
+        XCTAssertEqual(vm.state, .notEnrolled)
+    }
 }
