@@ -82,7 +82,12 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         InMemoryEnrollmentMetadataStore(enrollment: DeviceEnrollment(vaultId: vaultId, deviceUuid: uuid))
     }
 
-    func testUnlockHappyPathOpensVaultAndZeroizes() async throws {
+    // NB: zeroization of the released secret is not asserted here — the fake
+    // port records a *value copy* of deviceSecret, so the coordinator's
+    // best-effort `defer { zeroize(&secret) }` of its own local is not
+    // observable at this boundary. The defer is guaranteed to run on every exit
+    // by construction; we assert the right bytes reached the port, not the wipe.
+    func testUnlockHappyPathOpensVault() async throws {
         let opened = FakeOpenedVault(vaultUuid: Array(repeating: 0x33, count: 16))
         let port = FakeVaultDeviceSlotPort(openResult: .success(opened))
         let enclave = InMemoryDeviceSecretEnclave()
@@ -104,7 +109,7 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
     }
 
     func testUnlockVaultSlotMismatchOnWrongVaultId() async {
-        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
         let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
                                     metadata: enrolledMetadata(vaultId: "v1"))
         await assertThrowsDeviceUnlock(.vaultSlotMismatch) {
@@ -114,7 +119,7 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
 
     func testUnlockMapsDeviceSlotNotFoundToMismatch() async {
         let port = FakeVaultDeviceSlotPort(openResult: .failure(.deviceSlotNotFound))
-        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
         let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
         await assertThrowsDeviceUnlock(.vaultSlotMismatch) {
             _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
@@ -123,7 +128,7 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
 
     func testUnlockSurfacesWrongDeviceSecretOrCorrupt() async {
         let port = FakeVaultDeviceSlotPort(openResult: .failure(.wrongDeviceSecretOrCorrupt))
-        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
         let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
         await assertThrowsDeviceUnlock(.wrongDeviceSecretOrCorrupt) {
             _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
@@ -132,15 +137,26 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
 
     func testUnlockPassesThroughOtherVaultError() async {
         let port = FakeVaultDeviceSlotPort(openResult: .failure(.other("disk gone")))
-        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
         let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
         await assertThrowsDeviceUnlock(.vault(.other("disk gone"))) {
             _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
         }
     }
 
+    func testUnlockSurfacesDeviceUuidMismatchAsVault() async {
+        // A header/filename uuid mismatch from the FFI must be surfaced honestly
+        // (as .vault), not swallowed — it can signal a tampered/relabelled wrap.
+        let port = FakeVaultDeviceSlotPort(openResult: .failure(.deviceUuidMismatch("hdr!=name")))
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
+        let coord = makeCoordinator(port: port, enclave: enclave, metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.vault(.deviceUuidMismatch("hdr!=name"))) {
+            _ = try await coord.unlock(vaultPath: self.vaultPath, vaultId: "v1", reason: "x")
+        }
+    }
+
     func testUnlockPropagatesBiometricError() async {
-        let enclave = InMemoryDeviceSecretEnclave(); try? enclave.store(secret: secret)
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
         enclave.releaseError = .biometryLockout
         let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
                                     metadata: enrolledMetadata())
