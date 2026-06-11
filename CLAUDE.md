@@ -14,8 +14,9 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 core/                Rust crate `secretary-core` — the only thing that matters today
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
-core/tests/python/conformance.py           — stdlib-only clean-room verifier; proves the spec
-                                             is implementable from `docs/` alone
+core/tests/python/conformance.py           — clean-room verifier (generic crypto primitives via
+                                             PEP 723; no dependency on `secretary-core`); proves
+                                             the spec is implementable from `docs/` alone
 core/fuzz/           — `cargo-fuzz` harness, EXCLUDED from the workspace; nightly toolchain
 docs/                — normative specs (see "Spec is normative" below)
 docs/adr/            — architecture decision records, numbered 0001..0006
