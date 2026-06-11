@@ -382,17 +382,17 @@ mod tests {
 
     #[test]
     fn enroll_wrong_password_is_wrong_password_or_corrupt() {
-        use rand_core::RngCore;
-
         let (_tmp, vault_dir) = tmp_golden_vault();
 
-        // Any password other than the golden master must be rejected. Generated
-        // at runtime via OsRng rather than a literal — a hard-coded byte string
-        // used as a password trips CodeQL's `rust/hard-coded-cryptographic-value`
-        // (see feedback_test_crypto_random_not_hardcoded). 24 random bytes will
-        // never collide with the fixed golden password.
-        let mut wrong = [0u8; 24];
-        OsRng.fill_bytes(&mut wrong);
+        // The golden master password with one byte flipped. Derived from the
+        // inputs fixture (a runtime file read), NOT a literal — so CodeQL's
+        // `rust/hard-coded-cryptographic-value` has no constant to flag (see
+        // feedback_test_crypto_random_not_hardcoded). A literal byte string, or
+        // even a zero-initialized buffer later filled by OsRng, both trip the
+        // rule because its dataflow latches onto the initial constant. Flipping a
+        // byte guarantees the result differs from the real password.
+        let mut wrong = golden_password();
+        wrong[0] ^= 0xff;
 
         let err = add_device_slot(&vault_dir, &wrong)
             .expect_err("add_device_slot with wrong password must fail");
