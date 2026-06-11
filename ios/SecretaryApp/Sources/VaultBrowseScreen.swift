@@ -66,6 +66,19 @@ struct VaultBrowseScreen: View {
                 Text(display(revealed))
                     .font(.subheadline.monospaced())
                     .redacted(reason: scenePhase == .active ? [] : .privacy)
+                    // Auto-hide: a revealed secret must not linger on screen
+                    // indefinitely. This task exists only while the field is
+                    // revealed (the `if let` branch); tapping Hide, switching
+                    // block, backgrounding, or locking removes the branch and
+                    // cancels the sleep. Keyed on the reveal key so it is a single
+                    // timer across redraws and restarts on a fresh reveal. The
+                    // interval is the named `RevealPolicy.autoHideSeconds`; the
+                    // drop goes through the unit-tested `hide` seam.
+                    .task(id: "\(record.uuidHex)/\(field.name)") {
+                        try? await Task.sleep(for: .seconds(RevealPolicy.autoHideSeconds))
+                        guard !Task.isCancelled else { return }
+                        viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name)
+                    }
                 Button("Hide") { viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name) }
             } else {
                 Button("Reveal") { viewModel.reveal(record: record, field: field) }

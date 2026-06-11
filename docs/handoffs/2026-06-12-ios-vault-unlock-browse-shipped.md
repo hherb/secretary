@@ -52,6 +52,7 @@ git diff main..HEAD --name-only | grep -E '\.rs$'              → (empty — no
 - **Prefilled demo password** in `UnlockScreen` (the golden fixture password) is demo convenience only and **commented as MUST-remove when real vault selection lands** (`a1ac0c4`). The vault-selection slice should delete it.
 - **Swift-side secret residue** — the password/phrase `String` and revealed `String`/`[UInt8]` can't be reliably zeroized under Swift COW; the FFI zeroizes the Rust copy. We minimize the window (reveal-on-demand, drop-on-hide/background); we don't claim to eliminate the residue. Documented carried risk.
 - **`RecordView.tags`** is decoded + carried but not yet rendered in the browse UI — a deliberate read-only-slice gap, not an oversight.
+- **Auto-hide is wired (post-review fixup).** A code review caught that `RevealPolicy.autoHideSeconds` (30s) was defined but never consumed — a revealed secret would linger on screen indefinitely. `VaultBrowseScreen.fieldRow` now attaches a `.task` (lives only while the field is revealed) that `Task.sleep`s the interval and drops the value through the unit-tested `hide` seam. The timed sleep itself is UI-driven and deliberately not unit-time-tested (flakiness); `hide`/`hideAll` remain the asserted seams.
 
 ## (4) Exact commands to resume
 
