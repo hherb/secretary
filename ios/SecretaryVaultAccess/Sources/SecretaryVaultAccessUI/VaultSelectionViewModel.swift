@@ -46,9 +46,14 @@ public final class VaultSelectionViewModel: ObservableObject {
         guard let loc = store.load() else { throw VaultSelectionError.noVaultSelected }
         do {
             return try store.beginAccess(loc)
-        } catch let VaultSelectionError.locationUnavailable(reason) {
-            state = .unavailable(reason: reason)
-            throw VaultSelectionError.locationUnavailable(reason)
+        } catch let error as VaultSelectionError {
+            // Reflect an unresolvable bookmark in state (the location is RETAINED,
+            // not cleared — losing the user's selection silently would be wrong),
+            // then rethrow the ORIGINAL error unchanged (no reconstruction).
+            if case .locationUnavailable(let reason) = error {
+                state = .unavailable(reason: reason)
+            }
+            throw error
         }
     }
 }

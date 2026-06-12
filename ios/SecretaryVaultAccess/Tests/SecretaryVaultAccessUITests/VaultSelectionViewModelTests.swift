@@ -69,6 +69,21 @@ final class VaultSelectionViewModelTests: XCTestCase {
         XCTAssertNotNil(store.load(), "an unavailable vault is NOT silently cleared")
     }
 
+    func testChooseDifferentFromUnavailableRecoversToEmpty() {
+        let store = FakeVaultLocationStore(
+            stored: VaultLocation(displayName: "V", bookmark: Data([0x01])))
+        store.beginAccessError = .locationUnavailable("vault moved")
+        let vm = VaultSelectionViewModel(store: store)
+        vm.loadPersisted()
+        XCTAssertThrowsError(try vm.beginAccess())
+        XCTAssertEqual(vm.state, .unavailable(reason: "vault moved"))
+        // The user can recover from the dead-end: choosing a different vault
+        // clears the bad location and returns to the empty state.
+        vm.chooseDifferent()
+        XCTAssertEqual(vm.state, .empty)
+        XCTAssertNil(store.load())
+    }
+
     func testBalanceAcrossManyOpenLockCycles() throws {
         let store = FakeVaultLocationStore(
             stored: VaultLocation(displayName: "V", bookmark: Data([0x01])))
