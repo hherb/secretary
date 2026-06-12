@@ -17,7 +17,14 @@ public final class VaultSelectionViewModel: ObservableObject {
 
     /// Refresh state from the persisted store (call on appear / on returning to
     /// the selection screen after a lock).
+    ///
+    /// A surfaced `.unavailable` is preserved, NOT silently downgraded back to
+    /// `.located`: a failed open's reason must survive a screen re-appear so the
+    /// user is not handed an "Open" button that will just fail again with no
+    /// explanation. The user clears `.unavailable` explicitly — `chooseDifferent()`
+    /// (→ `.empty`) or a fresh `recordSelection(...)` (→ `.located`) both override it.
     public func loadPersisted() {
+        if case .unavailable = state { return }
         if let loc = store.load() {
             state = .located(displayName: loc.displayName)
         } else {

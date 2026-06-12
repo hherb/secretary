@@ -34,7 +34,7 @@ private struct RootView: View {
                 VaultSelectionScreen(
                     viewModel: selectionVM,
                     onOpen: { scoped in route = .unlock(scoped) },
-                    onOpenDemo: { openDemo() })
+                    onOpenDemo: { try openDemo() })
             case .unlock(let scoped):
                 UnlockScreen(
                     viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
@@ -66,15 +66,11 @@ private struct RootView: View {
 
     /// Stage + open the bundled golden vault behind an explicit opt-in. The demo
     /// path is in-sandbox, so its `ScopedVaultPath` holds no real scope (no-op end).
-    private func openDemo() {
-        do {
-            let url = try AppVaultProvisioning.stageGoldenVault()
-            let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
-            route = .unlock(scoped)
-        } catch {
-            // Staging failure is surfaced by returning to select; the demo button
-            // simply has no effect. (A dedicated error surface is a later polish.)
-            route = .select
-        }
+    /// A staging failure is rethrown so `VaultSelectionScreen` surfaces it in its
+    /// Error section — the button never silently no-ops.
+    private func openDemo() throws {
+        let url = try AppVaultProvisioning.stageGoldenVault()
+        let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
+        route = .unlock(scoped)
     }
 }

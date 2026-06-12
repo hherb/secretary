@@ -10,7 +10,7 @@ import SecretaryVaultAccessUI
 struct VaultSelectionScreen: View {
     @ObservedObject var viewModel: VaultSelectionViewModel
     let onOpen: (ScopedVaultPath) -> Void
-    let onOpenDemo: () -> Void
+    let onOpenDemo: () throws -> Void
 
     @State private var importing = false
     @State private var errorText: String?
@@ -36,7 +36,7 @@ struct VaultSelectionScreen: View {
                 }
 
                 Section {
-                    Button("Try the demo vault") { onOpenDemo() }
+                    Button("Try the demo vault") { openDemo() }
                 }
 
                 if let errorText {
@@ -73,6 +73,19 @@ struct VaultSelectionScreen: View {
             } else {
                 errorText = String(describing: error)
             }
+        }
+    }
+
+    /// Open the opt-in demo vault. A staging failure (the bundled fixture is
+    /// missing/unreadable — a developer-environment fault, not a user-vault path)
+    /// is surfaced in the Error section rather than leaving the button silently
+    /// inert.
+    private func openDemo() {
+        errorText = nil
+        do {
+            try onOpenDemo()
+        } catch {
+            errorText = String(describing: error)
         }
     }
 

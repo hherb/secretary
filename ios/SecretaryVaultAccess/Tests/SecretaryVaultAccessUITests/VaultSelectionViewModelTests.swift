@@ -69,6 +69,21 @@ final class VaultSelectionViewModelTests: XCTestCase {
         XCTAssertNotNil(store.load(), "an unavailable vault is NOT silently cleared")
     }
 
+    func testLoadPersistedPreservesUnavailableReason() {
+        let store = FakeVaultLocationStore(
+            stored: VaultLocation(displayName: "V", bookmark: Data([0x01])))
+        store.beginAccessError = .locationUnavailable("vault moved")
+        let vm = VaultSelectionViewModel(store: store)
+        vm.loadPersisted()
+        XCTAssertThrowsError(try vm.beginAccess())
+        XCTAssertEqual(vm.state, .unavailable(reason: "vault moved"))
+        // A re-appear (onAppear → loadPersisted) must NOT silently downgrade the
+        // surfaced reason back to .located, which would hand the user an "Open"
+        // button that just fails again with no explanation.
+        vm.loadPersisted()
+        XCTAssertEqual(vm.state, .unavailable(reason: "vault moved"))
+    }
+
     func testChooseDifferentFromUnavailableRecoversToEmpty() {
         let store = FakeVaultLocationStore(
             stored: VaultLocation(displayName: "V", bookmark: Data([0x01])))
