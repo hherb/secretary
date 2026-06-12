@@ -4,13 +4,17 @@ Native iOS client for Secretary (Sub-project D.3), per
 [ADR 0008](../docs/adr/0008-native-mobile-via-uniffi.md): a Swift app
 consuming `secretary-core` through the `ffi/secretary-ffi-uniffi` bindings.
 
-## Status — D.3 slice 1 ✅ + B.3 (Secure-Enclave device unlock) ✅ + password/recovery unlock + read-only browse ✅
+## Status — D.3 slice 1 ✅ + B.3 (Secure-Enclave device unlock) ✅ + password/recovery unlock + read-only browse ✅ + vault selection ✅
 
 The first slice established the iOS build pipeline and proves the core runs
 on-device. B.3 adds biometric-gated, Secure-Enclave-backed release of the
-per-device secret (the ADR 0009 wrap slot → vault unlock). The latest slice
+per-device secret (the ADR 0009 wrap slot → vault unlock). A later slice
 opens the vault by **password or recovery phrase** and **browses blocks /
-records read-only** with reveal-on-demand secret fields.
+records read-only** with reveal-on-demand secret fields. The latest slice adds
+**vault selection** — the app opens a user-chosen vault folder (system
+`.fileImporter`) and remembers it across launches via a persisted
+security-scoped bookmark; the bundled golden vault is now an explicit opt-in
+demo (no prefilled password).
 
 - `scripts/build-xcframework.sh` — cross-compiles the uniffi staticlib for the
   three iOS triples, generates the Swift bindings, and assembles
@@ -32,21 +36,29 @@ records read-only** with reveal-on-demand secret fields.
   SE conformer compiles and is exercised on the simulator with a fake enclave;
   real Face ID / Touch ID release was verified on an iPhone 13 Pro Max
   (#202 ✅ — see `SecretaryApp/` below).
-- `SecretaryVaultAccess/` — a pure, FFI-free Swift package for unlock + browse:
-  ports (`VaultOpenPort`, `VaultSession`), pure models, a typed `VaultAccessError`
-  (whose `…OrCorrupt` cases preserve the core's anti-oracle conflation), and the
-  host-tested `UnlockViewModel` / `VaultBrowseViewModel`. A
-  `SecretaryVaultAccessTesting` product provides in-memory fakes. Reveal is
+- `SecretaryVaultAccess/` — a pure, FFI-free Swift package for unlock + browse +
+  selection: ports (`VaultOpenPort`, `VaultSession`, `VaultLocationStore`), pure
+  models, typed errors (`VaultAccessError`, whose `…OrCorrupt` cases preserve the
+  core's anti-oracle conflation, + `VaultSelectionError`), a single-owner
+  `ScopedVaultPath` (holds the security scope for the whole session, idempotent
+  release), and the host-tested `UnlockViewModel` / `VaultBrowseViewModel` /
+  `VaultSelectionViewModel`. A `SecretaryVaultAccessTesting` product provides
+  in-memory fakes (incl. a scope-counting `FakeVaultLocationStore`). Reveal is
   on-demand only; `lock()` drops all revealed plaintext and wipes the session.
 - `SecretaryKit/Sources/SecretaryKit/VaultAccess/` — the real adapters:
   `UniffiVaultOpenPort` / `UniffiVaultSession` over the projected
-  `open_vault_with_password` / `open_vault_with_recovery` + `read_block`, plus a
-  simulator integration test that opens golden_vault_001 by password and recovery.
-- `SecretaryApp/` — a XcodeGen SwiftUI app. The current root flow is **unlock
-  (password or 24-word recovery) → read-only browse** (blocks → records →
-  tap-to-reveal a field), locking the vault on background. The earlier
+  `open_vault_with_password` / `open_vault_with_recovery` + `read_block`, and
+  `BookmarkVaultLocationStore` (security-scoped bookmark persistence in
+  `UserDefaults` + scoped access), plus simulator integration tests that open
+  golden_vault_001 by password/recovery and through a resolved bookmark.
+- `SecretaryApp/` — a XcodeGen SwiftUI app. The current root flow is **select a
+  vault (system `.fileImporter` folder pick, remembered across launches via a
+  bookmark; or an explicit opt-in demo vault) → unlock (password or 24-word
+  recovery) → read-only browse** (blocks → records → tap-to-reveal a field),
+  releasing the scope + locking the vault on background. The earlier
   device-unlock walking-skeleton (`DeviceUnlockScreen` over the real
-  `DeviceUnlockCoordinator`) remains in the package as a reference flow.
+  `DeviceUnlockCoordinator`) remains in the package as a reference but is not
+  currently wired into the root flow.
   Built (and the demo vault staged) via `scripts/build-app.sh`. The SE store
   records the raw `domain`+`code` diagnostic on each unlock attempt.
   [#202](https://github.com/hherb/secretary/issues/202) ✅ **proven on an

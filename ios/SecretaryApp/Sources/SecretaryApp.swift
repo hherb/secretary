@@ -10,57 +10,67 @@ struct SecretaryApp: App {
     }
 }
 
-/// Routes between the unlock screen and the browse screen, and LOCKS (wipes the
-/// session) when the app backgrounds — re-unlock is required on return. Builds
-/// the real `UniffiVaultOpenPort` over a staged writable copy of golden_vault_001.
+/// Routes `select → unlock → browse`. A user-selected vault's security scope is
+/// held by the `ScopedVaultPath` for the whole session (lazy block reads) and
+/// released on lock/background, which returns to the selection screen showing the
+/// still-remembered vault (one tap re-opens — no re-pick). The demo vault reuses
+/// the same unlock/browse flow with a no-op scope over its staged path.
 private struct RootView: View {
     private enum Route {
-        case unlock
-        /// Carries the live browse VM (not just the session) so backgrounding can
-        /// route teardown through its authoritative `lock()` (drop reveals + wipe).
-        case browse(VaultBrowseViewModel)
+        case select
+        case unlock(ScopedVaultPath)
+        case browse(VaultBrowseViewModel, ScopedVaultPath)
     }
 
-    @State private var route: Route = .unlock
-    @State private var staged: Result<Data, Error> = RootView.stageVaultPath()
+    @StateObject private var selectionVM =
+        VaultSelectionViewModel(store: BookmarkVaultLocationStore())
+    @State private var route: Route = .select
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
-            switch staged {
-            case .failure(let error):
-                Text("Setup failed: \(error.localizedDescription)").padding()
-            case .success(let vaultPath):
-                switch route {
-                case .unlock:
-                    UnlockScreen(
-                        viewModel: UnlockViewModel(port: UniffiVaultOpenPort(), vaultPath: vaultPath),
-                        onUnlocked: { session in route = .browse(VaultBrowseViewModel(session: session)) })
-                case .browse(let browseModel):
-                    VaultBrowseScreen(viewModel: browseModel)
-                }
+            switch route {
+            case .select:
+                VaultSelectionScreen(
+                    viewModel: selectionVM,
+                    onOpen: { scoped in route = .unlock(scoped) },
+                    onOpenDemo: { try openDemo() })
+            case .unlock(let scoped):
+                UnlockScreen(
+                    viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
+                                               vaultPath: scoped.pathData),
+                    onUnlocked: { session in
+                        route = .browse(VaultBrowseViewModel(session: session), scoped)
+                    })
+            case .browse(let browseModel, _):
+                VaultBrowseScreen(viewModel: browseModel)
             }
         }
-        // Lock on background: the VM's lock() drops all revealed plaintext AND
-        // wipes the session in one authoritative step; then return to unlock.
+        // Lock on background: wipe + drop reveals, release the held scope, and
+        // return to the selection screen (which still shows the remembered vault).
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background, case .browse(let browseModel) = route {
+            guard phase == .background else { return }
+            switch route {
+            case .browse(let browseModel, let scoped):
                 browseModel.lock()
-                route = .unlock
+                scoped.end()
+                route = .select
+            case .unlock(let scoped):
+                scoped.end()
+                route = .select
+            case .select:
+                break
             }
         }
     }
 
-    /// Computed once as a `@State` default: SwiftUI keeps the FIRST stored value
-    /// across `RootView` re-creations, so the staging runs effectively once. The
-    /// default expression may re-run on a later init (SwiftUI discards the extra
-    /// results), which is harmless because `stageGoldenVault` is idempotent.
-    private static func stageVaultPath() -> Result<Data, Error> {
-        do {
-            let url = try AppVaultProvisioning.stageGoldenVault()
-            return .success(Data(url.path.utf8))
-        } catch {
-            return .failure(error)
-        }
+    /// Stage + open the bundled golden vault behind an explicit opt-in. The demo
+    /// path is in-sandbox, so its `ScopedVaultPath` holds no real scope (no-op end).
+    /// A staging failure is rethrown so `VaultSelectionScreen` surfaces it in its
+    /// Error section — the button never silently no-ops.
+    private func openDemo() throws {
+        let url = try AppVaultProvisioning.stageGoldenVault()
+        let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
+        route = .unlock(scoped)
     }
 }
