@@ -7,7 +7,7 @@ struct DeviceUnlockScreen: View {
     @StateObject private var viewModel: DeviceUnlockViewModel
     /// Pinned uuid for the happy-path match readout (nil if unavailable).
     let pinnedVaultUuidHex: String?
-    @State private var password: String = "correct horse battery staple"
+    @State private var password: String = ""
 
     init(viewModel: DeviceUnlockViewModel, pinnedVaultUuidHex: String?) {
         self._viewModel = StateObject(wrappedValue: viewModel)

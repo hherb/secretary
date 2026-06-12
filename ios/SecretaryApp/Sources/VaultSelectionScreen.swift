@@ -30,6 +30,7 @@ struct VaultSelectionScreen: View {
                 case .unavailable(let reason):
                     Section("Vault unavailable") {
                         Text(reason).font(.footnote).foregroundStyle(.secondary)
+                        Button("Select a vault…") { importing = true }
                         Button("Choose a different vault") { viewModel.chooseDifferent() }
                     }
                 }
@@ -65,8 +66,13 @@ struct VaultSelectionScreen: View {
             let scoped = try viewModel.beginAccess()
             onOpen(scoped)
         } catch {
-            // .unavailable state is already set by the VM; surface a line too.
-            errorText = String(describing: error)
+            // If the VM already reflects the failure (.unavailable carries the
+            // reason), don't also show a redundant Error line; otherwise surface it.
+            if case .unavailable = viewModel.state {
+                errorText = nil
+            } else {
+                errorText = String(describing: error)
+            }
         }
     }
 
