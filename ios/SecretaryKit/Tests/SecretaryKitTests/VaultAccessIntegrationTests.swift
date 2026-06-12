@@ -12,19 +12,6 @@ final class VaultAccessIntegrationTests: XCTestCase {
     private let goldenRecovery = "wall annual clay zebra cost cricket choose light small neck mimic season fix situate love asset dismiss online island disease turkey grab dish that"
     private var vaultCopy: URL!
 
-    /// The pinned vault UUID (lowercase hex, no dashes) read from the inputs JSON
-    /// — the declared single source of truth for the golden vault's identity.
-    /// Reading it (rather than hardcoding) keeps this test honest if the fixture
-    /// is ever regenerated after a KAT rotation.
-    private func pinnedVaultUuidHex() throws -> String {
-        let url = try XCTUnwrap(
-            Bundle.module.url(forResource: "golden_vault_001_inputs", withExtension: "json"))
-        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-        let dict = try XCTUnwrap(json as? [String: Any])
-        let dashed = try XCTUnwrap(dict["vault_uuid"] as? String)
-        return dashed.replacingOccurrences(of: "-", with: "").lowercased()
-    }
-
     override func setUpWithError() throws {
         let bundled = try XCTUnwrap(
             Bundle.module.url(forResource: "golden_vault_001", withExtension: nil),
@@ -47,7 +34,7 @@ final class VaultAccessIntegrationTests: XCTestCase {
         let session = try port.openWithPassword(vaultPath: path, password: [UInt8](goldenPassword.utf8))
         defer { session.wipe() }
 
-        XCTAssertEqual(session.vaultUuidHex, try pinnedVaultUuidHex())
+        XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())
 
         let blocks = session.blockSummaries()
         XCTAssertFalse(blocks.isEmpty, "golden vault has at least one block")
@@ -68,7 +55,7 @@ final class VaultAccessIntegrationTests: XCTestCase {
         let port = UniffiVaultOpenPort()
         let session = try port.openWithRecovery(vaultPath: path, phrase: [UInt8](goldenRecovery.utf8))
         defer { session.wipe() }
-        XCTAssertEqual(session.vaultUuidHex, try pinnedVaultUuidHex())
+        XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())
     }
 
     func testWrongPasswordSurfacesConflatedVariant() {

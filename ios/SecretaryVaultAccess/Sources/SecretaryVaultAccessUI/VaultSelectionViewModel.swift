@@ -46,12 +46,16 @@ public final class VaultSelectionViewModel: ObservableObject {
         guard let loc = store.load() else { throw VaultSelectionError.noVaultSelected }
         do {
             return try store.beginAccess(loc)
-        } catch let error as VaultSelectionError {
-            // Reflect an unresolvable bookmark in state (the location is RETAINED,
-            // not cleared — losing the user's selection silently would be wrong),
-            // then rethrow the ORIGINAL error unchanged (no reconstruction).
-            if case .locationUnavailable(let reason) = error {
+        } catch {
+            // ANY failure to acquire the scope means the remembered vault cannot be
+            // opened right now. Reflect that in state so it never lies (a caller
+            // observing only state must not see a stale `.located`). The location is
+            // RETAINED, not cleared — losing the user's selection silently would be
+            // wrong. Rethrow the ORIGINAL error unchanged (no reconstruction).
+            if case VaultSelectionError.locationUnavailable(let reason) = error {
                 state = .unavailable(reason: reason)
+            } else {
+                state = .unavailable(reason: String(describing: error))
             }
             throw error
         }

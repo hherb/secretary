@@ -84,6 +84,20 @@ final class VaultSelectionViewModelTests: XCTestCase {
         XCTAssertNil(store.load())
     }
 
+    func testBeginAccessNonSelectionErrorStillTransitionsToUnavailable() {
+        let store = ThrowingNonSelectionStore(
+            location: VaultLocation(displayName: "V", bookmark: Data([0x01])))
+        let vm = VaultSelectionViewModel(store: store)
+        vm.loadPersisted()
+        XCTAssertThrowsError(try vm.beginAccess()) { err in
+            XCTAssertEqual(err as? GenericError, GenericError(message: "boom"),
+                           "the ORIGINAL error must be rethrown unchanged")
+        }
+        guard case .unavailable = vm.state else {
+            return XCTFail("state must transition to .unavailable even for a non-VaultSelectionError")
+        }
+    }
+
     func testBalanceAcrossManyOpenLockCycles() throws {
         let store = FakeVaultLocationStore(
             stored: VaultLocation(displayName: "V", bookmark: Data([0x01])))
@@ -96,5 +110,20 @@ final class VaultSelectionViewModelTests: XCTestCase {
         XCTAssertEqual(store.started, 5)
         XCTAssertEqual(store.stopped, 5)
         XCTAssertEqual(store.liveScopes, 0, "no leaked scopes across cycles")
+    }
+}
+
+/// A store whose `beginAccess` throws a NON-`VaultSelectionError`, to prove the VM
+/// still transitions to `.unavailable` (state never lies) and rethrows the original.
+private struct GenericError: Error, Equatable { let message: String }
+
+private final class ThrowingNonSelectionStore: VaultLocationStore {
+    let location: VaultLocation
+    init(location: VaultLocation) { self.location = location }
+    func load() -> VaultLocation? { location }
+    func persist(_ location: VaultLocation) {}
+    func clear() {}
+    func beginAccess(_ location: VaultLocation) throws -> ScopedVaultPath {
+        throw GenericError(message: "boom")
     }
 }

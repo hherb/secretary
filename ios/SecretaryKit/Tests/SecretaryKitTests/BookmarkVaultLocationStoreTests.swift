@@ -13,15 +13,6 @@ final class BookmarkVaultLocationStoreTests: XCTestCase {
     private var tmpRoot: URL!
     private var vaultURL: URL!
 
-    private func pinnedVaultUuidHex() throws -> String {
-        let url = try XCTUnwrap(
-            Bundle.module.url(forResource: "golden_vault_001_inputs", withExtension: "json"))
-        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-        let dict = try XCTUnwrap(json as? [String: Any])
-        let dashed = try XCTUnwrap(dict["vault_uuid"] as? String)
-        return dashed.replacingOccurrences(of: "-", with: "").lowercased()
-    }
-
     override func setUpWithError() throws {
         suiteName = "test.bookmarkstore.\(UUID().uuidString)"
         defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -74,7 +65,7 @@ final class BookmarkVaultLocationStoreTests: XCTestCase {
         let session = try port.openWithPassword(
             vaultPath: scoped.pathData, password: [UInt8](goldenPassword.utf8))
         defer { session.wipe() }
-        XCTAssertEqual(session.vaultUuidHex, try pinnedVaultUuidHex())
+        XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())
     }
 
     func testBeginAccessUnresolvableBookmarkThrowsLocationUnavailable() {

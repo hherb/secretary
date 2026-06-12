@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SecretaryVaultAccess
 
 /// Real `VaultLocationStore`: persists the remembered vault as a security-scoped
@@ -8,6 +9,7 @@ import SecretaryVaultAccess
 /// create/resolve options — a bookmark created from a document-picker URL is
 /// implicitly security-scoped on iOS. We therefore use `[]` options throughout.
 public final class BookmarkVaultLocationStore: VaultLocationStore {
+    private static let log = Logger(subsystem: "com.secretary.app", category: "vault-location")
     private let defaults: UserDefaults
     private let bookmarkKey: String
     private let nameKey: String
@@ -51,10 +53,18 @@ public final class BookmarkVaultLocationStore: VaultLocationStore {
         // error. We only `stop` if we actually `start`ed (`granted == true`).
         let granted = url.startAccessingSecurityScopedResource()
 
-        // Refresh a stale bookmark WHILE access is held (re-persist; logged, not
-        // silent). Best-effort: a failed refresh does not abort the open.
-        if isStale, let fresh = try? url.bookmarkData() {
-            persist(VaultLocation(displayName: location.displayName, bookmark: fresh))
+        // Refresh a stale bookmark WHILE access is held (re-persist). Best-effort:
+        // a failed refresh does not abort the open — the already-resolved URL is
+        // still valid — but it is LOGGED, never silent, so a recurring refresh
+        // failure is diagnosable.
+        if isStale {
+            do {
+                let fresh = try url.bookmarkData()
+                persist(VaultLocation(displayName: location.displayName, bookmark: fresh))
+                Self.log.notice("Refreshed stale vault bookmark for \(location.displayName, privacy: .public)")
+            } catch {
+                Self.log.error("Stale vault bookmark refresh failed (using resolved URL): \(String(describing: error), privacy: .public)")
+            }
         }
 
         return ScopedVaultPath(pathData: Data(url.path.utf8),
