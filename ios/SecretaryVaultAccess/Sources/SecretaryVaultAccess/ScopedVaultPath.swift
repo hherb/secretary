@@ -6,8 +6,10 @@ import Foundation
 /// the scope must span the whole session, not just the open call.
 ///
 /// `ScopedVaultPath` is the single owner of one scope acquisition. `end()` releases
-/// it exactly once (idempotent); the `onEnd` closure is dropped after the first call
-/// so a double-`end()` (e.g. lock racing background) cannot double-release. The real
+/// it exactly once: the `onEnd` closure is dropped after the first call, so any later
+/// `end()` is a no-op. This idempotence assumes serial calls — the type is driven from
+/// the `@MainActor` UI, where lock and background events are serialized, so they never
+/// truly race; the type does not add its own locking. The real
 /// adapter injects `onEnd = { url.stopAccessingSecurityScopedResource() }`; the fake
 /// injects a counter bump — so the begin/end balance is unit-testable.
 public final class ScopedVaultPath {
@@ -24,5 +26,12 @@ public final class ScopedVaultPath {
     public func end() {
         onEnd?()
         onEnd = nil
+    }
+
+    /// Backstop: if the single owner drops this handle without calling `end()`,
+    /// release the scope on dealloc so a forgotten `end()` cannot leak it. If
+    /// `end()` already ran, `onEnd` is nil and this is a no-op (still exactly-once).
+    deinit {
+        end()
     }
 }

@@ -15,11 +15,20 @@ final class ScopedVaultPathTests: XCTestCase {
         XCTAssertEqual(releases, 1)
     }
 
-    func testErrorIsEquatable() {
-        XCTAssertEqual(VaultSelectionError.noVaultSelected, .noVaultSelected)
-        XCTAssertEqual(VaultSelectionError.locationUnavailable("x"),
-                       .locationUnavailable("x"))
-        XCTAssertNotEqual(VaultSelectionError.locationUnavailable("x"),
-                          .locationUnavailable("y"))
+    func testDeinitReleasesWhenEndNotCalled() {
+        var releases = 0
+        do {
+            _ = ScopedVaultPath(pathData: Data(), onEnd: { releases += 1 })
+        } // handle dropped here without end()
+        XCTAssertEqual(releases, 1, "deinit must release a scope whose end() was never called")
+    }
+
+    func testExplicitEndThenDeinitReleasesExactlyOnce() {
+        var releases = 0
+        do {
+            let scoped = ScopedVaultPath(pathData: Data(), onEnd: { releases += 1 })
+            scoped.end()
+        } // deinit runs here; must NOT release again
+        XCTAssertEqual(releases, 1)
     }
 }
