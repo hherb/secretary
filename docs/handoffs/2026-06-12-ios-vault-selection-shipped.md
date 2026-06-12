@@ -2,7 +2,7 @@
 
 **Session date:** 2026-06-12. Flow: `/nextsession` → confirmed prior arc (#216, iOS password/recovery unlock + read-only browse) merged → cleaned up the leftover `ios-vault-unlock-browse` worktree/branch → brainstormed the next iOS slice → picked **vault selection** → spec (Approach A) → 7-task TDD plan → subagent-driven implementation (fresh implementer + spec & code-quality review per task, all fixes applied) → full gauntlet green.
 
-**Status:** ✅ **code-complete + simulator-verified** on branch `feature/ios-vault-selection`. **On-device manual smoke (with a side-loaded vault) is the one outstanding item** (needs a physical device; see §3). PR: see §4.
+**Status:** ✅ **code-complete + simulator-verified + on-device-verified** on branch `feature/ios-vault-selection`. The on-device manual smoke **passed on an iPhone 13 Pro Max (2026-06-12)** — see §3. PR: see §4.
 
 ## (1) What we shipped this session
 
@@ -47,7 +47,7 @@ Candidate next slices (pick with the user):
 ## (3) Open decisions and risks
 
 - **RESOLVED (2026-06-12) — orphaned `DeviceUnlockScreen.swift` kept as a reference.** A code review found this file has been **unreachable since `acc53ae`** (the #216 routing rewrite, before this slice). This slice removed its prefilled-credential literal; the user **decided to keep the file** as a reference for the device-unlock flow until D-phase biometric wiring (its only orphaned consumer, `AppVaultProvisioning.pinnedVaultUuidHex()`, also stays). When D-phase biometric unlock lands it should wire into the `select→unlock→browse` routing, not a separate root screen — revisit this file then.
-- **On-device manual smoke is the one outstanding acceptance item.** Code-complete + simulator-green, but the spec's on-device smoke (side-load a vault into Files → pick it → relaunch reopens it → unlock by password AND recovery → browse → reveal → background→redaction+re-lock) has NOT been run — it needs a physical device + a side-loaded vault. Same posture as the #216 / #202 device steps. Recommend running it before/with merge.
+- **On-device manual smoke ✅ PASSED on an iPhone 13 Pro Max (2026-06-12).** The real vault-selection path was exercised end to end on hardware: side-loaded a vault folder into Files → **Select a vault…** picked it → the bookmark **persisted across a relaunch** (reopened straight to that vault) → unlocked by **both password and recovery phrase** → browsed → revealed a field → background returned to the selection screen still showing the remembered vault. App was built + installed via `xcodebuild` (team `X5DWXB4283`, Apple Development cert) + `xcrun devicectl`. No outstanding device step remains.
 - **`@MainActor` ViewModel blocks on the password KDF** (carried from #216) — `unlock` awaits the synchronous Argon2id open on the main actor (brief UI freeze). Background-offload is the noted follow-up.
 - **Swift-side secret residue** (carried) — the password/phrase `String` and revealed values can't be reliably zeroized under Swift COW; the FFI zeroizes the Rust copy. Selection adds no new secret material (it handles only the folder path).
 - **Demo-stage failure routes silently to `.select`** — acknowledged in-code as later polish; it is a developer-environment failure (fixture not bundled), not a user-vault path.
@@ -85,5 +85,5 @@ bash /Users/hherb/src/secretary/.worktrees/ios-vault-selection/ios/scripts/run-i
 - **Acceptance:** green — full `run-ios-tests.sh` (host 35 + 42, simulator TEST SUCCEEDED, app BUILD SUCCEEDED). No Rust / frozen-format / FFI-surface change.
 - **Per-task reviews:** every task passed spec-compliance + code-quality review; all raised issues fixed on the branch (no deferred debt). Final whole-branch review: **APPROVE**.
 - **README.md / ROADMAP.md / ios/README.md:** updated — iOS vault selection ✅.
-- **Outstanding:** on-device manual smoke (§3) before merge. (The `DeviceUnlockScreen` orphan decision is resolved — kept as a reference, §3.)
+- **Outstanding:** none blocking. On-device manual smoke ✅ passed on an iPhone 13 Pro Max (§3); the `DeviceUnlockScreen` orphan decision is resolved — kept as a reference (§3). Ready to merge once CI is green.
 - **NEXT_SESSION.md:** symlink retargeted to this file.
