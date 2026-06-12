@@ -87,7 +87,7 @@ Explicitly **not** claimed as security wins for A (to avoid overselling):
 | `VaultLocation` | Value model: `displayName: String` + opaque `bookmark: Data`. No key material — picker token + label. `Equatable`. |
 | `VaultLocationStore` (protocol) | The **port**. `load() -> VaultLocation?`, `persist(_:)`, `clear()`, `beginAccess(_ location: VaultLocation) throws -> ScopedVaultPath`. |
 | `ScopedVaultPath` | Handle returned by `beginAccess`: exposes `pathData: Data` (UTF-8 folder path for the FFI) and `end()` releasing the scope. Models "scope held while this lives." `end()` is idempotent. |
-| `VaultSelectionError` | Typed, selection-layer (distinct from `VaultAccessError`): `.noVaultSelected`, `.locationUnavailable(String)`, `.accessDenied(String)`. |
+| `VaultSelectionError` | Typed, selection-layer (distinct from `VaultAccessError`): `.noVaultSelected`, `.locationUnavailable(String)`. (No `.accessDenied`: `startAccessingSecurityScopedResource()` returning `false` is *not* reliably a denial — it is also benign-false for in-sandbox paths — so a genuine lack of access is left to surface loudly downstream as the FFI's typed open error, never swallowed.) |
 | `VaultSelectionViewModel` | `@MainActor` state machine. State: `.empty` / `.located(displayName)` / `.unavailable(reason)`. API: `loadPersisted()`, `recordSelection(bookmark:displayName:)`, `chooseDifferent()`, `beginAccess() throws -> ScopedVaultPath`. Host-tested against a fake. |
 
 ### Real adapter — `SecretaryKit/Sources/SecretaryKit/VaultAccess/`
@@ -95,10 +95,12 @@ Explicitly **not** claimed as security wins for A (to avoid overselling):
 - `BookmarkVaultLocationStore: VaultLocationStore`
   - persist/load via a named `UserDefaults` suite (bookmark `Data` + display name).
   - `beginAccess`: `URL(resolvingBookmarkData:options:relativeTo:bookmarkDataIsStale:)`
-    → on stale, **refresh the bookmark and re-persist** (logged, not silent) →
-    `startAccessingSecurityScopedResource()`; if it returns `false`, throw
-    `.accessDenied`. Returns a `ScopedVaultPath` whose `end()` calls
-    `stopAccessingSecurityScopedResource()` exactly once.
+    (resolve failure → `.locationUnavailable`) → `startAccessingSecurityScopedResource()`
+    (record whether granted) → on stale, **refresh the bookmark and re-persist while
+    access is held** (logged, not silent) → return a `ScopedVaultPath` whose `end()`
+    calls `stopAccessingSecurityScopedResource()` **only if access was granted**, exactly
+    once. A `false` grant is non-fatal (benign for in-sandbox paths); a genuine lack of
+    access surfaces as the FFI's typed open error downstream.
   - iOS bookmark-API note: iOS does **not** use the macOS `.withSecurityScope`
     create/resolve options; a bookmark created from a document-picker URL is
     implicitly security-scoped on iOS. (Verify exact option set during impl.)
@@ -152,16 +154,18 @@ entering unlock for a .located vault:
    on lock / background:
         session.wipe()
         scoped.end()                     // stopAccessingSecurityScopedResource()
-        route back to UNLOCK for the same remembered vault (no re-pick needed)
+        route to SELECT showing the still-remembered vault (one tap re-opens)
    on "choose different vault":
-        session.wipe() (if open); scoped.end() (if held); store.clear()
-        route to SELECT
+        store.clear()
+        route to SELECT (now .empty)
 ```
 
-Routing rule (disambiguated): a background/lock returns to the **unlock** screen for
-the *still-remembered* vault — the user re-enters their password, not the picker.
-Only the explicit "choose different vault" action clears the bookmark and routes to
-the **select** screen.
+Routing rule (disambiguated): a background/lock releases the scope and returns to the
+**select** screen, which still shows the *remembered* vault — one "Open" tap re-acquires
+the scope and goes to unlock; **no re-pick needed**. The bookmark is retained. Only the
+explicit "choose different vault" action clears the bookmark. (Routing back to a live
+*unlock* screen is avoided because the scope must be released on background, so re-entry
+requires a fresh `beginAccess()`.)
 
 **Invariant:** the scope opened by `beginAccess()` is held from before the FFI open
 through every lazy block read, and released exactly once on lock/wipe. `RootView`
@@ -171,8 +175,10 @@ structurally enforced and unit-testable via the fake's counter.
 
 **Failure paths (all typed, no silent fallback):**
 - bookmark won't resolve → `.locationUnavailable` → `.unavailable(reason)` → re-pick.
-- stale bookmark → resolve, **refresh + re-persist**, continue (logged, not silent).
-- `startAccessing…` returns `false` → `.accessDenied` → surfaced, not swallowed.
+- stale bookmark → resolve, **refresh + re-persist** (access held), continue (logged, not silent).
+- `startAccessing…` returns `false` → non-fatal; access may still be valid (in-sandbox).
+  A *genuine* lack of access is not swallowed — it surfaces as the FFI's typed open
+  error (`.folderInvalid` / `.wrongPasswordOrCorrupt`) when the open is attempted.
 
 ## Testing strategy
 
@@ -182,7 +188,8 @@ structurally enforced and unit-testable via the fake's counter.
   - `recordSelection` persists + → `.located`; `chooseDifferent` clears → `.empty`.
   - `beginAccess` on `.empty` throws `.noVaultSelected`; on `.located` returns a
     `ScopedVaultPath` whose `pathData` matches.
-  - unresolvable bookmark → `.unavailable`; `accessDenied` surfaces, not swallowed.
+  - unresolvable bookmark → `beginAccess` throws `.locationUnavailable` and the VM
+    transitions to `.unavailable(reason)` (location retained, not cleared).
   - **begin/end balance:** fake counts start/stop; after N unlock→lock cycles
     `started == stopped`, no live scopes leak; `end()` idempotent (double-end does not
     double-decrement).
