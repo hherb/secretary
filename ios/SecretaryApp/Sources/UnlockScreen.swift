@@ -9,11 +9,7 @@ struct UnlockScreen: View {
     let onUnlocked: (VaultSession) -> Void
 
     @State private var mode: UnlockViewModel.Mode = .password
-    // Demo convenience ONLY: the app stages the golden demo vault, so prefilling
-    // its fixture password saves typing. MUST be removed when real vault
-    // selection/import lands — never ship a prefilled credential into a build
-    // that opens a user's real vault.
-    @State private var password: String = "correct horse battery staple"
+    @State private var password: String = ""
     @State private var phrase: String = ""
 
     init(viewModel: UnlockViewModel, onUnlocked: @escaping (VaultSession) -> Void) {
