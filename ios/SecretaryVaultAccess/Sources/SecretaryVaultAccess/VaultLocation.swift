@@ -7,6 +7,7 @@ import Foundation
 /// credential ever flows through this type.
 public struct VaultLocation: Equatable {
     public let displayName: String
+    /// Security-scoped bookmark data as returned by the system file picker.
     public let bookmark: Data
 
     public init(displayName: String, bookmark: Data) {

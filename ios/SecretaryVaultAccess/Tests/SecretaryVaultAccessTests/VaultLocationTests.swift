@@ -14,5 +14,7 @@ final class VaultLocationTests: XCTestCase {
         let c = VaultLocation(displayName: "V", bookmark: Data([0xBB]))
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, c)
+        let d = VaultLocation(displayName: "W", bookmark: Data([0xAA]))
+        XCTAssertNotEqual(a, d)  // same bookmark, different displayName → not equal
     }
 }
