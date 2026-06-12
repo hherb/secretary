@@ -26,6 +26,11 @@ public final class FakeVaultLocationStore: VaultLocationStore {
     public func beginAccess(_ location: VaultLocation) throws -> ScopedVaultPath {
         if let beginAccessError { throw beginAccessError }
         started += 1
+        // location is intentionally ignored: the fake always returns
+        // `pathDataToReturn` regardless of which location was requested.
+        // [weak self] mirrors the real adapter's non-retaining onEnd and avoids a
+        // retain cycle if a test holds a ScopedVaultPath past the store's lifetime;
+        // in that (untested) case `stopped` is simply not incremented.
         return ScopedVaultPath(pathData: pathDataToReturn,
                                onEnd: { [weak self] in self?.stopped += 1 })
     }

@@ -15,6 +15,9 @@ public protocol VaultLocationStore {
     func clear()
     /// Resolve `location` and acquire a scope held until the returned handle's
     /// `end()`. Throws `VaultSelectionError.locationUnavailable` if the underlying
-    /// bookmark cannot be resolved.
+    /// bookmark cannot be resolved. The caller is responsible for ensuring a
+    /// location exists before calling this (the no-vault-selected precondition is
+    /// enforced one level up, in `VaultSelectionViewModel.beginAccess`), so this
+    /// method does not throw `.noVaultSelected`.
     func beginAccess(_ location: VaultLocation) throws -> ScopedVaultPath
 }
