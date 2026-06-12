@@ -46,7 +46,7 @@ Candidate next slices (pick with the user):
 
 ## (3) Open decisions and risks
 
-- **OPEN DECISION — orphaned `DeviceUnlockScreen.swift`.** A code review found this file has been **unreachable since `acc53ae`** (the #216 routing rewrite, before this slice — it was "retained as a reference flow" but never actually wired in). This slice removed its prefilled-credential literal but did **not delete the file** (it was deliberately retained by a prior session, and deleting deliberately-kept code is the user's call). Recommendation: **delete `DeviceUnlockScreen.swift`** (+ the now-orphaned `AppVaultProvisioning.pinnedVaultUuidHex()`, its only consumer) — D-phase biometric unlock will wire into the new `select→unlock→browse` routing, not as a separate root screen. **Decide before/with merge.**
+- **RESOLVED (2026-06-12) — orphaned `DeviceUnlockScreen.swift` kept as a reference.** A code review found this file has been **unreachable since `acc53ae`** (the #216 routing rewrite, before this slice). This slice removed its prefilled-credential literal; the user **decided to keep the file** as a reference for the device-unlock flow until D-phase biometric wiring (its only orphaned consumer, `AppVaultProvisioning.pinnedVaultUuidHex()`, also stays). When D-phase biometric unlock lands it should wire into the `select→unlock→browse` routing, not a separate root screen — revisit this file then.
 - **On-device manual smoke is the one outstanding acceptance item.** Code-complete + simulator-green, but the spec's on-device smoke (side-load a vault into Files → pick it → relaunch reopens it → unlock by password AND recovery → browse → reveal → background→redaction+re-lock) has NOT been run — it needs a physical device + a side-loaded vault. Same posture as the #216 / #202 device steps. Recommend running it before/with merge.
 - **`@MainActor` ViewModel blocks on the password KDF** (carried from #216) — `unlock` awaits the synchronous Argon2id open on the main actor (brief UI freeze). Background-offload is the noted follow-up.
 - **Swift-side secret residue** (carried) — the password/phrase `String` and revealed values can't be reliably zeroized under Swift COW; the FFI zeroizes the Rust copy. Selection adds no new secret material (it handles only the folder path).
@@ -83,7 +83,7 @@ bash /Users/hherb/src/secretary/.worktrees/ios-vault-selection/ios/scripts/run-i
 
 - **Branch on close:** `main` @ `acc53ae`; `feature/ios-vault-selection` carries spec + plan + the 7-task implementation (each with its review fixes) + this handoff/symlink. Squash-merge → one commit on `main`.
 - **Acceptance:** green — full `run-ios-tests.sh` (host 35 + 42, simulator TEST SUCCEEDED, app BUILD SUCCEEDED). No Rust / frozen-format / FFI-surface change.
-- **Per-task reviews:** every task passed spec-compliance + code-quality review; all raised issues fixed on the branch (no deferred debt) except the one OPEN DECISION above (delete the orphaned `DeviceUnlockScreen.swift`).
+- **Per-task reviews:** every task passed spec-compliance + code-quality review; all raised issues fixed on the branch (no deferred debt). Final whole-branch review: **APPROVE**.
 - **README.md / ROADMAP.md / ios/README.md:** updated — iOS vault selection ✅.
-- **Outstanding:** on-device manual smoke (§3) + the `DeviceUnlockScreen` deletion decision (§3) before merge.
+- **Outstanding:** on-device manual smoke (§3) before merge. (The `DeviceUnlockScreen` orphan decision is resolved — kept as a reference, §3.)
 - **NEXT_SESSION.md:** symlink retargeted to this file.
