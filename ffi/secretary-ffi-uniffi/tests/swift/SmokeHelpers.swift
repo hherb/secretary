@@ -68,6 +68,13 @@ let saveBlockNewBlockUuid = Data(repeating: 0xAB, count: 16)
 let saveBlockNewRecordUuid = Data(repeating: 0xCD, count: 16)
 let saveBlockDeviceUuid = Data(repeating: 0x07, count: 16)
 
+// record-edit slice (append/edit/tombstone/resurrect). Distinct block /
+// record UUIDs so seeded blocks don't collide with the save_block flows
+// when assertions run in sequence on the same fresh-copy vaults.
+let recordEditBlockUuid = Data(repeating: 0xB1, count: 16)
+let recordEditRecordUuid = Data(repeating: 0xC2, count: 16)
+let recordEditDeviceUuid = Data(repeating: 0x07, count: 16)
+
 // share_block uses the same pinned block UUID as save_block — the share
 // flow runs on a block produced by save_block in the same temp vault.
 let shareBlockBlockUuid = Data(repeating: 0xAB, count: 16)

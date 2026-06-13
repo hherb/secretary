@@ -84,6 +84,7 @@ swiftc \
     "$SCRIPT_DIR/SmokeFolderIn.swift" \
     "$SCRIPT_DIR/SmokeReadBlock.swift" \
     "$SCRIPT_DIR/SmokeSaveBlock.swift" \
+    "$SCRIPT_DIR/SmokeRecordEdit.swift" \
     "$SCRIPT_DIR/SmokeShareBlock.swift" \
     "$SCRIPT_DIR/SmokeTrashRestore.swift" \
     "$SCRIPT_DIR/SmokeDeviceSlot.swift" \
