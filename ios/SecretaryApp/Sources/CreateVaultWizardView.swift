@@ -31,7 +31,7 @@ struct CreateVaultWizardView: View {
             }
             .navigationTitle("Create vault")
             .toolbar { ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { onCancel() }
+                Button("Cancel") { viewModel.cancel(); onCancel() }
             } }
             .fileImporter(isPresented: $pickingParent,
                           allowedContentTypes: [.folder]) { result in
@@ -100,7 +100,6 @@ struct CreateVaultWizardView: View {
         switch e {
         case .folderNotEmpty: return "A folder with that name already exists — choose another"
         case .folderInvalid: return "That location can't be used"
-        case .invalidName: return "Choose a different name"
         case .passwordMismatch: return "Passwords do not match"
         case .createFailed(let d): return "Couldn't create the vault (\(d))"
         }

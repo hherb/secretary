@@ -45,7 +45,7 @@ SecretaryVaultAccess  (pure, FFI-free)
   ├─ VaultCreatePort   (protocol)     create boundary: mkdir + createVaultInFolder + persist bookmark
   ├─ VaultShapeProbe   (protocol)     import boundary: "does this folder contain a vault?"
   ├─ CreatedVault                     value type: persisted VaultLocation + one-shot phrase bytes
-  └─ VaultProvisioningError           typed: invalidName, folderNotEmpty, folderInvalid, createFailed, …
+  └─ VaultProvisioningError           typed: folderNotEmpty, folderInvalid, passwordMismatch, createFailed
 
 SecretaryVaultAccessUI  (pure, host-tested)
   └─ VaultProvisioningViewModel       @MainActor, drives the wizard over VaultCreatePort
@@ -126,11 +126,10 @@ wizard states:
 |---|---|
 | `VaultFolderNotEmpty` | "A folder with that name already exists here — choose a different name" (back to folder step; structurally rare since we mkdir fresh) |
 | `FolderInvalid(detail)` | "That location can't be used" (back to folder step) |
-| `InvalidArgument(detail)` | a name that passed Swift validation but the bridge rejected — treated as `invalidName` |
+| `InvalidArgument(detail)` | maps to `.createFailed("invalid argument: …")` (name validation is caught client-side via `validateVaultName` before any FFI call, so `InvalidArgument` is not expected for the name) |
 | others (`CorruptVault`, …) | generic "Couldn't create the vault" with detail in a diagnostics line |
 
-`validateVaultName` failures never reach the FFI — caught in the folder step as
-`.invalidName` before any `mkdir`.
+`validateVaultName` failures never reach the FFI — caught in the folder step before any `mkdir`.
 
 ## Testing strategy
 

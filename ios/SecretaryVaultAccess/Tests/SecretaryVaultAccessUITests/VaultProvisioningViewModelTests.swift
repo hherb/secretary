@@ -89,4 +89,14 @@ final class VaultProvisioningViewModelTests: XCTestCase {
         XCTAssertEqual(vm.error, .createFailed("vault location unavailable after create"))
         if case .done = vm.step { XCTFail("must not complete without a location") }
     }
+
+    func testCancelClearsMnemonicRows() async {
+        let (vm, _, _) = makeVM(createResult: okResult(name: "v1"))
+        vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
+        await vm.create(displayName: "Owner",
+                        password: Array("pw".utf8), confirm: Array("pw".utf8))
+        XCTAssertNotNil(vm.mnemonicRows)          // shown after create
+        vm.cancel()
+        XCTAssertNil(vm.mnemonicRows)             // cleared on cancel
+    }
 }

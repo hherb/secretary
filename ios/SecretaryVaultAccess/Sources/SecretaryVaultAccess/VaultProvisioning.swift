@@ -17,9 +17,10 @@ public enum VaultProvisioningStep: Equatable {
 
 /// Typed failures surfaced by the create wizard. Maps from the FFI `VaultError`
 /// (see SecretaryKit's `mapProvisioningError`) plus the local name-validation gate.
+/// Note: name validation is caught client-side via `validateVaultName` before any
+/// FFI call; there is no `invalidName` variant — FFI `InvalidArgument` maps to
+/// `.createFailed("invalid argument: …")` instead.
 public enum VaultProvisioningError: Error, Equatable {
-    /// The typed name failed `validateVaultName`.
-    case invalidName(VaultNameError)
     /// Password and confirm did not match (or were empty).
     case passwordMismatch
     /// A folder with that name already exists and is non-empty.

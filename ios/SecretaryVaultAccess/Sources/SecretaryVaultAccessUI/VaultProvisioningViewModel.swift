@@ -66,6 +66,19 @@ public final class VaultProvisioningViewModel: ObservableObject {
         }
     }
 
+    /// Abandon the wizard (Cancel / leave): scrub the retained recovery phrase
+    /// and clear its on-screen rows. The host then dismisses the wizard. Safe to
+    /// call from any step.
+    public func cancel() {
+        if phrase != nil { phrase!.resetBytes(in: phrase!.indices) }
+        phrase = nil
+        mnemonicRows = nil
+    }
+
+    deinit {
+        if phrase != nil { phrase!.resetBytes(in: phrase!.indices) }
+    }
+
     /// User confirmed they wrote down the phrase: wipe the retained phrase + the
     /// display rows, and complete. `.done` carries the persisted location so the
     /// host can route to the unlock screen.
