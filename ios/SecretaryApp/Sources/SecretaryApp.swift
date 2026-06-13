@@ -18,15 +18,26 @@ struct SecretaryApp: App {
 private struct RootView: View {
     private enum Route {
         case select
+        case create
         case unlock(ScopedVaultPath)
         case browse(VaultBrowseViewModel, ScopedVaultPath)
     }
 
-    @StateObject private var selectionVM =
-        VaultSelectionViewModel(store: BookmarkVaultLocationStore(),
-                                probe: FileManagerVaultShapeProbe())
+    /// One shared location store backs BOTH the selection VM and the create
+    /// wizard's provisioning VM, so a vault created in the wizard is visible to
+    /// `selectionVM.loadPersisted()` immediately after `onCreated`.
+    private let store: BookmarkVaultLocationStore
+    @StateObject private var selectionVM: VaultSelectionViewModel
     @State private var route: Route = .select
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let store = BookmarkVaultLocationStore()
+        self.store = store
+        _selectionVM = StateObject(
+            wrappedValue: VaultSelectionViewModel(store: store,
+                                                  probe: FileManagerVaultShapeProbe()))
+    }
 
     var body: some View {
         Group {
@@ -35,7 +46,17 @@ private struct RootView: View {
                 VaultSelectionScreen(
                     viewModel: selectionVM,
                     onOpen: { scoped in route = .unlock(scoped) },
-                    onOpenDemo: { try openDemo() })
+                    onOpenDemo: { try openDemo() },
+                    onCreateNew: { route = .create })
+            case .create:
+                CreateVaultWizardView(
+                    viewModel: VaultProvisioningViewModel(
+                        createPort: UniffiVaultCreatePort(), store: store),
+                    onCreated: { _ in
+                        selectionVM.loadPersisted()          // pick up the new location
+                        route = .select                      // back to select → "Open" → unlock
+                    },
+                    onCancel: { route = .select })
             case .unlock(let scoped):
                 UnlockScreen(
                     viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
@@ -59,7 +80,7 @@ private struct RootView: View {
             case .unlock(let scoped):
                 scoped.end()
                 route = .select
-            case .select:
+            case .select, .create:
                 break
             }
         }

@@ -11,6 +11,7 @@ struct VaultSelectionScreen: View {
     @ObservedObject var viewModel: VaultSelectionViewModel
     let onOpen: (ScopedVaultPath) -> Void
     let onOpenDemo: () throws -> Void
+    let onCreateNew: () -> Void
 
     @State private var importing = false
     @State private var errorText: String?
@@ -56,7 +57,8 @@ struct VaultSelectionScreen: View {
 
     private var selectSection: some View {
         Section("Open a vault") {
-            Button("Select a vault…") { importing = true }
+            Button("Import existing vault…") { importing = true }
+            Button("Create new vault…") { onCreateNew() }
         }
     }
 
@@ -100,8 +102,15 @@ struct VaultSelectionScreen: View {
             defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
             do {
                 let bookmark = try url.bookmarkData()
-                viewModel.recordSelection(bookmark: bookmark,
-                                          displayName: url.lastPathComponent)
+                switch viewModel.considerImport(url: url, bookmark: bookmark,
+                                                 displayName: url.lastPathComponent) {
+                case .opened:
+                    break                                    // VM is now .located
+                case .notAVault:
+                    errorText = "This folder doesn’t contain a vault."
+                case .unavailable(let reason):
+                    errorText = reason
+                }
             } catch {
                 errorText = String(describing: error)
             }
