@@ -88,12 +88,14 @@ The projection layer adds **no** record-semantics of its own. Its only responsib
 
 ## Testing (TDD)
 
-The bridge primitives are already unit-tested, so these tests assert the **projection layer** (length validation, error mapping, type conversion, zeroize contract), not record semantics:
+The bridge primitives are already unit-tested, so these tests assert the **projection layer** (length validation, error mapping, type conversion, zeroize contract), not record semantics. Exercising the projected fns needs a real opened-vault handle, so (matching the established convention for `save_block`/`trash_block`) the binding-level coverage lives in the **Swift + Kotlin smoke runners** and **pyo3 pytest** — not in uniffi-crate Rust `#[test]`s (those only cover handle-free path-validation):
 
-- **uniffi namespace unit tests** (mirroring the existing `save_block` tests in `namespace/mod.rs`):
-  - wrong-length `record_uuid`/`block_uuid`/`device_uuid` → `VaultError::InvalidArgument` for each of the 4 fns.
-  - happy-path round-trips through real open handles: `append_record` then `read_block` shows the new record; `edit_record` then `read_block` shows the changed value with an untouched sibling field's clock preserved; `tombstone_record` then `read_block` omits the record from the live set; `resurrect_record` brings it back.
-- **pyo3 tests** (pytest, via `uv`): construct `RecordContent` from Python, exercise the 4 fns against a temp-copied golden vault, assert `ValueError` on wrong-length uuids and read-back on the happy paths.
+- **Swift + Kotlin smoke** (`SmokeRecordEdit.{swift,kt}`, run by `tests/{swift,kotlin}/run.sh`, against a temp-copied golden vault):
+  - `append_record` then `read_block` shows the new record with matching field payloads.
+  - `edit_record` then `read_block` shows the changed value, AND an untouched sibling field keeps its prior `device_uuid` (asserted via `FieldHandle.device_uuid()`) — a direct binding-level proof of the per-field-clock-preservation CRDT property.
+  - `tombstone_record` then `read_block` omits the record from the live set; `resurrect_record` brings it back.
+  - wrong-length `record_uuid`/`block_uuid`/`device_uuid` → `VaultError.InvalidArgument`; unknown record/block uuid → `RecordNotFound`/`BlockNotFound`.
+- **pyo3 tests** (`tests/test_record_edit.py`, pytest via `uv`, mirroring `test_trash_restore.py`): construct `RecordContent` from Python, exercise the 4 fns against a temp-copied golden vault, assert `ValueError` on wrong-length uuids, `VaultRecordNotFound`/`VaultBlockNotFound` on unknown uuids, and read-back on the happy paths.
 - **Gauntlet (all green before PR):**
   - `cargo test --release --workspace`
   - `cargo clippy --release --workspace --tests -- -D warnings`
@@ -109,6 +111,6 @@ All Swift/iOS code: the `VaultSession` write extension / a new write port, the `
 
 ## Risks / open items
 
-- **uniffi namespace re-export resolution:** moving the new fns into `namespace/record_edit.rs` and re-exporting must still satisfy uniffi 0.31's UDL scaffolding lookup. This is the expected pattern, but the very first build of the slice validates it; if it fails, fall back to declaring the fns in `mod.rs` but keeping the conversion helpers + `RecordContent` in a separate file (still under 500 lines).
+- **uniffi namespace re-export resolution:** moving the new fns into `namespace/record_edit.rs` and re-exporting must satisfy uniffi 0.31's UDL scaffolding lookup. **This is a confirmed, already-in-use pattern** — `namespace/sync.rs` holds `sync_status`/`sync_vault`/`sync_commit_decisions` (all UDL-declared) and is re-exported via `mod sync; pub use sync::{...}` from `namespace/mod.rs`. `record_edit.rs` follows it 1:1. (If a future uniffi quirk bites, the fallback is declaring the fns in `mod.rs` while keeping the conversion helper + `RecordContent` in a separate file.)
 - **pyo3 editable-install cache stickiness:** `maturin develop` + `uv`'s editable cache can leave pytest seeing a stale `.so` even after a rebuild; if a pyo3 test fails inexplicably, nuke the venv + uv cache before trusting the failure.
 - No on-disk-format / frozen-spec / `FfiVaultError`-variant change — verified by construction; conformance scripts prove it.
