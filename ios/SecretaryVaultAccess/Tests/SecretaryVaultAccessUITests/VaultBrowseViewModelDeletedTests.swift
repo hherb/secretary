@@ -53,4 +53,22 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         XCTAssertNotNil(vm.makeEditViewModel(mode: .add))
     }
+
+    func testRefreshRereadsSelectedBlock() throws {
+        let s = session([record(1, tombstone: false)])
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
+        // mutate underneath the VM via the same session, then refresh
+        try s.appendRecord(blockUuid: vm.blocks[0].uuid,
+            content: RecordContentInput(recordType: "note", tags: [], fields: []))
+        XCTAssertEqual(vm.visibleRecords.count, 1)  // not yet refreshed
+        vm.refresh()
+        XCTAssertEqual(vm.visibleRecords.count, 2)  // refresh picked up the append
+    }
+
+    func testRefreshNoOpWhenNoBlockSelected() {
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+        vm.refresh()  // must not crash / not set error
+        XCTAssertNil(vm.error)
+    }
 }

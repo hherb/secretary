@@ -59,6 +59,24 @@ public final class VaultBrowseViewModel: ObservableObject {
         commitThenReload { try session.resurrectRecord(blockUuid: $0, recordUuid: record.uuid) }
     }
 
+    /// Re-read the currently-selected block (e.g. after the edit sheet writes),
+    /// using the VM's own selection rather than a caller-held BlockSummary.
+    /// No-op if no block is selected.
+    public func refresh() {
+        guard let blockUuid = selectedBlockUuid else { return }
+        error = nil
+        revealed.removeAll()
+        do {
+            records = try session.readBlock(blockUuid: blockUuid)
+        } catch let e as VaultAccessError {
+            records = nil
+            error = e
+        } catch {
+            records = nil
+            self.error = .other(String(describing: error))
+        }
+    }
+
     private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
         guard let blockUuid = selectedBlockUuid else { return }
         error = nil

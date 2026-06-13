@@ -51,6 +51,7 @@ struct RecordEditScreen: View {
                 }
                 Section {
                     Button("Save") { viewModel.commit() }
+                        .disabled(viewModel.loadFailed)
                 }
                 if let err = viewModel.error {
                     Section("Error") {

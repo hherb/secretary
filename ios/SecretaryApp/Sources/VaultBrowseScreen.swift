@@ -87,10 +87,9 @@ struct VaultBrowseScreen: View {
                     title: session.title,
                     onDone: {
                         editSession = nil
-                        // Re-select the block to refresh visibleRecords.
-                        if let block = selectedBlock {
-                            viewModel.selectBlock(block)
-                        }
+                        // Refresh the record list using the VM's own selection,
+                        // avoiding the screen's cached selectedBlock as a source of truth.
+                        viewModel.refresh()
                     }
                 )
             }

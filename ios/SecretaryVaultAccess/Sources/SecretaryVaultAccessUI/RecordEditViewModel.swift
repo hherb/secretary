@@ -32,6 +32,7 @@ public final class RecordEditViewModel: ObservableObject {
     @Published public var fields: [EditableField] = []
     @Published public private(set) var error: VaultAccessError?
     @Published public private(set) var committed = false
+    // Set by load(record:) on a reveal failure; reset only by a successful load. A fresh VM (always built per-edit) starts clean.
     @Published public private(set) var loadFailed = false
 
     private let session: VaultSession
