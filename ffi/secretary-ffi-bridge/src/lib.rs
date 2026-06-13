@@ -127,7 +127,7 @@ pub use contacts::{
     import_contact_card, owner_card_export, revoke_block_from, share_block_to, ContactSummary,
     RecipientKind, RecipientSummary,
 };
-pub use create::{create_vault, CreateVaultOutput, MnemonicOutput};
+pub use create::{create_vault, create_vault_in_folder, CreateVaultOutput, MnemonicOutput};
 pub use device::{
     add_device_slot, open_with_device_secret, remove_device_slot, DeviceEnrollOutput,
     DeviceSecretOutput,
