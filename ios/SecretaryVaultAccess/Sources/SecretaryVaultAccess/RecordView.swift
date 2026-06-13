@@ -25,18 +25,22 @@ public struct FieldView {
 }
 
 /// One decrypted record. Field metadata is exposed; plaintext stays behind
-/// `FieldView.reveal`.
+/// `FieldView.reveal`. `tombstone` is true for a soft-deleted record (read_block
+/// surfaces deleted records; the browse layer filters them client-side).
 public struct RecordView {
     public let uuid: [UInt8]
     public let type: String
     public let tags: [String]
     public let fields: [FieldView]
+    public let tombstone: Bool
 
-    public init(uuid: [UInt8], type: String, tags: [String], fields: [FieldView]) {
+    public init(uuid: [UInt8], type: String, tags: [String], fields: [FieldView],
+                tombstone: Bool = false) {
         self.uuid = uuid
         self.type = type
         self.tags = tags
         self.fields = fields
+        self.tombstone = tombstone
     }
 
     public var uuidHex: String { uuid.map { String(format: "%02x", $0) }.joined() }

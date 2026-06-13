@@ -14,6 +14,13 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// small + short-lived as possible; cleared on hide / lock / background.
     @Published public private(set) var revealed: [String: RevealedValue] = [:]
 
+    /// When false (default) the browse list hides tombstoned records. Toggling
+    /// it does not re-read — `visibleRecords` re-partitions the cached `records`.
+    @Published public var showDeleted = false
+
+    /// The currently-selected block uuid, so delete/restore can re-read it.
+    private var selectedBlockUuid: [UInt8]?
+
     private let session: VaultSession
     public init(session: VaultSession) { self.session = session }
 
@@ -22,10 +29,19 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func loadBlocks() { blocks = session.blockSummaries() }
 
     public func selectBlock(_ block: BlockSummary) {
+        selectedBlockUuid = block.uuid
+        reload(blockUuid: block.uuid)
+    }
+
+    /// Read `blockUuid` into `records`, mapping any failure to `error` and
+    /// clearing `records`. Always drops revealed plaintext first — a reload must
+    /// never carry a stale reveal across the new read (block switch, refresh, or
+    /// post-mutation re-read).
+    private func reload(blockUuid: [UInt8]) {
         error = nil
-        revealed.removeAll()  // never carry a reveal across a block switch
+        revealed.removeAll()
         do {
-            records = try session.readBlock(blockUuid: block.uuid)
+            records = try session.readBlock(blockUuid: blockUuid)
         } catch let e as VaultAccessError {
             records = nil
             error = e
@@ -33,6 +49,47 @@ public final class VaultBrowseViewModel: ObservableObject {
             records = nil
             self.error = .other(String(describing: error))
         }
+    }
+
+    /// Records to display: tombstoned ones are hidden unless `showDeleted`.
+    public var visibleRecords: [RecordView] {
+        let all = records ?? []
+        return showDeleted ? all : all.filter { !$0.tombstone }
+    }
+
+    /// Soft-delete a record, then re-read so `visibleRecords` reflects it.
+    public func delete(record: RecordView) {
+        commitThenReload { try session.tombstoneRecord(blockUuid: $0, recordUuid: record.uuid) }
+    }
+
+    /// Restore a soft-deleted record, then re-read.
+    public func restore(record: RecordView) {
+        commitThenReload { try session.resurrectRecord(blockUuid: $0, recordUuid: record.uuid) }
+    }
+
+    /// Re-read the currently-selected block (e.g. after the edit sheet writes),
+    /// using the VM's own selection rather than a caller-held BlockSummary.
+    /// No-op if no block is selected.
+    public func refresh() {
+        guard let blockUuid = selectedBlockUuid else { return }
+        reload(blockUuid: blockUuid)
+    }
+
+    /// Run a mutation against the selected block, then re-read on success. A
+    /// failed mutation surfaces `error` but deliberately leaves `records` (and
+    /// any reveal) intact — a rejected delete must not blank the visible list.
+    private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
+        guard let blockUuid = selectedBlockUuid else { return }
+        do {
+            try op(blockUuid)
+        } catch let e as VaultAccessError {
+            error = e
+            return
+        } catch {
+            self.error = .other(String(describing: error))
+            return
+        }
+        reload(blockUuid: blockUuid)
     }
 
     /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always
@@ -73,5 +130,13 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func lock() {
         revealed.removeAll()
         session.wipe()
+    }
+
+    /// Build a record-edit VM bound to this session + the selected block.
+    /// Returns nil if no block is selected. The edit screen calls `commit()`;
+    /// on success the browse screen re-selects the block to refresh the list.
+    public func makeEditViewModel(mode: RecordEditViewModel.Mode) -> RecordEditViewModel? {
+        guard let blockUuid = selectedBlockUuid else { return nil }
+        return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode)
     }
 }

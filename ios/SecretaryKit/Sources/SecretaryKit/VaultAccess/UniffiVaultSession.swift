@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SecretaryVaultAccess
 
 /// Real `VaultSession` over the uniffi `OpenVaultOutput` (identity + manifest)
@@ -8,12 +9,25 @@ import SecretaryVaultAccess
 public final class UniffiVaultSession: VaultSession {
     private let identity: UnlockedIdentity
     private let manifest: OpenVaultManifest
+    private let deviceUuids: DeviceUuidProviding?
     /// Retained decrypted-block handles, so reveal closures remain valid.
     private var openBlocks: [BlockReadOutput] = []
+    /// Cached per this session so every write stamps the same device UUID.
+    private var cachedDeviceUuid: [UInt8]?
 
     public init(output: OpenVaultOutput) {
         self.identity = output.identity
         self.manifest = output.manifest
+        self.deviceUuids = nil
+    }
+
+    /// Test/seam initializer: inject a device-uuid provider. Production uses
+    /// `init(output:)`, which resolves `DeviceUuidStore.applicationSupportDefault()`
+    /// lazily on the first write (read-only sessions never touch write infra).
+    public init(output: OpenVaultOutput, deviceUuids: DeviceUuidProviding) {
+        self.identity = output.identity
+        self.manifest = output.manifest
+        self.deviceUuids = deviceUuids
     }
 
     public var vaultUuidHex: String {
@@ -74,7 +88,8 @@ public final class UniffiVaultSession: VaultSession {
             uuid: [UInt8](rec.recordUuid()),
             type: rec.recordType(),
             tags: rec.tags(),
-            fields: fields)
+            fields: fields,
+            tombstone: rec.tombstone())
     }
 
     private func makeFieldView(_ handle: FieldHandle) -> FieldView {
@@ -102,5 +117,103 @@ public final class UniffiVaultSession: VaultSession {
         openBlocks.removeAll()
         manifest.wipe()
         identity.wipe()
+    }
+
+    @discardableResult
+    public func appendRecord(blockUuid: [UInt8], content: RecordContentInput) throws -> [UInt8] {
+        let recordUuid = try Self.freshRecordUuid()
+        try write { dev, now in
+            try SecretaryKit.appendRecord(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), recordUuid: Data(recordUuid),
+                content: Self.toFfi(content), deviceUuid: Data(dev), nowMs: now)
+        }
+        return recordUuid
+    }
+
+    public func editRecord(blockUuid: [UInt8], recordUuid: [UInt8], content: RecordContentInput) throws {
+        try write { dev, now in
+            try SecretaryKit.editRecord(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), recordUuid: Data(recordUuid),
+                content: Self.toFfi(content), deviceUuid: Data(dev), nowMs: now)
+        }
+    }
+
+    public func tombstoneRecord(blockUuid: [UInt8], recordUuid: [UInt8]) throws {
+        try write { dev, now in
+            try SecretaryKit.tombstoneRecord(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), recordUuid: Data(recordUuid),
+                deviceUuid: Data(dev), nowMs: now)
+        }
+    }
+
+    public func resurrectRecord(blockUuid: [UInt8], recordUuid: [UInt8]) throws {
+        try write { dev, now in
+            try SecretaryKit.resurrectRecord(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), recordUuid: Data(recordUuid),
+                deviceUuid: Data(dev), nowMs: now)
+        }
+    }
+
+    /// Resolve (device uuid, now-ms), run the FFI write, map errors. Centralizes
+    /// the device-uuid resolve + `VaultError` mapping for all four writers.
+    ///
+    /// - Throws: `VaultAccessError` for any FFI `VaultError`; additionally, the
+    ///   **first write** of a session may throw a `DeviceUuidStoreError` (an I/O
+    ///   error from resolving the per-vault device UUID) which is deliberately NOT
+    ///   mapped to a `VaultAccessError` — callers must handle both error types.
+    private func write(_ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> Void) throws {
+        let dev = try deviceUuid()
+        do {
+            try body(dev, Self.nowMs())
+        } catch let e as VaultError {
+            throw mapVaultAccessError(e)
+        }
+    }
+
+    private func deviceUuid() throws -> [UInt8] {
+        if let c = cachedDeviceUuid { return c }
+        let provider = try (deviceUuids ?? DeviceUuidStore.applicationSupportDefault())
+        let d = try provider.deviceUuid(forVaultHex: vaultUuidHex)
+        cachedDeviceUuid = d
+        return d
+    }
+
+    private static func nowMs() -> UInt64 {
+        UInt64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// 16 bytes — a record UUID. Named locally rather than borrowing the
+    /// device-uuid constant: both happen to be 16, but they are unrelated values.
+    private static let recordUuidByteLen = 16
+
+    private static func freshRecordUuid() throws -> [UInt8] {
+        var u = [UInt8](repeating: 0, count: recordUuidByteLen)
+        let status = SecRandomCopyBytes(kSecRandomDefault, u.count, &u)
+        guard status == errSecSuccess else {
+            throw VaultAccessError.other("OS entropy unavailable for record UUID (status \(status))")
+        }
+        return u
+    }
+
+    /// Map the FFI-free `RecordContentInput` to the uniffi `RecordContent`,
+    /// zeroizing the plaintext byte payloads we copy in once the value type is
+    /// built (text values are Strings — same residue limitation as the unlock
+    /// password field).
+    private static func toFfi(_ c: RecordContentInput) -> RecordContent {
+        let fields = c.fields.map { f -> FieldInput in
+            switch f.value {
+            case .text(let s):
+                return FieldInput(name: f.name, value: .text(text: s))
+            case .bytes(var b):
+                let input = FieldInput(name: f.name, value: .bytes(data: Data(b)))
+                for i in b.indices { b[i] = 0 }  // overwrite our copy of the payload
+                return input
+            }
+        }
+        return RecordContent(recordType: c.recordType, tags: c.tags, fields: fields)
     }
 }
