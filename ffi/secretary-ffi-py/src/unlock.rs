@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyType};
 use zeroize::Zeroize;
 
-use crate::errors::ffi_unlock_error_to_pyerr;
+use crate::errors::{ffi_unlock_error_to_pyerr, ffi_vault_error_to_pyerr};
 use crate::identity::UnlockedIdentity;
 
 /// Opaque Python-side handle to a one-shot recovery mnemonic. Newtype
@@ -223,4 +223,34 @@ pub(crate) fn create_vault(
         identity: Some(UnlockedIdentity(identity)),
         mnemonic: Some(MnemonicOutput(mnemonic)),
     })
+}
+
+/// Create a fresh v1 vault on disk in an existing empty `folder` and return
+/// the one-shot recovery `MnemonicOutput`. Writes all four canonical files
+/// via the bridge's folder-writing path; the caller re-opens with
+/// `open_vault_with_password` to browse (no auto-open). Bridge hardcodes
+/// `OsRng` + `Argon2idParams::V1_DEFAULT`.
+///
+/// Raises `VaultFolderNotEmpty` if the directory is non-empty,
+/// `VaultFolderInvalid` if it is missing / unreadable, `VaultCorruptVault`
+/// on rare crypto failure.
+#[pyfunction]
+pub(crate) fn create_vault_in_folder(
+    folder: std::path::PathBuf,
+    mut password: Vec<u8>,
+    display_name: &str,
+    created_at_ms: u64,
+) -> PyResult<MnemonicOutput> {
+    // Mirrors create_vault's wrapper-side zeroize discipline: the bridge
+    // wraps password into SecretBytes; this Vec is the projection-side
+    // cleartext transient. Zero it whether the call succeeds or fails.
+    let result = secretary_ffi_bridge::create_vault_in_folder(
+        &folder,
+        &password,
+        display_name,
+        created_at_ms,
+    );
+    password.zeroize();
+    let mnemonic = result.map_err(ffi_vault_error_to_pyerr)?;
+    Ok(MnemonicOutput(mnemonic))
 }
