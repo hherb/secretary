@@ -76,4 +76,17 @@ final class VaultProvisioningViewModelTests: XCTestCase {
         guard case .done(let loc) = vm.step else { return XCTFail("expected .done") }
         XCTAssertEqual(loc.displayName, "v1")
     }
+
+    func testAcknowledgeWithLostLocationSurfacesError() async {
+        let (vm, _, store) = makeVM(createResult: okResult(name: "v1"))
+        vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
+        await vm.create(displayName: "Owner",
+                        password: Array("pw".utf8), confirm: Array("pw".utf8))
+        // Simulate the store losing the just-persisted location before ack.
+        store.clear()
+        vm.acknowledgeMnemonic()
+        XCTAssertNil(vm.mnemonicRows)                 // phrase display still wiped (security)
+        XCTAssertEqual(vm.error, .createFailed("vault location unavailable after create"))
+        if case .done = vm.step { XCTFail("must not complete without a location") }
+    }
 }

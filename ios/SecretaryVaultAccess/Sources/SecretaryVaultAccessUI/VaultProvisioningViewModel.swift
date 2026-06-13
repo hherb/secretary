@@ -76,6 +76,11 @@ public final class VaultProvisioningViewModel: ObservableObject {
         mnemonicRows = nil
         if let loc = store.load() {
             step = .done(loc)
+        } else {
+            // The location was persisted during create; a nil load now is a real
+            // store fault. Surface it rather than stranding the user on an
+            // unrenderable mnemonic step (no silent failures).
+            error = .createFailed("vault location unavailable after create")
         }
     }
 }
