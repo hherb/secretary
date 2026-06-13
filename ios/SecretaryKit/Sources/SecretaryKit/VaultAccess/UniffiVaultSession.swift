@@ -9,16 +9,21 @@ import SecretaryVaultAccess
 public final class UniffiVaultSession: VaultSession {
     private let identity: UnlockedIdentity
     private let manifest: OpenVaultManifest
-    private let deviceUuids: DeviceUuidProviding
+    private let deviceUuids: DeviceUuidProviding?
     /// Retained decrypted-block handles, so reveal closures remain valid.
     private var openBlocks: [BlockReadOutput] = []
     /// Cached per this session so every write stamps the same device UUID.
     private var cachedDeviceUuid: [UInt8]?
 
-    public convenience init(output: OpenVaultOutput) throws {
-        self.init(output: output, deviceUuids: try DeviceUuidStore.applicationSupportDefault())
+    public init(output: OpenVaultOutput) {
+        self.identity = output.identity
+        self.manifest = output.manifest
+        self.deviceUuids = nil
     }
 
+    /// Test/seam initializer: inject a device-uuid provider. Production uses
+    /// `init(output:)`, which resolves `DeviceUuidStore.applicationSupportDefault()`
+    /// lazily on the first write (read-only sessions never touch write infra).
     public init(output: OpenVaultOutput, deviceUuids: DeviceUuidProviding) {
         self.identity = output.identity
         self.manifest = output.manifest
@@ -155,6 +160,11 @@ public final class UniffiVaultSession: VaultSession {
 
     /// Resolve (device uuid, now-ms), run the FFI write, map errors. Centralizes
     /// the device-uuid resolve + `VaultError` mapping for all four writers.
+    ///
+    /// - Throws: `VaultAccessError` for any FFI `VaultError`; additionally, the
+    ///   **first write** of a session may throw a `DeviceUuidStoreError` (an I/O
+    ///   error from resolving the per-vault device UUID) which is deliberately NOT
+    ///   mapped to a `VaultAccessError` — callers must handle both error types.
     private func write(_ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> Void) throws {
         let dev = try deviceUuid()
         do {
@@ -166,7 +176,8 @@ public final class UniffiVaultSession: VaultSession {
 
     private func deviceUuid() throws -> [UInt8] {
         if let c = cachedDeviceUuid { return c }
-        let d = try deviceUuids.deviceUuid(forVaultHex: vaultUuidHex)
+        let provider = try (deviceUuids ?? DeviceUuidStore.applicationSupportDefault())
+        let d = try provider.deviceUuid(forVaultHex: vaultUuidHex)
         cachedDeviceUuid = d
         return d
     }

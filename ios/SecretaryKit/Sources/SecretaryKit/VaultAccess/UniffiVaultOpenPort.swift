@@ -9,7 +9,7 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
         do {
             let out = try SecretaryKit.openVaultWithPassword(
                 folderPath: vaultPath, password: Data(password))
-            return try UniffiVaultSession(output: out)
+            return UniffiVaultSession(output: out)
         } catch let e as VaultError {
             throw mapVaultAccessError(e)
         }
@@ -19,7 +19,7 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
         do {
             let out = try SecretaryKit.openVaultWithRecovery(
                 folderPath: vaultPath, mnemonic: Data(phrase))
-            return try UniffiVaultSession(output: out)
+            return UniffiVaultSession(output: out)
         } catch let e as VaultError {
             throw mapVaultAccessError(e)
         }

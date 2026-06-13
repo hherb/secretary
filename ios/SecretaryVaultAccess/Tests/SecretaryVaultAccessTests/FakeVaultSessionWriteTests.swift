@@ -60,4 +60,16 @@ final class FakeVaultSessionWriteTests: XCTestCase {
             }
         }
     }
+
+    func testTombstoneAlreadyTombstonedThrowsRecordNotFound() throws {
+        let s = freshSession()
+        let id = try s.appendRecord(blockUuid: block,
+            content: RecordContentInput(recordType: "login", tags: [], fields: []))
+        try s.tombstoneRecord(blockUuid: block, recordUuid: id)
+        XCTAssertThrowsError(try s.tombstoneRecord(blockUuid: block, recordUuid: id)) { err in
+            guard case VaultAccessError.recordNotFound = err else {
+                return XCTFail("expected .recordNotFound, got \(err)")
+            }
+        }
+    }
 }
