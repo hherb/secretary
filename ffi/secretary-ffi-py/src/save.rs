@@ -80,6 +80,18 @@ impl FieldInput {
     }
 }
 
+impl FieldInput {
+    /// Clone this field into the bridge-side `FieldInput` (name +
+    /// zeroize-typed value) for the record-edit projection. Brief
+    /// secret-doubling, same tradeoff as `save_block`'s record clone.
+    pub(crate) fn to_bridge(&self) -> BridgeFieldInput {
+        BridgeFieldInput {
+            name: self.name.clone(),
+            value: self.value.inner.clone(),
+        }
+    }
+}
+
 /// One record being saved. Duplicate field names inside `fields` collapse
 /// to last-write-wins inside the resulting `BTreeMap<String, RecordField>`
 /// (matching `core::Record::fields`'s key invariant).
