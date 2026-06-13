@@ -10,9 +10,11 @@ public final class VaultSelectionViewModel: ObservableObject {
     @Published public private(set) var state: VaultSelectionState = .empty
 
     private let store: VaultLocationStore
+    private let probe: VaultShapeProbe
 
-    public init(store: VaultLocationStore) {
+    public init(store: VaultLocationStore, probe: VaultShapeProbe) {
         self.store = store
+        self.probe = probe
     }
 
     /// Refresh state from the persisted store (call on appear / on returning to
@@ -36,6 +38,22 @@ public final class VaultSelectionViewModel: ObservableObject {
     public func recordSelection(bookmark: Data, displayName: String) {
         store.persist(VaultLocation(displayName: displayName, bookmark: bookmark))
         state = .located(displayName: displayName)
+    }
+
+    /// Consider a folder the user picked via "Import existing vault". Runs the
+    /// crypto-free shape probe FIRST: only a folder that contains a vault is
+    /// persisted + located. A non-vault folder is rejected without persisting (so
+    /// the user is not handed an "Open" button that will just fail at unlock); an
+    /// unreadable folder surfaces as `.unavailable`. The caller must hold the
+    /// folder's security scope across this call (the probe reads `vault.toml`).
+    public func considerImport(url: URL, bookmark: Data, displayName: String) -> ImportOutcome {
+        do {
+            guard try probe.looksLikeVault(url) else { return .notAVault }
+            recordSelection(bookmark: bookmark, displayName: displayName)
+            return .opened
+        } catch {
+            return .unavailable(String(describing: error))
+        }
     }
 
     /// Forget the remembered vault and return to the empty state.
