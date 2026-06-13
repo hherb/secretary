@@ -232,8 +232,8 @@ pub(crate) fn create_vault(
 /// `OsRng` + `Argon2idParams::V1_DEFAULT`.
 ///
 /// Raises `VaultFolderNotEmpty` if the directory is non-empty,
-/// `VaultFolderInvalid` if it is missing / unreadable, `VaultCorruptVault`
-/// on rare crypto failure.
+/// `VaultFolderInvalid` if it is missing / unreadable / a file (not a
+/// directory), `VaultCorruptVault` on rare crypto failure.
 #[pyfunction]
 pub(crate) fn create_vault_in_folder(
     folder: std::path::PathBuf,

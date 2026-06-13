@@ -138,8 +138,9 @@ pub fn create_vault(
 /// # Errors
 ///
 /// Returns [`VaultError`]: `VaultFolderNotEmpty` if the directory contains
-/// entries, `FolderInvalid` if the path is missing / unreadable / not
-/// valid UTF-8, `CorruptVault` on rare crypto failure.
+/// entries, `FolderInvalid` if the path is missing / unreadable / a file
+/// (not a directory) / not valid UTF-8, `CorruptVault` on rare crypto
+/// failure.
 pub fn create_vault_in_folder(
     folder_path: Vec<u8>,
     mut password: Vec<u8>,

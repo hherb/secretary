@@ -291,7 +291,8 @@ pub fn create_vault(
 /// # Errors
 ///
 /// - [`FfiVaultError::VaultFolderNotEmpty`] — `folder` contains entries.
-/// - [`FfiVaultError::FolderInvalid`] — `folder` is missing or unreadable.
+/// - [`FfiVaultError::FolderInvalid`] — `folder` is missing, unreadable, or
+///   resolves to a file rather than a directory.
 /// - [`FfiVaultError::CorruptVault`] — rare crypto/serialization failure.
 pub fn create_vault_in_folder(
     folder: &Path,
@@ -458,6 +459,22 @@ mod tests {
         assert!(
             matches!(err, FfiVaultError::FolderInvalid { .. }),
             "missing folder must surface FolderInvalid, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn create_vault_in_folder_rejects_file_path() {
+        // A path that resolves to a file (not a directory) is a wrong-path
+        // mistake, not corruption: ensure_empty_directory surfaces
+        // NotADirectory, which must map to the actionable FolderInvalid.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").expect("seed file");
+        let err = create_vault_in_folder(&file, b"pw", "X", 1_700_000_000_000)
+            .expect_err("file path must error");
+        assert!(
+            matches!(err, FfiVaultError::FolderInvalid { .. }),
+            "file path must surface FolderInvalid, got {err:?}",
         );
     }
 }
