@@ -40,16 +40,19 @@ final class RecordEditIntegrationTests: XCTestCase {
     func testAddEditDeleteRestoreRoundTrip() throws {
         let device = [UInt8](repeating: 0x5A, count: 16)
         let session = try openSession(device: device)
-        defer { session.wipe() }
         let block = try XCTUnwrap(session.blockSummaries().first).uuid
 
         // ADD a record with two text fields.
+        // Each mutating FFI call persists atomically (rename(2) on the block
+        // file) before returning, so the next readBlock sees committed state.
         let id = try session.appendRecord(blockUuid: block, content: RecordContentInput(
             recordType: "login", tags: ["work"],
             fields: [FieldContentInput(name: "user", value: .text("alice")),
                      FieldContentInput(name: "pass", value: .text("hunter2"))]))
         var rec = try XCTUnwrap(try session.readBlock(blockUuid: block).first { $0.uuid == id })
         XCTAssertFalse(rec.tombstone)
+        XCTAssertEqual(rec.type, "login")
+        XCTAssertEqual(Set(rec.fields.map(\.name)), ["user", "pass"])
 
         // EDIT only "pass"; assert the new value round-trips.
         try session.editRecord(blockUuid: block, recordUuid: id, content: RecordContentInput(
@@ -70,5 +73,22 @@ final class RecordEditIntegrationTests: XCTestCase {
         try session.resurrectRecord(blockUuid: block, recordUuid: id)
         let afterRestore = try session.readBlock(blockUuid: block).first { $0.uuid == id }
         XCTAssertEqual(afterRestore?.tombstone, false)
+
+        // DURABILITY: the mutations must have persisted to disk, not just the
+        // first session's memory. Re-open a fresh session over the same on-disk
+        // vault and confirm the final state survived.
+        // wipe() zeroizes contents but keeps the Rust handle alive (idempotent);
+        // the defer below will call it again harmlessly.
+        session.wipe()
+        defer { session.wipe() }
+        let reopened = try openSession(device: device)
+        defer { reopened.wipe() }
+        let persisted = try XCTUnwrap(
+            try reopened.readBlock(blockUuid: block).first { $0.uuid == id },
+            "record not found in fresh session — writes did not persist to disk")
+        XCTAssertFalse(persisted.tombstone, "record persisted live after a fresh open")
+        let persistedPass = try XCTUnwrap(persisted.fields.first { $0.name == "pass" })
+        guard case .text(let pv) = try persistedPass.reveal() else { return XCTFail("expected text") }
+        XCTAssertEqual(pv, "s3cret!", "edited value persisted across a re-open")
     }
 }
