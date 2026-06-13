@@ -10,6 +10,7 @@
 // lives in SmokeBytesIn.kt.
 
 import uniffi.secretary.VaultException
+import uniffi.secretary.createVaultInFolder
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
 
@@ -122,5 +123,65 @@ fun runFolderInAsserts(env: SmokeEnv) {
         check(true, "open_vault_with_recovery wrong-vault phrase → VaultException.WrongMnemonicOrCorrupt")
     } catch (e: Throwable) {
         check(false, "wrong-vault phrase threw $e, expected VaultException.WrongMnemonicOrCorrupt")
+    }
+
+    // =============================================================================
+    // create_vault_in_folder — write a complete vault on disk, then open it.
+    // =============================================================================
+
+    // Assert 39: create_vault_in_folder writes a complete, openable vault
+    // (24-word recovery phrase + folder-password open succeeds → browsable).
+    run {
+        val tmp = kotlin.io.path.createTempDirectory("create-folder-").toFile()
+        try {
+            val folderPath = tmp.path.toByteArray(Charsets.UTF_8)
+            val pw = "create-smoke-pw".toByteArray(Charsets.UTF_8)
+            var wordCount = 0
+            createVaultInFolder(folderPath, pw, "Kotlin-Create-Bob", 1_700_000_000_000UL).use { mn ->
+                val phrase = mn.takePhrase()
+                check(phrase != null, "create_vault_in_folder take_phrase returned null")
+                if (phrase != null) {
+                    // takePhrase() returns List<UByte>? per uniffi 0.31's
+                    // sequence<u8>? mapping; convert to a UTF-8 string to count words.
+                    val bytes = ByteArray(phrase.size) { phrase[it].toByte() }
+                    wordCount = bytes.toString(Charsets.UTF_8).split(" ").size
+                }
+            }
+            val out = openVaultWithPassword(folderPath, pw)
+            out.identity.use { identity ->
+                out.manifest.use { _ ->
+                    val name = identity.displayName()
+                    check(
+                        wordCount == 24 && name == "Kotlin-Create-Bob",
+                        "create_vault_in_folder → 24-word phrase + openable vault (words=$wordCount, displayName=\"$name\")",
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            check(false, "create_vault_in_folder smoke threw $e, expected success")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    // Assert 40: create_vault_in_folder on a non-empty folder → VaultException.VaultFolderNotEmpty.
+    run {
+        val tmp = kotlin.io.path.createTempDirectory("create-nonempty-").toFile()
+        try {
+            java.io.File(tmp, "junk").writeText("x")
+            createVaultInFolder(
+                tmp.path.toByteArray(Charsets.UTF_8),
+                "pw".toByteArray(Charsets.UTF_8),
+                "X",
+                1_700_000_000_000UL,
+            )
+            check(false, "non-empty folder should have thrown VaultException.VaultFolderNotEmpty")
+        } catch (e: VaultException.VaultFolderNotEmpty) {
+            check(true, "create_vault_in_folder non-empty → VaultException.VaultFolderNotEmpty")
+        } catch (e: Throwable) {
+            check(false, "non-empty folder threw $e, expected VaultException.VaultFolderNotEmpty")
+        } finally {
+            tmp.deleteRecursively()
+        }
     }
 }
