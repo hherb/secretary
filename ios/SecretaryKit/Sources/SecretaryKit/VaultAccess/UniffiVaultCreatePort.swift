@@ -48,6 +48,13 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
 
         // Bookmark the NEW subfolder while still inside the parent's scope (the
         // standard pattern for bookmarking a child URL). iOS uses `[]` options.
+        //
+        // Degraded path: if bookmarking fails here the vault files are already
+        // written, so we leave a complete-but-unreferenced vault folder on disk and
+        // surface a typed error (never a silent no-op). The orphan is harmless — the
+        // user can re-import the folder via "Import existing vault" to recover it.
+        // We don't auto-delete it: destroying just-written user data on a transient
+        // bookmark failure would be the worse outcome.
         let bookmark: Data
         do {
             bookmark = try folder.bookmarkData()

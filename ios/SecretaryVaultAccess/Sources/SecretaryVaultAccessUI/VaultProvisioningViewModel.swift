@@ -50,14 +50,20 @@ public final class VaultProvisioningViewModel: ObservableObject {
             return
         }
         do {
-            var created = try createPort.create(parent: parent,
+            let created = try createPort.create(parent: parent,
                                                 vaultName: vaultName,
                                                 password: password,
                                                 displayName: displayName)
             store.persist(created.location)            // persist BEFORE mnemonic
+            // `phrase` takes sole ownership of the recovery bytes (COW shares the
+            // one buffer with `created.phrase`, which is dropped when this scope
+            // ends — no second copy to wipe). The authoritative scrub of this
+            // buffer happens in `acknowledgeMnemonic`/`cancel`/`deinit`. The words
+            // are also materialized as un-zeroizable `String`s for display, which is
+            // the accepted best-effort tradeoff for showing a phrase the user must
+            // read.
             phrase = created.phrase
             mnemonicRows = groupMnemonic(String(decoding: created.phrase, as: UTF8.self))
-            created.phrase.resetBytes(in: created.phrase.indices)  // wipe the local copy
             step = .mnemonic
         } catch let e as VaultProvisioningError {
             error = e
