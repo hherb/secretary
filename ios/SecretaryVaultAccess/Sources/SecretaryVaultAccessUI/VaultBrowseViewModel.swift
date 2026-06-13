@@ -29,11 +29,19 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func loadBlocks() { blocks = session.blockSummaries() }
 
     public func selectBlock(_ block: BlockSummary) {
-        error = nil
-        revealed.removeAll()  // never carry a reveal across a block switch
         selectedBlockUuid = block.uuid
+        reload(blockUuid: block.uuid)
+    }
+
+    /// Read `blockUuid` into `records`, mapping any failure to `error` and
+    /// clearing `records`. Always drops revealed plaintext first — a reload must
+    /// never carry a stale reveal across the new read (block switch, refresh, or
+    /// post-mutation re-read).
+    private func reload(blockUuid: [UInt8]) {
+        error = nil
+        revealed.removeAll()
         do {
-            records = try session.readBlock(blockUuid: block.uuid)
+            records = try session.readBlock(blockUuid: blockUuid)
         } catch let e as VaultAccessError {
             records = nil
             error = e
@@ -64,31 +72,24 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// No-op if no block is selected.
     public func refresh() {
         guard let blockUuid = selectedBlockUuid else { return }
-        error = nil
-        revealed.removeAll()
-        do {
-            records = try session.readBlock(blockUuid: blockUuid)
-        } catch let e as VaultAccessError {
-            records = nil
-            error = e
-        } catch {
-            records = nil
-            self.error = .other(String(describing: error))
-        }
+        reload(blockUuid: blockUuid)
     }
 
+    /// Run a mutation against the selected block, then re-read on success. A
+    /// failed mutation surfaces `error` but deliberately leaves `records` (and
+    /// any reveal) intact — a rejected delete must not blank the visible list.
     private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
         guard let blockUuid = selectedBlockUuid else { return }
-        error = nil
         do {
             try op(blockUuid)
-            revealed.removeAll()  // never carry a reveal across a mutation
-            records = try session.readBlock(blockUuid: blockUuid)
         } catch let e as VaultAccessError {
             error = e
+            return
         } catch {
             self.error = .other(String(describing: error))
+            return
         }
+        reload(blockUuid: blockUuid)
     }
 
     /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always

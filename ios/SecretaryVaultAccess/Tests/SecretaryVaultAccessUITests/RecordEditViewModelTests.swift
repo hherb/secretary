@@ -43,11 +43,29 @@ final class RecordEditViewModelTests: XCTestCase {
         let vm = RecordEditViewModel(session: s, blockUuid: block, mode: .add)
         vm.addField()
         vm.fields[0].name = "key"
-        vm.setKind(at: 0, .bytes)
+        vm.fields[0].kind = .bytes
         vm.fields[0].rawText = "zz"  // not hex
         vm.commit()
         XCTAssertFalse(vm.committed)
         XCTAssertEqual(vm.error, .invalidArgument("field 'key' is not valid hex"))
+    }
+
+    func testValidHexInBytesFieldCommitsAndRoundTrips() throws {
+        let s = session()
+        let vm = RecordEditViewModel(session: s, blockUuid: block, mode: .add)
+        vm.recordType = "key"
+        vm.addField()
+        vm.fields[0].name = "secret"
+        vm.fields[0].kind = .bytes
+        vm.fields[0].rawText = "de ad be ef"  // spaced hex must parse
+        vm.commit()
+        XCTAssertTrue(vm.committed)
+        XCTAssertNil(vm.error)
+        let rec = try XCTUnwrap(try s.readBlock(blockUuid: block).first)
+        guard case .bytes(let b) = try XCTUnwrap(rec.fields.first).reveal() else {
+            return XCTFail("expected bytes")
+        }
+        XCTAssertEqual(b, [0xDE, 0xAD, 0xBE, 0xEF])
     }
 
     func testEditPrefillsFromRecordThenCommitsEdit() throws {

@@ -45,15 +45,10 @@ public final class RecordEditViewModel: ObservableObject {
         self.mode = mode
     }
 
+    /// Append a blank field row. Removal + kind changes are driven directly
+    /// through the `fields` binding by the SwiftUI Form (`.onDelete`, the kind
+    /// Picker), so no guarded mutators are needed beyond this one.
     public func addField() { fields.append(EditableField()) }
-    public func removeField(at index: Int) {
-        guard fields.indices.contains(index) else { return }
-        fields.remove(at: index)
-    }
-    public func setKind(at index: Int, _ kind: FieldContentValue.Kind) {
-        guard fields.indices.contains(index) else { return }
-        fields[index].kind = kind
-    }
 
     /// Reveal each field of an existing record into the editable rows. Text →
     /// plaintext; bytes → lowercase hex. Throws if a field cannot be revealed.

@@ -186,8 +186,12 @@ public final class UniffiVaultSession: VaultSession {
         UInt64(Date().timeIntervalSince1970 * 1000)
     }
 
+    /// 16 bytes — a record UUID. Named locally rather than borrowing the
+    /// device-uuid constant: both happen to be 16, but they are unrelated values.
+    private static let recordUuidByteLen = 16
+
     private static func freshRecordUuid() throws -> [UInt8] {
-        var u = [UInt8](repeating: 0, count: DeviceUuidStore.uuidByteLen)
+        var u = [UInt8](repeating: 0, count: recordUuidByteLen)
         let status = SecRandomCopyBytes(kSecRandomDefault, u.count, &u)
         guard status == errSecSuccess else {
             throw VaultAccessError.other("OS entropy unavailable for record UUID (status \(status))")
