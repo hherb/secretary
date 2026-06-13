@@ -1097,6 +1097,10 @@ def test_edit_record_changes_value_and_preserves_untouched_field_clock(tmp_path:
 
 
 def test_tombstone_then_resurrect_round_trip(tmp_path: Path) -> None:
+    # NOTE: read_block surfaces ALL records (it does not hide tombstoned
+    # ones) and exposes deletion via the per-record tombstone() flag —
+    # filtering live-vs-deleted is the consumer's job. So we assert the
+    # flag flips, not a record_count change.
     out, _dst = _fresh_writable_vault(tmp_path)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
@@ -1105,12 +1109,13 @@ def test_tombstone_then_resurrect_round_trip(tmp_path: Path) -> None:
                 identity, manifest, BLOCK_UUID, RECORD_UUID, DEVICE_UUID, NOW_MS_BASE + 1_000
             )
             with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
-                assert block.record_count() == 0
+                assert block.record_count() == 1
+                assert block.record_at(0).tombstone() is True
             secretary_ffi_py.resurrect_record(
                 identity, manifest, BLOCK_UUID, RECORD_UUID, DEVICE_UUID, NOW_MS_BASE + 2_000
             )
             with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
-                assert block.record_count() == 1
+                assert block.record_at(0).tombstone() is False
 
 
 def test_edit_unknown_record_raises_record_not_found(tmp_path: Path) -> None:

@@ -93,9 +93,9 @@ The bridge primitives are already unit-tested, so these tests assert the **proje
 - **Swift + Kotlin smoke** (`SmokeRecordEdit.{swift,kt}`, run by `tests/{swift,kotlin}/run.sh`, against a temp-copied golden vault):
   - `append_record` then `read_block` shows the new record with matching field payloads.
   - `edit_record` then `read_block` shows the changed value, AND an untouched sibling field keeps its prior `device_uuid` (asserted via `FieldHandle.device_uuid()`) — a direct binding-level proof of the per-field-clock-preservation CRDT property.
-  - `tombstone_record` then `read_block` omits the record from the live set; `resurrect_record` brings it back.
+  - `tombstone_record` then `read_block` shows the record with `tombstone() == true` (read_block surfaces ALL records and exposes deletion via the per-record flag — it does NOT filter tombstones; filtering live-vs-deleted is the consumer's job, a Slice-2 UI concern); `resurrect_record` flips it back to `false`.
   - wrong-length `record_uuid`/`block_uuid`/`device_uuid` → `VaultError.InvalidArgument`; unknown record/block uuid → `RecordNotFound`/`BlockNotFound`.
-- **pyo3 tests** (`tests/test_record_edit.py`, pytest via `uv`, mirroring `test_trash_restore.py`): construct `RecordContent` from Python, exercise the 4 fns against a temp-copied golden vault, assert `ValueError` on wrong-length uuids, `VaultRecordNotFound`/`VaultBlockNotFound` on unknown uuids, and read-back on the happy paths.
+- **pyo3 tests** (`tests/test_record_edit.py`, pytest via `uv`, mirroring `test_trash_restore.py`): construct `RecordContent` from Python, exercise the 4 fns against a temp-copied golden vault, assert `ValueError` on wrong-length uuids, `VaultRecordNotFound`/`VaultBlockNotFound` on unknown uuids, and read-back on the happy paths (tombstone asserts the per-record `tombstone()` flag flips, since `read_block` surfaces tombstoned records rather than hiding them).
 - **Gauntlet (all green before PR):**
   - `cargo test --release --workspace`
   - `cargo clippy --release --workspace --tests -- -D warnings`
