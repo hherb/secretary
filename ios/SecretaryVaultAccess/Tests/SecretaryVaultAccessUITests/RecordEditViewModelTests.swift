@@ -68,4 +68,35 @@ final class RecordEditViewModelTests: XCTestCase {
         }
         XCTAssertEqual(v, "bob")
     }
+
+    func testLoadFailureSurfacesErrorAndBlocksCommit() throws {
+        let id: [UInt8] = [0xD1]
+        // A field whose reveal throws (simulates a corrupt/undecryptable field).
+        let bad = RecordView(uuid: id, type: "login", tags: [],
+            fields: [FieldView(name: "user", kind: .text) {
+                throw VaultAccessError.corruptVault("boom")
+            }])
+        let s = session([bad])
+        let vm = RecordEditViewModel(session: s, blockUuid: block, mode: .edit(recordUuid: id))
+        vm.load(record: bad)                       // non-throwing wrapper
+        XCTAssertTrue(vm.loadFailed)
+        XCTAssertEqual(vm.error, .corruptVault("boom"))
+        vm.commit()                                // must be refused
+        XCTAssertFalse(vm.committed)
+        // the record in the fake still has its original single field (not clobbered)
+        XCTAssertEqual(try s.readBlock(blockUuid: block).first?.fields.count, 1)
+    }
+
+    func testLoadSuccessClearsLoadFailedAndAllowsCommit() throws {
+        let id: [UInt8] = [0xD2]
+        let good = RecordView(uuid: id, type: "login", tags: ["w"],
+            fields: [FieldView(name: "user", kind: .text) { .text("alice") }])
+        let s = session([good])
+        let vm = RecordEditViewModel(session: s, blockUuid: block, mode: .edit(recordUuid: id))
+        vm.load(record: good)
+        XCTAssertFalse(vm.loadFailed)
+        vm.fields[0].rawText = "bob"
+        vm.commit()
+        XCTAssertTrue(vm.committed)
+    }
 }

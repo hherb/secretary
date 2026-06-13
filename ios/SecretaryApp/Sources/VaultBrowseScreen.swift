@@ -157,7 +157,7 @@ struct VaultBrowseScreen: View {
                 Button {
                     guard let vm = viewModel.makeEditViewModel(
                         mode: .edit(recordUuid: record.uuid)) else { return }
-                    try? vm.loadForEdit(record: record)
+                    vm.load(record: record)
                     editSession = EditSession(editVM: vm, title: "Edit Record")
                 } label: {
                     Label("Edit", systemImage: "pencil")

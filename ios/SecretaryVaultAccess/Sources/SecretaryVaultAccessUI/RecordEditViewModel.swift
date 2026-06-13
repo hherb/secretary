@@ -32,6 +32,7 @@ public final class RecordEditViewModel: ObservableObject {
     @Published public var fields: [EditableField] = []
     @Published public private(set) var error: VaultAccessError?
     @Published public private(set) var committed = false
+    @Published public private(set) var loadFailed = false
 
     private let session: VaultSession
     private let blockUuid: [UInt8]
@@ -68,9 +69,28 @@ public final class RecordEditViewModel: ObservableObject {
         }
     }
 
+    /// Prefill from an existing record for editing, capturing any reveal failure
+    /// into `error` (instead of throwing) and setting `loadFailed`. While
+    /// `loadFailed` is true, `commit()` refuses to write — a partially-revealed
+    /// record must never be saved back, which would clobber the fields that
+    /// could not be read.
+    public func load(record: RecordView) {
+        do {
+            try loadForEdit(record: record)
+            loadFailed = false
+        } catch let e as VaultAccessError {
+            error = e
+            loadFailed = true
+        } catch {
+            self.error = .other(String(describing: error))
+            loadFailed = true
+        }
+    }
+
     /// Build → validate → write. Sets `committed` on success; sets `error` and
     /// writes nothing on any validation or FFI failure.
     public func commit() {
+        guard !loadFailed else { return }   // refuse to overwrite a record we couldn't fully read
         let content: RecordContentInput
         do {
             content = try buildContent()
