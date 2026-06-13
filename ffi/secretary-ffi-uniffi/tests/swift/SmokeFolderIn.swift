@@ -119,4 +119,61 @@ func runFolderInAsserts(env: SmokeEnv) {
     } catch {
         check(false, "wrong-vault phrase threw \(error), expected VaultError.WrongMnemonicOrCorrupt")
     }
+
+    // =============================================================================
+    // create_vault_in_folder — write a complete vault on disk, then open it.
+    // =============================================================================
+
+    // Assert 38: create_vault_in_folder writes a complete, openable vault
+    // (24-word recovery phrase + folder-password open succeeds → browsable).
+    do {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("create-folder-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let folderPath = Data(tmp.path.utf8)
+        let pw = Data("create-smoke-pw".utf8)
+        let mnem = try createVaultInFolder(
+            folderPath: folderPath,
+            password: pw,
+            displayName: "Swift-Create-Bob",
+            createdAtMs: 1_700_000_000_000
+        )
+        defer { mnem.wipe() }
+        let wordCount = mnem.takePhrase().map {
+            String(decoding: $0, as: UTF8.self).split(separator: " ").count
+        } ?? 0
+
+        let opened = try openVaultWithPassword(folderPath: folderPath, password: pw)
+        defer { opened.identity.wipe() }
+        defer { opened.manifest.wipe() }
+        check(
+            wordCount == 24 && opened.identity.displayName() == "Swift-Create-Bob",
+            "create_vault_in_folder → 24-word phrase + openable vault (words=\(wordCount), displayName=\"\(opened.identity.displayName())\")"
+        )
+    } catch {
+        check(false, "create_vault_in_folder smoke threw \(error), expected success")
+    }
+
+    // Assert 39: create_vault_in_folder on a non-empty folder → VaultError.VaultFolderNotEmpty.
+    do {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("create-nonempty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try Data("x".utf8).write(to: tmp.appendingPathComponent("junk"))
+
+        _ = try createVaultInFolder(
+            folderPath: Data(tmp.path.utf8),
+            password: Data("pw".utf8),
+            displayName: "X",
+            createdAtMs: 1_700_000_000_000
+        )
+        check(false, "non-empty folder should have thrown VaultError.VaultFolderNotEmpty")
+    } catch VaultError.VaultFolderNotEmpty {
+        check(true, "create_vault_in_folder non-empty → VaultError.VaultFolderNotEmpty")
+    } catch {
+        check(false, "non-empty folder threw \(error), expected VaultError.VaultFolderNotEmpty")
+    }
 }

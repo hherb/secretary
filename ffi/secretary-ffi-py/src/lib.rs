@@ -68,7 +68,8 @@ use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
-    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultInvalidMnemonic,
+    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
+    VaultInvalidMnemonic,
     VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
     VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
     VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
@@ -88,7 +89,8 @@ use sync::{
 };
 use trash::trash_block;
 use unlock::{
-    create_vault, open_with_password, open_with_recovery, CreateVaultOutput, MnemonicOutput,
+    create_vault, create_vault_in_folder, open_with_password, open_with_recovery, CreateVaultOutput,
+    MnemonicOutput,
 };
 use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
@@ -152,6 +154,7 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CreateVaultOutput>()?;
     m.add_class::<MnemonicOutput>()?;
     m.add_function(wrap_pyfunction!(create_vault, m)?)?;
+    m.add_function(wrap_pyfunction!(create_vault_in_folder, m)?)?;
 
     // B.4a surface:
     m.add_class::<BlockSummary>()?;
@@ -174,6 +177,7 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("VaultMismatchFolder", py.get_type::<VaultMismatchFolder>())?;
     m.add("VaultCorruptVault", py.get_type::<VaultCorruptVault>())?;
     m.add("VaultFolderInvalid", py.get_type::<VaultFolderInvalid>())?;
+    m.add("VaultFolderNotEmpty", py.get_type::<VaultFolderNotEmpty>())?;
 
     // B.4b surface:
     m.add_class::<FieldHandle>()?;

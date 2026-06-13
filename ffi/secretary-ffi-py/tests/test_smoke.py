@@ -7,6 +7,7 @@ import) works end-to-end.
 """
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1161,3 +1162,49 @@ def test_share_block_typed_exception_classes_are_distinct() -> None:
         secretary_ffi_py.VaultMissingRecipientCard
         is not secretary_ffi_py.VaultBlockNotFound
     )
+
+
+# create_vault_in_folder (iOS create/import Slice 1): folder-writing create.
+
+
+def test_create_vault_in_folder_writes_openable_vault() -> None:
+    """create_vault_in_folder writes all four canonical files; the folder
+    then opens through open_vault_with_password (which validates the
+    manifest + owner card)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "vault"
+        folder.mkdir()
+        mnem = secretary_ffi_py.create_vault_in_folder(
+            str(folder), b"hunter2", "Py-Folder-Bob", 1_700_000_000_000
+        )
+        phrase = mnem.take_phrase()
+        assert phrase is not None
+        assert len(bytes(phrase).split(b" ")) == 24
+
+        assert (folder / "vault.toml").is_file()
+        assert (folder / "identity.bundle.enc").is_file()
+        assert (folder / "manifest.cbor.enc").is_file()
+        assert (folder / "contacts").is_dir()
+
+        out = secretary_ffi_py.open_vault_with_password(str(folder), b"hunter2")
+        assert out.identity.display_name() == "Py-Folder-Bob"
+
+
+def test_create_vault_in_folder_rejects_nonempty_folder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "vault"
+        folder.mkdir()
+        (folder / "junk").write_bytes(b"x")
+        with pytest.raises(secretary_ffi_py.VaultFolderNotEmpty):
+            secretary_ffi_py.create_vault_in_folder(
+                str(folder), b"pw", "X", 1_700_000_000_000
+            )
+
+
+def test_create_vault_in_folder_rejects_missing_folder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = Path(tmp) / "does-not-exist"
+        with pytest.raises(secretary_ffi_py.VaultFolderInvalid):
+            secretary_ffi_py.create_vault_in_folder(
+                str(missing), b"pw", "X", 1_700_000_000_000
+            )

@@ -38,6 +38,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.DeviceSlotNotFound -> "DeviceSlotNotFound"
     is VaultException.WrongDeviceSecretOrCorrupt -> "WrongDeviceSecretOrCorrupt"
     is VaultException.DeviceUuidMismatch -> "DeviceUuidMismatch"
+    is VaultException.VaultFolderNotEmpty -> "VaultFolderNotEmpty"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -74,5 +75,6 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.SyncInProgress,
     is VaultException.SyncDecisionsIncomplete,
     is VaultException.DeviceSlotNotFound,
-    is VaultException.WrongDeviceSecretOrCorrupt -> null
+    is VaultException.WrongDeviceSecretOrCorrupt,
+    is VaultException.VaultFolderNotEmpty -> null
 }

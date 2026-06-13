@@ -49,6 +49,7 @@
 //!
 //! Rationale: docs/superpowers/specs/2026-05-05-ffi-b3b-create-vault-design.md
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use rand_core::OsRng;
@@ -56,7 +57,7 @@ use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::unlock::{self, mnemonic::Mnemonic};
 
-use crate::error::FfiUnlockError;
+use crate::error::{FfiUnlockError, FfiVaultError};
 use crate::identity::UnlockedIdentity;
 use crate::sync_helpers::lock_or_recover;
 
@@ -266,6 +267,53 @@ pub fn create_vault(
     })
 }
 
+/// Create a fresh v1 vault **on disk** in `folder`, writing all four
+/// canonical files via `core::vault::create_vault`, and return the one-shot
+/// recovery mnemonic.
+///
+/// This is the folder-writing sibling of [`create_vault`]. Where
+/// `create_vault` returns identity-level byte artifacts for the caller to
+/// persist (and pairs with the bytes-based `open_with_password`), this
+/// function produces a **complete, browsable** vault — including
+/// `manifest.cbor.enc` and `contacts/<owner-uuid>.card` — that opens through
+/// the folder-based [`crate::open_vault_with_password`] /
+/// [`crate::open_vault_with_recovery`].
+///
+/// `folder` MUST already exist as an empty directory; the platform layer
+/// owns the mkdir / subfolder decision (mirroring core's
+/// `ensure_empty_directory` contract). The function does NOT auto-open the
+/// vault — the caller re-opens with the master password to browse, matching
+/// the desktop "no auto-open, re-enter password" flow.
+///
+/// `OsRng` and `Argon2idParams::V1_DEFAULT` are hardcoded — no foreign
+/// RNG/KDF knobs, same rationale as [`create_vault`].
+///
+/// # Errors
+///
+/// - [`FfiVaultError::VaultFolderNotEmpty`] — `folder` contains entries.
+/// - [`FfiVaultError::FolderInvalid`] — `folder` is missing, unreadable, or
+///   resolves to a file rather than a directory.
+/// - [`FfiVaultError::CorruptVault`] — rare crypto/serialization failure.
+pub fn create_vault_in_folder(
+    folder: &Path,
+    password: &[u8],
+    display_name: &str,
+    created_at_ms: u64,
+) -> Result<MnemonicOutput, FfiVaultError> {
+    let pw = SecretBytes::from(password);
+    let mut rng = OsRng;
+    let mnemonic = secretary_core::vault::create_vault(
+        folder,
+        &pw,
+        display_name,
+        Argon2idParams::V1_DEFAULT,
+        created_at_ms,
+        &mut rng,
+    )
+    .map_err(FfiVaultError::from)?;
+    Ok(MnemonicOutput::new(mnemonic))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +328,19 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let m = mnemonic::generate(&mut rng);
         MnemonicOutput::new(m)
+    }
+
+    /// Helper: mint a fresh random password at test runtime. Literal
+    /// password byte strings trip CodeQL's
+    /// `rust/hard-coded-cryptographic-value` rule, so the create / open
+    /// round-trips below generate the secret from `OsRng` and reuse the
+    /// same bound value for both halves of the round-trip
+    /// ([[feedback_test_crypto_random_not_hardcoded]]).
+    fn random_password() -> Vec<u8> {
+        use rand_core::RngCore;
+        let mut pw = vec![0u8; 16];
+        OsRng.fill_bytes(&mut pw);
+        pw
     }
 
     #[test]
@@ -351,5 +412,83 @@ mod tests {
             crate::open_with_recovery(&out.vault_toml_bytes, &out.identity_bundle_bytes, &phrase)
                 .expect("re-open with the just-taken phrase must succeed");
         assert_eq!(opened.display_name(), "Round-Trip-Carol");
+    }
+
+    #[test]
+    fn create_vault_in_folder_writes_complete_openable_vault() {
+        // Real Argon2idParams::V1_DEFAULT. Proves the folder-writing path
+        // produces ALL FOUR canonical files (not just the 2 identity-level
+        // byte artifacts the bytes-based create_vault returns) — the
+        // folder-based open_vault_with_password validates the manifest
+        // signature + owner card, so a successful open IS the proof the
+        // manifest + contacts/<uuid>.card were written and are valid.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path();
+        let pw = random_password();
+
+        let out = create_vault_in_folder(folder, &pw, "Folder-Bob", 1_700_000_000_000)
+            .expect("create_vault_in_folder should succeed");
+
+        assert!(folder.join("vault.toml").is_file(), "vault.toml missing");
+        assert!(
+            folder.join("identity.bundle.enc").is_file(),
+            "identity.bundle.enc missing",
+        );
+        assert!(
+            folder.join("manifest.cbor.enc").is_file(),
+            "manifest.cbor.enc missing",
+        );
+        assert!(folder.join("contacts").is_dir(), "contacts/ missing");
+
+        // Folder-based password open must succeed → the vault is browsable.
+        let opened = crate::open_vault_with_password(folder, &pw)
+            .expect("folder open with the same password must succeed");
+        assert_eq!(opened.identity.display_name(), "Folder-Bob");
+
+        // The returned mnemonic opens the same vault via the recovery path.
+        let phrase = out.take_phrase().expect("phrase must be available");
+        let opened2 = crate::open_vault_with_recovery(folder, &phrase)
+            .expect("folder open with the just-taken phrase must succeed");
+        assert_eq!(opened2.identity.display_name(), "Folder-Bob");
+    }
+
+    #[test]
+    fn create_vault_in_folder_rejects_nonempty_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("junk"), b"x").expect("seed junk file");
+        let err = create_vault_in_folder(dir.path(), &random_password(), "X", 1_700_000_000_000)
+            .expect_err("non-empty folder must error");
+        assert!(
+            matches!(err, FfiVaultError::VaultFolderNotEmpty),
+            "non-empty folder must surface VaultFolderNotEmpty, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn create_vault_in_folder_rejects_missing_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let err = create_vault_in_folder(&missing, &random_password(), "X", 1_700_000_000_000)
+            .expect_err("missing folder must error");
+        assert!(
+            matches!(err, FfiVaultError::FolderInvalid { .. }),
+            "missing folder must surface FolderInvalid, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn create_vault_in_folder_rejects_file_path() {
+        // A path that resolves to a file (not a directory) is a wrong-path
+        // mistake, not corruption: ensure_empty_directory surfaces
+        // NotADirectory, which must map to the actionable FolderInvalid.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").expect("seed file");
+        let err = create_vault_in_folder(&file, &random_password(), "X", 1_700_000_000_000)
+            .expect_err("file path must error");
+        assert!(
+            matches!(err, FfiVaultError::FolderInvalid { .. }),
+            "file path must surface FolderInvalid, got {err:?}",
+        );
     }
 }

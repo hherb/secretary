@@ -126,6 +126,51 @@ pub fn create_vault(
     })
 }
 
+/// Create a fresh v1 vault on disk in an existing empty `folder_path`.
+/// uniffi-projected. (iOS create/import Slice 1.)
+///
+/// `folder_path` is the UTF-8-encoded filesystem path to an existing empty
+/// directory. Writes all four canonical files and returns the one-shot
+/// recovery mnemonic; the caller re-opens with `open_vault_with_password`
+/// to browse (no auto-open). The bridge hardcodes `OsRng` +
+/// `Argon2idParams::V1_DEFAULT`.
+///
+/// # Errors
+///
+/// Returns [`VaultError`]: `VaultFolderNotEmpty` if the directory contains
+/// entries, `FolderInvalid` if the path is missing / unreadable / a file
+/// (not a directory) / not valid UTF-8, `CorruptVault` on rare crypto
+/// failure.
+pub fn create_vault_in_folder(
+    folder_path: Vec<u8>,
+    mut password: Vec<u8>,
+    display_name: String,
+    created_at_ms: u64,
+) -> Result<std::sync::Arc<MnemonicOutput>, VaultError> {
+    // Compute the full result chain into a single binding so the password
+    // is zeroized BEFORE any `?`-propagation (mirrors open_vault_with_password).
+    let result: Result<secretary_ffi_bridge::MnemonicOutput, VaultError> =
+        match std::str::from_utf8(&folder_path) {
+            Ok(s) => {
+                let path = std::path::PathBuf::from(s);
+                secretary_ffi_bridge::create_vault_in_folder(
+                    &path,
+                    &password,
+                    &display_name,
+                    created_at_ms,
+                )
+                .map_err(VaultError::from)
+            }
+            Err(_) => Err(VaultError::FolderInvalid {
+                detail: "folder path contained invalid UTF-8".to_string(),
+            }),
+        };
+
+    password.zeroize();
+    let bridge_mnemonic = result?;
+    Ok(std::sync::Arc::new(MnemonicOutput(bridge_mnemonic)))
+}
+
 /// Open a vault folder using its master password. uniffi-projected. (B.4a)
 ///
 /// `folder_path` is the UTF-8-encoded filesystem path to the vault folder as
@@ -603,6 +648,23 @@ mod tests {
         match open_vault_with_recovery(
             b"\xff\xfe".to_vec(),
             b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec(),
+        ) {
+            Err(VaultError::FolderInvalid { .. }) => {}
+            Err(other) => panic!("expected FolderInvalid, got {other:?}"),
+            Ok(_) => panic!("expected Err for invalid UTF-8 path"),
+        }
+    }
+
+    #[test]
+    fn create_vault_in_folder_invalid_utf8_path_returns_folder_invalid() {
+        // 0xff\xfe is invalid UTF-8; the wrapper must reject before touching
+        // the bridge / KDF. MnemonicOutput holds Arc<opaque> (no Debug), so
+        // we match rather than calling unwrap_err().
+        match create_vault_in_folder(
+            b"\xff\xfe".to_vec(),
+            b"pw".to_vec(),
+            "X".to_string(),
+            1_700_000_000_000,
         ) {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),

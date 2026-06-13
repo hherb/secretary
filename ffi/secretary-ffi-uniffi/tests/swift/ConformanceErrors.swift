@@ -39,6 +39,7 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .DeviceSlotNotFound: return "DeviceSlotNotFound"
     case .WrongDeviceSecretOrCorrupt: return "WrongDeviceSecretOrCorrupt"
     case .DeviceUuidMismatch: return "DeviceUuidMismatch"
+    case .VaultFolderNotEmpty: return "VaultFolderNotEmpty"
     }
 }
 

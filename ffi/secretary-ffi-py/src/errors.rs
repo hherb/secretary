@@ -74,6 +74,9 @@ create_exception!(
     PyException
 );
 create_exception!(secretary_ffi_py, VaultDeviceUuidMismatch, PyException);
+// Folder-create precondition — target directory not empty. Mirrors the
+// bridge's FfiVaultError::VaultFolderNotEmpty.
+create_exception!(secretary_ffi_py, VaultFolderNotEmpty, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -170,6 +173,7 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultWrongDeviceSecretOrCorrupt::new_err(e.to_string())
         }
         FfiVaultError::DeviceUuidMismatch { detail } => VaultDeviceUuidMismatch::new_err(detail),
+        FfiVaultError::VaultFolderNotEmpty => VaultFolderNotEmpty::new_err(e.to_string()),
     }
 }
 

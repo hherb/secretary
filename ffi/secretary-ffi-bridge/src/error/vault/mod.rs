@@ -331,6 +331,18 @@ pub enum FfiVaultError {
         /// Diagnostic text; free-form, not part of the API contract.
         detail: String,
     },
+
+    /// The `create_vault_in_folder` target directory already contains
+    /// entries. `core::vault::create_vault` requires an empty directory
+    /// (it refuses to clobber an unrelated folder), so a non-empty target
+    /// surfaces as `core::VaultError::Io { ErrorKind::AlreadyExists }`.
+    /// This dedicated variant keeps that caller-actionable condition
+    /// ("pick an empty folder or make a subfolder") distinct from a wrong
+    /// or unreadable path (`FolderInvalid`) and from data corruption
+    /// (`CorruptVault`). No payload — the name is the whole story and the
+    /// folder is the caller's own input.
+    #[error("vault folder is not empty")]
+    VaultFolderNotEmpty,
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
@@ -357,18 +369,40 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
 
             // Pre-unlock IO errors → FolderInvalid. The matched ErrorKinds
             // are the foreign-caller-actionable ones (path is wrong, no
-            // permission). Any other IO error kind (e.g. interrupted, broken
-            // pipe) falls through to CorruptVault since it's neither
-            // user-actionable nor data-integrity-clean.
+            // permission, or it is a file where a directory was expected —
+            // `ensure_empty_directory` surfaces the latter as NotADirectory).
+            // Any other IO error kind (e.g. interrupted, broken pipe) falls
+            // through to CorruptVault since it's neither user-actionable nor
+            // data-integrity-clean.
             VE::Io { context, source }
                 if matches!(
                     source.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::NotADirectory
                 ) =>
             {
                 FfiVaultError::FolderInvalid {
                     detail: format!("{context}: {source}"),
                 }
+            }
+
+            // Folder-create precondition: the target directory already
+            // contains entries. `ensure_empty_directory` is the ONLY core
+            // site that manufactures Io { AlreadyExists } (verified: a
+            // workspace grep for `ErrorKind::AlreadyExists` under core/src
+            // finds no other producer), so routing the kind unconditionally
+            // to this dedicated typed variant is sound — it lets
+            // `create_vault_in_folder` callers tell "not empty" apart from a
+            // wrong path (`FolderInvalid`) and from corruption
+            // (`CorruptVault`). INVARIANT: if a future core path ever emits
+            // AlreadyExists for an unrelated reason, this arm must be
+            // narrowed (it cannot see which op called it). Must precede the
+            // generic Io catch-all below.
+            VE::Io { source, .. }
+                if source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                FfiVaultError::VaultFolderNotEmpty
             }
 
             // Block-lookup failure (the manifest does not list this UUID).
