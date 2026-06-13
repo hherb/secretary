@@ -330,6 +330,19 @@ mod tests {
         MnemonicOutput::new(m)
     }
 
+    /// Helper: mint a fresh random password at test runtime. Literal
+    /// password byte strings trip CodeQL's
+    /// `rust/hard-coded-cryptographic-value` rule, so the create / open
+    /// round-trips below generate the secret from `OsRng` and reuse the
+    /// same bound value for both halves of the round-trip
+    /// ([[feedback_test_crypto_random_not_hardcoded]]).
+    fn random_password() -> Vec<u8> {
+        use rand_core::RngCore;
+        let mut pw = vec![0u8; 16];
+        OsRng.fill_bytes(&mut pw);
+        pw
+    }
+
     #[test]
     fn mnemonic_output_take_phrase_returns_24_words() {
         let mo = fresh_mnemonic_output();
@@ -411,8 +424,9 @@ mod tests {
         // manifest + contacts/<uuid>.card were written and are valid.
         let dir = tempfile::tempdir().expect("tempdir");
         let folder = dir.path();
+        let pw = random_password();
 
-        let out = create_vault_in_folder(folder, b"hunter2", "Folder-Bob", 1_700_000_000_000)
+        let out = create_vault_in_folder(folder, &pw, "Folder-Bob", 1_700_000_000_000)
             .expect("create_vault_in_folder should succeed");
 
         assert!(folder.join("vault.toml").is_file(), "vault.toml missing");
@@ -427,7 +441,7 @@ mod tests {
         assert!(folder.join("contacts").is_dir(), "contacts/ missing");
 
         // Folder-based password open must succeed → the vault is browsable.
-        let opened = crate::open_vault_with_password(folder, b"hunter2")
+        let opened = crate::open_vault_with_password(folder, &pw)
             .expect("folder open with the same password must succeed");
         assert_eq!(opened.identity.display_name(), "Folder-Bob");
 
@@ -442,7 +456,7 @@ mod tests {
     fn create_vault_in_folder_rejects_nonempty_folder() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("junk"), b"x").expect("seed junk file");
-        let err = create_vault_in_folder(dir.path(), b"pw", "X", 1_700_000_000_000)
+        let err = create_vault_in_folder(dir.path(), &random_password(), "X", 1_700_000_000_000)
             .expect_err("non-empty folder must error");
         assert!(
             matches!(err, FfiVaultError::VaultFolderNotEmpty),
@@ -454,7 +468,7 @@ mod tests {
     fn create_vault_in_folder_rejects_missing_folder() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
-        let err = create_vault_in_folder(&missing, b"pw", "X", 1_700_000_000_000)
+        let err = create_vault_in_folder(&missing, &random_password(), "X", 1_700_000_000_000)
             .expect_err("missing folder must error");
         assert!(
             matches!(err, FfiVaultError::FolderInvalid { .. }),
@@ -470,7 +484,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("a-file");
         std::fs::write(&file, b"x").expect("seed file");
-        let err = create_vault_in_folder(&file, b"pw", "X", 1_700_000_000_000)
+        let err = create_vault_in_folder(&file, &random_password(), "X", 1_700_000_000_000)
             .expect_err("file path must error");
         assert!(
             matches!(err, FfiVaultError::FolderInvalid { .. }),
