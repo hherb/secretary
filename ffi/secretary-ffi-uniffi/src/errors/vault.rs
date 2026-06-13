@@ -131,6 +131,11 @@ pub enum VaultError {
     /// the UUID it was looked up by. Mirrors `FfiVaultError::DeviceUuidMismatch`.
     #[error("device UUID mismatch: {detail}")]
     DeviceUuidMismatch { detail: String },
+
+    /// Create-in-folder target directory already contains entries.
+    /// Mirrors `FfiVaultError::VaultFolderNotEmpty`.
+    #[error("vault folder is not empty")]
+    VaultFolderNotEmpty,
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -181,6 +186,7 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::DeviceUuidMismatch { detail } => {
                 VaultError::DeviceUuidMismatch { detail }
             }
+            FfiVaultError::VaultFolderNotEmpty => VaultError::VaultFolderNotEmpty,
         }
     }
 }
@@ -229,6 +235,10 @@ mod tests {
             panic!("expected FolderInvalid")
         };
         assert_eq!(detail, "z");
+        assert!(matches!(
+            VaultError::from(B::VaultFolderNotEmpty),
+            VaultError::VaultFolderNotEmpty
+        ));
     }
 
     // -------------------------------------------------------------------

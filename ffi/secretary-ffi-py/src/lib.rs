@@ -68,7 +68,8 @@ use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
-    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultInvalidMnemonic,
+    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
+    VaultInvalidMnemonic,
     VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
     VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
     VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
@@ -174,6 +175,7 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("VaultMismatchFolder", py.get_type::<VaultMismatchFolder>())?;
     m.add("VaultCorruptVault", py.get_type::<VaultCorruptVault>())?;
     m.add("VaultFolderInvalid", py.get_type::<VaultFolderInvalid>())?;
+    m.add("VaultFolderNotEmpty", py.get_type::<VaultFolderNotEmpty>())?;
 
     // B.4b surface:
     m.add_class::<FieldHandle>()?;

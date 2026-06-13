@@ -67,6 +67,25 @@ fn from_core_vault_error_io_not_found_maps_to_folder_invalid() {
 }
 
 #[test]
+fn io_already_exists_maps_to_vault_folder_not_empty() {
+    // ensure_empty_directory surfaces a non-empty target as
+    // Io { ErrorKind::AlreadyExists }; it must route to the dedicated
+    // typed variant, NOT fold to CorruptVault.
+    let core_err = VaultError::Io {
+        context: "vault folder is not empty",
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "expected an empty directory",
+        ),
+    };
+    let ffi = FfiVaultError::from(core_err);
+    assert!(
+        matches!(ffi, FfiVaultError::VaultFolderNotEmpty),
+        "Io{{AlreadyExists}} must map to VaultFolderNotEmpty, got {ffi:?}",
+    );
+}
+
+#[test]
 fn from_core_vault_error_io_permission_denied_maps_to_folder_invalid() {
     let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
     let core_err = VaultError::Io {

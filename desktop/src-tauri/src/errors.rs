@@ -365,6 +365,17 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::DeviceSlotNotFound => AppError::DeviceSlotNotFound,
         FfiVaultError::WrongDeviceSecretOrCorrupt => AppError::WrongDeviceSecret,
         FfiVaultError::DeviceUuidMismatch { detail } => AppError::VaultCorrupt { detail },
+
+        // Folder-create precondition (iOS create/import Slice 1). The bridge
+        // variant is path-less, exactly like `FolderInvalid` above. Desktop's
+        // own create command runs its emptiness pre-check and constructs the
+        // path-aware `AppError::VaultFolderNotEmpty { path }` directly at the
+        // boundary, so this `map_ffi_error` arm is the fallback for any
+        // path-less bridge surfacing — fold to the generic `Io` bucket with a
+        // descriptive detail, mirroring the `FolderInvalid` → `Io` precedent.
+        FfiVaultError::VaultFolderNotEmpty => AppError::Io {
+            detail: "vault folder is not empty".to_string(),
+        },
     }
 }
 
