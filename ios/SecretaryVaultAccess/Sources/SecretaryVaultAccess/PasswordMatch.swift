@@ -1,5 +1,3 @@
-import Foundation
-
 /// True iff `password` and `confirm` are byte-equal AND non-empty. Gates the
 /// create wizard's credentials step (desktop D.1.3 parity: both fields filled
 /// and identical; no password-strength rule). This is a UX confirm-match check,
