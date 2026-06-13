@@ -46,4 +46,11 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         vm.showDeleted = false
         XCTAssertEqual(vm.visibleRecords.count, 1)        // back in live list
     }
+
+    func testMakeEditViewModelNilBeforeSelectThenNonNilAfter() {
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+        XCTAssertNil(vm.makeEditViewModel(mode: .add))
+        vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
+        XCTAssertNotNil(vm.makeEditViewModel(mode: .add))
+    }
 }

@@ -112,4 +112,12 @@ public final class VaultBrowseViewModel: ObservableObject {
         revealed.removeAll()
         session.wipe()
     }
+
+    /// Build a record-edit VM bound to this session + the selected block.
+    /// Returns nil if no block is selected. The edit screen calls `commit()`;
+    /// on success the browse screen re-selects the block to refresh the list.
+    public func makeEditViewModel(mode: RecordEditViewModel.Mode) -> RecordEditViewModel? {
+        guard let blockUuid = selectedBlockUuid else { return nil }
+        return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode)
+    }
 }
