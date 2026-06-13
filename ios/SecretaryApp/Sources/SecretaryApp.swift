@@ -23,7 +23,8 @@ private struct RootView: View {
     }
 
     @StateObject private var selectionVM =
-        VaultSelectionViewModel(store: BookmarkVaultLocationStore())
+        VaultSelectionViewModel(store: BookmarkVaultLocationStore(),
+                                probe: FileManagerVaultShapeProbe())
     @State private var route: Route = .select
     @Environment(\.scenePhase) private var scenePhase
 
