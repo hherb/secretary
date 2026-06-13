@@ -51,6 +51,7 @@ mod device;
 mod errors;
 mod identity;
 mod record;
+mod record_edit;
 mod restore;
 mod save;
 mod share;
@@ -77,6 +78,7 @@ use errors::{
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
+use record_edit::{append_record, edit_record, resurrect_record, tombstone_record, RecordContent};
 use restore::restore_block;
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
@@ -191,6 +193,15 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RecordInput>()?;
     m.add_class::<BlockInput>()?;
     m.add_function(wrap_pyfunction!(save_block, m)?)?;
+
+    // Record-edit surface — 4 primitives (append / edit / tombstone / resurrect)
+    // + RecordContent input pyclass. Error surface reuses VaultBlockNotFound /
+    // VaultRecordNotFound / VaultCorruptVault already registered above.
+    m.add_class::<RecordContent>()?;
+    m.add_function(wrap_pyfunction!(append_record, m)?)?;
+    m.add_function(wrap_pyfunction!(edit_record, m)?)?;
+    m.add_function(wrap_pyfunction!(tombstone_record, m)?)?;
+    m.add_function(wrap_pyfunction!(resurrect_record, m)?)?;
 
     // B.4d surface — share_block pyfunction + 4 typed exception classes.
     m.add_function(wrap_pyfunction!(share_block, m)?)?;

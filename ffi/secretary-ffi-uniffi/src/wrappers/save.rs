@@ -78,3 +78,20 @@ pub struct BlockInput {
     /// Records to save in this block.
     pub records: Vec<RecordInput>,
 }
+
+/// The editable delta for one record on an edit/append. (record-edit slice)
+///
+/// Mirrors [`secretary_ffi_bridge::RecordContent`]: it carries only the
+/// editable part — `record_type`, `tags`, `fields`. The `record_uuid`,
+/// `created_at_ms`, and every `unknown` map are owned by the bridge edit
+/// primitives (preserve-on-edit / mint-on-add), NOT supplied here. Reuses
+/// the same zeroize-typed [`FieldInput`] / [`FieldInputValue`] as the
+/// `save_block` path, so a `RecordContent` zeroizes its secrets on drop.
+pub struct RecordContent {
+    /// Open-ended record-type discriminator (e.g. "login"). Empty allowed.
+    pub record_type: String,
+    /// Cross-cutting tags.
+    pub tags: Vec<String>,
+    /// Ordered list of fields (name + zeroize-typed text/bytes value).
+    pub fields: Vec<FieldInput>,
+}

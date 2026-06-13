@@ -69,6 +69,12 @@ pub fn create_block(
 /// Append a new record to an existing block, preserving all sibling records
 /// — and every `unknown` map at block / record / field level — natively.
 ///
+/// Record-UUID uniqueness is NOT enforced here (mirroring `create_block`'s
+/// block-UUID contract): the caller is expected to pass a fresh CSPRNG
+/// `record_uuid`. Passing one already present in the block pushes a second
+/// record with the same UUID rather than erroring — uniqueness rests on the
+/// caller's UUID generation, exactly as for blocks.
+///
 /// # Errors
 ///
 /// [`FfiVaultError::BlockNotFound`] (block UUID not in the manifest),

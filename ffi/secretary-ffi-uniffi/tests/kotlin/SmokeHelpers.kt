@@ -92,6 +92,14 @@ val B5_BLOCK_UUID: ByteArray = ByteArray(16) { 0xBB.toByte() }
 val B5_RECORD_UUID: ByteArray = ByteArray(16) { 0xCC.toByte() }
 val B5_DEVICE_UUID: ByteArray = ByteArray(16) { 0x07.toByte() }
 
+// Record-edit slice pinned UUIDs (mirror the Swift SmokeHelpers.swift
+// recordEdit* constants). Each runRecordEditAsserts case seeds into a
+// fresh temp copy of golden_vault_001, so these are isolated from the
+// save/share/trash UUIDs above; kept distinct anyway for self-documentation.
+val RECORD_EDIT_BLOCK_UUID = ByteArray(16) { 0xB1.toByte() }
+val RECORD_EDIT_RECORD_UUID = ByteArray(16) { 0xC2.toByte() }
+val RECORD_EDIT_DEVICE_UUID = ByteArray(16) { 0x07.toByte() }
+
 // =============================================================================
 // File-level mutable assertion state
 // =============================================================================
