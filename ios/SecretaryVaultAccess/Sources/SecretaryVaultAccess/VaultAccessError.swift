@@ -20,6 +20,8 @@ public enum VaultAccessError: Error, Equatable {
     case corruptVault(String)
     /// Block UUID not found in the manifest's live blocks.
     case blockNotFound(String)
+    /// Record UUID not found in the target block (for edit/tombstone/resurrect).
+    case recordNotFound(String)
     /// FFI input-shape error (e.g. wrong-length UUID).
     case invalidArgument(String)
     /// Vault folder missing or unreadable.

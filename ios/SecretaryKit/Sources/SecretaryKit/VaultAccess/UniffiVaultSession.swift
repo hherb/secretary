@@ -74,7 +74,8 @@ public final class UniffiVaultSession: VaultSession {
             uuid: [UInt8](rec.recordUuid()),
             type: rec.recordType(),
             tags: rec.tags(),
-            fields: fields)
+            fields: fields,
+            tombstone: rec.tombstone())
     }
 
     private func makeFieldView(_ handle: FieldHandle) -> FieldView {

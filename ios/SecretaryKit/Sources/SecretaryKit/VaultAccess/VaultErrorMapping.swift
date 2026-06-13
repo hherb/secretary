@@ -20,6 +20,7 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     case .VaultMismatch:                    return .vaultMismatch
     case .CorruptVault(let detail):         return .corruptVault(detail)
     case .BlockNotFound(let uuidHex):       return .blockNotFound(uuidHex)
+    case .RecordNotFound(let uuidHex):      return .recordNotFound(uuidHex)
     case .InvalidArgument(let detail):      return .invalidArgument(detail)
     case .FolderInvalid(let detail):        return .folderInvalid(detail)
     default:                                return .other(String(describing: e))
