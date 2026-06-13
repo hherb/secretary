@@ -136,7 +136,10 @@ public final class RecordEditViewModel: ObservableObject {
                 return FieldContentInput(name: f.name, value: .bytes(bytes))
             }
         }
-        return RecordContentInput(recordType: recordType, tags: tags, fields: built)
+        let cleanTags = tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return RecordContentInput(recordType: recordType, tags: cleanTags, fields: built)
     }
 
     private static func mapValidation(_ v: RecordContentInputError) -> VaultAccessError {

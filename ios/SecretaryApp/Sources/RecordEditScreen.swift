@@ -25,6 +25,14 @@ struct RecordEditScreen: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
+                Section("Tags") {
+                    ForEach(viewModel.tags.indices, id: \.self) { i in
+                        TextField("tag", text: $viewModel.tags[i])
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    .onDelete { viewModel.tags.remove(atOffsets: $0) }
+                    Button("Add tag") { viewModel.tags.append("") }
+                }
                 Section("Fields") {
                     ForEach($viewModel.fields) { $field in
                         VStack(alignment: .leading, spacing: 6) {

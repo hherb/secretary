@@ -121,7 +121,7 @@ public final class UniffiVaultSession: VaultSession {
 
     @discardableResult
     public func appendRecord(blockUuid: [UInt8], content: RecordContentInput) throws -> [UInt8] {
-        let recordUuid = Self.freshRecordUuid()
+        let recordUuid = try Self.freshRecordUuid()
         try write { dev, now in
             try SecretaryKit.appendRecord(
                 identity: identity, manifest: manifest,
@@ -186,9 +186,12 @@ public final class UniffiVaultSession: VaultSession {
         UInt64(Date().timeIntervalSince1970 * 1000)
     }
 
-    private static func freshRecordUuid() -> [UInt8] {
+    private static func freshRecordUuid() throws -> [UInt8] {
         var u = [UInt8](repeating: 0, count: DeviceUuidStore.uuidByteLen)
-        _ = SecRandomCopyBytes(kSecRandomDefault, u.count, &u)
+        let status = SecRandomCopyBytes(kSecRandomDefault, u.count, &u)
+        guard status == errSecSuccess else {
+            throw VaultAccessError.other("OS entropy unavailable for record UUID (status \(status))")
+        }
         return u
     }
 
