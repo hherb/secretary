@@ -59,6 +59,7 @@ fn convert_record_content(c: crate::RecordContent) -> secretary_ffi_bridge::Reco
 /// - [`VaultError::BlockNotFound`] — `block_uuid` not in the manifest.
 /// - [`VaultError::CorruptVault`] — decrypt failure / wiped handle.
 /// - save-tail surface ([`VaultError::FolderInvalid`] / [`VaultError::SaveCryptoFailure`]).
+#[allow(clippy::too_many_arguments)]
 pub fn append_record(
     identity: std::sync::Arc<UnlockedIdentity>,
     manifest: std::sync::Arc<OpenVaultManifest>,
@@ -94,6 +95,7 @@ pub fn append_record(
 /// - [`VaultError::InvalidArgument`] — wrong-length uuid.
 /// - [`VaultError::RecordNotFound`] — no live record with this UUID in the block.
 /// - [`VaultError::BlockNotFound`] / [`VaultError::CorruptVault`] / save-tail surface.
+#[allow(clippy::too_many_arguments)]
 pub fn edit_record(
     identity: std::sync::Arc<UnlockedIdentity>,
     manifest: std::sync::Arc<OpenVaultManifest>,
@@ -148,8 +150,8 @@ pub fn tombstone_record(
     .map_err(VaultError::from)
 }
 
-/// Resurrect one tombstoned record (clear tombstone, preserve
-/// `tombstoned_at_ms`). (record-edit slice)
+/// Resurrect one tombstoned record (clear tombstone, bump `last_mod_ms`
+/// to `now_ms`, preserve `tombstoned_at_ms`). (record-edit slice)
 ///
 /// # Errors
 ///
