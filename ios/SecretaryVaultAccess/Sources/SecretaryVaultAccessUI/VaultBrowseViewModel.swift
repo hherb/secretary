@@ -14,6 +14,13 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// small + short-lived as possible; cleared on hide / lock / background.
     @Published public private(set) var revealed: [String: RevealedValue] = [:]
 
+    /// When false (default) the browse list hides tombstoned records. Toggling
+    /// it does not re-read — `visibleRecords` re-partitions the cached `records`.
+    @Published public var showDeleted = false
+
+    /// The currently-selected block uuid, so delete/restore can re-read it.
+    private var selectedBlockUuid: [UInt8]?
+
     private let session: VaultSession
     public init(session: VaultSession) { self.session = session }
 
@@ -24,6 +31,7 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func selectBlock(_ block: BlockSummary) {
         error = nil
         revealed.removeAll()  // never carry a reveal across a block switch
+        selectedBlockUuid = block.uuid
         do {
             records = try session.readBlock(blockUuid: block.uuid)
         } catch let e as VaultAccessError {
@@ -31,6 +39,36 @@ public final class VaultBrowseViewModel: ObservableObject {
             error = e
         } catch {
             records = nil
+            self.error = .other(String(describing: error))
+        }
+    }
+
+    /// Records to display: tombstoned ones are hidden unless `showDeleted`.
+    public var visibleRecords: [RecordView] {
+        let all = records ?? []
+        return showDeleted ? all : all.filter { !$0.tombstone }
+    }
+
+    /// Soft-delete a record, then re-read so `visibleRecords` reflects it.
+    public func delete(record: RecordView) {
+        commitThenReload { try session.tombstoneRecord(blockUuid: $0, recordUuid: record.uuid) }
+    }
+
+    /// Restore a soft-deleted record, then re-read.
+    public func restore(record: RecordView) {
+        commitThenReload { try session.resurrectRecord(blockUuid: $0, recordUuid: record.uuid) }
+    }
+
+    private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
+        guard let blockUuid = selectedBlockUuid else { return }
+        error = nil
+        do {
+            try op(blockUuid)
+            revealed.removeAll()  // never carry a reveal across a mutation
+            records = try session.readBlock(blockUuid: blockUuid)
+        } catch let e as VaultAccessError {
+            error = e
+        } catch {
             self.error = .other(String(describing: error))
         }
     }
