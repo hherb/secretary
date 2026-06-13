@@ -24,6 +24,8 @@ public enum ValidatedVaultName: Equatable {
 public func validateVaultName(_ raw: String) -> ValidatedVaultName {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return .invalid(.empty) }
+    // On iOS/APFS the only path separators are '/' and NUL. A backslash is a
+    // legal literal filename character on this platform and is intentionally allowed.
     if trimmed.contains("/") || trimmed.contains("\u{0}") { return .invalid(.containsSeparator) }
     if trimmed == "." || trimmed == ".." { return .invalid(.reservedName) }
     return .valid(trimmed)
