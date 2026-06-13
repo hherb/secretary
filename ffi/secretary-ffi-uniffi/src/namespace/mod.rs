@@ -11,6 +11,9 @@ use crate::wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdent
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
+mod record_edit;
+pub use record_edit::{append_record, edit_record, resurrect_record, tombstone_record};
+
 mod sync;
 pub use sync::{sync_commit_decisions, sync_status, sync_vault};
 
