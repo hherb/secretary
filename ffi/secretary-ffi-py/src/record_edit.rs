@@ -62,7 +62,8 @@ fn to_bridge_content(c: &RecordContent) -> BridgeRecordContent {
 /// Append a new record to an existing block. `block_uuid` / `record_uuid`
 /// / `device_uuid` must each be 16 bytes (else `ValueError`). Raises
 /// `VaultBlockNotFound` for an unknown block; `VaultCorruptVault` on a
-/// wiped handle.
+/// wiped handle; `VaultFolderInvalid` on an IO failure during the atomic
+/// write; `VaultSaveCryptoFailure` on a crypto/encoding failure.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn append_record(
@@ -90,8 +91,10 @@ pub(crate) fn append_record(
 }
 
 /// Replace one live record's editable part. Raises `VaultRecordNotFound`
-/// if no live record with this UUID; same uuid-length contract as
-/// `append_record`.
+/// if no live record with this UUID; `VaultBlockNotFound` for an unknown
+/// block; `VaultCorruptVault` on a wiped handle; `VaultFolderInvalid` on
+/// an IO failure during the atomic write; `VaultSaveCryptoFailure` on a
+/// crypto/encoding failure. Same uuid-length contract as `append_record`.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn edit_record(
@@ -119,7 +122,10 @@ pub(crate) fn edit_record(
 }
 
 /// Soft-delete one live record. Raises `VaultRecordNotFound` if no LIVE
-/// record with this UUID.
+/// record with this UUID; `VaultBlockNotFound` for an unknown block;
+/// `VaultCorruptVault` on a wiped handle; `VaultFolderInvalid` on an IO
+/// failure during the atomic write; `VaultSaveCryptoFailure` on a
+/// crypto/encoding failure.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn tombstone_record(
@@ -146,7 +152,12 @@ pub(crate) fn tombstone_record(
 
 /// Resurrect one tombstoned record (clear tombstone, bump last_mod_ms,
 /// preserve `tombstoned_at_ms`). Raises `VaultRecordNotFound` if no
-/// TOMBSTONED record with this UUID.
+/// TOMBSTONED record with this UUID; `VaultBlockNotFound` for an unknown
+/// block; `VaultCorruptVault` on a wiped handle; `VaultFolderInvalid` on
+/// an IO failure during the atomic write; `VaultSaveCryptoFailure` on a
+/// crypto/encoding failure. Assumes `now_ms` is monotonic (≥ the
+/// preserved `tombstoned_at_ms`); a stale clock would momentarily produce
+/// `tombstoned_at_ms > last_mod_ms`, which core defensively clamps on merge.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn resurrect_record(
