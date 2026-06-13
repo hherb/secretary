@@ -12,6 +12,8 @@ final class FakeProvisioningFakesTests: XCTestCase {
                                   password: Array("pw".utf8),
                                   displayName: "Owner")
         XCTAssertEqual(out.location, loc)
+        XCTAssertEqual(out.phrase, Array("word1 word2".utf8))
+        XCTAssertEqual(port.lastParent, URL(fileURLWithPath: "/p"))
         XCTAssertEqual(port.lastVaultName, "v1")
         XCTAssertEqual(port.lastPassword, Array("pw".utf8))
         XCTAssertEqual(port.lastDisplayName, "Owner")
@@ -25,12 +27,22 @@ final class FakeProvisioningFakesTests: XCTestCase {
                                              displayName: "d")) {
             XCTAssertEqual($0 as? VaultProvisioningError, .folderNotEmpty)
         }
+        XCTAssertEqual(port.lastVaultName, "v")
+        XCTAssertEqual(port.lastPassword, [1])
+        XCTAssertEqual(port.lastDisplayName, "d")
     }
 
     func testShapeProbeReturnsSeededAnswer() throws {
-        XCTAssertTrue(try FakeVaultShapeProbe(answer: .success(true))
-            .looksLikeVault(URL(fileURLWithPath: "/p")))
+        let yes = FakeVaultShapeProbe(answer: .success(true))
+        XCTAssertTrue(try yes.looksLikeVault(URL(fileURLWithPath: "/p")))
+        XCTAssertEqual(yes.lastFolder, URL(fileURLWithPath: "/p"))
         XCTAssertFalse(try FakeVaultShapeProbe(answer: .success(false))
-            .looksLikeVault(URL(fileURLWithPath: "/p")))
+            .looksLikeVault(URL(fileURLWithPath: "/q")))
+    }
+
+    func testShapeProbeThrowsSeededError() {
+        struct Boom: Error {}
+        let probe = FakeVaultShapeProbe(answer: .failure(Boom()))
+        XCTAssertThrowsError(try probe.looksLikeVault(URL(fileURLWithPath: "/p")))
     }
 }

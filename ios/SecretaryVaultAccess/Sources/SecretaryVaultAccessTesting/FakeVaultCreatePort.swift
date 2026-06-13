@@ -5,6 +5,7 @@ import SecretaryVaultAccess
 /// inputs the view-model forwarded.
 public final class FakeVaultCreatePort: VaultCreatePort {
     private let result: Result<CreatedVault, VaultProvisioningError>
+    public private(set) var lastParent: URL?
     public private(set) var lastVaultName: String?
     public private(set) var lastPassword: [UInt8]?
     public private(set) var lastDisplayName: String?
@@ -17,6 +18,7 @@ public final class FakeVaultCreatePort: VaultCreatePort {
                        vaultName: String,
                        password: [UInt8],
                        displayName: String) throws -> CreatedVault {
+        lastParent = parent
         lastVaultName = vaultName
         lastPassword = password
         lastDisplayName = displayName
