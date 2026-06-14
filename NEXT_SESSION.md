@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-14-ios-vault-create-import-shipped.md
+docs/handoffs/2026-06-14-ios-include-deleted-rust-gate-shipped.md
