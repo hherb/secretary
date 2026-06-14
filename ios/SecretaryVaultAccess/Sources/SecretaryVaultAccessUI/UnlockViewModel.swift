@@ -3,10 +3,9 @@ import Combine
 import SecretaryVaultAccess
 
 /// Drives the unlock screen. Holds only the injected port + vault path, so it is
-/// fully host-testable. `@MainActor` because it publishes UI state; like the
-/// device-unlock VM, the synchronous CPU-heavy Argon2id open briefly blocks the
-/// main actor on the password path (accepted for this slice; background-offload
-/// is a noted follow-up).
+/// fully host-testable. `@MainActor` because it publishes UI state. The CPU-heavy
+/// Argon2id open is offloaded off the main actor by the port implementation, so
+/// `unlock` only suspends (it does not block) the main actor while the vault opens.
 @MainActor
 public final class UnlockViewModel: ObservableObject {
     public enum Mode: Equatable { case password, recovery }
@@ -30,8 +29,8 @@ public final class UnlockViewModel: ObservableObject {
         do {
             let session: VaultSession
             switch mode {
-            case .password: session = try port.openWithPassword(vaultPath: vaultPath, password: secret)
-            case .recovery: session = try port.openWithRecovery(vaultPath: vaultPath, phrase: secret)
+            case .password: session = try await port.openWithPassword(vaultPath: vaultPath, password: secret)
+            case .recovery: session = try await port.openWithRecovery(vaultPath: vaultPath, phrase: secret)
             }
             state = .unlocked(session)
         } catch let e as VaultAccessError {

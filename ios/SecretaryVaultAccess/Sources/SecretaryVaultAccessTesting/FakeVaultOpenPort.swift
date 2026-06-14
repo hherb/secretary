@@ -9,6 +9,8 @@ public final class FakeVaultOpenPort: VaultOpenPort {
     /// VM forwarded for each mode).
     public private(set) var lastPassword: [UInt8]?
     public private(set) var lastPhrase: [UInt8]?
+    /// Optional rendezvous so a responsiveness test can hold the call mid-flight.
+    public var gate: SuspensionGate?
 
     public init(passwordResult: Result<VaultSession, VaultAccessError>,
                 recoveryResult: Result<VaultSession, VaultAccessError>) {
@@ -16,13 +18,15 @@ public final class FakeVaultOpenPort: VaultOpenPort {
         self.recoveryResult = recoveryResult
     }
 
-    public func openWithPassword(vaultPath: Data, password: [UInt8]) throws -> VaultSession {
+    public func openWithPassword(vaultPath: Data, password: [UInt8]) async throws -> VaultSession {
         lastPassword = password
+        await gate?.enterAndWait()
         return try passwordResult.get()
     }
 
-    public func openWithRecovery(vaultPath: Data, phrase: [UInt8]) throws -> VaultSession {
+    public func openWithRecovery(vaultPath: Data, phrase: [UInt8]) async throws -> VaultSession {
         lastPhrase = phrase
+        await gate?.enterAndWait()
         return try recoveryResult.get()
     }
 }

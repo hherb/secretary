@@ -29,9 +29,9 @@ final class VaultAccessIntegrationTests: XCTestCase {
 
     private var path: Data { Data(vaultCopy.path.utf8) }
 
-    func testPasswordOpenBrowseAndRevealOnDemand() throws {
+    func testPasswordOpenBrowseAndRevealOnDemand() async throws {
         let port = UniffiVaultOpenPort()
-        let session = try port.openWithPassword(vaultPath: path, password: [UInt8](goldenPassword.utf8))
+        let session = try await port.openWithPassword(vaultPath: path, password: [UInt8](goldenPassword.utf8))
         defer { session.wipe() }
 
         XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())
@@ -51,19 +51,21 @@ final class VaultAccessIntegrationTests: XCTestCase {
         XCTAssertFalse(plaintext.isEmpty)
     }
 
-    func testRecoveryOpensSameVault() throws {
+    func testRecoveryOpensSameVault() async throws {
         let port = UniffiVaultOpenPort()
-        let session = try port.openWithRecovery(vaultPath: path, phrase: [UInt8](goldenRecovery.utf8))
+        let session = try await port.openWithRecovery(vaultPath: path, phrase: [UInt8](goldenRecovery.utf8))
         defer { session.wipe() }
         XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())
     }
 
-    func testWrongPasswordSurfacesConflatedVariant() {
+    func testWrongPasswordSurfacesConflatedVariant() async {
         let port = UniffiVaultOpenPort()
-        XCTAssertThrowsError(
-            try port.openWithPassword(vaultPath: path, password: [UInt8]("definitely wrong".utf8))
-        ) { err in
-            XCTAssertEqual(err as? VaultAccessError, .wrongPasswordOrCorrupt,
+        do {
+            _ = try await port.openWithPassword(
+                vaultPath: path, password: [UInt8]("definitely wrong".utf8))
+            XCTFail("expected wrong password to throw")
+        } catch {
+            XCTAssertEqual(error as? VaultAccessError, .wrongPasswordOrCorrupt,
                            "wrong password must be indistinguishable from corruption (anti-oracle)")
         }
     }
