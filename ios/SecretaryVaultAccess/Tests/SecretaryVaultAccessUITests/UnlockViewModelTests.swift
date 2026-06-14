@@ -33,8 +33,10 @@ final class UnlockViewModelTests: XCTestCase {
         let task = Task { await vm.unlock(secret: Array("pw".utf8)) }
 
         // Suspends THIS (main-actor) test until the fake is mid-call. Reaching the
-        // next line proves the unlock did not hold the main actor — otherwise this
-        // await could never interleave and the test would hang.
+        // next line proves `unlock` yielded the main actor at a suspension point
+        // mid-open: if it had run the open synchronously on the main actor, this
+        // `Task`'s body could not interleave with the test's await and
+        // `waitUntilEntered()` would never resume (the test would time out).
         await gate.waitUntilEntered()
         guard case .busy = vm.state else {
             return XCTFail("expected .busy while the port is in flight")
