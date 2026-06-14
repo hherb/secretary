@@ -94,4 +94,19 @@ final class ChangeDetectionMonitorTests: XCTestCase {
         try monitor.start()                          // second start ignored
         XCTAssertEqual(watch.startCount, 1)
     }
+
+    func testAcknowledgeReArmsAPulseThatArrivedWhilePending() throws {
+        var changes = 0
+        let (monitor, watch, scheduler) = make(onChange: { changes += 1 })
+        try monitor.start()
+        watch.emit(at: t(0))
+        scheduler.fire(at: t(1_000_000_000))         // first signal raised
+        XCTAssertEqual(changes, 1)
+        watch.emit(at: t(1_500_000_000))             // a pulse arrives WHILE pending
+        monitor.acknowledge()                         // must re-arm for the preserved pulse
+        XCTAssertNotNil(scheduler.scheduledDelay)     // re-armed (was nil before the fix)
+        scheduler.fire(at: t(3_000_000_000))         // preserved deadline (2.5s) has passed → fires
+        XCTAssertEqual(changes, 2)
+        XCTAssertTrue(monitor.pendingChanges)
+    }
 }

@@ -54,10 +54,18 @@ public final class ChangeDetectionMonitor {
         pendingChanges = false
     }
 
-    /// Consume the signal (a later change re-arms).
+    /// Consume the signal. If a pulse arrived while the signal was pending, the
+    /// detector preserved it (its deadline may already have elapsed), so re-arm a
+    /// flush — the scheduler supplies the real fire instant, keeping this layer
+    /// clock-free. With no preserved pulse this is a no-op.
     public func acknowledge() {
         detector.acknowledge()
         pendingChanges = detector.pendingChanges
+        if detector.nextFlushDeadline != nil {
+            scheduler.schedule(after: .zero) { [weak self] fireInstant in
+                self?.handleFlush(now: fireInstant)
+            }
+        }
     }
 
     /// Suppress watcher pulses stamped before `instant` (self-write window).

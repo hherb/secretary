@@ -35,6 +35,7 @@ public struct FolderChangeDetector: Sendable {
         isActive = active
         if !active {
             lastPulseAt = nil
+            muteBefore = nil
             pendingChanges = false
         }
     }
