@@ -56,6 +56,31 @@ final class VaultProvisioningViewModelTests: XCTestCase {
         XCTAssertEqual(vm.mnemonicRows?.count, 24)
     }
 
+    func testMainActorIsFreeWhileCreating() async {
+        let (vm, port, _) = makeVM(createResult: okResult(name: "v1"))
+        let gate = SuspensionGate()
+        port.gate = gate
+        vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
+
+        let task = Task {
+            await vm.create(displayName: "Owner",
+                            password: Array("pw".utf8), confirm: Array("pw".utf8))
+        }
+
+        // Reaching past this await proves `create` yielded the main actor at a
+        // suspension point mid-create: if it had run the create synchronously on
+        // the main actor, this `Task`'s body could not interleave with the test's
+        // await and `waitUntilEntered()` would never resume (the test would time out).
+        await gate.waitUntilEntered()
+        XCTAssertEqual(port.lastVaultName, "v1")        // reached the port
+        if case .mnemonic = vm.step { XCTFail("must not advance until port returns") }
+
+        await gate.release()
+        await task.value
+        XCTAssertEqual(vm.step, .mnemonic)
+        XCTAssertEqual(vm.mnemonicRows?.count, 24)
+    }
+
     func testFolderNotEmptyErrorSurfaces() async {
         let (vm, _, store) = makeVM(createResult: .failure(.folderNotEmpty))
         vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")

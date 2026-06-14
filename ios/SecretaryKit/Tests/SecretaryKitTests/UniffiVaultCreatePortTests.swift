@@ -6,7 +6,7 @@ final class UniffiVaultCreatePortTests: XCTestCase {
     /// Create a vault in a fresh tempdir parent, then open it by password and
     /// assert the display name round-trips. NEVER touches the bundled golden
     /// fixture — a unique tempdir, not even a copy.
-    func testCreateThenOpenRoundTrips() throws {
+    func testCreateThenOpenRoundTrips() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("create-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -14,7 +14,7 @@ final class UniffiVaultCreatePortTests: XCTestCase {
 
         let port = UniffiVaultCreatePort()
         let password = Array("create-test-pw".utf8)
-        var created = try port.create(parent: parent,
+        var created = try await port.create(parent: parent,
                                       vaultName: "v1",
                                       password: password,
                                       displayName: "Sim-Owner")
@@ -34,7 +34,7 @@ final class UniffiVaultCreatePortTests: XCTestCase {
         XCTAssertEqual(out.identity.displayName(), "Sim-Owner")
     }
 
-    func testCreateIntoExistingNonEmptyNameThrowsFolderNotEmpty() throws {
+    func testCreateIntoExistingNonEmptyNameThrowsFolderNotEmpty() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("create-collide-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -44,13 +44,16 @@ final class UniffiVaultCreatePortTests: XCTestCase {
             at: parent.appendingPathComponent("v1", isDirectory: true),
             withIntermediateDirectories: false)
 
-        XCTAssertThrowsError(try UniffiVaultCreatePort().create(
-            parent: parent, vaultName: "v1", password: [1, 2, 3], displayName: "X")) {
-            XCTAssertEqual($0 as? VaultProvisioningError, .folderNotEmpty)
+        do {
+            _ = try await UniffiVaultCreatePort().create(
+                parent: parent, vaultName: "v1", password: [1, 2, 3], displayName: "X")
+            XCTFail("expected folderNotEmpty")
+        } catch {
+            XCTAssertEqual(error as? VaultProvisioningError, .folderNotEmpty)
         }
     }
 
-    func testShapeProbeDetectsVault() throws {
+    func testShapeProbeDetectsVault() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("probe-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -59,7 +62,7 @@ final class UniffiVaultCreatePortTests: XCTestCase {
         let probe = FileManagerVaultShapeProbe()
         XCTAssertFalse(try probe.looksLikeVault(parent))             // empty → not a vault
         let folder = parent.appendingPathComponent("v1", isDirectory: true)
-        _ = try UniffiVaultCreatePort().create(
+        _ = try await UniffiVaultCreatePort().create(
             parent: parent, vaultName: "v1", password: Array("pw".utf8), displayName: "O")
         XCTAssertTrue(try probe.looksLikeVault(folder))              // now has vault.toml
     }

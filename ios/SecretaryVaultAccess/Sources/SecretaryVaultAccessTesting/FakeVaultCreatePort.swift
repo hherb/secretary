@@ -9,6 +9,8 @@ public final class FakeVaultCreatePort: VaultCreatePort {
     public private(set) var lastVaultName: String?
     public private(set) var lastPassword: [UInt8]?
     public private(set) var lastDisplayName: String?
+    /// Optional rendezvous so a responsiveness test can hold the call mid-flight.
+    public var gate: SuspensionGate?
 
     public init(result: Result<CreatedVault, VaultProvisioningError>) {
         self.result = result
@@ -17,11 +19,12 @@ public final class FakeVaultCreatePort: VaultCreatePort {
     public func create(parent: URL,
                        vaultName: String,
                        password: [UInt8],
-                       displayName: String) throws -> CreatedVault {
+                       displayName: String) async throws -> CreatedVault {
         lastParent = parent
         lastVaultName = vaultName
         lastPassword = password
         lastDisplayName = displayName
+        await gate?.enterAndWait()
         return try result.get()
     }
 }

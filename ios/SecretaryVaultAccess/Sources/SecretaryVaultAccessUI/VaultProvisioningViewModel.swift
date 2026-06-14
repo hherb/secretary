@@ -4,9 +4,9 @@ import SecretaryVaultAccess
 
 /// Drives the create-vault wizard over a `VaultCreatePort` and persists the new
 /// location via a `VaultLocationStore`. Holds only injected ports, so it is fully
-/// host-testable. `@MainActor` because it publishes UI state; like `UnlockViewModel`,
-/// the CPU-heavy Argon2id create briefly blocks the main actor on the create path
-/// (accepted for this slice; background-offload is a noted follow-up).
+/// host-testable. `@MainActor` because it publishes UI state. The CPU-heavy
+/// Argon2id create is offloaded off the main actor by the port implementation, so
+/// `create` only suspends (it does not block) the main actor while the vault is built.
 @MainActor
 public final class VaultProvisioningViewModel: ObservableObject {
     @Published public private(set) var step: VaultProvisioningStep = .folder
@@ -50,7 +50,7 @@ public final class VaultProvisioningViewModel: ObservableObject {
             return
         }
         do {
-            let created = try createPort.create(parent: parent,
+            let created = try await createPort.create(parent: parent,
                                                 vaultName: vaultName,
                                                 password: password,
                                                 displayName: displayName)
