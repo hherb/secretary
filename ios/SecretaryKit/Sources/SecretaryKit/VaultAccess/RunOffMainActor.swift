@@ -10,8 +10,10 @@ import Foundation
 /// adapter returns `any VaultSession` (a non-`Sendable` `AnyObject`), which would
 /// emit a Swift-5.9 Sendable warning. `CheckedContinuation`'s result type is
 /// unconstrained, so the freshly-built session transfers back across the
-/// suspension cleanly. `work` is `@Sendable` and captures only `Sendable` inputs
-/// (`Data` / `[UInt8]` / `URL` / `String`); neither adapter captures `self`.
+/// suspension cleanly. (The create adapter returns the `Sendable` `CreatedVault`
+/// and shares this helper purely for consistency.) `work` is `@Sendable` and
+/// captures only `Sendable` inputs (`Data` / `[UInt8]` / `URL` / `String`);
+/// neither adapter captures `self`.
 func runOffMainActor<T>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
