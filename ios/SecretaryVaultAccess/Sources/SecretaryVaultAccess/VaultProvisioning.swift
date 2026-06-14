@@ -49,11 +49,14 @@ public struct CreatedVault {
 /// persistable bookmark, and return the location + recovery phrase. Throws
 /// `VaultProvisioningError`. Implementations own all filesystem + FFI I/O so the
 /// view-model is host-testable against a fake.
+///
+/// `async` because create runs Argon2id (CPU-heavy); implementations offload it
+/// off the calling actor (see `SecretaryKit.runOffMainActor`).
 public protocol VaultCreatePort {
     func create(parent: URL,
                 vaultName: String,
                 password: [UInt8],
-                displayName: String) throws -> CreatedVault
+                displayName: String) async throws -> CreatedVault
 }
 
 /// Import boundary: cheap, crypto-free check of whether `folder` looks like a

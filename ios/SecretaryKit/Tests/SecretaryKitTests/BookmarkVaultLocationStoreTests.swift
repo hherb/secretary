@@ -49,7 +49,7 @@ final class BookmarkVaultLocationStoreTests: XCTestCase {
         XCTAssertNil(store.load())
     }
 
-    func testBeginAccessResolvesToFolderAndOpensGoldenVault() throws {
+    func testBeginAccessResolvesToFolderAndOpensGoldenVault() async throws {
         let store = makeStore()
         let bookmark = try vaultURL.bookmarkData()
         store.persist(VaultLocation(displayName: "golden_vault_001", bookmark: bookmark))
@@ -62,7 +62,7 @@ final class BookmarkVaultLocationStoreTests: XCTestCase {
                       "resolved \(resolvedPath)")
 
         let port = UniffiVaultOpenPort()
-        let session = try port.openWithPassword(
+        let session = try await port.openWithPassword(
             vaultPath: scoped.pathData, password: [UInt8](goldenPassword.utf8))
         defer { session.wipe() }
         XCTAssertEqual(session.vaultUuidHex, try goldenPinnedVaultUuidHex())

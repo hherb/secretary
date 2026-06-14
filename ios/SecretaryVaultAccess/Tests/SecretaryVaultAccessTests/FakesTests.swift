@@ -37,13 +37,17 @@ final class FakesTests: XCTestCase {
         }
     }
 
-    func testFakeOpenPortRoutesPasswordAndRecovery() throws {
+    func testFakeOpenPortRoutesPasswordAndRecovery() async throws {
         let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [], recordsByBlock: [:])
         let port = FakeVaultOpenPort(passwordResult: .success(session),
                                      recoveryResult: .failure(.wrongMnemonicOrCorrupt))
-        XCTAssertTrue(try port.openWithPassword(vaultPath: Data(), password: [1]) === session)
-        XCTAssertThrowsError(try port.openWithRecovery(vaultPath: Data(), phrase: [1])) { err in
-            XCTAssertEqual(err as? VaultAccessError, .wrongMnemonicOrCorrupt)
+        let opened = try await port.openWithPassword(vaultPath: Data(), password: [1])
+        XCTAssertTrue(opened === session)
+        do {
+            _ = try await port.openWithRecovery(vaultPath: Data(), phrase: [1])
+            XCTFail("expected recovery to throw")
+        } catch {
+            XCTAssertEqual(error as? VaultAccessError, .wrongMnemonicOrCorrupt)
         }
     }
 }

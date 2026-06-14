@@ -71,7 +71,9 @@ struct CreateVaultWizardView: View {
                     password = ""; confirm = ""
                 }
             }
-            .disabled(displayName.isEmpty || password.isEmpty || confirm.isEmpty)
+            .disabled(displayName.isEmpty || password.isEmpty || confirm.isEmpty
+                      || viewModel.isCreating)
+            if viewModel.isCreating { ProgressView("Creating vault…") }
         }
     }
 

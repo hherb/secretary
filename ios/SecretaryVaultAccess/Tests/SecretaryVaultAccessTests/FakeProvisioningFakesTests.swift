@@ -3,11 +3,11 @@ import SecretaryVaultAccess
 import SecretaryVaultAccessTesting
 
 final class FakeProvisioningFakesTests: XCTestCase {
-    func testCreatePortReturnsSeededResultAndSpiesInputs() throws {
+    func testCreatePortReturnsSeededResultAndSpiesInputs() async throws {
         let loc = VaultLocation(displayName: "v1", bookmark: Data("bm".utf8))
         let port = FakeVaultCreatePort(result: .success(
             CreatedVault(location: loc, phrase: Array("word1 word2".utf8))))
-        let out = try port.create(parent: URL(fileURLWithPath: "/p"),
+        let out = try await port.create(parent: URL(fileURLWithPath: "/p"),
                                   vaultName: "v1",
                                   password: Array("pw".utf8),
                                   displayName: "Owner")
@@ -19,13 +19,16 @@ final class FakeProvisioningFakesTests: XCTestCase {
         XCTAssertEqual(port.lastDisplayName, "Owner")
     }
 
-    func testCreatePortThrowsSeededError() {
+    func testCreatePortThrowsSeededError() async {
         let port = FakeVaultCreatePort(result: .failure(.folderNotEmpty))
-        XCTAssertThrowsError(try port.create(parent: URL(fileURLWithPath: "/p"),
-                                             vaultName: "v",
-                                             password: [1],
-                                             displayName: "d")) {
-            XCTAssertEqual($0 as? VaultProvisioningError, .folderNotEmpty)
+        do {
+            _ = try await port.create(parent: URL(fileURLWithPath: "/p"),
+                                      vaultName: "v",
+                                      password: [1],
+                                      displayName: "d")
+            XCTFail("expected create to throw")
+        } catch {
+            XCTAssertEqual(error as? VaultProvisioningError, .folderNotEmpty)
         }
         XCTAssertEqual(port.lastVaultName, "v")
         XCTAssertEqual(port.lastPassword, [1])

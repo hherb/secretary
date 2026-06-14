@@ -56,6 +56,61 @@ final class VaultProvisioningViewModelTests: XCTestCase {
         XCTAssertEqual(vm.mnemonicRows?.count, 24)
     }
 
+    func testMainActorIsFreeWhileCreating() async {
+        let (vm, port, _) = makeVM(createResult: okResult(name: "v1"))
+        let gate = SuspensionGate()
+        port.gate = gate
+        vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
+
+        let task = Task {
+            await vm.create(displayName: "Owner",
+                            password: Array("pw".utf8), confirm: Array("pw".utf8))
+        }
+
+        // Reaching past this await proves `create` yielded the main actor at a
+        // suspension point mid-create: if it had run the create synchronously on
+        // the main actor, this `Task`'s body could not interleave with the test's
+        // await and `waitUntilEntered()` would never resume (the test would time out).
+        await gate.waitUntilEntered()
+        XCTAssertEqual(port.lastVaultName, "v1")        // reached the port
+        XCTAssertTrue(vm.isCreating)                    // in-flight flag is set
+        if case .mnemonic = vm.step { XCTFail("must not advance until port returns") }
+
+        await gate.release()
+        await task.value
+        XCTAssertFalse(vm.isCreating)                   // reset after completion
+        XCTAssertEqual(vm.step, .mnemonic)
+        XCTAssertEqual(vm.mnemonicRows?.count, 24)
+    }
+
+    func testReentrantCreateWhileInFlightIsIgnored() async {
+        let (vm, port, _) = makeVM(createResult: okResult(name: "v1"))
+        let gate = SuspensionGate()
+        port.gate = gate
+        vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
+
+        let first = Task {
+            await vm.create(displayName: "Owner",
+                            password: Array("pw".utf8), confirm: Array("pw".utf8))
+        }
+        await gate.waitUntilEntered()                   // first create parked mid-port
+        XCTAssertTrue(vm.isCreating)
+
+        // A second tap while the first is in flight must be a no-op: it must NOT
+        // reach the port a second time (which would mkdir into the just-created
+        // folder and surface a spurious folderNotEmpty). This call returns
+        // immediately at the re-entrancy guard without touching the gate.
+        await vm.create(displayName: "Owner",
+                        password: Array("pw".utf8), confirm: Array("pw".utf8))
+        XCTAssertEqual(port.createCallCount, 1, "re-entrant create must be ignored")
+
+        await gate.release()
+        await first.value
+        XCTAssertEqual(port.createCallCount, 1)         // still exactly one create
+        XCTAssertFalse(vm.isCreating)
+        XCTAssertEqual(vm.step, .mnemonic)
+    }
+
     func testFolderNotEmptyErrorSurfaces() async {
         let (vm, _, store) = makeVM(createResult: .failure(.folderNotEmpty))
         vm.chooseParent(URL(fileURLWithPath: "/p"), vaultName: "v1")
