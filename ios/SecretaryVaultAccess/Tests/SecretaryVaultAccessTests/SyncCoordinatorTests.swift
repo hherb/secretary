@@ -84,6 +84,26 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(pending, PendingConflict(vetoes: [veto], collisions: []))
     }
 
+    func testResolveReRaisingConflictReplacesStash() async throws {
+        let vetoA = SyncVeto(recordUuidHex: "aa", recordType: "login", tags: [],
+                             fieldNames: ["password"], localLastModMs: 1,
+                             peerTombstonedAtMs: 2, peerDeviceHex: "bb")
+        let vetoB = SyncVeto(recordUuidHex: "cc", recordType: "note", tags: [],
+                             fieldNames: ["body"], localLastModMs: 3,
+                             peerTombstonedAtMs: 4, peerDeviceHex: "dd")
+        let port = FakeVaultSyncPort(
+            syncResult: .success(.conflictsPending(vetoes: [vetoA], collisions: [], manifestHash: [1])),
+            commitResult: .success(.conflictsPending(vetoes: [vetoB], collisions: [], manifestHash: [2])))
+        let coord = SyncCoordinator(port: port, stateDir: "/tmp/s", vaultFolder: "/tmp/v")
+        _ = try await coord.runPass(password: pw, nowMs: 0)
+        let outcome = try await coord.resolve(decisions: [], password: pw, nowMs: 0)
+        XCTAssertEqual(outcome, .conflictsPending(vetoes: [vetoB], collisions: [], manifestHash: [2]))
+        // commit replayed the FIRST pass's token; stash now reflects the re-raised conflict
+        XCTAssertEqual(port.lastCommitManifestHash, [1])
+        let pending = await coord.pendingConflict
+        XCTAssertEqual(pending, PendingConflict(vetoes: [vetoB], collisions: []))
+    }
+
     func testRunPassClearsAStalePendingConflictOnASafeArm() async throws {
         let veto = makeVeto()
         let conflictPort = FakeVaultSyncPort(

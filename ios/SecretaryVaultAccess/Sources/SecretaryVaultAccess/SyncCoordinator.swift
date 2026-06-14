@@ -1,9 +1,13 @@
 import Foundation
 
 /// Orchestrates the two-call inspect→commit sync round-trip over a
-/// `VaultSyncPort`. An `actor` so concurrent `runPass`/`resolve` calls against
-/// the same vault serialize cleanly (the FFI also holds a per-vault lockfile and
-/// would return `.inProgress`, but the actor avoids a redundant FFI hop).
+/// `VaultSyncPort`. An `actor` so its state mutations are isolated. Note that
+/// actors are reentrant across `await`: a second `runPass`/`resolve` can
+/// interleave at the suspension point, so this type assumes a single serial
+/// driver per vault. The freshness token committed by `resolve` is captured
+/// before the suspension and is therefore never torn; a genuinely concurrent
+/// commit is additionally backstopped on the FFI side by the per-vault lockfile
+/// (surfacing `.inProgress`) and the `evidenceStale` freshness gate.
 ///
 /// Secret hygiene: the password is passed per call and never stored. Only the
 /// non-secret freshness token + veto metadata persist between calls.
