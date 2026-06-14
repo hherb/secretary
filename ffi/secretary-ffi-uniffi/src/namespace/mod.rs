@@ -261,7 +261,9 @@ pub fn open_vault_with_recovery(
 /// folded into `FolderInvalid`, which semantically means "your filesystem
 /// path is wrong").
 ///
-/// When `include_deleted` is false, tombstoned records are withheld; when true they are returned with `tombstone() == true`.
+/// When `include_deleted` is false, tombstoned records are withheld (their
+/// field handles are never built, so no secret bytes cross the FFI seam);
+/// when true they are returned with `tombstone() == true`.
 ///
 /// # Errors
 ///

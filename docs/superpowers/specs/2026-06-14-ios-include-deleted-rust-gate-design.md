@@ -71,6 +71,8 @@ The alternative (a separate `read_block_visible` function leaving `read_block` u
 - uniffi scaffolding wrapper (the `[u8;16]`-coercing wrapper that calls the bridge): thread `include_deleted` through.
 - pyo3 wrapper (`ffi/secretary-ffi-py/src/...`): add `include_deleted` (positional, mirroring desktop's TS default of `false` at the call sites; pyo3 has no default-arg sugar, so callers pass it explicitly).
 
+**No default argument — deliberate.** Neither the Swift (`readBlock(blockUuid:includeDeleted:)`) nor the pyo3 (`read_block(..., include_deleted)`) surface gives `include_deleted` a default value, even though `false` (live-only) is the overwhelmingly common case. This is intentional for a security-sensitive visibility gate: a defaulted `false` would let a future caller silently get live-only behavior without consciously choosing it, and — more dangerously — a future refactor that flipped the default to `true` would silently start surfacing soft-deleted secrets at every un-updated call site. Forcing every caller to spell out the flag keeps the choice auditable at the call site. Do not "tidy" this into a default argument.
+
 ### 3. Desktop consolidation
 
 - `desktop/src-tauri/src/commands/browse.rs`: pass `include_deleted` into the bridge `read_block` call (it already receives the flag over IPC).

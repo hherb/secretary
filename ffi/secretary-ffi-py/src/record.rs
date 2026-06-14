@@ -195,7 +195,9 @@ impl BlockReadOutput {
 /// from the data-error variant `VaultBlockNotFound` (which fires when
 /// the UUID doesn't match any block in the manifest).
 ///
-/// When `include_deleted` is false, tombstoned (soft-deleted) records are withheld; when true they are returned carrying `tombstone == True`.
+/// When `include_deleted` is false, tombstoned (soft-deleted) records are
+/// withheld (their field handles are never built, so no secret bytes cross
+/// the FFI seam); when true they are returned carrying `tombstone == True`.
 ///
 /// # Raises
 ///
