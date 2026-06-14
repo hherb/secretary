@@ -16,6 +16,11 @@ public final class FakeVaultSyncPort: VaultSyncPort {
     public private(set) var lastCommitPassword: [UInt8]?
     public private(set) var lastCommitDecisions: [SyncVetoDecision]?
     public private(set) var lastCommitManifestHash: [UInt8]?
+    public private(set) var lastStatusVaultUuid: [UInt8]?
+    public private(set) var lastSyncStateDir: String?
+    public private(set) var lastSyncVaultFolder: String?
+    public private(set) var lastCommitStateDir: String?
+    public private(set) var lastCommitVaultFolder: String?
 
     /// Optional rendezvous so an off-main-actor test can hold a call mid-flight.
     public var gate: SuspensionGate?
@@ -31,6 +36,7 @@ public final class FakeVaultSyncPort: VaultSyncPort {
 
     public func status(stateDir: String, vaultUuid: [UInt8]) async throws -> SyncStatus {
         statusCalls += 1
+        lastStatusVaultUuid = vaultUuid
         return try statusResult.get()
     }
 
@@ -38,6 +44,8 @@ public final class FakeVaultSyncPort: VaultSyncPort {
                      password: [UInt8], nowMs: UInt64) async throws -> SyncOutcome {
         syncCalls += 1
         lastSyncPassword = password
+        lastSyncStateDir = stateDir
+        lastSyncVaultFolder = vaultFolder
         await gate?.enterAndWait()
         return try syncResult.get()
     }
@@ -49,6 +57,8 @@ public final class FakeVaultSyncPort: VaultSyncPort {
         lastCommitPassword = password
         lastCommitDecisions = decisions
         lastCommitManifestHash = manifestHash
+        lastCommitStateDir = stateDir
+        lastCommitVaultFolder = vaultFolder
         await gate?.enterAndWait()
         return try commitResult.get()
     }
