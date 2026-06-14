@@ -17,6 +17,12 @@ final class MonotonicInstantTests: XCTestCase {
         XCTAssertEqual(a.duration(to: b), .nanoseconds(3_000))
     }
 
+    func testDurationToEarlierInstantIsNegative() {
+        let a = MonotonicInstant(nanoseconds: 4_000)
+        let b = MonotonicInstant(nanoseconds: 1_000)
+        XCTAssertEqual(a.duration(to: b), .nanoseconds(-3_000))
+    }
+
     func testDefaultDebounceWindowIsTwoSeconds() {
         XCTAssertEqual(ChangeDetectionTuning.defaultDebounceWindow, .milliseconds(2_000))
     }

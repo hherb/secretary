@@ -24,6 +24,7 @@ public struct MonotonicInstant: Comparable, Equatable, Sendable {
 extension Duration {
     /// Whole nanoseconds (drops sub-nanosecond attoseconds). Internal helper for
     /// `MonotonicInstant` arithmetic.
+    // NOTE: promoted to `public` in Task 5 — SecretaryKit's DispatchFlushScheduler (separate module) needs this.
     var wholeNanoseconds: Int64 {
         let (seconds, attoseconds) = components
         return seconds * 1_000_000_000 + attoseconds / 1_000_000_000
