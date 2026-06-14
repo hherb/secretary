@@ -5,7 +5,9 @@ import SecretaryVaultAccess
 /// `commitDecisions` re-open the identity from the password (full Argon2id), so
 /// they run off the calling actor via `runOffMainActor` — exactly like
 /// `UniffiVaultOpenPort` — keeping a `@MainActor` caller responsive. `status`
-/// is a cheap disk read and runs inline.
+/// is a cheap disk read and runs inline (no `runOffMainActor`): under
+/// `SyncCoordinator` (a plain `actor`) that still executes on the cooperative
+/// pool, never the main thread.
 public struct UniffiVaultSyncPort: VaultSyncPort {
     public init() {}
 

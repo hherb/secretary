@@ -6,8 +6,12 @@ import Foundation
 /// All methods are `async` because the real `sync`/`commitDecisions` re-open the
 /// identity from the password and pay the full Argon2id cost; the real adapter
 /// offloads them off the calling actor (see `SecretaryKit.runOffMainActor`) so a
-/// `@MainActor` caller stays responsive. `status` is a cheap disk read but is
-/// `async` for protocol uniformity.
+/// `@MainActor` caller stays responsive. `status` is a cheap disk read and the
+/// real adapter runs its FFI call inline (no `runOffMainActor`); "inline" means
+/// on the adapter's own async executor, not the caller's — driven through
+/// `SyncCoordinator` (a plain `actor`, not `@MainActor`) it executes on the
+/// cooperative pool, so even the synchronous read never lands on the main thread.
+/// `async` is also kept for protocol uniformity.
 ///
 /// `password` is passed per call and never retained by callers.
 public protocol VaultSyncPort {
