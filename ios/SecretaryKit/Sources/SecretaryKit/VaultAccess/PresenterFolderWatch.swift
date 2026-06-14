@@ -14,9 +14,10 @@ public final class PresenterFolderWatch: NSObject, FolderWatchPort, NSFilePresen
 
     public init(folder: URL) {
         self.presentedItemURL = folder
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 1   // serial; underlying thread is not main
-        self.presentedItemOperationQueue = queue
+        // Deliver presenter callbacks on the main queue so every access to
+        // `onPulse` — the start/stop writes AND the pulse() read — is confined to
+        // the main thread. No cross-thread data race on the stored closure.
+        self.presentedItemOperationQueue = .main
         super.init()
     }
 
@@ -30,17 +31,22 @@ public final class PresenterFolderWatch: NSObject, FolderWatchPort, NSFilePresen
         onPulse = nil
     }
 
+    // The OS frequently delivers BOTH callbacks for a single sub-item write; the
+    // extra pulse is harmless — the detector's trailing debounce (`recordPulse`
+    // uses `max`) folds it into the same deadline. Keep BOTH overrides:
+    // `presentedSubitemDidChange` catches block-file writes inside the folder,
+    // `presentedItemDidChange` catches changes to the folder item itself.
     public func presentedSubitemDidChange(at url: URL) { pulse() }
     public func presentedItemDidChange() { pulse() }
 
+    /// Forward a change as a main-actor pulse, stamped at OS-event time. Runs on
+    /// the main queue (the presenter's operation queue), so `assumeIsolated` is
+    /// safe and `onPulse` is read on the same thread it is written from. A pulse
+    /// enqueued before `stop()` is harmless: stop() runs on the same main queue
+    /// (it cannot interleave mid-pulse), and any later stale pulse finds
+    /// `onPulse == nil`.
     private func pulse() {
         let instant = MonotonicInstant.now()
-        // Hop onto the main actor: the presenter queue is a background serial
-        // queue, but the `FolderWatchPort` contract delivers callbacks
-        // main-actor-isolated. The closure capture of `onPulse` is safe because
-        // `onPulse` is only written from `start`/`stop`, both of which callers
-        // invoke before (or after) any pulses arrive; the Task captures the
-        // current value at the moment `pulse()` fires.
-        Task { @MainActor [onPulse] in onPulse?(instant) }
+        MainActor.assumeIsolated { onPulse?(instant) }
     }
 }
