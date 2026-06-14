@@ -26,8 +26,8 @@ pub async fn read_block(
 
 /// Testable core for `read_block`. Decrypts the block, projects records +
 /// field metadata (no secrets), wipes the handle. The `include_deleted` gate
-/// decides whether tombstoned records cross the IPC seam (Rust gates
-/// visibility): `false` = live-only; `true` = emit tombstoned records flagged.
+/// is consumed entirely by `bridge_read_block` — `project_block_detail`
+/// projects every record the bridge returned without re-filtering.
 pub fn read_block_impl(
     state: &Mutex<VaultSession>,
     block_uuid_hex: &str,
@@ -47,7 +47,7 @@ pub fn read_block_impl(
                 other => AppError::from(other),
             },
         )?;
-        let dto = project_block_detail(block_uuid_hex.to_string(), &output, include_deleted);
+        let dto = project_block_detail(block_uuid_hex.to_string(), &output);
         output.wipe();
         Ok(dto)
     })

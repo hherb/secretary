@@ -11,25 +11,19 @@ use secretary_ffi_bridge::{BlockReadOutput, FieldHandle, Record};
 
 use crate::dtos::{BlockDetailDto, FieldMetaDto, RecordDto};
 
-/// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`]. The
-/// `include_deleted` gate decides whether tombstoned records cross the IPC
-/// seam: when `false` (default), they are skipped (live-only, the D.1.2
-/// behaviour); when `true`, they are emitted carrying `tombstoned: true` for
-/// the restore UI. Carries only plaintext metadata — never calls
-/// `expose_text`/`expose_bytes`.
-pub fn project_block_detail(
-    block_uuid_hex: String,
-    output: &BlockReadOutput,
-    include_deleted: bool,
-) -> BlockDetailDto {
+/// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`].
+///
+/// Projects every record the bridge returned — tombstone visibility is gated
+/// upstream in `secretary_ffi_bridge::read_block(include_deleted)`, so this
+/// layer no longer filters. Each projected record carries `tombstoned` so the
+/// restore UI can style soft-deleted rows. Carries only plaintext metadata —
+/// never calls `expose_text`/`expose_bytes`.
+pub fn project_block_detail(block_uuid_hex: String, output: &BlockReadOutput) -> BlockDetailDto {
     let mut records = Vec::with_capacity(output.record_count());
     for i in 0..output.record_count() {
         let Some(record) = output.record_at(i) else {
             continue;
         };
-        if record.tombstone() && !include_deleted {
-            continue;
-        }
         records.push(project_record(&record));
     }
     BlockDetailDto {
@@ -77,7 +71,9 @@ fn project_field_meta(handle: &FieldHandle) -> FieldMetaDto {
 pub fn locate_record(output: &BlockReadOutput, record_uuid_hex: &str) -> Option<Record> {
     for i in 0..output.record_count() {
         if let Some(record) = output.record_at(i) {
-            // Mirror project_block_detail: reveal must not resolve tombstoned records.
+            // Tombstoned records are not reveal-able; skip them. (The caller passes
+            // include_deleted: false to the bridge, so tombstones won't appear here
+            // under normal operation; this guard is defence-in-depth.)
             if record.tombstone() {
                 continue;
             }
