@@ -18,6 +18,17 @@ use crate::error::FfiVaultError;
 use crate::identity::{ReaderSecretKeysError, UnlockedIdentity};
 use crate::vault::OpenVaultManifest;
 
+/// Whether a record is visible to a foreign reader.
+///
+/// A record is visible unless it is tombstoned and the caller did not ask
+/// for deleted records. This is the authoritative gate for record-level
+/// tombstone visibility: callers of `read_block` must not filter tombstoned
+/// records themselves.
+#[allow(dead_code)] // wired into read_block when include_deleted is threaded through
+fn record_is_visible(tombstone: bool, include_deleted: bool) -> bool {
+    include_deleted || !tombstone
+}
+
 /// Decrypt and return all records in one block of an open vault.
 ///
 /// Borrows both handles; returns a fresh [`BlockReadOutput`] container
@@ -301,5 +312,15 @@ mod tests {
             panic!("expected CorruptVault");
         };
         assert!(detail.contains("wiped"), "detail: {detail}");
+    }
+
+    #[test]
+    fn record_is_visible_truth_table() {
+        // Live records are always visible.
+        assert!(record_is_visible(false, false));
+        assert!(record_is_visible(false, true));
+        // Tombstoned records are visible only when the caller asks for deleted.
+        assert!(!record_is_visible(true, false));
+        assert!(record_is_visible(true, true));
     }
 }
