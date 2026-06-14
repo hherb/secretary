@@ -17,7 +17,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
         val out = openVaultWithPassword(folderPathBytes, env.password001)
         out.identity.use { id ->
             out.manifest.use { mf ->
-                readBlock(id, mf, VAULT_001_BLOCK_UUID).use { block ->
+                readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->
                     val recordCount = block.recordCount()
                     val record = block.recordAt(0u)
                     val fieldCount = record?.fieldCount() ?: 0u
@@ -38,7 +38,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
         val out = openVaultWithPassword(folderPathBytes, env.password001)
         out.identity.use { id ->
             out.manifest.use { mf ->
-                readBlock(id, mf, VAULT_001_BLOCK_UUID).use { block ->
+                readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->
                     val record = block.recordAt(0u)!!
                     val pwField = record.fieldByName("password")!!
                     val secret = pwField.exposeText()
@@ -61,7 +61,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
             out.manifest.use { mf ->
                 val unknownUuid = ByteArray(16)
                 try {
-                    readBlock(id, mf, unknownUuid)
+                    readBlock(id, mf, unknownUuid, false)
                     check(false, "read_block(unknown_uuid) should have thrown VaultException.BlockNotFound")
                 } catch (e: VaultException.BlockNotFound) {
                     check(
@@ -86,7 +86,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
         val out = openVaultWithPassword(folderPathBytes, env.password001)
         out.identity.use { id ->
             out.manifest.use { mf ->
-                readBlock(id, mf, VAULT_001_BLOCK_UUID).use { block ->
+                readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->
                     block.wipe()
                     val countAfter = block.recordCount()
                     check(

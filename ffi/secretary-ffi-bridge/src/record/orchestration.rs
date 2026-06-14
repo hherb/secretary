@@ -18,7 +18,23 @@ use crate::error::FfiVaultError;
 use crate::identity::{ReaderSecretKeysError, UnlockedIdentity};
 use crate::vault::OpenVaultManifest;
 
-/// Decrypt and return all records in one block of an open vault.
+/// Whether a record is visible to a foreign reader.
+///
+/// A record is visible unless it is tombstoned and the caller did not ask
+/// for deleted records. This is the authoritative gate for record-level
+/// tombstone visibility: callers of `read_block` must not filter tombstoned
+/// records themselves.
+fn record_is_visible(tombstone: bool, include_deleted: bool) -> bool {
+    include_deleted || !tombstone
+}
+
+/// Decrypt and return the visible records in one block of an open vault.
+///
+/// When `include_deleted` is `false`, tombstoned (soft-deleted) records are
+/// withheld — their `FieldHandle`s are never constructed, so their secret
+/// field bytes never cross the FFI seam. When `true`, tombstoned records are
+/// returned carrying `tombstone() == true` (for a restore UI). This is the
+/// single source of truth for tombstone visibility across all platforms.
 ///
 /// Borrows both handles; returns a fresh [`BlockReadOutput`] container
 /// or a typed [`FfiVaultError`].
@@ -43,6 +59,7 @@ pub fn read_block(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
     block_uuid: &[u8; 16],
+    include_deleted: bool,
 ) -> Result<BlockReadOutput, FfiVaultError> {
     let plaintext = decrypt_block_plaintext(identity, manifest, block_uuid)?;
 
@@ -62,6 +79,13 @@ pub fn read_block(
             // unknown / tombstoned_at_ms intentionally not surfaced.
             ..
         } = r;
+
+        // Tombstone visibility gate: withhold deleted records (and therefore
+        // never build their FieldHandles, so no secret field bytes cross the
+        // FFI seam) unless the caller asked for them.
+        if !record_is_visible(tombstone, include_deleted) {
+            continue;
+        }
 
         let mut field_handles: Vec<FieldHandle> = Vec::with_capacity(fields.len());
         for (name, field) in fields {
@@ -301,5 +325,15 @@ mod tests {
             panic!("expected CorruptVault");
         };
         assert!(detail.contains("wiped"), "detail: {detail}");
+    }
+
+    #[test]
+    fn record_is_visible_truth_table() {
+        // Live records are always visible.
+        assert!(record_is_visible(false, false));
+        assert!(record_is_visible(false, true));
+        // Tombstoned records are visible only when the caller asks for deleted.
+        assert!(!record_is_visible(true, false));
+        assert!(record_is_visible(true, true));
     }
 }

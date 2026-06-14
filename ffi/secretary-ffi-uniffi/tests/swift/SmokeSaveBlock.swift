@@ -43,7 +43,8 @@ func runSaveBlockAsserts(env: SmokeEnv) {
         let block = try readBlock(
             identity: identity,
             manifest: manifest,
-            blockUuid: saveBlockNewBlockUuid
+            blockUuid: saveBlockNewBlockUuid,
+            includeDeleted: false
         )
         defer { block.wipe() }
         let recordCount = block.recordCount()
@@ -179,7 +180,8 @@ func runSaveBlockAsserts(env: SmokeEnv) {
         let block = try readBlock(
             identity: out2.identity,
             manifest: out2.manifest,
-            blockUuid: saveBlockNewBlockUuid
+            blockUuid: saveBlockNewBlockUuid,
+            includeDeleted: false
         )
         defer { block.wipe() }
         let v = block.recordAt(idx: 0)?.fieldByName(name: "k")?.exposeText()

@@ -53,7 +53,7 @@ final class RecordEditIntegrationTests: XCTestCase {
             fields: [FieldContentInput(name: "user", value: .text("alice")),
                      FieldContentInput(name: "pass", value: .text("hunter2")),
                      FieldContentInput(name: "key", value: .bytes(keyBytes))]))
-        var rec = try XCTUnwrap(try session.readBlock(blockUuid: block).first { $0.uuid == id })
+        var rec = try XCTUnwrap(try session.readBlock(blockUuid: block, includeDeleted: false).first { $0.uuid == id })
         XCTAssertFalse(rec.tombstone)
         XCTAssertEqual(rec.type, "login")
         XCTAssertEqual(Set(rec.fields.map(\.name)), ["user", "pass", "key"])
@@ -68,19 +68,23 @@ final class RecordEditIntegrationTests: XCTestCase {
             fields: [FieldContentInput(name: "user", value: .text("alice")),
                      FieldContentInput(name: "pass", value: .text("s3cret!")),
                      FieldContentInput(name: "key", value: .bytes(keyBytes))]))
-        rec = try XCTUnwrap(try session.readBlock(blockUuid: block).first { $0.uuid == id })
+        rec = try XCTUnwrap(try session.readBlock(blockUuid: block, includeDeleted: false).first { $0.uuid == id })
         let pass = try XCTUnwrap(rec.fields.first { $0.name == "pass" })
         guard case .text(let v) = try pass.reveal() else { return XCTFail("expected text") }
         XCTAssertEqual(v, "s3cret!")
 
-        // DELETE → record stays in the projection but tombstone() flips true.
+        // DELETE → the Rust include_deleted gate now controls visibility:
+        //   includeDeleted: false OMITS the tombstoned record entirely;
+        //   includeDeleted: true INCLUDES it with tombstone() == true.
         try session.tombstoneRecord(blockUuid: block, recordUuid: id)
-        let afterDelete = try session.readBlock(blockUuid: block).first { $0.uuid == id }
-        XCTAssertEqual(afterDelete?.tombstone, true)
+        let liveOnly = try session.readBlock(blockUuid: block, includeDeleted: false).first { $0.uuid == id }
+        XCTAssertNil(liveOnly, "gate withholds the tombstoned record from a live-only read")
+        let withDeleted = try session.readBlock(blockUuid: block, includeDeleted: true).first { $0.uuid == id }
+        XCTAssertEqual(withDeleted?.tombstone, true, "gate surfaces it as tombstoned when asked")
 
-        // RESTORE → tombstone() back to false.
+        // RESTORE → tombstone() back to false; the live-only read sees it again.
         try session.resurrectRecord(blockUuid: block, recordUuid: id)
-        let afterRestore = try session.readBlock(blockUuid: block).first { $0.uuid == id }
+        let afterRestore = try session.readBlock(blockUuid: block, includeDeleted: false).first { $0.uuid == id }
         XCTAssertEqual(afterRestore?.tombstone, false)
 
         // DURABILITY: the mutations must have persisted to disk, not just the
@@ -93,7 +97,7 @@ final class RecordEditIntegrationTests: XCTestCase {
         let reopened = try openSession(device: device)
         defer { reopened.wipe() }
         let persisted = try XCTUnwrap(
-            try reopened.readBlock(blockUuid: block).first { $0.uuid == id },
+            try reopened.readBlock(blockUuid: block, includeDeleted: false).first { $0.uuid == id },
             "record not found in fresh session — writes did not persist to disk")
         XCTAssertFalse(persisted.tombstone, "record persisted live after a fresh open")
         let persistedPass = try XCTUnwrap(persisted.fields.first { $0.name == "pass" })

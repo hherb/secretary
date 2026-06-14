@@ -195,6 +195,10 @@ impl BlockReadOutput {
 /// from the data-error variant `VaultBlockNotFound` (which fires when
 /// the UUID doesn't match any block in the manifest).
 ///
+/// When `include_deleted` is false, tombstoned (soft-deleted) records are
+/// withheld (their field handles are never built, so no secret bytes cross
+/// the FFI seam); when true they are returned carrying `tombstone == True`.
+///
 /// # Raises
 ///
 /// - `ValueError` — `block_uuid` length ≠ 16.
@@ -207,6 +211,7 @@ pub(crate) fn read_block(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
     block_uuid: Vec<u8>,
+    include_deleted: bool,
 ) -> PyResult<BlockReadOutput> {
     if block_uuid.len() != 16 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -216,7 +221,7 @@ pub(crate) fn read_block(
     }
     let mut uuid_array = [0u8; 16];
     uuid_array.copy_from_slice(&block_uuid);
-    secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array)
+    secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array, include_deleted)
         .map(BlockReadOutput)
         .map_err(ffi_vault_error_to_pyerr)
 }

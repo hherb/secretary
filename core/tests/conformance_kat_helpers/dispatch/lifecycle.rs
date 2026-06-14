@@ -221,9 +221,13 @@ pub fn assert_post_state(
     if let Some(read_pin) = &pinned.read_block {
         let uuid = round_trip_uuid
             .expect("post_state.read_block requires post_state.find_block_uuid_hex to be set");
-        let output =
-            secretary_ffi_bridge::record::read_block(&cached.identity, &cached.manifest, &uuid)
-                .unwrap_or_else(|e| panic!("{label}: round-trip read_block failed: {e:?}"));
+        let output = secretary_ffi_bridge::record::read_block(
+            &cached.identity,
+            &cached.manifest,
+            &uuid,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{label}: round-trip read_block failed: {e:?}"));
         assert_read_block_records(label, &output, &read_pin.records);
     }
 }

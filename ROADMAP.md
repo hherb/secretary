@@ -10,7 +10,7 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 
 ---
 
-## Where we are: 2026-06-11
+## Where we are: 2026-06-14
 
 - **Sub-project A**: feature-complete for v1. Internal hardening track (fuzzing, threat-model refresh, side-channel audit, memory-hygiene audit) ✅ closed. Only the external paid review track remains.
 - **Sub-project B**: complete through B.6 v2 + #187 + B.1 device-wrap slot + B.2 FFI projection + B.3 iOS Secure Enclave unlock. Bridge crate + PyO3 + uniffi (Swift, Kotlin) expose unlock / open / read / save / share / trash / restore + sync surface + device-slot ops. iOS device-unlock orchestration host-tested in `ios/SecretaryDeviceUnlock/`; SE conformer compile-verified on simulator; on-device biometric proof is [#202](https://github.com/hherb/secretary/issues/202). Cross-language conformance KAT (26 vectors + enrol round-trip, lifecycle-complete) replays Rust ↔ Swift ↔ Kotlin parity.
@@ -21,7 +21,7 @@ For the full design specifications see [docs/](docs/). For the next-session entr
 [================================================================] Sub-project A — Rust core (feature-complete; A.7 internal track closed; external review pending)
 [================================================================] Sub-project B — FFI bindings (B.1 → B.6 v2 ✅)
 [==================================                              ] Sub-project C — Sync orchestration (C.1 + C.1.1a/b ✅; C.2 ✅)
-[======                                                          ] Sub-project D — Platform UIs (D.1.1 walking skeleton + D.1.2 browse + D.1.3 create wizard + D.1.4 vault edit + D.1.5 delete/trash + D.1.6 share/contacts + D.1.7 contacts management + D.1.8 per-block recipients + D.1.9 per-contact reverse map + D.1.10 revoke primitive + D.1.11 revoke UI + D.1.12 desktop polish batch + D.1.13 sync primitive + D.1.14 sync UI + D.1.15 interactive conflict resolution + D.3 s1 iOS link-proof + B.3 iOS SE device unlock + iOS app walking-skeleton + #202 on-device biometric proof + iOS password/recovery unlock + read-only browse + iOS vault selection + iOS record CRUD + iOS vault create/import ✅)
+[======                                                          ] Sub-project D — Platform UIs (D.1.1 walking skeleton + D.1.2 browse + D.1.3 create wizard + D.1.4 vault edit + D.1.5 delete/trash + D.1.6 share/contacts + D.1.7 contacts management + D.1.8 per-block recipients + D.1.9 per-contact reverse map + D.1.10 revoke primitive + D.1.11 revoke UI + D.1.12 desktop polish batch + D.1.13 sync primitive + D.1.14 sync UI + D.1.15 interactive conflict resolution + D.3 s1 iOS link-proof + B.3 iOS SE device unlock + iOS app walking-skeleton + #202 on-device biometric proof + iOS password/recovery unlock + read-only browse + iOS vault selection + iOS record CRUD + iOS vault create/import + iOS include_deleted Rust gate ✅)
 ```
 
 Test totals as of B.6 v2 / C.1.1b: 800 tests pass + 10 ignored under `cargo test --release --workspace`; 68 pytest; 38 Swift / 39 Kotlin smoke asserts; 22/22 cross-language conformance vectors PASS on both Swift and Kotlin. Clippy clean with `-D warnings --tests`. `#![forbid(unsafe_code)]` workspace-wide except a localized `deny` carve-out in the two binding-flavor crates.

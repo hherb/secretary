@@ -25,8 +25,9 @@ public struct FieldView {
 }
 
 /// One decrypted record. Field metadata is exposed; plaintext stays behind
-/// `FieldView.reveal`. `tombstone` is true for a soft-deleted record (read_block
-/// surfaces deleted records; the browse layer filters them client-side).
+/// `FieldView.reveal`. `tombstone` is true for a soft-deleted record (the Rust
+/// `read_block` gate withholds deleted records unless `includeDeleted` is set, so
+/// a `RecordView` with `tombstone == true` only appears when "Show deleted" is on).
 public struct RecordView {
     public let uuid: [UInt8]
     public let type: String

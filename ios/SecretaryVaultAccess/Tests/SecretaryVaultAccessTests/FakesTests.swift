@@ -18,7 +18,7 @@ final class FakesTests: XCTestCase {
 
         XCTAssertEqual(session.blockSummaries().count, 1)
         // Reveal closure must NOT have fired just by reading the block.
-        let records = try session.readBlock(blockUuid: [9])
+        let records = try session.readBlock(blockUuid: [9], includeDeleted: false)
         XCTAssertEqual(session.readCount, 1)
         XCTAssertEqual(revealCalls, 0, "reveal must be on-demand only")
         // Firing reveal explicitly works and is counted by the closure.
@@ -32,7 +32,7 @@ final class FakesTests: XCTestCase {
 
     func testFakeSessionReadUnknownBlockThrows() {
         let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [], recordsByBlock: [:])
-        XCTAssertThrowsError(try session.readBlock(blockUuid: [0xde])) { err in
+        XCTAssertThrowsError(try session.readBlock(blockUuid: [0xde], includeDeleted: false)) { err in
             XCTAssertEqual(err as? VaultAccessError, .blockNotFound("de"))
         }
     }

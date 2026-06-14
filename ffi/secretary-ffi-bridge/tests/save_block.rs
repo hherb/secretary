@@ -101,7 +101,7 @@ fn save_block_insert_round_trips_through_read_block() {
         .expect("block findable in manifest");
     assert_eq!(summary.block_name, "Notes");
 
-    let output = read_block(&identity, &manifest, &NEW_BLOCK_UUID).expect("read_block");
+    let output = read_block(&identity, &manifest, &NEW_BLOCK_UUID, false).expect("read_block");
     assert_eq!(output.record_count(), 1);
     let record = output.record_at(0).expect("record present");
     assert_eq!(record.field_count(), 2);
@@ -206,7 +206,7 @@ fn save_block_persists_to_disk_visible_to_fresh_open() {
         .find_block(&NEW_BLOCK_UUID)
         .expect("block visible on re-open");
     assert_eq!(summary.block_name, "persisted");
-    let output = read_block(&out2.identity, &out2.manifest, &NEW_BLOCK_UUID).expect("read");
+    let output = read_block(&out2.identity, &out2.manifest, &NEW_BLOCK_UUID, false).expect("read");
     let r = output.record_at(0).expect("record present");
     assert_eq!(
         r.field_by_name("k").unwrap().expose_text().as_deref(),
@@ -356,7 +356,7 @@ proptest::proptest! {
         save_block(&identity, &manifest, input, DEVICE_UUID, NOW_MS_BASE)
             .map_err(|e| proptest::test_runner::TestCaseError::fail(format!("save failed: {e:?}")))?;
 
-        let output = read_block(&identity, &manifest, &block_uuid)
+        let output = read_block(&identity, &manifest, &block_uuid, false)
             .map_err(|e| proptest::test_runner::TestCaseError::fail(format!("read failed: {e:?}")))?;
         proptest::prop_assert_eq!(output.record_count() as usize, record_count);
 
@@ -461,7 +461,7 @@ fn save_block_preserves_record_type_and_tags_141() {
     };
     save_block(&identity, &manifest, input, [0x07u8; 16], 1_715_000_000_000).expect("save");
 
-    let out = read_block(&identity, &manifest, &block_uuid).expect("read");
+    let out = read_block(&identity, &manifest, &block_uuid, false).expect("read");
     let rec = out.record_at(0).expect("record 0");
     assert_eq!(
         rec.record_type(),
@@ -576,7 +576,7 @@ fn save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk() {
         .find_block(&NEW_BLOCK_UUID)
         .expect("new block visible on re-open after mid-call race");
     assert_eq!(summary.block_name, "raced");
-    let output = read_block(&out.identity, &out.manifest, &NEW_BLOCK_UUID)
+    let output = read_block(&out.identity, &out.manifest, &NEW_BLOCK_UUID, false)
         .expect("read_block decrypts the persisted block");
     let r = output.record_at(0).expect("record present");
     assert_eq!(

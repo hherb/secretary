@@ -44,11 +44,12 @@ public final class UniffiVaultSession: VaultSession {
         }
     }
 
-    public func readBlock(blockUuid: [UInt8]) throws -> [RecordView] {
+    public func readBlock(blockUuid: [UInt8], includeDeleted: Bool) throws -> [RecordView] {
         let out: BlockReadOutput
         do {
             out = try SecretaryKit.readBlock(
-                identity: identity, manifest: manifest, blockUuid: Data(blockUuid))
+                identity: identity, manifest: manifest, blockUuid: Data(blockUuid),
+                includeDeleted: includeDeleted)
         } catch let e as VaultError {
             throw mapVaultAccessError(e)
         }

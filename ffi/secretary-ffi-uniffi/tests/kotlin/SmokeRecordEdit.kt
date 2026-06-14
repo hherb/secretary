@@ -65,7 +65,7 @@ fun runRecordEditAsserts(env: SmokeEnv) {
                     ),
                     RECORD_EDIT_DEVICE_UUID, 2_000UL,
                 )
-                readBlock(id, mf, RECORD_EDIT_BLOCK_UUID).use { block ->
+                readBlock(id, mf, RECORD_EDIT_BLOCK_UUID, false).use { block ->
                     check(
                         block.recordCount() == 2uL,
                         "append_record → read_block sees 2 records (got ${block.recordCount()})",
@@ -101,7 +101,7 @@ fun runRecordEditAsserts(env: SmokeEnv) {
                     ),
                     editDevice, 3_000UL,
                 )
-                readBlock(id, mf, RECORD_EDIT_BLOCK_UUID).use { block ->
+                readBlock(id, mf, RECORD_EDIT_BLOCK_UUID, false).use { block ->
                     val record = block.recordAt(0u)
                     val pass = record?.fieldByName("pass")?.exposeText()
                     val userDevice = record?.fieldByName("user")?.deviceUuid()
@@ -137,7 +137,7 @@ fun runRecordEditAsserts(env: SmokeEnv) {
                     RECORD_EDIT_BLOCK_UUID, RECORD_EDIT_RECORD_UUID,
                     RECORD_EDIT_DEVICE_UUID, 4_000UL,
                 )
-                val deadFlag = readBlock(id, mf, RECORD_EDIT_BLOCK_UUID).use { block ->
+                val deadFlag = readBlock(id, mf, RECORD_EDIT_BLOCK_UUID, true).use { block ->
                     block.recordAt(0u)?.tombstone()
                 }
                 resurrectRecord(
@@ -145,7 +145,7 @@ fun runRecordEditAsserts(env: SmokeEnv) {
                     RECORD_EDIT_BLOCK_UUID, RECORD_EDIT_RECORD_UUID,
                     RECORD_EDIT_DEVICE_UUID, 5_000UL,
                 )
-                val liveFlag = readBlock(id, mf, RECORD_EDIT_BLOCK_UUID).use { block ->
+                val liveFlag = readBlock(id, mf, RECORD_EDIT_BLOCK_UUID, false).use { block ->
                     block.recordAt(0u)?.tombstone()
                 }
                 check(

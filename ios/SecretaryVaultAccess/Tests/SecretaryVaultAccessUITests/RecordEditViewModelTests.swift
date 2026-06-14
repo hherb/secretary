@@ -24,7 +24,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.commit()
         XCTAssertTrue(vm.committed)
         XCTAssertNil(vm.error)
-        XCTAssertEqual(try s.readBlock(blockUuid: block).count, 1)
+        XCTAssertEqual(try s.readBlock(blockUuid: block, includeDeleted: false).count, 1)
     }
 
     func testDuplicateFieldNameBlocksCommit() throws {
@@ -35,7 +35,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.commit()
         XCTAssertFalse(vm.committed)
         XCTAssertEqual(vm.error, .invalidArgument("duplicate field name: user"))
-        XCTAssertEqual(try s.readBlock(blockUuid: block).count, 0)  // nothing written
+        XCTAssertEqual(try s.readBlock(blockUuid: block, includeDeleted: false).count, 0)  // nothing written
     }
 
     func testBadHexInBytesFieldBlocksCommit() throws {
@@ -61,7 +61,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.commit()
         XCTAssertTrue(vm.committed)
         XCTAssertNil(vm.error)
-        let rec = try XCTUnwrap(try s.readBlock(blockUuid: block).first)
+        let rec = try XCTUnwrap(try s.readBlock(blockUuid: block, includeDeleted: false).first)
         guard case .bytes(let b) = try XCTUnwrap(rec.fields.first).reveal() else {
             return XCTFail("expected bytes")
         }
@@ -81,7 +81,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.fields[0].rawText = "bob"
         vm.commit()
         XCTAssertTrue(vm.committed)
-        guard case .text(let v) = try XCTUnwrap(try s.readBlock(blockUuid: block).first?.fields.first).reveal() else {
+        guard case .text(let v) = try XCTUnwrap(try s.readBlock(blockUuid: block, includeDeleted: false).first?.fields.first).reveal() else {
             return XCTFail("expected text")
         }
         XCTAssertEqual(v, "bob")
@@ -102,7 +102,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.commit()                                // must be refused
         XCTAssertFalse(vm.committed)
         // the record in the fake still has its original single field (not clobbered)
-        XCTAssertEqual(try s.readBlock(blockUuid: block).first?.fields.count, 1)
+        XCTAssertEqual(try s.readBlock(blockUuid: block, includeDeleted: false).first?.fields.count, 1)
     }
 
     func testCommitIncludesTagsAndFiltersBlanks() throws {
@@ -113,7 +113,7 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.addField(); vm.fields[0].name = "user"; vm.fields[0].rawText = "alice"
         vm.commit()
         XCTAssertTrue(vm.committed)
-        let rec = try XCTUnwrap(try s.readBlock(blockUuid: block).first)
+        let rec = try XCTUnwrap(try s.readBlock(blockUuid: block, includeDeleted: false).first)
         XCTAssertEqual(rec.tags, ["work", "personal"])
     }
 

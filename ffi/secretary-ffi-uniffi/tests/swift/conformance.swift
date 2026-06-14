@@ -172,7 +172,7 @@ struct ConformanceRunner {
                     // uniffi's read_block expects a 16-byte sequence; the binding-layer
                     // wrapper rejects non-16-byte input as InvalidArgument before
                     // dispatching to the bridge.
-                    let out = try readBlock(identity: cached.identity, manifest: cached.manifest, blockUuid: raw)
+                    let out = try readBlock(identity: cached.identity, manifest: cached.manifest, blockUuid: raw, includeDeleted: true)
                     if kind != "ok" { _ = check(false, name, "expected err, got ok"); continue }
                     if let records = expected["records"] as? [[String: Any]] {
                         _ = check(Int(out.recordCount()) == records.count, name, "record_count mismatch")

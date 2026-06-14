@@ -173,7 +173,7 @@ def test_restore_block_round_trip(tmp_path: Path) -> None:
 
             # Round-trip readability via read_block.
             with secretary_ffi_py.read_block(
-                identity, manifest, NEW_BLOCK_UUID
+                identity, manifest, NEW_BLOCK_UUID, include_deleted=False
             ) as block:
                 assert block.record_count() == 1
                 record = block.record_at(0)

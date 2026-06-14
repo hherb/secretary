@@ -56,7 +56,7 @@ func runTrashRestoreAsserts(env: SmokeEnv) {
             nowMs: 3_000
         )
         let restored = try readBlock(
-            identity: identity, manifest: manifest, blockUuid: b5BlockUuid
+            identity: identity, manifest: manifest, blockUuid: b5BlockUuid, includeDeleted: false
         )
         check(
             restored.recordCount() == 1,

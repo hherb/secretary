@@ -19,32 +19,36 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         RecordView(uuid: [b], type: "login", tags: [], fields: [], tombstone: tombstone)
     }
 
-    func testVisibleRecordsHideTombstonedByDefault() {
+    func testRecordsHideTombstonedByDefault() {
         let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false),
                                                         record(2, tombstone: true)]))
-        vm.loadBlocks()
-        vm.selectBlock(vm.blocks[0])
+        vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
+        // The gate (modeled by the fake) withheld the tombstoned record.
         XCTAssertEqual(vm.visibleRecords.map(\.uuid), [[1]])
     }
 
-    func testShowDeletedRevealsTombstoned() {
-        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false),
-                                                        record(2, tombstone: true)]))
+    func testTogglingShowDeletedRereadsWithFlag() {
+        let s = session([record(1, tombstone: false), record(2, tombstone: true)])
+        let vm = VaultBrowseViewModel(session: s)
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
+        XCTAssertEqual(s.lastIncludeDeleted, false)   // initial read was live-only
+        let readsBefore = s.readCount
         vm.showDeleted = true
+        XCTAssertGreaterThan(s.readCount, readsBefore) // toggling re-read
+        XCTAssertEqual(s.lastIncludeDeleted, true)     // with the new flag
         XCTAssertEqual(vm.visibleRecords.map(\.uuid), [[1], [2]])
     }
 
-    func testDeleteThenRestoreUpdatesVisibility() throws {
+    func testDeleteThenRestoreUpdatesVisibility() {
         let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         vm.delete(record: vm.visibleRecords[0])
-        XCTAssertTrue(vm.visibleRecords.isEmpty)          // gone from live list
+        XCTAssertTrue(vm.visibleRecords.isEmpty)       // gone from live list
         vm.showDeleted = true
-        XCTAssertEqual(vm.visibleRecords.count, 1)
+        XCTAssertEqual(vm.visibleRecords.count, 1)     // re-read shows it
         vm.restore(record: vm.visibleRecords[0])
         vm.showDeleted = false
-        XCTAssertEqual(vm.visibleRecords.count, 1)        // back in live list
+        XCTAssertEqual(vm.visibleRecords.count, 1)     // back in live list
     }
 
     func testMakeEditViewModelNilBeforeSelectThenNonNilAfter() {
@@ -58,7 +62,6 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         let s = session([record(1, tombstone: false)])
         let vm = VaultBrowseViewModel(session: s)
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
-        // mutate underneath the VM via the same session, then refresh
         try s.appendRecord(blockUuid: vm.blocks[0].uuid,
             content: RecordContentInput(recordType: "note", tags: [], fields: []))
         XCTAssertEqual(vm.visibleRecords.count, 1)  // not yet refreshed
@@ -68,7 +71,7 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
 
     func testRefreshNoOpWhenNoBlockSelected() {
         let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
-        vm.refresh()  // must not crash / not set error
+        vm.refresh()
         XCTAssertNil(vm.error)
     }
 }

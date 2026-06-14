@@ -49,7 +49,7 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
                     ),
                 )
                 saveBlock(id, mf, input, SAVE_BLOCK_DEVICE_UUID, 1_000UL)
-                readBlock(id, mf, SAVE_BLOCK_NEW_BLOCK_UUID).use { block ->
+                readBlock(id, mf, SAVE_BLOCK_NEW_BLOCK_UUID, false).use { block ->
                     val recordCount = block.recordCount()
                     val record = block.recordAt(0u)
                     val title = record?.fieldByName("title")?.exposeText()
@@ -183,7 +183,7 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
         out2.identity.use { id ->
             out2.manifest.use { mf ->
                 val summary = mf.findBlock(SAVE_BLOCK_NEW_BLOCK_UUID)
-                readBlock(id, mf, SAVE_BLOCK_NEW_BLOCK_UUID).use { block ->
+                readBlock(id, mf, SAVE_BLOCK_NEW_BLOCK_UUID, false).use { block ->
                     val v = block.recordAt(0u)?.fieldByName("k")?.exposeText()
                     check(
                         summary?.blockName == "persisted" && v == "v",

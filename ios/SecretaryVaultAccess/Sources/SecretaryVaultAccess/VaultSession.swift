@@ -13,8 +13,10 @@ public protocol VaultSession: AnyObject {
     var vaultUuidHex: String { get }
     /// Block metadata from the manifest (no plaintext).
     func blockSummaries() -> [BlockSummary]
-    /// Decrypt one block; returns records with on-demand-reveal fields.
-    func readBlock(blockUuid: [UInt8]) throws -> [RecordView]
+    /// Decrypt one block and return its VISIBLE records (tombstoned records are
+    /// withheld by the Rust gate unless `includeDeleted`). Returns records with
+    /// on-demand-reveal fields.
+    func readBlock(blockUuid: [UInt8], includeDeleted: Bool) throws -> [RecordView]
     /// Append a NEW record to a block. The session mints a fresh 16-byte record
     /// UUID, stamps this device's UUID + now, and returns the new UUID.
     @discardableResult

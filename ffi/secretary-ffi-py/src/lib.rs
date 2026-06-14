@@ -69,9 +69,8 @@ use errors::{
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
-    VaultInvalidMnemonic,
-    VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard, VaultNotAuthor,
-    VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
+    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
+    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
     VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
     VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
     VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
@@ -89,8 +88,8 @@ use sync::{
 };
 use trash::trash_block;
 use unlock::{
-    create_vault, create_vault_in_folder, open_with_password, open_with_recovery, CreateVaultOutput,
-    MnemonicOutput,
+    create_vault, create_vault_in_folder, open_with_password, open_with_recovery,
+    CreateVaultOutput, MnemonicOutput,
 };
 use vault::{
     open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,

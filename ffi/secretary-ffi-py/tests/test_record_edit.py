@@ -69,7 +69,7 @@ def test_append_record_adds_live_record(tmp_path: Path) -> None:
                 RecordContent([FieldInput("body", FieldInputValue.text("remember"))], "note", []),
                 DEVICE_UUID, NOW_MS_BASE + 1_000,
             )
-            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID, include_deleted=False) as block:
                 assert block.record_count() == 2
 
 
@@ -90,7 +90,7 @@ def test_edit_record_changes_value_and_preserves_untouched_field_clock(tmp_path:
                 ),
                 edit_device, NOW_MS_BASE + 2_000,
             )
-            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 assert record.field_by_name("pass").expose_text() == "s3cret!"
                 assert bytes(record.field_by_name("user").device_uuid()) == DEVICE_UUID
@@ -105,13 +105,13 @@ def test_tombstone_then_resurrect_round_trip(tmp_path: Path) -> None:
             secretary_ffi_py.tombstone_record(
                 identity, manifest, BLOCK_UUID, RECORD_UUID, DEVICE_UUID, NOW_MS_BASE + 1_000
             )
-            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID, include_deleted=True) as block:
                 assert block.record_count() == 1
                 assert block.record_at(0).tombstone() is True
             secretary_ffi_py.resurrect_record(
                 identity, manifest, BLOCK_UUID, RECORD_UUID, DEVICE_UUID, NOW_MS_BASE + 2_000
             )
-            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, BLOCK_UUID, include_deleted=False) as block:
                 assert block.record_at(0).tombstone() is False
 
 
