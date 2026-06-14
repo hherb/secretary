@@ -81,4 +81,16 @@ final class FolderChangeDetectorTests: XCTestCase {
         XCTAssertTrue(d.flush(now: t(1_000_000_000)))
         XCTAssertFalse(d.flush(now: t(2_000_000_000)))         // already pending → no second flip
     }
+
+    func testPulseDuringPendingIsNotLostOnAcknowledge() {
+        var d = active()
+        d.recordPulse(at: t(0))
+        _ = d.flush(now: t(1_000_000_000))      // raises pendingChanges, clears lastPulseAt
+        XCTAssertTrue(d.pendingChanges)
+        d.recordPulse(at: t(1_500_000_000))     // arrives while pending — must not be dropped
+        d.acknowledge()
+        XCTAssertFalse(d.pendingChanges)
+        // pulse during pending preserved; deadline re-armed from the mid-pending pulse
+        XCTAssertEqual(d.nextFlushDeadline, t(2_500_000_000))
+    }
 }
