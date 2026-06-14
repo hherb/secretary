@@ -26,12 +26,20 @@ public final class ChangeDetectionMonitor {
         self.onChange = onChange
     }
 
-    /// Start watching + gate active. Throws if the watch port can't start.
+    /// Start watching + gate active. Ignored if already started. Throws (and
+    /// rolls back the active gate) if the watch port can't start, so a retry
+    /// after a failure starts from a clean state.
     public func start() throws {
+        guard !detector.isActive else { return }   // already started — ignore double-start
         detector.setActive(true)
-        try watch.start(onPulse: { [weak self] instant in
-            self?.handlePulse(at: instant)
-        })
+        do {
+            try watch.start(onPulse: { [weak self] instant in
+                self?.handlePulse(at: instant)
+            })
+        } catch {
+            detector.setActive(false)              // roll back so a retry starts clean
+            throw error
+        }
     }
 
     /// Stop watching, cancel any armed flush, gate inactive, clear the signal.
@@ -39,7 +47,11 @@ public final class ChangeDetectionMonitor {
         scheduler.cancel()
         watch.stop()
         detector.setActive(false)
-        pendingChanges = detector.pendingChanges
+        // setActive(false) intentionally clears the detector's pending signal:
+        // stop is a clean-slate reset (ADR-0003 foreground-only; a change that
+        // arrived pre-background is re-detected on next foreground or covered by
+        // slice-3 sync-at-unlock). Mirror that cleared state explicitly.
+        pendingChanges = false
     }
 
     /// Consume the signal (a later change re-arms).
@@ -60,7 +72,10 @@ public final class ChangeDetectionMonitor {
 
     private func rearm(now: MonotonicInstant) {
         guard let deadline = detector.nextFlushDeadline else { scheduler.cancel(); return }
-        scheduler.schedule(after: now.duration(to: deadline)) { [weak self] fireInstant in
+        // Clamp: a real scheduler firing slightly past the deadline must not pass
+        // a negative Duration to schedule(after:) (the contract is undefined for it).
+        let delay = max(.zero, now.duration(to: deadline))
+        scheduler.schedule(after: delay) { [weak self] fireInstant in
             self?.handleFlush(now: fireInstant)
         }
     }

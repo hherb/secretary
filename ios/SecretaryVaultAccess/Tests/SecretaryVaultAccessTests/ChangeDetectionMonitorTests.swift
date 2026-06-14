@@ -75,4 +75,23 @@ final class ChangeDetectionMonitorTests: XCTestCase {
         watch.startError = Boom()
         XCTAssertThrowsError(try monitor.start())
     }
+
+    func testStartAfterFailedStartSucceedsCleanly() throws {
+        let (monitor, watch, scheduler) = make()
+        struct Boom: Error {}
+        watch.startError = Boom()
+        XCTAssertThrowsError(try monitor.start())   // first attempt fails + rolls back
+        watch.startError = nil
+        try monitor.start()                          // retry must succeed (gate not wedged)
+        XCTAssertTrue(watch.started)
+        watch.emit(at: t(0))
+        XCTAssertEqual(scheduler.scheduledDelay, window)   // detector usable again
+    }
+
+    func testDoubleStartIsIgnored() throws {
+        let (monitor, watch, _) = make()
+        try monitor.start()
+        try monitor.start()                          // second start ignored
+        XCTAssertEqual(watch.startCount, 1)
+    }
 }

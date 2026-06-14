@@ -5,6 +5,7 @@ import SecretaryVaultAccess
 public final class FakeFolderWatch: FolderWatchPort {
     public private(set) var started = false
     public private(set) var stopCount = 0
+    public private(set) var startCount = 0
     /// Set before `start` to make it throw.
     public var startError: Error?
     private var onPulse: (@MainActor (MonotonicInstant) -> Void)?
@@ -13,6 +14,7 @@ public final class FakeFolderWatch: FolderWatchPort {
 
     public func start(onPulse: @escaping @MainActor (MonotonicInstant) -> Void) throws {
         if let startError { throw startError }
+        startCount += 1
         started = true
         self.onPulse = onPulse
     }
