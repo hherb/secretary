@@ -14,6 +14,11 @@ public final class VaultProvisioningViewModel: ObservableObject {
     @Published public private(set) var error: VaultProvisioningError?
     /// Numbered words for the mnemonic step; `nil` outside that step or after ack.
     @Published public private(set) var mnemonicRows: [MnemonicWord]?
+    /// True while a `create` call is in flight. Drives the create button's
+    /// disabled state. Now that the KDF is offloaded the UI stays responsive
+    /// during create, so the trigger stays tappable — this flag is the
+    /// re-entrancy guard the blocking main actor used to provide implicitly.
+    @Published public private(set) var isCreating = false
 
     private let createPort: VaultCreatePort
     private let store: VaultLocationStore
@@ -43,12 +48,22 @@ public final class VaultProvisioningViewModel: ObservableObject {
     /// vault), then advance to the mnemonic step. The caller owns clearing its own
     /// Swift-side `password`/`confirm` copies after this returns.
     public func create(displayName: String, password: [UInt8], confirm: [UInt8]) async {
+        // Ignore a re-entrant call while one is already in flight. The offloaded
+        // KDF keeps the UI responsive (and the Create button tappable) during the
+        // ~0.5–1 s create, so without this guard a double-tap would fire a second
+        // concurrent port call (mkdir into the just-created folder → a spurious
+        // `folderNotEmpty` over an otherwise-successful create).
+        guard !isCreating else { return }
         guard case .credentials(let parent, let vaultName) = step else { return }
         error = nil
         guard passwordsMatch(password, confirm) else {
             error = .passwordMismatch
             return
         }
+        // Set synchronously before the first suspension point so SwiftUI disables
+        // the trigger before the await yields the main actor; reset on every exit.
+        isCreating = true
+        defer { isCreating = false }
         do {
             let created = try await createPort.create(parent: parent,
                                                 vaultName: vaultName,

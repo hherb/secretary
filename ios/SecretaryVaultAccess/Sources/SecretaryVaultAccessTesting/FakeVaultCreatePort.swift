@@ -9,6 +9,9 @@ public final class FakeVaultCreatePort: VaultCreatePort {
     public private(set) var lastVaultName: String?
     public private(set) var lastPassword: [UInt8]?
     public private(set) var lastDisplayName: String?
+    /// How many times `create` was entered — lets a test prove a re-entrant call
+    /// was ignored before it reached the port.
+    public private(set) var createCallCount = 0
     /// Optional rendezvous so a responsiveness test can hold the call mid-flight.
     public var gate: SuspensionGate?
 
@@ -20,6 +23,7 @@ public final class FakeVaultCreatePort: VaultCreatePort {
                        vaultName: String,
                        password: [UInt8],
                        displayName: String) async throws -> CreatedVault {
+        createCallCount += 1
         lastParent = parent
         lastVaultName = vaultName
         lastPassword = password
