@@ -6,6 +6,7 @@ import Foundation
 public protocol FolderWatchPort: AnyObject {
     /// Begin watching. Throws if watching can't start (folder unreadable / scope lost).
     func start(onPulse: @escaping @MainActor (MonotonicInstant) -> Void) throws
+    /// Stop watching and release the watch. Safe to call if not started.
     func stop()
 }
 
