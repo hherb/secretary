@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-14-argon2id-off-main-actor-shipped.md
+docs/handoffs/2026-06-15-c3-ios-sync-orchestration-core-shipped.md
