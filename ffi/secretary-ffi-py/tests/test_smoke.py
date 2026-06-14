@@ -538,7 +538,7 @@ def test_read_block_shape() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 assert block.record_count() == 1
                 assert block.block_name() == VAULT_001_BLOCK_NAME
                 assert block.block_uuid() == VAULT_001_BLOCK_UUID
@@ -553,7 +553,7 @@ def test_read_block_record_metadata() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 assert record.record_uuid() == VAULT_001_RECORD_UUID
                 assert record.record_type() == "login"
@@ -569,7 +569,7 @@ def test_read_block_field_text_password() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 pw_field = record.field_by_name("password")
                 assert pw_field is not None
@@ -583,7 +583,7 @@ def test_read_block_field_text_username() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 user_field = record.field_by_name("username")
                 assert user_field is not None
@@ -596,7 +596,7 @@ def test_read_block_field_metadata() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 pw_field = record.field_by_name("password")
                 user_field = record.field_by_name("username")
@@ -616,7 +616,7 @@ def test_read_block_unknown_uuid_raises_block_not_found() -> None:
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
             with pytest.raises(secretary_ffi_py.VaultBlockNotFound) as exc_info:
-                secretary_ffi_py.read_block(identity, manifest, unknown)
+                secretary_ffi_py.read_block(identity, manifest, unknown, include_deleted=False)
             # The exception payload carries the uuid_hex string.
             assert "00000000000000000000000000000000" in str(exc_info.value)
 
@@ -629,7 +629,7 @@ def test_read_block_wrong_length_uuid_raises_value_error() -> None:
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
             with pytest.raises(ValueError) as exc_info:
-                secretary_ffi_py.read_block(identity, manifest, bytes(15))
+                secretary_ffi_py.read_block(identity, manifest, bytes(15), include_deleted=False)
             assert "16 bytes" in str(exc_info.value)
             assert "got 15" in str(exc_info.value)
 
@@ -640,7 +640,7 @@ def test_read_block_field_bytes_is_none_for_text_field() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record = block.record_at(0)
                 pw_field = record.field_by_name("password")
                 assert pw_field is not None
@@ -655,7 +655,7 @@ def test_block_read_output_context_manager_wipes() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            block = secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID)
+            block = secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False)
             assert block.record_count() == 1
             with block:
                 pass  # __exit__ runs wipe()
@@ -671,7 +671,7 @@ def test_record_field_handles_share_state_after_wipe() -> None:
     out = secretary_ffi_py.open_vault_with_password(str(folder), VAULT_001_PASSWORD)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
-            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID) as block:
+            with secretary_ffi_py.read_block(identity, manifest, VAULT_001_BLOCK_UUID, include_deleted=False) as block:
                 record_a = block.record_at(0)
                 record_b = block.record_at(0)
                 field_a = record_a.field_by_name("password")
@@ -746,7 +746,7 @@ def test_save_block_round_trip_insert(tmp_path: Path) -> None:
                 identity, manifest, input, SAVE_BLOCK_DEVICE_UUID, SAVE_BLOCK_NOW_MS_BASE,
             )
             with secretary_ffi_py.read_block(
-                identity, manifest, SAVE_BLOCK_NEW_BLOCK_UUID,
+                identity, manifest, SAVE_BLOCK_NEW_BLOCK_UUID, include_deleted=False,
             ) as block:
                 assert block.record_count() == 1
                 record = block.record_at(0)
@@ -834,7 +834,7 @@ def test_save_block_persists_visible_to_fresh_open(tmp_path: Path) -> None:
             assert summary is not None
             assert summary.block_name == "persisted"
             with secretary_ffi_py.read_block(
-                identity2, manifest2, SAVE_BLOCK_NEW_BLOCK_UUID,
+                identity2, manifest2, SAVE_BLOCK_NEW_BLOCK_UUID, include_deleted=False,
             ) as block:
                 assert (
                     block.record_at(0).field_by_name("k").expose_text() == "v"
