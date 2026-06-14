@@ -18,7 +18,8 @@ func runReadBlockAsserts(env: SmokeEnv) {
         let block = try readBlock(
             identity: out.identity,
             manifest: out.manifest,
-            blockUuid: vault001BlockUuid
+            blockUuid: vault001BlockUuid,
+            includeDeleted: false
         )
         defer { block.wipe() }
         let recordCount = block.recordCount()
@@ -41,7 +42,8 @@ func runReadBlockAsserts(env: SmokeEnv) {
         let block = try readBlock(
             identity: out.identity,
             manifest: out.manifest,
-            blockUuid: vault001BlockUuid
+            blockUuid: vault001BlockUuid,
+            includeDeleted: false
         )
         defer { block.wipe() }
         let record = block.recordAt(idx: 0)!
@@ -65,7 +67,8 @@ func runReadBlockAsserts(env: SmokeEnv) {
         _ = try readBlock(
             identity: out.identity,
             manifest: out.manifest,
-            blockUuid: unknownUuid
+            blockUuid: unknownUuid,
+            includeDeleted: false
         )
         check(false, "read_block(unknown_uuid) should have thrown VaultError.BlockNotFound")
     } catch let e as VaultError {
@@ -90,7 +93,8 @@ func runReadBlockAsserts(env: SmokeEnv) {
         let block = try readBlock(
             identity: out.identity,
             manifest: out.manifest,
-            blockUuid: vault001BlockUuid
+            blockUuid: vault001BlockUuid,
+            includeDeleted: false
         )
         block.wipe()
         let countAfter = block.recordCount()

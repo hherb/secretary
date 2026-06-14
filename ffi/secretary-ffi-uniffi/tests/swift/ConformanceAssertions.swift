@@ -111,7 +111,7 @@ func assertPostState(
             return
         }
         do {
-            let output = try readBlock(identity: identity, manifest: manifest, blockUuid: uuid)
+            let output = try readBlock(identity: identity, manifest: manifest, blockUuid: uuid, includeDeleted: true)
             _ = check(Int(output.recordCount()) == pinnedRecords.count, name, "post_state.read_block.record_count mismatch")
             for (i, expRec) in pinnedRecords.enumerated() {
                 guard let rec = output.recordAt(idx: UInt64(i)) else {

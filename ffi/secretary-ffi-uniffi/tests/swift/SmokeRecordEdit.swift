@@ -45,7 +45,7 @@ func runRecordEditAsserts(env: SmokeEnv) {
             ),
             deviceUuid: recordEditDeviceUuid, nowMs: 2_000
         )
-        let block = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid)
+        let block = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid, includeDeleted: false)
         defer { block.wipe() }
         check(
             block.recordCount() == 2,
@@ -76,7 +76,7 @@ func runRecordEditAsserts(env: SmokeEnv) {
             ),
             deviceUuid: editDevice, nowMs: 3_000
         )
-        let block = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid)
+        let block = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid, includeDeleted: false)
         defer { block.wipe() }
         let record = block.recordAt(idx: 0)
         let pass = record?.fieldByName(name: "pass")?.exposeText()
@@ -105,7 +105,7 @@ func runRecordEditAsserts(env: SmokeEnv) {
             blockUuid: recordEditBlockUuid, recordUuid: recordEditRecordUuid,
             deviceUuid: recordEditDeviceUuid, nowMs: 4_000
         )
-        let afterTombstone = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid)
+        let afterTombstone = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid, includeDeleted: true)
         let deadFlag = afterTombstone.recordAt(idx: 0)?.tombstone()
         afterTombstone.wipe()
         try resurrectRecord(
@@ -113,7 +113,7 @@ func runRecordEditAsserts(env: SmokeEnv) {
             blockUuid: recordEditBlockUuid, recordUuid: recordEditRecordUuid,
             deviceUuid: recordEditDeviceUuid, nowMs: 5_000
         )
-        let afterResurrect = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid)
+        let afterResurrect = try readBlock(identity: identity, manifest: manifest, blockUuid: recordEditBlockUuid, includeDeleted: false)
         let liveFlag = afterResurrect.recordAt(idx: 0)?.tombstone()
         afterResurrect.wipe()
         check(
