@@ -60,7 +60,7 @@ pub fn load_from_vault(
         return Ok((Settings::default(), Vec::new()));
     };
 
-    let block = read_block(identity, manifest, &block_uuid).map_err(AppError::from)?;
+    let block = read_block(identity, manifest, &block_uuid, false).map_err(AppError::from)?;
 
     if block.record_count() != 1 {
         return Ok((

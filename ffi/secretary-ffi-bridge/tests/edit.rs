@@ -92,7 +92,7 @@ fn create_block_then_append_record_is_readable() {
     )
     .expect("append_record");
 
-    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).expect("read");
+    let out = read_block(&opened.identity, &opened.manifest, &block_uuid, false).expect("read");
     assert_eq!(out.record_count(), 1);
     let r = out.record_at(0).unwrap();
     assert_eq!(r.record_type(), "login");
@@ -157,7 +157,7 @@ fn edit_record_replaces_target_and_leaves_siblings_byte_faithful() {
     )
     .unwrap();
 
-    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).unwrap();
+    let out = read_block(&opened.identity, &opened.manifest, &block_uuid, false).unwrap();
     let find = |uuid: [u8; 16]| {
         (0..out.record_count())
             .map(|i| out.record_at(i).unwrap())
@@ -271,15 +271,27 @@ fn tombstone_record_hides_from_read_block() {
     )
     .expect("tombstone_record");
 
-    // The record is STILL present in the block file (soft-delete), but its
-    // tombstone flag is now set.
-    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).expect("read");
-    let found = find_record(&out, record_uuid).expect("tombstoned record still present");
+    // include_deleted = false: the tombstoned record is WITHHELD — it never
+    // crosses the FFI projection, so its field handles are never built.
+    let live_only =
+        read_block(&opened.identity, &opened.manifest, &block_uuid, false).expect("read");
+    assert!(
+        find_record(&live_only, record_uuid).is_none(),
+        "tombstoned record must be withheld when include_deleted=false"
+    );
+    live_only.wipe();
+
+    // include_deleted = true: the record is present (soft-delete) and reports
+    // tombstone() == true for the restore UI.
+    let with_deleted =
+        read_block(&opened.identity, &opened.manifest, &block_uuid, true).expect("read");
+    let found = find_record(&with_deleted, record_uuid)
+        .expect("tombstoned record present when include_deleted=true");
     assert!(
         found.tombstone(),
         "tombstoned record must report tombstone()"
     );
-    out.wipe();
+    with_deleted.wipe();
 }
 
 #[test]
@@ -309,7 +321,7 @@ fn resurrect_record_clears_tombstone_and_keeps_fields() {
     )
     .expect("resurrect_record");
 
-    let out = read_block(&opened.identity, &opened.manifest, &block_uuid).expect("read");
+    let out = read_block(&opened.identity, &opened.manifest, &block_uuid, false).expect("read");
     let r = find_record(&out, record_uuid).expect("resurrected record present");
     assert!(!r.tombstone(), "resurrected record must clear tombstone()");
     assert_eq!(

@@ -270,8 +270,9 @@ fn generate_conformance_kat() {
     let block_uuid_hex = "112233445566778899aabbccddeeff00";
     let mut uuid = [0u8; 16];
     uuid.copy_from_slice(&hex::decode(block_uuid_hex).unwrap());
-    let read = secretary_ffi_bridge::record::read_block(&opened.identity, &opened.manifest, &uuid)
-        .expect("read_block(golden_vault_001 block) must succeed");
+    let read =
+        secretary_ffi_bridge::record::read_block(&opened.identity, &opened.manifest, &uuid, true)
+            .expect("read_block(golden_vault_001 block) must succeed");
 
     let mut records_json = Vec::new();
     for i in 0..read.record_count() {
@@ -361,9 +362,13 @@ fn generate_conformance_kat() {
         .expect("generator: save_block_insert_happy");
 
         // Round-trip read.
-        let read_out =
-            secretary_ffi_bridge::record::read_block(&out.identity, &out.manifest, &[0xABu8; 16])
-                .expect("generator: round-trip read_block");
+        let read_out = secretary_ffi_bridge::record::read_block(
+            &out.identity,
+            &out.manifest,
+            &[0xABu8; 16],
+            true,
+        )
+        .expect("generator: round-trip read_block");
 
         // Build the JSON array for records.
         let records_json: Vec<serde_json::Value> = (0..read_out.record_count())

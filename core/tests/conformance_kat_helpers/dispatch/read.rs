@@ -28,7 +28,10 @@ pub fn run_read_block(
     }
     let mut uuid = [0u8; 16];
     uuid.copy_from_slice(&bytes);
-    secretary_ffi_bridge::record::read_block(&cached.identity, &cached.manifest, &uuid)
+    // include_deleted=true: conformance verifies the FULL decoded record set
+    // agrees across languages; no read_block vector carries a tombstone, so this
+    // is observationally identical to false.
+    secretary_ffi_bridge::record::read_block(&cached.identity, &cached.manifest, &uuid, true)
         .map_err(BridgeOrSyntheticErr::Bridge)
 }
 

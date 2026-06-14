@@ -225,13 +225,14 @@ pub fn reveal_record_impl(
     let block_uuid = parse_uuid_16(block_uuid_hex)?;
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let output =
-            bridge_read_block(&u.identity, &u.manifest, &block_uuid).map_err(|e| match e {
+        let output = bridge_read_block(&u.identity, &u.manifest, &block_uuid, false).map_err(
+            |e| match e {
                 FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
                     block_uuid_hex: uuid_hex,
                 },
                 other => AppError::from(other),
-            })?;
+            },
+        )?;
         let record = match locate_record(&output, record_uuid_hex) {
             Some(r) => r,
             None => {

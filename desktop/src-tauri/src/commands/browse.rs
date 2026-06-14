@@ -36,15 +36,17 @@ pub fn read_block_impl(
     let uuid = parse_uuid_16(block_uuid_hex)?;
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let output = bridge_read_block(&u.identity, &u.manifest, &uuid).map_err(|e| match e {
-            // Now user-reachable (any block card click) — surface a typed
-            // BlockNotFound rather than the generic Internal that the shared
-            // map_ffi_error uses (it can't know the caller's hex).
-            FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-                block_uuid_hex: uuid_hex,
+        let output = bridge_read_block(&u.identity, &u.manifest, &uuid, include_deleted).map_err(
+            |e| match e {
+                // Now user-reachable (any block card click) — surface a typed
+                // BlockNotFound rather than the generic Internal that the shared
+                // map_ffi_error uses (it can't know the caller's hex).
+                FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
+                    block_uuid_hex: uuid_hex,
+                },
+                other => AppError::from(other),
             },
-            other => AppError::from(other),
-        })?;
+        )?;
         let dto = project_block_detail(block_uuid_hex.to_string(), &output, include_deleted);
         output.wipe();
         Ok(dto)
@@ -79,12 +81,13 @@ pub fn reveal_field_impl(
     let uuid = parse_uuid_16(block_uuid_hex)?;
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let output = bridge_read_block(&u.identity, &u.manifest, &uuid).map_err(|e| match e {
-            FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-                block_uuid_hex: uuid_hex,
-            },
-            other => AppError::from(other),
-        })?;
+        let output =
+            bridge_read_block(&u.identity, &u.manifest, &uuid, false).map_err(|e| match e {
+                FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
+                    block_uuid_hex: uuid_hex,
+                },
+                other => AppError::from(other),
+            })?;
 
         // Locate record + field; on any miss, wipe before returning the error.
         let record = match locate_record(&output, record_uuid_hex) {

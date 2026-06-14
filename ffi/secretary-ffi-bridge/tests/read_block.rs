@@ -50,7 +50,7 @@ const VAULT_001_BLOCK_FILENAME: &str = "11223344-5566-7788-99aa-bbccddeeff00.cbo
 fn read_block_returns_one_record_two_fields_for_golden_vault_001() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).expect("open should succeed");
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID)
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false)
         .expect("read_block should succeed");
     assert_eq!(block.record_count(), 1);
     assert_eq!(block.block_name(), VAULT_001_BLOCK_NAME);
@@ -63,7 +63,7 @@ fn read_block_returns_one_record_two_fields_for_golden_vault_001() {
 fn read_block_record_metadata_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     assert_eq!(record.record_uuid(), VAULT_001_RECORD_UUID);
     assert_eq!(record.record_type(), VAULT_001_RECORD_TYPE);
@@ -77,7 +77,7 @@ fn read_block_record_metadata_matches_pinned_kat() {
 fn read_block_field_names_in_btreemap_order() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     assert_eq!(
         record.field_names(),
@@ -89,7 +89,7 @@ fn read_block_field_names_in_btreemap_order() {
 fn read_block_field_text_payload_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record
         .field_by_name("password")
@@ -111,7 +111,7 @@ fn read_block_field_text_payload_matches_pinned_kat() {
 fn read_block_field_metadata_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record.field_by_name("password").unwrap();
     let user_field = record.field_by_name("username").unwrap();
@@ -125,7 +125,7 @@ fn read_block_field_metadata_matches_pinned_kat() {
 fn read_block_field_is_text_not_bytes() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record.field_by_name("password").unwrap();
     assert!(pw_field.is_text());
@@ -138,7 +138,7 @@ fn read_block_unknown_uuid_returns_block_not_found() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
     let unknown = [0u8; 16];
-    let err = read_block(&out.identity, &out.manifest, &unknown).unwrap_err();
+    let err = read_block(&out.identity, &out.manifest, &unknown, false).unwrap_err();
     let FfiVaultError::BlockNotFound { uuid_hex } = err else {
         panic!("expected BlockNotFound, got {err:?}");
     };
@@ -221,7 +221,7 @@ fn open_vault_missing_block_file_returns_folder_invalid() {
 fn block_read_output_wipe_drops_records() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record_clone = block.record_at(0).expect("record at 0");
     block.wipe();
     assert_eq!(block.record_count(), 0);
@@ -236,7 +236,7 @@ fn block_read_output_wipe_drops_records() {
 fn record_wipe_drops_field_handles() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let field_clone = record.field_by_name("password").unwrap();
     record.wipe();
@@ -252,7 +252,7 @@ fn record_wipe_drops_field_handles() {
 fn field_handle_arc_clones_share_wiped_state() {
     let folder = fixture_folder("golden_vault_001");
     let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record_a = block.record_at(0).unwrap();
     let record_b = block.record_at(0).unwrap();
     let field_a = record_a.field_by_name("password").unwrap();
@@ -275,7 +275,7 @@ fn read_block_after_open_vault_with_recovery_succeeds() {
     let folder = fixture_folder("golden_vault_001");
     let phrase: &[u8] = b"wall annual clay zebra cost cricket choose light small neck mimic season fix situate love asset dismiss online island disease turkey grab dish that";
     let out = open_vault_with_recovery(&folder, phrase).expect("recovery open");
-    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID).unwrap();
+    let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     assert_eq!(block.record_count(), 1);
     let record = block.record_at(0).unwrap();
     let pw_field = record.field_by_name("password").unwrap();

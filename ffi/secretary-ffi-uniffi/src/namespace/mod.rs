@@ -261,6 +261,8 @@ pub fn open_vault_with_recovery(
 /// folded into `FolderInvalid`, which semantically means "your filesystem
 /// path is wrong").
 ///
+/// When `include_deleted` is false, tombstoned records are withheld; when true they are returned with `tombstone() == true`.
+///
 /// # Errors
 ///
 /// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` (≠ 16 bytes).
@@ -272,6 +274,7 @@ pub fn read_block(
     identity: std::sync::Arc<UnlockedIdentity>,
     manifest: std::sync::Arc<OpenVaultManifest>,
     block_uuid: Vec<u8>,
+    include_deleted: bool,
 ) -> Result<std::sync::Arc<BlockReadOutput>, VaultError> {
     if block_uuid.len() != 16 {
         return Err(VaultError::InvalidArgument {
@@ -280,7 +283,7 @@ pub fn read_block(
     }
     let mut uuid_array = [0u8; 16];
     uuid_array.copy_from_slice(&block_uuid);
-    secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array)
+    secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array, include_deleted)
         .map(|b| std::sync::Arc::new(BlockReadOutput(b)))
         .map_err(VaultError::from)
 }
@@ -688,7 +691,7 @@ mod tests {
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
         let pwd = b"correct horse battery staple".to_vec();
         let out = open_vault_with_password(folder_bytes, pwd).unwrap();
-        match read_block(out.identity, out.manifest, vec![0u8; 15]) {
+        match read_block(out.identity, out.manifest, vec![0u8; 15], false) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(
                     detail.contains("16 bytes") && detail.contains("got 15"),
