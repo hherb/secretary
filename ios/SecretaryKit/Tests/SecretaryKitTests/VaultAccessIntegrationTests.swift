@@ -39,7 +39,7 @@ final class VaultAccessIntegrationTests: XCTestCase {
         let blocks = session.blockSummaries()
         XCTAssertFalse(blocks.isEmpty, "golden vault has at least one block")
 
-        let records = try session.readBlock(blockUuid: blocks[0].uuid)
+        let records = try session.readBlock(blockUuid: blocks[0].uuid, includeDeleted: false)
         XCTAssertFalse(records.isEmpty, "the first block has at least one record")
 
         let textField = try XCTUnwrap(

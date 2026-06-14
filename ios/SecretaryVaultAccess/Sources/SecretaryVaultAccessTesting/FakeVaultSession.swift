@@ -11,6 +11,8 @@ public final class FakeVaultSession: VaultSession {
     private var nextUuidByte: UInt8 = 0xA0
     public private(set) var readCount = 0
     public private(set) var wipeCount = 0
+    /// Spy: the includeDeleted value passed to the most recent readBlock.
+    public private(set) var lastIncludeDeleted = false
 
     public init(vaultUuidHex: String,
                 blocks: [BlockSummary],
@@ -22,12 +24,14 @@ public final class FakeVaultSession: VaultSession {
 
     public func blockSummaries() -> [BlockSummary] { blocks }
 
-    public func readBlock(blockUuid: [UInt8]) throws -> [RecordView] {
+    public func readBlock(blockUuid: [UInt8], includeDeleted: Bool) throws -> [RecordView] {
         readCount += 1
+        lastIncludeDeleted = includeDeleted
         guard let records = recordsByBlock[blockUuid] else {
             throw VaultAccessError.blockNotFound(hex(blockUuid))
         }
-        return records
+        // Model the Rust gate: withhold tombstoned records unless asked.
+        return includeDeleted ? records : records.filter { !$0.tombstone }
     }
 
     @discardableResult

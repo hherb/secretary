@@ -14,9 +14,15 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// small + short-lived as possible; cleared on hide / lock / background.
     @Published public private(set) var revealed: [String: RevealedValue] = [:]
 
-    /// When false (default) the browse list hides tombstoned records. Toggling
-    /// it does not re-read — `visibleRecords` re-partitions the cached `records`.
-    @Published public var showDeleted = false
+    /// When false (default) the browse list shows only live records. The Rust
+    /// gate withholds tombstoned records; toggling RE-READS the selected block
+    /// with the new flag (the client never holds withheld data).
+    @Published public var showDeleted = false {
+        didSet {
+            guard showDeleted != oldValue, let blockUuid = selectedBlockUuid else { return }
+            reload(blockUuid: blockUuid)
+        }
+    }
 
     /// The currently-selected block uuid, so delete/restore can re-read it.
     private var selectedBlockUuid: [UInt8]?
@@ -41,7 +47,7 @@ public final class VaultBrowseViewModel: ObservableObject {
         error = nil
         revealed.removeAll()
         do {
-            records = try session.readBlock(blockUuid: blockUuid)
+            records = try session.readBlock(blockUuid: blockUuid, includeDeleted: showDeleted)
         } catch let e as VaultAccessError {
             records = nil
             error = e
@@ -51,11 +57,9 @@ public final class VaultBrowseViewModel: ObservableObject {
         }
     }
 
-    /// Records to display: tombstoned ones are hidden unless `showDeleted`.
-    public var visibleRecords: [RecordView] {
-        let all = records ?? []
-        return showDeleted ? all : all.filter { !$0.tombstone }
-    }
+    /// Records to display. The Rust gate already withheld tombstoned records
+    /// (unless `showDeleted`), so no client-side filtering happens here.
+    public var visibleRecords: [RecordView] { records ?? [] }
 
     /// Soft-delete a record, then re-read so `visibleRecords` reflects it.
     public func delete(record: RecordView) {
