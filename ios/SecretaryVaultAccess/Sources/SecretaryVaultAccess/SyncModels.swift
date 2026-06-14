@@ -2,7 +2,7 @@ import Foundation
 
 /// One device's vector-clock entry — public metadata, never secret.
 /// Mirrors the bridge `DeviceClockDto`.
-public struct DeviceClock: Equatable {
+public struct DeviceClock: Equatable, Sendable {
     public let deviceUuidHex: String
     public let counter: UInt64
     public init(deviceUuidHex: String, counter: UInt64) {
@@ -12,7 +12,7 @@ public struct DeviceClock: Equatable {
 }
 
 /// Read-only sync status for a vault. Mirrors the bridge `SyncStatusDto`.
-public struct SyncStatus: Equatable {
+public struct SyncStatus: Equatable, Sendable {
     public let hasState: Bool
     public let deviceClocks: [DeviceClock]
     public let lastStateWriteMs: UInt64?
@@ -25,7 +25,7 @@ public struct SyncStatus: Equatable {
 
 /// A tombstone dispute awaiting a human decision. Metadata-only by construction
 /// (the bridge projects field *names*, never values) — no plaintext secret here.
-public struct SyncVeto: Equatable {
+public struct SyncVeto: Equatable, Sendable {
     public let recordUuidHex: String
     public let recordType: String
     public let tags: [String]
@@ -47,7 +47,7 @@ public struct SyncVeto: Equatable {
 }
 
 /// Metadata-only field-level collision summary for the "auto-merged" notice.
-public struct SyncCollision: Equatable {
+public struct SyncCollision: Equatable, Sendable {
     public let recordUuidHex: String
     public let fieldNames: [String]
     public init(recordUuidHex: String, fieldNames: [String]) {
@@ -58,7 +58,7 @@ public struct SyncCollision: Equatable {
 
 /// Caller's per-record decision. `keepLocal == true` rejects the peer tombstone;
 /// `false` accepts the delete.
-public struct SyncVetoDecision: Equatable {
+public struct SyncVetoDecision: Equatable, Sendable {
     public let recordUuidHex: String
     public let keepLocal: Bool
     public init(recordUuidHex: String, keepLocal: Bool) {
@@ -68,7 +68,7 @@ public struct SyncVetoDecision: Equatable {
 }
 
 /// Result of one sync pass. Mirrors the bridge `SyncOutcomeDto`.
-public enum SyncOutcome: Equatable {
+public enum SyncOutcome: Equatable, Sendable {
     /// Disk clock == local highest-seen. No change.
     case nothingToDo
     /// Disk strictly dominates local. State advanced; no vault write.
@@ -87,7 +87,7 @@ public enum SyncOutcome: Equatable {
 /// The pending conflict detail surfaced after a `runPass` that paused.
 /// The freshness token is held privately by the coordinator and intentionally
 /// NOT exposed here — callers never thread it themselves.
-public struct PendingConflict: Equatable {
+public struct PendingConflict: Equatable, Sendable {
     public let vetoes: [SyncVeto]
     public let collisions: [SyncCollision]
     public init(vetoes: [SyncVeto], collisions: [SyncCollision]) {
