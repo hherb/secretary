@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-15-c3-ios-sync-orchestration-core-shipped.md
+docs/handoffs/2026-06-15-c3-ios-folder-change-detection-shipped.md
