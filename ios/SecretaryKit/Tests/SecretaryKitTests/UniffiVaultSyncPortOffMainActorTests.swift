@@ -5,12 +5,24 @@ import SecretaryVaultAccessTesting
 
 /// Both `sync` and `commitDecisions` re-open the identity (Argon2id) and so are
 /// offloaded off the calling actor via `runOffMainActor` in `UniffiVaultSyncPort`
-/// — the same plumbing the open path uses. These tests prove the contract at the
-/// coordinator boundary using `FakeVaultSyncPort` + `SuspensionGate`: reaching
-/// past `waitUntilEntered()` while the pass is suspended is only possible if the
-/// `@MainActor` test interleaved with the in-flight pass. Against a
-/// synchronous-on-main-actor regression the test would deadlock → XCTest timeout
-/// (a hung test is still a red CI).
+/// — the same plumbing the open path uses.
+///
+/// SCOPE — read before trusting the file name: these tests assert the
+/// **coordinator-boundary** non-blocking contract using `FakeVaultSyncPort` +
+/// `SuspensionGate`, NOT the real `UniffiVaultSyncPort`. The fake awaits the gate
+/// directly (no `runOffMainActor` wrap), so what is proven here is that a
+/// `@MainActor` caller interleaves with an in-flight `SyncCoordinator` pass —
+/// which holds because `SyncCoordinator` is a plain `actor` running on the
+/// cooperative pool, independent of any offload in the adapter. The real
+/// adapter's `runOffMainActor` wrap is the *same helper* exercised by the #227
+/// open-path responsiveness tests; it is covered transitively, not re-asserted
+/// here. (Building real-adapter coverage needs an FFI-backed vault on a
+/// simulator — out of scope for this pure-orchestration slice.)
+///
+/// Mechanically: reaching past `waitUntilEntered()` while the pass is suspended
+/// is only possible if the `@MainActor` test interleaved with the in-flight
+/// pass. Against a synchronous-on-main-actor regression the test would deadlock
+/// → XCTest timeout (a hung test is still a red CI).
 final class UniffiVaultSyncPortOffMainActorTests: XCTestCase {
     private let pw: [UInt8] = [1, 2, 3]
 
