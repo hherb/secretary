@@ -193,7 +193,7 @@ fun main() {
                 }
 
                 try {
-                    val block = readBlock(cached.identity, cached.manifest, rawBytes)
+                    val block = readBlock(cached.identity, cached.manifest, rawBytes, true)
                     if (kind != "ok") {
                         check(false, name, "expected err, got ok")
                         block.destroy()

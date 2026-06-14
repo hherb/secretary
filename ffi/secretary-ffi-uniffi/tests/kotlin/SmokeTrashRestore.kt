@@ -49,7 +49,7 @@ fun runTrashRestoreAsserts(env: SmokeEnv) {
                     "trash_block: BlockEntry dropped from manifest",
                 )
                 restoreBlock(id, mf, B5_BLOCK_UUID, B5_DEVICE_UUID, 3_000UL)
-                readBlock(id, mf, B5_BLOCK_UUID).use { block ->
+                readBlock(id, mf, B5_BLOCK_UUID, false).use { block ->
                     check(
                         block.recordCount() == 1UL,
                         "restore_block: record preserved (got ${block.recordCount()})",

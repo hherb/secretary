@@ -132,7 +132,7 @@ internal fun assertPostState(
             return
         }
         try {
-            val output = readBlock(identity, manifest, uuid)
+            val output = readBlock(identity, manifest, uuid, true)
             try {
                 check(output.recordCount().toInt() == pinnedRecords.length(), name, "post_state.read_block.record_count mismatch")
                 for (ri in 0 until pinnedRecords.length()) {
