@@ -17,6 +17,22 @@ public final class PresenterFolderWatch: NSObject, FolderWatchPort, NSFilePresen
         // Deliver presenter callbacks on the main queue so every access to
         // `onPulse` — the start/stop writes AND the pulse() read — is confined to
         // the main thread. No cross-thread data race on the stored closure.
+        //
+        // Apple cautions against `.main` here because a *synchronous*
+        // `NSFileCoordinator` write driven from the main thread could deadlock
+        // waiting on a presenter callback that also needs the main queue. That
+        // hazard does not apply to this presenter:
+        //   1. It implements only the notification callbacks
+        //      (`presentedSubitemDidChange` / `presentedItemDidChange`), never the
+        //      blocking coordination callbacks (`relinquishPresentedItem(toWriter:)`,
+        //      `savePresentedItemChanges`) that participate in a write's critical
+        //      section.
+        //   2. The app performs NO Swift `NSFileCoordinator` writes — vault writes
+        //      go through the Rust core's atomic rename over FFI, not file
+        //      coordination — so there is no same-process coordinated write to
+        //      contend with on any thread, let alone the main one.
+        // Slice 3's `muteUntil` self-write hook (if wired around a write) must
+        // preserve property (2): keep vault writes off Swift file coordination.
         self.presentedItemOperationQueue = .main
         super.init()
     }

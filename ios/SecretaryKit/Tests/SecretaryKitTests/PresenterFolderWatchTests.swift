@@ -22,7 +22,13 @@ final class PresenterFolderWatchTests: XCTestCase {
         defer { monitor.stop() }
 
         // Write a file via a separate coordinator (filePresenter: nil) so our
-        // registered presenter is notified of the external change.
+        // registered presenter is notified of the external change. This models
+        // the real scenario: an EXTERNAL writer (the sync engine / iCloud)
+        // mutating the folder. It deliberately does NOT model a same-process
+        // synchronous coordinated write from the main thread — the one shape that
+        // could deadlock a `.main` presenter queue — because the app performs no
+        // such write (vault writes go through the Rust core's atomic rename, not
+        // Swift file coordination); see PresenterFolderWatch.init.
         let target = folder.appendingPathComponent("block-0001.bin")
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordError: NSError?
