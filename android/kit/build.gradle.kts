@@ -13,10 +13,19 @@ val repoRoot: java.io.File = rootProject.projectDir.parentFile
 val hostCdylibExt: String = if (DefaultNativePlatform.getCurrentOperatingSystem().isMacOsX) "dylib" else "so"
 val generatedBindingsDir = layout.buildDirectory.dir("generated/uniffi")
 
+// Single source of truth for the NDK revision (reused by android.ndkVersion and cargo-ndk below).
+val ndkVer = "29.0.14206865"
+
+// SDK root for locating the NDK: honor the standard Android env vars (CI / Linux),
+// falling back to the conventional macOS location for a bare local shell.
+val androidSdkRoot: String = System.getenv("ANDROID_SDK_ROOT")
+    ?: System.getenv("ANDROID_HOME")
+    ?: "${System.getProperty("user.home")}/Library/Android/sdk"
+
 android {
     namespace = "org.secretary.sync"
     compileSdk = 36
-    ndkVersion = "29.0.14206865"
+    ndkVersion = ndkVer
 
     defaultConfig {
         minSdk = 26
@@ -103,7 +112,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 // Cross-build the cdylib for arm64-v8a and stage it into jniLibs.
 val cargoNdkBuildArm64 by tasks.registering(Exec::class) {
     workingDir = repoRoot
-    environment("ANDROID_NDK_HOME", "${System.getProperty("user.home")}/Library/Android/sdk/ndk/29.0.14206865")
+    environment("ANDROID_NDK_HOME", "$androidSdkRoot/ndk/$ndkVer")
     commandLine(
         "cargo", "ndk",
         "-t", "arm64-v8a",
