@@ -26,6 +26,10 @@ pub const BASELINE_PASSWORD: &[u8] = b"c4-convergence-test-password";
 pub const BASELINE_CREATED_AT_MS: u64 = 1_714_060_800_000;
 const BASELINE_SEED: u8 = 0xC4;
 
+fn fast_kdf() -> Argon2idParams {
+    Argon2idParams::new(8, 1, 1)
+}
+
 pub struct Baseline {
     _tmp: tempfile::TempDir,
     folder: PathBuf,
@@ -43,7 +47,7 @@ impl Baseline {
             &password,
             "C4 Convergence",
             BASELINE_CREATED_AT_MS,
-            Argon2idParams::new(8, 1, 1),
+            fast_kdf(),
             &mut rng,
         )
         .expect("create_vault_unchecked");
@@ -136,6 +140,9 @@ impl Baseline {
         &self.password
     }
 
+    /// Opens the vault (a full cryptographic unlock via open_vault) and returns the decrypted
+    /// manifest; the identity_block_key and other OpenVault fields are dropped (and zeroized)
+    /// on return.
     pub fn open_manifest(&self) -> Manifest {
         let open = open_vault(&self.folder, Unlocker::Password(&self.password), None)
             .expect("open baseline");
