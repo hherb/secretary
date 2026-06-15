@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-15-c3-android-sync-orchestration-core-shipped.md
+docs/handoffs/2026-06-15-c3-android-sync-adapter-shipped.md
