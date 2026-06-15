@@ -79,6 +79,42 @@ public final class VaultSyncViewModel: ObservableObject {
         recomputeBadge()
     }
 
+    // MARK: - Monitor input
+
+    /// The change monitor raised its advisory flag. Mirror it into the badge.
+    public func pendingChangesRaised() {
+        pendingChanges = true
+        recomputeBadge()
+    }
+
+    // MARK: - Trigger 2: interactive re-prompt sync
+
+    /// Open the password sheet (entry point for badge tap / "Sync now").
+    public func beginInteractiveSync() {
+        passwordSheetPresented = true
+    }
+
+    /// Run a pass with the re-prompted password. On `conflictsPending`, dismiss the
+    /// password sheet and present the conflict sheet (the view retains the password
+    /// and re-supplies it to `resolve`); on any clean arm, dismiss and clear; on
+    /// failure, keep the password sheet open for retry.
+    public func runInteractivePass(password: [UInt8]) async {
+        await runPass(password: password) { [weak self] outcome in
+            guard let self else { return }
+            if case let .conflictsPending(vetoes, collisions, _) = outcome {
+                self.pendingConflict = PendingConflict(vetoes: vetoes, collisions: collisions)
+                self.reviewNeeded = true
+                self.passwordSheetPresented = false
+                self.conflictSheetPresented = true
+            } else {
+                self.reviewNeeded = false
+                self.passwordSheetPresented = false
+                self.conflictSheetPresented = false
+                self.pendingConflict = nil
+            }
+        }
+    }
+
     // MARK: - Status
 
     /// Best-effort: needs the 16-byte vault UUID. Failures are swallowed (the

@@ -71,4 +71,59 @@ final class VaultSyncViewModelTests: XCTestCase {
         XCTAssertEqual(hook.muteCalls, 1)            // mute happened before the pass
         XCTAssertEqual(hook.acknowledgeCalls, 0)     // failure → no acknowledge
     }
+
+    func testPendingChangesRaisedUpdatesBadge() {
+        let vm = makeVM(port: FakeVaultSyncPort())
+        vm.pendingChangesRaised()
+        XCTAssertEqual(vm.badge, .changesDetected)
+    }
+
+    func testBeginInteractiveSyncPresentsPasswordSheet() {
+        let vm = makeVM(port: FakeVaultSyncPort())
+        vm.beginInteractiveSync()
+        XCTAssertTrue(vm.passwordSheetPresented)
+    }
+
+    func testInteractivePassCleanDismissesAndClears() async {
+        let port = FakeVaultSyncPort(syncResult: .success(.mergedClean))
+        let vm = makeVM(port: port)
+        vm.beginInteractiveSync()
+        vm.pendingChangesRaised()                    // badge was changesDetected
+
+        await vm.runInteractivePass(password: Array("pw".utf8))
+
+        XCTAssertFalse(vm.passwordSheetPresented)
+        XCTAssertFalse(vm.conflictSheetPresented)
+        XCTAssertNil(vm.pendingConflict)
+        XCTAssertFalse(vm.reviewNeeded)
+    }
+
+    func testInteractivePassConflictPresentsConflictSheet() async {
+        let veto = SyncVeto(recordUuidHex: "aa", recordType: "login", tags: ["t"],
+                            fieldNames: ["password"], localLastModMs: 1,
+                            peerTombstonedAtMs: 2, peerDeviceHex: "bb")
+        let port = FakeVaultSyncPort(syncResult: .success(
+            .conflictsPending(vetoes: [veto], collisions: [], manifestHash: [9])))
+        let vm = makeVM(port: port)
+        vm.beginInteractiveSync()
+
+        await vm.runInteractivePass(password: Array("pw".utf8))
+
+        XCTAssertFalse(vm.passwordSheetPresented)    // password sheet dismissed
+        XCTAssertTrue(vm.conflictSheetPresented)     // conflict sheet up
+        XCTAssertEqual(vm.pendingConflict?.vetoes.first?.recordUuidHex, "aa")
+        XCTAssertTrue(vm.reviewNeeded)
+    }
+
+    func testInteractivePassFailureKeepsPasswordSheetOpen() async {
+        let port = FakeVaultSyncPort(syncResult: .failure(.inProgress))
+        let vm = makeVM(port: port)
+        vm.beginInteractiveSync()
+
+        await vm.runInteractivePass(password: Array("pw".utf8))
+
+        XCTAssertEqual(vm.lastError, .inProgress)
+        XCTAssertTrue(vm.passwordSheetPresented)     // stays open for retry
+        XCTAssertFalse(vm.conflictSheetPresented)
+    }
 }
