@@ -201,3 +201,46 @@ Each defense in §3 must correspond to either a specific test or a specific desi
 - **`tempfile` exact-pinned (`=3.27.0`)** → atomic-write path dependency; pinned at `core/Cargo.toml` so a `cargo update` cannot move the resolved version inside the 3.x range without a deliberate edit.
 
 Each test name and KAT-file name above is a contract; renaming or removing requires a corresponding update here.
+
+---
+
+## 6. Browser extension adversaries (Sub-project D.4 scope)
+
+The browser autofill extension (D.4; design in [adr/0010-browser-autofill-native-messaging.md](adr/0010-browser-autofill-native-messaging.md)) introduces adversaries the v1 core model (§2) does not cover, because it *deliberately* moves a subset of secrets into the browser — a far larger and more hostile trusted computing base than the native clients. This section is **scoped to D.4**: it adds adversaries and defenses for that slice and does **not** relax any §2–§5 guarantee for the native apps. The defenses below are design commitments for an unbuilt sub-project; unlike §3, they do not yet have a §5 verification trace (that is a Definition-of-Done item for D.4, not Sub-project A).
+
+The organizing principle is **containment, not in-browser hardening**: the browser is assumed to be a weaker environment that we do not try to make as strong as the native app. Instead, the design caps what is reachable from it — long-term keys and the high-value vault never enter the browser process at all.
+
+### 6.1 Adversaries
+
+#### 6.1.1 Hostile / lookalike web page (in scope, primary for D.4)
+Any page the user visits. Goal: induce a fill into the wrong origin, or read a value that was legitimately filled. Capabilities:
+- Present a login form on a punycode/IDN lookalike domain, a confusable subdomain, or inside a nested cross-origin iframe.
+- Clickjack or overlay the fill affordance; synthesize "user gesture" events via script.
+- Read the filled value from its own DOM after a fill.
+
+#### 6.1.2 Malicious / compromised extension (in scope)
+A second extension with broad host permissions, or a supply-chain compromise / hostile auto-update of Secretary's own extension. Capabilities: read page DOM (hence any filled secret), and probe any local IPC the helper exposes.
+
+#### 6.1.3 Browser / renderer as expanded TCB (containment, not defense)
+Renderer RCE and similar. Secretary does **not** claim to protect a secret once it has been filled into a compromised renderer — this is the §2.7 "active malware on an unlocked device" case carried into the browser. The D.4 response is architectural containment (§6.2), not in-renderer protection.
+
+#### 6.1.4 Native-messaging channel attacker (in scope)
+A local process attempting to impersonate the extension to the native helper, or the helper to the extension.
+
+### 6.2 Defense matrix (D.4-specific)
+
+| Attack | Defense |
+|---|---|
+| Fill into the wrong origin (lookalike / confusable subdomain / cross-origin iframe) | Origin matching runs in the **native helper**, never in a content script. Per-credential `origin_binding` (`registrable_domain` via Public Suffix List, or `exact_origin` = scheme+host+port). Top-frame origin governs; a cross-origin iframe is never silently filled. HTTPS-only. The confirmation displays the de-confused (punycode-flagged, mixed-script-flagged) destination origin. (ADR 0010 §6) |
+| Silent autofill on page load | **Click-to-fill only.** A fill requires a genuine (`isTrusted`) user gesture; synthetic/scripted events do not trigger a fill. (ADR 0010 §4) |
+| Clickjacked / spoofed confirmation, or co-extension hijack of the prompt | The confirmation gesture is a **native OS dialog outside web content** — not page-injected, not web-rendered. (ADR 0010 §5) |
+| Extension reads the bulk credential set | The extension holds no vault and no keys. Matching happens in the helper; only the **single approved credential** crosses the boundary, never the credential list. (ADR 0010 §2) |
+| Compromise of the browser/extension/helper reaches high-value secrets | **Vault tiering is cryptographic, not a toggle:** the high-value vault is never enrolled with a browser device slot (ADR 0009), so the helper holds no key material capable of opening it. Worst case is casual-vault items, one fill at a time. (ADR 0010 §1, §3) |
+| Impersonation on the native-messaging channel | Native messaging is a browser-spawned **stdio** subprocess — no listening socket (preserves the §3.1 / ADR 0007 "no localhost server" posture). The per-OS native-messaging manifest binds extension ID ⟷ helper path on both ends. (ADR 0010 §2) |
+| Weaker open on the browser path | The per-fill `open_with_device_secret` goes through the **same B.2 manifest verify-before-decrypt** as the password / recovery / device paths; the browser open is not a weaker open. (ADR 0010 §3) |
+
+### 6.3 Known limitations of D.4 (acknowledged tradeoffs)
+
+1. **Filled secrets live in page DOM.** Once a credential is filled, a compromised renderer or a malicious co-resident extension can read it. Tiering bounds the loss to casual-vault items; it does not eliminate it.
+2. **The user classifies value, not the tool.** "Casual" vs "high-value" is a human judgement. Guard-rails (a warning when filing a recovery-channel domain — email / SSO / financial — into the casual vault, and discouraging cross-tier password reuse) mitigate but cannot remove misclassification risk.
+3. **A reused password defeats the wall.** If the same secret sits in both the casual and high-value vaults, the cryptographic separation is illusory for that secret. The cross-tier-reuse guard-rail is the only mitigation; it is advisory, not enforced.
