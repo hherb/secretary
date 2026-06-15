@@ -3021,7 +3021,8 @@ def section_convergence_kat() -> tuple[bool, list[str]]:
             ab = _normalise_block(_converged_block(b, a, b_hex))
             # Ordering BA: B canonical, A merges (A local, B remote, merger=A).
             ba = _normalise_block(_converged_block(a, b, a_hex))
-        except Exception as exc:  # noqa: BLE001 — surface any merge error as a FAIL line
+        except Exception as exc:
+            # Surface any merge error as a FAIL line (mirrors section4_conflict_kat).
             lines.append(f"FAIL  scenario {name!r}: merge raised {exc!r}")
             all_ok = False
             continue
