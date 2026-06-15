@@ -214,7 +214,7 @@ fn scenario_concurrent_disjoint_fields_converges() {
     // Seed X so both devices edit the SAME record.
     let mut seed = Device::fork(&baseline, [0x00; 16], 0x55);
     seed.edit_text_field(X_BLOCK, X_RECORD, "f0", "seed", 10);
-    let baseline = baseline_from_seeded(baseline, &seed, X_BLOCK);
+    let baseline = baseline_from_seeded(baseline, &seed);
 
     let edit = |canonical_first: bool| {
         let mut a = Device::fork(&baseline, A_UUID, 0xA0);
@@ -238,16 +238,33 @@ fn scenario_concurrent_disjoint_fields_converges() {
     // any sync — see the harness note in convergence_helpers/device.rs. The seed
     // exists only to give A and B a common-ancestor record UUID so they edit the
     // SAME record and stay mutually concurrent.)
-    assert_eq!(order_ab.len(), 1);
-    for fname in ["f1", "f2"] {
-        assert!(
-            order_ab[0]
-                .field_value_digests
-                .iter()
-                .any(|(n, _)| n == fname),
-            "missing field {fname}",
-        );
+
+    // Helper: assert every expected field name appears in the record's digest map.
+    fn assert_has_fields(record: &convergence_helpers::LogicalRecord, expected: &[&str]) {
+        for fname in expected {
+            assert!(
+                record.field_value_digests.iter().any(|(n, _)| n == fname),
+                "missing field {fname}",
+            );
+        }
     }
+
+    assert_eq!(order_ab.len(), 1);
+    assert_eq!(
+        order_ab[0].field_value_digests.len(),
+        2,
+        "expected exactly f1 and f2 (seed f0 is overwritten)"
+    );
+    assert_has_fields(&order_ab[0], &["f1", "f2"]);
+
+    assert_eq!(order_ba.len(), 1);
+    assert_eq!(
+        order_ba[0].field_value_digests.len(),
+        2,
+        "expected exactly f1 and f2 (seed f0 is overwritten)"
+    );
+    assert_has_fields(&order_ba[0], &["f1", "f2"]);
+
     // Order-independence: both orderings converge to the same logical state.
     convergence_helpers::assert_converged(&order_ab, &order_ba);
 }
