@@ -1,2 +1,5 @@
 .gradle/
 build/
+
+# cargo-ndk-staged native libraries (built, never committed)
+kit/src/main/jniLibs/
