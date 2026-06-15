@@ -39,7 +39,7 @@ fn reconcile_lays_out_canonical_plus_conflict_copy() {
     b.edit_text_field(X_BLOCK, X_RECORD, "f2", "bob", 100);
 
     // A canonical, B merger (B's files become conflict-copies in S).
-    let shared = reconcile(&a, Some((&b, B_UUID)), X_BLOCK);
+    let shared = reconcile(&a, Some(&b), X_BLOCK);
 
     let s = shared.folder();
     assert!(s.join("manifest.cbor.enc").exists());

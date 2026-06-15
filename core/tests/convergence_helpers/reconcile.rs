@@ -19,20 +19,22 @@ impl SharedFolder {
 ///
 /// - `canonical`: the device whose files become the canonical
 ///   `manifest.cbor.enc` / `blocks/<uuid>.cbor.enc`.
-/// - `merger`: `Some((device, uuid))` whose `manifest.cbor.enc` and
+/// - `merger`: `Some(device)` whose `manifest.cbor.enc` and
 ///   `blocks/<uuid>.cbor.enc` are copied in as conflict-copy siblings;
 ///   `None` for the one-editor (auto-apply) scenario.
-/// - `block_uuid`: the block both devices touched.
+/// - `block_uuid`: the block the canonical device (and optionally the merger) touched.
 pub fn reconcile(
     canonical: &Device,
-    merger: Option<(&Device, [u8; 16])>,
+    merger: Option<&Device>,
     block_uuid: [u8; 16],
 ) -> SharedFolder {
     let tmp = tempfile::tempdir().expect("tempdir");
     let folder = tmp.path().to_path_buf();
     copy_dir_all(canonical.folder(), &folder).expect("copy canonical into shared");
 
-    if let Some((merger_dev, merger_uuid)) = merger {
+    if let Some(merger_dev) = merger {
+        let merger_uuid = merger_dev.device_uuid();
+        // first byte only — sufficient while device UUIDs are distinct in byte 0 (e.g. [0x0A;16] / [0x0B;16]); extend to more bytes if the harness gains devices that collide here.
         let suffix = format!(".sync-conflict-from-device-{:02x}", merger_uuid[0]);
 
         // Manifest conflict-copy.
