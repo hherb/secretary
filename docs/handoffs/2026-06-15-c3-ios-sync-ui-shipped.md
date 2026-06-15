@@ -55,7 +55,7 @@ The natural continuation is **C.3 Android** (the last C.3 platform piece) or **C
 
 **Acceptance for C.3 Android (sketch):** an Android app (Compose) can open a SAF-granted vault folder, detect remote folder changes via `WorkManager`, run a sync pass (re-prompting for the password), and surface a tombstone-veto conflict in a Keep-mine / Accept-delete UI — mirroring the iOS slice-1/2/3 stack over the same uniffi bindings.
 
-**Open follow-up issues:** carried **#224 / #192 / #193 / #190 / #189 / #186 / #161 / #162 / #167 / #202**.
+**Open follow-up issues:** new **#234** (sync badge "Synced Nm ago" label doesn't tick forward on its own — cosmetic, deferred from this PR's review); carried **#224 / #192 / #193 / #190 / #189 / #186 / #161 / #162 / #167 / #202**.
 
 ## (3) Open decisions and risks
 

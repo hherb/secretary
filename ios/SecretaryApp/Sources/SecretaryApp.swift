@@ -1,7 +1,13 @@
 import SwiftUI
+import os
 import SecretaryKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
+
+/// App-level breadcrumbs for the best-effort sync wiring (folder watcher start +
+/// sync-state-dir resolution). Both paths degrade gracefully rather than failing
+/// the unlock, so a log line is the only signal that detection went advisory-blind.
+private let appLog = Logger(subsystem: "com.secretary.app", category: "sync-wiring")
 
 @main
 struct SecretaryApp: App {
@@ -73,11 +79,25 @@ private struct RootView: View {
                         onUnlocked: { session, password in
                             let folder = URL(fileURLWithPath:
                                 String(decoding: scoped.pathData, as: UTF8.self))
-                            let stateDir = (try? defaultSyncStateDir())
-                                ?? FileManager.default.temporaryDirectory
+                            // App-sandbox dir creation effectively never fails; if it
+                            // does, fall back to a (ephemeral) temp dir so unlock still
+                            // proceeds — sync state just won't persist across launches.
+                            let stateDir: URL
+                            do {
+                                stateDir = try defaultSyncStateDir()
+                            } catch {
+                                stateDir = FileManager.default.temporaryDirectory
+                                appLog.error("sync state dir unavailable, using temp: \(error.localizedDescription, privacy: .public)")
+                            }
                             let (syncVM, monitor) = makeVaultSync(
                                 session: session, folder: folder, stateDir: stateDir)
-                            try? monitor.start()
+                            // A failed watcher start leaves detection advisory-blind
+                            // (the badge falls back to manual "Sync now"); not fatal.
+                            do {
+                                try monitor.start()
+                            } catch {
+                                appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
+                            }
                             if let password {
                                 Task { await syncVM.syncAtUnlock(password: password) }
                             } else {

@@ -97,9 +97,10 @@ public final class VaultSyncViewModel: ObservableObject {
     }
 
     /// Run a pass with the re-prompted password. On `conflictsPending`, dismiss the
-    /// password sheet and present the conflict sheet (the view retains the password
-    /// and re-supplies it to `resolve`); on any clean arm, dismiss and clear; on
-    /// failure, keep the password sheet open for retry.
+    /// password sheet and present the conflict sheet (which re-prompts for its own
+    /// short-lived password on Apply — no secret is threaded across the two sheets);
+    /// on any clean arm, dismiss and clear; on failure, keep the password sheet open
+    /// for retry.
     public func runInteractivePass(password: [UInt8]) async {
         await runPass(password: password) { [weak self] outcome in
             guard let self else { return }
