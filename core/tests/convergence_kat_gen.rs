@@ -220,6 +220,9 @@ struct Scenario {
 fn scenarios() -> Vec<Scenario> {
     vec![
         // 1. auto-apply: A live, B behind (empty block + empty clock).
+        //    Exercises IncomingDominates / IncomingDominated (NOT the Concurrent
+        //    merge path); order-independence holds because A's clock dominates
+        //    B's either way.
         Scenario {
             name: "auto_apply",
             a_block: block_of(
@@ -297,7 +300,7 @@ fn scenarios() -> Vec<Scenario> {
 }
 
 /// Merge a scenario in one ordering. `merger` syncs: its own side is `local`,
-/// the canonical side is `remote`, and the merge ticks `merger`'s clock entry.
+/// the incoming side is `remote`, and the merge ticks `merger`'s clock entry.
 fn merge_ordering(
     local: &BlockPlaintext,
     local_clock: &[VectorClockEntry],
