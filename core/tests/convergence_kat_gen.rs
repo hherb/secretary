@@ -7,13 +7,16 @@
 //!
 //! See docs/superpowers/specs/2026-06-15-c4-python-convergence-mirror-design.md.
 #![forbid(unsafe_code)]
-#![allow(dead_code)] // Task 2 (generator + guard) consumes the remaining builders/imports.
+#![allow(dead_code)]
+// Task 2 (generator + guard) consumes the remaining builders/imports.
+// (B, record_tombstoned, vc, clock_to_json, merge_block are Task 2's device-B/guard items.)
 #![allow(unused_imports)] // merge_block is consumed by Task 2.
 
 use std::collections::BTreeMap;
 
 use secretary_core::vault::{
-    merge_block, BlockPlaintext, Record, RecordField, RecordFieldValue, VectorClockEntry,
+    merge_block, BlockPlaintext, Record, RecordField, RecordFieldValue, UnknownValue,
+    VectorClockEntry,
 };
 
 const A: u8 = 0x0A;
@@ -127,6 +130,19 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Serialise a record- or block-level `unknown` map to the KAT's
+/// `{"key": "<hex-cbor>"}` shape. Currently asserts the map is empty: no
+/// convergence scenario exercises forward-compat unknown keys. This is the
+/// single extension point — implement the hex-CBOR mapping here when the first
+/// such scenario is added, rather than re-deriving it at three call sites.
+fn unknown_to_json(map: &BTreeMap<String, UnknownValue>) -> serde_json::Value {
+    assert!(
+        map.is_empty(),
+        "convergence scenarios carry no unknown keys — implement unknown_to_json when first needed"
+    );
+    serde_json::json!({})
+}
+
 fn field_to_json(name: &str, f: &RecordField) -> serde_json::Value {
     assert!(
         f.unknown.is_empty(),
@@ -150,10 +166,6 @@ fn field_to_json(name: &str, f: &RecordField) -> serde_json::Value {
 }
 
 fn record_to_json(r: &Record) -> serde_json::Value {
-    assert!(
-        r.unknown.is_empty(),
-        "convergence scenarios carry no record-level unknown keys"
-    );
     // BTreeMap iteration is sorted by name → matches py_merge_record's
     // `sorted(set(...))` field order, so the golden compares equal to the
     // Python merge output field-for-field.
@@ -168,15 +180,11 @@ fn record_to_json(r: &Record) -> serde_json::Value {
         "last_mod_ms": r.last_mod_ms,
         "tombstone": r.tombstone,
         "tombstoned_at_ms": r.tombstoned_at_ms,
-        "unknown_hex": serde_json::json!({}),
+        "unknown_hex": unknown_to_json(&r.unknown),
     })
 }
 
 fn block_to_json(b: &BlockPlaintext) -> serde_json::Value {
-    assert!(
-        b.unknown.is_empty(),
-        "convergence scenarios carry no block-level unknown keys"
-    );
     let records: Vec<serde_json::Value> = b.records.iter().map(record_to_json).collect();
     serde_json::json!({
         "block_version": b.block_version,
@@ -184,7 +192,7 @@ fn block_to_json(b: &BlockPlaintext) -> serde_json::Value {
         "block_name": b.block_name,
         "schema_version": b.schema_version,
         "records": records,
-        "unknown_hex": serde_json::json!({}),
+        "unknown_hex": unknown_to_json(&b.unknown),
     })
 }
 
