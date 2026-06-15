@@ -39,4 +39,36 @@ final class VaultSyncViewModelTests: XCTestCase {
         XCTAssertEqual(hook.muteCalls, 1)         // muted before the (possibly-writing) pass
         XCTAssertEqual(hook.acknowledgeCalls, 1)  // success → acknowledge
     }
+
+    func testSyncAtUnlockConflictFlipsReviewNoSheet() async {
+        let veto = SyncVeto(recordUuidHex: "aa", recordType: "login", tags: [],
+                            fieldNames: ["password"], localLastModMs: 1,
+                            peerTombstonedAtMs: 2, peerDeviceHex: "bb")
+        let port = FakeVaultSyncPort(syncResult: .success(
+            .conflictsPending(vetoes: [veto], collisions: [], manifestHash: [9])))
+        let hook = FakeSyncMonitorHook()
+        let vm = makeVM(port: port, hook: hook)
+
+        await vm.syncAtUnlock(password: Array("pw".utf8))
+
+        XCTAssertTrue(vm.reviewNeeded)
+        XCTAssertNil(vm.pendingConflict)             // detail NOT surfaced at unlock
+        XCTAssertFalse(vm.conflictSheetPresented)
+        XCTAssertFalse(vm.passwordSheetPresented)
+        XCTAssertEqual(vm.badge, .reviewNeeded)
+        XCTAssertEqual(hook.acknowledgeCalls, 1)
+    }
+
+    func testSyncAtUnlockFailureSetsErrorNoAcknowledge() async {
+        let port = FakeVaultSyncPort(syncResult: .failure(.wrongPasswordOrCorrupt))
+        let hook = FakeSyncMonitorHook()
+        let vm = makeVM(port: port, hook: hook)
+
+        await vm.syncAtUnlock(password: Array("bad".utf8))
+
+        XCTAssertEqual(vm.lastError, .wrongPasswordOrCorrupt)
+        XCTAssertFalse(vm.reviewNeeded)
+        XCTAssertEqual(hook.muteCalls, 1)            // mute happened before the pass
+        XCTAssertEqual(hook.acknowledgeCalls, 0)     // failure → no acknowledge
+    }
 }
