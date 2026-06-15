@@ -38,4 +38,10 @@ public enum ChangeDetectionTuning {
     /// Trailing-debounce quiet period after the last folder pulse before the
     /// "remote changes detected" signal is raised.
     public static let defaultDebounceWindow: Duration = .milliseconds(2_000)
+    /// How long to suppress the folder watcher after the app initiates its own
+    /// vault write (sync commit), so the write does not raise a spurious
+    /// "changes detected" signal. Best-effort and generous: it must outlast the
+    /// debounce plus a slow Argon2id pass + filesystem settling. Residual false
+    /// positives are benign (badge → user syncs → nothingToDo).
+    public static let defaultSelfWriteMuteWindow: Duration = .milliseconds(10_000)
 }
