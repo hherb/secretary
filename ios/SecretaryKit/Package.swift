@@ -19,6 +19,7 @@ let package = Package(
                 "SecretaryFFI",
                 .product(name: "SecretaryDeviceUnlock", package: "SecretaryDeviceUnlock"),
                 .product(name: "SecretaryVaultAccess", package: "SecretaryVaultAccess"),
+                .product(name: "SecretaryVaultAccessUI", package: "SecretaryVaultAccess"),
             ]
         ),
         .testTarget(
