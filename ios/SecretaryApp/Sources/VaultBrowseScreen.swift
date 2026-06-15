@@ -7,6 +7,7 @@ import SecretaryVaultAccessUI
 /// session on background.
 struct VaultBrowseScreen: View {
     @StateObject private var viewModel: VaultBrowseViewModel
+    @ObservedObject private var syncModel: VaultSyncViewModel
     @Environment(\.scenePhase) private var scenePhase
 
     // MARK: - add / edit sheet state
@@ -27,8 +28,9 @@ struct VaultBrowseScreen: View {
     // Delete-confirmation state
     @State private var recordPendingDelete: RecordView?
 
-    init(viewModel: VaultBrowseViewModel) {
+    init(viewModel: VaultBrowseViewModel, syncModel: VaultSyncViewModel) {
         self._viewModel = StateObject(wrappedValue: viewModel)
+        self.syncModel = syncModel
     }
 
     var body: some View {
@@ -65,6 +67,11 @@ struct VaultBrowseScreen: View {
             }
             .navigationTitle("Browse")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    SyncBadgeView(state: syncModel.badge,
+                                  nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
+                                  onTap: { syncModel.beginInteractiveSync() })
+                }
                 if selectedBlock != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -92,6 +99,14 @@ struct VaultBrowseScreen: View {
                         viewModel.refresh()
                     }
                 )
+            }
+            .sheet(isPresented: $syncModel.passwordSheetPresented) {
+                SyncPasswordSheet(model: syncModel)
+            }
+            .sheet(isPresented: $syncModel.conflictSheetPresented) {
+                if let conflict = syncModel.pendingConflict {
+                    ConflictResolutionSheet(model: syncModel, conflict: conflict)
+                }
             }
             .confirmationDialog(
                 "Delete record?",

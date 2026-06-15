@@ -3,16 +3,19 @@ import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
 /// Password / recovery-phrase unlock. Thin shell: renders `viewModel.state` and
-/// forwards the entered secret. On `.unlocked` it calls `onUnlocked(session)`.
+/// forwards the entered secret. On `.unlocked` it calls `onUnlocked(session, password)`
+/// where `password` is non-nil only for `.password` mode (recovery has no usable sync password).
 struct UnlockScreen: View {
     @StateObject private var viewModel: UnlockViewModel
-    let onUnlocked: (VaultSession) -> Void
+    let onUnlocked: (VaultSession, _ password: [UInt8]?) -> Void
 
     @State private var mode: UnlockViewModel.Mode = .password
     @State private var password: String = ""
     @State private var phrase: String = ""
+    @State private var lastPasswordSecret: [UInt8]?
 
-    init(viewModel: UnlockViewModel, onUnlocked: @escaping (VaultSession) -> Void) {
+    init(viewModel: UnlockViewModel,
+         onUnlocked: @escaping (VaultSession, _ password: [UInt8]?) -> Void) {
         self._viewModel = StateObject(wrappedValue: viewModel)
         self.onUnlocked = onUnlocked
     }
@@ -50,6 +53,7 @@ struct UnlockScreen: View {
                         let secret: [UInt8] = mode == .password
                             ? Array(password.utf8)
                             : Array(RecoveryPhrase.normalize(phrase).utf8)
+                        lastPasswordSecret = (mode == .password) ? secret : nil
                         Task { await viewModel.unlock(secret: secret) }
                     }
                 }
@@ -64,7 +68,10 @@ struct UnlockScreen: View {
             .navigationTitle("Unlock vault")
             .overlay { if isBusy { ProgressView() } }
             .onChange(of: stateIsUnlocked) { _, unlocked in
-                if unlocked, case .unlocked(let session) = viewModel.state { onUnlocked(session) }
+                if unlocked, case .unlocked(let session) = viewModel.state {
+                    onUnlocked(session, lastPasswordSecret)
+                    lastPasswordSecret = nil       // drop our copy
+                }
             }
         }
     }

@@ -20,7 +20,7 @@ private struct RootView: View {
         case select
         case create
         case unlock(ScopedVaultPath)
-        case browse(VaultBrowseViewModel, ScopedVaultPath)
+        case browse(VaultBrowseViewModel, VaultSyncViewModel, ChangeDetectionMonitor, ScopedVaultPath)
     }
 
     /// One shared location store backs BOTH the selection VM and the create
@@ -70,11 +70,25 @@ private struct RootView: View {
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
                                                    vaultPath: scoped.pathData),
-                        onUnlocked: { session in
-                            route = .browse(VaultBrowseViewModel(session: session), scoped)
+                        onUnlocked: { session, password in
+                            let folder = URL(fileURLWithPath:
+                                String(decoding: scoped.pathData, as: UTF8.self))
+                            let stateDir = (try? defaultSyncStateDir())
+                                ?? FileManager.default.temporaryDirectory
+                            let (syncVM, monitor) = makeVaultSync(
+                                session: session, folder: folder, stateDir: stateDir)
+                            try? monitor.start()
+                            if let password {
+                                Task { await syncVM.syncAtUnlock(password: password) }
+                            } else {
+                                Task { await syncVM.refreshStatus() }
+                            }
+                            route = .browse(VaultBrowseViewModel(session: session),
+                                            syncVM, monitor, scoped)
                         })
-                case .browse(let browseModel, _):
-                    VaultBrowseScreen(viewModel: browseModel)
+                case .browse(let browseModel, let syncVM, let monitor, _):
+                    VaultBrowseScreen(viewModel: browseModel, syncModel: syncVM)
+                        .onDisappear { monitor.stop() }
                 }
             }
             // Privacy cover for the app-switcher snapshot. iOS renders the snapshot
@@ -94,7 +108,8 @@ private struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .background else { return }
             switch route {
-            case .browse(let browseModel, let scoped):
+            case .browse(let browseModel, _, let monitor, let scoped):
+                monitor.stop()
                 browseModel.lock()
                 scoped.end()
                 route = .select
