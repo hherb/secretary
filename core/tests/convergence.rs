@@ -9,7 +9,11 @@ mod convergence_helpers;
 mod fixtures;
 mod sync_helpers;
 
-use convergence_helpers::Baseline;
+use convergence_helpers::{Baseline, Device};
+
+const A_UUID: [u8; 16] = [0x0A; 16];
+const X_RECORD: [u8; 16] = [0xAA; 16];
+const X_BLOCK: [u8; 16] = [0xBB; 16];
 
 #[test]
 fn baseline_creates_an_empty_openable_vault() {
@@ -22,5 +26,25 @@ fn baseline_creates_an_empty_openable_vault() {
     assert!(
         manifest.vector_clock.is_empty(),
         "fresh baseline must have an empty manifest vector clock",
+    );
+}
+
+#[test]
+fn device_edit_writes_a_record_with_its_device_clock() {
+    let baseline = Baseline::create();
+    let mut a = Device::fork(&baseline, A_UUID, /*seed*/ 0xA0);
+    a.edit_text_field(X_BLOCK, X_RECORD, "k", "alice", /*now_ms*/ 100);
+
+    let records = a.decrypt_block_records(X_BLOCK);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record_uuid, X_RECORD);
+    assert!(!records[0].tombstone);
+
+    let clock = a.manifest_clock();
+    assert!(
+        clock
+            .iter()
+            .any(|e| e.device_uuid == A_UUID && e.counter >= 1),
+        "device A's edit must tick its own vector-clock entry",
     );
 }
