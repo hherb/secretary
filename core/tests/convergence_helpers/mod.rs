@@ -4,12 +4,18 @@
 mod baseline;
 mod device;
 mod reconcile;
+mod sync_drive;
 
 pub use baseline::Baseline;
 #[allow(unused_imports)] // copy_dir_all is unused until later convergence tasks
 pub use device::{copy_dir_all, Device};
 #[allow(unused_imports)] // SharedFolder is used by later convergence tasks
 pub use reconcile::{reconcile, SharedFolder};
+#[allow(unused_imports)]
+// sync_as_pure_adopter is used by later convergence tasks (scenario 1)
+pub use sync_drive::{
+    is_nothing_to_do, sync_as_adopter, sync_as_merger, sync_as_pure_adopter, VetoPolicy,
+};
 
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::vault::{open_vault, Record, Unlocker};

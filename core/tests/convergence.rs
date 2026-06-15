@@ -10,6 +10,7 @@ mod fixtures;
 mod sync_helpers;
 
 use convergence_helpers::{reconcile, Baseline, Device};
+use convergence_helpers::{sync_as_adopter, sync_as_merger, VetoPolicy};
 
 const A_UUID: [u8; 16] = [0x0A; 16];
 const B_UUID: [u8; 16] = [0x0B; 16];
@@ -74,4 +75,41 @@ fn device_edit_writes_a_record_with_its_device_clock() {
             .any(|e| e.device_uuid == A_UUID && e.counter >= 1),
         "device A's edit must tick its own vector-clock entry",
     );
+}
+
+#[test]
+fn merger_then_adopter_both_quiesce_on_disjoint_fields() {
+    let baseline = Baseline::create();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.edit_text_field(X_BLOCK, X_RECORD, "f1", "alice", 100);
+    b.edit_text_field(X_BLOCK, X_RECORD, "f2", "bob", 100);
+
+    // A canonical / B merger.
+    let shared = reconcile(&a, Some(&b), X_BLOCK);
+
+    // B merges (disjoint fields → no veto needed).
+    let b_state = sync_as_merger(
+        &baseline,
+        shared.folder(),
+        &b,
+        VetoPolicy::NoVetoExpected,
+        1_000,
+    );
+    // A adopts the merged LUB.
+    let a_state = sync_as_adopter(&baseline, shared.folder(), &a, 1_001);
+
+    // Quiescence: re-running sync on each device's final state is a no-op.
+    assert!(convergence_helpers::is_nothing_to_do(
+        &baseline,
+        shared.folder(),
+        &b_state,
+        1_002
+    ));
+    assert!(convergence_helpers::is_nothing_to_do(
+        &baseline,
+        shared.folder(),
+        &a_state,
+        1_003
+    ));
 }
