@@ -278,7 +278,7 @@ fn scenario_lww_collision_converges() {
     let baseline = Baseline::create();
     let mut seed = Device::fork(&baseline, [0x00; 16], 0x55);
     seed.edit_text_field(X_BLOCK, X_RECORD, "k", "seed", 10);
-    let baseline = baseline_from_seeded(baseline, &seed); // 2-arg form
+    let baseline = baseline_from_seeded(baseline, &seed);
 
     // Expected winning digest = the project hash of the later writer's plaintext.
     let later_value_digest = *secretary_core::crypto::hash::hash(b"bob-wins").as_bytes();
@@ -286,6 +286,7 @@ fn scenario_lww_collision_converges() {
     let edit = |canonical_first: bool| {
         let mut a = Device::fork(&baseline, A_UUID, 0xA0);
         let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+        // B's last_mod (101) > A's (100), so LWW keeps B's "bob-wins".
         a.edit_text_field(X_BLOCK, X_RECORD, "k", "alice-loses", 100);
         b.edit_text_field(X_BLOCK, X_RECORD, "k", "bob-wins", 101);
         if canonical_first {
@@ -301,6 +302,11 @@ fn scenario_lww_collision_converges() {
     // The surviving "k" digest is the later writer's, in both orderings.
     for state in [&order_ab, &order_ba] {
         assert_eq!(state.len(), 1);
+        assert_eq!(
+            state[0].field_value_digests.len(),
+            1,
+            "only field k survives the LWW collision"
+        );
         let digest = state[0]
             .field_value_digests
             .iter()
