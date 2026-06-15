@@ -3,3 +3,7 @@ build/
 
 # cargo-ndk-staged native libraries (built, never committed)
 kit/src/main/jniLibs/
+
+# cargo-ndk staged native libs are ignored above; the androidTest golden-vault
+# fixture is likewise staged at build time from core/tests/data (never committed).
+kit/src/androidTest/assets/

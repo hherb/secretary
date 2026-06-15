@@ -29,6 +29,7 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Kotlin/JVM 21 bytecode (matches :vault-access jvmToolchain(21)).
@@ -70,6 +71,14 @@ dependencies {
         version { strictly("1.8.0") }
     }
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Instrumented (on-device) tests run JUnit4 via the AndroidJUnitRunner — a separate
+    // world from the JUnit5 host unit tests above. runBlocking drives the real suspend
+    // FFI calls on real dispatchers (no virtual-time scheduler — this is an integration test).
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
 }
 
 // --- FFI build wiring -------------------------------------------------------
@@ -145,4 +154,23 @@ val cargoNdkBuildArm64 by tasks.registering(Exec::class) {
 // no cargo-ndk, and no aarch64-linux-android target installed.
 tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
     dependsOn(cargoNdkBuildArm64)
+}
+
+// --- androidTest fixture staging ------------------------------------------
+
+// Stage golden_vault_001 (+ its inputs JSON) from the canonical core/tests/data
+// location into the androidTest assets. The destination is gitignored: the tracked
+// fixture stays the single source of truth (no committed duplicate of a frozen KAT),
+// mirroring how iOS stages it via build-xcframework.sh. `Copy` tracks `from`/`into`
+// as inputs/outputs automatically, so Gradle skips the copy when the fixture is unchanged.
+val stageGoldenVaultForAndroidTest by tasks.registering(Copy::class) {
+    val fixtureRoot = repoRoot.resolve("core/tests/data")
+    from(fixtureRoot.resolve("golden_vault_001")) { into("golden_vault_001") }
+    from(fixtureRoot.resolve("golden_vault_001_inputs.json"))
+    into(layout.projectDirectory.dir("src/androidTest/assets"))
+}
+
+// The androidTest asset merge must see the staged fixture.
+tasks.matching { it.name == "mergeDebugAndroidTestAssets" }.configureEach {
+    dependsOn(stageGoldenVaultForAndroidTest)
 }
