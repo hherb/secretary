@@ -18,14 +18,24 @@ import java.io.File
  *
  * The class also exercises the SyncCoordinator wrapper over the real port — the slice-1 + slice-2a
  * assembled stack — not just the raw port.
+ *
+ * Scope: this proves the native surface works end-to-end (load → marshal → outcome arm → state
+ * persistence), asserting the SyncOutcome and hasState only. Record-level content fidelity through
+ * a merge is not asserted here — a single-device golden vault can only fast-forward, never merge
+ * or veto; content round-trip + the ConflictsPending/commitDecisions path need a seeded concurrent
+ * state and are future coverage.
  */
 @RunWith(AndroidJUnit4::class)
 class SyncRoundTripInstrumentedTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    // The published golden-vault KAT password — not a real secret, so not zeroized.
     private val goldenPassword = "correct horse battery staple".toByteArray()
 
-    // nowMs is only consulted as the merge timestamp on a clean concurrent merge; a single-device
-    // pass never reaches that arm. Pinned to the golden vault's clock domain for determinism.
+    // nowMs only stamps merge timestamps (`last_mod_ms`) in the commit/write path
+    // (core/src/sync/commit/write.rs), which a single-device pass never reaches: the
+    // asserted AppliedAutomatically fast-forward arm consumes it nowhere. Pinned to the
+    // golden vault's clock domain for determinism.
     private val mergeClockMs = 2_000_000_000_000uL
 
     private val toClean = mutableListOf<File>()
