@@ -17,8 +17,11 @@ class VaultSyncErrorTest {
     @Test
     fun objectArmsAreSingletonThrowables() {
         assertSame(VaultSyncError.WrongPasswordOrCorrupt, VaultSyncError.WrongPasswordOrCorrupt)
-        assertTrue(VaultSyncError.EvidenceStale is VaultSyncError)
-        assertTrue(VaultSyncError.NoPendingConflict is Throwable)
+        // Static type widened to Any so the runtime `is` check is genuine (no always-true warning).
+        val stale: Any = VaultSyncError.EvidenceStale
+        val noConflict: Any = VaultSyncError.NoPendingConflict
+        assertTrue(stale is VaultSyncError)
+        assertTrue(noConflict is Throwable)
         assertNull(VaultSyncError.InProgress.message)
     }
 }
