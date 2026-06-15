@@ -80,6 +80,14 @@ val hostCdylib = repoRoot.resolve("target/release/libsecretary_ffi_uniffi.$hostC
 
 // Build the host cdylib once, tracked, so the bindings task has a real input/output edge
 // (no untracked product hiding inside a doFirst — safe under Gradle's build cache).
+//
+// Input boundary is `ffi/secretary-ffi-uniffi/src` ALONE (not the whole workspace closure)
+// on purpose: this cdylib is consumed ONLY by uniffi-bindgen — it is never packaged. The
+// generated Kotlin bindings derive solely from the uniffi scaffolding/checksums embedded by
+// this crate (its `secretary.udl`), so a `core/` change that does not touch the FFI surface
+// cannot change the bindings. cargo itself stays correct regardless (it tracks the full
+// closure); narrowing Gradle's input here only governs when the bindings are regenerated.
+// Contrast `cargoNdkBuildArm64` below, whose output IS packaged and is deliberately untracked.
 val buildHostCdylib by tasks.registering(Exec::class) {
     workingDir = repoRoot
     inputs.dir(repoRoot.resolve("ffi/secretary-ffi-uniffi/src"))
@@ -112,6 +120,14 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 // Cross-build the cdylib for arm64-v8a and stage it into jniLibs. Wired onto the
 // JNI-merge tasks below (the AAR/packaging path), never onto preBuild — so it stays
 // off the host unit-test path.
+//
+// DELIBERATELY no Gradle inputs/outputs (so it always runs on the packaging path): unlike
+// `buildHostCdylib`, this .so IS packaged into the AAR, and its runtime behavior depends on
+// the whole cargo workspace closure (core + the bridge crate), not just `ffi/.../src`. A
+// partial input declaration would let a `core/` change ship a STALE native lib in the AAR —
+// a correctness hazard far worse than the cost it saves. cargo's own incremental build makes
+// the always-run re-invocation a near-instant no-op when nothing changed, so we lean on cargo
+// for freshness here rather than trying (and risking under-tracking) it in Gradle.
 val cargoNdkBuildArm64 by tasks.registering(Exec::class) {
     workingDir = repoRoot
     environment("ANDROID_NDK_HOME", "$androidSdkRoot/ndk/$ndkVer")

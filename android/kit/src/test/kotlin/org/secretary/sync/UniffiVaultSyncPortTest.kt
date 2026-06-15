@@ -93,4 +93,47 @@ class UniffiVaultSyncPortTest {
         }
         assertInstanceOf(VaultSyncError.InProgress::class.java, thrown)
     }
+
+    @Test
+    fun `status surfaces a thrown VaultException as VaultSyncError`() = runTest {
+        // `status` runs INLINE (no withContext offload, unlike sync/commit), so its error path
+        // is structurally distinct — this proves the shared callMappingErrors funnel fires there too.
+        val port = UniffiVaultSyncPort(
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            statusFn = { _, _ -> throw VaultException.SyncStateCorrupt("boom") },
+            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
+        )
+
+        val thrown = try {
+            port.status(stateDir = "/s", vaultUuid = ByteArray(16) { 1 })
+            null
+        } catch (e: VaultSyncError) {
+            e
+        }
+        assertEquals(VaultSyncError.StateCorrupt("boom"), thrown)
+    }
+
+    @Test
+    fun `commitDecisions surfaces a thrown VaultException as VaultSyncError`() = runTest {
+        // commitDecisions offloads via withContext like sync, so we await inside the runTest body
+        // (which drains testScheduler) rather than nesting runBlocking — see the sync-path note above.
+        val port = UniffiVaultSyncPort(
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            statusFn = { _, _ -> error("statusFn should not be called in this test") },
+            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _, _, _ -> throw VaultException.SyncEvidenceStale() },
+        )
+
+        val thrown = try {
+            port.commitDecisions(
+                stateDir = "/s", vaultFolder = "/v", password = byteArrayOf(1),
+                decisions = emptyList(), manifestHash = byteArrayOf(2), nowMs = 0uL,
+            )
+            null
+        } catch (e: VaultSyncError) {
+            e
+        }
+        assertInstanceOf(VaultSyncError.EvidenceStale::class.java, thrown)
+    }
 }
