@@ -26,7 +26,9 @@ public final class VaultSyncViewModel: ObservableObject {
     private let coordinator: SyncCoordinator
     private let wallClock: WallClock
     private let vaultUuid: [UInt8]?
-    private weak var monitor: SyncMonitorHook?
+    // Strongly owned: no retain cycle — the factory's VMBox.vm back-reference is
+    // already `weak`, so the vm → hook direction must be strong to keep the hook alive.
+    private var monitor: SyncMonitorHook?
 
     public init(coordinator: SyncCoordinator, wallClock: WallClock,
                 vaultUuid: [UInt8]? = nil, monitor: SyncMonitorHook? = nil) {

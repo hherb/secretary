@@ -199,4 +199,25 @@ final class VaultSyncViewModelTests: XCTestCase {
         vm.dismissPasswordSheet()
         XCTAssertFalse(vm.passwordSheetPresented)
     }
+
+    func testViewModelRetainsMonitorHookForPasses() async {
+        // Regression: the VM must STRONGLY retain its monitor hook. If it holds the
+        // hook weakly, the only production instance (a local in makeVaultSync)
+        // deallocates immediately and muteSelfWrite/acknowledge silently no-op.
+        weak var weakHook: FakeSyncMonitorHook?
+        let port = FakeVaultSyncPort(syncResult: .success(.nothingToDo))
+        let vm: VaultSyncViewModel = {
+            let hook = FakeSyncMonitorHook()
+            weakHook = hook
+            return VaultSyncViewModel(
+                coordinator: SyncCoordinator(port: port, stateDir: "/s", vaultFolder: "/v"),
+                wallClock: FakeWallClock(nowMs: 1),
+                vaultUuid: nil,
+                monitor: hook)
+        }()                                  // local `hook` strong ref ends here
+        XCTAssertNotNil(weakHook, "VM must strongly retain its monitor hook")
+        await vm.syncAtUnlock(password: Array("pw".utf8))
+        XCTAssertEqual(weakHook?.muteCalls, 1)
+        XCTAssertEqual(weakHook?.acknowledgeCalls, 1)
+    }
 }
