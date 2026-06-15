@@ -52,6 +52,34 @@ fn serializes_a_text_field_record_to_kat_shape() {
     assert_eq!(got, expected);
 }
 
+/// Pins the load-bearing field-ordering contract: the serializer emits fields
+/// sorted by name (BTreeMap order), matching `py_merge_record`'s
+/// `sorted(set(...))`, regardless of construction order. Built fields-last
+/// here as "f2" before "f1" to prove the output is re-sorted, not echoed.
+#[test]
+fn serializes_record_fields_in_name_sorted_order() {
+    let rec = record_live(
+        X_RECORD,
+        &[
+            ("f2", text_field("bob", 101, B)),
+            ("f1", text_field("alice", 100, A)),
+        ],
+        101,
+    );
+    let got = record_to_json(&rec);
+    let field_names: Vec<&str> = got["fields"]
+        .as_array()
+        .expect("fields[]")
+        .iter()
+        .map(|f| f["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(
+        field_names,
+        vec!["f1", "f2"],
+        "fields must serialise in name-sorted order to match py_merge_record"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Builders (mirror conflict.rs's pt/record/rfield/vc)
 // ---------------------------------------------------------------------------
@@ -140,6 +168,10 @@ fn unknown_to_json(map: &BTreeMap<String, UnknownValue>) -> serde_json::Value {
 }
 
 fn field_to_json(name: &str, f: &RecordField) -> serde_json::Value {
+    // Field-level unknowns assert inline rather than routing through
+    // `unknown_to_json`: the KAT field shape emits no `unknown_hex` key at all
+    // (unlike records/blocks), so there is nothing to serialise — only the
+    // "scenarios carry none" invariant to guard.
     assert!(
         f.unknown.is_empty(),
         "convergence scenarios carry no record-field unknown keys"
