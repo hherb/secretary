@@ -15,6 +15,9 @@ import java.io.File
  * The first on-device exercise of the native sync surface: a real libsecretary_ffi_uniffi.so
  * load + uniffi marshalling + SyncOutcome/SyncStatus mapping, round-tripped against a writable
  * copy of golden_vault_001 on the arm64 emulator. Host tests (with fakes) cannot touch any of this.
+ *
+ * The class also exercises the SyncCoordinator wrapper over the real port — the slice-1 + slice-2a
+ * assembled stack — not just the raw port.
  */
 @RunWith(AndroidJUnit4::class)
 class SyncRoundTripInstrumentedTest {
@@ -55,5 +58,18 @@ class SyncRoundTripInstrumentedTest {
         // AppliedAutomatically advances the clock, so the first sync persists sync state.
         val after = port.status(state.path, uuid)
         assertTrue("AppliedAutomatically persists sync state", after.hasState)
+    }
+
+    @Test
+    fun coordinator_overRealPort_runsAPassOnDevice() = runBlocking {
+        val vault = stageVault()
+        val state = stateDir()
+        val coordinator = SyncCoordinator(UniffiVaultSyncPort(), state.path, vault.path)
+
+        // Proves the assembled slice-1 (pure core) + slice-2a (adapter) stack on device.
+        // First pass over a fresh state dir establishes the baseline (advancing arm),
+        // matching the rawPort test's characterized AppliedAutomatically result.
+        val outcome = coordinator.runPass(goldenPassword, mergeClockMs)
+        assertEquals(SyncOutcome.AppliedAutomatically, outcome)
     }
 }
