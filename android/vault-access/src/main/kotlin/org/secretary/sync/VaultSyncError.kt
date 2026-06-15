@@ -7,6 +7,9 @@ package org.secretary.sync
  *
  * [WrongPasswordOrCorrupt] is intentionally conflated (wrong password vs. vault corruption)
  * per the threat model's anti-oracle rule (§13). Do NOT split it.
+ *
+ * The singleton (`data object`) arms share a single instance and therefore a single captured
+ * stack trace; rely on the arm type, not the stack trace, for diagnosis.
  */
 sealed class VaultSyncError(message: String? = null) : Exception(message) {
     /** Re-open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */

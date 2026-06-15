@@ -24,4 +24,21 @@ class VaultSyncErrorTest {
         assertTrue(noConflict is Throwable)
         assertNull(VaultSyncError.InProgress.message)
     }
+
+    @Test
+    fun allObjectArmsAreNullMessageThrowables() {
+        val objectArms: List<VaultSyncError> = listOf(
+            VaultSyncError.WrongPasswordOrCorrupt,
+            VaultSyncError.InProgress,
+            VaultSyncError.StateVaultMismatch,
+            VaultSyncError.EvidenceStale,
+            VaultSyncError.DecisionsIncomplete,
+            VaultSyncError.NoPendingConflict,
+        )
+        objectArms.forEach { arm ->
+            val widened: Any = arm
+            assertTrue(widened is Throwable)
+            assertNull(arm.message)
+        }
+    }
 }
