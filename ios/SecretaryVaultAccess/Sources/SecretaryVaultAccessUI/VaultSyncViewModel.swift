@@ -149,6 +149,11 @@ public final class VaultSyncViewModel: ObservableObject {
         recomputeBadge()
     }
 
+    /// Dismiss the password sheet (Cancel).
+    public func dismissPasswordSheet() {
+        passwordSheetPresented = false
+    }
+
     /// Dismiss the conflict sheet without committing. Keeps `reviewNeeded` so the
     /// badge still flags that the conflict is unresolved.
     public func cancelConflict() {

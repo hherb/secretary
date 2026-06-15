@@ -192,4 +192,11 @@ final class VaultSyncViewModelTests: XCTestCase {
         await task.value
         XCTAssertFalse(vm.isSyncing)
     }
+
+    func testDismissPasswordSheet() {
+        let vm = makeVM(port: FakeVaultSyncPort())
+        vm.beginInteractiveSync()
+        vm.dismissPasswordSheet()
+        XCTAssertFalse(vm.passwordSheetPresented)
+    }
 }
