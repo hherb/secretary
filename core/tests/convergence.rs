@@ -145,7 +145,7 @@ fn scenario_auto_apply_converges() {
     // B is a pure adopter (empty clock).
     let b_state = convergence_helpers::sync_as_pure_adopter(&baseline, shared.folder(), 1_000);
 
-    // Logical: exactly A's record, live.
+    // Logical: shared folder contains exactly A's record, live.
     let state = decrypt_state(&baseline, shared.folder(), X_BLOCK);
     assert_eq!(state.len(), 1);
     assert_eq!(state[0].record_uuid, X_RECORD);
@@ -158,7 +158,7 @@ fn scenario_auto_apply_converges() {
         &b_state,
         1_001
     ));
-    let a_state = a_post_edit_state(&baseline, &a);
+    let a_state = device_post_edit_state(&baseline, &a);
     assert!(convergence_helpers::is_nothing_to_do(
         &baseline,
         shared.folder(),
@@ -167,8 +167,11 @@ fn scenario_auto_apply_converges() {
     ));
 }
 
-/// A's remembered sync state is its own post-edit manifest clock.
-fn a_post_edit_state(baseline: &Baseline, a: &Device) -> secretary_core::sync::SyncState {
-    secretary_core::sync::SyncState::new(baseline.open_manifest().vault_uuid, a.manifest_clock())
-        .expect("A SyncState")
+/// A device's remembered sync state is its own post-edit manifest clock.
+fn device_post_edit_state(baseline: &Baseline, device: &Device) -> secretary_core::sync::SyncState {
+    secretary_core::sync::SyncState::new(
+        baseline.open_manifest().vault_uuid,
+        device.manifest_clock(),
+    )
+    .expect("SyncState")
 }
