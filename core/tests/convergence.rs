@@ -128,3 +128,47 @@ fn decrypt_state_projects_records_to_comparable_shape() {
     assert_eq!(state[0].field_value_digests.len(), 1);
     assert_eq!(state[0].field_value_digests[0].0, "f1");
 }
+
+/// Scenario 1 (auto-apply): A edits record X; B never edits. After B
+/// syncs it adopts A's state; both decrypt to A's record and re-syncing
+/// is a no-op.
+#[test]
+fn scenario_auto_apply_converges() {
+    let baseline = Baseline::create();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    // B exists as a device but never edits; its sync is modelled by
+    // sync_as_pure_adopter (empty clock), which doesn't take the Device handle.
+
+    a.edit_text_field(X_BLOCK, X_RECORD, "f1", "alice", 100);
+    let shared = reconcile(&a, None, X_BLOCK); // A canonical, no conflict copy
+
+    // B is a pure adopter (empty clock).
+    let b_state = convergence_helpers::sync_as_pure_adopter(&baseline, shared.folder(), 1_000);
+
+    // Logical: exactly A's record, live.
+    let state = decrypt_state(&baseline, shared.folder(), X_BLOCK);
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0].record_uuid, X_RECORD);
+    assert!(!state[0].tombstone);
+
+    // Quiescence on both devices.
+    assert!(convergence_helpers::is_nothing_to_do(
+        &baseline,
+        shared.folder(),
+        &b_state,
+        1_001
+    ));
+    let a_state = a_post_edit_state(&baseline, &a);
+    assert!(convergence_helpers::is_nothing_to_do(
+        &baseline,
+        shared.folder(),
+        &a_state,
+        1_002
+    ));
+}
+
+/// A's remembered sync state is its own post-edit manifest clock.
+fn a_post_edit_state(baseline: &Baseline, a: &Device) -> secretary_core::sync::SyncState {
+    secretary_core::sync::SyncState::new(baseline.open_manifest().vault_uuid, a.manifest_clock())
+        .expect("A SyncState")
+}
