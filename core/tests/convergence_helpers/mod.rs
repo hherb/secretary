@@ -28,6 +28,17 @@ pub fn baseline_password_bytes() -> Vec<u8> {
     baseline::BASELINE_PASSWORD.to_vec()
 }
 
+/// Promote a seeded device's working copy into a fresh baseline whose
+/// common-ancestor state includes the seed record. `prev` (the now-unused
+/// empty baseline) is dropped to release its tempdir; `seed` was forked into
+/// its own tempdir, so copying from `seed.folder()` is independent of `prev`.
+pub fn baseline_from_seeded(prev: Baseline, seed: &Device, _block_uuid: [u8; 16]) -> Baseline {
+    let password = SecretBytes::new(baseline_password_bytes());
+    let new_baseline = Baseline::from_folder(seed.folder(), password);
+    drop(prev);
+    new_baseline
+}
+
 /// Decrypt one block file in `folder` and return its records. Reuses the
 /// proven `sync_helpers::decrypt_block_using_open`.
 pub fn decrypt_block_records(

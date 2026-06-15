@@ -9,8 +9,8 @@ mod convergence_helpers;
 mod fixtures;
 mod sync_helpers;
 
-use convergence_helpers::{decrypt_state, reconcile, Baseline, Device, LogicalRecord};
-use convergence_helpers::{sync_as_adopter, sync_as_merger, VetoPolicy};
+use convergence_helpers::{baseline_from_seeded, decrypt_state, reconcile, Baseline, Device};
+use convergence_helpers::{sync_as_adopter, sync_as_merger, LogicalRecord, VetoPolicy};
 
 const A_UUID: [u8; 16] = [0x0A; 16];
 const B_UUID: [u8; 16] = [0x0B; 16];
@@ -174,4 +174,80 @@ fn device_post_edit_state(baseline: &Baseline, device: &Device) -> secretary_cor
         device.manifest_clock(),
     )
     .expect("SyncState")
+}
+
+/// Run a both-edit scenario in one ordering: `canonical` device's files
+/// are canonical, `merger` device merges. Returns the converged logical
+/// state of the named block.
+fn run_both_edit_ordering(
+    baseline: &Baseline,
+    canonical: &Device,
+    merger: &Device,
+    policy: VetoPolicy,
+    block_uuid: [u8; 16],
+) -> Vec<LogicalRecord> {
+    let shared = reconcile(canonical, Some(merger), block_uuid);
+    let merger_state = sync_as_merger(baseline, shared.folder(), merger, policy, 1_000);
+    let adopter_state = sync_as_adopter(baseline, shared.folder(), canonical, 1_001);
+    assert!(convergence_helpers::is_nothing_to_do(
+        baseline,
+        shared.folder(),
+        &merger_state,
+        1_002
+    ));
+    assert!(convergence_helpers::is_nothing_to_do(
+        baseline,
+        shared.folder(),
+        &adopter_state,
+        1_003
+    ));
+    decrypt_state(baseline, shared.folder(), block_uuid)
+}
+
+/// Scenario 2 (concurrent disjoint): A edits X.f1, B edits X.f2 from a
+/// shared seeded baseline. CRDT auto-merges both fields (no veto). The
+/// converged record carries both fields (plus the seed field f0),
+/// regardless of which device is canonical.
+#[test]
+fn scenario_concurrent_disjoint_fields_converges() {
+    let baseline = Baseline::create();
+    // Seed X so both devices edit the SAME record.
+    let mut seed = Device::fork(&baseline, [0x00; 16], 0x55);
+    seed.edit_text_field(X_BLOCK, X_RECORD, "f0", "seed", 10);
+    let baseline = baseline_from_seeded(baseline, &seed, X_BLOCK);
+
+    let edit = |canonical_first: bool| {
+        let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+        let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+        a.edit_text_field(X_BLOCK, X_RECORD, "f1", "alice", 100);
+        b.edit_text_field(X_BLOCK, X_RECORD, "f2", "bob", 101);
+        if canonical_first {
+            run_both_edit_ordering(&baseline, &a, &b, VetoPolicy::NoVetoExpected, X_BLOCK)
+        } else {
+            run_both_edit_ordering(&baseline, &b, &a, VetoPolicy::NoVetoExpected, X_BLOCK)
+        }
+    };
+
+    let order_ab = edit(true);
+    let order_ba = edit(false);
+
+    // One logical record carrying both concurrent disjoint edits, auto-merged
+    // by the field-union CRDT. (The seed field f0 is NOT retained: each device's
+    // `edit_text_field` is a whole-record `save_block` overwrite, so a
+    // single-field edit drops sibling fields on that device's own replica before
+    // any sync — see the harness note in convergence_helpers/device.rs. The seed
+    // exists only to give A and B a common-ancestor record UUID so they edit the
+    // SAME record and stay mutually concurrent.)
+    assert_eq!(order_ab.len(), 1);
+    for fname in ["f1", "f2"] {
+        assert!(
+            order_ab[0]
+                .field_value_digests
+                .iter()
+                .any(|(n, _)| n == fname),
+            "missing field {fname}",
+        );
+    }
+    // Order-independence: both orderings converge to the same logical state.
+    convergence_helpers::assert_converged(&order_ab, &order_ba);
 }

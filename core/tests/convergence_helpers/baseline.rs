@@ -132,6 +132,20 @@ impl Baseline {
         }
     }
 
+    /// Build a new baseline whose on-disk state is a deep copy of an
+    /// already-edited device folder — used to seed a common-ancestor
+    /// record both devices then edit. The password is unchanged.
+    pub fn from_folder(src: &Path, password: SecretBytes) -> Self {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path().to_path_buf();
+        crate::convergence_helpers::copy_dir_all(src, &folder).expect("copy seeded folder");
+        Self {
+            _tmp: tmp,
+            folder,
+            password,
+        }
+    }
+
     pub fn folder(&self) -> &Path {
         &self.folder
     }
