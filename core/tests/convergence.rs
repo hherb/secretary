@@ -268,3 +268,49 @@ fn scenario_concurrent_disjoint_fields_converges() {
     // Order-independence: both orderings converge to the same logical state.
     convergence_helpers::assert_converged(&order_ab, &order_ba);
 }
+
+/// Scenario 3 (LWW collision): A and B edit the SAME field of X with
+/// different values and different last_mod. CRDT keeps the later
+/// last_mod. The converged value digest equals the later writer's, in
+/// both orderings.
+#[test]
+fn scenario_lww_collision_converges() {
+    let baseline = Baseline::create();
+    let mut seed = Device::fork(&baseline, [0x00; 16], 0x55);
+    seed.edit_text_field(X_BLOCK, X_RECORD, "k", "seed", 10);
+    let baseline = baseline_from_seeded(baseline, &seed); // 2-arg form
+
+    // Expected winning digest = the project hash of the later writer's plaintext.
+    let later_value_digest = *secretary_core::crypto::hash::hash(b"bob-wins").as_bytes();
+
+    let edit = |canonical_first: bool| {
+        let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+        let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+        a.edit_text_field(X_BLOCK, X_RECORD, "k", "alice-loses", 100);
+        b.edit_text_field(X_BLOCK, X_RECORD, "k", "bob-wins", 101);
+        if canonical_first {
+            run_both_edit_ordering(&baseline, &a, &b, VetoPolicy::NoVetoExpected, X_BLOCK)
+        } else {
+            run_both_edit_ordering(&baseline, &b, &a, VetoPolicy::NoVetoExpected, X_BLOCK)
+        }
+    };
+
+    let order_ab = edit(true);
+    let order_ba = edit(false);
+
+    // The surviving "k" digest is the later writer's, in both orderings.
+    for state in [&order_ab, &order_ba] {
+        assert_eq!(state.len(), 1);
+        let digest = state[0]
+            .field_value_digests
+            .iter()
+            .find(|(n, _)| n == "k")
+            .map(|(_, d)| *d)
+            .expect("field k present");
+        assert_eq!(
+            digest, later_value_digest,
+            "LWW must keep the later writer's value"
+        );
+    }
+    convergence_helpers::assert_converged(&order_ab, &order_ba);
+}
