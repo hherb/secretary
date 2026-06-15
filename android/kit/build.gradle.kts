@@ -109,7 +109,9 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     dependsOn(generateUniffiKotlinBindings)
 }
 
-// Cross-build the cdylib for arm64-v8a and stage it into jniLibs.
+// Cross-build the cdylib for arm64-v8a and stage it into jniLibs. Wired onto the
+// JNI-merge tasks below (the AAR/packaging path), never onto preBuild — so it stays
+// off the host unit-test path.
 val cargoNdkBuildArm64 by tasks.registering(Exec::class) {
     workingDir = repoRoot
     environment("ANDROID_NDK_HOME", "$androidSdkRoot/ndk/$ndkVer")
@@ -121,5 +123,10 @@ val cargoNdkBuildArm64 by tasks.registering(Exec::class) {
     )
 }
 
-// The native lib is required to assemble the AAR, but NOT for host unit tests.
-tasks.named("preBuild").configure { dependsOn(cargoNdkBuildArm64) }
+// The arm64 .so is needed only to PACKAGE the AAR, never for host unit tests. Hooking the
+// JNI-merge tasks (mergeDebugJniLibFolders / mergeReleaseJniLibFolders) keeps the cross-build
+// off the testDebugUnitTest path — so the pure mapper/adapter host tests run with no NDK,
+// no cargo-ndk, and no aarch64-linux-android target installed.
+tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
+    dependsOn(cargoNdkBuildArm64)
+}
