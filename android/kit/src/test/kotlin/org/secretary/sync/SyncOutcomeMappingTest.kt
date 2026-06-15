@@ -39,6 +39,18 @@ class SyncOutcomeMappingTest {
         )
         assertEquals(listOf(SyncCollision("cc", listOf("note"))), mapped.collisions)
         assertTrue(hash.contentEquals(mapped.manifestHash))
+
+        // Whole-value equality against an independently-constructed expected (note the SEPARATE
+        // byteArrayOf instance): exercises ConflictsPending's hand-rolled content-based
+        // equals/hashCode, which the field-by-field asserts above do not.
+        assertEquals(
+            SyncOutcome.ConflictsPending(
+                listOf(SyncVeto("aa", "login", listOf("t1"), listOf("password"), 10uL, 20uL, "bb")),
+                listOf(SyncCollision("cc", listOf("note"))),
+                byteArrayOf(1, 2, 3),
+            ),
+            mapped,
+        )
     }
 
     @Test
