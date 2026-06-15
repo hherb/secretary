@@ -9,7 +9,7 @@ mod convergence_helpers;
 mod fixtures;
 mod sync_helpers;
 
-use convergence_helpers::{reconcile, Baseline, Device};
+use convergence_helpers::{decrypt_state, reconcile, Baseline, Device, LogicalRecord};
 use convergence_helpers::{sync_as_adopter, sync_as_merger, VetoPolicy};
 
 const A_UUID: [u8; 16] = [0x0A; 16];
@@ -112,4 +112,18 @@ fn merger_then_adopter_both_quiesce_on_disjoint_fields() {
         &a_state,
         1_003
     ));
+}
+
+#[test]
+fn decrypt_state_projects_records_to_comparable_shape() {
+    let baseline = Baseline::create();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    a.edit_text_field(X_BLOCK, X_RECORD, "f1", "alice", 100);
+    let shared = reconcile(&a, None, X_BLOCK); // one-editor; A canonical
+
+    let state: Vec<LogicalRecord> = decrypt_state(&baseline, shared.folder(), X_BLOCK);
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0].record_uuid, X_RECORD);
+    assert!(!state[0].tombstone);
+    assert!(state[0].field_names.contains(&"f1".to_string()));
 }
