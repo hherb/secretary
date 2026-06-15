@@ -4,7 +4,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Test
 import uniffi.secretary.SyncOutcomeDto
 import uniffi.secretary.SyncStatusDto
@@ -22,8 +22,8 @@ class UniffiVaultSyncPortTest {
                 seenDir = dir; seenUuid = uuid
                 SyncStatusDto(hasState = true, deviceClocks = emptyList(), lastStateWriteMs = null)
             },
-            syncFn = { _, _, _, _ -> error("unused") },
-            commitFn = { _, _, _, _, _, _ -> error("unused") },
+            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         val status = port.status(stateDir = "/s", vaultUuid = ByteArray(16) { 1 })
@@ -38,9 +38,9 @@ class UniffiVaultSyncPortTest {
         var seenPassword: ByteArray? = null
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
-            statusFn = { _, _ -> error("unused") },
+            statusFn = { _, _ -> error("statusFn should not be called in this test") },
             syncFn = { _, _, pw, _ -> seenPassword = pw; SyncOutcomeDto.AppliedAutomatically },
-            commitFn = { _, _, _, _, _, _ -> error("unused") },
+            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         val outcome = port.sync("/s", "/v", byteArrayOf(7, 8, 9), nowMs = 5uL)
@@ -54,8 +54,8 @@ class UniffiVaultSyncPortTest {
         var seenDecisions: List<VetoDecisionDto>? = null
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
-            statusFn = { _, _ -> error("unused") },
-            syncFn = { _, _, _, _ -> error("unused") },
+            statusFn = { _, _ -> error("statusFn should not be called in this test") },
+            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
             commitFn = { _, _, _, decisions, _, _ -> seenDecisions = decisions; SyncOutcomeDto.MergedClean },
         )
 
@@ -73,9 +73,9 @@ class UniffiVaultSyncPortTest {
     fun `a thrown VaultException is mapped to VaultSyncError`() = runTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
-            statusFn = { _, _ -> error("unused") },
+            statusFn = { _, _ -> error("statusFn should not be called in this test") },
             syncFn = { _, _, _, _ -> throw VaultException.SyncInProgress() },
-            commitFn = { _, _, _, _, _, _ -> error("unused") },
+            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         // NOTE: deviates from the planned `assertThrows(...) { runBlocking { port.sync(...) } }`.
@@ -91,6 +91,6 @@ class UniffiVaultSyncPortTest {
         } catch (e: VaultSyncError) {
             e
         }
-        assertTrue(thrown is VaultSyncError.InProgress)
+        assertInstanceOf(VaultSyncError.InProgress::class.java, thrown)
     }
 }

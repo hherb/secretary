@@ -12,8 +12,10 @@ import uniffi.secretary.syncStatus
 import uniffi.secretary.syncVault
 
 /**
- * The real [VaultSyncPort] over the generated `uniffi.secretary` bindings — the ONLY type
- * that imports them. A faithful Kotlin mirror of iOS `UniffiVaultSyncPort.swift`.
+ * The real [VaultSyncPort] over the generated `uniffi.secretary` sync calls. This is the only
+ * [VaultSyncPort] implementation that invokes the bindings (the pure DTO/error mappers reference
+ * the generated types too, but only as translators). A faithful Kotlin mirror of iOS
+ * `UniffiVaultSyncPort.swift`.
  *
  * [sync] and [commitDecisions] re-open the vault from the password (full Argon2id), so they run
  * on [ioDispatcher] (default [Dispatchers.IO]) to keep the caller responsive; [status] is a cheap
@@ -26,6 +28,7 @@ class UniffiVaultSyncPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val statusFn: (String, ByteArray) -> SyncStatusDto = ::syncStatus,
     private val syncFn: (String, String, ByteArray, ULong) -> SyncOutcomeDto = ::syncVault,
+    // (stateDir, vaultFolder, password, decisions, manifestHash, nowMs) -> outcome
     private val commitFn: (String, String, ByteArray, List<VetoDecisionDto>, ByteArray, ULong) -> SyncOutcomeDto =
         ::syncCommitDecisions,
 ) : VaultSyncPort {
