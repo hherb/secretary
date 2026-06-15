@@ -115,6 +115,47 @@ public final class VaultSyncViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Trigger 3: resolve conflict
+
+    /// Commit the user's per-record decisions for the pending conflict. On any
+    /// non-conflict result, dismiss + clear; on `evidenceStale` /
+    /// `decisionsIncomplete`, keep the sheet open (the coordinator preserves the
+    /// stash) so the user can re-apply.
+    public func resolve(decisions: [SyncVetoDecision], password: [UInt8]) async {
+        isSyncing = true
+        lastError = nil
+        recomputeBadge()
+        monitor?.muteSelfWrite()
+        do {
+            let outcome = try await coordinator.resolve(decisions: decisions,
+                                                        password: password,
+                                                        nowMs: wallClock.nowMs())
+            if case let .conflictsPending(vetoes, collisions, _) = outcome {
+                pendingConflict = PendingConflict(vetoes: vetoes, collisions: collisions)
+            } else {
+                conflictSheetPresented = false
+                pendingConflict = nil
+                reviewNeeded = false
+            }
+            monitor?.acknowledge()
+            pendingChanges = false
+            await refreshStatus()
+        } catch let e as VaultSyncError {
+            lastError = e
+        } catch {
+            lastError = .failed(String(describing: error))
+        }
+        isSyncing = false
+        recomputeBadge()
+    }
+
+    /// Dismiss the conflict sheet without committing. Keeps `reviewNeeded` so the
+    /// badge still flags that the conflict is unresolved.
+    public func cancelConflict() {
+        conflictSheetPresented = false
+        pendingConflict = nil
+    }
+
     // MARK: - Status
 
     /// Best-effort: needs the 16-byte vault UUID. Failures are swallowed (the

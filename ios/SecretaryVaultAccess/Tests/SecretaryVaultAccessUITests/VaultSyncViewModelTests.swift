@@ -126,4 +126,70 @@ final class VaultSyncViewModelTests: XCTestCase {
         XCTAssertTrue(vm.passwordSheetPresented)     // stays open for retry
         XCTAssertFalse(vm.conflictSheetPresented)
     }
+
+    /// Drives a conflict into the stash, then resolves it. Returns the VM + port.
+    private func vmWithStashedConflict(
+        commitResult: Result<SyncOutcome, VaultSyncError>
+    ) async -> (VaultSyncViewModel, FakeVaultSyncPort) {
+        let veto = SyncVeto(recordUuidHex: "aa", recordType: "login", tags: [],
+                            fieldNames: ["password"], localLastModMs: 1,
+                            peerTombstonedAtMs: 2, peerDeviceHex: "bb")
+        let port = FakeVaultSyncPort(
+            syncResult: .success(.conflictsPending(vetoes: [veto], collisions: [],
+                                                   manifestHash: [9])),
+            commitResult: commitResult)
+        let vm = makeVM(port: port)
+        vm.beginInteractiveSync()
+        await vm.runInteractivePass(password: Array("pw".utf8))   // stash the conflict
+        return (vm, port)
+    }
+
+    func testResolveSuccessCommitsAndClears() async {
+        let (vm, port) = await vmWithStashedConflict(commitResult: .success(.mergedClean))
+        let decision = SyncVetoDecision(recordUuidHex: "aa", keepLocal: true)
+
+        await vm.resolve(decisions: [decision], password: Array("pw".utf8))
+
+        XCTAssertEqual(port.commitCalls, 1)
+        XCTAssertEqual(port.lastCommitDecisions, [decision])
+        XCTAssertEqual(port.lastCommitManifestHash, [9])    // freshness token replayed
+        XCTAssertFalse(vm.conflictSheetPresented)
+        XCTAssertNil(vm.pendingConflict)
+        XCTAssertFalse(vm.reviewNeeded)
+        XCTAssertNil(vm.lastError)
+    }
+
+    func testResolveEvidenceStaleKeepsSheetOpen() async {
+        let (vm, _) = await vmWithStashedConflict(commitResult: .failure(.evidenceStale))
+        let decision = SyncVetoDecision(recordUuidHex: "aa", keepLocal: false)
+
+        await vm.resolve(decisions: [decision], password: Array("pw".utf8))
+
+        XCTAssertEqual(vm.lastError, .evidenceStale)
+        XCTAssertTrue(vm.conflictSheetPresented)            // stays open for retry
+        XCTAssertNotNil(vm.pendingConflict)
+    }
+
+    func testCancelConflictDismissesButKeepsReviewNeeded() async {
+        let (vm, _) = await vmWithStashedConflict(commitResult: .success(.mergedClean))
+        vm.cancelConflict()
+        XCTAssertFalse(vm.conflictSheetPresented)
+        XCTAssertNil(vm.pendingConflict)
+        XCTAssertTrue(vm.reviewNeeded)                      // badge still flags review
+    }
+
+    func testBadgeIsSyncingMidPass() async {
+        let gate = SuspensionGate()
+        let port = FakeVaultSyncPort(syncResult: .success(.nothingToDo))
+        port.gate = gate
+        let vm = makeVM(port: port)
+
+        let task = Task { await vm.runInteractivePass(password: Array("pw".utf8)) }
+        await gate.waitUntilEntered()
+        XCTAssertEqual(vm.badge, .syncing)
+        XCTAssertTrue(vm.isSyncing)
+        await gate.release()
+        await task.value
+        XCTAssertFalse(vm.isSyncing)
+    }
 }
