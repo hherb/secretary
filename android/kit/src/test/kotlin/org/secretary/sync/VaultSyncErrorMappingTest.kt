@@ -34,5 +34,12 @@ class VaultSyncErrorMappingTest {
         assertTrue(mapped is VaultSyncError.Failed)
         mapped as VaultSyncError.Failed
         assertTrue(mapped.detail.contains("RecordNotFound"))
+
+        // A structurally different non-sync arm (no-field) also folds — proving the fold is
+        // general, not incidentally matching RecordNotFound's shape.
+        val mappedNoField = mapVaultSyncError(VaultException.CannotRevokeOwner())
+        assertTrue(mappedNoField is VaultSyncError.Failed)
+        mappedNoField as VaultSyncError.Failed
+        assertTrue(mappedNoField.detail.contains("CannotRevokeOwner"))
     }
 }
