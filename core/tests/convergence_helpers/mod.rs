@@ -3,10 +3,13 @@
 
 mod baseline;
 mod device;
+mod reconcile;
 
 pub use baseline::Baseline;
 #[allow(unused_imports)] // copy_dir_all is unused until later convergence tasks
 pub use device::{copy_dir_all, Device};
+#[allow(unused_imports)] // SharedFolder is used by later convergence tasks
+pub use reconcile::{reconcile, SharedFolder};
 
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::vault::{open_vault, Record, Unlocker};

@@ -9,9 +9,10 @@ mod convergence_helpers;
 mod fixtures;
 mod sync_helpers;
 
-use convergence_helpers::{Baseline, Device};
+use convergence_helpers::{reconcile, Baseline, Device};
 
 const A_UUID: [u8; 16] = [0x0A; 16];
+const B_UUID: [u8; 16] = [0x0B; 16];
 const X_RECORD: [u8; 16] = [0xAA; 16];
 const X_BLOCK: [u8; 16] = [0xBB; 16];
 
@@ -26,6 +27,32 @@ fn baseline_creates_an_empty_openable_vault() {
     assert!(
         manifest.vector_clock.is_empty(),
         "fresh baseline must have an empty manifest vector clock",
+    );
+}
+
+#[test]
+fn reconcile_lays_out_canonical_plus_conflict_copy() {
+    let baseline = Baseline::create();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.edit_text_field(X_BLOCK, X_RECORD, "f1", "alice", 100);
+    b.edit_text_field(X_BLOCK, X_RECORD, "f2", "bob", 100);
+
+    // A canonical, B merger (B's files become conflict-copies in S).
+    let shared = reconcile(&a, Some((&b, B_UUID)), X_BLOCK);
+
+    let s = shared.folder();
+    assert!(s.join("manifest.cbor.enc").exists());
+    let manifest_siblings: Vec<_> = std::fs::read_dir(s)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("manifest.cbor.enc") && n != "manifest.cbor.enc")
+        .collect();
+    assert_eq!(
+        manifest_siblings.len(),
+        1,
+        "expected exactly one manifest conflict-copy"
     );
 }
 
