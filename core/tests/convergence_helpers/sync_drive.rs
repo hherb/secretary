@@ -100,9 +100,12 @@ pub fn sync_as_merger(
     }
 }
 
-/// Drive the adopter device: the merged canonical LUB dominates its
-/// remembered (post-edit) clock, so `sync_once` returns
-/// `AppliedAutomatically`. Returns the new `SyncState`.
+/// Drive the adopter device: the merged canonical LUB strictly dominates its
+/// remembered (post-edit) clock, so `sync_once` **must** return
+/// `AppliedAutomatically`. Any other outcome — including `NothingToDo` —
+/// panics: a `NothingToDo` here would mean the fixture had no real divergence
+/// and the quiescence check that follows would pass vacuously. Returns the
+/// new `SyncState`.
 pub fn sync_as_adopter(
     baseline: &Baseline,
     shared: &Path,
@@ -114,7 +117,6 @@ pub fn sync_as_adopter(
         SyncState::new(vault_uuid(baseline), adopter.manifest_clock()).expect("adopter SyncState");
     match sync_once(shared, &identity, &state, now_ms).expect("adopter sync_once") {
         SyncOutcome::AppliedAutomatically { new_state } => new_state,
-        SyncOutcome::NothingToDo => state,
         other => panic!("adopter expected AppliedAutomatically, got {other:?}"),
     }
 }
