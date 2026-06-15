@@ -13,6 +13,8 @@ import kotlinx.coroutines.sync.withLock
  * (non-interleaving) serialization. It cannot deadlock because the public methods never
  * call one another. The per-vault FFI lockfile (surfaced as [VaultSyncError.InProgress])
  * remains the cross-process guard; this [Mutex] is the in-process single-driver guarantee.
+ * All four methods share the mutex, so a [status]/[pendingConflict] read blocks behind an
+ * in-flight pass — intended, since one coordinator drives one vault serially.
  *
  * Secret hygiene: the password is forwarded to the port per call and never retained. Only
  * the manifest-hash freshness token (not a secret) and conflict METADATA are stashed.

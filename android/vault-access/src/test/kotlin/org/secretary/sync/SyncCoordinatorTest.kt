@@ -1,5 +1,7 @@
 package org.secretary.sync
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -134,5 +136,72 @@ class SyncCoordinatorTest {
         c.runPass(pw, 1uL)
 
         assertTrue(port.syncCalls.single().password.contentEquals(pw))
+    }
+
+    @Test
+    fun secondRunPassWithSafeArmClearsPriorStash() = runTest {
+        val port = FakeVaultSyncPort()
+        port.syncResults += Result.success(
+            SyncOutcome.ConflictsPending(emptyList(), emptyList(), byteArrayOf(9)),
+        )
+        port.syncResults += Result.success(SyncOutcome.MergedClean)
+        val c = coordinator(port)
+
+        c.runPass(pw, 1uL)
+        assertNotNull(c.pendingConflict())
+
+        assertEquals(SyncOutcome.MergedClean, c.runPass(pw, 2uL))
+        assertNull(c.pendingConflict())
+    }
+
+    @Test
+    fun mutexSerializesConcurrentRunPasses() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var insideSync = 0
+        var maxConcurrentInside = 0
+        var entries = 0
+        val gatedPort = object : VaultSyncPort {
+            override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
+                throw UnsupportedOperationException()
+
+            override suspend fun sync(
+                stateDir: String,
+                vaultFolder: String,
+                password: ByteArray,
+                nowMs: ULong,
+            ): SyncOutcome {
+                insideSync++
+                entries++
+                maxConcurrentInside = maxOf(maxConcurrentInside, insideSync)
+                gate.await()
+                insideSync--
+                return SyncOutcome.NothingToDo
+            }
+
+            override suspend fun commitDecisions(
+                stateDir: String,
+                vaultFolder: String,
+                password: ByteArray,
+                decisions: List<SyncVetoDecision>,
+                manifestHash: ByteArray,
+                nowMs: ULong,
+            ): SyncOutcome = throw UnsupportedOperationException()
+        }
+        val c = SyncCoordinator(gatedPort, "/state", "/vault")
+
+        val a = launch { c.runPass(pw, 1uL) }
+        val b = launch { c.runPass(pw, 2uL) }
+        // With the mutex held across the gated sync call, only the first coroutine can be
+        // inside sync; the second is parked on the mutex, not inside sync.
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, entries)
+        assertEquals(1, maxConcurrentInside)
+
+        gate.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        a.join()
+        b.join()
+        assertEquals(2, entries)
+        assertEquals(1, maxConcurrentInside)
     }
 }
