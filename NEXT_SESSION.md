@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-15-c3-ios-folder-change-detection-shipped.md
+docs/handoffs/2026-06-15-c3-ios-sync-ui-shipped.md
