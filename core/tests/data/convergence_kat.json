@@ -1,0 +1,400 @@
+{
+  "version": 1,
+  "_doc": "C.4 convergence conformance vectors. Each scenario carries two concurrent device sides (block plaintext + vector clock) plus the golden converged block produced by the real Rust merge_block. Replayed by core/tests/convergence_kat_gen.rs (always-run guard) and core/tests/python/conformance.py (clean-room, stdlib only): both merge BOTH orderings and assert order-independence + golden-match. The vector clock is intentionally absent from `golden` (it differs by which device was the merger; convergence is logical, on records not clocks). Regenerate with: cargo test --release --workspace -- --ignored generate_convergence_kat --nocapture",
+  "scenarios": [
+    {
+      "name": "auto_apply",
+      "device_a": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "f1",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "counter": 1
+          }
+        ]
+      },
+      "device_b": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [],
+          "unknown_hex": {}
+        },
+        "vector_clock": []
+      },
+      "merging_device_a_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "merging_device_b_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "golden": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "f1",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        }
+      }
+    },
+    {
+      "name": "concurrent_disjoint",
+      "device_a": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "f1",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "counter": 1
+          }
+        ]
+      },
+      "device_b": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "f2",
+                  "value_type": "text",
+                  "value_text": "bob",
+                  "last_mod": 101,
+                  "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 101,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "counter": 1
+          }
+        ]
+      },
+      "merging_device_a_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "merging_device_b_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "golden": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "f1",
+                  "value_type": "text",
+                  "value_text": "alice",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                },
+                {
+                  "name": "f2",
+                  "value_type": "text",
+                  "value_text": "bob",
+                  "last_mod": 101,
+                  "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 101,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        }
+      }
+    },
+    {
+      "name": "lww_collision",
+      "device_a": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "k",
+                  "value_type": "text",
+                  "value_text": "alice-loses",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "counter": 1
+          }
+        ]
+      },
+      "device_b": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "k",
+                  "value_type": "text",
+                  "value_text": "bob-wins",
+                  "last_mod": 101,
+                  "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 101,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "counter": 1
+          }
+        ]
+      },
+      "merging_device_a_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "merging_device_b_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "golden": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "k",
+                  "value_type": "text",
+                  "value_text": "bob-wins",
+                  "last_mod": 101,
+                  "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 101,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        }
+      }
+    },
+    {
+      "name": "tombstone_accept",
+      "device_a": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [
+                {
+                  "name": "k",
+                  "value_type": "text",
+                  "value_text": "alice-live",
+                  "last_mod": 100,
+                  "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+                }
+              ],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 100,
+              "tombstone": false,
+              "tombstoned_at_ms": 0,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "counter": 1
+          }
+        ]
+      },
+      "device_b": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 200,
+              "tombstone": true,
+              "tombstoned_at_ms": 200,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        },
+        "vector_clock": [
+          {
+            "device_uuid_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "counter": 1
+          }
+        ]
+      },
+      "merging_device_a_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "merging_device_b_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "golden": {
+        "block": {
+          "block_version": 1,
+          "block_uuid_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "block_name": "vault",
+          "schema_version": 1,
+          "records": [
+            {
+              "record_uuid_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "record_type": "login",
+              "fields": [],
+              "tags": [],
+              "created_at_ms": 1000,
+              "last_mod_ms": 200,
+              "tombstone": true,
+              "tombstoned_at_ms": 200,
+              "unknown_hex": {}
+            }
+          ],
+          "unknown_hex": {}
+        }
+      }
+    }
+  ]
+}
