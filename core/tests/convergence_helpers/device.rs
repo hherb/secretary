@@ -69,10 +69,7 @@ impl Device {
     /// Tombstone record `record_uuid` in block `block_uuid` (delete), via
     /// a real `save_block`. tombstoned_at_ms == last_mod_ms == now_ms.
     pub fn tombstone(&mut self, block_uuid: [u8; 16], record_uuid: [u8; 16], now_ms: u64) {
-        let mut record = self.build_record_with_field(record_uuid, "k", "deleted", now_ms, true);
-        record.tombstone = true;
-        record.tombstoned_at_ms = now_ms;
-        record.last_mod_ms = now_ms;
+        let record = self.build_record_with_field(record_uuid, "k", "deleted", now_ms, true);
         self.save_records(block_uuid, vec![record], now_ms);
     }
 
