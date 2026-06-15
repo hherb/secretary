@@ -8,6 +8,8 @@ plugins {
 
 // Repo root (the cargo workspace) is the parent of the `android/` gradle root project.
 val repoRoot: java.io.File = rootProject.projectDir.parentFile
+// Host cdylib extension for the bindgen metadata read: macOS → dylib, Linux → so.
+// Windows is not a supported host for this FFI build (the project does not target it).
 val hostCdylibExt: String = if (DefaultNativePlatform.getCurrentOperatingSystem().isMacOsX) "dylib" else "so"
 val generatedBindingsDir = layout.buildDirectory.dir("generated/uniffi")
 
@@ -63,23 +65,31 @@ dependencies {
 
 // --- FFI build wiring -------------------------------------------------------
 
-// Generate the uniffi Kotlin bindings from the .udl-derived host cdylib metadata.
-// uniffi-bindgen --library reads the built cdylib, so we build the host cdylib first.
-val generateUniffiKotlinBindings by tasks.registering(Exec::class) {
+// The host cdylib whose embedded metadata uniffi-bindgen reads to generate Kotlin bindings.
+// macOS → .dylib, Linux → .so (Windows is not a supported host for this project's FFI build).
+val hostCdylib = repoRoot.resolve("target/release/libsecretary_ffi_uniffi.$hostCdylibExt")
+
+// Build the host cdylib once, tracked, so the bindings task has a real input/output edge
+// (no untracked product hiding inside a doFirst — safe under Gradle's build cache).
+val buildHostCdylib by tasks.registering(Exec::class) {
     workingDir = repoRoot
     inputs.dir(repoRoot.resolve("ffi/secretary-ffi-uniffi/src"))
+    outputs.file(hostCdylib)
+    commandLine("cargo", "build", "--release", "-p", "secretary-ffi-uniffi")
+}
+
+// Generate the uniffi Kotlin bindings from the host cdylib metadata.
+val generateUniffiKotlinBindings by tasks.registering(Exec::class) {
+    dependsOn(buildHostCdylib)
+    workingDir = repoRoot
+    inputs.dir(repoRoot.resolve("ffi/secretary-ffi-uniffi/src"))
+    inputs.file(hostCdylib)
     outputs.dir(generatedBindingsDir)
-    doFirst {
-        exec {
-            workingDir = repoRoot
-            commandLine("cargo", "build", "--release", "-p", "secretary-ffi-uniffi")
-        }
-    }
     commandLine(
         "cargo", "run", "--release", "--features", "cli",
         "-p", "secretary-ffi-uniffi", "--bin", "uniffi-bindgen", "--",
         "generate",
-        "--library", "target/release/libsecretary_ffi_uniffi.$hostCdylibExt",
+        "--library", hostCdylib.absolutePath,
         "--language", "kotlin",
         "--out-dir", generatedBindingsDir.get().asFile.absolutePath,
     )
