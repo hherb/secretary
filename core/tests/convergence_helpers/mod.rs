@@ -1,5 +1,4 @@
 //! Reusable two-device convergence harness. See `convergence.rs`.
-#![allow(dead_code)] // helpers land task-by-task; some are unused until later tasks
 
 mod assert;
 mod baseline;
@@ -7,15 +6,10 @@ mod device;
 mod reconcile;
 mod sync_drive;
 
-#[allow(unused_imports)] // assert_converged is used by later convergence tasks
 pub use assert::{assert_converged, decrypt_state, LogicalRecord};
 pub use baseline::Baseline;
-#[allow(unused_imports)] // copy_dir_all is unused until later convergence tasks
 pub use device::{copy_dir_all, Device};
-#[allow(unused_imports)] // SharedFolder is used by later convergence tasks
-pub use reconcile::{reconcile, SharedFolder};
-#[allow(unused_imports)]
-// sync_as_pure_adopter is used by later convergence tasks (scenario 1)
+pub use reconcile::reconcile;
 pub use sync_drive::sync_as_pure_adopter;
 pub use sync_drive::{is_nothing_to_do, sync_as_adopter, sync_as_merger, VetoPolicy};
 
