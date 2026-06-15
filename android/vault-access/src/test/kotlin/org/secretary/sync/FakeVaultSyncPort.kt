@@ -1,9 +1,13 @@
 package org.secretary.sync
 
 /**
- * Scriptable in-memory [VaultSyncPort] for host tests. Seed per-method results (a queue,
- * dequeued FIFO) and inspect the recorded calls (spy). A seeded `Result.failure` is thrown,
- * mirroring how the real adapter surfaces [VaultSyncError].
+ * Scriptable in-memory [VaultSyncPort] for host tests. Seed per-method results and inspect
+ * the recorded calls (spy). A seeded `Result.failure` is thrown, mirroring how the real
+ * adapter surfaces [VaultSyncError].
+ *
+ * Seeding model: [sync] and [commitDecisions] are FIFO queues (so a multi-pass coordinator
+ * test can script a sequence of outcomes); [status] is a single stable value returned on
+ * every read.
  */
 class FakeVaultSyncPort : VaultSyncPort {
     val syncResults: ArrayDeque<Result<SyncOutcome>> = ArrayDeque()
@@ -16,6 +20,7 @@ class FakeVaultSyncPort : VaultSyncPort {
     val commitCalls: MutableList<CommitCall> = mutableListOf()
     val statusCalls: MutableList<ByteArray> = mutableListOf()
 
+    // Field-access only; never ==-compared, so the ByteArray fields' referential equals/hashCode are unused.
     data class SyncCall(
         val stateDir: String,
         val vaultFolder: String,
@@ -23,6 +28,7 @@ class FakeVaultSyncPort : VaultSyncPort {
         val nowMs: ULong,
     )
 
+    // Field-access only; never ==-compared, so the ByteArray fields' referential equals/hashCode are unused.
     data class CommitCall(
         val stateDir: String,
         val vaultFolder: String,
