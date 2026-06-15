@@ -125,5 +125,6 @@ fn decrypt_state_projects_records_to_comparable_shape() {
     assert_eq!(state.len(), 1);
     assert_eq!(state[0].record_uuid, X_RECORD);
     assert!(!state[0].tombstone);
-    assert!(state[0].field_names.contains(&"f1".to_string()));
+    assert_eq!(state[0].field_value_digests.len(), 1);
+    assert_eq!(state[0].field_value_digests[0].0, "f1");
 }

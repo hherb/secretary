@@ -6,12 +6,30 @@ use crate::convergence_helpers::{decrypt_block_records, Baseline};
 /// cross-ordering convergence comparison. Field VALUES are not compared
 /// directly (they are `SecretString`); instead the value is hashed into
 /// a stable digest so equality is meaningful without exposing secrets.
+///
+/// Included fields cover every mergeable axis so that a divergence in any
+/// merge outcome is caught:
+/// - `tombstoned_at_ms`: the record-level death clock; load-bearing for the
+///   tombstone-veto scenario.
+/// - `record_type`, `tags`: metadata merged alongside field data.
+/// - `field_value_digests`: `(field_name, blake3-of-plaintext-value)` pairs,
+///   sorted by name. Per-field `last_mod`/`device_uuid` are covered
+///   indirectly: if the wrong field-version won the merge its value digest
+///   differs, so a divergence is still detected.
+///
+/// Deliberately EXCLUDED:
+/// - `created_at_ms`: `min()`-merged, so it is order-independent by
+///   construction and cannot diverge between orderings.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LogicalRecord {
     pub record_uuid: [u8; 16],
     pub tombstone: bool,
+    pub tombstoned_at_ms: u64,
     pub last_mod_ms: u64,
-    pub field_names: Vec<String>,
+    pub record_type: String,
+    /// Tags sorted lexicographically so ordering differences don't cause
+    /// spurious inequality.
+    pub tags: Vec<String>,
     /// (field_name, blake3-of-plaintext-value) pairs, sorted by name.
     pub field_value_digests: Vec<(String, [u8; 32])>,
 }
@@ -27,19 +45,21 @@ pub fn decrypt_state(
     let mut out: Vec<LogicalRecord> = records
         .iter()
         .map(|r| {
-            let mut field_names: Vec<String> = r.fields.keys().cloned().collect();
-            field_names.sort();
             let mut field_value_digests: Vec<(String, [u8; 32])> = r
                 .fields
                 .iter()
                 .map(|(k, v)| (k.clone(), digest_field_value(&v.value)))
                 .collect();
             field_value_digests.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut tags = r.tags.clone();
+            tags.sort();
             LogicalRecord {
                 record_uuid: r.record_uuid,
                 tombstone: r.tombstone,
+                tombstoned_at_ms: r.tombstoned_at_ms,
                 last_mod_ms: r.last_mod_ms,
-                field_names,
+                record_type: r.record_type.clone(),
+                tags,
                 field_value_digests,
             }
         })
