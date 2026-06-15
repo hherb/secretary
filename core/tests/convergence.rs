@@ -179,6 +179,7 @@ fn device_post_edit_state(baseline: &Baseline, device: &Device) -> secretary_cor
 /// Run a both-edit scenario in one ordering: `canonical` device's files
 /// are canonical, `merger` device merges. Returns the converged logical
 /// state of the named block.
+/// Also asserts quiescence (a follow-up sync is a no-op) for both devices before returning.
 fn run_both_edit_ordering(
     baseline: &Baseline,
     canonical: &Device,
@@ -376,6 +377,10 @@ fn scenario_tombstone_veto_keep_local_overrides_within_ordering() {
         !state[0].tombstone,
         "KeepLocal veto keeps X live; both devices converge to live within this ordering",
     );
+    assert!(
+        !state[0].field_value_digests.is_empty(),
+        "the kept-live record retains its fields",
+    );
 }
 
 /// Scenario 3 (LWW collision): A and B edit the SAME field of X with
@@ -384,10 +389,7 @@ fn scenario_tombstone_veto_keep_local_overrides_within_ordering() {
 /// both orderings.
 #[test]
 fn scenario_lww_collision_converges() {
-    let baseline = Baseline::create();
-    let mut seed = Device::fork(&baseline, [0x00; 16], 0x55);
-    seed.edit_text_field(X_BLOCK, X_RECORD, "k", "seed", 10);
-    let baseline = baseline_from_seeded(baseline, &seed);
+    let baseline = seed_baseline_with_live_x();
 
     // Expected winning digest = the project hash of the later writer's plaintext.
     let later_value_digest = *secretary_core::crypto::hash::hash(b"bob-wins").as_bytes();
