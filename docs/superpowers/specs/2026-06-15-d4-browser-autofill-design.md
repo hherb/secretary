@@ -211,11 +211,10 @@ D.4.3 is the slice that earns the most review; D.4.1/D.4.2 are scaffolding; D.4.
 
 These need a decision before the slices that depend on them; recommendations noted.
 
-1. **Save / update path (biggest scope call).** D.4 as specified is **fill-only** (read). Do we
-   also offer the classic "save this new password?" / "update changed password?" capture prompt?
-   That is a *write* into the casual vault from the browser — a materially larger surface (the
-   helper would need a record-create/update path and its own confirmation). *Recommendation:*
-   ship D.4 v1 fill-only; spec the capture path as a follow-on (D.4.7) once fill is proven.
+1. **Save / update path → RESOLVED (2026-06-16): fill-only for v1.** D.4 v1 is read-only;
+   the "save this new password?" / "update changed password?" *capture* prompt is a separate
+   **extended-scope** slice (D.4.7), specced and built only after fill is proven. v1 introduces
+   no browser-side write path into the casual vault.
 2. **Field-detection strategy.** How the content script identifies username / password / TOTP
    fields to inject into (autocomplete attributes vs heuristics). Mis-detection is a
    security-relevant failure (right credential, wrong field). *Recommendation:* prefer
