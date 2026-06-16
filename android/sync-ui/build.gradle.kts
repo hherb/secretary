@@ -50,7 +50,7 @@ dependencies {
     // ViewModel + lifecycle-aware state collection in Compose.
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
-    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.activity:activity-compose")
 
     // coroutines pinned to match the rest of the workspace.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core") {
