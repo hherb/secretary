@@ -31,18 +31,12 @@ private const val JUST_NOW_CUTOFF_MS = MINUTE_MS
  * supplying `nowMs` (e.g. `System.currentTimeMillis().toULong()`) at render time, which
  * makes the output trivially testable on the JVM host without an emulator.
  *
- * Clock-skew handling: if [sinceMs] is ahead of [nowMs] (e.g. due to NTP drift), the
- * ULong subtraction wraps to a large value; reinterpreting it as a signed [Long] yields
- * a negative number which is caught by the `< 0` guard and returns "just now". This
- * avoids a branch on `nowMs >= sinceMs` and keeps the common (past) path branch-free,
- * while remaining correct for any delta up to 2^63 ms (≈ 292 million years).
+ * A [sinceMs] ahead of [nowMs] (clock skew) clamps to "just now".
  */
 fun relativeSyncedLabel(sinceMs: ULong, nowMs: ULong): String {
-    // ULong subtraction wraps on underflow; toLong() reinterprets the bit pattern, giving
-    // a negative Long when sinceMs > nowMs (i.e. clock skew / future timestamp).
+    if (nowMs < sinceMs) return "just now" // clock skew: sinceMs is in the future
     val deltaMs: Long = (nowMs - sinceMs).toLong()
     return when {
-        deltaMs < 0 -> "just now"                          // sinceMs is in the future
         deltaMs < JUST_NOW_CUTOFF_MS -> "just now"
         deltaMs < HOUR_MS -> "${deltaMs / MINUTE_MS}m ago"
         deltaMs < DAY_MS -> "${deltaMs / HOUR_MS}h ago"
@@ -82,7 +76,7 @@ fun badgeLabel(state: SyncBadgeState, nowMs: ULong): String = when (state) {
 fun badgeIcon(state: SyncBadgeState): ImageVector = when (state) {
     SyncBadgeState.NeverSynced -> Icons.Default.Info
     is SyncBadgeState.Synced -> Icons.Default.CheckCircle
-    SyncBadgeState.ChangesDetected -> Icons.Default.Refresh
+    SyncBadgeState.ChangesDetected -> Icons.Default.Refresh // intentionally the same icon as Syncing below; do not deduplicate
     SyncBadgeState.ReviewNeeded -> Icons.Default.Warning
     SyncBadgeState.Syncing -> Icons.Default.Refresh
 }

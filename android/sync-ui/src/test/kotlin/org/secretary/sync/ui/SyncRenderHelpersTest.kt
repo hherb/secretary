@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test
 import org.secretary.sync.SyncBadgeState
 
 class SyncRenderHelpersTest {
-    private val now = 10_000_000uL // arbitrary fixed "now" in epoch millis
+    private val now = 1_750_000_000_000uL // realistic epoch millis (~2025-06-15); every now - offset in this file is a genuine past timestamp
 
     @Test
     fun relativeLabel_underAMinute_isJustNow() {
@@ -40,5 +40,21 @@ class SyncRenderHelpersTest {
         assertEquals("Changes detected", badgeLabel(SyncBadgeState.ChangesDetected, now))
         assertEquals("Review needed", badgeLabel(SyncBadgeState.ReviewNeeded, now))
         assertEquals("Syncing…", badgeLabel(SyncBadgeState.Syncing, now))
+    }
+
+    @Test
+    fun relativeLabel_exactlyOneMinute_isMinutes() {
+        // 60_000 ms is NOT < JUST_NOW_CUTOFF_MS, so it falls into the minutes bucket as "1m ago".
+        assertEquals("1m ago", relativeSyncedLabel(sinceMs = now - 60_000uL, nowMs = now))
+    }
+
+    @Test
+    fun relativeLabel_exactlyOneHour_isHours() {
+        assertEquals("1h ago", relativeSyncedLabel(sinceMs = now - 3_600_000uL, nowMs = now))
+    }
+
+    @Test
+    fun relativeLabel_exactlyOneDay_isDays() {
+        assertEquals("1d ago", relativeSyncedLabel(sinceMs = now - 86_400_000uL, nowMs = now))
     }
 }
