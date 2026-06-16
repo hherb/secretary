@@ -61,6 +61,14 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # on the normalized ASCII host.
 url = "2"
 idna = "1"
+# `psl` — the Public Suffix List, EMBEDDED at compile time in the crate. The
+# `registrable_domain` binding matches on eTLD+1 (so `foo.github.io` is its own
+# registrable domain, defeating shared-suffix confusion). The list is a
+# VERSIONED, SECURITY-CRITICAL data dependency: the embedded list is baked into
+# this crate version, so EXACT-PINNING the version pins the list. A bump moves
+# match boundaries — treat it as a deliberate, reviewed change, same discipline
+# as `tempfile =3.27.0` in core (CLAUDE.md "Atomic-write contract" / design §5).
+psl = "=2.1.137"
 
 [dev-dependencies]
 # `tempfile` for tests that write a dev secret file / copy the golden vault.
