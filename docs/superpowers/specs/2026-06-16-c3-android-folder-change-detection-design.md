@@ -55,7 +55,7 @@ smoke test land in `:kit`.
 
 :kit (real adapters — thin, Android)                         package org.secretary.sync
   MonotonicClock.kt            monotonicNow() = MonotonicInstant(SystemClock.elapsedRealtimeNanos())
-  FileObserverFolderWatch.kt   android.os.FileObserver → FolderWatchPort (recursive on API 29+, root fallback)
+  FileObserverFolderWatch.kt   android.os.FileObserver → FolderWatchPort (root-only, non-recursive)
   HandlerFlushScheduler.kt     main-Looper Handler.postDelayed → FlushScheduler
   ChangeMonitorFactory.kt      makeChangeMonitor(folder:File, ...) tiny composition factory
 
@@ -120,13 +120,18 @@ Because both ports are injected, the burst/coalesce/cancel/ack behavior is host-
 
 - **`MonotonicClock.kt`** — `fun monotonicNow(): MonotonicInstant = MonotonicInstant(SystemClock.elapsedRealtimeNanos())`.
   The only Android-specific time source; keeps `MonotonicInstant` itself pure in `:vault-access`.
-- **`FileObserverFolderWatch`** — registers an `android.os.FileObserver` on the vault folder.
-  - **API 29+:** the recursive `FileObserver(File, mask)` constructor → full subtree coverage.
-  - **API 26–28:** the legacy `FileObserver(path: String, mask)` watches the root non-recursively. This still
-    catches every **committed** change because the top-level `manifest.cbor.enc` is rewritten via atomic rename
-    on every state advance (a `MOVED_TO` / `CREATE` event on the root directory). A deep-only change with no
-    manifest touch is not committed and is therefore not a sync-relevant event.
-  - Mask: creation / modification / move-in / delete events (`CREATE | MODIFY | MOVED_TO | MOVED_FROM | DELETE | CLOSE_WRITE`).
+- **`FileObserverFolderWatch`** — registers a single `android.os.FileObserver` on the vault **root**,
+  **non-recursively**. `FileObserver` is non-recursive on *all* API levels (even API 29's `FileObserver(File,
+  mask)` watches only the directory's immediate contents, not subdirectories — the standard recursive
+  workaround is one observer per subdir, which we deliberately avoid). Root-only watching is **correct and
+  sufficient** because the top-level `manifest.cbor.enc` is re-signed and rewritten via atomic rename on every
+  committed state advance (vault-format §4.4), surfacing as a `MOVED_TO` / `CREATE` event on the root
+  directory. A remote device's change always lands a new top-level manifest, so it always pulses. A deep-only
+  change with no manifest touch is not a committed (sync-relevant) state.
+  - **API 29+:** `FileObserver(folder: File, mask)` — the non-deprecated constructor (still non-recursive).
+  - **API 26–28:** `FileObserver(path: String, mask)` — the legacy constructor (deprecated on 29+; identical
+    non-recursive behavior). The API split is **deprecation hygiene only**, not a coverage difference.
+  - Mask: creation / modification / move-in/out / delete events (`CREATE | MODIFY | MOVED_TO | MOVED_FROM | DELETE | CLOSE_WRITE`).
   - `FileObserver.onEvent` fires on the observer's own thread; the conformer stamps `monotonicNow()` and
     **posts to a main-`Looper` `Handler`** before invoking `onPulse`, so the monitor is only ever touched on
     the main thread (matches iOS delivering on `@MainActor`).
@@ -159,8 +164,9 @@ FileObserver.onEvent (observer thread) ──► post to main Handler ──► 
     residual false positives are benign (badge → user syncs → `NothingToDo`).
   - **Backgrounded full-sync**: a change that fully downloads while backgrounded won't pulse on next
     foreground. Slice 4's sync-at-unlock / "Sync now" covers the cold-start case.
-  - **API 26–28 deep-only changes**: see the recursion note above — non-committed deep changes are not
-    sync-relevant, so the root-only fallback misses nothing that matters.
+  - **Deep-only changes (all APIs)**: because watching is root-only/non-recursive, a change confined to a
+    subdirectory with no top-level manifest rewrite would not pulse. Such a change is, by definition, not a
+    committed (sync-relevant) state (vault-format §4.4), so root-only misses nothing that matters.
 
 ## Background-execution decision (documented, not built)
 
