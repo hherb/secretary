@@ -15,6 +15,7 @@
 //! D.4.4; real origin matching is D.4.3.
 
 pub mod config;
+pub mod enroll;
 pub mod frame;
 pub mod protocol;
 pub mod secret_source;
