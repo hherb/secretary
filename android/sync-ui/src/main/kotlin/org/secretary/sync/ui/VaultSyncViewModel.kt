@@ -34,15 +34,30 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
         _passwordSheetVisible.value = true
     }
 
-    /** Run one interactive pass with the re-entered password, then close the password sheet. */
+    /**
+     * Run one interactive pass with the re-entered password. On success — or when the pass
+     * surfaces a conflict (handed off to the conflict sheet via [pendingConflict]) — the password
+     * sheet closes. On a [VaultSyncError] (e.g. wrong password) the model captures it in
+     * [lastError] without throwing, and the sheet STAYS OPEN so the user can retry inline.
+     *
+     * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
+     * The CALLER owns the byte buffer and must zero it after this call returns (the VM cannot —
+     * it does not retain a reference past the in-flight pass).
+     */
     fun submitPassword(password: ByteArray) {
         viewModelScope.launch {
             model.runInteractivePass(password)
-            _passwordSheetVisible.value = false
+            if (model.lastError.value == null) _passwordSheetVisible.value = false
         }
     }
 
-    /** Commit the user's veto decisions for the paused conflict. */
+    /**
+     * Commit the user's veto decisions for the paused conflict. The conflict sheet is driven by
+     * [pendingConflict]; a clean resolve clears it (no separate visibility flag here).
+     *
+     * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
+     * The CALLER owns the byte buffer and must zero it after this call returns.
+     */
     fun resolve(decisions: List<SyncVetoDecision>, password: ByteArray) {
         viewModelScope.launch { model.resolve(decisions, password) }
     }
@@ -63,8 +78,11 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
     /**
      * Silent sync immediately after a password unlock — for the FUTURE app's unlock hook. No UI in
      * this slice drives it; a conflict only raises the review badge (password dropped, no sheet).
+     *
+     * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
+     * The CALLER owns the byte buffer and must zero it after this call returns.
      */
     fun syncAtUnlock(password: ByteArray) {
-        viewModelScope.launch { model.syncAtUnlock(password) }
+        viewModelScope.launch { model.syncAtUnlock(password) } // Wired by a future :app unlock hook; no UI path triggers this in this slice.
     }
 }

@@ -42,13 +42,49 @@ class VaultSyncViewModelTest {
 
     @Test
     fun submitPassword_cleanOutcome_hidesSheetAndForwardsBadge() = runTest(dispatcher) {
-        val vm = viewModel(SyncOutcome.MergedClean)
+        // Build with an inspectable port so we can assert password forwarding.
+        val port = ScriptedSyncPort(SyncOutcome.MergedClean)
+        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        val vm = VaultSyncViewModel(model)
+
         vm.beginInteractiveSync()
         vm.submitPassword("pw".toByteArray())
         advanceUntilIdle()
         assertFalse(vm.passwordSheetVisible.value)
         // A clean pass with no prior status leaves the badge at NeverSynced (status not refreshed).
         assertEquals(SyncBadgeState.NeverSynced, vm.badge.value)
+        // Assert the password bytes reached the port.
+        assertEquals(1, port.passwords.size)
+        assertEquals("pw".toByteArray().toList(), port.passwords[0].toList())
+    }
+
+    @Test
+    fun resolve_afterConflict_clearsPendingConflict() = runTest(dispatcher) {
+        val veto = org.secretary.sync.SyncVeto(
+            recordUuidHex = "aabb", recordType = "login", tags = listOf("work"),
+            fieldNames = listOf("password"), localLastModMs = 1uL, peerTombstonedAtMs = 2uL,
+            peerDeviceHex = "deadbeefcafef00d",
+        )
+        val conflict = org.secretary.sync.SyncOutcome.ConflictsPending(
+            vetoes = listOf(veto), collisions = emptyList(), manifestHash = byteArrayOf(1, 2, 3),
+        )
+        val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = org.secretary.sync.SyncOutcome.MergedClean)
+        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        val vm = VaultSyncViewModel(model)
+
+        vm.beginInteractiveSync()
+        vm.submitPassword("pw".toByteArray())
+        advanceUntilIdle()
+        // The interactive pass surfaced a conflict; the password sheet closed (no error).
+        assertFalse(vm.passwordSheetVisible.value)
+        assertEquals(true, vm.pendingConflict.value != null)
+
+        vm.resolve(listOf(org.secretary.sync.SyncVetoDecision("aabb", true)), "pw".toByteArray())
+        advanceUntilIdle()
+        // The clean commit cleared the conflict.
+        assertEquals(null, vm.pendingConflict.value)
     }
 
     @Test
