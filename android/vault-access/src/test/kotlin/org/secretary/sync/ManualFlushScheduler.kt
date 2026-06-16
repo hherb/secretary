@@ -9,6 +9,9 @@ import kotlin.time.Duration
  * a fresh pending entry.
  */
 class ManualFlushScheduler : FlushScheduler {
+    /** The delay from the most recent [schedule]. NOT invalidated by [fire] or [cancel]
+     *  (it reflects the last schedule call, not whether work is still pending — use
+     *  [hasPending] for that). */
     var scheduledDelay: Duration? = null
         private set
     var cancelCount: Int = 0

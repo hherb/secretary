@@ -53,4 +53,20 @@ class PortDoublesTest {
         assertEquals(1, scheduler.cancelCount)
         assertFalse(scheduler.hasPending)
     }
+
+    @Test
+    fun fakeWatchStopBeforeStartIsHarmless() {
+        val watch = FakeFolderWatch()
+        watch.stop() // idempotent: stopping an unstarted watch must not throw
+        assertFalse(watch.started)
+        assertEquals(1, watch.stopCount)
+    }
+
+    @Test
+    fun fakeWatchEmitAfterStopThrows() {
+        val watch = FakeFolderWatch()
+        watch.start {}
+        watch.stop()
+        assertThrows(IllegalStateException::class.java) { watch.emit(MonotonicInstant(1)) }
+    }
 }
