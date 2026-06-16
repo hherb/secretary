@@ -3,6 +3,7 @@ package org.secretary.sync.ui
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.secretary.sync.SyncBadgeState
+import org.secretary.sync.VaultSyncError
 
 class SyncRenderHelpersTest {
     private val now = 1_750_000_000_000uL // realistic epoch millis (~2025-06-15); every now - offset in this file is a genuine past timestamp
@@ -56,5 +57,13 @@ class SyncRenderHelpersTest {
     @Test
     fun relativeLabel_exactlyOneDay_isDays() {
         assertEquals("1d ago", relativeSyncedLabel(sinceMs = now - 86_400_000uL, nowMs = now))
+    }
+
+    @Test
+    fun syncErrorLabel_coversWrongPassword() {
+        assertEquals(
+            "Wrong password, or the vault is corrupt.",
+            syncErrorLabel(VaultSyncError.WrongPasswordOrCorrupt),
+        )
     }
 }

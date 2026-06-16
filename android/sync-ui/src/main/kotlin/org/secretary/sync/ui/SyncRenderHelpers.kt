@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.graphics.vector.ImageVector
 import org.secretary.sync.SyncBadgeState
+import org.secretary.sync.VaultSyncError
 
 // ---------------------------------------------------------------------------
 // Named time-bucket constants — no magic numbers in logic below.
@@ -79,4 +80,30 @@ fun badgeIcon(state: SyncBadgeState): ImageVector = when (state) {
     SyncBadgeState.ChangesDetected -> Icons.Default.Refresh // intentionally the same icon as Syncing below; do not deduplicate
     SyncBadgeState.ReviewNeeded -> Icons.Default.Warning
     SyncBadgeState.Syncing -> Icons.Default.Refresh
+}
+
+// ---------------------------------------------------------------------------
+// Error label helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a pure, user-facing error message for a [VaultSyncError].
+ *
+ * This function is **pure** and exhaustive over every [VaultSyncError] arm — the `when`
+ * has no `else` branch so that adding a new arm is a compile error, not a silent gap.
+ * It is used by both the password sheet and the conflict sheet so the wording is consistent.
+ *
+ * **Intentional conflation:** [VaultSyncError.WrongPasswordOrCorrupt] uses a single message
+ * per the threat model's anti-oracle rule (§13). Do NOT split the label.
+ */
+fun syncErrorLabel(error: VaultSyncError): String = when (error) {
+    is VaultSyncError.WrongPasswordOrCorrupt -> "Wrong password, or the vault is corrupt."
+    is VaultSyncError.EvidenceStale -> "The vault changed while resolving — please try again."
+    is VaultSyncError.DecisionsIncomplete -> "Choose an option for every record."
+    is VaultSyncError.InProgress -> "A sync is already running."
+    is VaultSyncError.StateVaultMismatch -> "Sync state belongs to a different vault."
+    is VaultSyncError.StateCorrupt -> "Sync state is corrupt."
+    is VaultSyncError.NoPendingConflict -> "Nothing to resolve."
+    is VaultSyncError.InvalidArgument -> "Invalid sync request."
+    is VaultSyncError.Failed -> "Sync failed."
 }
