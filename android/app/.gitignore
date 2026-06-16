@@ -1,0 +1,3 @@
+# Golden vault is staged from core/tests/data at build time (single source of truth) — never committed.
+/src/main/assets/golden_vault_001/
+/src/main/assets/golden_vault_001_inputs.json
