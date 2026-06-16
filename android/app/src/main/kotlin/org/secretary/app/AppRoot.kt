@@ -32,11 +32,12 @@ private sealed interface Route {
 
 /**
  * Top-level routing for the walking skeleton: Unlock → Sync. On unlock it builds the REAL
- * makeVaultSync pair on the main thread (Compose runs on main), starts the folder monitor
- * (advisory — a failed start is logged, not fatal), awaits a silent syncAtUnlock, zeroizes the
- * password, then routes to the slice-5 SyncScreen. On background (ON_STOP) it stops the monitor
- * and returns to Unlock, dropping the session (mirrors iOS scenePhase == .background; Android has
- * no session to resume since the password is transient per pass).
+ * makeVaultSync pair on the main thread (Compose runs on main), awaits a silent syncAtUnlock,
+ * zeroizes the password, then routes to the slice-5 SyncScreen. The folder monitor's lifecycle is
+ * bound to the Sync screen's composition (see the DisposableEffect in the Route.Sync arm): it runs
+ * only while Sync is on screen. On background (ON_STOP) the app routes back to Unlock, which
+ * disposes the Sync composition and stops the monitor (mirrors iOS scenePhase == .background;
+ * Android has no session to resume since the password is transient per pass).
  */
 @Composable
 fun AppRoot() {
@@ -44,14 +45,12 @@ fun AppRoot() {
     val scope = rememberCoroutineScope()
     var route by remember { mutableStateOf<Route>(Route.Unlock) }
 
-    // Background → stop monitor + return to Unlock, dropping the model.
+    // Background → return to Unlock. Leaving Route.Sync disposes its composition, whose
+    // DisposableEffect stops the monitor — so the watcher is never left running once we leave Sync.
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, route) {
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                (route as? Route.Sync)?.let { it.monitor.stop() }
-                route = Route.Unlock
-            }
+            if (event == Lifecycle.Event.ON_STOP) route = Route.Unlock
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -63,15 +62,32 @@ fun AppRoot() {
                 route = unlockAndSync(context, password)
             }
         })
-        is Route.Sync -> SyncScreen(viewModel = r.viewModel)
+        is Route.Sync -> {
+            // The monitor runs only while the Sync screen is composed: started on enter, stopped
+            // on dispose (route change back to Unlock on background, or activity teardown). This
+            // binds detection to the on-screen session and never leaves a watcher running after we
+            // leave Sync. A failed start leaves detection advisory-blind (the badge falls back to
+            // manual "Sync now"); not fatal.
+            DisposableEffect(r.monitor) {
+                try {
+                    r.monitor.start()
+                } catch (e: Exception) {
+                    Log.w(TAG, "folder-change monitor failed to start", e)
+                }
+                onDispose { r.monitor.stop() }
+            }
+            SyncScreen(viewModel = r.viewModel)
+        }
     }
 }
 
 /**
- * Builds makeVaultSync (main thread), starts the monitor, awaits the silent unlock pass, zeroizes
- * the password, kicks a best-effort status refresh (for the "synced N ago" label), and returns the
- * Sync route. Called from a main-dispatched coroutine (the heavy Argon2id work hops to IO inside
- * the sync port). The password buffer is zeroized only after the awaited pass consumes it.
+ * Builds makeVaultSync (main thread), awaits the silent unlock pass, zeroizes the password, kicks
+ * a best-effort status refresh (for the "synced N ago" label), and returns the Sync route. The
+ * monitor is NOT started here — it is started by the Route.Sync DisposableEffect when the Sync
+ * screen enters composition, so a watcher is never started for a session the user never sees.
+ * Called from a main-dispatched coroutine (the heavy Argon2id work hops to IO inside the sync
+ * port). The password buffer is zeroized only after the awaited pass consumes it.
  */
 private suspend fun unlockAndSync(context: Context, password: ByteArray): Route {
     val folder = AppVaultProvisioning.stageGoldenVault(context)
@@ -79,12 +95,6 @@ private suspend fun unlockAndSync(context: Context, password: ByteArray): Route 
     val uuid = AppVaultProvisioning.goldenVaultUuid(context)
 
     val (model, monitor) = makeVaultSync(folder, stateDir, uuid)
-    try {
-        monitor.start()
-    } catch (e: Exception) {
-        // Advisory-blind detection (badge falls back to manual "Sync now"); not fatal.
-        Log.w(TAG, "folder-change monitor failed to start", e)
-    }
 
     val viewModel = VaultSyncViewModel(model)
     try {
