@@ -4,17 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@11.3.0",
-  "description": "Chromium MV3 extension for the Secretary browser-autofill native-messaging walking skeleton (D.4.1).",
+  "description": "Chromium MV3 extension for the Secretary browser-autofill native-messaging host (D.4).",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint src tests",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "^9",
     "@types/chrome": "^0.0.287",
     "eslint": "^9",
     "typescript": "^5",
-    "typescript-eslint": "^8"
+    "typescript-eslint": "^8",
+    "vitest": "^4"
   }
 }

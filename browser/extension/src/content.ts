@@ -5,7 +5,9 @@
 //
 // NOTE: this file is loaded as a *classic* content script (not an ES module),
 // so it must have no top-level `import`/`export`. The IIFE keeps its bindings
-// out of the page's global scope.
+// out of the page's global scope. Because it cannot import, it inlines the same
+// shape as `messaging.ts::collectQuery` — keep the two in sync (collectQuery is
+// the unit-tested reference).
 
 (() => {
   const topOrigin = window.location.origin;
