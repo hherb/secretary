@@ -28,7 +28,10 @@ struct Vector {
 }
 
 fn load() -> Corpus {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/origin_match_kat.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/origin_match_kat.json"
+    );
     let raw = std::fs::read_to_string(path).expect("origin_match_kat.json must be readable");
     serde_json::from_str(&raw).expect("origin_match_kat.json must parse")
 }
@@ -37,10 +40,13 @@ fn load() -> Corpus {
 fn replay_origin_match_kat() {
     let corpus = load();
     assert_eq!(corpus.version, 1, "unexpected corpus version");
-    assert!(
-        corpus.vectors.len() >= 20,
-        "the corpus should be comprehensive (got {})",
-        corpus.vectors.len()
+    // Exact count: the KAT is the contract — a silently dropped vector must
+    // fail, not pass. Bump this deliberately when adding vectors (and the diff
+    // is human-reviewed, per CLAUDE.md "Spec is normative").
+    assert_eq!(
+        corpus.vectors.len(),
+        24,
+        "unexpected corpus size (vectors added/removed without updating the count?)"
     );
 
     for v in &corpus.vectors {

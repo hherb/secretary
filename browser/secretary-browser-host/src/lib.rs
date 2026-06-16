@@ -79,18 +79,37 @@ impl Context {
     /// Answer one inbound message.
     fn answer(&self, message: Inbound) -> Outbound {
         match message {
-            Inbound::Query { .. } => self.answer_query(),
+            // The advisory `https` flag is ignored: the page-level gate derives
+            // HTTPS from the parsed origins, which is not extension-controlled.
+            Inbound::Query {
+                top_origin,
+                frame_origin,
+                https: _,
+            } => self.answer_query(&top_origin, &frame_origin),
             Inbound::Unknown => Outbound::error("unknown or unsupported message type"),
         }
     }
 
     /// A `query` → an `available { count }` (or an `error` on a genuine
     /// open/config failure of an enrolled vault).
-    fn answer_query(&self) -> Outbound {
+    fn answer_query(&self, top_origin: &str, frame_origin: &str) -> Outbound {
         let Some(enrolled) = &self.enrolled else {
             // Not enrolled: no affordance, never an error.
             return Outbound::available_none();
         };
+        // Page-level gate (origin-match rules 1+2): never surface an affordance
+        // on a non-HTTPS page or inside a cross-origin iframe — even though the
+        // per-credential, origin-aware *count* (rule 3) is still D.4.3 task 5.
+        // Until that lands this ensures the casual-vault block count is not
+        // leaked to a foreign top frame or over plain http. The casual default
+        // binding is `registrable_domain` (design §10.6.5).
+        if !origin_match::page_affordance_allowed(
+            top_origin,
+            frame_origin,
+            origin_match::OriginBinding::RegistrableDomain,
+        ) {
+            return Outbound::available_none();
+        }
         match vault::per_fill_count(&enrolled.config, enrolled.source.as_ref()) {
             Ok(count) => Outbound::available(count),
             // The secret simply isn't present yet (e.g. file not written, or a
@@ -220,6 +239,39 @@ mod tests {
         }) {
             Outbound::Available { count, .. } => assert_eq!(count, expected),
             other => panic!("expected Available, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrolled_query_on_http_page_shows_no_count() {
+        // The page-level gate must refuse before the vault is even opened, so an
+        // enrolled vault's block count never leaks over plain http.
+        let (_tmp, vault, uuid, secret) = enrolled_golden();
+        let ctx = Context::new(config_for(&vault, &uuid), Box::new(FakeSource(secret)));
+        match ctx.answer(Inbound::Query {
+            top_origin: "http://example.com".into(),
+            frame_origin: "http://example.com".into(),
+            https: false,
+        }) {
+            Outbound::Available { count, .. } => assert_eq!(count, 0, "no affordance over http"),
+            other => panic!("expected Available{{count:0}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrolled_query_in_cross_origin_iframe_shows_no_count() {
+        // A foreign top frame must not learn the casual vault's block count.
+        let (_tmp, vault, uuid, secret) = enrolled_golden();
+        let ctx = Context::new(config_for(&vault, &uuid), Box::new(FakeSource(secret)));
+        match ctx.answer(Inbound::Query {
+            top_origin: "https://evil.com".into(),
+            frame_origin: "https://example.com".into(),
+            https: true,
+        }) {
+            Outbound::Available { count, .. } => {
+                assert_eq!(count, 0, "no affordance in a cross-origin iframe")
+            }
+            other => panic!("expected Available{{count:0}}, got {other:?}"),
         }
     }
 

@@ -59,6 +59,12 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # IDN→punycode, default-port normalization); `idna` decodes punycode hosts back
 # to Unicode for the mixed-script (homograph) display flag. Matching itself runs
 # on the normalized ASCII host.
+#
+# SECURITY-RELEVANT: both feed the origin-matching trust boundary — a change in
+# punycode/host normalization could move a match decision. Treat a bump as a
+# deliberate, reviewed change: re-run the origin-match KAT
+# (`tests/origin_match_kat.rs`) plus the `origin` parser tests on any upgrade
+# (same discipline as the `psl` pin below; CLAUDE.md "Atomic-write contract").
 url = "2"
 idna = "1"
 # `psl` — the Public Suffix List, EMBEDDED at compile time in the crate. The

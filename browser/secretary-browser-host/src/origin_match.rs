@@ -120,6 +120,29 @@ pub fn decide(
     }
 }
 
+/// Page-level affordance gate — rules 1 (HTTPS-only) and 2 (top-frame governs),
+/// the subset of [`decide`] that needs **no** stored credential.
+///
+/// The per-fill count path uses this so an affordance is never surfaced on a
+/// non-HTTPS page or inside a cross-origin iframe, even while per-credential
+/// origin matching (rule 3 — the bit that makes the *count itself* origin-aware)
+/// is still deferred to D.4.3 task 5. HTTPS is derived from the **parsed**
+/// origins, never from the extension's advisory `https` flag.
+///
+/// This mirrors the rule-1 / rule-2 logic in [`decide`]; the
+/// `page_gate_agrees_with_decide` test pins the two together so they cannot
+/// drift.
+pub fn page_affordance_allowed(
+    top_origin: &str,
+    frame_origin: &str,
+    binding: OriginBinding,
+) -> bool {
+    let (Ok(frame), Ok(top)) = (parse_origin(frame_origin), parse_origin(top_origin)) else {
+        return false;
+    };
+    frame.is_https() && top.is_https() && origins_match(&top, &frame, binding)
+}
+
 /// Whether two parsed origins match under `binding`. Used for both the
 /// top-vs-frame (rule 2) and stored-vs-frame (rule 3) comparisons.
 fn origins_match(a: &ParsedOrigin, b: &ParsedOrigin, binding: OriginBinding) -> bool {
@@ -338,5 +361,79 @@ mod tests {
         let d = decide(spoof, spoof, "https://example.com", RegistrableDomain);
         assert!(!d.fill, "homograph must not match");
         assert!(d.mixed_script, "decision carries the homograph flag");
+    }
+
+    // ── page_affordance_allowed (rules 1+2, no stored credential) ────────────
+
+    #[test]
+    fn page_gate_allows_https_same_origin() {
+        assert!(page_affordance_allowed(
+            "https://example.com",
+            "https://example.com",
+            RegistrableDomain
+        ));
+    }
+
+    #[test]
+    fn page_gate_allows_same_site_subdomain_iframe_registrable() {
+        assert!(page_affordance_allowed(
+            "https://example.com",
+            "https://login.example.com",
+            RegistrableDomain
+        ));
+    }
+
+    #[test]
+    fn page_gate_refuses_http_page() {
+        assert!(!page_affordance_allowed(
+            "http://example.com",
+            "http://example.com",
+            RegistrableDomain
+        ));
+    }
+
+    #[test]
+    fn page_gate_refuses_cross_origin_iframe() {
+        assert!(!page_affordance_allowed(
+            "https://example.com",
+            "https://evil.com",
+            RegistrableDomain
+        ));
+    }
+
+    #[test]
+    fn page_gate_refuses_unparseable_origin() {
+        assert!(!page_affordance_allowed(
+            "about:blank",
+            "about:blank",
+            RegistrableDomain
+        ));
+    }
+
+    /// The gate is the page-level subset (rules 1+2) of `decide`: whenever the
+    /// gate refuses, `decide` must also refuse for *any* stored origin (it can
+    /// never reach the fill path). This pins the two so they cannot drift.
+    #[test]
+    fn page_gate_agrees_with_decide() {
+        let cases = [
+            ("https://example.com", "https://example.com"), // allowed
+            ("http://example.com", "http://example.com"),   // not https
+            ("https://example.com", "https://evil.com"),    // cross-origin iframe
+            ("about:blank", "about:blank"),                 // unparseable
+            ("https://example.com", "https://login.example.com"), // same-site iframe
+        ];
+        for (top, frame) in cases {
+            for binding in [ExactOrigin, RegistrableDomain] {
+                let gate = page_affordance_allowed(top, frame, binding);
+                if !gate {
+                    // A refused page can never fill, regardless of stored origin.
+                    let d = decide(top, frame, frame, binding);
+                    assert!(
+                        !d.fill,
+                        "gate refused ({top}, {frame}, {binding:?}) but decide filled: {d:?}"
+                    );
+                }
+            }
+        }
     }
 }

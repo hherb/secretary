@@ -1,10 +1,11 @@
-//! Wire protocol for the D.4.1 native-messaging walking skeleton.
+//! Wire protocol for the D.4 native-messaging channel.
 //!
-//! Only the transport-proving subset of the full design (§3) lives here. The
-//! extension sends a [`Inbound::Query`]; the host always answers
-//! [`Outbound::Available`] with `count: 0` (no matching exists yet — that is
-//! D.4.3). An unrecognized message type is answered with [`Outbound::Error`],
-//! never a panic.
+//! Only the transport-proving subset of the full design (§3) lives here: the
+//! extension sends a [`Inbound::Query`] and the host replies with an
+//! [`Outbound::Available`] count (or an [`Outbound::Error`] for an unrecognized
+//! message type, never a panic). The dispatch itself lives in
+//! [`crate::Context::answer`] — the host opens the casual vault per fill and
+//! reports a real count (D.4.2), gated by the page-level origin rules.
 //!
 //! Every reply carries a freshly minted `request_id` so D.4.4's `request_fill`
 //! correlation is already threaded through the channel.
@@ -22,7 +23,8 @@ use uuid::Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Inbound {
     /// "Is anything available for this page?" The host replies with a count
-    /// (always 0 in D.4.1).
+    /// (the casual vault's live block count when the page-level gate passes,
+    /// else 0).
     Query {
         /// Origin of the top-level document.
         top_origin: String,
@@ -45,11 +47,13 @@ pub enum Inbound {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Outbound {
     /// Reply to a [`Inbound::Query`]. `count` is the number of fillable
-    /// candidates — always 0 in this slice.
+    /// candidates: the casual vault's live block count when enrolled and the
+    /// page-level gate passes, else 0 (not enrolled / non-HTTPS / cross-origin
+    /// iframe / secret unavailable).
     Available {
         /// Correlation token for a later `request_fill` (D.4.4).
         request_id: String,
-        /// Candidate count. Always 0 in D.4.1.
+        /// Candidate count (0 = no affordance).
         count: u32,
     },
     /// A message the host could not process (unknown type, malformed frame).
@@ -85,16 +89,6 @@ impl Outbound {
     }
 }
 
-/// Dispatch one inbound message to its reply. Pure and total — every input,
-/// including [`Inbound::Unknown`], maps to an [`Outbound`].
-pub fn handle(message: Inbound) -> Outbound {
-    match message {
-        // No matching exists yet (D.4.3), so the host always reports zero.
-        Inbound::Query { .. } => Outbound::available_none(),
-        Inbound::Unknown => Outbound::error("unknown or unsupported message type"),
-    }
-}
-
 /// Mint a fresh random (v4) request-correlation id, hyphenated lowercase.
 fn new_request_id() -> String {
     Uuid::new_v4().to_string()
@@ -127,16 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn query_is_answered_with_available_zero() {
-        let reply = handle(Inbound::Query {
-            top_origin: "https://example.com".to_string(),
-            frame_origin: "https://example.com".to_string(),
-            https: true,
-        });
-        match reply {
+    fn available_carries_a_parseable_request_id() {
+        // The `available` constructor mints a fresh v4 UUID (36 hyphenated
+        // chars) that re-parses — the correlation token D.4.4 will echo back.
+        match Outbound::available(0) {
             Outbound::Available { count, request_id } => {
                 assert_eq!(count, 0);
-                // A v4 UUID is 36 chars (hyphenated) and re-parses.
                 assert!(Uuid::parse_str(&request_id).is_ok());
             }
             other => panic!("expected Available, got {other:?}"),
@@ -144,9 +134,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_is_answered_with_error() {
-        let reply = handle(Inbound::Unknown);
-        assert!(matches!(reply, Outbound::Error { .. }));
+    fn error_constructor_builds_error_variant() {
+        assert!(matches!(Outbound::error("nope"), Outbound::Error { .. }));
     }
 
     #[test]

@@ -86,6 +86,19 @@ calls it "an ordinary login-record field" — likely a `url` field). The golden
 vault may need a crafted login record with a URL field + `d4_origin_binding` for
 the integration test.
 
+## (2a) Post-review hardening — page-level gate on the count path
+
+Review of the PR flagged that `per_fill_count` was reached **without any
+origin/HTTPS check** — safe today only because the content script is
+`https://example.com/*`-scoped, but a latent count-leak the moment that
+broadens. Fixed without waiting on the §2 decision: `Context::answer_query` now
+runs a **page-level gate** (`origin_match::page_affordance_allowed`, rules 1+2 —
+HTTPS-only + top-frame-governs) before opening the vault, returning `count: 0`
+on a non-HTTPS page or a cross-origin iframe. HTTPS is derived from the **parsed**
+origins, not the extension's advisory `https` flag. A `page_gate_agrees_with_decide`
+test pins the gate to `decide` so they can't drift. This is **rules 1+2 only**;
+the per-credential, origin-aware count (rule 3) is still task 5 below.
+
 ## (3) What remains in D.4.3
 
 - **Task 5** — origin-aware `per_fill_count`: thread the query origins
