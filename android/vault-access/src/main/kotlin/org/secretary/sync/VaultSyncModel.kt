@@ -22,6 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
  * suspending port calls, so the model never drives concurrent passes. Do not drive [refreshStatus]
  * while a pass is in flight (it parks behind the coordinator mutex) — read status before/after.
  *
+ * Badge labelling: a clean pass does not auto-refresh the "synced N ago" label — the [SyncBadgeState.Synced]
+ * label updates only when slice 5 drives [refreshStatus] (read status before/after a pass, never during).
+ * This deliberately differs from iOS, which refreshes inside the pass; on Android the refresh is a UI-layer
+ * concern to avoid re-parking behind the just-released coordinator mutex.
+ *
  * Secret hygiene: the password is a per-call argument, forwarded straight to the coordinator and
  * never stored on the model.
  */
