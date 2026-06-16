@@ -32,6 +32,24 @@ thiserror = "2"
 # `request_fill` step can already be threaded. `v4` = random UUIDs (no MAC /
 # time leakage); no `serde` feature needed since we format to string ourselves.
 uuid = { version = "1", features = ["v4"] }
+# D.4.2: the per-fill open reuses the EXACT B.2 / ADR 0009 path
+# (`open_vault(Unlocker::DeviceSecret { .. })`) and the enrollment primitive
+# (`device_slot::add_device_slot`) — no crypto is reimplemented host-side, and
+# the open is never a weaker open. `SecretBytes` carries the fetched device
+# secret with zeroize-on-drop discipline.
+secretary-core = { path = "../../core" }
+# `dirs` locates the per-user config dir for the helper-local config. Matches
+# the version the `secretary-cli` crate already pins (cli/Cargo.toml).
+dirs = "5"
+# `hex` encodes/decodes the device UUID and the dev-provider secret file as
+# lowercase hex. Matches the version pinned in `secretary-ffi-bridge`.
+hex = "0.4"
+
+[dev-dependencies]
+# `tempfile` for tests that write a dev secret file / copy the golden vault.
+# Exact-pinned to match `core` / `cli` / bridge (CLAUDE.md atomic-write
+# contract); a security-critical-path crate stays exact-pinned even in dev use.
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true

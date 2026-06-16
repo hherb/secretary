@@ -11,8 +11,10 @@
 //! dependency**, holds no key material, and opens no vault. D.4.2 attaches the
 //! crypto behind the same `open_with_device_secret` verify-before-decrypt path.
 
+pub mod config;
 pub mod frame;
 pub mod protocol;
+pub mod secret_source;
 
 use std::io::{Read, Write};
 
