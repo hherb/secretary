@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "description": "Pinned known-answer corpus for the D.4.3 origin-matching engine (origin_match::decide). Each vector is a rule from design §5; replayed by tests/origin_match_kat.rs. Do NOT relax a vector to make code pass — a disagreement is a code or spec bug, resolved explicitly (CLAUDE.md 'Spec is normative'). Regenerate only via a reviewed diff.",
+  "vectors": [
+    {
+      "name": "exact/same-origin fills",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://example.com",
+      "stored_origin": "https://example.com",
+      "binding": "exact_origin",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "exact/explicit-443 normalizes to default",
+      "top_origin": "https://example.com:443",
+      "frame_origin": "https://example.com:443",
+      "stored_origin": "https://example.com",
+      "binding": "exact_origin",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "exact/apex stored does not fill a subdomain page",
+      "top_origin": "https://login.example.com",
+      "frame_origin": "https://login.example.com",
+      "stored_origin": "https://example.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "exact/www does not fill apex",
+      "top_origin": "https://www.example.com",
+      "frame_origin": "https://www.example.com",
+      "stored_origin": "https://example.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "exact/different port refuses",
+      "top_origin": "https://example.com:8443",
+      "frame_origin": "https://example.com:8443",
+      "stored_origin": "https://example.com:443",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "exact/http page refuses (https-only)",
+      "top_origin": "http://example.com",
+      "frame_origin": "http://example.com",
+      "stored_origin": "http://example.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "not_https"
+    },
+    {
+      "name": "exact/cross-origin iframe refuses",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://evil.com",
+      "stored_origin": "https://evil.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "cross_origin_iframe"
+    },
+    {
+      "name": "exact/subdomain iframe is cross-origin",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://login.example.com",
+      "stored_origin": "https://login.example.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "cross_origin_iframe"
+    },
+    {
+      "name": "registrable/subdomain fills (apex stored)",
+      "top_origin": "https://login.example.com",
+      "frame_origin": "https://login.example.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/apex page fills from subdomain-stored",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://example.com",
+      "stored_origin": "https://login.example.com",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/deep subdomain fills",
+      "top_origin": "https://a.b.example.com",
+      "frame_origin": "https://a.b.example.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/eTLD+1 under co.uk fills",
+      "top_origin": "https://www.example.co.uk",
+      "frame_origin": "https://www.example.co.uk",
+      "stored_origin": "https://example.co.uk",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/github.io private suffix does not cross-fill",
+      "top_origin": "https://a.github.io",
+      "frame_origin": "https://a.github.io",
+      "stored_origin": "https://b.github.io",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "registrable/different site refuses",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://example.com",
+      "stored_origin": "https://evil.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "registrable/cross-site iframe refuses",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://evil.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "cross_origin_iframe"
+    },
+    {
+      "name": "registrable/same-site subdomain iframe fills",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://login.example.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/http page refuses (https-only)",
+      "top_origin": "http://example.com",
+      "frame_origin": "http://example.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "not_https"
+    },
+    {
+      "name": "registrable/IDN homograph frame does not match real domain",
+      "top_origin": "https://exаmple.com",
+      "frame_origin": "https://exаmple.com",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "registrable/IPv4 exact fills (no registrable domain, host fallback)",
+      "top_origin": "https://93.184.216.34",
+      "frame_origin": "https://93.184.216.34",
+      "stored_origin": "https://93.184.216.34",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
+    },
+    {
+      "name": "registrable/different IPv4 refuses",
+      "top_origin": "https://93.184.216.34",
+      "frame_origin": "https://93.184.216.34",
+      "stored_origin": "https://10.0.0.1",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "page/data: URI refuses (no host)",
+      "top_origin": "data:text/html,hi",
+      "frame_origin": "data:text/html,hi",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "unparseable_page_origin"
+    },
+    {
+      "name": "page/about:blank refuses (no host)",
+      "top_origin": "about:blank",
+      "frame_origin": "about:blank",
+      "stored_origin": "https://example.com",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "unparseable_page_origin"
+    },
+    {
+      "name": "page/file: refuses (no host)",
+      "top_origin": "file:///etc/passwd",
+      "frame_origin": "file:///etc/passwd",
+      "stored_origin": "https://example.com",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "unparseable_page_origin"
+    },
+    {
+      "name": "stored/unparseable stored origin refuses",
+      "top_origin": "https://example.com",
+      "frame_origin": "https://example.com",
+      "stored_origin": "not a url",
+      "binding": "exact_origin",
+      "expect_fill": false,
+      "expect_reason": "unparseable_stored_origin"
+    }
+  ]
+}

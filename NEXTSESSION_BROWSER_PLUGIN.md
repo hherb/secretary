@@ -8,79 +8,113 @@
 
 ## TL;DR
 
-Planning is done and merged. The next session **implements D.4.1** — a native-messaging
-*walking skeleton*: a browser extension + a small Rust host that complete one
-`query → available{count:0}` **no-op** round trip. **No crypto, no vault, no `secretary-core`
-dependency, no fill.** It exists only to prove the channel before any feature work.
+**D.4.1 (channel skeleton), D.4.2 (per-fill open), and the D.4.3 security CORE (the pure
+origin-matching engine + pinned KAT, tasks 1–4) are shipped.** See the handoffs
+`docs/handoffs/2026-06-16-d4{1,2}-shipped.md` and **`2026-06-16-d43-engine-core-shipped.md`**.
 
-## Read these first (all on `main`)
+**RESUME HERE: D.4.3 task 5 (vault integration) is blocked on one architectural decision** —
+how the host reads records to origin-match them. The "decrypt a block → records" helper lives in
+the *bridge*, not core. **Recommended: option C** — add a small `read_block_records`/`read_all_records`
+helper to `secretary-core` over `OpenVault` (reviewed core-surface addition, composition not new
+crypto), so the host stays `secretary-core`-only. Full decision table in §"Task 5 decision" of the
+`d43-engine-core-shipped.md` handoff. Then make `per_fill_count` origin-aware (run `decide` over each
+record's URL field + `d4_origin_binding`), and do task 6 (docs + repoint to D.4.4). Still only a
+*count* crosses — injection is D.4.4.
 
-1. `docs/adr/0010-browser-autofill-native-messaging.md` — **the decision** (why thin-courier +
-   native messaging + per-fill open + cryptographic vault tiering).
-2. `docs/threat-model.md` **§6** — the browser-extension adversary model + the structural
-   invariants D.4.1 must preserve.
-3. `docs/superpowers/specs/2026-06-15-d4-browser-autofill-design.md` — **the build plan** for the
-   whole sub-project. §10 records every resolved decision (fill-only for v1, helper-local
-   binding default, Safari = App-Extension, TOTP in v1, etc.).
-4. `docs/superpowers/specs/2026-06-16-d41-native-messaging-skeleton-plan.md` — **the slice you
-   are building.** Layout, framing codec, host manifest, the 6-task breakdown, and the DoD.
+Two D.4 side-quests also shipped this session: `browser/host-manifest/install-dev.sh` (turnkey host
+install for the real-browser smoke) and headless extension vitest tests (which caught + fixed a
+module-service-worker import bug that would have broken the on-Mac smoke).
 
-## What D.4.1 ships (from the plan §1)
+## What already exists (D.4.1 + D.4.2, on branch `claude/intelligent-davinci-hriple`)
 
-- `browser/secretary-browser-host/` — a **new Rust crate, a workspace member** (so it inherits
-  `#![forbid(unsafe_code)]` + clippy `-D warnings`). stdin/stdout framed read→handle→write loop.
-  **No `secretary-core` dep yet** (D.4.2 adds it).
-- `browser/extension/` — Chromium MV3 extension that `connectNative`s, sends `query`, logs
-  `available`.
-- `browser/host-manifest/` — dev manifest binding host ↔ extension ID + per-OS install notes.
+- `browser/secretary-browser-host/` — Rust workspace member, now `secretary-core`-linked:
+  - `frame.rs` (1 MiB-capped never-panic codec), `protocol.rs` (`query`/`available`/`error`).
+  - `config.rs` (helper-local `HostConfig`: vault path, device_uuid, secret source).
+  - `secret_source.rs` (`DeviceSecretSource` **port** + dev-only `DevFileSecretSource`).
+  - `vault.rs::per_fill_count` — opens the casual vault via `open_vault(Unlocker::DeviceSecret)`
+    (the **exact** B.2 verify-before-decrypt) and returns `manifest.blocks.len()`.
+  - `lib.rs::Context` + `run()` — `query → available{count}`; not-enrolled → `count:0`.
+  - `enroll.rs` + `src/bin/enroll.rs` (`secretary-browser-enroll`, **dev-only**).
+- `browser/extension/` — Chromium MV3; `browser/host-manifest/` — dev manifest + install +
+  enrollment notes; `browser/README.md` — architecture + dev-run + enrollment.
 
-## Task order (plan §6) — start with 1–2, the load-bearing core
+The host opens **only** the casual vault, holds **no key material between fills**, and **no
+secrets cross the channel** (the reply is an integer count).
 
-1. **Host crate + `frame.rs` framing codec** — 4-byte native-endian length prefix, **1 MiB
-   cap**, **no panic on malformed input** (return `Result`, mirroring the fuzz "assert Result,
-   not panic" contract). Unit-test every branch: round-trip, oversize→`TooLarge`, truncated
-   length, non-JSON body, EOF→clean shutdown.
-2. **`protocol.rs` + `main.rs` loop** — serde `query`/`available`/`error`; no-op handler returns
-   `available{count:0}` + a fresh `request_id` UUID. `tests/echo.rs`: pipe a `query` frame in,
-   assert an `available` frame out; unknown type → `error`.
-3. Chromium MV3 extension scaffold (reuse `desktop/` pnpm/tsconfig conventions).
-4. `host-manifest/` dev manifest + macOS/Linux install README.
-5. Wire the host crate into `cargo test --release --workspace`; clippy `-D warnings` clean.
-6. `browser/README.md` + a `docs/handoffs/2026-..-d41-shipped.md` handoff, then update **this
-   file** to point at D.4.2.
+## Read these first
 
-Tasks 1, 2, 5 are fully CI-gated in Rust. Tasks 3–4 carry a **documented manual browser smoke**
-(load-unpacked + installed manifest → console shows the round trip) — same posture as the iOS
-on-device proof; automated browser-driver e2e is a later optional add, not D.4.1.
+1. `docs/handoffs/2026-06-16-d42-shipped.md` — what D.4.2 shipped + exactly what D.4.3 picks up.
+2. `docs/superpowers/specs/2026-06-15-d4-browser-autofill-design.md` **§5 "Origin-matching
+   engine (security core)"** — the D.4.3 contract: `registrable_domain` (PSL/eTLD+1) vs
+   `exact_origin`; top-frame-governs; cross-origin-iframe refusal; HTTPS-only; IDN
+   de-confusion; no credential-list leak. **§6** — where `origin_binding` lives (the record
+   `unknown` map under `d4_origin_binding`; **no on-disk format change**) and the helper-local
+   global default. **§12** — the invariants (esp. 5: matching runs only in the helper, passes
+   the pinned KAT, never fills a cross-origin iframe, HTTPS-only; 8: PSL exact-pinned).
+3. `docs/threat-model.md` **§6** — the adversary model the matcher defends against.
+4. CLAUDE.md "Spec is normative" + the `*_kat.json` discipline — D.4.3 adds
+   `origin_match_kat.json`, pinned and (ideally) cross-checked clean-room, mirroring the
+   existing KAT pattern.
 
-## Guardrails (must hold — these are the DoD, plan §8)
+## What D.4.3 ships (design §5/§6, the security-critical slice)
 
-- **No `core/`, `ffi/`, `ios/`, `android/`, or on-disk-format change.** D.4.1 is purely additive
-  under `browser/` + `docs/`. Guardrail grep before you push:
-  `git diff main...HEAD --name-only | grep -vE '^(browser/|docs/|Cargo\.(toml|lock)|README\.md|ROADMAP\.md|NEXTSESSION_BROWSER_PLUGIN\.md)'` → expect empty.
-  (The only root touch allowed is adding the new crate to the workspace members in `Cargo.toml`.)
-- **No listening socket** — the host speaks only over the browser-provided stdio. This is the
-  whole point of the slice (threat-model §6 invariant 3).
-- **No key material, no vault open** — trivially true (no `secretary-core` dep). Don't add one;
-  that's D.4.2's job, and it must go through the same `open_with_device_secret`
-  verify-before-decrypt path.
-- **Framing codec never panics** and caps at 1 MiB.
-- `#![forbid(unsafe_code)]` holds in the new crate; `cargo clippy --release --workspace --tests
-  -- -D warnings` clean.
+- An **origin-matching engine** in the host (never in a content script): given a query's
+  `top_origin`/`frame_origin`/`https` and a credential's stored origin + binding, decide
+  fill-vs-refuse under **both** bindings:
+  - `registrable_domain` — eTLD+1 via the **Public Suffix List** (mandatory, not a string
+    suffix; `foo.github.io` is its own registrable domain).
+  - `exact_origin` — scheme + host + port.
+  - Rules (each a KAT vector): top-frame-origin governs (refuse cross-origin iframes),
+    HTTPS-only (refuse `http`/`file`/`data`/`blob`/`about`/extension pages), IDN de-confusion,
+    no credential-list leak.
+- `per_fill_count` becomes **origin-aware**: count only records whose stored origin matches the
+  query under the active binding (read the credential's URL field + the per-record
+  `d4_origin_binding` from the record `unknown` map, falling back to the helper-local default).
+- A **pinned `origin_match_kat.json`** corpus replayed in Rust (and ideally clean-room), plus
+  the **PSL as a versioned, exact-pinned data dependency** with a deliberate-bump review
+  (mirror the `tempfile =3.27.0` discipline; a stale PSL silently moves match boundaries).
+
+The two other D.4.2 follow-ups also live around here: the **real OS-keystore
+`DeviceSecretSource` adapters** (behind the existing port, replacing `DevFileSecretSource`) and
+the **desktop enrollment UI** (replacing `secretary-browser-enroll`). They can be a sub-slice or
+folded in — but the origin-matching engine is the heart of D.4.3 and earns the most review.
+
+### Explicit non-goals (later slices — do not pull forward)
+
+| Deferred | Slice |
+|---|---|
+| Click-to-fill, native confirmation dialog, credential injection | D.4.4 |
+| Writing `d4_origin_binding` (read is D.4.3) + tiering guard-rails | D.4.5 |
+| Firefox + Safari + Windows registry + signing/packaging | D.4.6 |
+| Any write/capture path | D.4.7 |
+
+## Guardrails (must hold — these become the D.4.3 DoD)
+
+- **Matching runs only in the helper**, never in a content script (design §12 invariant 5).
+- **Pinned KAT.** `origin_match_kat.json` is the contract; every rule is a vector. Don't relax a
+  vector to make code pass — a disagreement is a code or spec bug, resolved explicitly.
+- **PSL exact-pinned** with a rationale comment + deliberate-bump review (invariant 8).
+- **No on-disk format change.** `origin_binding` lives in the record `unknown` map under
+  `d4_origin_binding` (design §6) — `golden_vault_001` stays byte-identical.
+- **Still no secrets cross the channel** — the reply is a count; injection is D.4.4.
+- **Reuse, don't weaken.** The per-fill open stays `open_vault(Unlocker::DeviceSecret)`; the
+  host still holds no key material between fills. `#![forbid(unsafe_code)]` + clippy
+  `-D warnings` + never-panic 1 MiB framing stay clean.
 
 ## How to start
 
 ```bash
-# from a clean main (these docs are merged):
+# from a clean main (D.4.1+D.4.2 live on claude/intelligent-davinci-hriple; rebase/merge as needed):
 cd /path/to/secretary && git fetch --prune origin && git checkout main && git pull --ff-only origin main
 pwd && git branch --show-current && git worktree list        # CLAUDE.md discipline check
-git worktree add .worktrees/d41-native-messaging -b feature/d41-native-messaging main
-# then implement plan §6 task 1 (browser/secretary-browser-host + frame.rs) first.
+git worktree add .worktrees/d43-origin-matching -b feature/d43-origin-matching main
+# bring in the D.4.1+D.4.2 browser/ tree, then implement design §5: PSL + binding rules +
+# the pinned origin_match_kat.json + origin-aware per_fill_count.
 ```
 
-## What this slice hands D.4.2
+## What this slice hands D.4.4
 
-A working channel to attach crypto to: add the `secretary-core` dep, the casual-vault
-per-fill `open_with_device_secret`, native-app device-slot enrollment, and replace the
-`count:0` no-op with a real candidate count (still **no secrets crossing** — that waits for
-D.4.4's native-confirmation gate). See design §9 / plan §9.
+A host that returns a **page-accurate** candidate count (origin-matched). D.4.4 adds the genuine
+user gesture → the **native** confirmation/picker dialog (outside web content) → a **single**
+credential injected into the page DOM — the first slice where any secret crosses the channel,
+and only after native approval (design §7, §3 steps 3–6).

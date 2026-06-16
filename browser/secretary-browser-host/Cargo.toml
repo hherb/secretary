@@ -1,0 +1,86 @@
+[package]
+name = "secretary-browser-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The native-messaging host is production code, so it is a full workspace
+# member (not excluded like `core/fuzz`) and inherits the workspace lints:
+# `#![forbid(unsafe_code)]` + clippy `-D warnings`. It intentionally has NO
+# `secretary-core` dependency in D.4.1 — this slice is pure transport (the
+# framing codec + read→dispatch→write loop). D.4.2 adds the crypto dep behind
+# the same `open_with_device_secret` verify-before-decrypt open path.
+
+[lib]
+# Surface the codec + protocol modules as a library so the D.4.1 task-2
+# integration test (`tests/echo.rs`) can drive the loop without going through
+# the binary boundary — same lib+bin split the `secretary-cli` crate uses.
+name = "secretary_browser_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretary-browser-host"
+path = "src/main.rs"
+
+# DEV-ONLY enrollment CLI (D.4.2 task 4): mints a browser-helper device slot on
+# a casual vault and writes the helper config + dev secret file. Stand-in for
+# the design's native-app enrollment until the desktop UI lands.
+[[bin]]
+name = "secretary-browser-enroll"
+path = "src/bin/enroll.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# `request_id` correlation token the host mints per query so D.4.4's
+# `request_fill` step can already be threaded. `v4` = random UUIDs (no MAC /
+# time leakage); no `serde` feature needed since we format to string ourselves.
+uuid = { version = "1", features = ["v4"] }
+# D.4.2: the per-fill open reuses the EXACT B.2 / ADR 0009 path
+# (`open_vault(Unlocker::DeviceSecret { .. })`) and the enrollment primitive
+# (`device_slot::add_device_slot`) — no crypto is reimplemented host-side, and
+# the open is never a weaker open. `SecretBytes` carries the fetched device
+# secret with zeroize-on-drop discipline.
+secretary-core = { path = "../../core" }
+# `dirs` locates the per-user config dir for the helper-local config. Matches
+# the version the `secretary-cli` crate already pins (cli/Cargo.toml).
+dirs = "5"
+# `hex` encodes/decodes the device UUID and the dev-provider secret file as
+# lowercase hex. Matches the version pinned in `secretary-ffi-bridge`.
+hex = "0.4"
+# `rand_core::OsRng` feeds the OS CSPRNG into core's `add_device_slot` (used by
+# the dev enroll tool, src/bin/enroll.rs). Match the version + `getrandom`
+# feature the bridge pins (ffi/secretary-ffi-bridge/Cargo.toml).
+rand_core = { version = "0.6", features = ["getrandom"] }
+# D.4.3 origin-matching engine: `url` parses origin strings (scheme/host/port,
+# IDN→punycode, default-port normalization); `idna` decodes punycode hosts back
+# to Unicode for the mixed-script (homograph) display flag. Matching itself runs
+# on the normalized ASCII host.
+#
+# SECURITY-RELEVANT: both feed the origin-matching trust boundary — a change in
+# punycode/host normalization could move a match decision. Treat a bump as a
+# deliberate, reviewed change: re-run the origin-match KAT
+# (`tests/origin_match_kat.rs`) plus the `origin` parser tests on any upgrade
+# (same discipline as the `psl` pin below; CLAUDE.md "Atomic-write contract").
+url = "2"
+idna = "1"
+# `psl` — the Public Suffix List, EMBEDDED at compile time in the crate. The
+# `registrable_domain` binding matches on eTLD+1 (so `foo.github.io` is its own
+# registrable domain, defeating shared-suffix confusion). The list is a
+# VERSIONED, SECURITY-CRITICAL data dependency: the embedded list is baked into
+# this crate version, so EXACT-PINNING the version pins the list. A bump moves
+# match boundaries — treat it as a deliberate, reviewed change, same discipline
+# as `tempfile =3.27.0` in core (CLAUDE.md "Atomic-write contract" / design §5).
+psl = "=2.1.137"
+
+[dev-dependencies]
+# `tempfile` for tests that write a dev secret file / copy the golden vault.
+# Exact-pinned to match `core` / `cli` / bridge (CLAUDE.md atomic-write
+# contract); a security-critical-path crate stays exact-pinned even in dev use.
+tempfile = "=3.27.0"
+
+[lints]
+workspace = true
