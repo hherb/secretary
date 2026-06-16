@@ -1,12 +1,24 @@
 #![forbid(unsafe_code)]
-//! Entry point for the Secretary native-messaging host.
+//! Entry point for the Secretary browser-autofill native-messaging host.
 //!
-//! D.4.1 **task 1** ships only the framing codec
-//! ([`secretary_browser_host::frame`]); the stdin/stdout read→dispatch→write
-//! loop is wired up in **task 2** alongside the `protocol` message types. Until
-//! then this binary is a placeholder so the crate builds as a workspace member
-//! and the codec stays CI-gated.
+//! The browser launches this binary and speaks to it over stdin/stdout only —
+//! there is no socket. The actual work is the [`secretary_browser_host::run`]
+//! read→dispatch→write loop; `main` just wires it to the locked standard
+//! streams and maps the result to a process exit code.
 
-fn main() {
-    // Intentionally empty: the read→handle→write loop lands in D.4.1 task 2.
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    match secretary_browser_host::run(&mut reader, &mut writer) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("secretary-browser-host: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
