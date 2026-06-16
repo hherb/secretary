@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import org.secretary.sync.SyncBadgeState
 
@@ -22,7 +23,8 @@ const val SYNC_BADGE_TAG = "sync-badge"
 const val SYNC_BADGE_SPINNER_TAG = "sync-badge-spinner"
 
 private val BADGE_ICON_SIZE = 18.dp
-private val BADGE_GAP = 6.dp
+private val BADGE_PADDING = 6.dp        // outer padding around the badge
+private val BADGE_ICON_LABEL_GAP = 6.dp // gap between icon/spinner and the label
 
 /**
  * The sync-status badge. Renders all five [SyncBadgeState]s as icon (or spinner for Syncing) +
@@ -53,10 +55,12 @@ fun SyncBadge(
     Row(
         modifier = modifier
             .testTag(SYNC_BADGE_TAG)
+            // Merge icon/spinner + label into one semantics node so TalkBack reads them together.
+            .semantics(mergeDescendants = true) {}
             .clickable(enabled = !isSyncing, onClick = onTap)
-            .padding(BADGE_GAP),
+            .padding(BADGE_PADDING),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(BADGE_GAP),
+        horizontalArrangement = Arrangement.spacedBy(BADGE_ICON_LABEL_GAP),
     ) {
         if (isSyncing) {
             CircularProgressIndicator(

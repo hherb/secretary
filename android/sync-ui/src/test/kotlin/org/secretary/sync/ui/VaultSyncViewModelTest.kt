@@ -10,12 +10,15 @@ import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.secretary.sync.SyncBadgeState
 import org.secretary.sync.SyncCoordinator
 import org.secretary.sync.SyncOutcome
+import org.secretary.sync.SyncVeto
+import org.secretary.sync.SyncVetoDecision
 import org.secretary.sync.VaultSyncModel
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -61,15 +64,15 @@ class VaultSyncViewModelTest {
 
     @Test
     fun resolve_afterConflict_clearsPendingConflict() = runTest(dispatcher) {
-        val veto = org.secretary.sync.SyncVeto(
+        val veto = SyncVeto(
             recordUuidHex = "aabb", recordType = "login", tags = listOf("work"),
             fieldNames = listOf("password"), localLastModMs = 1uL, peerTombstonedAtMs = 2uL,
             peerDeviceHex = "deadbeefcafef00d",
         )
-        val conflict = org.secretary.sync.SyncOutcome.ConflictsPending(
+        val conflict = SyncOutcome.ConflictsPending(
             vetoes = listOf(veto), collisions = emptyList(), manifestHash = byteArrayOf(1, 2, 3),
         )
-        val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = org.secretary.sync.SyncOutcome.MergedClean)
+        val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = SyncOutcome.MergedClean)
         val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
         val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
         val vm = VaultSyncViewModel(model)
@@ -79,9 +82,9 @@ class VaultSyncViewModelTest {
         advanceUntilIdle()
         // The interactive pass surfaced a conflict; the password sheet closed (no error).
         assertFalse(vm.passwordSheetVisible.value)
-        assertEquals(true, vm.pendingConflict.value != null)
+        assertNotNull(vm.pendingConflict.value)
 
-        vm.resolve(listOf(org.secretary.sync.SyncVetoDecision("aabb", true)), "pw".toByteArray())
+        vm.resolve(listOf(SyncVetoDecision("aabb", true)), "pw".toByteArray())
         advanceUntilIdle()
         // The clean commit cleared the conflict.
         assertEquals(null, vm.pendingConflict.value)

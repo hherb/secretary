@@ -33,12 +33,30 @@ kotlin {
     jvmToolchain(21)
 }
 
-// Espresso 3.5.x/3.6.x use reflection to call InputManager.getInstance() which is a hidden
-// API (@UnsupportedAppUsage) that Android 16 (API 36) denies even via getDeclaredMethod.
-// Espresso 3.7.0 fixes this by using getContext().getSystemService(InputManager.class) on
-// SDK >= 23. Force 3.7.0 across all configurations so the BOM-pinned transitive 3.5.0
-// cannot win. Also force coroutines to our workspace pin so the coroutines-bom constraint
-// from androidx.test:core:1.7.0 (which wants 1.8.1) cannot conflict with our 1.8.0 strictly.
+// Two distinct pinning mechanisms are in play here — they serve different purposes:
+//
+// 1. strictly("1.8.0") on the coroutines dependency declarations below is the workspace
+//    production pin: it matches the version used by sibling modules :kit and :vault-access
+//    and will hard-error if any dependency tries to upgrade it.
+//
+// 2. force() here is needed ONLY to override a TEST-ONLY transitive demand:
+//    androidx.test:core:1.7.0 (pulled by espresso 3.7.0) brings in
+//    kotlinx-coroutines-bom:1.8.1 as a constraint, which requests coroutines 1.8.1.
+//    Gradle treats a BOM constraint as a hard requirement that strictly("1.8.0") alone
+//    cannot satisfy — it would reject the graph with a version-conflict error. The force()
+//    overrides that constraint so our 1.8.0 pin wins unconditionally.
+//    Without the force(), connectedDebugAndroidTest fails at dependency resolution
+//    (verified: removing the force lines causes BUILD FAILED with "Cannot find a version
+//    of 'kotlinx-coroutines-core' that satisfies the version constraints").
+//
+//    The Espresso forces (3.7.0) fix a separate hidden-API issue: Espresso 3.5.x/3.6.x use
+//    reflection to call InputManager.getInstance() (@UnsupportedAppUsage) which Android 16
+//    (API 36) denies. Espresso 3.7.0 uses getSystemService() on SDK >= 23 instead.
+//
+// Note: force() is applied via configureEach (all configurations) rather than only
+// androidTestRuntimeClasspath because per-configuration force in KTS requires explicit
+// iteration; the forces are test-tooling only and conservative — revisit if they ever
+// perturb lintClasspath.
 configurations.configureEach {
     resolutionStrategy {
         force("androidx.test.espresso:espresso-core:3.7.0")

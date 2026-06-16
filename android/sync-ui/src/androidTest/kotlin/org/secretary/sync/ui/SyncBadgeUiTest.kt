@@ -44,4 +44,21 @@ class SyncBadgeUiTest {
         composeRule.onNodeWithTag(SYNC_BADGE_TAG).performClick()
         assertTrue(tapped)
     }
+
+    @Test
+    fun neverSynced_showsLabel() {
+        composeRule.setContent {
+            SyncBadge(state = SyncBadgeState.NeverSynced, nowMs = 0uL, onTap = {})
+        }
+        composeRule.onNodeWithText("Never synced").assertIsDisplayed()
+    }
+
+    @Test
+    fun synced_showsRelativeLabel() {
+        // nowMs == sinceMs → "just now"
+        composeRule.setContent {
+            SyncBadge(state = SyncBadgeState.Synced(sinceMs = 1_000uL), nowMs = 1_000uL, onTap = {})
+        }
+        composeRule.onNodeWithText("Synced just now").assertIsDisplayed()
+    }
 }
