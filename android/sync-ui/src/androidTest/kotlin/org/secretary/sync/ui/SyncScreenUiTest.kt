@@ -61,6 +61,7 @@ class SyncScreenUiTest {
         // Badge starts at "Never synced"; tap opens the password sheet.
         composeRule.onNodeWithTag(SYNC_BADGE_TAG).performClick()
         composeRule.waitForIdle()
+        composeRule.onNodeWithTag(PASSWORD_FIELD_TAG).assertExists()   // password sheet appeared
 
         // Type a password and submit. The sheet is a ModalBottomSheet so wait for idle twice —
         // once for the coroutine to fire, once for the animation to settle.
@@ -68,6 +69,7 @@ class SyncScreenUiTest {
         composeRule.onNodeWithText("Sync").performClick()
         composeRule.waitForIdle()
         composeRule.waitForIdle()
+        composeRule.onNodeWithTag(CONFLICT_APPLY_TAG).assertExists()   // conflict sheet appeared
 
         // Conflict sheet appears; Apply resolves clean → sheet closes.
         composeRule.onNodeWithTag(CONFLICT_APPLY_TAG).performClick()

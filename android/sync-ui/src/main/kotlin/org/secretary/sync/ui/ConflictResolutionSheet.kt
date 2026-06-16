@@ -73,6 +73,7 @@ fun ConflictSheetContent(
         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(CONFLICT_PADDING),
         verticalArrangement = Arrangement.spacedBy(CONFLICT_GAP),
     ) {
+        // TODO(i18n): extract user-facing strings to string resources when i18n infra is added.
         Text(text = "Resolve sync conflicts")
         conflict.vetoes.forEach { veto -> VetoCard(veto, overrides) }
 

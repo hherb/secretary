@@ -24,6 +24,8 @@ import org.secretary.sync.SyncVetoDecision
  *   - a clean pass: when both `pendingConflict` and `passwordSheetVisible` are false.
  *   - conflict cancel: via [VaultSyncViewModel.cancelConflict] callback.
  *   - sheet dismiss: via [VaultSyncViewModel.dismissPasswordSheet] callback.
+ *   - retry after error: the prior attempt's buffer is zeroized before the new one is stored,
+ *     so only the latest attempt's bytes remain live at any point in time.
  *
  * The VM deliberately does NOT zeroize the password buffer (it is a pass-through); this screen is
  * the designated owner of the ByteArray's lifetime and is the sole site responsible for `fill(0)`.
@@ -69,6 +71,7 @@ fun SyncScreen(viewModel: VaultSyncViewModel) {
         visible = passwordVisible,
         error = lastError,
         onSubmit = { pw ->
+            heldPassword?.fill(0) // zeroize the previous attempt before overwriting the reference
             heldPassword = pw
             viewModel.submitPassword(pw)
         },
