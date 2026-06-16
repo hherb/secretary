@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-16-c3-android-sync-emulator-roundtrip-shipped.md
+docs/handoffs/2026-06-16-c3-android-folder-change-detection-shipped.md
