@@ -8,12 +8,22 @@
 
 ## TL;DR
 
-**D.4.1 (channel skeleton) and D.4.2 (per-fill open) are shipped** — see
-`docs/handoffs/2026-06-16-d41-shipped.md` and `docs/handoffs/2026-06-16-d42-shipped.md`. The
-next session **implements D.4.3 — the origin-matching engine, the security-critical slice.** It
-replaces the current trivial "all live blocks" count with a real `(top_origin, frame_origin,
-stored_origin, binding) → {fill | refuse}` decision, gated by a **pinned KAT corpus**. Still
-returns only a *count* — injection is D.4.4.
+**D.4.1 (channel skeleton), D.4.2 (per-fill open), and the D.4.3 security CORE (the pure
+origin-matching engine + pinned KAT, tasks 1–4) are shipped.** See the handoffs
+`docs/handoffs/2026-06-16-d4{1,2}-shipped.md` and **`2026-06-16-d43-engine-core-shipped.md`**.
+
+**RESUME HERE: D.4.3 task 5 (vault integration) is blocked on one architectural decision** —
+how the host reads records to origin-match them. The "decrypt a block → records" helper lives in
+the *bridge*, not core. **Recommended: option C** — add a small `read_block_records`/`read_all_records`
+helper to `secretary-core` over `OpenVault` (reviewed core-surface addition, composition not new
+crypto), so the host stays `secretary-core`-only. Full decision table in §"Task 5 decision" of the
+`d43-engine-core-shipped.md` handoff. Then make `per_fill_count` origin-aware (run `decide` over each
+record's URL field + `d4_origin_binding`), and do task 6 (docs + repoint to D.4.4). Still only a
+*count* crosses — injection is D.4.4.
+
+Two D.4 side-quests also shipped this session: `browser/host-manifest/install-dev.sh` (turnkey host
+install for the real-browser smoke) and headless extension vitest tests (which caught + fixed a
+module-service-worker import bug that would have broken the on-Mac smoke).
 
 ## What already exists (D.4.1 + D.4.2, on branch `claude/intelligent-davinci-hriple`)
 
