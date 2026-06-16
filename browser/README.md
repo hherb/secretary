@@ -5,13 +5,16 @@ host whether anything is available for the current page, and (in later slices)
 fills credentials after an explicit native confirmation. It runs **parallel** to
 the other Secretary sub-projects.
 
-> **Status: D.4.1 — native-messaging walking skeleton (shipped).** This is the
-> transport shell only: one `query → available{count:0}` **no-op** round trip.
-> **No crypto, no vault, no `secretary-core` dependency, no fill, no secrets.**
-> It exists to prove the channel, the manifest binding, and the framing codec in
-> isolation — exactly as D.1.1 proved the Tauri IPC shell before any feature
-> work. Real candidate counts, the per-fill vault open, and credential injection
-> arrive in D.4.2–D.4.4.
+> **Status: D.4.2 — per-fill open (shipped).** On a `query`, the host now opens
+> the **casual** vault per fill via the existing `open_with_device_secret`
+> (B.2 / ADR 0009) verify-before-decrypt path and replies `available { count }`
+> with the real candidate count. **Still no secrets cross the channel** — the
+> reply is an integer. The host holds no key material between fills and opens
+> only the casual vault. Real origin matching (PSL, bindings, iframe rules) is
+> D.4.3; credential injection + the native confirmation dialog are D.4.4.
+>
+> D.4.1 (the underlying native-messaging walking skeleton — framing codec,
+> `query → available` no-op, manifest binding, no socket) shipped first.
 
 ## Why native messaging (the architecture in one paragraph)
 
@@ -33,9 +36,14 @@ browser/
   secretary-browser-host/   Rust native-messaging host (a workspace member)
     src/frame.rs            length-prefix framing codec (1 MiB cap, never panics)
     src/protocol.rs         serde query / available / error message types
-    src/lib.rs              run(): the read→dispatch→write loop
-    src/main.rs             wires run() to locked stdin/stdout
-    tests/echo.rs           in-process query→available round-trip test (no browser)
+    src/config.rs           helper-local config (vault path, device_uuid, secret source)
+    src/secret_source.rs    DeviceSecretSource port + DevFileSecretSource (dev only)
+    src/vault.rs            per_fill_count(): open_with_device_secret → block count
+    src/enroll.rs           enroll(): mint a device slot + write config/secret
+    src/lib.rs              Context + run(): the read→dispatch→write loop
+    src/main.rs             builds Context from config; wires run() to stdin/stdout
+    src/bin/enroll.rs       secretary-browser-enroll: DEV-only enrollment CLI
+    tests/echo.rs           in-process channel round-trip test (no browser)
   extension/                Chromium MV3 extension (Firefox shares it in D.4.6)
     manifest.json           MV3, nativeMessaging permission, scoped to a test page
     src/background.ts       service worker: connectNative → send query → log available
@@ -47,10 +55,36 @@ browser/
 
 The host is a **full workspace member** (not excluded like `core/fuzz`): it is
 production code and holds the workspace lints — `#![forbid(unsafe_code)]` and
-clippy `-D warnings`. In D.4.1 it has **no `secretary-core` dependency**; it is
-pure transport. D.4.2 adds that dependency behind the per-fill vault open.
+clippy `-D warnings`. As of D.4.2 it depends on **`secretary-core`** and reuses
+the **exact** B.2 / ADR 0009 `open_vault(Unlocker::DeviceSecret { .. })` path —
+no crypto is reimplemented and the browser open is never a weaker open.
 
-## The D.4.1 protocol subset
+### Per-fill open (D.4.2)
+
+On a `query`, the host:
+
+1. Loads the helper-local config (`config.rs`) — vault path, device UUID, and
+   where to fetch the secret. **No config = not enrolled** → it replies
+   `count: 0` (no affordance), never an error.
+2. Fetches the 32-byte device secret from the [`DeviceSecretSource`] port
+   (`secret_source.rs`) as a zeroize-on-drop `SecretBytes`.
+3. Opens the casual vault via `open_vault(Unlocker::DeviceSecret { .. })`
+   (`vault.rs`) — the same manifest verify-before-decrypt as every other path —
+   counts the live blocks, and drops the secret + identity (zeroizing).
+
+The host holds **no key material between fills** and **no secrets cross the
+channel** — only the integer count.
+
+> #### ⚠️ Dev-only secret source
+>
+> D.4.2 ships **one** `DeviceSecretSource`: `DevFileSecretSource`, which reads
+> the device secret from a **cleartext file**. It exists so the per-fill open is
+> CI-testable without a platform keystore — **never use it in production.** Real
+> OS-keystore adapters (macOS Keychain, Linux Secret Service), optionally
+> biometric-gated, land behind the same port in a follow-up (the iOS B.3
+> pure-core-port / real-adapter pattern).
+
+## The protocol subset
 
 Two message types (the full set is in design §3):
 
@@ -60,13 +94,15 @@ Two message types (the full set is in design §3):
   "frame_origin": "https://example.com", "https": true }
 
 // host → extension
-{ "type": "available", "request_id": "<uuid>", "count": 0 }
+{ "type": "available", "request_id": "<uuid>", "count": 2 }
 ```
 
-The host **always** answers `count: 0` in this slice — no matching exists yet
-(that is D.4.3). Each reply mints a fresh `request_id` UUID so D.4.4's
-`request_fill` correlation is already threaded through the channel. An
-unrecognized `type` is answered with a typed `error` frame, never a panic.
+`count` is the number of candidate records in the enrolled casual vault
+(D.4.2); an un-enrolled host replies `count: 0`. Real **origin matching** (so
+the count reflects the page, not the whole vault) is D.4.3. Each reply mints a
+fresh `request_id` UUID so D.4.4's `request_fill` correlation is already
+threaded through the channel. An unrecognized `type` is answered with a typed
+`error` frame, never a panic.
 
 **Framing** (`frame.rs`): each message is UTF-8 JSON prefixed by a **4-byte
 length in native byte order**, capped at **1 MiB**. The codec never panics on
@@ -80,10 +116,34 @@ malformed input — a bad length, truncated frame, or non-JSON body is a typed
 
 ```bash
 # from the repo root
-cargo build --release -p secretary-browser-host        # → target/release/secretary-browser-host
-cargo test  --release -p secretary-browser-host        # frame.rs unit tests + tests/echo.rs
-cargo clippy --release -p secretary-browser-host --tests -- -D warnings
+cargo build --release -p secretary-browser-host        # → target/release/{secretary-browser-host,secretary-browser-enroll}
+cargo test  --release -p secretary-browser-host        # codec + config + per-fill open + enroll
+cargo clippy --release -p secretary-browser-host --tests --bins -- -D warnings
 ```
+
+### Enroll a casual vault (DEV-only)
+
+`secretary-browser-enroll` mints a browser-helper device slot on a casual vault
+and writes the helper config + the dev secret file. It is a stand-in for the
+design's native-app enrollment until the desktop UI lands — and it writes the
+device secret to a **cleartext file** (see the dev-only warning above), so it is
+for development only.
+
+```bash
+# password from an env var (or it prompts on stdin, echoing — dev tool)
+SECRETARY_VAULT_PASSWORD='…' \
+  target/release/secretary-browser-enroll \
+    --vault /path/to/casual-vault \
+    --config /path/to/browser-host.json \
+    --secret /path/to/browser-host-secret.hex
+
+# then point the host at that config (the host reads $SECRETARY_BROWSER_HOST_CONFIG,
+# else dirs::config_dir()/secretary/browser-host.json):
+export SECRETARY_BROWSER_HOST_CONFIG=/path/to/browser-host.json
+```
+
+With the config in place a `query` returns `available { count: N }` for the
+vault's live records; without it (un-enrolled) it returns `count: 0`.
 
 ### Extension (TypeScript)
 
@@ -110,8 +170,7 @@ NativeMessagingHosts install locations, and a troubleshooting table are in
 
 | Slice | Adds |
 |---|---|
-| D.4.2 | `secretary-core` dep; casual-vault per-fill `open_with_device_secret`; device-slot enrollment; real candidate count |
-| D.4.3 | Real origin matching (PSL, bindings, iframe rules) |
+| D.4.3 | Real origin matching (PSL, bindings, iframe rules) — so the count reflects the page; + the real OS-keystore `DeviceSecretSource` adapters and the desktop enrollment UI |
 | D.4.4 | Click-to-fill, native confirmation dialog, credential injection |
 | D.4.5 | `origin_binding` record metadata + tiering guard-rails |
 | D.4.6 | Firefox + Safari + Windows registry + signing/packaging |
@@ -120,6 +179,6 @@ NativeMessagingHosts install locations, and a troubleshooting table are in
 ## Pointers
 
 - [ADR 0010](../docs/adr/0010-browser-autofill-native-messaging.md) — the decision.
-- [D.4 design](../docs/superpowers/specs/2026-06-15-d4-browser-autofill-design.md) — §2 boundary, §3 protocol, §9 slicing, §10 resolved decisions.
-- [D.4.1 plan](../docs/superpowers/specs/2026-06-16-d41-native-messaging-skeleton-plan.md) — this slice's task breakdown + DoD.
+- [D.4 design](../docs/superpowers/specs/2026-06-15-d4-browser-autofill-design.md) — §2 boundary, §3 protocol, §4 per-fill open, §9 slicing, §10 resolved decisions, §12 invariants.
+- [D.4.1 plan](../docs/superpowers/specs/2026-06-16-d41-native-messaging-skeleton-plan.md) + [D.4.2 plan](../docs/superpowers/specs/2026-06-16-d42-per-fill-open-plan.md) — the slice task breakdowns + DoDs.
 - [threat-model §6](../docs/threat-model.md) — the browser-extension adversary model + structural invariants.

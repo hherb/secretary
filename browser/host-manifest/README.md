@@ -129,8 +129,15 @@ With the host built, the extension loaded, and the manifest installed:
    [secretary] host responded: { type: "available", request_id: "…", count: 0 }
    ```
 
-`count: 0` is expected — D.4.1 never matches anything; it only proves the
-channel. A real candidate count arrives in D.4.2.
+`count: 0` is expected **until the browser is enrolled.** As of D.4.2 the host
+opens the casual vault per fill and returns a real candidate count — but only if
+a helper-local config points it at an enrolled casual vault. To see a non-zero
+count in the smoke, first enroll with `secretary-browser-enroll` and set
+`$SECRETARY_BROWSER_HOST_CONFIG` (see ["Enroll a casual vault" in
+`browser/README.md`](../README.md#enroll-a-casual-vault-dev-only)). Without a
+config the host stays at `count: 0` — the un-enrolled, no-affordance posture.
+Real **origin matching** (count reflecting the page, not the whole vault) is
+D.4.3.
 
 ### Troubleshooting
 
@@ -141,10 +148,14 @@ channel. A real candidate count arrives in D.4.2.
 | `Native host has exited` immediately | `path` is wrong/relative, or the binary isn't built (`cargo build --release -p secretary-browser-host`). |
 | No log at all | Content script didn't run — confirm you're on `https://example.com/` and reload the tab after loading the extension. |
 
-## What changes after D.4.1
+## What changes in later slices
 
-- **D.4.2** replaces `count: 0` with a real candidate count (still no secrets
-  crossing) and adds the `secretary-core` dep behind `open_with_device_secret`.
+- **D.4.2 (done)** replaced `count: 0` with a real candidate count from a
+  per-fill `open_with_device_secret` open of the enrolled casual vault (still no
+  secrets crossing).
+- **D.4.3** makes the count reflect the page via real origin matching, and adds
+  the real OS-keystore secret source + desktop enrollment UI (replacing the
+  dev-only file secret + `secretary-browser-enroll`).
 - **D.4.6** adds Windows registry registration, Firefox (`allowed_extensions`
   by add-on ID), Safari (App Extension), and a packaged installer so this manual
   copy step goes away.
