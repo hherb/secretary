@@ -17,6 +17,7 @@ import java.io.File
  * weak back-reference is needed. The caller owns the monitor's lifecycle: `start()` on unlock,
  * `stop()` on lock/background.
  *
+ * @param vaultUuid the open vault's UUID, or null to suppress status reads until it is known.
  * @return the model and the monitor; the caller starts/stops the monitor and calls
  *   [VaultSyncModel.syncAtUnlock] once the unlock password is in hand.
  */
