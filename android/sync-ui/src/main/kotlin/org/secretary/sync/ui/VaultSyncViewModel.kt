@@ -81,15 +81,16 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
     }
 
     /**
-     * Silent sync immediately after a password unlock — for the FUTURE app's unlock hook. No UI in
-     * this slice drives it; a conflict only raises the review badge (password dropped, no sheet).
+     * Silent sync immediately after a password unlock (trigger-1). Suspends until the pass
+     * settles so the caller (the :app unlock orchestration) can zeroize the password buffer
+     * only AFTER the async Argon2id re-open has consumed it — avoiding a use-after-zero race.
+     * A conflict only raises the review badge (the password is dropped, no sheet).
      *
      * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
-     * The VM deliberately does NOT zeroize the buffer: the owning caller (the unlock hook) may
-     * reuse the same ByteArray across this call and any subsequent conflict resolution. The owning
-     * caller is responsible for zeroizing the ByteArray on its terminal paths (success, dismiss).
+     * The VM deliberately does NOT zeroize the buffer; the owning caller zeroizes after this
+     * suspend call returns (it is never reused for a conflict resolve on the silent path).
      */
-    fun syncAtUnlock(password: ByteArray) {
-        viewModelScope.launch { model.syncAtUnlock(password) } // Wired by a future :app unlock hook; no UI path triggers this in this slice.
+    suspend fun syncAtUnlock(password: ByteArray) {
+        model.syncAtUnlock(password)
     }
 }

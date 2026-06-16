@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -88,6 +89,18 @@ class VaultSyncViewModelTest {
         advanceUntilIdle()
         // The clean commit cleared the conflict.
         assertEquals(null, vm.pendingConflict.value)
+    }
+
+    @Test
+    fun syncAtUnlock_awaitsPass_andForwardsBadge() = runTest(dispatcher) {
+        val vm = viewModel(SyncOutcome.AppliedAutomatically)
+
+        // Returns only after the silent pass settles (suspend, not fire-and-forget).
+        vm.syncAtUnlock("pw".toByteArray())
+
+        // A clean silent pass leaves no error and clears review state.
+        assertNull(vm.lastError.value)
+        assertFalse(vm.reviewNeeded.value)
     }
 
     @Test
