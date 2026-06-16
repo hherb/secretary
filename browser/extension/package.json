@@ -1,0 +1,20 @@
+{
+  "name": "secretary-browser-extension",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "description": "Chromium MV3 extension for the Secretary browser-autofill native-messaging walking skeleton (D.4.1).",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@types/chrome": "^0.0.287",
+    "eslint": "^9",
+    "typescript": "^5",
+    "typescript-eslint": "^8"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Secretary Autofill (D.4.1 skeleton)",
+  "version": "0.1.0",
+  "description": "Native-messaging walking skeleton: query the Secretary host and log the availability reply. No fill, no secrets — this only proves the channel.",
+  "permissions": ["nativeMessaging"],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://example.com/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
