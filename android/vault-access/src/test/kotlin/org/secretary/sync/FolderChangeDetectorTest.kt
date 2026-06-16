@@ -1,5 +1,6 @@
 package org.secretary.sync
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -74,7 +75,18 @@ class FolderChangeDetectorTest {
         d.recordPulse(at(50))                  // before the mute instant → ignored
         assertNull(d.nextFlushDeadline)
         d.recordPulse(at(100))                 // at/after the mute instant → counts
+        assertEquals(at(100).advancedBy(window), d.nextFlushDeadline) // armed to 100 + window
         assertTrue(d.flush(at(200)))
+    }
+
+    @Test
+    fun goingInactiveClearsMuteWindow() {
+        val d = active()
+        d.muteUntil(at(100))
+        d.setActive(false)
+        d.setActive(true)
+        d.recordPulse(at(50))                  // mute was cleared, so this earlier pulse now counts
+        assertEquals(at(50).advancedBy(window), d.nextFlushDeadline)
     }
 
     @Test

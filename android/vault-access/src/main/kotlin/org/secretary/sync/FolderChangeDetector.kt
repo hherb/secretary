@@ -79,7 +79,8 @@ class FolderChangeDetector(
         return true
     }
 
-    /** Caller consumed the signal. A later (or preserved) pulse re-arms. */
+    /** Caller consumed the signal. A post-acknowledge pulse, or one preserved before
+     *  the flush, re-arms. */
     fun acknowledge() {
         pendingChanges = false
     }
