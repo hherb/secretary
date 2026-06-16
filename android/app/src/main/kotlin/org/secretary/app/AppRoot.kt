@@ -82,27 +82,41 @@ fun AppRoot() {
 }
 
 /**
- * Builds makeVaultSync (main thread), awaits the silent unlock pass, zeroizes the password, kicks
- * a best-effort status refresh (for the "synced N ago" label), and returns the Sync route. The
- * monitor is NOT started here — it is started by the Route.Sync DisposableEffect when the Sync
+ * Builds makeVaultSync (main thread), awaits the silent unlock pass, and returns the Sync route.
+ * The monitor is NOT started here — it is started by the Route.Sync DisposableEffect when the Sync
  * screen enters composition, so a watcher is never started for a session the user never sees.
- * Called from a main-dispatched coroutine (the heavy Argon2id work hops to IO inside the sync
- * port). The password buffer is zeroized only after the awaited pass consumes it.
+ * Called from a main-dispatched coroutine (the heavy Argon2id work hops to IO inside the sync port).
+ *
+ * Secret hygiene: the password buffer is zeroized in a `finally` that wraps the ENTIRE body, so it
+ * is overwritten on every exit — the clean pass, a captured wrong-password (the model swallows the
+ * error into `lastError` rather than throwing), AND an early provisioning/factory failure that
+ * throws before the pass. Because `syncAtUnlock` is awaited, the zeroize cannot race the async
+ * Argon2id re-open that consumes the buffer. A provisioning/factory failure is logged and returns
+ * the user to Unlock rather than escaping as an uncaught coroutine exception (which would both
+ * crash and leak the un-zeroized buffer).
+ *
+ * Known accepted minor race: if the app is backgrounded (ON_STOP → route = Unlock) while this pass
+ * is still suspended, the coroutine may complete and set route = Sync afterwards; the monitor is
+ * then stopped on the next ON_STOP and the password is already zeroized, so it self-heals —
+ * acceptable for the walking skeleton (transient per-pass session, mirroring iOS scenePhase).
  */
 private suspend fun unlockAndSync(context: Context, password: ByteArray): Route {
-    val folder = AppVaultProvisioning.stageGoldenVault(context)
-    val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
-    val uuid = AppVaultProvisioning.goldenVaultUuid(context)
-
-    val (model, monitor) = makeVaultSync(folder, stateDir, uuid)
-
-    val viewModel = VaultSyncViewModel(model)
     try {
-        viewModel.syncAtUnlock(password)
-    } finally {
-        password.fill(0) // zeroize after the pass has consumed it
-    }
-    viewModel.refreshStatus() // best-effort "synced N ago" label; reactive via the badge flow
+        val folder = AppVaultProvisioning.stageGoldenVault(context)
+        val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
+        val uuid = AppVaultProvisioning.goldenVaultUuid(context)
 
-    return Route.Sync(viewModel, monitor)
+        val (model, monitor) = makeVaultSync(folder, stateDir, uuid)
+        val viewModel = VaultSyncViewModel(model)
+        viewModel.syncAtUnlock(password)        // silent pass; wrong password is captured in lastError, not thrown
+        viewModel.refreshStatus()               // best-effort "synced N ago" label; reactive via the badge flow
+        return Route.Sync(viewModel, monitor)
+    } catch (e: Exception) {
+        // Provisioning/factory failure (e.g. asset not bundled, main-thread check): log and stay on
+        // Unlock rather than crash. The finally still zeroizes the password.
+        Log.w(TAG, "unlock failed; returning to unlock screen", e)
+        return Route.Unlock
+    } finally {
+        password.fill(0) // zeroize on every exit — success, captured error, or early throw
+    }
 }
