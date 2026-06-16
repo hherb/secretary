@@ -61,6 +61,9 @@ class FolderWatchInstrumentedTest {
             "onChange should fire within timeout after an external write",
             changed.await(10, TimeUnit.SECONDS),
         )
-        instrumentation.runOnMainSync { assertTrue(monitor!!.pendingChanges) }
+        val started = monitor ?: error("monitor was not started")
+        instrumentation.runOnMainSync {
+            assertTrue("pendingChanges should be raised after the debounced onChange", started.pendingChanges)
+        }
     }
 }
