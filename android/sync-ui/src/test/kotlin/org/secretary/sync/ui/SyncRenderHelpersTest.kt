@@ -60,10 +60,18 @@ class SyncRenderHelpersTest {
     }
 
     @Test
-    fun syncErrorLabel_coversWrongPassword() {
-        assertEquals(
-            "Wrong password, or the vault is corrupt.",
-            syncErrorLabel(VaultSyncError.WrongPasswordOrCorrupt),
+    fun syncErrorLabel_coversEveryArm() {
+        val cases = listOf(
+            VaultSyncError.WrongPasswordOrCorrupt to "Wrong password, or the vault is corrupt.",
+            VaultSyncError.EvidenceStale to "The vault changed while resolving — please try again.",
+            VaultSyncError.DecisionsIncomplete to "Choose an option for every record.",
+            VaultSyncError.InProgress to "A sync is already running.",
+            VaultSyncError.StateVaultMismatch to "Sync state belongs to a different vault.",
+            VaultSyncError.StateCorrupt("x") to "Sync state is corrupt.",
+            VaultSyncError.NoPendingConflict to "Nothing to resolve.",
+            VaultSyncError.InvalidArgument("x") to "Invalid sync request.",
+            VaultSyncError.Failed("x") to "Sync failed.",
         )
+        cases.forEach { (error, expected) -> assertEquals(expected, syncErrorLabel(error)) }
     }
 }

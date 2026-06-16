@@ -41,8 +41,10 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
      * [lastError] without throwing, and the sheet STAYS OPEN so the user can retry inline.
      *
      * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
-     * The CALLER owns the byte buffer and must zero it after this call returns (the VM cannot —
-     * it does not retain a reference past the in-flight pass).
+     * The VM deliberately does NOT zeroize the buffer: the owning caller (the screen) may reuse
+     * the same ByteArray across this interactive pass and a subsequent conflict [resolve] call.
+     * Zeroizing here would corrupt that reuse. The owning caller is responsible for zeroizing the
+     * ByteArray on its terminal paths (success, conflict-cancel, dismiss).
      */
     fun submitPassword(password: ByteArray) {
         viewModelScope.launch {
@@ -56,7 +58,10 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
      * [pendingConflict]; a clean resolve clears it (no separate visibility flag here).
      *
      * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
-     * The CALLER owns the byte buffer and must zero it after this call returns.
+     * The VM deliberately does NOT zeroize the buffer: the owning caller (the screen) reuses the
+     * same ByteArray that was passed to [submitPassword] for the preceding interactive pass.
+     * Zeroizing here would corrupt that reuse. The owning caller is responsible for zeroizing the
+     * ByteArray on its terminal paths (success, conflict-cancel, dismiss).
      */
     fun resolve(decisions: List<SyncVetoDecision>, password: ByteArray) {
         viewModelScope.launch { model.resolve(decisions, password) }
@@ -80,7 +85,9 @@ class VaultSyncViewModel(private val model: VaultSyncModel) : ViewModel() {
      * this slice drives it; a conflict only raises the review badge (password dropped, no sheet).
      *
      * Secret hygiene: [password] is forwarded straight to the model and never stored on this VM.
-     * The CALLER owns the byte buffer and must zero it after this call returns.
+     * The VM deliberately does NOT zeroize the buffer: the owning caller (the unlock hook) may
+     * reuse the same ByteArray across this call and any subsequent conflict resolution. The owning
+     * caller is responsible for zeroizing the ByteArray on its terminal paths (success, dismiss).
      */
     fun syncAtUnlock(password: ByteArray) {
         viewModelScope.launch { model.syncAtUnlock(password) } // Wired by a future :app unlock hook; no UI path triggers this in this slice.

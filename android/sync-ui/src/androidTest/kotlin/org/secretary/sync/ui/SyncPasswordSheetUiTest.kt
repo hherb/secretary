@@ -1,6 +1,7 @@
 package org.secretary.sync.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -36,5 +37,17 @@ class SyncPasswordSheetUiTest {
             PasswordSheetContent(error = VaultSyncError.WrongPasswordOrCorrupt, onSubmit = {}, onDismiss = {})
         }
         composeRule.onNodeWithTag(PASSWORD_ERROR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(PASSWORD_ERROR_TAG).assertTextContains("Wrong password, or the vault is corrupt.")
+    }
+
+    @Test
+    fun cancel_invokesDismiss() {
+        var dismissed = false
+        composeRule.setContent {
+            PasswordSheetContent(error = null, onSubmit = {}, onDismiss = { dismissed = true })
+        }
+        composeRule.onNodeWithTag(PASSWORD_FIELD_TAG).performTextInput("secret")
+        composeRule.onNodeWithText("Cancel").performClick()
+        assertTrue("Cancel must invoke onDismiss", dismissed)
     }
 }

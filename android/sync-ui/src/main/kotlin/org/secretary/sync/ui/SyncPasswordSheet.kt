@@ -40,8 +40,11 @@ private val SHEET_GAP = 12.dp
  *                [VaultSyncError.WrongPasswordOrCorrupt]). The sheet stays open on failure;
  *                it is the caller's responsibility to keep [visible] = `true` until success.
  * @param onSubmit  Called with the UTF-8 bytes of the entered password when the user taps Sync.
- *                  The field is cleared immediately before this callback fires so the [String]
- *                  lifetime is minimised (though [String] is immutable — see [PasswordSheetContent]).
+ *                  The String STATE is cleared before this callback fires to minimise [String]
+ *                  lifetime; however, the encoded ByteArray and the source String transiently
+ *                  overlap during encoding (unavoidable — Kotlin [String] is immutable and cannot
+ *                  be zeroized). The caller owns the returned ByteArray's lifetime and is
+ *                  responsible for zeroizing it on terminal paths.
  * @param onDismiss Called when the user dismisses the sheet (swipe-down or Cancel).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,6 +91,7 @@ fun PasswordSheetContent(
             .padding(SHEET_PADDING),
         verticalArrangement = Arrangement.spacedBy(SHEET_GAP),
     ) {
+        // TODO(i18n): extract user-facing strings to string resources when i18n infra is added.
         Text(text = "Enter your vault password to sync")
         OutlinedTextField(
             value = password,
@@ -116,7 +120,7 @@ fun PasswordSheetContent(
                 Text("Cancel")
             }
             Button(onClick = {
-                val bytes = password.toByteArray()
+                val bytes = password.toByteArray(Charsets.UTF_8)
                 password = "" // clear ASAP; String is immutable so this is minimal-lifetime, not true zeroize
                 onSubmit(bytes)
             }) {
