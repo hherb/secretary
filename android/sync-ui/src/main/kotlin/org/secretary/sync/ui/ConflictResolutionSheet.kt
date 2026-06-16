@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,7 +31,10 @@ const val CONFLICT_ERROR_TAG = "conflict-error"
 
 private val CONFLICT_PADDING = 16.dp
 private val CONFLICT_GAP = 12.dp
-private const val PEER_DEVICE_PREFIX_LEN = 8 // show only the device-id prefix, never the full hex
+// Show only a device-id prefix, never the full hex. This is acceptable because the device UUID is
+// non-secret metadata — it is already surfaced in the badge's vector-clock / SyncStatus.deviceClocks
+// display; the prefix is enough to distinguish devices without exposing the full identifier.
+private const val PEER_DEVICE_PREFIX_LEN = 8
 
 /** Bottom-sheet wrapper; testable body is [ConflictSheetContent]. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,9 +51,12 @@ fun ConflictResolutionSheet(
 }
 
 /**
- * Metadata-only conflict resolution, mirroring desktop D.1.15. One card per [SyncVeto] with a
- * per-record Keep-mine / Accept-delete choice (default Keep mine). A read-only summary lists the
- * auto-merged field collisions. NO secret field VALUE is shown — `fieldNames` only (anti-oracle).
+ * Metadata-only conflict resolution, mirroring desktop D.1.15 (the metadata-only conflict sheet).
+ * One card per [SyncVeto] with a per-record Keep-mine / Accept-delete choice (default Keep mine).
+ * A read-only summary lists the auto-merged field collisions. NO secret field VALUE is shown —
+ * `fieldNames` only (anti-oracle). Tags are user-controlled labels classified as non-secret
+ * metadata (same as the browse path) and are rendered verbatim; only field NAMES (never values)
+ * and a device-id prefix are shown — anti-oracle.
  * Decisions are assembled via the shared [collectDecisions] (default `keepLocal = true`). The sheet
  * stays open on error; the caller keeps it presented until a clean resolve clears `pendingConflict`.
  */
@@ -62,7 +70,7 @@ fun ConflictSheetContent(
     // recordUuidHex -> keepLocal override; absent means "Keep mine" (default via collectDecisions).
     val overrides = remember { mutableStateMapOf<String, Boolean>() }
     Column(
-        modifier = Modifier.fillMaxWidth().padding(CONFLICT_PADDING),
+        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(CONFLICT_PADDING),
         verticalArrangement = Arrangement.spacedBy(CONFLICT_GAP),
     ) {
         Text(text = "Resolve sync conflicts")
@@ -77,6 +85,8 @@ fun ConflictSheetContent(
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onCancel) { Text("Cancel") }
+            // Apply is always enabled: untouched records default to Keep mine (no data loss);
+            // decisionsComplete gating is deliberately deferred.
             Button(
                 onClick = { onResolve(collectDecisions(conflict.vetoes, overrides.toMap())) },
                 modifier = Modifier.testTag(CONFLICT_APPLY_TAG),
