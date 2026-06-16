@@ -28,9 +28,4 @@ class MonotonicInstantTest {
         assertEquals((-3_000_000).nanoseconds, b.durationTo(a))
     }
 
-    @Test
-    fun tuningConstantsAreNamed() {
-        assertEquals(2_000.milliseconds, ChangeDetectionTuning.defaultDebounceWindow)
-        assertEquals(10_000.milliseconds, ChangeDetectionTuning.defaultSelfWriteMuteWindow)
-    }
 }

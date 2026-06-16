@@ -17,6 +17,6 @@ value class MonotonicInstant(val nanos: Long) : Comparable<MonotonicInstant> {
     fun advancedBy(duration: Duration): MonotonicInstant =
         MonotonicInstant(nanos + duration.inWholeNanoseconds)
 
-    /** The (signed) duration from this instant to [later]. */
-    fun durationTo(later: MonotonicInstant): Duration = (later.nanos - nanos).nanoseconds
+    /** The (signed) duration from this instant to [other]. */
+    fun durationTo(other: MonotonicInstant): Duration = (other.nanos - nanos).nanoseconds
 }
