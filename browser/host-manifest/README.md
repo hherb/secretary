@@ -36,7 +36,23 @@ Two fields are the security-relevant bindings:
 `"type": "stdio"` is the whole point of the slice — the host speaks only over
 the browser-provided stdin/stdout. **There is no listening socket.**
 
-## One-time setup
+## Quick install (recommended)
+
+[`install-dev.sh`](install-dev.sh) does the build + manifest install in one
+step. Load the unpacked extension first (`chrome://extensions` → Developer mode
+→ Load unpacked → `browser/extension/`), copy its 32-char ID, then:
+
+```bash
+browser/host-manifest/install-dev.sh --ext-id <EXTENSION_ID> [--browser chrome|chromium|edge]
+# --dry-run to preview, --uninstall to remove, --skip-build to reuse an existing binary
+```
+
+It builds `secretary-browser-host`, writes the manifest (absolute `path` +
+`allowed_origins` bound to your extension ID) into the right
+NativeMessagingHosts directory for your OS + browser, and prints the next steps.
+The manual walkthrough below is the same thing done by hand.
+
+## One-time setup (manual)
 
 ### 1. Build the host binary
 
