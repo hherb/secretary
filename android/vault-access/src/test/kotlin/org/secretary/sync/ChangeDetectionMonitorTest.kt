@@ -69,6 +69,8 @@ class ChangeDetectionMonitorTest {
         f.monitor.acknowledge()
         assertFalse(f.monitor.pendingChanges)
         assertTrue(f.scheduler.hasPending)      // re-armed at zero delay
+        // scheduledDelay records the last schedule() arg (here ZERO); hasPending above
+        // confirms the work is actually outstanding.
         assertEquals(Duration.ZERO, f.scheduler.scheduledDelay)
         f.scheduler.fire(at(300))               // fires the preserved pulse
         assertEquals(2, f.changes)
@@ -92,5 +94,17 @@ class ChangeDetectionMonitorTest {
         f.monitor.start()
         f.monitor.start()
         assertEquals(1, f.watch.startCount)
+    }
+
+    @Test
+    fun muteUntilSuppressesPulsesBeforeTheWindow() {
+        val f = Fixture()
+        f.monitor.start()
+        f.monitor.muteUntil(at(100))
+        f.watch.emit(at(50))                 // before the mute instant → dropped, nothing armed
+        assertFalse(f.scheduler.hasPending)
+        f.watch.emit(at(100))                // at/after the mute instant → counts
+        f.scheduler.fire(at(200))
+        assertEquals(1, f.changes)
     }
 }

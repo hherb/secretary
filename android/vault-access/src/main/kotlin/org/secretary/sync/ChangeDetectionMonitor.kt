@@ -73,6 +73,8 @@ class ChangeDetectionMonitor(
     private fun rearm(now: MonotonicInstant) {
         val deadline = detector.nextFlushDeadline
         if (deadline == null) {
+            // nextFlushDeadline is null while already pending or inactive — drop any
+            // stale timer rather than arm a new one.
             scheduler.cancel()
             return
         }
