@@ -7,3 +7,8 @@ kit/src/main/jniLibs/
 # cargo-ndk staged native libs are ignored above; the androidTest golden-vault
 # fixture is likewise staged at build time from core/tests/data (never committed).
 kit/src/androidTest/assets/
+
+# :app bundles the golden vault as a runnable-demo asset, staged at build time
+# from core/tests/data (single source of truth — never committed).
+app/src/main/assets/golden_vault_001/
+app/src/main/assets/golden_vault_001_inputs.json
