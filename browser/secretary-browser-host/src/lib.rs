@@ -15,6 +15,7 @@ pub mod config;
 pub mod frame;
 pub mod protocol;
 pub mod secret_source;
+pub mod vault;
 
 use std::io::{Read, Write};
 
