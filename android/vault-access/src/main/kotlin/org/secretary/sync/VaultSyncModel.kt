@@ -129,6 +129,13 @@ class VaultSyncModel(
         _pendingConflict.value = PendingConflict(outcome.vetoes, outcome.collisions)
     }
 
+    /**
+     * Clear all conflict/review state after a clean pass. Deliberately does NOT
+     * call [recomputeBadge] itself — it is only ever reached from inside
+     * [guardedPass], whose `finally` recomputes the badge after the flags settle.
+     * A future caller invoking this outside `guardedPass` must recompute the
+     * badge afterwards (or this should grow its own `recomputeBadge()` call).
+     */
     private fun onCleanArm() {
         monitorHook.acknowledge()
         pendingChanges = false
