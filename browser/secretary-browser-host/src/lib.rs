@@ -17,6 +17,7 @@
 pub mod config;
 pub mod enroll;
 pub mod frame;
+pub mod origin;
 pub mod protocol;
 pub mod secret_source;
 pub mod vault;

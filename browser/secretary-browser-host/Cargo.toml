@@ -55,6 +55,12 @@ hex = "0.4"
 # the dev enroll tool, src/bin/enroll.rs). Match the version + `getrandom`
 # feature the bridge pins (ffi/secretary-ffi-bridge/Cargo.toml).
 rand_core = { version = "0.6", features = ["getrandom"] }
+# D.4.3 origin-matching engine: `url` parses origin strings (scheme/host/port,
+# IDN→punycode, default-port normalization); `idna` decodes punycode hosts back
+# to Unicode for the mixed-script (homograph) display flag. Matching itself runs
+# on the normalized ASCII host.
+url = "2"
+idna = "1"
 
 [dev-dependencies]
 # `tempfile` for tests that write a dev secret file / copy the golden vault.

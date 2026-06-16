@@ -3844,12 +3844,14 @@ version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
  "hex",
+ "idna",
  "rand_core 0.6.4",
  "secretary-core",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "url",
  "uuid",
 ]
 
