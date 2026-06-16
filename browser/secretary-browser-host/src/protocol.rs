@@ -63,12 +63,17 @@ pub enum Outbound {
 }
 
 impl Outbound {
-    /// Build an `available { count: 0 }` reply with a fresh `request_id`.
-    pub fn available_none() -> Self {
+    /// Build an `available { count }` reply with a fresh `request_id`.
+    pub fn available(count: u32) -> Self {
         Outbound::Available {
             request_id: new_request_id(),
-            count: 0,
+            count,
         }
+    }
+
+    /// Build an `available { count: 0 }` reply with a fresh `request_id`.
+    pub fn available_none() -> Self {
+        Self::available(0)
     }
 
     /// Build an `error` reply with a fresh `request_id`.

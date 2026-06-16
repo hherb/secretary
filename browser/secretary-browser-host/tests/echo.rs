@@ -1,14 +1,16 @@
-//! D.4.1 task-2 integration test: drive the host's read→dispatch→write loop
+//! Channel-level integration test: drive the host's read→dispatch→write loop
 //! over an in-memory pipe (a `Cursor`) and assert the observable frames.
 //!
-//! No browser, no network, no crypto — this is the CI-gated proof of the
-//! `query → available{count:0}` round trip and the unknown-type → `error`
-//! behavior the manual browser smoke (task 4) mirrors.
+//! These use a **not-enrolled** [`Context`], so they exercise the transport +
+//! framing in isolation: a `query → available{count:0}` round trip and the
+//! unknown-type → `error` behavior the manual browser smoke mirrors. The
+//! enrolled per-fill open+count path (D.4.2) is covered by the in-crate
+//! `lib.rs` tests, which need the golden-vault enroll fixture.
 
 use std::io::Cursor;
 
-use secretary_browser_host::frame;
 use secretary_browser_host::protocol::Outbound;
+use secretary_browser_host::{frame, Context};
 
 /// Serialize a sequence of inbound messages into a single framed byte stream,
 /// exactly as the extension would write to the host's stdin.
@@ -41,7 +43,8 @@ fn query_round_trips_to_available_zero() {
 
     let mut reader = Cursor::new(input);
     let mut writer = Vec::new();
-    secretary_browser_host::run(&mut reader, &mut writer).expect("loop runs to clean EOF");
+    secretary_browser_host::run(&Context::not_enrolled(), &mut reader, &mut writer)
+        .expect("loop runs to clean EOF");
 
     let replies = drain_output(writer);
     assert_eq!(replies.len(), 1, "exactly one reply for one query");
@@ -63,7 +66,8 @@ fn unknown_type_is_answered_with_error() {
 
     let mut reader = Cursor::new(input);
     let mut writer = Vec::new();
-    secretary_browser_host::run(&mut reader, &mut writer).expect("loop runs to clean EOF");
+    secretary_browser_host::run(&Context::not_enrolled(), &mut reader, &mut writer)
+        .expect("loop runs to clean EOF");
 
     let replies = drain_output(writer);
     assert_eq!(replies.len(), 1);
@@ -82,7 +86,8 @@ fn multiple_queries_each_get_a_reply() {
 
     let mut reader = Cursor::new(input);
     let mut writer = Vec::new();
-    secretary_browser_host::run(&mut reader, &mut writer).expect("loop runs to clean EOF");
+    secretary_browser_host::run(&Context::not_enrolled(), &mut reader, &mut writer)
+        .expect("loop runs to clean EOF");
 
     let replies = drain_output(writer);
     assert_eq!(replies.len(), 3);
@@ -105,7 +110,8 @@ fn multiple_queries_each_get_a_reply() {
 fn empty_stdin_is_a_clean_shutdown() {
     let mut reader = Cursor::new(Vec::<u8>::new());
     let mut writer = Vec::new();
-    secretary_browser_host::run(&mut reader, &mut writer).expect("clean EOF is not an error");
+    secretary_browser_host::run(&Context::not_enrolled(), &mut reader, &mut writer)
+        .expect("clean EOF is not an error");
     assert!(writer.is_empty(), "no input → no output");
 }
 
@@ -130,7 +136,8 @@ fn malformed_json_body_yields_error_then_keeps_serving() {
 
     let mut reader = Cursor::new(input);
     let mut writer = Vec::new();
-    secretary_browser_host::run(&mut reader, &mut writer).expect("loop survives a bad frame");
+    secretary_browser_host::run(&Context::not_enrolled(), &mut reader, &mut writer)
+        .expect("loop survives a bad frame");
 
     let replies = drain_output(writer);
     assert_eq!(replies.len(), 2, "an error then an available");

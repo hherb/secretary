@@ -140,7 +140,10 @@ mod tests {
         let hexstr: String = (0u8..32).map(|b| format!("{b:02x}")).collect();
         let (_d, path) = write_tmp(&format!("{hexstr}\n"));
         let src = DevFileSecretSource::new(path);
-        assert_eq!(src.device_secret().unwrap().expose().len(), DEVICE_SECRET_LEN);
+        assert_eq!(
+            src.device_secret().unwrap().expose().len(),
+            DEVICE_SECRET_LEN
+        );
     }
 
     #[test]

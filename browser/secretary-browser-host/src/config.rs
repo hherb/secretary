@@ -110,12 +110,11 @@ impl HostConfig {
 
     /// Decode `device_uuid` to its 16 raw bytes.
     pub fn device_uuid_bytes(&self) -> Result<[u8; DEVICE_UUID_LEN], ConfigError> {
-        let bytes =
-            hex::decode(&self.device_uuid).map_err(|e| ConfigError::BadDeviceUuid(e.to_string()))?;
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| ConfigError::BadDeviceUuid(format!("expected 16 bytes, got {}", bytes.len())))
+        let bytes = hex::decode(&self.device_uuid)
+            .map_err(|e| ConfigError::BadDeviceUuid(e.to_string()))?;
+        bytes.as_slice().try_into().map_err(|_| {
+            ConfigError::BadDeviceUuid(format!("expected 16 bytes, got {}", bytes.len()))
+        })
     }
 
     /// Build the concrete [`DeviceSecretSource`] this config describes.

@@ -266,6 +266,9 @@ mod tests {
         let third: Option<Msg> = decode(&mut cursor).unwrap();
         assert_eq!(first, Some(a));
         assert_eq!(second, Some(b));
-        assert!(third.is_none(), "stream should end cleanly after two frames");
+        assert!(
+            third.is_none(),
+            "stream should end cleanly after two frames"
+        );
     }
 }

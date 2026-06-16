@@ -74,74 +74,9 @@ pub fn per_fill_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SecretSourceConfig;
     use crate::secret_source::DEVICE_SECRET_LEN;
+    use crate::test_support::{config_for, enrolled_golden, FakeSource};
     use secretary_core::crypto::secret::SecretBytes;
-    use std::path::{Path, PathBuf};
-
-    /// A non-file fake secret source built straight from bytes.
-    struct FakeSource(Vec<u8>);
-    impl DeviceSecretSource for FakeSource {
-        fn device_secret(&self) -> Result<SecretBytes, SecretSourceError> {
-            if self.0.len() != DEVICE_SECRET_LEN {
-                return Err(SecretSourceError::WrongLength(self.0.len()));
-            }
-            Ok(SecretBytes::from(self.0.as_slice()))
-        }
-    }
-
-    fn golden_vault_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core/tests/data/golden_vault_001")
-    }
-
-    fn golden_password() -> Vec<u8> {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001_inputs.json");
-        let raw = std::fs::read_to_string(p).expect("golden inputs readable");
-        let v: serde_json::Value = serde_json::from_str(&raw).expect("golden inputs parse");
-        v["password"].as_str().expect("password str").as_bytes().to_vec()
-    }
-
-    fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let dst_path = dst.join(entry.file_name());
-            if entry.file_type()?.is_dir() {
-                copy_dir_all(&entry.path(), &dst_path)?;
-            } else {
-                std::fs::copy(entry.path(), dst_path)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Copy the golden vault to a tempdir, enroll a fresh device slot, and
-    /// return (tempdir, vault_path, device_uuid, device_secret_bytes).
-    fn enrolled_golden() -> (tempfile::TempDir, PathBuf, [u8; 16], Vec<u8>) {
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path().join("casual");
-        copy_dir_all(&golden_vault_dir(), &vault).unwrap();
-
-        let pw = SecretBytes::from(golden_password().as_slice());
-        let mut rng = rand_core::OsRng;
-        let enrolled =
-            secretary_core::vault::device_slot::add_device_slot(&vault, &pw, &mut rng).unwrap();
-        let uuid = enrolled.device_uuid;
-        let secret = enrolled.device_secret.expose().to_vec();
-        (tmp, vault, uuid, secret)
-    }
-
-    fn config_for(vault: &Path, uuid: &[u8; 16]) -> HostConfig {
-        HostConfig {
-            vault_path: vault.to_path_buf(),
-            device_uuid: hex::encode(uuid),
-            // unused by the FakeSource path, but a valid descriptor.
-            secret_source: SecretSourceConfig::DevFile {
-                path: PathBuf::from("/unused"),
-            },
-        }
-    }
 
     #[test]
     fn counts_live_blocks_of_enrolled_vault() {
@@ -153,7 +88,10 @@ mod tests {
             let s = SecretBytes::from(secret.as_slice());
             let opened = open_vault(
                 &vault,
-                Unlocker::DeviceSecret { device_uuid: &uuid, secret: &s },
+                Unlocker::DeviceSecret {
+                    device_uuid: &uuid,
+                    secret: &s,
+                },
                 None,
             )
             .unwrap();
