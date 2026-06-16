@@ -1,0 +1,33 @@
+[package]
+name = "secretary-browser-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The native-messaging host is production code, so it is a full workspace
+# member (not excluded like `core/fuzz`) and inherits the workspace lints:
+# `#![forbid(unsafe_code)]` + clippy `-D warnings`. It intentionally has NO
+# `secretary-core` dependency in D.4.1 — this slice is pure transport (the
+# framing codec + read→dispatch→write loop). D.4.2 adds the crypto dep behind
+# the same `open_with_device_secret` verify-before-decrypt open path.
+
+[lib]
+# Surface the codec + protocol modules as a library so the D.4.1 task-2
+# integration test (`tests/echo.rs`) can drive the loop without going through
+# the binary boundary — same lib+bin split the `secretary-cli` crate uses.
+name = "secretary_browser_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretary-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints]
+workspace = true
