@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-16-c3-android-sync-ui-model-shipped.md
+docs/handoffs/2026-06-16-c3-android-sync-compose-render-shipped.md
