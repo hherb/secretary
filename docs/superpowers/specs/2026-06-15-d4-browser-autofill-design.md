@@ -145,8 +145,9 @@ home is the **record-level `unknown` map** under a reserved key (e.g. `d4_origin
 
 The credential's URL/origin itself is an ordinary login-record field (already present); the
 engine reads that field plus the `d4_origin_binding` policy. The **global default** binding
-(used when a record has no `d4_origin_binding`) is a D.4-layer setting; whether it lives in
-`vault.toml` or in helper-local config is an open question (§10).
+(used when a record has no `d4_origin_binding`) is **helper-local config** (§10.1.1) — a
+per-install user-posture choice that does not sync — defaulting to `registrable_domain`
+(§10.6.5), with the per-record `d4_origin_binding` overriding it.
 
 > Alternative considered: a first-class typed `origin_binding` field on `Record`. Rejected for
 > v1 — it mutates the frozen record struct for a D.4-only concern the `unknown` map already
@@ -183,30 +184,71 @@ Advisory, in the native app / helper, not enforced by the core:
 
 D.4.3 is the slice that earns the most review; D.4.1/D.4.2 are scaffolding; D.4.4 is per-OS UI.
 
-## 10. Open questions
+## 10. Decisions & open questions
 
-1. **Global-default `origin_binding` location** — `vault.toml` (syncs, but widens a frozen-ish
-   cleartext file) vs helper-local config (per-install, doesn't sync). Leaning helper-local +
-   per-record override, since the binding default is a user-posture choice, not vault data.
-2. **Safari** — Safari Web Extensions do not use classic stdio native messaging; they ship
-   inside a containing macOS/iOS app and message it. D.4.6 likely routes Safari through the
-   native app directly rather than a separate helper. Confirm before committing the abstraction.
-3. **TOTP autofill** — login records can carry a TOTP seed (`Bytes` field). Filling a *generated
-   code* (not the seed) is in natural scope for D.4.4/D.4.5; decide whether v1 includes it.
-4. **Mobile autofill** — iOS AutoFill credential provider / Android AutoFill Service are
-   *siblings*, not part of D.4 (different OS frameworks, ADR 0008 native apps). Same
-   thin-courier + per-fill-open + tiering shape; likely a separate sub-project. Flag, don't
-   absorb.
-5. **WebAuthn / passkeys** — the phishing-resistant long-term answer for "casual web login,"
-   and the browser is its natural home. Explicitly out of D.4 v1 scope; noted so the autofill
-   abstraction doesn't foreclose it.
+### 10.1 Resolved (2026-06-16)
+
+1. **Global-default `origin_binding` location → helper-local config.** The default binding is a
+   user-posture choice per install, not vault data; it does not sync, and a per-record
+   `d4_origin_binding` overrides it. Keeps `vault.toml` untouched.
+2. **Safari → App-Extension model, confirmed.** Safari Web Extensions ship inside a containing
+   macOS/iOS app and message it rather than using stdio native messaging. D.4.6 routes Safari
+   through the native app directly; the §5 origin-matching engine and the §2 trust boundary are
+   shared, only the transport differs. **Chromium + Firefox use stdio native messaging on all
+   desktop OSes** (Win/macOS/Linux), differing only in manifest-registration location — no
+   separate transport needed (Firefox-for-Android has no native messaging, but Android is the
+   §10.5 mobile sibling regardless).
+3. **TOTP autofill → in v1.** The helper computes the *current code* from the record's TOTP seed
+   (`Bytes` field) at fill time and returns the **6-digit code, never the seed**, as a fill
+   field (§3 step 5). Covered by D.4.4/D.4.5. (See §10.6 open items on TOTP UX.)
+4. **Mobile autofill → sibling sub-project, not D.4.** iOS AutoFill credential provider /
+   Android AutoFill Service reuse §5 and §6 with a different host integration; tracked
+   separately.
+5. **WebAuthn / passkeys → out of D.4 v1, not foreclosed.** Noted so the autofill abstraction
+   leaves room for the phishing-resistant path later.
+
+### 10.6 Still open
+
+These need a decision before the slices that depend on them; recommendations noted.
+
+1. **Save / update path (biggest scope call).** D.4 as specified is **fill-only** (read). Do we
+   also offer the classic "save this new password?" / "update changed password?" capture prompt?
+   That is a *write* into the casual vault from the browser — a materially larger surface (the
+   helper would need a record-create/update path and its own confirmation). *Recommendation:*
+   ship D.4 v1 fill-only; spec the capture path as a follow-on (D.4.7) once fill is proven.
+2. **Field-detection strategy.** How the content script identifies username / password / TOTP
+   fields to inject into (autocomplete attributes vs heuristics). Mis-detection is a
+   security-relevant failure (right credential, wrong field). *Recommendation:* prefer
+   `autocomplete=` attributes; fall back to conservative heuristics; never inject into a field
+   the user didn't focus for the click-to-fill gesture. Needs its own mini-spec in D.4.4.
+3. **Per-browser vs shared device slot.** If the user runs Chrome *and* Firefox, is that one
+   browser-helper device slot or one per browser? Affects revocation granularity.
+   *Recommendation:* one device slot **per browser** (per-browser revoke; matches the ADR 0009
+   "multi-device = multiple files" grain).
+4. **Biometric gate on per-fill open: required or optional?** The casual vault's per-fill
+   `open_with_device_secret` can be gated by biometric or just OS-login. *Recommendation:* make
+   it a helper-local setting, default **on** (biometric per fill) — cheap given HKDF opens, and
+   it raises the bar for a stolen unlocked session.
+5. **Shipped default binding value.** Helper-local default (10.1.1) needs a shipped value:
+   `registrable_domain` (casual-vault ergonomics) vs `exact_origin` (safer).
+   *Recommendation:* `registrable_domain` as the casual-vault default, with the per-record
+   override for items the user wants pinned.
+6. **TOTP fill UX / auto-submit.** Since TOTP is in v1 (10.1.3): is the code filled together with
+   username+password in one approval or as a separate gesture, and does D.4 ever auto-submit the
+   form? *Recommendation:* one approval fills all matched fields incl. the TOTP code; **never
+   auto-submit** in v1 (auto-submit is a known foot-gun and removes the user's last look).
+7. **Reserved-key namespace in `unknown`.** `d4_origin_binding` (and any future `d4_*` keys) must
+   be documented as reserved so later format work doesn't collide. *Recommendation:* reserve a
+   `d4_` prefix in the record-format notes when D.4.5 lands.
 
 ## 11. Cross-platform notes
 
-- **Chromium (MV3) + Firefox** — classic native messaging over stdio; the §3 protocol applies
-  directly. Firefox uses the same model with a different manifest location.
-- **Safari** — App-Extension model (see §10.2); different transport, same trust boundary and
-  same origin-matching engine.
+- **Chromium (MV3) + Firefox** — classic native messaging over stdio on **all desktop OSes**
+  (Win/macOS/Linux); the §3 protocol applies directly. Firefox uses the same model, differing
+  only in host-manifest registration location. (Firefox-for-Android has no native messaging →
+  handled by the §10.5 mobile sibling, not here.)
+- **Safari** — App-Extension model (§10.1.2); different transport, same trust boundary and same
+  origin-matching engine.
 - **Mobile** — sibling sub-project (§10.4); reuses §5 and §6, different host integration.
 
 ## 12. Security invariants (D.4 Definition-of-Done checklist)
