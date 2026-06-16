@@ -92,6 +92,7 @@ class VaultSyncModelTest {
         assertNull(m.pendingConflict.value)
         assertFalse(m.reviewNeeded.value)
         assertEquals(1, f.hook.acknowledgeCount)
+        assertEquals(1, f.hook.muteCount)
     }
 
     @Test
@@ -107,6 +108,8 @@ class VaultSyncModelTest {
         assertNull(m.pendingConflict.value)
         assertFalse(m.reviewNeeded.value)
         assertNull(m.lastError.value)
+        assertEquals(1, f.hook.acknowledgeCount)
+        assertEquals(2, f.hook.muteCount)
     }
 
     @Test
