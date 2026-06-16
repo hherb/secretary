@@ -43,6 +43,11 @@ class FileObserverFolderWatch(
         obs.startWatching()
     }
 
+    /**
+     * Stop watching. Idempotent. Main-thread deliveries already queued on [mainHandler]
+     * may still fire after this returns; they are harmless because the detector drops
+     * pulses while inactive (FolderChangeDetector gates recordPulse on isActive).
+     */
     override fun stop() {
         observer?.stopWatching()
         observer = null

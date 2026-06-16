@@ -21,7 +21,7 @@ class HandlerFlushScheduler(
     override fun schedule(after: Duration, work: (MonotonicInstant) -> Unit) {
         cancel()
         val runnable = Runnable {
-            pending = null
+            pending = null // cleared before invocation: a re-entrant cancel() sees null (safe no-op)
             work(now())
         }
         pending = runnable
