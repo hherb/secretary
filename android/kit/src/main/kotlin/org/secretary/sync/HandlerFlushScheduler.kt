@@ -25,6 +25,8 @@ class HandlerFlushScheduler(
             work(now())
         }
         pending = runnable
+        // Sub-ms durations truncate toward zero (fire one tick early); harmless because the
+        // monitor's handleFlush re-checks the real fire instant and re-arms an early flush.
         handler.postDelayed(runnable, after.inWholeMilliseconds)
     }
 
