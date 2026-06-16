@@ -1,6 +1,7 @@
 package org.secretary.sync.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +27,11 @@ import org.secretary.sync.SyncVetoDecision
  *   - sheet dismiss: via [VaultSyncViewModel.dismissPasswordSheet] callback.
  *   - retry after error: the prior attempt's buffer is zeroized before the new one is stored,
  *     so only the latest attempt's bytes remain live at any point in time.
+ *   - lifecycle disposal: a [DisposableEffect] `onDispose` zeroizes the buffer when this screen
+ *     leaves the composition (Activity/process teardown, config-change recreation, navigation
+ *     away) — the user-driven terminal paths above never fire in those cases, so without this the
+ *     bytes would linger on the heap until GC. `heldPassword` is intentionally NOT
+ *     `rememberSaveable`, so a config change drops the buffer; `onDispose` zeroizes it first.
  *
  * The VM deliberately does NOT zeroize the password buffer (it is a pass-through); this screen is
  * the designated owner of the ByteArray's lifetime and is the sole site responsible for `fill(0)`.
@@ -61,6 +67,13 @@ fun SyncScreen(viewModel: VaultSyncViewModel) {
         if (pendingConflict == null && !passwordVisible) dropPassword()
     }
 
+    // Zeroize on lifecycle disposal (Activity/process teardown, config-change recreation,
+    // navigation away) — none of the user-driven terminal paths fire then, so this is the only
+    // site that catches a buffer left live when the screen is torn down mid-flow.
+    DisposableEffect(Unit) {
+        onDispose { dropPassword() }
+    }
+
     SyncBadge(
         state = badge,
         nowMs = System.currentTimeMillis().toULong(),
@@ -86,7 +99,15 @@ fun SyncScreen(viewModel: VaultSyncViewModel) {
             conflict = conflict,
             error = lastError,
             onResolve = { decisions: List<SyncVetoDecision> ->
+                // In this slice a pending conflict is only ever reached through the interactive
+                // path, so `heldPassword` is non-null here by construction. The fallback guards a
+                // genuine edge — the screen is recreated mid-conflict (config change), where the
+                // VM keeps `pendingConflict` but the transient `heldPassword` was zeroized on
+                // disposal — and a future trigger that surfaces a conflict without a held password.
+                // Rather than a silent no-op, re-open the password sheet so the user re-enters it;
+                // the conflict re-surfaces with a live buffer and Apply then commits.
                 heldPassword?.let { viewModel.resolve(decisions, it) }
+                    ?: viewModel.beginInteractiveSync()
             },
             onCancel = {
                 dropPassword()
