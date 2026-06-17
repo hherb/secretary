@@ -137,6 +137,35 @@ class RecordEditModelTest {
     }
 
     @Test
+    fun `blank tags are dropped on commit`() = runTest {
+        val s = session()
+        val m = addModel(s)
+        m.setRecordType("note")
+        m.addField()
+        m.setFieldName(0, "body")
+        m.setFieldRawText(0, "hello")
+        m.addTag(); m.setTag(0, "personal")
+        m.addTag(); m.setTag(1, "   ")
+        m.commit()
+        assertTrue(m.committed.value)
+        assertNull(m.error.value)
+        assertEquals(listOf("personal"), s.appended.single().second.tags)
+    }
+
+    @Test
+    fun `empty field name is rejected with InvalidArgument`() = runTest {
+        val s = session()
+        val m = addModel(s)
+        m.addField()
+        m.setFieldName(0, "   ")
+        m.setFieldRawText(0, "v")
+        m.commit()
+        assertFalse(m.committed.value)
+        assertTrue(s.appended.isEmpty())
+        assertTrue(m.error.value is VaultBrowseError.InvalidArgument)
+    }
+
+    @Test
     fun `removeField and tag mutators work`() {
         val s = session()
         val m = addModel(s)
