@@ -7,6 +7,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -87,5 +88,36 @@ class OpenBrowseSmokeTest {
 
         model.lock()
         assertTrue("lock clears revealed values", model.revealed.value.isEmpty())
+    }
+
+    @Test
+    fun softDelete_roundTrip_tombstoneThenResurrect() = runBlocking {
+        val folder = AppVaultProvisioning.stageGoldenVault(context)
+        val deviceUuids = org.secretary.browse.FileDeviceUuidStore(
+            File(context.noBackupFilesDir, "devices-${System.nanoTime()}"))
+        val session = org.secretary.browse.uniffiVaultOpenPort(deviceUuids)
+            .openWithPassword(folder.path, goldenPassword.toByteArray())
+        val model = VaultBrowseModel(session)
+        model.loadBlocks()
+        model.selectBlock(model.blocks.value.first())
+
+        val target = model.selectedRecords.value!!.first { it.type == "login" }
+
+        // Tombstone → gone from the default (live-only) view.
+        model.delete(target)
+        assertTrue("tombstoned record left the live view",
+            model.selectedRecords.value!!.none { it.uuidHex == target.uuidHex })
+
+        // Show-deleted → present again, marked tombstoned.
+        model.setShowDeleted(true)
+        val deleted = model.selectedRecords.value!!.first { it.uuidHex == target.uuidHex }
+        assertTrue("record is tombstoned under show-deleted", deleted.tombstone)
+
+        // Resurrect → live again.
+        model.restore(target)
+        val restored = model.selectedRecords.value!!.first { it.uuidHex == target.uuidHex }
+        assertFalse("resurrected record is live", restored.tombstone)
+
+        model.lock()
     }
 }

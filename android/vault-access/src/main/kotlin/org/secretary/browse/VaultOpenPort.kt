@@ -19,5 +19,12 @@ interface VaultSession {
     fun vaultUuidHex(): String
     fun blockSummaries(): List<BlockSummaryView>
     suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView>
+
+    /** Soft-delete one live record (tombstone). Device-uuid + now-ms are resolved inside the impl. */
+    suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray)
+
+    /** Restore one tombstoned record (resurrect). Device-uuid + now-ms are resolved inside the impl. */
+    suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray)
+
     fun wipe()
 }

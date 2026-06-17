@@ -24,5 +24,7 @@ class FakeVaultSession(
         readError?.let { throw it }
         return recordsByBlockHex[hexOfBytes(blockUuid)] ?: emptyList()
     }
+    override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) {}
+    override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) {}
     override fun wipe() { wiped = true }
 }

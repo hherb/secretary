@@ -22,6 +22,8 @@ internal fun mapVaultBrowseError(e: VaultException): VaultBrowseError = when (e)
     is VaultException.FolderInvalid -> VaultBrowseError.FolderInvalid(e.detail)
     is VaultException.BlockNotFound -> VaultBrowseError.BlockNotFound(e.uuidHex)
     is VaultException.InvalidArgument -> VaultBrowseError.InvalidArgument(e.detail)
+    is VaultException.RecordNotFound -> VaultBrowseError.RecordNotFound(e.uuidHex)
+    is VaultException.SaveCryptoFailure -> VaultBrowseError.SaveCryptoFailure(e.detail)
     else -> VaultBrowseError.Failed(e.toString())
 }
 

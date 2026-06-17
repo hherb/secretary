@@ -18,10 +18,18 @@ class BrowseMappingTest {
     }
 
     @Test
-    fun `folds any other arm into Failed carrying the variant name`() {
-        val mapped = mapVaultBrowseError(VaultException.RecordNotFound("deadbeef"))
+    fun `maps the write-relevant arms to their domain counterparts`() {
+        assertEquals(VaultBrowseError.RecordNotFound("deadbeef"),
+            mapVaultBrowseError(VaultException.RecordNotFound("deadbeef")))
+        assertEquals(VaultBrowseError.SaveCryptoFailure("io"),
+            mapVaultBrowseError(VaultException.SaveCryptoFailure("io")))
+    }
+
+    @Test
+    fun `folds a still-unmapped arm into Failed carrying the variant name`() {
+        val mapped = mapVaultBrowseError(VaultException.RecipientNotPresent())
         assertTrue(mapped is VaultBrowseError.Failed)
-        assertTrue((mapped as VaultBrowseError.Failed).detail.contains("RecordNotFound"))
+        assertTrue((mapped as VaultBrowseError.Failed).detail.contains("RecipientNotPresent"))
     }
 
     @Test

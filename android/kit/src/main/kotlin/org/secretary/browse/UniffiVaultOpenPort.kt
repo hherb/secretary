@@ -12,6 +12,8 @@ import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.readBlock as ffiReadBlock
+import uniffi.secretary.resurrectRecord as ffiResurrectRecord
+import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
 
 /**
  * The real [VaultOpenPort] over the generated `uniffi.secretary` open call. The only browse code
@@ -24,12 +26,13 @@ import uniffi.secretary.readBlock as ffiReadBlock
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val deviceUuids: DeviceUuidProvider? = null,
     private val openFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithPassword,
 ) : VaultOpenPort {
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession =
         withContext(ioDispatcher) {
             val output = mapErrors { openFn(vaultFolder.toByteArray(Charsets.UTF_8), password) }
-            UniffiVaultSession(output, ioDispatcher)
+            UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
 }
 
@@ -51,6 +54,7 @@ class UniffiVaultOpenPort(
 class UniffiVaultSession(
     output: OpenVaultOutput,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val deviceUuids: DeviceUuidProvider? = null,
 ) : VaultSession {
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
@@ -62,6 +66,9 @@ class UniffiVaultSession(
 
     /** Set true by [wipe]; a read that observes it must not retain its block. */
     private var wiped: Boolean = false
+
+    /** Resolved once per session (first write) so every write stamps the same device UUID. */
+    private var cachedDeviceUuid: ByteArray? = null
 
     /** Decrypted blocks retained so the per-field reveal closures (which capture a FieldHandle)
      *  stay valid until wipe(). Mirror of iOS UniffiVaultSession.openBlocks. NOTE: this currently
@@ -100,6 +107,41 @@ class UniffiVaultSession(
                 }
             }
         }
+
+    override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) =
+        write { dev, now -> ffiTombstoneRecord(identity, manifest, blockUuid, recordUuid, dev, now) }
+
+    override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) =
+        write { dev, now -> ffiResurrectRecord(identity, manifest, blockUuid, recordUuid, dev, now) }
+
+    /**
+     * Resolve (device-uuid, now-ms), run the FFI write under [sessionLock] + the [wiped] guard, and
+     * map errors. A write that loses the race to a concurrent wipe() must not touch zeroized handles.
+     */
+    private suspend fun write(body: (deviceUuid: ByteArray, nowMs: ULong) -> Unit) =
+        withContext(ioDispatcher) {
+            mapErrors {
+                synchronized(sessionLock) {
+                    if (wiped) throw VaultBrowseError.Failed("write on a wiped session")
+                    val dev = deviceUuid()
+                    body(dev, System.currentTimeMillis().toULong())
+                }
+            }
+        }
+
+    /** Resolve + cache the per-vault device UUID; surface a store failure as a typed error. */
+    private fun deviceUuid(): ByteArray {
+        cachedDeviceUuid?.let { return it }
+        val provider = deviceUuids
+            ?: throw VaultBrowseError.Failed("read-only session: no device-uuid provider configured")
+        val d = try {
+            provider.deviceUuid(vaultUuidHex())
+        } catch (e: DeviceUuidException) {
+            throw VaultBrowseError.Failed("device-uuid resolve failed: ${e.message}")
+        }
+        cachedDeviceUuid = d
+        return d
+    }
 
     /** Map one decrypted [Record] handle to a view whose fields reveal plaintext ON DEMAND. */
     private fun toRecordView(record: Record): RecordSummaryView {
@@ -158,3 +200,7 @@ private inline fun <T> mapErrors(block: () -> T): T =
 
 /** Production factory for the real open port (defaults to the live bindings + IO dispatcher). */
 fun uniffiVaultOpenPort(): VaultOpenPort = UniffiVaultOpenPort()
+
+/** Production factory that supports writes (delete/restore/edit): inject a device-uuid provider. */
+fun uniffiVaultOpenPort(deviceUuids: DeviceUuidProvider): VaultOpenPort =
+    UniffiVaultOpenPort(deviceUuids = deviceUuids)
