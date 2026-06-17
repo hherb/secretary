@@ -14,30 +14,26 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
-import org.secretary.sync.ChangeDetectionMonitor
-import org.secretary.sync.makeVaultSync
-import org.secretary.sync.ui.SyncScreen
-import org.secretary.sync.ui.VaultSyncViewModel
+import org.secretary.browse.VaultBrowseModel
+import org.secretary.browse.uniffiVaultOpenPort
+import org.secretary.browse.ui.BrowseScreen
+import org.secretary.browse.ui.VaultBrowseViewModel
 
 private const val TAG = "AppRoot"
 
-/** The app's two screens; Sync carries the live model + monitor for the unlocked session. */
+/** The app's two screens; Browse carries the live view-model for the unlocked session. */
 private sealed interface Route {
     data object Unlock : Route
-    data class Sync(
-        val viewModel: VaultSyncViewModel,
-        val monitor: ChangeDetectionMonitor,
-    ) : Route
+    data class Browse(val viewModel: VaultBrowseViewModel) : Route
 }
 
 /**
- * Top-level routing for the walking skeleton: Unlock → Sync. On unlock it builds the REAL
- * makeVaultSync pair on the main thread (Compose runs on main), awaits a silent syncAtUnlock,
- * zeroizes the password, then routes to the slice-5 SyncScreen. The folder monitor's lifecycle is
- * bound to the Sync screen's composition (see the DisposableEffect in the Route.Sync arm): it runs
- * only while Sync is on screen. On background (ON_STOP) the app routes back to Unlock, which
- * disposes the Sync composition and stops the monitor (mirrors iOS scenePhase == .background;
- * Android has no session to resume since the password is transient per pass).
+ * Top-level routing for the walking skeleton: Unlock → Browse. On unlock it opens the REAL vault
+ * (open_vault_with_password, Argon2id offloaded to IO inside the port), builds a VaultBrowseModel,
+ * lists blocks, and routes to the metadata-only BrowseScreen. On background (ON_STOP) the app routes
+ * back to Unlock; leaving Browse disposes its composition, whose DisposableEffect calls
+ * viewModel.lock() — the session is wiped, so returning requires the password again (lock-on-background,
+ * mirroring iOS). FLAG_SECURE (set on the Activity) blocks screenshot/recents capture.
  */
 @Composable
 fun AppRoot() {
@@ -45,8 +41,6 @@ fun AppRoot() {
     val scope = rememberCoroutineScope()
     var route by remember { mutableStateOf<Route>(Route.Unlock) }
 
-    // Background → return to Unlock. Leaving Route.Sync disposes its composition, whose
-    // DisposableEffect stops the monitor — so the watcher is never left running once we leave Sync.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -58,71 +52,43 @@ fun AppRoot() {
 
     when (val r = route) {
         is Route.Unlock -> UnlockScreen(onUnlock = { password ->
-            scope.launch {
-                route = unlockAndSync(context, password)
-            }
+            scope.launch { route = unlockAndOpen(context, password) }
         })
-        is Route.Sync -> {
-            // The monitor runs only while the Sync screen is composed: started on enter, stopped
-            // on dispose (route change back to Unlock on background, or activity teardown). This
-            // binds detection to the on-screen session and never leaves a watcher running after we
-            // leave Sync. A failed start leaves detection advisory-blind (the badge falls back to
-            // manual "Sync now"); not fatal.
-            DisposableEffect(r.monitor) {
-                try {
-                    r.monitor.start()
-                } catch (e: Exception) {
-                    Log.w(TAG, "folder-change monitor failed to start", e)
-                }
-                onDispose { r.monitor.stop() }
+        is Route.Browse -> {
+            // Wipe the session when we leave Browse (background → Unlock, or teardown): the decrypted
+            // manifest/identity never outlives the on-screen session. Re-entry re-opens from password.
+            DisposableEffect(r.viewModel) {
+                onDispose { r.viewModel.lock() }
             }
-            SyncScreen(viewModel = r.viewModel)
+            BrowseScreen(viewModel = r.viewModel)
         }
     }
 }
 
 /**
- * Builds makeVaultSync (main thread), awaits the silent unlock pass, and returns the Sync route.
- * The monitor is NOT started here — it is started by the Route.Sync DisposableEffect when the Sync
- * screen enters composition, so a watcher is never started for a session the user never sees.
- * Called from a main-dispatched coroutine (the heavy Argon2id work hops to IO inside the sync port).
+ * Opens the vault (main-dispatched coroutine; Argon2id hops to IO inside the port), lists blocks,
+ * and returns the Browse route. Unlike the sync slice, this open is session-producing and CAN refuse:
+ * a wrong password / corrupt or provisioning failure is logged and returns the user to Unlock.
  *
- * Secret hygiene: the password buffer is zeroized in a `finally` that wraps the ENTIRE body, so it
- * is overwritten on every exit — the clean pass, a captured wrong-password (the model swallows the
- * error into `lastError` rather than throwing), AND an early provisioning/factory failure that
- * throws before the pass. Because `syncAtUnlock` is awaited, the zeroize cannot race the async
- * Argon2id re-open that consumes the buffer. A provisioning/factory failure is logged and returns
- * the user to Unlock rather than escaping as an uncaught coroutine exception (which would both
- * crash and leak the un-zeroized buffer).
+ * Secret hygiene: the password buffer is zeroized in a `finally` wrapping the whole body — overwritten
+ * on every exit (success, open failure, early provisioning throw). Because openWithPassword is awaited,
+ * the zeroize cannot race the async Argon2id that consumes the buffer.
  *
- * Known accepted minor race: if the app is backgrounded (ON_STOP → route = Unlock) while this pass
- * is still suspended, the coroutine may complete and set route = Sync afterwards; the monitor is
- * then stopped on the next ON_STOP and the password is already zeroized, so it self-heals —
- * acceptable for the walking skeleton (transient per-pass session, mirroring iOS scenePhase).
+ * Known accepted minor race (mirrors slice 6): if backgrounded (ON_STOP → route = Unlock) while this
+ * suspends, the coroutine may still set route = Browse afterwards; the next ON_STOP disposes Browse and
+ * wipes the session, and the password is already zeroized — self-heals.
  */
-private suspend fun unlockAndSync(context: Context, password: ByteArray): Route {
+private suspend fun unlockAndOpen(context: Context, password: ByteArray): Route {
     try {
         val folder = AppVaultProvisioning.stageGoldenVault(context)
-        val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
-        val uuid = AppVaultProvisioning.goldenVaultUuid(context)
-
-        val (model, monitor) = makeVaultSync(folder, stateDir, uuid)
-        val viewModel = VaultSyncViewModel(model)
-        viewModel.syncAtUnlock(password)        // silent pass; wrong password is captured in lastError, not thrown
-        viewModel.refreshStatus()               // best-effort "synced N ago" label; reactive via the badge flow
-        // We route to Sync even when the silent pass failed (e.g. wrong password): "unlock" here is
-        // the sync-password entry, not a session-producing open, so there is no session to refuse. A
-        // failed pass lands on SyncScreen with an error badge whose tap re-opens the password sheet
-        // (SyncScreen's `onTap = beginInteractiveSync`) — that re-prompt is the deliberate retry path,
-        // so this is not a dead-end. Provisioning/factory failures (which never built a model) still
-        // fall through to the catch below and stay on Unlock.
-        return Route.Sync(viewModel, monitor)
+        val session = uniffiVaultOpenPort().openWithPassword(folder.path, password)
+        val model = VaultBrowseModel(session)
+        model.loadBlocks()
+        return Route.Browse(VaultBrowseViewModel(model))
     } catch (e: Exception) {
-        // Provisioning/factory failure (e.g. asset not bundled, main-thread check): log and stay on
-        // Unlock rather than crash. The finally still zeroizes the password.
-        Log.w(TAG, "unlock failed; returning to unlock screen", e)
+        Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
         return Route.Unlock
     } finally {
-        password.fill(0) // zeroize on every exit — success, captured error, or early throw
+        password.fill(0) // zeroize on every exit — success, open failure, or early throw
     }
 }

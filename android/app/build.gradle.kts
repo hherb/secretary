@@ -56,9 +56,11 @@ dependencies {
     // :kit brings the real makeVaultSync + the packaged arm64 .so (transitively into the APK).
     // :sync-ui brings SyncScreen + VaultSyncViewModel. :vault-access (the pure model) is
     // transitive via both, declared explicitly for the model types used in the unlock orchestration.
+    // :browse-ui brings BrowseScreen + VaultBrowseViewModel (and transitively VaultBrowseModel).
     implementation(project(":kit"))
     implementation(project(":sync-ui"))
     implementation(project(":vault-access"))
+    implementation(project(":browse-ui"))
 
     val composeBom = platform("androidx.compose:compose-bom:2025.05.00")
     implementation(composeBom)
