@@ -57,5 +57,6 @@ class BrowseScreenRevealTest {
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithTag("value-$recUuid-password").fetchSemanticsNodes().isEmpty()
         }
+        composeRule.onAllNodesWithTag("value-$recUuid-password").assertCountEquals(0)
     }
 }
