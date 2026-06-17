@@ -40,4 +40,14 @@ class FileDeviceUuidStoreTest {
         val store = FileDeviceUuidStore(devices)
         assertThrows(DeviceUuidException::class.java) { store.deviceUuid("abcd1234") }
     }
+
+    @Test
+    fun `a backing-store I-O failure folds to a typed error, not a raw IOException`(@TempDir dir: File) {
+        // A regular file where the store expects its directory: mkdirs() can't create it and the
+        // CREATE_NEW write hits a non-directory parent → IOException. It must surface as the typed
+        // DeviceUuidException so UniffiVaultSession can map it rather than crash the write coroutine.
+        val notADir = File(dir, "store").apply { writeBytes(ByteArray(1)) }
+        val store = FileDeviceUuidStore(notADir)
+        assertThrows(DeviceUuidException::class.java) { store.deviceUuid("abcd1234") }
+    }
 }
