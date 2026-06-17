@@ -57,6 +57,10 @@ class VaultBrowseModel(private val session: VaultSession) {
             _revealed.value = _revealed.value + (revealKey(record.uuidHex, field.name) to field.reveal())
         } catch (e: VaultBrowseError) {
             _error.value = e
+        } catch (e: Exception) {
+            // Mirror iOS: an unexpected throwable from a field lambda must not escape reveal()
+            // (would crash the UI). Fold to the generic Failed arm rather than propagate.
+            _error.value = VaultBrowseError.Failed(e.toString())
         }
     }
 

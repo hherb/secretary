@@ -114,7 +114,10 @@ class VaultBrowseModelTest {
     fun `hideAll clears every revealed field`() = runTest {
         val model = revealModel()
         val rec = revealRecs.first()
+        val second = RevealableField("username", FieldKind.Text) { RevealedValue.Text("owner") }
         model.reveal(rec, pwField)
+        model.reveal(rec, second)
+        assertEquals(2, model.revealed.value.size)
         model.hideAll()
         assertTrue(model.revealed.value.isEmpty())
     }
@@ -145,6 +148,26 @@ class VaultBrowseModelTest {
         }
         model.reveal(rec, boom)
         assertTrue(model.error.value is VaultBrowseError.CorruptVault)
+        assertTrue(model.revealed.value.isEmpty())
+    }
+
+    @Test
+    fun `a reveal lambda throwing a non-VaultBrowseError folds to Failed and leaves revealed empty`() = runTest {
+        val model = revealModel()
+        val rec = revealRecs.first()
+        val boom = RevealableField("password", FieldKind.Text) {
+            throw IllegalStateException("unexpected")
+        }
+        model.reveal(rec, boom)
+        assertTrue(model.error.value is VaultBrowseError.Failed)
+        assertTrue(model.revealed.value.isEmpty())
+    }
+
+    @Test
+    fun `clearSelection clears any revealed value`() = runTest {
+        val model = revealModel()
+        model.reveal(revealRecs.first(), pwField)
+        model.clearSelection()
         assertTrue(model.revealed.value.isEmpty())
     }
 }
