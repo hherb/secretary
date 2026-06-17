@@ -40,8 +40,11 @@ class BrowseModelsTest {
 
     @Test
     fun `VaultBrowseError is throwable and arms carry detail`() {
-        val e: VaultBrowseError = VaultBrowseError.BlockNotFound("00")
-        assertTrue(e is Exception)
-        assertEquals("00", (e as VaultBrowseError.BlockNotFound).uuidHex)
+        val caught: Exception = try {
+            throw VaultBrowseError.BlockNotFound("00")
+        } catch (ex: Exception) {
+            ex
+        }
+        assertEquals("00", (caught as VaultBrowseError.BlockNotFound).uuidHex)
     }
 }

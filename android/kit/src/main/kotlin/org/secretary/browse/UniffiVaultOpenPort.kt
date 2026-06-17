@@ -66,6 +66,7 @@ class UniffiVaultSession(
                 openBlocks += block   // retained (NO .use{}) — reveal closures depend on it
                 val count = block.recordCount().toInt()
                 (0 until count).map { i ->
+                    // Record is a transient Kotlin wrapper; the FieldHandle secrets it yields are zeroized via the BlockReadOutput.wipe() cascade in wipe(), not via this handle.
                     val rec = block.recordAt(i.toULong())
                         ?: throw VaultBrowseError.CorruptVault("recordAt($i) returned null on an open block")
                     toRecordView(rec)
@@ -73,8 +74,7 @@ class UniffiVaultSession(
             }
         }
 
-    /** Map one decrypted [Record] handle to a view whose fields reveal plaintext ON DEMAND.
-     *  The ONLY place expose_text/expose_bytes is called (inside each field's reveal lambda). */
+    /** Map one decrypted [Record] handle to a view whose fields reveal plaintext ON DEMAND. */
     private fun toRecordView(record: Record): RecordSummaryView {
         val fieldCount = record.fieldCount().toInt()
         val fields = (0 until fieldCount).map { j ->
