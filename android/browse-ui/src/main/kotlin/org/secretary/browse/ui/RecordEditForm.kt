@@ -56,8 +56,11 @@ fun RecordEditForm(
             ) { Text("Save") }
         }
         error?.let {
+            // Prefer the typed arm's detail (e.g. "field 'x' is not valid hex", "duplicate field
+            // name: y") over the bare class name; fall back to the class name for message-less arms.
+            val detail = it.message?.takeIf(String::isNotBlank) ?: it::class.simpleName
             Text(
-                text = "Couldn't save: ${it::class.simpleName}",
+                text = "Couldn't save: $detail",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium,
             )

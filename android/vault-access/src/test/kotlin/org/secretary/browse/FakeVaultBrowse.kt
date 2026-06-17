@@ -12,6 +12,9 @@ class FakeVaultSession(
     private val readError: VaultBrowseError? = null,
     private val blocksError: VaultBrowseError? = null,
     private val writeError: VaultBrowseError? = null,
+    /** A non-[VaultBrowseError] throwable a write raises raw — models a uniffi InternalException
+     *  (Rust panic) that mapErrors does NOT translate, so callers must fold it themselves. */
+    private val rawWriteThrowable: Throwable? = null,
 ) : VaultSession {
     var wiped: Boolean = false
         private set
@@ -53,6 +56,7 @@ class FakeVaultSession(
     }
     override suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray {
         writeError?.let { throw it }
+        rawWriteThrowable?.let { throw it }
         val blockHex = hexOfBytes(blockUuid)
         appended += blockHex to content
         // Mint a deterministic distinct uuid for the fake (real adapter uses SecureRandom).
@@ -73,6 +77,7 @@ class FakeVaultSession(
 
     override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) {
         writeError?.let { throw it }
+        rawWriteThrowable?.let { throw it }
         val blockHex = hexOfBytes(blockUuid)
         val recordHex = hexOfBytes(recordUuid)
         edited += Triple(blockHex, recordHex, content)

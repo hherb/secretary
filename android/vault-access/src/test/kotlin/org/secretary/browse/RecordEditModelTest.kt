@@ -10,8 +10,18 @@ import org.junit.jupiter.api.Test
 class RecordEditModelTest {
     private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
 
-    private fun session(writeError: VaultBrowseError? = null, records: List<RecordSummaryView> = emptyList()) =
-        FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to records), writeError = writeError)
+    private fun session(
+        writeError: VaultBrowseError? = null,
+        records: List<RecordSummaryView> = emptyList(),
+        rawWriteThrowable: Throwable? = null,
+    ) =
+        FakeVaultSession(
+            "abcd",
+            listOf(block),
+            mapOf(block.uuidHex to records),
+            writeError = writeError,
+            rawWriteThrowable = rawWriteThrowable,
+        )
 
     private fun addModel(s: FakeVaultSession) =
         RecordEditModel(s, block.uuid, RecordEditModel.Mode.Add)
@@ -134,6 +144,18 @@ class RecordEditModelTest {
         m.commit()
         assertFalse(m.committed.value)
         assertTrue(m.error.value is VaultBrowseError.SaveCryptoFailure)
+    }
+
+    @Test
+    fun `unexpected throwable from the write is folded to Failed, not propagated`() = runTest {
+        // A uniffi InternalException (Rust panic) is NOT a VaultException, so mapErrors lets it
+        // through raw. commit() must catch it and surface Failed rather than crash the coroutine.
+        val s = session(rawWriteThrowable = RuntimeException("panic in append_record"))
+        val m = addModel(s)
+        m.setRecordType("note")
+        m.commit() // must not throw
+        assertFalse(m.committed.value)
+        assertTrue(m.error.value is VaultBrowseError.Failed)
     }
 
     @Test

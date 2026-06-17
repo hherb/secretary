@@ -1,5 +1,6 @@
 package org.secretary.browse
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -132,6 +133,13 @@ class RecordEditModel(
             _committed.value = true
         } catch (e: VaultBrowseError) {
             _error.value = e
+        } catch (e: CancellationException) {
+            throw e // never swallow coroutine cancellation (commit is suspend)
+        } catch (e: Exception) {
+            // Mirror load()/reveal(): an unexpected throwable from the FFI write (e.g. a uniffi
+            // InternalException from a Rust panic — NOT a VaultException, so mapErrors lets it
+            // through) must not escape commit() and crash the launching coroutine. Fold to Failed.
+            _error.value = VaultBrowseError.Failed(e.toString())
         }
     }
 
