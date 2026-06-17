@@ -31,7 +31,12 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** Publish the manifest's block summaries (in-memory metadata; no decryption). */
     fun loadBlocks() {
         _error.value = null
-        _blocks.value = session.blockSummaries()
+        try {
+            _blocks.value = session.blockSummaries()
+        } catch (e: VaultBrowseError) {
+            _error.value = e
+            _blocks.value = emptyList()
+        }
     }
 
     /** Decrypt the selected block and publish its records (metadata only). Errors are captured. */
@@ -48,10 +53,11 @@ class VaultBrowseModel(private val session: VaultSession) {
         }
     }
 
-    /** Return to the block list. */
+    /** Return to the block list, clearing any read error left from a failed selection. */
     fun clearSelection() {
         _selectedBlock.value = null
         _selectedRecords.value = null
+        _error.value = null
     }
 
     /** Wipe the session (zeroize handles) and reset every flow. Called on background / lock. */

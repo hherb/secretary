@@ -9,7 +9,7 @@ import uniffi.secretary.Record
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
-import uniffi.secretary.readBlock
+import uniffi.secretary.readBlock as ffiReadBlock
 
 /**
  * The real [VaultOpenPort] over the generated `uniffi.secretary` open call. The only browse code
@@ -48,14 +48,16 @@ class UniffiVaultSession(
     override fun vaultUuidHex(): String = hexOfBytes(manifest.vaultUuid())
 
     override fun blockSummaries(): List<BlockSummaryView> =
-        manifest.blockSummaries().map(::mapBlockSummary)
+        // In-memory manifest metadata (no decryption), but route through mapErrors so any
+        // VaultException surfaces as a typed VaultBrowseError rather than a raw FFI throwable.
+        mapErrors { manifest.blockSummaries().map(::mapBlockSummary) }
 
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> =
         withContext(ioDispatcher) {
             mapErrors {
                 // `.use` closes (and zeroizes) the decrypted block output as soon as we have copied
                 // the metadata out — no decrypted record handle outlives this call.
-                readBlock(identity, manifest, blockUuid, includeDeleted).use { block ->
+                ffiReadBlock(identity, manifest, blockUuid, includeDeleted).use { block ->
                     val count = block.recordCount().toInt()
                     (0 until count).mapNotNull { i ->
                         block.recordAt(i.toULong())?.use(::toRecordSummaryView)

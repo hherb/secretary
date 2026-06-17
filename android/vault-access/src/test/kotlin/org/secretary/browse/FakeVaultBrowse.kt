@@ -6,12 +6,16 @@ class FakeVaultSession(
     private val blocks: List<BlockSummaryView>,
     private val recordsByBlockHex: Map<String, List<RecordSummaryView>> = emptyMap(),
     private val readError: VaultBrowseError? = null,
+    private val blocksError: VaultBrowseError? = null,
 ) : VaultSession {
     var wiped: Boolean = false
         private set
 
     override fun vaultUuidHex(): String = vaultUuidHex
-    override fun blockSummaries(): List<BlockSummaryView> = blocks
+    override fun blockSummaries(): List<BlockSummaryView> {
+        blocksError?.let { throw it }
+        return blocks
+    }
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> {
         readError?.let { throw it }
         return recordsByBlockHex[hexOfBytes(blockUuid)] ?: emptyList()

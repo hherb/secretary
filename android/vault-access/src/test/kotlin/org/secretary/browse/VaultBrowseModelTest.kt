@@ -21,6 +21,15 @@ class VaultBrowseModelTest {
     }
 
     @Test
+    fun `loadBlocks captures a summary failure as a typed error and leaves blocks empty`() = runTest {
+        val failing = FakeVaultSession("abcd", listOf(block), blocksError = VaultBrowseError.CorruptVault("bad"))
+        val model = VaultBrowseModel(failing)
+        model.loadBlocks()
+        assertTrue(model.error.value is VaultBrowseError.CorruptVault)
+        assertTrue(model.blocks.value.isEmpty())
+    }
+
+    @Test
     fun `selectBlock publishes the block's records`() = runTest {
         val model = VaultBrowseModel(session())
         model.loadBlocks()
@@ -45,6 +54,16 @@ class VaultBrowseModelTest {
         model.clearSelection()
         assertNull(model.selectedBlock.value)
         assertNull(model.selectedRecords.value)
+    }
+
+    @Test
+    fun `clearSelection clears a lingering read error`() = runTest {
+        val model = VaultBrowseModel(session(readError = VaultBrowseError.BlockNotFound("4c")))
+        model.loadBlocks()
+        model.selectBlock(block)
+        assertTrue(model.error.value is VaultBrowseError.BlockNotFound)
+        model.clearSelection()
+        assertNull(model.error.value)
     }
 
     @Test
