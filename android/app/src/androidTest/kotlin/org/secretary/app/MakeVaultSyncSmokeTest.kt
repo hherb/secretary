@@ -45,8 +45,11 @@ class MakeVaultSyncSmokeTest {
     /** Build the real model+monitor on the main thread (makeVaultSync fast-fails off-main). */
     private fun buildOnMain(): Pair<VaultSyncModel, ChangeDetectionMonitor> {
         val folder = AppVaultProvisioning.stageGoldenVault(context)
-        val stateDir = File(context.cacheDir, "state-${System.nanoTime()}").apply { mkdirs() }
-        toClean += stateDir
+        // Resolve via the production `syncStateDir` helper (under a unique throwaway base so tests
+        // don't collide), exercising the same base→subdir mapping `unlockAndSync` uses in the app.
+        val stateBase = File(context.cacheDir, "run-${System.nanoTime()}")
+        val stateDir = syncStateDir(stateBase).apply { mkdirs() }
+        toClean += stateBase
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
         lateinit var pair: Pair<VaultSyncModel, ChangeDetectionMonitor>
         instrumentation.runOnMainSync {

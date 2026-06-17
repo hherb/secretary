@@ -110,6 +110,12 @@ private suspend fun unlockAndSync(context: Context, password: ByteArray): Route 
         val viewModel = VaultSyncViewModel(model)
         viewModel.syncAtUnlock(password)        // silent pass; wrong password is captured in lastError, not thrown
         viewModel.refreshStatus()               // best-effort "synced N ago" label; reactive via the badge flow
+        // We route to Sync even when the silent pass failed (e.g. wrong password): "unlock" here is
+        // the sync-password entry, not a session-producing open, so there is no session to refuse. A
+        // failed pass lands on SyncScreen with an error badge whose tap re-opens the password sheet
+        // (SyncScreen's `onTap = beginInteractiveSync`) — that re-prompt is the deliberate retry path,
+        // so this is not a dead-end. Provisioning/factory failures (which never built a model) still
+        // fall through to the catch below and stay on Unlock.
         return Route.Sync(viewModel, monitor)
     } catch (e: Exception) {
         // Provisioning/factory failure (e.g. asset not bundled, main-thread check): log and stay on

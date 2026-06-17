@@ -27,7 +27,18 @@ object AppVaultProvisioning {
         }
         val dest = File(context.filesDir, VAULT_ASSET)
         if (dest.exists()) return dest
-        copyAsset(context, VAULT_ASSET, dest)
+        // Crash-safe staging: copy into a temp sibling, then rename into place. The recursive copy
+        // is not atomic, so a crash mid-copy could otherwise leave a half-written vault that the
+        // `dest.exists()` short-circuit above would later return as if complete. rename(2) within
+        // filesDir IS atomic, so `dest` only ever appears fully populated. Any leftover staging dir
+        // from a previously-interrupted attempt is cleared first.
+        val staging = File(context.filesDir, "$VAULT_ASSET.staging")
+        staging.deleteRecursively()
+        copyAsset(context, VAULT_ASSET, staging)
+        if (!staging.renameTo(dest)) {
+            staging.deleteRecursively()
+            throw IOException("failed to stage $VAULT_ASSET into ${dest.path}")
+        }
         return dest
     }
 

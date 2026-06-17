@@ -70,8 +70,9 @@ dependencies {
     // Explicit version: the only contributor of a concrete activity-compose version was the
     // debugImplementation `ui-tooling` (a `debug`-only transitive), which does not extend into
     // the androidTest compile classpath — so a bare coordinate left debugAndroidTestCompileClasspath
-    // unable to resolve a version. Pin it (matches the lifecycle 2.8.x line resolved in production).
-    implementation("androidx.activity:activity-compose:1.8.2")
+    // unable to resolve a version. 1.9.3 is the release aligned with the lifecycle 2.8.x line pinned
+    // below (1.8.x predates 2.8 and would be a cross-line pairing).
+    implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
 
