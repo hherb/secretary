@@ -25,6 +25,10 @@ fun hexOfBytes(bytes: ByteArray): String {
 internal fun hexToBytes(hex: String): ByteArray =
     ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 
+/** Public façade over [hexToBytes] for trusted callers outside the module (e.g. on-device smoke
+ *  tests that hold a [RecordSummaryView.uuidHex]). Same trusted-input contract. */
+fun hexToBytesPublic(hex: String): ByteArray = hexToBytes(hex)
+
 /**
  * Parse a hex string to bytes, leniently: whitespace is stripped (so users can paste spaced hex)
  * and digits are case-insensitive. Returns `null` if the cleaned string has odd length or any
