@@ -3,11 +3,17 @@ package org.secretary.browse.ui
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.secretary.browse.BlockSummaryView
+import org.secretary.browse.FieldKind
 import org.secretary.browse.RecordSummaryView
+import org.secretary.browse.RevealableField
+import org.secretary.browse.RevealedValue
+
+private fun textField(name: String, value: String) =
+    RevealableField(name, FieldKind.Text) { RevealedValue.Text(value) }
 
 class BrowseRenderHelpersTest {
     private fun rec(type: String, tags: List<String>, tombstone: Boolean = false) =
-        RecordSummaryView("aa", type, tags, 1u, 2u, tombstone, listOf("username"))
+        RecordSummaryView("aa", type, tags, 1u, 2u, tombstone, listOf(textField("username", "u")))
 
     @Test
     fun `record title shows type and first tag`() {

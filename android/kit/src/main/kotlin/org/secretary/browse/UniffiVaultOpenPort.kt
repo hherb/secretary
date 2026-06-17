@@ -3,6 +3,8 @@ package org.secretary.browse
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import uniffi.secretary.BlockReadOutput
+import uniffi.secretary.FieldHandle
 import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.Record
@@ -32,11 +34,12 @@ class UniffiVaultOpenPort(
 }
 
 /**
- * The real [VaultSession]: owns the decrypted [OpenVaultManifest] + [UnlockedIdentity] handles.
- * [blockSummaries] reads in-memory manifest metadata. [readBlock] decrypts ONE block on
- * [ioDispatcher], maps each [Record]'s metadata + field NAMES to a [RecordSummaryView], and closes
- * the block output immediately — it NEVER calls `exposeText`/`exposeBytes`, so no secret value is
- * materialized while browsing. [wipe] zeroizes the manifest + identity (idempotent).
+ * The real [VaultSession]: owns the decrypted [OpenVaultManifest] + [UnlockedIdentity] handles,
+ * plus every [BlockReadOutput] retained from [readBlock]. [blockSummaries] reads in-memory manifest
+ * metadata. [readBlock] decrypts ONE block, retains it in [openBlocks] (NO `.use{}`), and builds
+ * one [RevealableField] per field whose `reveal` lambda calls `expose_text`/`expose_bytes` ON DEMAND
+ * — no secret value is materialized until the user taps. [wipe] zeroizes blocks → manifest →
+ * identity in that order (mirrors iOS UniffiVaultSession). Kotlin mirror of iOS `UniffiVaultSession`.
  */
 class UniffiVaultSession(
     output: OpenVaultOutput,
@@ -44,6 +47,10 @@ class UniffiVaultSession(
 ) : VaultSession {
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
+
+    /** Decrypted blocks retained so the per-field reveal closures (which capture a FieldHandle)
+     *  stay valid until wipe(). Mirror of iOS UniffiVaultSession.openBlocks. */
+    private val openBlocks: MutableList<BlockReadOutput> = mutableListOf()
 
     override fun vaultUuidHex(): String = hexOfBytes(manifest.vaultUuid())
 
@@ -55,35 +62,58 @@ class UniffiVaultSession(
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> =
         withContext(ioDispatcher) {
             mapErrors {
-                // `.use` closes (and zeroizes) the decrypted block output as soon as we have copied
-                // the metadata out — no decrypted record handle outlives this call.
-                ffiReadBlock(identity, manifest, blockUuid, includeDeleted).use { block ->
-                    val count = block.recordCount().toInt()
-                    (0 until count).mapNotNull { i ->
-                        block.recordAt(i.toULong())?.use(::toRecordSummaryView)
-                    }
+                val block = ffiReadBlock(identity, manifest, blockUuid, includeDeleted)
+                openBlocks += block   // retained (NO .use{}) — reveal closures depend on it
+                val count = block.recordCount().toInt()
+                (0 until count).map { i ->
+                    val rec = block.recordAt(i.toULong())
+                        ?: throw VaultBrowseError.CorruptVault("recordAt($i) returned null on an open block")
+                    toRecordView(rec)
                 }
             }
         }
 
+    /** Map one decrypted [Record] handle to a view whose fields reveal plaintext ON DEMAND.
+     *  The ONLY place expose_text/expose_bytes is called (inside each field's reveal lambda). */
+    private fun toRecordView(record: Record): RecordSummaryView {
+        val fieldCount = record.fieldCount().toInt()
+        val fields = (0 until fieldCount).map { j ->
+            val handle = record.fieldAt(j.toULong())
+                ?: throw VaultBrowseError.CorruptVault("fieldAt($j) returned null on an open record")
+            buildRevealableField(handle)
+        }
+        return RecordSummaryView(
+            uuidHex = hexOfBytes(record.recordUuid()),
+            type = record.recordType(),
+            tags = record.tags(),
+            createdAtMs = record.createdAtMs(),
+            lastModMs = record.lastModMs(),
+            tombstone = record.tombstone(),
+            fields = fields,
+        )
+    }
+
+    /** The secret-pull boundary: captures [handle]; calls expose_* only when reveal() is invoked. */
+    private fun buildRevealableField(handle: FieldHandle): RevealableField {
+        val kind = fieldKindOf(handle.isText())
+        return RevealableField(name = handle.name(), kind = kind) {
+            when (kind) {
+                FieldKind.Text -> RevealedValue.Text(
+                    handle.exposeText() ?: throw VaultBrowseError.CorruptVault("text field could not be exposed"))
+                FieldKind.Bytes -> RevealedValue.Bytes(
+                    handle.exposeBytes() ?: throw VaultBrowseError.CorruptVault("bytes field could not be exposed"))
+            }
+        }
+    }
+
     override fun wipe() {
-        // Idempotent zeroize-now of both long-lived handles (mirrors iOS UniffiVaultSession.wipe).
+        // Order mirrors iOS: blocks (cascade zeroize to records + fields) → manifest → identity.
+        openBlocks.forEach { it.wipe() }
+        openBlocks.clear()
         manifest.wipe()
         identity.wipe()
     }
 }
-
-/** Map one decrypted [Record] handle to a metadata-only view. NEVER reads a field value. */
-private fun toRecordSummaryView(record: Record): RecordSummaryView =
-    RecordSummaryView(
-        uuidHex = hexOfBytes(record.recordUuid()),
-        type = record.recordType(),
-        tags = record.tags(),
-        createdAtMs = record.createdAtMs(),
-        lastModMs = record.lastModMs(),
-        tombstone = record.tombstone(),
-        fieldNames = record.fieldNames(),
-    )
 
 /** Run an FFI call, translating any [VaultException] into the domain [VaultBrowseError]. */
 private inline fun <T> mapErrors(block: () -> T): T =

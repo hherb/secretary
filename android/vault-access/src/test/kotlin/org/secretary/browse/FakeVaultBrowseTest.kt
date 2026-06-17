@@ -30,7 +30,7 @@ class FakeVaultBrowseTest {
     @Test
     fun `fake session returns seeded records and records wipe`() = runTest {
         val recs = listOf(
-            RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf("username")),
+            RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf(textField("username", "u"))),
         )
         val session = FakeVaultSession(vaultUuidHex = "abcd", blocks = listOf(block("Logins")), recordsByBlockHex = mapOf("4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c" to recs))
         // "Logins" → first char 'L' = 0x4c repeated 16x

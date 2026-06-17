@@ -1,5 +1,9 @@
 package org.secretary.browse
 
+/** Build a text field whose reveal returns a canned value (host tests only). */
+fun textField(name: String, value: String): RevealableField =
+    RevealableField(name, FieldKind.Text) { RevealedValue.Text(value) }
+
 /** In-memory [VaultSession] for host tests. Records whether it was wiped; keyed by block uuidHex. */
 class FakeVaultSession(
     private val vaultUuidHex: String,

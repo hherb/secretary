@@ -15,12 +15,15 @@ import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.FakeVaultSession
 import org.secretary.browse.RecordSummaryView
 import org.secretary.browse.VaultBrowseModel
+import org.secretary.browse.textField
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VaultBrowseViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
-    private val recs = listOf(RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf("username")))
+    private val recs = listOf(
+        RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf(textField("username", "u"))),
+    )
 
     @BeforeEach fun setUp() = Dispatchers.setMain(dispatcher)
     @AfterEach fun tearDown() = Dispatchers.resetMain()

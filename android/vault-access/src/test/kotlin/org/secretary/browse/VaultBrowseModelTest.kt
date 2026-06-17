@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test
 
 class VaultBrowseModelTest {
     private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
-    private val recs = listOf(RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf("username")))
+    private val recs = listOf(
+        RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf(textField("username", "u"))),
+    )
     private fun session(readError: VaultBrowseError? = null) =
         FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to recs), readError)
 
