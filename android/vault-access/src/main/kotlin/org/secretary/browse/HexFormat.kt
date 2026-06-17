@@ -24,3 +24,26 @@ fun hexOfBytes(bytes: ByteArray): String {
  */
 internal fun hexToBytes(hex: String): ByteArray =
     ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+
+/** Public façade over [hexToBytes] for trusted callers outside the module (e.g. on-device smoke
+ *  tests that hold a [RecordSummaryView.uuidHex]). Same trusted-input contract. */
+fun hexToBytesPublic(hex: String): ByteArray = hexToBytes(hex)
+
+/**
+ * Parse a hex string to bytes, leniently: whitespace is stripped (so users can paste spaced hex)
+ * and digits are case-insensitive. Returns `null` if the cleaned string has odd length or any
+ * non-hex character. Inverse of [hexOfBytes] for the byte-field edit affordance; mirror of iOS
+ * `RecordEditViewModel.parseHex`. Unlike [hexToBytes] (trusted, throwing), this is for USER input.
+ */
+fun parseHexLenient(s: String): ByteArray? {
+    val cleaned = s.filterNot { it.isWhitespace() }
+    if (cleaned.length % 2 != 0) return null
+    val out = ByteArray(cleaned.length / 2)
+    for (i in out.indices) {
+        val hi = Character.digit(cleaned[i * 2], 16)
+        val lo = Character.digit(cleaned[i * 2 + 1], 16)
+        if (hi < 0 || lo < 0) return null
+        out[i] = ((hi shl 4) or lo).toByte()
+    }
+    return out
+}

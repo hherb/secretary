@@ -239,4 +239,54 @@ class VaultBrowseModelTest {
         assertTrue(model.error.value is VaultBrowseError.RecordNotFound)
         assertEquals(before, model.selectedRecords.value)   // NOT blanked
     }
+
+    @Test
+    fun `startAdd publishes an Add edit model on the selected block`() = runTest {
+        val model = VaultBrowseModel(session())
+        model.loadBlocks()
+        model.selectBlock(block)
+        model.startAdd()
+        val editing = model.editing.value
+        assertEquals(RecordEditModel.Mode.Add, editing?.mode)
+    }
+
+    @Test
+    fun `startEdit publishes an Edit model prefilled from the record`() = runTest {
+        val model = VaultBrowseModel(session())
+        model.loadBlocks()
+        model.selectBlock(block)
+        val rec = model.selectedRecords.value!!.first()
+        model.startEdit(rec)
+        val editing = model.editing.value!!
+        assertTrue(editing.mode is RecordEditModel.Mode.Edit)
+        assertEquals(rec.type, editing.recordType.value)
+    }
+
+    @Test
+    fun `cancelEdit clears the editing model`() = runTest {
+        val model = VaultBrowseModel(session())
+        model.loadBlocks(); model.selectBlock(block); model.startAdd()
+        model.cancelEdit()
+        assertNull(model.editing.value)
+    }
+
+    @Test
+    fun `onEditCommitted clears editing and re-reads the block`() = runTest {
+        val s = session()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(block); model.startAdd()
+        // Simulate a committed append directly on the session, then signal commit.
+        s.appendRecord(block.uuid, RecordContentInput("note", emptyList(), emptyList()))
+        model.onEditCommitted()
+        assertNull(model.editing.value)
+        assertTrue(model.selectedRecords.value!!.any { it.type == "note" })
+    }
+
+    @Test
+    fun `lock clears editing`() = runTest {
+        val model = VaultBrowseModel(session())
+        model.loadBlocks(); model.selectBlock(block); model.startAdd()
+        model.lock()
+        assertNull(model.editing.value)
+    }
 }

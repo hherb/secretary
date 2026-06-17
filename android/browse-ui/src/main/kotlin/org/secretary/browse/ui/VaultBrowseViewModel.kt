@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.secretary.browse.BlockSummaryView
+import org.secretary.browse.RecordEditModel
 import org.secretary.browse.RecordSummaryView
 import org.secretary.browse.RevealableField
 import org.secretary.browse.RevealedValue
@@ -62,5 +63,26 @@ class VaultBrowseViewModel(private val model: VaultBrowseModel) : ViewModel() {
     /** Restore a tombstoned record. */
     fun restore(record: RecordSummaryView) {
         viewModelScope.launch { model.restore(record) }
+    }
+
+    val editing: StateFlow<RecordEditModel?> = model.editing
+
+    /** Open a blank add form for the selected block. */
+    fun startAdd() = model.startAdd()
+
+    /** Open an edit form prefilled from [record]. */
+    fun startEdit(record: RecordSummaryView) = model.startEdit(record)
+
+    /** Dismiss the edit form without writing. */
+    fun cancelEdit() = model.cancelEdit()
+
+    /** Run the open form's commit (suspend) on the view-model scope. */
+    fun commitEdit() {
+        viewModelScope.launch { model.editing.value?.commit() }
+    }
+
+    /** After a successful commit: drop the form + re-read the block. */
+    fun onEditCommitted() {
+        viewModelScope.launch { model.onEditCommitted() }
     }
 }

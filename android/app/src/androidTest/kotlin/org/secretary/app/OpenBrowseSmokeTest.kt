@@ -120,4 +120,65 @@ class OpenBrowseSmokeTest {
 
         model.lock()
     }
+
+    @Test
+    fun append_thenReadShowsNewRecord() = runBlocking {
+        val folder = AppVaultProvisioning.stageGoldenVault(context)
+        val deviceUuids = org.secretary.browse.FileDeviceUuidStore(
+            File(context.noBackupFilesDir, "devices-${System.nanoTime()}"))
+        val session = org.secretary.browse.uniffiVaultOpenPort(deviceUuids)
+            .openWithPassword(folder.path, goldenPassword.toByteArray())
+        val model = VaultBrowseModel(session)
+        model.loadBlocks()
+        val block = model.blocks.value.first()
+        model.selectBlock(block)
+
+        val content = org.secretary.browse.RecordContentInput(
+            recordType = "smoke-note",
+            tags = listOf("smoke"),
+            fields = listOf(org.secretary.browse.FieldContentInput(
+                "body", org.secretary.browse.FieldContentValue.Text("appended"))),
+        )
+        session.appendRecord(block.uuid, content)
+        model.selectBlock(block) // re-read
+
+        val added = model.selectedRecords.value!!.first { it.type == "smoke-note" }
+        model.reveal(added, added.fields.first { it.name == "body" })
+        assertEquals(
+            RevealedValue.Text("appended"),
+            model.revealed.value["${added.uuidHex}/body"],
+        )
+        model.lock()
+    }
+
+    @Test
+    fun edit_thenReadShowsChange() = runBlocking {
+        val folder = AppVaultProvisioning.stageGoldenVault(context)
+        val deviceUuids = org.secretary.browse.FileDeviceUuidStore(
+            File(context.noBackupFilesDir, "devices-${System.nanoTime()}"))
+        val session = org.secretary.browse.uniffiVaultOpenPort(deviceUuids)
+            .openWithPassword(folder.path, goldenPassword.toByteArray())
+        val model = VaultBrowseModel(session)
+        model.loadBlocks()
+        val block = model.blocks.value.first()
+        model.selectBlock(block)
+
+        val target = model.selectedRecords.value!!.first { it.type == "login" }
+        val content = org.secretary.browse.RecordContentInput(
+            recordType = "login",
+            tags = target.tags,
+            fields = listOf(org.secretary.browse.FieldContentInput(
+                "password", org.secretary.browse.FieldContentValue.Text("edited-secret"))),
+        )
+        session.editRecord(block.uuid, org.secretary.browse.hexToBytesPublic(target.uuidHex), content)
+        model.selectBlock(block) // re-read
+
+        val edited = model.selectedRecords.value!!.first { it.uuidHex == target.uuidHex }
+        model.reveal(edited, edited.fields.first { it.name == "password" })
+        assertEquals(
+            RevealedValue.Text("edited-secret"),
+            model.revealed.value["${edited.uuidHex}/password"],
+        )
+        model.lock()
+    }
 }
