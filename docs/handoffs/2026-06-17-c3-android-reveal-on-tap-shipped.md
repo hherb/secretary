@@ -2,7 +2,7 @@
 
 **Session date:** 2026-06-17. Flow: `/nextsession` → slice-7 baton (PR #249 merged, `main` @ `162c5e2`) → housekeeping (removed merged `c3-android-open-browse` worktree/branch) → chose **Android slice 8** (reveal-on-tap) → brainstormed (4 decisions: mirror-iOS retain-open-blocks, exact iOS hide policy, reveal-only scope, add instrumented Compose UI tests) → spec → 8-task TDD plan → **subagent-driven execution** (fresh implementer + spec/quality review per task; all review items fixed in-task) → final whole-branch review (opus, "Ready to merge") → docs + this handoff.
 
-**Status:** ✅ **code-complete + all-green** on branch `feature/c3-android-reveal-on-tap` (worktree `.worktrees/c3-android-reveal-on-tap`). **Not yet pushed / no PR** — push + open PR is the first resume step (the user reviews/merges; this session does not merge). This is the **first Android slice where a secret value crosses the adapter**: tap a field → real `expose_text`/`expose_bytes` → plaintext, with 30s auto-hide, tap-to-hide, drop-on-background. Mirrors the proven iOS reveal architecture. **No `core`/`ffi`/`ios`/format change** — both guardrail greps empty.
+**Status:** ✅ **code-complete + all-green**, **pushed — PR [#250](https://github.com/hherb/secretary/pull/250) open and MERGEABLE**, on branch `feature/c3-android-reveal-on-tap` (worktree `.worktrees/c3-android-reveal-on-tap`). First resume step is **review + squash-merge PR #250** (the user merges; this session does not merge). This is the **first Android slice where a secret value crosses the adapter**: tap a field → real `expose_text`/`expose_bytes` → plaintext, with 30s auto-hide, tap-to-hide, drop-on-background. Mirrors the proven iOS reveal architecture. **No `core`/`ffi`/`ios`/format change** — both guardrail greps empty.
 
 ## (1) What we shipped this session
 
@@ -78,12 +78,9 @@ git diff main...HEAD --name-only | grep -E 'core/|ffi/|ios/|crypto-design|vault-
 ## (4) Exact commands to resume
 
 ```bash
-# 0) The branch is code-complete but NOT pushed. Push + open the PR (the user reviews/merges):
-cd /Users/hherb/src/secretary/.worktrees/c3-android-reveal-on-tap
-git push -u origin feature/c3-android-reveal-on-tap
-gh pr create --base main --head feature/c3-android-reveal-on-tap \
-  --title "C.3 Android slice 8: reveal-on-tap — per-field expose_* + auto-hide + lock-on-background" \
-  --body "First Android slice where a secret value crosses the adapter. Tap a field → real expose_text/expose_bytes via a retained FieldHandle → plaintext, with 30s auto-hide, tap-to-hide, drop-on-background. Mirrors iOS: session retains decrypted BlockReadOutputs until wipe() (blocks → manifest → identity); the only expose_* call sites live in one reveal lambda. Host-tested throughout + instrumented Compose UI test + on-device smoke (real .so reveals golden vault's 'hunter2'). New :browse-ui reveal UI; :browse-ui stays FFI-free. Pure Kotlin-port + Compose — no core/ffi/ios/format change."
+# 0) PR #250 is OPEN and MERGEABLE. Review + squash-merge it (the user merges; this session does not):
+#    https://github.com/hherb/secretary/pull/250
+#    (branch already pushed; nothing to push unless you add fixup commits)
 
 # 1) After review, squash-merge, then housekeeping:
 git fetch --prune origin && git checkout main && git pull --ff-only origin main
