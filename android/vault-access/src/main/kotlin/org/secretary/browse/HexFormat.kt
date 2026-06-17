@@ -15,3 +15,7 @@ fun hexOfBytes(bytes: ByteArray): String {
     }
     return sb.toString()
 }
+
+/** Parse a 32-char lowercase hex string to its raw bytes. Inverse of [hexOfBytes]. */
+internal fun hexToBytes(hex: String): ByteArray =
+    ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }

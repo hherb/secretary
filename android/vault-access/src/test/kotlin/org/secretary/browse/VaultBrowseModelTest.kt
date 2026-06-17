@@ -198,4 +198,45 @@ class VaultBrowseModelTest {
         assertEquals(true, model.showDeleted.value)
         assertNull(s.lastIncludeDeleted)   // no read happened
     }
+
+    private fun writableSession(writeError: VaultBrowseError? = null): FakeVaultSession {
+        val live = RecordSummaryView("ab", "login", emptyList(), 1u, 2u, false, listOf(textField("u", "x")))
+        return FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(live)), writeError = writeError)
+    }
+
+    @Test
+    fun `delete tombstones the record then re-reads so it leaves the live view`() = runTest {
+        val s = writableSession()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(block)
+        val rec = model.selectedRecords.value!!.first()
+        model.delete(rec)
+        assertEquals(listOf(block.uuidHex to rec.uuidHex), s.tombstoned)
+        assertTrue(model.selectedRecords.value!!.none { it.uuidHex == rec.uuidHex })  // gone from live view
+    }
+
+    @Test
+    fun `restore resurrects the record then re-reads`() = runTest {
+        val s = writableSession()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks()
+        model.setShowDeleted(true)
+        model.selectBlock(block)
+        val rec = model.selectedRecords.value!!.first()
+        model.delete(rec)                       // tombstone it (still visible: showDeleted = true)
+        model.restore(rec)
+        assertEquals(listOf(block.uuidHex to rec.uuidHex), s.resurrected)
+        assertTrue(model.selectedRecords.value!!.any { it.uuidHex == rec.uuidHex && !it.tombstone })
+    }
+
+    @Test
+    fun `a failed delete surfaces a typed error and leaves the visible list intact`() = runTest {
+        val s = writableSession(writeError = VaultBrowseError.RecordNotFound("ab"))
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(block)
+        val before = model.selectedRecords.value
+        model.delete(before!!.first())
+        assertTrue(model.error.value is VaultBrowseError.RecordNotFound)
+        assertEquals(before, model.selectedRecords.value)   // NOT blanked
+    }
 }

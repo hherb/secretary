@@ -102,6 +102,30 @@ class VaultBrowseModel(private val session: VaultSession) {
         }
     }
 
+    /** Soft-delete [record], then re-read the selected block so the list reflects it. */
+    suspend fun delete(record: RecordSummaryView) =
+        commitThenReload { block -> session.tombstoneRecord(block.uuid, hexToBytes(record.uuidHex)) }
+
+    /** Restore [record], then re-read. */
+    suspend fun restore(record: RecordSummaryView) =
+        commitThenReload { block -> session.resurrectRecord(block.uuid, hexToBytes(record.uuidHex)) }
+
+    /**
+     * Run a mutation against the selected block, then re-read on SUCCESS only. A failed mutation
+     * surfaces [error] but deliberately leaves [selectedRecords] (and any reveal) intact — a rejected
+     * delete must not blank the visible list. No-op if no block is selected. Mirror of iOS commitThenReload.
+     */
+    private suspend fun commitThenReload(op: suspend (BlockSummaryView) -> Unit) {
+        val block = _selectedBlock.value ?: return
+        try {
+            op(block)
+        } catch (e: VaultBrowseError) {
+            _error.value = e
+            return
+        }
+        selectBlock(block)
+    }
+
     /** Return to the block list, clearing any read error left from a failed selection. */
     fun clearSelection() {
         _revealed.value = emptyMap()
