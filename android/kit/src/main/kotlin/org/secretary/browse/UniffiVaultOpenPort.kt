@@ -66,7 +66,9 @@ class UniffiVaultSession(
                 openBlocks += block   // retained (NO .use{}) — reveal closures depend on it
                 val count = block.recordCount().toInt()
                 (0 until count).map { i ->
-                    // Record is a transient Kotlin wrapper; the FieldHandle secrets it yields are zeroized via the BlockReadOutput.wipe() cascade in wipe(), not via this handle.
+                    // Record is a transient Kotlin wrapper; the FieldHandle secrets it
+                    // yields are zeroized via the BlockReadOutput.wipe() cascade in wipe(),
+                    // not via this handle.
                     val rec = block.recordAt(i.toULong())
                         ?: throw VaultBrowseError.CorruptVault("recordAt($i) returned null on an open block")
                     toRecordView(rec)
