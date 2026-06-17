@@ -49,10 +49,22 @@ fun BrowseScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val revealed by viewModel.revealed.collectAsStateWithLifecycle()
     val showDeleted by viewModel.showDeleted.collectAsStateWithLifecycle()
+    val editing by viewModel.editing.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        val editModel = editing
+        if (editModel != null) {
+            val committed by editModel.committed.collectAsStateWithLifecycle()
+            LaunchedEffect(committed) { if (committed) viewModel.onEditCommitted() }
+            RecordEditForm(
+                model = editModel,
+                onCommit = viewModel::commitEdit,
+                onCancel = viewModel::cancelEdit,
+            )
+            return@Column
+        }
         error?.let { ErrorBanner(it) }
         val block = selectedBlock
         if (block == null) {
@@ -69,7 +81,13 @@ fun BrowseScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(blockLabel(block), style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = { viewModel.back() }) { Text("Back") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = { viewModel.startAdd() },
+                        modifier = Modifier.testTag("add-record"),
+                    ) { Text("Add") }
+                    TextButton(onClick = { viewModel.back() }) { Text("Back") }
+                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -92,6 +110,7 @@ fun BrowseScreen(
                         onHide = viewModel::hide,
                         onDelete = viewModel::delete,
                         onRestore = viewModel::restore,
+                        onEdit = viewModel::startEdit,
                     )
                     HorizontalDivider()
                 }
@@ -118,6 +137,7 @@ private fun RecordRow(
     onHide: (String, String) -> Unit,
     onDelete: (RecordSummaryView) -> Unit,
     onRestore: (RecordSummaryView) -> Unit,
+    onEdit: (RecordSummaryView) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Row(
@@ -131,10 +151,16 @@ private fun RecordRow(
                     modifier = Modifier.testTag("restore-${record.uuidHex}"),
                 ) { Text("Restore") }
             } else {
-                TextButton(
-                    onClick = { onDelete(record) },
-                    modifier = Modifier.testTag("delete-${record.uuidHex}"),
-                ) { Text("Delete") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { onEdit(record) },
+                        modifier = Modifier.testTag("edit-${record.uuidHex}"),
+                    ) { Text("Edit") }
+                    TextButton(
+                        onClick = { onDelete(record) },
+                        modifier = Modifier.testTag("delete-${record.uuidHex}"),
+                    ) { Text("Delete") }
+                }
             }
         }
         record.fields.forEach { field ->

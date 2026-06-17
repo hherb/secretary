@@ -26,5 +26,7 @@ class FakeVaultSession(
     }
     override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) {}
     override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) {}
+    override suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray = ByteArray(16)
+    override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) {}
     override fun wipe() { wiped = true }
 }
