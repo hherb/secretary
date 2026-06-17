@@ -26,5 +26,19 @@ interface VaultSession {
     /** Restore one tombstoned record (resurrect). Device-uuid + now-ms are resolved inside the impl. */
     suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray)
 
+    /**
+     * Append a new record built from [content] to the block; returns the freshly-minted 16-byte
+     * record UUID. The UUID is minted INSIDE the impl (SecureRandom in the real adapter) so the pure
+     * model stays deterministic. Device-uuid + now-ms are resolved inside the impl.
+     */
+    suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray
+
+    /**
+     * Replace one live record's editable part (type / tags / fields) with [content]. `record_uuid`,
+     * `created_at_ms`, per-field clocks and `unknown` maps are preserved by the bridge. Device-uuid +
+     * now-ms are resolved inside the impl. `RecordNotFound` if no live record with [recordUuid].
+     */
+    suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput)
+
     fun wipe()
 }

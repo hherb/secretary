@@ -6,6 +6,38 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+class FakeVaultSessionWriteTest {
+    private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
+    private val existing = RecordSummaryView(
+        "aa".repeat(16), "login", emptyList(), 1u, 2u, false, listOf(textField("user", "u")),
+    )
+
+    private fun session() =
+        FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(existing)))
+
+    @Test
+    fun `appendRecord records content and re-read shows the new record`() = runTest {
+        val s = session()
+        val content = RecordContentInput("note", listOf("t"), listOf(
+            FieldContentInput("body", FieldContentValue.Text("hello"))))
+        val uuid = s.appendRecord(block.uuid, content)
+        assertEquals(16, uuid.size)
+        assertEquals(1, s.appended.size)
+        val records = s.readBlock(block.uuid, includeDeleted = false)
+        assertTrue(records.any { it.type == "note" })
+    }
+
+    @Test
+    fun `editRecord records the edit for the right uuid`() = runTest {
+        val s = session()
+        val content = RecordContentInput("login", emptyList(), listOf(
+            FieldContentInput("user", FieldContentValue.Text("changed"))))
+        s.editRecord(block.uuid, hexToBytes(existing.uuidHex), content)
+        assertEquals(1, s.edited.size)
+        assertEquals(existing.uuidHex, s.edited.first().second)
+    }
+}
+
 class FakeVaultBrowseTest {
     private fun block(name: String) =
         BlockSummaryView(uuid = ByteArray(16) { name.first().code.toByte() }, name = name, createdAtMs = 1u, lastModifiedMs = 2u)
