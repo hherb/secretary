@@ -65,9 +65,13 @@ git diff main...HEAD --name-only | grep -E 'core/|ffi/|ios/|crypto-design|vault-
 - **On-device veto round-trip** still needs a seeded concurrent state ([[project_secretary_sync_veto_needs_seeded_state]]).
 - Optional `WorkManager` background detection (deferred from slice 3).
 
-**Open follow-up issues (carried):** #224 / #234 / #192 / #193 / #190 / #189 / #186 / #161 / #162 / #167 / #202. No new issues filed this session.
+**Open follow-up issues (carried):** #224 / #234 / #192 / #193 / #190 / #189 / #186 / #161 / #162 / #167 / #202. **Filed this session (post-review fixup):** #251 (cross-platform `openBlocks` decrypted-plaintext accumulation).
 
 ## (3) Open decisions and risks
+
+**Post-review fixup (this session, on this branch after the slice landed):**
+- **Fixed — `wipe()` / `readBlock` race (`UniffiVaultSession`).** Android runs `readBlock` on the IO dispatcher while `wipe()` runs on the main thread (`ON_STOP`), an unsynchronized cross-thread touch of the FFI handles + `openBlocks` that iOS's synchronous `readBlock` doesn't have. Now serialized under a `sessionLock` + a `wiped` guard: a read that loses the race to a concurrent `wipe()` zeroizes its just-decrypted block instead of leaving plaintext resident past the lock. Verified on-device (`:app` 5/5, `:browse-ui` 2/2). Only `android/kit/.../UniffiVaultOpenPort.kt` changed; both guardrails still empty.
+- **Filed #251 — `openBlocks` accumulates every visited block's decrypted plaintext until `wipe()`** (no per-navigation eviction; re-selecting a block appends a duplicate). This is faithful iOS parity (the iOS `UniffiVaultSession` does the same), so it's a deliberate cross-platform residency decision to make once and apply to both, not an Android-only fix — hence an issue, not an in-branch divergence. The same issue notes the derived `Record`/`FieldHandle` wrappers are no longer `.use{}`-closed (iOS-identical, zeroized via the `BlockReadOutput` cascade, proven by the on-device smoke).
 
 - **No Compose UI test of `:app`'s unlock→browse→reveal glue end-to-end.** The instrumented coverage is `:browse-ui`'s `BrowseScreenRevealTest` (fake-backed, real Compose) + `:app`'s `OpenBrowseSmokeTest` (real `.so`, ViewModel layer). The `:app` route Compose render itself isn't UI-tested — same deliberate choice as slices 6/7.
 - **Pre-existing sibling-test patterns left as-is** (out of scope, flagged by reviews): `OpenBrowseSmokeTest` happy-path + slice-7 cases don't close the `VaultSession` in `@After` (the new reveal case does `lock()`); a `!!` unwrap on `selectedRecords`. Consistent with the existing file; changing them would diverge from the established style.
