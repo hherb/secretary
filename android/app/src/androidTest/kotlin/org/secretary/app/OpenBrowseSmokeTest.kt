@@ -4,11 +4,13 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.secretary.browse.RevealedValue
 import org.secretary.browse.VaultBrowseError
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.uniffiVaultOpenPort
@@ -64,5 +66,26 @@ class OpenBrowseSmokeTest {
                 uniffiVaultOpenPort().openWithPassword(folder.path, "definitely-wrong".toByteArray())
             }
         }
+    }
+
+    @Test
+    fun reveal_passwordField_exposesKnownPlaintext() = runBlocking {
+        val folder = AppVaultProvisioning.stageGoldenVault(context)
+        val session = uniffiVaultOpenPort().openWithPassword(folder.path, goldenPassword.toByteArray())
+        val model = VaultBrowseModel(session)
+        model.loadBlocks()
+        model.selectBlock(model.blocks.value.first())
+
+        val record = model.selectedRecords.value!!.first { it.type == "login" }
+        val password = record.fields.first { it.name == "password" }
+        model.reveal(record, password)
+
+        assertEquals(
+            RevealedValue.Text("hunter2"),
+            model.revealed.value["${record.uuidHex}/password"],
+        )
+
+        model.lock()
+        assertTrue("lock clears revealed values", model.revealed.value.isEmpty())
     }
 }

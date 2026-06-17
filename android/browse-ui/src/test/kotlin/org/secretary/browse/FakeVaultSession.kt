@@ -1,5 +1,9 @@
 package org.secretary.browse
 
+/** Build a text field whose reveal returns a canned value (host tests only). */
+fun textField(name: String, value: String): RevealableField =
+    RevealableField(name, FieldKind.Text) { RevealedValue.Text(value) }
+
 /**
  * Local test-only [VaultSession] double for :browse-ui host tests. Mirrors the `:vault-access`
  * `FakeVaultSession` (which lives in that module's test source set and is not exported). Keyed by

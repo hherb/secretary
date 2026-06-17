@@ -20,7 +20,7 @@ class BrowseModelsTest {
     }
 
     @Test
-    fun `record summary carries metadata and no secret value`() {
+    fun `record summary carries metadata and derives field names from fields`() {
         val rec = RecordSummaryView(
             uuidHex = "deadbeef",
             type = "login",
@@ -28,17 +28,23 @@ class BrowseModelsTest {
             createdAtMs = 10u,
             lastModMs = 20u,
             tombstone = false,
-            fieldNames = listOf("username", "password"),
+            fields = listOf(
+                RevealableField("username", FieldKind.Text) { RevealedValue.Text("u") },
+                RevealableField("password", FieldKind.Text) { RevealedValue.Text("p") },
+            ),
         )
         assertEquals("login", rec.type)
-        assertEquals(listOf("username", "password"), rec.fieldNames)
+        assertEquals(listOf("username", "password"), rec.fieldNames)   // computed
         assertTrue(rec.tags.contains("personal"))
     }
 
     @Test
     fun `VaultBrowseError is throwable and arms carry detail`() {
-        val e: VaultBrowseError = VaultBrowseError.BlockNotFound("00")
-        assertTrue(e is Exception)
-        assertEquals("00", (e as VaultBrowseError.BlockNotFound).uuidHex)
+        val caught: Exception = try {
+            throw VaultBrowseError.BlockNotFound("00")
+        } catch (ex: Exception) {
+            ex
+        }
+        assertEquals("00", (caught as VaultBrowseError.BlockNotFound).uuidHex)
     }
 }

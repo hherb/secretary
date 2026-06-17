@@ -28,6 +28,11 @@ class VaultBrowseModel(private val session: VaultSession) {
     private val _error = MutableStateFlow<VaultBrowseError?>(null)
     val error: StateFlow<VaultBrowseError?> = _error.asStateFlow()
 
+    private val _revealed = MutableStateFlow<Map<String, RevealedValue>>(emptyMap())
+    /** Currently-revealed plaintext, keyed "<recordUuidHex>/<fieldName>". Cleared on
+     *  selectBlock / clearSelection / lock. Mirror of iOS VaultBrowseViewModel.revealed. */
+    val revealed: StateFlow<Map<String, RevealedValue>> = _revealed.asStateFlow()
+
     /** Publish the manifest's block summaries (in-memory metadata; no decryption). */
     fun loadBlocks() {
         _error.value = null
@@ -39,8 +44,39 @@ class VaultBrowseModel(private val session: VaultSession) {
         }
     }
 
+    /**
+     * Composite reveal-map key. Collision-safe: [recordUuidHex] is always exactly 32 lowercase hex
+     * chars (charset [0-9a-f]), so it can never contain the "/" separator nor alias another
+     * (record, field) pair even though field names are arbitrary vault-supplied strings.
+     */
+    private fun revealKey(recordUuidHex: String, fieldName: String): String = "$recordUuidHex/$fieldName"
+
+    /** Materialize one field's plaintext on explicit user action (invokes [RevealableField.reveal]). */
+    fun reveal(record: RecordSummaryView, field: RevealableField) {
+        try {
+            _revealed.value = _revealed.value + (revealKey(record.uuidHex, field.name) to field.reveal())
+        } catch (e: VaultBrowseError) {
+            _error.value = e
+        } catch (e: Exception) {
+            // Mirror iOS: an unexpected throwable from a field lambda must not escape reveal()
+            // (would crash the UI). Fold to the generic Failed arm rather than propagate.
+            _error.value = VaultBrowseError.Failed(e.toString())
+        }
+    }
+
+    /** Drop one revealed field. */
+    fun hide(recordUuidHex: String, fieldName: String) {
+        _revealed.value = _revealed.value - revealKey(recordUuidHex, fieldName)
+    }
+
+    /** Drop all revealed plaintext (e.g. on backgrounding) without locking. */
+    fun hideAll() {
+        _revealed.value = emptyMap()
+    }
+
     /** Decrypt the selected block and publish its records (metadata only). Errors are captured. */
     suspend fun selectBlock(block: BlockSummaryView) {
+        _revealed.value = emptyMap()
         _error.value = null
         try {
             val records = session.readBlock(block.uuid, includeDeleted = false)
@@ -55,6 +91,7 @@ class VaultBrowseModel(private val session: VaultSession) {
 
     /** Return to the block list, clearing any read error left from a failed selection. */
     fun clearSelection() {
+        _revealed.value = emptyMap()
         _selectedBlock.value = null
         _selectedRecords.value = null
         _error.value = null
@@ -62,6 +99,7 @@ class VaultBrowseModel(private val session: VaultSession) {
 
     /** Wipe the session (zeroize handles) and reset every flow. Called on background / lock. */
     fun lock() {
+        _revealed.value = emptyMap()
         session.wipe()
         _blocks.value = emptyList()
         _selectedBlock.value = null

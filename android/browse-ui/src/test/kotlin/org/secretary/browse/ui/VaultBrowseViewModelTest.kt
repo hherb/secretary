@@ -9,18 +9,23 @@ import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.FakeVaultSession
 import org.secretary.browse.RecordSummaryView
+import org.secretary.browse.RevealedValue
 import org.secretary.browse.VaultBrowseModel
+import org.secretary.browse.textField
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VaultBrowseViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
-    private val recs = listOf(RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf("username")))
+    private val recs = listOf(
+        RecordSummaryView("aa", "login", listOf("p"), 1u, 2u, false, listOf(textField("username", "u"))),
+    )
 
     @BeforeEach fun setUp() = Dispatchers.setMain(dispatcher)
     @AfterEach fun tearDown() = Dispatchers.resetMain()
@@ -51,5 +56,29 @@ class VaultBrowseViewModelTest {
         vm.back()
         assertNull(vm.selectedBlock.value)
         assertNull(vm.selectedRecords.value)
+    }
+
+    @Test
+    fun `reveal forwards to the model and publishes the revealed value`() = runTest {
+        val pw = textField("password", "hunter2")
+        val rec = RecordSummaryView("ab", "login", emptyList(), 1u, 2u, false, listOf(pw))
+        val m = VaultBrowseModel(FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(rec))))
+        val vm = VaultBrowseViewModel(m)
+        vm.reveal(rec, pw)
+        assertEquals(RevealedValue.Text("hunter2"), vm.revealed.value["ab/password"])
+    }
+
+    @Test
+    fun `hide and hideAll forward to the model`() = runTest {
+        val pw = textField("password", "hunter2")
+        val rec = RecordSummaryView("ab", "login", emptyList(), 1u, 2u, false, listOf(pw))
+        val m = VaultBrowseModel(FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(rec))))
+        val vm = VaultBrowseViewModel(m)
+        vm.reveal(rec, pw)
+        vm.hide("ab", "password")
+        assertTrue(vm.revealed.value.isEmpty())
+        vm.reveal(rec, pw)
+        vm.hideAll()
+        assertTrue(vm.revealed.value.isEmpty())
     }
 }

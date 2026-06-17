@@ -3,6 +3,8 @@ package org.secretary.browse
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import uniffi.secretary.BlockReadOutput
+import uniffi.secretary.FieldHandle
 import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.Record
@@ -32,11 +34,19 @@ class UniffiVaultOpenPort(
 }
 
 /**
- * The real [VaultSession]: owns the decrypted [OpenVaultManifest] + [UnlockedIdentity] handles.
- * [blockSummaries] reads in-memory manifest metadata. [readBlock] decrypts ONE block on
- * [ioDispatcher], maps each [Record]'s metadata + field NAMES to a [RecordSummaryView], and closes
- * the block output immediately — it NEVER calls `exposeText`/`exposeBytes`, so no secret value is
- * materialized while browsing. [wipe] zeroizes the manifest + identity (idempotent).
+ * The real [VaultSession]: owns the decrypted [OpenVaultManifest] + [UnlockedIdentity] handles,
+ * plus every [BlockReadOutput] retained from [readBlock]. [blockSummaries] reads in-memory manifest
+ * metadata. [readBlock] decrypts ONE block, retains it in [openBlocks] (NO `.use{}`), and builds
+ * one [RevealableField] per field whose `reveal` lambda calls `expose_text`/`expose_bytes` ON DEMAND
+ * — no secret value is materialized until the user taps. [wipe] zeroizes blocks → manifest →
+ * identity in that order (mirrors iOS UniffiVaultSession). Kotlin mirror of iOS `UniffiVaultSession`.
+ *
+ * Thread-safety: unlike iOS (whose `readBlock` is synchronous), Android runs [readBlock] on
+ * [ioDispatcher] while [wipe] runs on the main thread (the slice-7 `ON_STOP` lock-on-background).
+ * Every touch of the shared FFI state — the `identity`/`manifest` handles and the [openBlocks]
+ * list — is therefore serialized under [sessionLock], and a [wiped] flag makes a read that loses
+ * the race to a concurrent [wipe] zeroize its just-decrypted block instead of leaving plaintext
+ * resident after a lock the caller believed cleared everything.
  */
 class UniffiVaultSession(
     output: OpenVaultOutput,
@@ -45,45 +55,98 @@ class UniffiVaultSession(
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
 
+    /** Serializes all access to the FFI handles + [openBlocks] across the IO dispatcher (reads)
+     *  and the main thread (wipe). The held section spans the block decrypt, so a concurrent
+     *  [wipe] waits for an in-flight read (bounded — one block decrypt is milliseconds). */
+    private val sessionLock = Any()
+
+    /** Set true by [wipe]; a read that observes it must not retain its block. */
+    private var wiped: Boolean = false
+
+    /** Decrypted blocks retained so the per-field reveal closures (which capture a FieldHandle)
+     *  stay valid until wipe(). Mirror of iOS UniffiVaultSession.openBlocks. NOTE: this currently
+     *  accumulates every visited block's plaintext until wipe() (no per-navigation eviction); the
+     *  cross-platform residency tradeoff is tracked in #251. */
+    private val openBlocks: MutableList<BlockReadOutput> = mutableListOf()
+
     override fun vaultUuidHex(): String = hexOfBytes(manifest.vaultUuid())
 
     override fun blockSummaries(): List<BlockSummaryView> =
         // In-memory manifest metadata (no decryption), but route through mapErrors so any
         // VaultException surfaces as a typed VaultBrowseError rather than a raw FFI throwable.
-        mapErrors { manifest.blockSummaries().map(::mapBlockSummary) }
+        synchronized(sessionLock) { mapErrors { manifest.blockSummaries().map(::mapBlockSummary) } }
 
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> =
         withContext(ioDispatcher) {
             mapErrors {
-                // `.use` closes (and zeroizes) the decrypted block output as soon as we have copied
-                // the metadata out — no decrypted record handle outlives this call.
-                ffiReadBlock(identity, manifest, blockUuid, includeDeleted).use { block ->
+                synchronized(sessionLock) {
+                    val block = ffiReadBlock(identity, manifest, blockUuid, includeDeleted)
+                    if (wiped) {
+                        // Lost the race to a concurrent wipe(): the session is closed. Zeroize the
+                        // block we just decrypted rather than retain plaintext past the lock.
+                        block.wipe()
+                        return@synchronized emptyList<RecordSummaryView>()
+                    }
+                    openBlocks += block   // retained (NO .use{}) — reveal closures depend on it
                     val count = block.recordCount().toInt()
-                    (0 until count).mapNotNull { i ->
-                        block.recordAt(i.toULong())?.use(::toRecordSummaryView)
+                    (0 until count).map { i ->
+                        // Record is a transient Kotlin wrapper; the FieldHandle secrets it
+                        // yields are zeroized via the BlockReadOutput.wipe() cascade in wipe(),
+                        // not via this handle.
+                        val rec = block.recordAt(i.toULong())
+                            ?: throw VaultBrowseError.CorruptVault("recordAt($i) returned null on an open block")
+                        toRecordView(rec)
                     }
                 }
             }
         }
 
+    /** Map one decrypted [Record] handle to a view whose fields reveal plaintext ON DEMAND. */
+    private fun toRecordView(record: Record): RecordSummaryView {
+        val fieldCount = record.fieldCount().toInt()
+        val fields = (0 until fieldCount).map { j ->
+            val handle = record.fieldAt(j.toULong())
+                ?: throw VaultBrowseError.CorruptVault("fieldAt($j) returned null on an open record")
+            buildRevealableField(handle)
+        }
+        return RecordSummaryView(
+            uuidHex = hexOfBytes(record.recordUuid()),
+            type = record.recordType(),
+            tags = record.tags(),
+            createdAtMs = record.createdAtMs(),
+            lastModMs = record.lastModMs(),
+            tombstone = record.tombstone(),
+            fields = fields,
+        )
+    }
+
+    /** The secret-pull boundary: captures [handle]; calls expose_* only when reveal() is invoked. */
+    private fun buildRevealableField(handle: FieldHandle): RevealableField {
+        val kind = fieldKindOf(handle.isText())
+        return RevealableField(name = handle.name(), kind = kind) {
+            when (kind) {
+                FieldKind.Text -> RevealedValue.Text(
+                    handle.exposeText() ?: throw VaultBrowseError.CorruptVault("text field could not be exposed"))
+                FieldKind.Bytes -> RevealedValue.Bytes(
+                    handle.exposeBytes() ?: throw VaultBrowseError.CorruptVault("bytes field could not be exposed"))
+            }
+        }
+    }
+
     override fun wipe() {
-        // Idempotent zeroize-now of both long-lived handles (mirrors iOS UniffiVaultSession.wipe).
-        manifest.wipe()
-        identity.wipe()
+        // Order mirrors iOS: blocks (cascade zeroize to records + fields) → manifest → identity.
+        // Under sessionLock so an in-flight readBlock either completes before we zeroize the
+        // handles or observes `wiped` and zeroizes its own block (idempotent — wipe may be called
+        // repeatedly, e.g. ON_STOP then explicit lock).
+        synchronized(sessionLock) {
+            wiped = true
+            openBlocks.forEach { it.wipe() }
+            openBlocks.clear()
+            manifest.wipe()
+            identity.wipe()
+        }
     }
 }
-
-/** Map one decrypted [Record] handle to a metadata-only view. NEVER reads a field value. */
-private fun toRecordSummaryView(record: Record): RecordSummaryView =
-    RecordSummaryView(
-        uuidHex = hexOfBytes(record.recordUuid()),
-        type = record.recordType(),
-        tags = record.tags(),
-        createdAtMs = record.createdAtMs(),
-        lastModMs = record.lastModMs(),
-        tombstone = record.tombstone(),
-        fieldNames = record.fieldNames(),
-    )
 
 /** Run an FFI call, translating any [VaultException] into the domain [VaultBrowseError]. */
 private inline fun <T> mapErrors(block: () -> T): T =

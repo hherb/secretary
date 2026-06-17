@@ -17,10 +17,13 @@ class BlockSummaryView(
 }
 
 /**
- * Metadata-only view of one record. Deliberately carries NO secret value — only the field *names*
- * (metadata). Reveal-on-tap (`expose_text`/`expose_bytes`) is a deferred slice; this type having no
- * value field is the structural guarantee that no secret is materialized while browsing.
- * Mirror of iOS `RecordView` minus the reveal closures.
+ * View of one record. Metadata (type/tags/timestamps/tombstone) is non-secret. Each [RevealableField]
+ * carries the field NAME (metadata) plus an on-demand `reveal` lambda — plaintext is materialized
+ * only when the user taps (slice 8). [fieldNames] is a computed convenience over [fields] so render
+ * helpers stay unchanged. Mirror of iOS `RecordView` (whose `fields` carry the reveal closures).
+ *
+ * Stays a data class: a reload returns the SAME RevealableField instances from the fake, so
+ * structural equality over [fields] (referential on each closure-bearing field) still holds in tests.
  */
 data class RecordSummaryView(
     val uuidHex: String,
@@ -29,5 +32,8 @@ data class RecordSummaryView(
     val createdAtMs: ULong,
     val lastModMs: ULong,
     val tombstone: Boolean,
-    val fieldNames: List<String>,
-)
+    val fields: List<RevealableField>,
+) {
+    /** Field names in iteration order — metadata only (derived from [fields]). */
+    val fieldNames: List<String> get() = fields.map { it.name }
+}
