@@ -92,13 +92,15 @@ data class RecordSummaryView(
     val fieldNames: List<String>,   // names are metadata; values are NOT read this slice
 )
 
-sealed interface VaultBrowseError {
-    data object WrongPasswordOrCorrupt : VaultBrowseError
-    data object VaultMismatch : VaultBrowseError
-    data class CorruptVault(val detail: String) : VaultBrowseError
-    data class BlockNotFound(val detail: String) : VaultBrowseError
-    data class FolderInvalid(val detail: String) : VaultBrowseError
-    data class Other(val detail: String) : VaultBrowseError
+// Throwable (mirrors VaultSyncError : Exception) so the model can `catch (e: VaultBrowseError)`.
+sealed class VaultBrowseError(message: String? = null) : Exception(message) {
+    data object WrongPasswordOrCorrupt : VaultBrowseError()      // VaultException.WrongPasswordOrCorrupt
+    data object VaultMismatch : VaultBrowseError()               // VaultException.VaultMismatch
+    data class CorruptVault(val detail: String) : VaultBrowseError(detail)   // VaultException.CorruptVault
+    data class FolderInvalid(val detail: String) : VaultBrowseError(detail)  // VaultException.FolderInvalid
+    data class BlockNotFound(val uuidHex: String) : VaultBrowseError(uuidHex) // VaultException.BlockNotFound
+    data class InvalidArgument(val detail: String) : VaultBrowseError(detail) // VaultException.InvalidArgument
+    data class Failed(val detail: String) : VaultBrowseError(detail)          // else-fold (toString)
 }
 ```
 
