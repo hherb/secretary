@@ -170,4 +170,32 @@ class VaultBrowseModelTest {
         model.clearSelection()
         assertTrue(model.revealed.value.isEmpty())
     }
+
+    @Test
+    fun `selectBlock reads with includeDeleted false by default`() = runTest {
+        val s = session()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(block)
+        assertEquals(false, s.lastIncludeDeleted)
+    }
+
+    @Test
+    fun `setShowDeleted true re-reads the selected block with includeDeleted true`() = runTest {
+        val s = session()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(block)
+        model.setShowDeleted(true)
+        assertEquals(true, model.showDeleted.value)
+        assertEquals(true, s.lastIncludeDeleted)
+    }
+
+    @Test
+    fun `setShowDeleted with no block selected just records the flag`() = runTest {
+        val s = session()
+        val model = VaultBrowseModel(s)
+        model.loadBlocks()
+        model.setShowDeleted(true)
+        assertEquals(true, model.showDeleted.value)
+        assertNull(s.lastIncludeDeleted)   // no read happened
+    }
 }

@@ -33,6 +33,19 @@ class VaultBrowseModel(private val session: VaultSession) {
      *  selectBlock / clearSelection / lock. Mirror of iOS VaultBrowseViewModel.revealed. */
     val revealed: StateFlow<Map<String, RevealedValue>> = _revealed.asStateFlow()
 
+    private val _showDeleted = MutableStateFlow(false)
+    /** When false (default) the list shows only live records; the Rust read_block gate withholds
+     *  tombstoned records. Toggling RE-READS the selected block with the new flag — the client never
+     *  holds withheld data and never filters tombstones itself. Mirror of iOS VaultBrowseViewModel.showDeleted. */
+    val showDeleted: StateFlow<Boolean> = _showDeleted.asStateFlow()
+
+    /** Set the show-deleted flag; on a real change, re-read the selected block (if any). */
+    suspend fun setShowDeleted(value: Boolean) {
+        if (value == _showDeleted.value) return
+        _showDeleted.value = value
+        _selectedBlock.value?.let { selectBlock(it) }
+    }
+
     /** Publish the manifest's block summaries (in-memory metadata; no decryption). */
     fun loadBlocks() {
         _error.value = null
@@ -79,7 +92,7 @@ class VaultBrowseModel(private val session: VaultSession) {
         _revealed.value = emptyMap()
         _error.value = null
         try {
-            val records = session.readBlock(block.uuid, includeDeleted = false)
+            val records = session.readBlock(block.uuid, includeDeleted = _showDeleted.value)
             _selectedBlock.value = block
             _selectedRecords.value = records
         } catch (e: VaultBrowseError) {

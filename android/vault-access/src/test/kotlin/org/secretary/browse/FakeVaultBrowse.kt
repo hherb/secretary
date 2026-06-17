@@ -14,6 +14,9 @@ class FakeVaultSession(
 ) : VaultSession {
     var wiped: Boolean = false
         private set
+    /** The `includeDeleted` arg of the most recent readBlock call (null until first read). */
+    var lastIncludeDeleted: Boolean? = null
+        private set
 
     override fun vaultUuidHex(): String = vaultUuidHex
     override fun blockSummaries(): List<BlockSummaryView> {
@@ -21,6 +24,7 @@ class FakeVaultSession(
         return blocks
     }
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> {
+        lastIncludeDeleted = includeDeleted
         readError?.let { throw it }
         return recordsByBlockHex[hexOfBytes(blockUuid)] ?: emptyList()
     }
