@@ -34,6 +34,7 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message) {
     /** The save tail (atomic manifest + block rewrite) failed during a write. */
     data class SaveCryptoFailure(val detail: String) : VaultBrowseError(detail)
 
-    /** Any other open/read failure (the mapper's else-fold). */
+    /** Any other open/read/write failure: the mapper's else-fold, plus the device-uuid resolve
+     *  failure and the no-provider (read-only session) write attempt. */
     data class Failed(val detail: String) : VaultBrowseError(detail)
 }
