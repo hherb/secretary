@@ -40,4 +40,14 @@ class BrowseRenderHelpersTest {
         assertEquals("Logins", blockLabel(BlockSummaryView(ByteArray(16), "Logins", 1u, 2u)))
         assertEquals("Untitled block", blockLabel(BlockSummaryView(ByteArray(16), "", 1u, 2u)))
     }
+
+    @Test
+    fun `revealed text value is shown as-is`() {
+        assertEquals("hunter2", revealedText(RevealedValue.Text("hunter2")))
+    }
+
+    @Test
+    fun `revealed bytes value is shown as lowercase hex`() {
+        assertEquals("00ff10", revealedText(RevealedValue.Bytes(byteArrayOf(0, 0xff.toByte(), 0x10))))
+    }
 }

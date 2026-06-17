@@ -2,6 +2,8 @@ package org.secretary.browse.ui
 
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.RecordSummaryView
+import org.secretary.browse.RevealedValue
+import org.secretary.browse.hexOfBytes
 
 private const val UNTITLED_RECORD = "Untitled record"
 private const val UNTITLED_BLOCK = "Untitled block"
@@ -20,3 +22,9 @@ fun recordTitle(record: RecordSummaryView): String {
 
 /** Pure label for a block row: its name, or a placeholder when blank. */
 fun blockLabel(block: BlockSummaryView): String = block.name.ifBlank { UNTITLED_BLOCK }
+
+/** Human-readable form of a revealed value: text as-is, bytes as lowercase hex. */
+fun revealedText(value: RevealedValue): String = when (value) {
+    is RevealedValue.Text -> value.value
+    is RevealedValue.Bytes -> hexOfBytes(value.value)
+}
