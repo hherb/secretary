@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,6 +48,7 @@ fun BrowseScreen(
     val records by viewModel.selectedRecords.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val revealed by viewModel.revealed.collectAsStateWithLifecycle()
+    val showDeleted by viewModel.showDeleted.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
@@ -69,6 +71,17 @@ fun BrowseScreen(
                 Text(blockLabel(block), style = MaterialTheme.typography.titleMedium)
                 TextButton(onClick = { viewModel.back() }) { Text("Back") }
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Show deleted", style = MaterialTheme.typography.bodyMedium)
+                Switch(
+                    checked = showDeleted,
+                    onCheckedChange = { viewModel.setShowDeleted(it) },
+                    modifier = Modifier.testTag("toggle-show-deleted"),
+                )
+            }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(records.orEmpty(), key = { it.uuidHex }) { r ->
                     RecordRow(
@@ -77,6 +90,8 @@ fun BrowseScreen(
                         autoHideMillis = autoHideMillis,
                         onReveal = viewModel::reveal,
                         onHide = viewModel::hide,
+                        onDelete = viewModel::delete,
+                        onRestore = viewModel::restore,
                     )
                     HorizontalDivider()
                 }
@@ -101,9 +116,27 @@ private fun RecordRow(
     autoHideMillis: Long,
     onReveal: (RecordSummaryView, RevealableField) -> Unit,
     onHide: (String, String) -> Unit,
+    onDelete: (RecordSummaryView) -> Unit,
+    onRestore: (RecordSummaryView) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-        Text(recordTitle(record), style = MaterialTheme.typography.bodyLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(recordTitle(record), style = MaterialTheme.typography.bodyLarge)
+            if (record.tombstone) {
+                TextButton(
+                    onClick = { onRestore(record) },
+                    modifier = Modifier.testTag("restore-${record.uuidHex}"),
+                ) { Text("Restore") }
+            } else {
+                TextButton(
+                    onClick = { onDelete(record) },
+                    modifier = Modifier.testTag("delete-${record.uuidHex}"),
+                ) { Text("Delete") }
+            }
+        }
         record.fields.forEach { field ->
             val key = "${record.uuidHex}/${field.name}"
             val value = revealed[key]

@@ -46,4 +46,21 @@ class VaultBrowseViewModel(private val model: VaultBrowseModel) : ViewModel() {
 
     /** Hide all revealed fields. */
     fun hideAll() = model.hideAll()
+
+    val showDeleted: StateFlow<Boolean> = model.showDeleted
+
+    /** Toggle show-deleted (suspend on the model → launched on viewModelScope). */
+    fun setShowDeleted(value: Boolean) {
+        viewModelScope.launch { model.setShowDeleted(value) }
+    }
+
+    /** Soft-delete a record (re-reads on success inside the model). */
+    fun delete(record: RecordSummaryView) {
+        viewModelScope.launch { model.delete(record) }
+    }
+
+    /** Restore a tombstoned record. */
+    fun restore(record: RecordSummaryView) {
+        viewModelScope.launch { model.restore(record) }
+    }
 }
