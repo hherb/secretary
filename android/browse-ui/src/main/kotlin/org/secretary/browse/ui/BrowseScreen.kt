@@ -17,24 +17,36 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.RecordSummaryView
+import org.secretary.browse.RevealPolicy
+import org.secretary.browse.RevealableField
+import org.secretary.browse.RevealedValue
 import org.secretary.browse.VaultBrowseError
+
+/** Milliseconds per second — auto-hide policy is expressed in seconds; Compose delay takes millis. */
+private const val MILLIS_PER_SECOND: Long = 1000L
 
 /**
  * Metadata-only browse surface: a block list, and (when a block is selected) that block's record
- * titles with a back affordance. No secret value is ever rendered — only types/tags/field-names.
+ * titles with a back affordance. Revealed field values are shown per-field and auto-hidden after
+ * [autoHideMillis] milliseconds.
  * Loads blocks once on first composition.
  */
 @Composable
-fun BrowseScreen(viewModel: VaultBrowseViewModel) {
+fun BrowseScreen(
+    viewModel: VaultBrowseViewModel,
+    autoHideMillis: Long = RevealPolicy.autoHideSeconds * MILLIS_PER_SECOND,
+) {
     val blocks by viewModel.blocks.collectAsStateWithLifecycle()
     val selectedBlock by viewModel.selectedBlock.collectAsStateWithLifecycle()
     val records by viewModel.selectedRecords.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val revealed by viewModel.revealed.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
@@ -59,7 +71,13 @@ fun BrowseScreen(viewModel: VaultBrowseViewModel) {
             }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(records.orEmpty(), key = { it.uuidHex }) { r ->
-                    RecordRow(r)
+                    RecordRow(
+                        record = r,
+                        revealed = revealed,
+                        autoHideMillis = autoHideMillis,
+                        onReveal = viewModel::reveal,
+                        onHide = viewModel::hide,
+                    )
                     HorizontalDivider()
                 }
             }
@@ -77,16 +95,67 @@ private fun BlockRow(block: BlockSummaryView, onClick: () -> Unit) {
 }
 
 @Composable
-private fun RecordRow(record: RecordSummaryView) {
+private fun RecordRow(
+    record: RecordSummaryView,
+    revealed: Map<String, RevealedValue>,
+    autoHideMillis: Long,
+    onReveal: (RecordSummaryView, RevealableField) -> Unit,
+    onHide: (String, String) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Text(recordTitle(record), style = MaterialTheme.typography.bodyLarge)
-        if (record.fieldNames.isNotEmpty()) {
-            Text(
-                text = record.fieldNames.joinToString(", "),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        record.fields.forEach { field ->
+            val key = "${record.uuidHex}/${field.name}"
+            val value = revealed[key]
+            FieldRow(
+                record = record,
+                field = field,
+                value = value,
+                autoHideMillis = autoHideMillis,
+                onReveal = onReveal,
+                onHide = onHide,
             )
+        }
+    }
+}
+
+@Composable
+private fun FieldRow(
+    record: RecordSummaryView,
+    field: RevealableField,
+    value: RevealedValue?,
+    autoHideMillis: Long,
+    onReveal: (RecordSummaryView, RevealableField) -> Unit,
+    onHide: (String, String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(field.name, style = MaterialTheme.typography.bodySmall)
+            if (value != null) {
+                Text(
+                    text = revealedText(value),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("value-${record.uuidHex}-${field.name}"),
+                )
+            }
+        }
+        TextButton(
+            onClick = {
+                if (value == null) onReveal(record, field) else onHide(record.uuidHex, field.name)
+            },
+            modifier = Modifier.testTag("reveal-${record.uuidHex}-${field.name}"),
+        ) {
+            Text(if (value == null) "Reveal" else "Hide")
+        }
+    }
+    // Auto-hide: keyed on the revealed value's presence so re-revealing restarts the timer.
+    if (value != null) {
+        LaunchedEffect(record.uuidHex, field.name, value) {
+            delay(autoHideMillis)
+            onHide(record.uuidHex, field.name)
         }
     }
 }
