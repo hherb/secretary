@@ -14,6 +14,9 @@ import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.readBlock as ffiReadBlock
 import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
+import uniffi.secretary.appendRecord as ffiAppendRecord
+import uniffi.secretary.editRecord as ffiEditRecord
+import java.security.SecureRandom
 
 /**
  * The real [VaultOpenPort] over the generated `uniffi.secretary` open call. The only browse code
@@ -114,11 +117,23 @@ class UniffiVaultSession(
     override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) =
         write { dev, now -> ffiResurrectRecord(identity, manifest, blockUuid, recordUuid, dev, now) }
 
+    /** Mint a fresh 16-byte record UUID (SecureRandom — never in the pure model), append, return it. */
+    override suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray =
+        write { dev, now ->
+            val recordUuid = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            ffiAppendRecord(identity, manifest, blockUuid, recordUuid, toFfi(content), dev, now)
+            recordUuid
+        }
+
+    override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) =
+        write { dev, now -> ffiEditRecord(identity, manifest, blockUuid, recordUuid, toFfi(content), dev, now) }
+
     /**
      * Resolve (device-uuid, now-ms), run the FFI write under [sessionLock] + the [wiped] guard, and
      * map errors. A write that loses the race to a concurrent wipe() must not touch zeroized handles.
+     * Generic so [appendRecord] can return the minted UUID; [tombstoneRecord]/[resurrectRecord] infer T=Unit.
      */
-    private suspend fun write(body: (deviceUuid: ByteArray, nowMs: ULong) -> Unit) =
+    private suspend fun <T> write(body: (deviceUuid: ByteArray, nowMs: ULong) -> T): T =
         withContext(ioDispatcher) {
             mapErrors {
                 synchronized(sessionLock) {
