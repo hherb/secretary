@@ -56,7 +56,7 @@ class FakeVaultSession(
         val blockHex = hexOfBytes(blockUuid)
         appended += blockHex to content
         // Mint a deterministic distinct uuid for the fake (real adapter uses SecureRandom).
-        val uuid = ByteArray(16) { (nextFakeUuidByte and 0xff).toByte() }
+        val uuid = ByteArray(16).also { it[15] = (nextFakeUuidByte and 0xff).toByte() }
         nextFakeUuidByte += 1
         val list = records.getOrPut(blockHex) { mutableListOf() }
         list += RecordSummaryView(
@@ -76,10 +76,10 @@ class FakeVaultSession(
         val blockHex = hexOfBytes(blockUuid)
         val recordHex = hexOfBytes(recordUuid)
         edited += Triple(blockHex, recordHex, content)
-        val list = records[blockHex] ?: return
-        val i = list.indexOfFirst { it.uuidHex == recordHex }
+        val list = records[blockHex]
+        val i = list?.indexOfFirst { it.uuidHex == recordHex } ?: -1
         if (i < 0) throw VaultBrowseError.RecordNotFound(recordHex)
-        list[i] = list[i].copy(
+        list!![i] = list[i].copy(
             type = content.recordType,
             tags = content.tags,
             fields = content.fields.map { it.toRevealableField() },

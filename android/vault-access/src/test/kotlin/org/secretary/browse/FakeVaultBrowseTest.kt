@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
 
 class FakeVaultSessionWriteTest {
@@ -35,6 +36,39 @@ class FakeVaultSessionWriteTest {
         s.editRecord(block.uuid, hexToBytes(existing.uuidHex), content)
         assertEquals(1, s.edited.size)
         assertEquals(existing.uuidHex, s.edited.first().second)
+    }
+
+    @Test
+    fun `editRecord mutates the in-memory record so readBlock reflects the change`() = runTest {
+        val s = session()
+        val content = RecordContentInput("login", emptyList(), listOf(
+            FieldContentInput("user", FieldContentValue.Text("new-value"))))
+        s.editRecord(block.uuid, hexToBytes(existing.uuidHex), content)
+        val records = s.readBlock(block.uuid, includeDeleted = false)
+        val updated = records.first { it.uuidHex == existing.uuidHex }
+        val revealed = updated.fields.first { it.name == "user" }.reveal()
+        assertEquals(RevealedValue.Text("new-value"), revealed)
+    }
+
+    @Test
+    fun `editRecord throws RecordNotFound for absent record uuid`() = runTest {
+        val s = session()
+        val content = RecordContentInput("login", emptyList(), emptyList())
+        try {
+            s.editRecord(block.uuid, ByteArray(16) { 0x00 }, content)
+            fail("expected RecordNotFound")
+        } catch (e: VaultBrowseError.RecordNotFound) { /* expected */ }
+    }
+
+    @Test
+    fun `editRecord throws RecordNotFound when block uuid is unknown`() = runTest {
+        val s = session()
+        val content = RecordContentInput("login", emptyList(), emptyList())
+        val unknownBlock = ByteArray(16) { 0x7f }
+        try {
+            s.editRecord(unknownBlock, hexToBytes(existing.uuidHex), content)
+            fail("expected RecordNotFound")
+        } catch (e: VaultBrowseError.RecordNotFound) { /* expected */ }
     }
 }
 
