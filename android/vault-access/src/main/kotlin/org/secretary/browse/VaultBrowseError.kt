@@ -27,6 +27,13 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message) {
     /** A caller argument was malformed (e.g. wrong-length UUID). */
     data class InvalidArgument(val detail: String) : VaultBrowseError(detail)
 
+    /** A write targeted a record that does not exist in the requested state (e.g. a peer already
+     *  deleted it). Surfaced by tombstone/resurrect/edit. */
+    data class RecordNotFound(val uuidHex: String) : VaultBrowseError(uuidHex)
+
+    /** The save tail (atomic manifest + block rewrite) failed during a write. */
+    data class SaveCryptoFailure(val detail: String) : VaultBrowseError(detail)
+
     /** Any other open/read failure (the mapper's else-fold). */
     data class Failed(val detail: String) : VaultBrowseError(detail)
 }
