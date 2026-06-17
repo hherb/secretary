@@ -14,9 +14,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
+import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.browse.ui.BrowseScreen
+import java.io.File
 import org.secretary.browse.ui.VaultBrowseViewModel
 
 private const val TAG = "AppRoot"
@@ -81,7 +83,8 @@ fun AppRoot() {
 private suspend fun unlockAndOpen(context: Context, password: ByteArray): Route {
     try {
         val folder = AppVaultProvisioning.stageGoldenVault(context)
-        val session = uniffiVaultOpenPort().openWithPassword(folder.path, password)
+        val deviceUuids = FileDeviceUuidStore(File(context.noBackupFilesDir, "devices"))
+        val session = uniffiVaultOpenPort(deviceUuids).openWithPassword(folder.path, password)
         val model = VaultBrowseModel(session)
         model.loadBlocks()
         return Route.Browse(VaultBrowseViewModel(model))
