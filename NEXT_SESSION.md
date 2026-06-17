@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-17-c3-android-open-browse-shipped.md
+docs/handoffs/2026-06-17-c3-android-reveal-on-tap-shipped.md
