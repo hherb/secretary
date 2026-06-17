@@ -39,6 +39,11 @@ class VaultBrowseModel(private val session: VaultSession) {
      *  holds withheld data and never filters tombstones itself. Mirror of iOS VaultBrowseViewModel.showDeleted. */
     val showDeleted: StateFlow<Boolean> = _showDeleted.asStateFlow()
 
+    private val _editing = MutableStateFlow<RecordEditModel?>(null)
+    /** Non-null when an add/edit form is open — the third UI state (alongside block-list /
+     *  record-list). Cleared on cancelEdit / commit / lock. Mirror of iOS's edit-sheet presentation. */
+    val editing: StateFlow<RecordEditModel?> = _editing.asStateFlow()
+
     /** Set the show-deleted flag; on a real change, re-read the selected block (if any). */
     suspend fun setShowDeleted(value: Boolean) {
         if (value == _showDeleted.value) return
@@ -110,6 +115,31 @@ class VaultBrowseModel(private val session: VaultSession) {
     suspend fun restore(record: RecordSummaryView) =
         commitThenReload { block -> session.resurrectRecord(block.uuid, hexToBytes(record.uuidHex)) }
 
+    /** Open a blank add form for the selected block. No-op if no block is selected. */
+    fun startAdd() {
+        val block = _selectedBlock.value ?: return
+        _editing.value = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Add)
+    }
+
+    /** Open an edit form prefilled from [record] (reveals its fields into the form). No-op if no
+     *  block is selected. */
+    fun startEdit(record: RecordSummaryView) {
+        val block = _selectedBlock.value ?: return
+        val model = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Edit(hexToBytes(record.uuidHex)))
+        model.load(record)
+        _editing.value = model
+    }
+
+    /** Dismiss the edit form without writing (drops its in-memory plaintext). */
+    fun cancelEdit() { _editing.value = null }
+
+    /** Called after a successful commit: drop the form and re-read the selected block so the list
+     *  reflects the new/edited record (re-read on success only, like commitThenReload). */
+    suspend fun onEditCommitted() {
+        _editing.value = null
+        _selectedBlock.value?.let { selectBlock(it) }
+    }
+
     /**
      * Run a mutation against the selected block, then re-read on SUCCESS only. A failed mutation
      * surfaces [error] but deliberately leaves [selectedRecords] (and any reveal) intact — a rejected
@@ -137,6 +167,7 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** Wipe the session (zeroize handles) and reset every flow. Called on background / lock. */
     fun lock() {
         _revealed.value = emptyMap()
+        _editing.value = null
         session.wipe()
         _blocks.value = emptyList()
         _selectedBlock.value = null
