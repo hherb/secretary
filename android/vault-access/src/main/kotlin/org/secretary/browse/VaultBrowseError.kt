@@ -12,6 +12,13 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message) {
     /** Open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */
     data object WrongPasswordOrCorrupt : VaultBrowseError()
 
+    /** Recovery open failed: wrong phrase OR corrupt vault. Conflated on purpose (§13). */
+    data object WrongRecoveryOrCorrupt : VaultBrowseError()
+
+    /** The recovery phrase was malformed (bad word / wrong length / invalid UTF-8) — a format
+     *  error, distinct from the conflated [WrongRecoveryOrCorrupt]. Safe to surface to the user. */
+    data class InvalidRecoveryPhrase(val detail: String) : VaultBrowseError(detail)
+
     /** The opened folder is a different vault than expected. */
     data object VaultMismatch : VaultBrowseError()
 
