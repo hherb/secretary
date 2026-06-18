@@ -129,4 +129,15 @@ final class RecordEditViewModelTests: XCTestCase {
         vm.commit()
         XCTAssertTrue(vm.committed)
     }
+
+    func testSecondCommitAfterSuccessDoesNotAppendAgain() throws {
+        let s = session()
+        let vm = RecordEditViewModel(session: s, blockUuid: block, mode: .add)
+        vm.recordType = "login"; vm.addField(); vm.fields[0].name = "user"; vm.fields[0].rawText = "alice"
+        vm.commit()
+        XCTAssertTrue(vm.committed)
+        vm.commit()   // render-gap re-tap: committed guard must block a second append
+        XCTAssertEqual(try s.readBlock(blockUuid: block, includeDeleted: false).count, 1)
+        XCTAssertFalse(vm.isWriting)
+    }
 }
