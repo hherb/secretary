@@ -3,6 +3,7 @@ package org.secretary.browse
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -43,5 +44,15 @@ class UnlockCredentialTest {
     fun `secret exposes the underlying bytes for both arms`() {
         assertArrayEquals(byteArrayOf(4, 5), UnlockCredential.Password(byteArrayOf(4, 5)).secret)
         assertArrayEquals(byteArrayOf(6), UnlockCredential.Recovery(byteArrayOf(6)).secret)
+    }
+
+    @Test
+    fun `a device-secret open propagates an injected error`() = runTest {
+        val port = FakeVaultOpenPort(deviceSecretError = VaultBrowseError.WrongDeviceSecretOrCorrupt)
+        assertThrows(VaultBrowseError.WrongDeviceSecretOrCorrupt::class.java) {
+            kotlinx.coroutines.runBlocking {
+                openWithCredential(port, "/vault", UnlockCredential.DeviceSecret(ByteArray(16), byteArrayOf(1)))
+            }
+        }
     }
 }

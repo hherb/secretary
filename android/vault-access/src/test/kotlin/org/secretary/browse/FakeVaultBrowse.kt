@@ -123,6 +123,7 @@ class FakeVaultOpenPort(
     private val session: VaultSession = FakeVaultSession("00", emptyList()),
     private val openError: VaultBrowseError? = null,
     private val recoveryError: VaultBrowseError? = null,
+    private val deviceSecretError: VaultBrowseError? = null,
 ) : VaultOpenPort {
     val openedFolders: MutableList<String> = mutableListOf()
     /** Copies of the password bytes seen by each openWithPassword call, in order. */
@@ -149,6 +150,7 @@ class FakeVaultOpenPort(
     override suspend fun openWithDeviceSecret(vaultFolder: String, deviceUuid: ByteArray, deviceSecret: ByteArray): VaultSession {
         openedFolders += vaultFolder
         openedWithDeviceSecret += deviceUuid.copyOf() to deviceSecret.copyOf()
+        deviceSecretError?.let { throw it }
         return session
     }
 }
