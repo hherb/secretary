@@ -39,6 +39,7 @@ class DeviceUnlockCoordinatorTest {
         assertThrows(DeviceUnlockError.Enclave::class.java) {
             kotlinx.coroutines.runBlocking { coordinator.enroll("/vault", "golden", byteArrayOf(0)) }
         }
+        assertArrayEquals(ByteArray(32), slot.lastIssuedSecret, "slot secret zeroized even on the failure path")
         assertEquals(1, slot.removeCalls.size, "the just-minted slot was removed")
         assertArrayEquals(uuid, slot.removeCalls[0])
         assertFalse(coordinator.isEnrolled, "metadata was never saved")
@@ -55,6 +56,7 @@ class DeviceUnlockCoordinatorTest {
             kotlinx.coroutines.runBlocking { coordinator.enroll("/vault", "golden", byteArrayOf(0)) }
         }
         assertEquals("disk full", thrown.message)
+        assertArrayEquals(ByteArray(32), slot.lastIssuedSecret, "slot secret zeroized even on the failure path")
         assertFalse(enclave.isEnrolled, "enclave was cleared")
         assertEquals(1, slot.removeCalls.size, "the slot was removed")
         assertFalse(coordinator.isEnrolled)
