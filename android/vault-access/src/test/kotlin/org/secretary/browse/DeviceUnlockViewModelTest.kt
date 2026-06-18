@@ -24,7 +24,7 @@ class DeviceUnlockViewModelTest {
     }
 
     @Test
-    fun enroll_thenRefresh_isEnrolled() = runTest {
+    fun enroll_success_setsEnrolledState() = runTest {
         val vm = DeviceUnlockViewModel(coordinator())
         vm.enroll(folder, vaultId, "pw".toByteArray())
         assertEquals(DeviceUnlockState.Enrolled, vm.state)
