@@ -14,6 +14,9 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// small + short-lived as possible; cleared on hide / lock / background.
     @Published public private(set) var revealed: [String: RevealedValue] = [:]
 
+    /// When false (default) the browse list shows only live records. The Rust
+    /// gate withholds tombstoned records; toggling RE-READS the selected block
+    /// with the new flag (the client never holds withheld data).
     @Published public var showDeleted = false {
         didSet {
             guard showDeleted != oldValue, let blockUuid = selectedBlockUuid else { return }
@@ -21,9 +24,6 @@ public final class VaultBrowseViewModel: ObservableObject {
         }
     }
 
-    /// When false (default) the browse list shows only live records. The Rust
-    /// gate withholds tombstoned records; toggling RE-READS the selected block
-    /// with the new flag (the client never holds withheld data).
     /// True for the brief window while a delete or restore is being committed to
     /// disk. Synchronous on @MainActor so it cannot truly re-enter; this flag is
     /// UX parity (disables swipe/dialog buttons during the write) rather than a
