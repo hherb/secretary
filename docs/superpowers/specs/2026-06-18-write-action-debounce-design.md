@@ -44,7 +44,7 @@ A single `writing` flag on `VaultBrowseModel` disables **every** Delete/Restore 
 - `commit()` becomes:
   ```
   suspend fun commit() {
-      if (_inFlight.value || _loadFailed.value) return
+      if (_inFlight.value || _committed.value || _loadFailed.value) return
       _inFlight.value = true
       try {
           // existing: buildContent → validate → appendRecord/editRecord → committed
@@ -53,7 +53,7 @@ A single `writing` flag on `VaultBrowseModel` disables **every** Delete/Restore 
       }
   }
   ```
-  The `loadFailed` early-return moves inside the same guard (still returns before setting `inFlight`). The `CancellationException` rethrow stays — `finally` resets the flag first, then the throw propagates.
+  The guard checks **three** flags: `inFlight` blocks a *concurrent* coroutine (two Saves launched before the first returns); `committed` blocks a *post-success re-tap* (a second Save landing in the render gap after the first succeeded but before `LaunchedEffect(committed)` → `onEditCommitted` clears `editing` — Android's analog of iOS's sync render-gap, and the symmetric reason iOS guards on `committed`); `loadFailed` is the existing "never clobber a half-read record" guard. The `CancellationException` rethrow stays — `finally` resets `inFlight` first, then the throw propagates.
 
 **`VaultBrowseModel` (`:vault-access`)**
 - Add `private val _writing = MutableStateFlow(false)` + `val writing: StateFlow<Boolean>`.
@@ -103,8 +103,9 @@ The `finally` (Android) / `defer` (iOS) guarantees the flag clears on **success,
 
 **Android host (JUnit5):**
 - `RecordEditModel`:
-  - two concurrent `commit()` (Add) on a `FakeVaultSession` → exactly **one** `appendRecord` (assert the fake's append audit list size == 1).
-  - `inFlight` is observed `true` during the suspend and `false` after.
+  - two concurrent `commit()` (Add) on a gated `FakeVaultSession` → exactly **one** `appendRecord` (assert the fake's append audit list size == 1). The fake's write awaits an injected gate so both coroutines reach the guard while the first is in flight (a faithful race, not a sleep).
+  - a second `commit()` *after* the first succeeded (Add) → still exactly **one** `appendRecord` (the `committed` guard — the post-success re-tap case).
+  - `inFlight` is observed `true` while the gated write is parked and `false` after the gate releases.
   - a failing write (`FakeVaultSession` throws) resets `inFlight` to `false`.
   - `loadFailed == true` → `commit()` no-ops and never sets `inFlight`.
 - `VaultBrowseModel`:
