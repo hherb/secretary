@@ -89,6 +89,9 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test") {
+        version { strictly("1.8.0") }
+    }
 
     // --- Instrumented tests (real .so makeVaultSync smoke on the emulator) ---
     androidTestImplementation("androidx.test:runner:1.6.2")
@@ -98,6 +101,9 @@ dependencies {
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test") {
         version { strictly("1.8.0") }
     }
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 // --- Production golden-vault asset staging ---------------------------------
