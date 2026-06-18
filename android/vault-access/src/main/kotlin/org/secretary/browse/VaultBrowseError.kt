@@ -19,6 +19,16 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message) {
      *  error, distinct from the conflated [WrongRecoveryOrCorrupt]. Safe to surface to the user. */
     data class InvalidRecoveryPhrase(val detail: String) : VaultBrowseError(detail)
 
+    /** Device-secret open failed: wrong device secret OR corrupt wrap/vault. Conflated on purpose (§13). */
+    data object WrongDeviceSecretOrCorrupt : VaultBrowseError()
+
+    /** No `devices/<uuid>.wrap` slot for the requested device UUID (benign "no such device"). */
+    data object DeviceSlotNotFound : VaultBrowseError()
+
+    /** The wrap file's header device_uuid ≠ the lookup UUID (§3a relabel-integrity check). A
+     *  structural-integrity signal, safe to surface. */
+    data class DeviceUuidMismatch(val detail: String) : VaultBrowseError(detail)
+
     /** The opened folder is a different vault than expected. */
     data object VaultMismatch : VaultBrowseError()
 

@@ -26,6 +26,9 @@ internal fun mapVaultBrowseError(e: VaultException): VaultBrowseError = when (e)
     is VaultException.SaveCryptoFailure -> VaultBrowseError.SaveCryptoFailure(e.detail)
     is VaultException.WrongMnemonicOrCorrupt -> VaultBrowseError.WrongRecoveryOrCorrupt
     is VaultException.InvalidMnemonic -> VaultBrowseError.InvalidRecoveryPhrase(e.detail)
+    is VaultException.WrongDeviceSecretOrCorrupt -> VaultBrowseError.WrongDeviceSecretOrCorrupt
+    is VaultException.DeviceSlotNotFound -> VaultBrowseError.DeviceSlotNotFound
+    is VaultException.DeviceUuidMismatch -> VaultBrowseError.DeviceUuidMismatch(e.detail)
     else -> VaultBrowseError.Failed(e.toString())
 }
 

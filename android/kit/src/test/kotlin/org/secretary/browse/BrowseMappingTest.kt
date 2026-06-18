@@ -55,4 +55,20 @@ class BrowseMappingTest {
         assertEquals(5uL, view.createdAtMs)
         assertEquals(6uL, view.lastModifiedMs)
     }
+
+    @Test
+    fun `maps the device-secret-relevant arms to their domain counterparts`() {
+        assertEquals(
+            VaultBrowseError.WrongDeviceSecretOrCorrupt,
+            mapVaultBrowseError(VaultException.WrongDeviceSecretOrCorrupt()),
+        )
+        assertEquals(
+            VaultBrowseError.DeviceSlotNotFound,
+            mapVaultBrowseError(VaultException.DeviceSlotNotFound()),
+        )
+        assertEquals(
+            VaultBrowseError.DeviceUuidMismatch("relabelled"),
+            mapVaultBrowseError(VaultException.DeviceUuidMismatch("relabelled")),
+        )
+    }
 }
