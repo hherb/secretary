@@ -4,7 +4,10 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -33,6 +36,8 @@ class DeviceUnlockFakesTest {
         assertEquals(1, port.addCalls.size)
         port.removeDeviceSlot("/vault", slot.deviceUuid)
         assertEquals(1, port.removeCalls.size)
+        assertNotNull(port.lastIssuedSecret)
+        assertSame(slot.secret, port.lastIssuedSecret) // alias: a later coordinator test asserts this array was zeroized
     }
 
     @Test
@@ -43,5 +48,13 @@ class DeviceUnlockFakesTest {
         assertEquals("golden", store.load()!!.vaultId)
         store.clear()
         assertNull(store.load())
+    }
+
+    @Test
+    fun `slot port throws the injected add error`() = runTest {
+        val port = FakeVaultDeviceSlotPort(addError = VaultBrowseError.FolderInvalid("nope"))
+        assertThrows(VaultBrowseError.FolderInvalid::class.java) {
+            kotlinx.coroutines.runBlocking { port.addDeviceSlot("/vault", byteArrayOf(0)) }
+        }
     }
 }

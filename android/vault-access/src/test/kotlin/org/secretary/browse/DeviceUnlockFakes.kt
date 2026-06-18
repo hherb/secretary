@@ -63,7 +63,7 @@ class FakeEnrollmentMetadataStore(
     override fun load(): DeviceEnrollment? = enrollment
     override fun save(enrollment: DeviceEnrollment) {
         saveError?.let { throw it }
-        this.enrollment = enrollment
+        this.enrollment = DeviceEnrollment(enrollment.vaultId, enrollment.deviceUuid.copyOf())
     }
     override fun clear() { enrollment = null }
 }
