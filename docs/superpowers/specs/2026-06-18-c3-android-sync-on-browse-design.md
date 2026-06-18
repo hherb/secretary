@@ -129,14 +129,17 @@ back to the manual "Sync now" tap (mirrors iOS). The existing
 
 ## Known accepted cost
 
-Android's `makeVaultSync(folder, stateDir, uuid)` opens the vault **independently**
-of the browse session (unlike iOS's `makeVaultSync(session:)` which shares the
-already-opened handle). So sync-at-unlock pays a *second* Argon2id derivation
-(m=256 MiB, t=3). Mitigated by running it in the background, off the
-browse-render critical path — browse is interactive immediately while the badge
-shows "syncing…". Restructuring `:kit` to share the session is out of scope (it
-would touch the FFI surface); recorded here so a future reader does not "fix" the
-two-derivation behaviour without realising it is a deliberate scope boundary.
+Both platforms' `SyncCoordinator` opens the vault with the password per sync call,
+so the sync pass runs its own Argon2id derivation (m=256 MiB, t=3) on both iOS
+and Android. The Android-specific delta is that Android cannot reuse the open browse
+session even to read the vault UUID: iOS's `makeVaultSync(session:)` extracts the
+UUID from the already-opened session handle, whereas Android provisions it separately
+via `goldenVaultUuid`. Both platforms mitigate the sync-pass Argon2id by running it
+in the background, off the browse-render critical path — browse is interactive
+immediately while the badge shows "syncing…". Restructuring `:kit` to share the
+session is out of scope (it would touch the FFI surface); recorded here so a future
+reader does not "fix" the behaviour without realising it is a deliberate scope
+boundary.
 
 ## Testing (TDD)
 

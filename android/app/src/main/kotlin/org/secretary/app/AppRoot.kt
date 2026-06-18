@@ -104,9 +104,10 @@ private suspend fun unlockAndOpen(
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, password)
-        // Background silent sync-at-unlock with a password copy (browse renders immediately;
-        // the second Argon2id never blocks the UI). A conflict on this path only raises the
-        // review badge — the interactive path (badge tap) re-prompts for the password.
+        // Fire-and-forget on the app-level `scope`, NOT the Browse composition: this pass opens its
+        // own independent vault handle from the password COPY and never touches the browse session,
+        // so it deliberately outlives Browse disposal. Binding it to the Browse scope would cancel
+        // the in-flight Argon2id on background. The copy is zeroized in launchSyncAtUnlock's finally.
         launchSyncAtUnlock(scope, password, session.sync::syncAtUnlock)
         return Route.Browse(session)
     } catch (e: Exception) {
