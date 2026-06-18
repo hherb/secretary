@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import java.io.File
 import java.nio.ByteBuffer
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
@@ -50,32 +51,42 @@ class KeystoreDeviceSecretEnclave(
 
     override suspend fun store(secret: ByteArray) {
         val key = ensureKey()
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        val authorized = gate(cipher, STORE_REASON)
-        val ct = authorized.doFinal(secret)
-        val iv = authorized.iv
         dir.mkdirs()
-        val out = ByteBuffer.allocate(1 + iv.size + ct.size)
-            .put(iv.size.toByte()).put(iv).put(ct).array()
-        val tmp = File(dir, "$BLOB_NAME.tmp")
-        tmp.writeBytes(out)
-        check(tmp.renameTo(blobFile)) { "atomic rename of secret blob failed" }
+        try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val authorized = gate(cipher, STORE_REASON)
+            val ct = authorized.doFinal(secret)
+            val iv = authorized.iv
+            val out = ByteBuffer.allocate(1 + iv.size + ct.size)
+                .put(iv.size.toByte()).put(iv).put(ct).array()
+            val tmp = File(dir, "$BLOB_NAME.tmp")
+            tmp.writeBytes(out)
+            check(tmp.renameTo(blobFile)) { "atomic rename of secret blob failed" }
+        } catch (e: GeneralSecurityException) {
+            throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
+        }
     }
 
     override suspend fun release(reason: String): ByteArray {
         val blob = blobFile.takeIf { it.exists() }?.readBytes() ?: throw DeviceUnlockError.NotEnrolled
-        val ivLen = blob[0].toInt()
+        if (blob.isEmpty()) throw DeviceUnlockError.WrappedSecretCorrupt
+        val ivLen = blob[0].toInt() and 0xFF
+        if (blob.size < 1 + ivLen + 1) throw DeviceUnlockError.WrappedSecretCorrupt
         val iv = blob.copyOfRange(1, 1 + ivLen)
         val ct = blob.copyOfRange(1 + ivLen, blob.size)
         val key = loadKey() ?: throw DeviceUnlockError.NotEnrolled
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-        val authorized = gate(cipher, reason)
         return try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            val authorized = gate(cipher, reason)
             authorized.doFinal(ct)
         } catch (e: AEADBadTagException) {
             throw DeviceUnlockError.WrappedSecretCorrupt
+        } catch (e: GeneralSecurityException) {
+            // Covers KeyPermanentlyInvalidatedException (post-biometric-re-enrollment) and
+            // other InvalidKeyException subclasses. Class name only — never log key/secret bytes.
+            throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
         }
     }
 

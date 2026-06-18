@@ -59,6 +59,24 @@ class KeystoreDeviceSecretEnclaveTest {
     }
 
     @Test
+    fun release_truncatedBlob_throwsWrappedSecretCorrupt() = runBlocking {
+        val dir = File(context.noBackupFilesDir, "ds-truncated-${System.nanoTime()}").apply { mkdirs() }
+        dirs += dir
+        val alias = "org.secretary.test.deviceSecret.truncated.${System.nanoTime()}"
+        val enclave = KeystoreDeviceSecretEnclave(dir, passthrough, alias, KeystoreKeyConfig.TEST_NO_AUTH)
+        enclave.store(ByteArray(32).also { SecureRandom().nextBytes(it) })
+        // Overwrite blob with a header claiming ivLen=12 but no IV or ciphertext follows.
+        File(dir, "blob").writeBytes(byteArrayOf(12))
+        try {
+            enclave.release("test")
+            fail("expected WrappedSecretCorrupt")
+        } catch (e: DeviceUnlockError.WrappedSecretCorrupt) {
+            // expected
+        }
+        enclave.clear()
+    }
+
+    @Test
     fun release_corruptBlob_throwsWrappedSecretCorrupt() = runBlocking {
         val dir = File(context.noBackupFilesDir, "ds-corrupt-${System.nanoTime()}").apply { mkdirs() }
         dirs += dir
