@@ -1,7 +1,13 @@
 package org.secretary.browse
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -288,5 +294,42 @@ class VaultBrowseModelTest {
         model.loadBlocks(); model.selectBlock(block); model.startAdd()
         model.lock()
         assertNull(model.editing.value)
+    }
+
+    private fun writableSessionGated(gate: CompletableDeferred<Unit>): FakeVaultSession {
+        val live = RecordSummaryView("ab", "login", emptyList(), 1u, 2u, false, listOf(textField("u", "x")))
+        return FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(live)), writeGate = gate)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `concurrent delete tombstones exactly once`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val s = writableSessionGated(gate)
+        val model = VaultBrowseModel(s)
+        model.loadBlocks()
+        model.selectBlock(model.blocks.value.single())
+        val rec = model.selectedRecords.value!!.first()
+        launch { model.delete(rec) }   // grabs writing, parks on the gate
+        launch { model.delete(rec) }   // sees writing == true, returns
+        runCurrent()
+        assertTrue(model.writing.value)
+        assertEquals(0, s.tombstoned.size)
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(1, s.tombstoned.size)
+        assertFalse(model.writing.value)
+    }
+
+    @Test
+    fun `failed delete resets writing and keeps the list`() = runTest {
+        val s = writableSession(writeError = VaultBrowseError.RecordNotFound("ab"))
+        val model = VaultBrowseModel(s)
+        model.loadBlocks(); model.selectBlock(model.blocks.value.single())
+        val before = model.selectedRecords.value
+        val rec = before!!.first()
+        model.delete(rec)
+        assertFalse(model.writing.value)
+        assertEquals(before, model.selectedRecords.value)   // rejected write leaves the list intact
     }
 }
