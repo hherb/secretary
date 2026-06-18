@@ -16,6 +16,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.UnlockCredential
 import org.secretary.browse.uniffiVaultOpenPort
 import java.io.File
 
@@ -53,7 +54,9 @@ fun AppRoot() {
 
     when (val r = route) {
         is Route.Unlock -> UnlockScreen(onUnlock = { password ->
-            scope.launch { route = unlockAndOpen(context, scope, password) }
+            scope.launch {
+                route = unlockAndOpen(context, scope, UnlockCredential.Password(password))
+            }
         })
         is Route.Browse -> {
             // The monitor runs only while Browse is composed: started on enter, stopped on dispose
@@ -78,24 +81,23 @@ fun AppRoot() {
 }
 
 /**
- * Opens the vault for browsing, assembles the sync model+monitor, fires a background
- * sync-at-unlock, and returns the Browse route. Runs on the main `scope` (Argon2id hops to IO
- * inside the open port; makeVaultSync inside [openBrowseWithSync] requires main — satisfied here).
+ * Opens the vault for browsing with [credential], assembles the sync model+monitor, fires the
+ * post-open sync action ([dispatchPostOpenSync]: password → background sync-at-unlock; recovery →
+ * status refresh, since Android sync is password-keyed), and returns the Browse route. Runs on the
+ * main `scope` (Argon2id hops to IO inside the open port; makeVaultSync inside [openBrowseWithSync]
+ * requires main — satisfied here).
  *
- * Secret hygiene: the original password buffer is zeroized in a `finally` wrapping the whole body —
- * overwritten on every exit (success, open failure, early provisioning throw). The background
- * sync-at-unlock receives a COPY ([launchSyncAtUnlock]); zeroizing the original here cannot corrupt
- * that copy. Because [openBrowseWithSync] awaits the open, the zeroize cannot race the Argon2id that
- * consumes the original.
- *
- * Known accepted minor race (mirrors slices 6/7): if backgrounded while this suspends, the coroutine
- * may still set route = Browse afterward; the next ON_STOP disposes Browse (stops the monitor, wipes
- * the session) and the password is already zeroized — self-heals.
+ * Secret hygiene: the credential bytes are zeroized in a `finally` wrapping the whole body — on
+ * every exit (success, open failure, early provisioning throw). For the password credential the
+ * background sync-at-unlock receives a COPY ([launchSyncAtUnlock]); zeroizing the original here
+ * cannot corrupt that copy, and because [openBrowseWithSync] awaits the open the zeroize cannot race
+ * the Argon2id that consumes the original. The recovery credential hands no copy to a background
+ * job, so its bytes are fully owned here.
  */
 private suspend fun unlockAndOpen(
     context: Context,
     scope: CoroutineScope,
-    password: ByteArray,
+    credential: UnlockCredential,
 ): Route {
     try {
         val folder = AppVaultProvisioning.stageGoldenVault(context)
@@ -103,17 +105,22 @@ private suspend fun unlockAndOpen(
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
         val session = openBrowseWithSync(
-            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, password)
-        // Fire-and-forget on the app-level `scope`, NOT the Browse composition: this pass opens its
-        // own independent vault handle from the password COPY and never touches the browse session,
-        // so it deliberately outlives Browse disposal. Binding it to the Browse scope would cancel
-        // the in-flight Argon2id on background. The copy is zeroized in launchSyncAtUnlock's finally.
-        launchSyncAtUnlock(scope, password, session.sync::syncAtUnlock)
+            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential)
+        // Password → background sync-at-unlock from a COPY (deliberately outlives Browse disposal:
+        // it opens its own vault handle and never touches the browse session; binding it to the
+        // Browse scope would cancel the in-flight Argon2id on background). Recovery → status refresh
+        // only: Android sync is password-keyed, so a recovery session has no password to sync with;
+        // the user syncs manually via the badge re-prompt.
+        dispatchPostOpenSync(
+            credential,
+            onPassword = { pw -> launchSyncAtUnlock(scope, pw, session.sync::syncAtUnlock) },
+            onRecovery = { session.sync.refreshStatus() },
+        )
         return Route.Browse(session)
     } catch (e: Exception) {
         Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
         return Route.Unlock
     } finally {
-        password.fill(0) // zeroize the original on every exit; the background copy is independent
+        credential.secret.fill(0) // zeroize on every exit; the password background copy is independent
     }
 }

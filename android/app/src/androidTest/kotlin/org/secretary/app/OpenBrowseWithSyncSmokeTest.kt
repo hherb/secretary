@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.UnlockCredential
 import org.secretary.browse.uniffiVaultOpenPort
 import java.io.File
 
@@ -45,7 +46,9 @@ class OpenBrowseWithSyncSmokeTest {
         // zeroize its caller's buffer (the caller owns it), so zeroize after the open returns.
         val openPw = goldenPassword.toByteArray()
         val session = withContext(Dispatchers.Main) {
-            openBrowseWithSync(uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, openPw)
+            openBrowseWithSync(
+                uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid,
+                UnlockCredential.Password(openPw))
         }
         openPw.fill(0)
 
