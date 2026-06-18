@@ -32,4 +32,17 @@ class PostOpenSyncTest {
         assertTrue(recoveryFired)
         assertFalse(pwFired, "password action must not fire for a recovery credential")
     }
+
+    @Test
+    fun `a device-secret credential fires onRecovery only (no password to re-derive sync keys)`() {
+        var pwFired = false
+        var recoveryFired = false
+        dispatchPostOpenSync(
+            UnlockCredential.DeviceSecret(ByteArray(16), byteArrayOf(7)),
+            onPassword = { pwFired = true },
+            onRecovery = { recoveryFired = true },
+        )
+        assertTrue(recoveryFired)
+        assertFalse(pwFired, "password action must not fire for a device-secret credential")
+    }
 }
