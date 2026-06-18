@@ -45,6 +45,7 @@ Branch from `main` @ `7c1a6ed`. **Squash-merge collapses to one commit on `main`
 cd android && ./gradlew :vault-access:test :kit:testDebugUnitTest :browse-ui:test :app:test   → BUILD SUCCESSFUL
 cd android && ./gradlew :browse-ui:connectedDebugAndroidTest                                   → 8/8 (incl. 2 new disable tests) on Medium_Phone_API_36.1
 cd ios/SecretaryVaultAccess && swift test                                                       → 172/172 ; swift build clean
+bash ios/scripts/run-ios-tests.sh                                                               → exit 0 (pure tests + XCFramework + SecretaryKit sim XCTest + SecretaryApp build-app.sh ** BUILD SUCCEEDED **)
 git diff main...HEAD --name-only | grep -E 'core/|ffi/|crypto-design|vault-format'              → empty
 git diff main...HEAD --name-only | grep -vE '^(android/|ios/|docs/|README.md|ROADMAP.md|NEXT_SESSION.md)' → empty
 ```
@@ -70,7 +71,7 @@ git diff main...HEAD --name-only | grep -vE '^(android/|ios/|docs/|README.md|ROA
 
 ## (3) Open decisions and risks
 
-- **`SecretaryApp` SwiftUI views are compile-by-inspection, NOT compiled by `swift test`** (XcodeGen target). The 5 `.disabled(...)` edits are additive modifier lines on already-tested `@Published` flags; the final reviewer verified each line-by-line on the correct `Button` and judged the residual risk acceptable. A full `xcodebuild` was NOT run because `ios/Secretary.xcframework` (the FFI binary target) isn't prebuilt — building it is a from-scratch multi-arch Rust cross-compile, disproportionate for 5 modifier lines. **The VM logic (the actual fix) DID compile + test (`swift test` 172/172).** Same posture the slice-10 spec documented for iOS app views.
+- **`SecretaryApp` SwiftUI views compiled clean on the simulator.** The 5 `.disabled(...)` edits are additive modifier lines on already-tested `@Published` flags. `bash ios/scripts/run-ios-tests.sh` ran end-to-end (exit 0): pure `swift test` (172/172), XCFramework build, `SecretaryKit` simulator XCTest, **and Step 5 `build-app.sh` (XcodeGen + simulator compile of the `SecretaryApp` target = `** BUILD SUCCEEDED **`)** — so the view edits are genuinely compiled, not just inspected. (Earlier in the session I'd mis-judged this as "disproportionate / xcframework not prebuilt"; `run-ios-tests.sh` builds the xcframework itself, so the full compile proof was cheap enough and was run.)
 - **`ios/` is intentionally in this slice's diff** — unlike every prior Android-only C.3 slice. The standard "no `ios/` change" guardrail does NOT apply here; the `core/`/`ffi/`/format guardrail still does and is empty.
 - **iOS `VaultBrowseViewModel.lock()` does not reset `isWriting`** — sound, because iOS writes are synchronous so `isWriting` is never observably true outside one synchronous call; a `lock()` can't interleave with it. (Android `lock()` DOES reset `writing` as defense-in-depth, since Android writes are `suspend`.)
 - **Final review verdict:** CHANGES REQUESTED with one borderline-Minor (androidTest fake parity doc) + two cosmetic Minors (a test could assert `error` set; an iOS doc-comment was misplaced). **All three fixed** (`a0949ed`; the comment-relocation was re-fixed in `c4b5ddf` after the first attempt orphaned `showDeleted`'s comment). No Critical/Important correctness findings.
@@ -116,7 +117,7 @@ git diff main...HEAD --name-only | grep -vE '^(android/|ios/|docs/|README.md|ROA
 ## Closing inventory
 
 - **Branch on close:** `main` @ `7c1a6ed`; `feature/write-action-debounce` carries spec + plan + 6 task commits + docs + 2 fix commits + this handoff commit. Squash-merge → one commit on `main`. **Not yet pushed; no PR yet.**
-- **Acceptance:** green — `:vault-access`/`:kit`/`:browse-ui`/`:app` host suites + `:browse-ui` connected 8/8 on `Medium_Phone_API_36.1` + iOS `swift test` 172/172 + `swift build`; both guardrails empty. See §1.
+- **Acceptance:** green — `:vault-access`/`:kit`/`:browse-ui`/`:app` host suites + `:browse-ui` connected 8/8 on `Medium_Phone_API_36.1` + iOS `swift test` 172/172 + full `run-ios-tests.sh` (XCFramework + `SecretaryKit` sim XCTest + `SecretaryApp` simulator compile proof, exit 0); both guardrails empty. See §1.
 - **Process note:** subagent-driven (fresh implementer + spec/quality review per task; all per-task review items fixed in-task). Final whole-branch review (opus) = READY-TO-MERGE-after-fixes; 6 cross-cutting invariants verified (guard semantics both platforms, `writing` reset on every exit, no flag stuck across `lock()`, all UI sites wired, cross-commit coherence, iOS caveat honestly scoped); 0 Critical/Important; the 3 Minor findings all fixed.
 - **README.md / ROADMAP.md:** updated — Write-action debounce ✅ (Android + iOS, #254).
 - **NEXT_SESSION.md:** symlink retargeted to this file.
