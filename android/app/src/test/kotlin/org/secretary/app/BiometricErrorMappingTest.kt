@@ -23,6 +23,9 @@ class BiometricErrorMappingTest {
         assertEquals(DeviceUnlockError.BiometryUnavailable, mapBiometricError(BiometricPrompt.ERROR_HW_UNAVAILABLE))
         assertEquals(DeviceUnlockError.BiometryUnavailable, mapBiometricError(BiometricPrompt.ERROR_HW_NOT_PRESENT))
     }
+    @Test fun systemCanceled_mapsToUserCancelled() {
+        assertEquals(DeviceUnlockError.UserCancelled, mapBiometricError(BiometricPrompt.ERROR_CANCELED))
+    }
     @Test fun unknownCode_mapsToAuthenticationFailed() {
         assertEquals(DeviceUnlockError.AuthenticationFailed, mapBiometricError(Int.MAX_VALUE))
     }
