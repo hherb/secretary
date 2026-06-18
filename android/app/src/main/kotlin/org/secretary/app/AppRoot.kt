@@ -53,10 +53,8 @@ fun AppRoot() {
     }
 
     when (val r = route) {
-        is Route.Unlock -> UnlockScreen(onUnlock = { password ->
-            scope.launch {
-                route = unlockAndOpen(context, scope, UnlockCredential.Password(password))
-            }
+        is Route.Unlock -> UnlockScreen(onUnlock = { credential ->
+            scope.launch { route = unlockAndOpen(context, scope, credential) }
         })
         is Route.Browse -> {
             // The monitor runs only while Browse is composed: started on enter, stopped on dispose
