@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-19-c3-android-recovery-open-shipped.md
+docs/handoffs/2026-06-19-c3-android-device-open-core-shipped.md
