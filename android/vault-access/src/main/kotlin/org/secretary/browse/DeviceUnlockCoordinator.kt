@@ -35,6 +35,9 @@ class DeviceUnlockCoordinator(
                 metadata.save(DeviceEnrollment(vaultId, slot.deviceUuid))
             } catch (e: Throwable) {
                 runCatching { enclave.clear() }
+                // A process crash between enclave.clear() and removeDeviceSlot() below can leave an
+                // orphan devices/<uuid>.wrap with no enclave secret and no metadata — benign (effectively
+                // dead; idempotent disenroll cleans it).
                 runCatching { slotPort.removeDeviceSlot(folder, slot.deviceUuid) }
                 throw e
             }

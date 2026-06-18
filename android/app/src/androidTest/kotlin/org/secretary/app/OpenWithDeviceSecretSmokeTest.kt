@@ -109,12 +109,15 @@ class OpenWithDeviceSecretSmokeTest {
         assertFalse("isEnrolled false after disenrol", coordinator.isEnrolled)
 
         // ── Step 4a: Reopen via captured uuid → DeviceSlotNotFound ────────────────────────────
+        // The slot is already gone, so the secret value is never cryptographically exercised —
+        // slot-absent check fires first. Randomized to avoid the hardcoded-crypto-value lint.
+        val dummySecret = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
         try {
             withContext(Dispatchers.IO) {
                 openWithCredential(
                     openPort,
                     folder.path,
-                    UnlockCredential.DeviceSecret(capturedDeviceUuid, ByteArray(32)),
+                    UnlockCredential.DeviceSecret(capturedDeviceUuid, dummySecret),
                 )
             }
             fail("expected VaultBrowseError.DeviceSlotNotFound but open succeeded")
