@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
@@ -47,5 +48,22 @@ class FileDeviceEnrollmentMetadataStoreTest {
         val loaded = store.load()!!
         assertEquals(vaultId, loaded.vaultId)
         assertArrayEquals(uuid, loaded.deviceUuid)
+    }
+
+    @Test
+    fun saveThenLoad_emptyVaultId_roundTrips(@TempDir dir: File) {
+        val store = FileDeviceEnrollmentMetadataStore(dir)
+        store.save(DeviceEnrollment("", uuid))
+        val loaded = store.load()!!
+        assertEquals("", loaded.vaultId)
+        assertArrayEquals(uuid, loaded.deviceUuid)
+    }
+
+    @Test
+    fun save_rejectsWrongLengthUuid(@TempDir dir: File) {
+        val store = FileDeviceEnrollmentMetadataStore(dir)
+        assertThrows<IllegalArgumentException> {
+            store.save(DeviceEnrollment(vaultId, ByteArray(15)))
+        }
     }
 }

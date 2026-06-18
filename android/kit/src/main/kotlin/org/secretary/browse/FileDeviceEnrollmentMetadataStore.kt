@@ -36,8 +36,13 @@ class FileDeviceEnrollmentMetadataStore(private val dir: File) : DeviceEnrollmen
             .put(enrollment.deviceUuid)
             .array()
         val tmp = File(dir, "$FILE_NAME.tmp")
-        tmp.writeBytes(out)
-        check(tmp.renameTo(file)) { "atomic rename of enrollment metadata failed" }
+        try {
+            tmp.writeBytes(out)
+            check(tmp.renameTo(file)) { "atomic rename of enrollment metadata failed" }
+        } catch (t: Throwable) {
+            tmp.delete()
+            throw t
+        }
     }
 
     override fun clear() {
