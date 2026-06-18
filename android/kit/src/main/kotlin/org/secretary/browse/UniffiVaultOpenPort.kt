@@ -12,6 +12,7 @@ import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
+import uniffi.secretary.openWithDeviceSecret as ffiOpenWithDeviceSecret
 import uniffi.secretary.readBlock as ffiReadBlock
 import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
@@ -34,6 +35,7 @@ class UniffiVaultOpenPort(
     private val deviceUuids: DeviceUuidProvider? = null,
     private val openFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithPassword,
     private val recoveryFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithRecovery,
+    private val deviceSecretFn: (ByteArray, ByteArray, ByteArray) -> OpenVaultOutput = ::ffiOpenWithDeviceSecret,
 ) : VaultOpenPort {
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession =
         withContext(ioDispatcher) {
@@ -44,6 +46,18 @@ class UniffiVaultOpenPort(
     override suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession =
         withContext(ioDispatcher) {
             val output = mapErrors { recoveryFn(vaultFolder.toByteArray(Charsets.UTF_8), phrase) }
+            UniffiVaultSession(output, ioDispatcher, deviceUuids)
+        }
+
+    override suspend fun openWithDeviceSecret(
+        vaultFolder: String,
+        deviceUuid: ByteArray,
+        deviceSecret: ByteArray,
+    ): VaultSession =
+        withContext(ioDispatcher) {
+            val output = mapErrors {
+                deviceSecretFn(vaultFolder.toByteArray(Charsets.UTF_8), deviceUuid, deviceSecret)
+            }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
 }
@@ -215,7 +229,7 @@ class UniffiVaultSession(
 }
 
 /** Run an FFI call, translating any [VaultException] into the domain [VaultBrowseError]. */
-private inline fun <T> mapErrors(block: () -> T): T =
+internal inline fun <T> mapErrors(block: () -> T): T =
     try {
         block()
     } catch (e: VaultException) {
