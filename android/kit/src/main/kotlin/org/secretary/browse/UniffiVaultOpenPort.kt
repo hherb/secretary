@@ -28,7 +28,9 @@ import java.security.SecureRandom
  * (default [Dispatchers.IO]) to keep the caller responsive. The password [ByteArray] is forwarded
  * per call (UTF-8 path + raw password bytes) and never retained. [openWithRecovery] behaves
  * identically — it also runs on [ioDispatcher] (Argon2id) and forwards the phrase bytes per call
- * without retaining them. The open function is an injectable seam defaulting to the real binding.
+ * without retaining them. [openWithDeviceSecret] behaves identically — it runs on [ioDispatcher]
+ * and forwards the 16-byte device UUID + 32-byte device secret per call without retaining them,
+ * opening via the per-device wrap slot. The open function is an injectable seam defaulting to the real binding.
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,

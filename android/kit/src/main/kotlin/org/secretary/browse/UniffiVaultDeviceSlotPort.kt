@@ -29,6 +29,7 @@ class UniffiVaultDeviceSlotPort(
                     // take_secret() is declared `sequence<u8>?` → a boxed list; convert to ByteArray.
                     // (`it.toByte()` is valid whether the element type is UByte or Byte.)
                     val secret = taken.map { it.toByte() }.toByteArray()
+                    // secret is a plain caller-owned ByteArray; the coordinator zeroizes it after enclave.store (see DeviceUnlockCoordinator.enroll).
                     EnrolledSlot(out.deviceUuid, secret)
                 } finally {
                     out.deviceSecret.wipe()
