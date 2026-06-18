@@ -56,4 +56,23 @@ class DeviceUnlockCoordinator(
         val secret = enclave.release(reason)
         return UnlockCredential.DeviceSecret(enrollment.deviceUuid, secret)
     }
+
+    /**
+     * Revoke this device's enrollment, idempotently. Removes the slot (a
+     * [VaultBrowseError.DeviceSlotNotFound] is swallowed — already-gone is success; any other
+     * [VaultBrowseError] propagates), then best-effort clears the enclave + metadata. Safe when not
+     * enrolled (nothing to remove). No orphan survives.
+     */
+    suspend fun disenroll(folder: String) {
+        val enrollment = metadata.load()
+        if (enrollment != null) {
+            try {
+                slotPort.removeDeviceSlot(folder, enrollment.deviceUuid)
+            } catch (e: VaultBrowseError.DeviceSlotNotFound) {
+                // already gone — fine
+            }
+        }
+        runCatching { enclave.clear() }
+        runCatching { metadata.clear() }
+    }
 }

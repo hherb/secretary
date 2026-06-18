@@ -102,4 +102,45 @@ class DeviceUnlockCoordinatorTest {
             kotlinx.coroutines.runBlocking { coordinator.unlock("golden", "why") }
         }
     }
+
+    @Test
+    fun `disenroll removes the slot and clears enclave and metadata`() = runTest {
+        val slot = FakeVaultDeviceSlotPort(deviceUuid = uuid, issuedSecret = secret)
+        val enclave = FakeDeviceSecretEnclave()
+        val metadata = FakeEnrollmentMetadataStore()
+        val coordinator = DeviceUnlockCoordinator(slot, enclave, metadata)
+        coordinator.enroll("/vault", "golden", byteArrayOf(0))
+
+        coordinator.disenroll("/vault")
+
+        assertEquals(1, slot.removeCalls.size)
+        assertArrayEquals(uuid, slot.removeCalls[0])
+        assertFalse(enclave.isEnrolled)
+        assertFalse(coordinator.isEnrolled)
+    }
+
+    @Test
+    fun `disenroll tolerates an already-gone slot`() = runTest {
+        val slot = FakeVaultDeviceSlotPort(
+            deviceUuid = uuid, issuedSecret = secret,
+            removeError = VaultBrowseError.DeviceSlotNotFound,
+        )
+        val enclave = FakeDeviceSecretEnclave().apply { store(secret) }
+        val metadata = FakeEnrollmentMetadataStore().apply { save(DeviceEnrollment("golden", uuid)) }
+        val coordinator = DeviceUnlockCoordinator(slot, enclave, metadata)
+
+        coordinator.disenroll("/vault") // must NOT throw
+
+        assertFalse(enclave.isEnrolled)
+        assertFalse(coordinator.isEnrolled)
+    }
+
+    @Test
+    fun `disenroll on a never-enrolled coordinator is a no-op`() = runTest {
+        val slot = FakeVaultDeviceSlotPort()
+        val coordinator = DeviceUnlockCoordinator(slot, FakeDeviceSecretEnclave(), FakeEnrollmentMetadataStore())
+        coordinator.disenroll("/vault")
+        assertEquals(0, slot.removeCalls.size, "no metadata → nothing to remove")
+        assertFalse(coordinator.isEnrolled)
+    }
 }
