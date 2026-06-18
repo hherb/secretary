@@ -7,6 +7,13 @@ package org.secretary.browse
  */
 interface VaultOpenPort {
     suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession
+
+    /**
+     * Opens a vault folder with its 24-word BIP-39 recovery phrase. [phrase] is the UTF-8 bytes of
+     * the (normalized) phrase, forwarded per call and never retained. The real impl runs Argon2id
+     * off the main thread, like [openWithPassword]. Mirror of iOS `VaultOpenPort.openWithRecovery`.
+     */
+    suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession
 }
 
 /**

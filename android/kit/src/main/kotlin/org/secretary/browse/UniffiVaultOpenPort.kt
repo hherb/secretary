@@ -37,6 +37,10 @@ class UniffiVaultOpenPort(
             val output = mapErrors { openFn(vaultFolder.toByteArray(Charsets.UTF_8), password) }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
+
+    // Stub — real Rust binding call added in Task 3 (C.3 slice).
+    override suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession =
+        TODO("openWithRecovery: real uniffi binding wired in Task 3")
 }
 
 /**
