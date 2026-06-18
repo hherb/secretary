@@ -14,6 +14,13 @@ interface VaultOpenPort {
      * off the main thread, like [openWithPassword]. Mirror of iOS `VaultOpenPort.openWithRecovery`.
      */
     suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession
+
+    /**
+     * Opens a vault folder with a per-device wrap slot. [deviceUuid] is the 16-byte device identifier
+     * and [deviceSecret] is the 32-byte wrapped key (derived from Secure Enclave or Keystore storage).
+     * Both are forwarded per call and never retained. Mirror of iOS `VaultOpenPort.openWithDeviceSecret`.
+     */
+    suspend fun openWithDeviceSecret(vaultFolder: String, deviceUuid: ByteArray, deviceSecret: ByteArray): VaultSession
 }
 
 /**

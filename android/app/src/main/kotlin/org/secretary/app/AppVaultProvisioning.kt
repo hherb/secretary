@@ -51,6 +51,11 @@ object AppVaultProvisioning {
     fun goldenRecoveryPhrase(context: Context): String =
         loadInputsJson(context).getString("recovery_mnemonic_phrase")
 
+    /** The golden vault's password, read from the bundled inputs JSON (single source of truth —
+     *  a published KAT, not a real secret). Mirrors [goldenRecoveryPhrase]. */
+    fun goldenPassword(context: Context): String =
+        loadInputsJson(context).getString("password")
+
     private fun loadInputsJson(context: Context): JSONObject {
         val json = try {
             context.assets.open(INPUTS_ASSET).bufferedReader().use { it.readText() }

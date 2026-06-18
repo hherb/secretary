@@ -1,0 +1,46 @@
+package org.secretary.browse
+
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import uniffi.secretary.DeviceEnrollOutput
+import uniffi.secretary.addDeviceSlot as ffiAddDeviceSlot
+import uniffi.secretary.removeDeviceSlot as ffiRemoveDeviceSlot
+
+/**
+ * The real [VaultDeviceSlotPort] over the generated `add_device_slot` / `remove_device_slot`. Runs on
+ * [ioDispatcher] (add_device_slot password-opens the vault → Argon2id). The one-shot
+ * `DeviceSecretOutput` is `takeSecret()`-ed once then `wipe()`-d in a `finally` so the bridge retains
+ * nothing (mirror of iOS's `defer { out.deviceSecret.wipe() }`). The FFI fns are injectable seams
+ * defaulting to the real bindings.
+ */
+class UniffiVaultDeviceSlotPort(
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val addFn: (ByteArray, ByteArray) -> DeviceEnrollOutput = ::ffiAddDeviceSlot,
+    private val removeFn: (ByteArray, ByteArray) -> Unit = ::ffiRemoveDeviceSlot,
+) : VaultDeviceSlotPort {
+    override suspend fun addDeviceSlot(vaultFolder: String, password: ByteArray): EnrolledSlot =
+        withContext(ioDispatcher) {
+            mapErrors {
+                val out = addFn(vaultFolder.toByteArray(Charsets.UTF_8), password)
+                try {
+                    val taken = out.deviceSecret.takeSecret()
+                        ?: throw VaultBrowseError.Failed("device secret handle was empty (already taken?)")
+                    // takeSecret() returns sequence<u8> (a boxed list); build the ByteArray directly to avoid an extra
+                    // boxed copy. The binding's own list is unavoidable here and cannot be zeroized in place — root-cause
+                    // fix (UDL bytes? return) tracked in #261. The FFI handle is wiped in the finally; the coordinator
+                    // zeroizes the returned ByteArray.
+                    val secret = ByteArray(taken.size) { taken[it].toByte() }
+                    // secret is a plain caller-owned ByteArray; the coordinator zeroizes it after enclave.store (see DeviceUnlockCoordinator.enroll).
+                    EnrolledSlot(out.deviceUuid, secret)
+                } finally {
+                    out.deviceSecret.wipe()
+                }
+            }
+        }
+
+    override suspend fun removeDeviceSlot(vaultFolder: String, deviceUuid: ByteArray) =
+        withContext(ioDispatcher) {
+            mapErrors { removeFn(vaultFolder.toByteArray(Charsets.UTF_8), deviceUuid) }
+        }
+}
