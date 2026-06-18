@@ -61,4 +61,45 @@ class DeviceUnlockCoordinatorTest {
         assertEquals(1, slot.removeCalls.size, "the slot was removed")
         assertFalse(coordinator.isEnrolled)
     }
+
+    @Test
+    fun `unlock throws NotEnrolled and never touches the enclave when no metadata`() = runTest {
+        val enclave = FakeDeviceSecretEnclave(releaseError = IllegalStateException("must not be called"))
+        val coordinator = DeviceUnlockCoordinator(FakeVaultDeviceSlotPort(), enclave, FakeEnrollmentMetadataStore())
+        assertThrows(DeviceUnlockError.NotEnrolled::class.java) {
+            kotlinx.coroutines.runBlocking { coordinator.unlock("golden", "why") }
+        }
+    }
+
+    @Test
+    fun `unlock throws VaultSlotMismatch when the enrolled vaultId differs, before release`() = runTest {
+        val metadata = FakeEnrollmentMetadataStore().apply { save(DeviceEnrollment("OTHER", uuid)) }
+        val enclave = FakeDeviceSecretEnclave(releaseError = IllegalStateException("must not be called"))
+        enclave.store(secret) // enclave is enrolled, but the vaultId guard must fire first
+        val coordinator = DeviceUnlockCoordinator(FakeVaultDeviceSlotPort(), enclave, metadata)
+        assertThrows(DeviceUnlockError.VaultSlotMismatch::class.java) {
+            kotlinx.coroutines.runBlocking { coordinator.unlock("golden", "why") }
+        }
+    }
+
+    @Test
+    fun `unlock returns a DeviceSecret credential carrying the released secret and slot uuid`() = runTest {
+        val metadata = FakeEnrollmentMetadataStore().apply { save(DeviceEnrollment("golden", uuid)) }
+        val enclave = FakeDeviceSecretEnclave().apply { store(secret) }
+        val coordinator = DeviceUnlockCoordinator(FakeVaultDeviceSlotPort(), enclave, metadata)
+        val cred = coordinator.unlock("golden", "why")
+        assertArrayEquals(uuid, cred.deviceUuid)
+        assertArrayEquals(secret, cred.secret)
+    }
+
+    @Test
+    fun `unlock propagates a biometric error from the enclave after the guards pass`() = runTest {
+        val metadata = FakeEnrollmentMetadataStore().apply { save(DeviceEnrollment("golden", uuid)) }
+        val enclave = FakeDeviceSecretEnclave(releaseError = DeviceUnlockError.UserCancelled)
+        enclave.store(secret)
+        val coordinator = DeviceUnlockCoordinator(FakeVaultDeviceSlotPort(), enclave, metadata)
+        assertThrows(DeviceUnlockError.UserCancelled::class.java) {
+            kotlinx.coroutines.runBlocking { coordinator.unlock("golden", "why") }
+        }
+    }
 }

@@ -42,4 +42,18 @@ class DeviceUnlockCoordinator(
             slot.secret.fill(0)
         }
     }
+
+    /**
+     * Release the device secret (slice 2: behind a biometric prompt) and wrap it into an
+     * [UnlockCredential.DeviceSecret]. Guards run BEFORE [DeviceSecretEnclave.release] so a stale /
+     * wrong-vault enrollment never triggers a biometric prompt: [DeviceUnlockError.NotEnrolled] if no
+     * metadata, [DeviceUnlockError.VaultSlotMismatch] if the enrolled vaultId differs. The returned
+     * credential owns the secret; the CALLER opens via `openWithCredential` and zeroizes it.
+     */
+    suspend fun unlock(vaultId: String, reason: String): UnlockCredential.DeviceSecret {
+        val enrollment = metadata.load() ?: throw DeviceUnlockError.NotEnrolled
+        if (enrollment.vaultId != vaultId) throw DeviceUnlockError.VaultSlotMismatch
+        val secret = enclave.release(reason)
+        return UnlockCredential.DeviceSecret(enrollment.deviceUuid, secret)
+    }
 }
