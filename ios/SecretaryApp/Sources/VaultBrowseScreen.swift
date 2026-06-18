@@ -80,6 +80,7 @@ struct VaultBrowseScreen: View {
                         } label: {
                             Label("Add record", systemImage: "plus")
                         }
+                        .disabled(viewModel.isWriting)
                     }
                 }
             }
@@ -121,6 +122,7 @@ struct VaultBrowseScreen: View {
                         viewModel.delete(record: record)
                         recordPendingDelete = nil
                     }
+                    .disabled(viewModel.isWriting)
                 }
                 Button("Cancel", role: .cancel) { recordPendingDelete = nil }
             }
@@ -158,12 +160,14 @@ struct VaultBrowseScreen: View {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
                 .tint(.blue)
+                .disabled(viewModel.isWriting)
             } else {
                 Button(role: .destructive) {
                     recordPendingDelete = record
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .disabled(viewModel.isWriting)
             }
         }
         .swipeActions(edge: .leading) {

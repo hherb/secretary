@@ -32,6 +32,7 @@ public final class RecordEditViewModel: ObservableObject {
     @Published public var fields: [EditableField] = []
     @Published public private(set) var error: VaultAccessError?
     @Published public private(set) var committed = false
+    @Published public private(set) var isWriting = false
     // Set by load(record:) on a reveal failure; reset only by a successful load. A fresh VM (always built per-edit) starts clean.
     @Published public private(set) var loadFailed = false
 
@@ -85,8 +86,13 @@ public final class RecordEditViewModel: ObservableObject {
 
     /// Build → validate → write. Sets `committed` on success; sets `error` and
     /// writes nothing on any validation or FFI failure.
+    ///
+    /// Guards on `committed` (render-gap re-tap), `isWriting` (in-flight re-entry),
+    /// and `loadFailed` (refuse to overwrite a record we couldn't fully read).
     public func commit() {
-        guard !loadFailed else { return }   // refuse to overwrite a record we couldn't fully read
+        guard !committed, !isWriting, !loadFailed else { return }
+        isWriting = true
+        defer { isWriting = false }
         let content: RecordContentInput
         do {
             content = try buildContent()

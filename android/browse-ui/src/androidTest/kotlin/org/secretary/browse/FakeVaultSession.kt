@@ -1,10 +1,21 @@
 package org.secretary.browse
 
-/** Instrumented-source VaultSession double (androidTest can't see the unit-test fake). */
+import kotlinx.coroutines.CompletableDeferred
+
+/**
+ * Instrumented-source VaultSession double (androidTest can't see the unit-test fake).
+ *
+ * Deliberately minimal subset of the host `:vault-access` `FakeVaultSession`: covers the
+ * write gate and happy-path recording only. It does NOT include the `writeError` /
+ * `rawWriteThrowable` error-injection fields — those are exercised in the host unit tests
+ * where coroutine-test utilities are available. Do not add error-injection here; keep
+ * this double focused on gate-based concurrency and happy-path instrumented scenarios.
+ */
 class FakeVaultSession(
     private val vaultUuidHex: String,
     private val blocks: List<BlockSummaryView>,
     recordsByBlockHex: Map<String, List<RecordSummaryView>> = emptyMap(),
+    private val writeGate: CompletableDeferred<Unit>? = null,
 ) : VaultSession {
     var wiped: Boolean = false
         private set
@@ -22,13 +33,18 @@ class FakeVaultSession(
         val all = records[hexOfBytes(blockUuid)] ?: return emptyList()
         return if (includeDeleted) all.toList() else all.filter { !it.tombstone }
     }
-    override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) =
+    override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) {
+        writeGate?.await()
         flip(hexOfBytes(blockUuid), hexOfBytes(recordUuid), tombstone = true)
-    override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) =
+    }
+    override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) {
+        writeGate?.await()
         flip(hexOfBytes(blockUuid), hexOfBytes(recordUuid), tombstone = false)
+    }
     override fun wipe() { wiped = true }
 
     override suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray {
+        writeGate?.await()
         val blockHex = hexOfBytes(blockUuid)
         appended += blockHex to content
         val uuid = ByteArray(16).also { it[15] = (nextFakeUuidByte and 0xff).toByte() }
@@ -47,6 +63,7 @@ class FakeVaultSession(
     }
 
     override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) {
+        writeGate?.await()
         val blockHex = hexOfBytes(blockUuid)
         val recordHex = hexOfBytes(recordUuid)
         edited += Triple(blockHex, recordHex, content)

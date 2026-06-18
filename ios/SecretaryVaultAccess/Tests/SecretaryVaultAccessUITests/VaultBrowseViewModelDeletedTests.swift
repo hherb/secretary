@@ -74,4 +74,12 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         vm.refresh()
         XCTAssertNil(vm.error)
     }
+
+    func testIsWritingFalseAtRestAndAfterDelete() {
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+        vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
+        XCTAssertFalse(vm.isWriting)              // false at rest
+        vm.delete(record: vm.visibleRecords[0])
+        XCTAssertFalse(vm.isWriting)              // defer reset ran on synchronous path
+    }
 }

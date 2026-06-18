@@ -44,6 +44,11 @@ class VaultBrowseModel(private val session: VaultSession) {
      *  record-list). Cleared on cancelEdit / commit / lock. Mirror of iOS's edit-sheet presentation. */
     val editing: StateFlow<RecordEditModel?> = _editing.asStateFlow()
 
+    private val _writing = MutableStateFlow(false)
+    /** True while a delete/restore write is in flight. Disables ALL delete/restore buttons in the UI
+     *  (global flag — writes serialize under the session lock, so no concurrent write is allowed). */
+    val writing: StateFlow<Boolean> = _writing.asStateFlow()
+
     /** Set the show-deleted flag; on a real change, re-read the selected block (if any). */
     suspend fun setShowDeleted(value: Boolean) {
         if (value == _showDeleted.value) return
@@ -143,17 +148,24 @@ class VaultBrowseModel(private val session: VaultSession) {
     /**
      * Run a mutation against the selected block, then re-read on SUCCESS only. A failed mutation
      * surfaces [error] but deliberately leaves [selectedRecords] (and any reveal) intact — a rejected
-     * delete must not blank the visible list. No-op if no block is selected. Mirror of iOS commitThenReload.
+     * delete must not blank the visible list. No-op if no block is selected or a write is already
+     * in flight (global re-entrancy guard — writes serialize under the session lock). Mirror of iOS commitThenReload.
      */
     private suspend fun commitThenReload(op: suspend (BlockSummaryView) -> Unit) {
         val block = _selectedBlock.value ?: return
+        if (_writing.value) return
+        _writing.value = true
         try {
-            op(block)
-        } catch (e: VaultBrowseError) {
-            _error.value = e
-            return
+            try {
+                op(block)
+            } catch (e: VaultBrowseError) {
+                _error.value = e
+                return
+            }
+            selectBlock(block)
+        } finally {
+            _writing.value = false
         }
-        selectBlock(block)
     }
 
     /** Return to the block list, clearing any read error left from a failed selection. */
@@ -168,6 +180,7 @@ class VaultBrowseModel(private val session: VaultSession) {
     fun lock() {
         _revealed.value = emptyMap()
         _editing.value = null
+        _writing.value = false
         session.wipe()
         _blocks.value = emptyList()
         _selectedBlock.value = null

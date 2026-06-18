@@ -24,6 +24,12 @@ public final class VaultBrowseViewModel: ObservableObject {
         }
     }
 
+    /// True for the brief window while a delete or restore is being committed to
+    /// disk. Synchronous on @MainActor so it cannot truly re-enter; this flag is
+    /// UX parity (disables swipe/dialog buttons during the write) rather than a
+    /// correctness guard.
+    @Published public private(set) var isWriting = false
+
     /// The currently-selected block uuid, so delete/restore can re-read it.
     private var selectedBlockUuid: [UInt8]?
 
@@ -84,6 +90,9 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// any reveal) intact — a rejected delete must not blank the visible list.
     private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
         guard let blockUuid = selectedBlockUuid else { return }
+        guard !isWriting else { return }
+        isWriting = true
+        defer { isWriting = false }
         do {
             try op(blockUuid)
         } catch let e as VaultAccessError {

@@ -1,11 +1,13 @@
 package org.secretary.browse.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 import org.secretary.browse.BlockSummaryView
@@ -65,5 +67,31 @@ class RecordEditFormTest {
         composeRule.waitForIdle()
         assert(fake.edited.size == 1)
         assert(fake.edited.first().second == recUuid)
+    }
+
+    @Test
+    fun saveDisabledWhileWriteInFlight() {
+        val gate = CompletableDeferred<Unit>()
+        val session = FakeVaultSession(
+            "abcd", listOf(block), mapOf(block.uuidHex to listOf(existing)),
+            writeGate = gate,
+        )
+        val vm = VaultBrowseViewModel(VaultBrowseModel(session))
+        openBlock(vm)
+        // Open the Add form and fill a valid field.
+        composeRule.onNodeWithTag("add-record").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("record-type-input").performTextInput("note")
+        composeRule.onNodeWithTag("add-field").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("field-name-0").performTextInput("body")
+        composeRule.onNodeWithTag("field-value-0").performTextInput("hello")
+        // Tap Save — commit launches and parks on the gate, leaving the main thread idle.
+        composeRule.onNodeWithTag("save-record").performClick()
+        composeRule.waitForIdle()
+        // The inFlight flag is true while the gate is open → Save must be disabled.
+        composeRule.onNodeWithTag("save-record").assertIsNotEnabled()
+        // Let the write finish so the coroutine tears down cleanly.
+        gate.complete(Unit)
     }
 }
