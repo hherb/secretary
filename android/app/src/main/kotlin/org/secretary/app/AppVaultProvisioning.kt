@@ -55,6 +55,20 @@ object AppVaultProvisioning {
         return parseVaultUuidHex(JSONObject(json).getString("vault_uuid"))
     }
 
+    /** The golden vault's 24-word BIP-39 recovery phrase, read from the bundled inputs JSON
+     *  (single source of truth — a published KAT, not a real secret). */
+    fun goldenRecoveryPhrase(context: Context): String {
+        val json = try {
+            context.assets.open(INPUTS_ASSET).bufferedReader().use { it.readText() }
+        } catch (e: IOException) {
+            throw IllegalStateException(
+                "$INPUTS_ASSET not bundled in the APK — the stageGoldenVaultForApp Gradle task did not run",
+                e,
+            )
+        }
+        return JSONObject(json).getString("recovery_mnemonic_phrase")
+    }
+
     // AssetManager.list() returns the children of a directory, or an empty array for a leaf
     // file. The golden vault has no empty directories, so empty-children == file. A genuinely
     // empty asset directory would be mis-staged as a leaf file, but this pinned fixture has none.
