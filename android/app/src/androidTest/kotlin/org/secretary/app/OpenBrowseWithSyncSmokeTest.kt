@@ -41,19 +41,25 @@ class OpenBrowseWithSyncSmokeTest {
         toClean += stateBase
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
 
-        // Assemble on the main thread (makeVaultSync is Looper-gated).
+        // Assemble on the main thread (makeVaultSync is Looper-gated). openBrowseWithSync does not
+        // zeroize its caller's buffer (the caller owns it), so zeroize after the open returns.
+        val openPw = goldenPassword.toByteArray()
         val session = withContext(Dispatchers.Main) {
-            openBrowseWithSync(uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid,
-                goldenPassword.toByteArray())
+            openBrowseWithSync(uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, openPw)
         }
+        openPw.fill(0)
 
         assertTrue("browse VM loaded blocks", session.browse.blocks.value.isNotEmpty())
 
         // Background sync-at-unlock with a password copy; join the job (test-only) and assert clean.
+        // launchSyncAtUnlock copies internally and zeroizes the copy; the ORIGINAL here is ours to
+        // wipe after the pass settles.
+        val syncPw = goldenPassword.toByteArray()
         val job = withContext(Dispatchers.Main) {
-            launchSyncAtUnlock(this, goldenPassword.toByteArray(), session.sync::syncAtUnlock)
+            launchSyncAtUnlock(this, syncPw, session.sync::syncAtUnlock)
         }
         job.join()
+        syncPw.fill(0)
         assertNull("clean silent pass surfaces no error", session.sync.lastError.value)
         assertTrue("review not raised on a clean single-device pass", !session.sync.reviewNeeded.value)
 
