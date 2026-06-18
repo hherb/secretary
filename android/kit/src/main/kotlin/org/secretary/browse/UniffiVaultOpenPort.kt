@@ -25,8 +25,9 @@ import java.security.SecureRandom
  *
  * [openWithPassword] re-derives the vault key with Argon2id, so it runs on [ioDispatcher]
  * (default [Dispatchers.IO]) to keep the caller responsive. The password [ByteArray] is forwarded
- * per call (UTF-8 path + raw password bytes) and never retained. The open function is an injectable
- * seam defaulting to the real binding.
+ * per call (UTF-8 path + raw password bytes) and never retained. [openWithRecovery] behaves
+ * identically — it also runs on [ioDispatcher] (Argon2id) and forwards the phrase bytes per call
+ * without retaining them. The open function is an injectable seam defaulting to the real binding.
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,

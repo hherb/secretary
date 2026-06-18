@@ -5,6 +5,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -24,6 +25,7 @@ class UnlockScreenRecoveryUiTest {
         composeRule.onNodeWithTag("unlock-button").performClick()
 
         val cred = captured
+        assertNotNull("onUnlock was not called", cred)
         assertTrue("expected a Recovery credential", cred is UnlockCredential.Recovery)
         // Normalized: lowercased, single-spaced, trimmed, UTF-8.
         assertArrayEquals("alpha bravo".toByteArray(Charsets.UTF_8), cred!!.secret)
@@ -38,6 +40,7 @@ class UnlockScreenRecoveryUiTest {
         composeRule.onNodeWithTag("unlock-button").performClick()
 
         val cred = captured
+        assertNotNull("onUnlock was not called", cred)
         assertTrue("expected a Password credential", cred is UnlockCredential.Password)
         assertArrayEquals("hunter2".toByteArray(Charsets.UTF_8), cred!!.secret)
     }

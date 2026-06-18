@@ -29,9 +29,9 @@ data class BrowseSession(
  * IO internally, returning to the caller's (main) dispatcher afterward, so [makeVaultSync] is still
  * on main.
  *
- * Does NOT zeroize the credential bytes and does NOT launch sync-at-unlock — the caller owns both
- * (see AppRoot: it zeroizes after handing a copy to launchSyncAtUnlock, and only for the password
- * credential; a recovery open has no password to sync with).
+ * Does NOT zeroize the credential bytes and does NOT launch sync-at-unlock — the caller owns both.
+ * AppRoot zeroizes the credential bytes unconditionally (both credentials, in its `finally` block);
+ * the copy handed to launchSyncAtUnlock is password-only (a recovery open has no password to sync with).
  *
  * @throws the typed open errors from [VaultOpenPort] (e.g. WrongPasswordOrCorrupt /
  *   WrongRecoveryOrCorrupt / InvalidRecoveryPhrase) — the caller catches and returns to Unlock.
