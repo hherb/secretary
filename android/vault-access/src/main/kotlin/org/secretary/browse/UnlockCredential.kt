@@ -14,6 +14,7 @@ sealed interface UnlockCredential {
 
     class Password(override val secret: ByteArray) : UnlockCredential
     class Recovery(override val secret: ByteArray) : UnlockCredential
+    class DeviceSecret(val deviceUuid: ByteArray, override val secret: ByteArray) : UnlockCredential
 }
 
 /**
@@ -29,4 +30,5 @@ suspend fun openWithCredential(
 ): VaultSession = when (credential) {
     is UnlockCredential.Password -> openPort.openWithPassword(vaultFolder, credential.secret)
     is UnlockCredential.Recovery -> openPort.openWithRecovery(vaultFolder, credential.secret)
+    is UnlockCredential.DeviceSecret -> openPort.openWithDeviceSecret(vaultFolder, credential.deviceUuid, credential.secret)
 }
