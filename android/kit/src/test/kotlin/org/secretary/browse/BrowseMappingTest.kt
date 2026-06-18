@@ -26,6 +26,18 @@ class BrowseMappingTest {
     }
 
     @Test
+    fun `maps the recovery-relevant arms to their domain counterparts`() {
+        assertEquals(
+            VaultBrowseError.WrongRecoveryOrCorrupt,
+            mapVaultBrowseError(VaultException.WrongMnemonicOrCorrupt()),
+        )
+        assertEquals(
+            VaultBrowseError.InvalidRecoveryPhrase("bad word"),
+            mapVaultBrowseError(VaultException.InvalidMnemonic("bad word")),
+        )
+    }
+
+    @Test
     fun `folds a still-unmapped arm into Failed carrying the variant name`() {
         val mapped = mapVaultBrowseError(VaultException.RecipientNotPresent())
         assertTrue(mapped is VaultBrowseError.Failed)

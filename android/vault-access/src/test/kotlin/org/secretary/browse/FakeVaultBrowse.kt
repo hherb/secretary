@@ -115,15 +115,32 @@ private fun FieldContentInput.toRevealableField(): RevealableField = when (val v
     is FieldContentValue.Bytes -> RevealableField(name, FieldKind.Bytes) { RevealedValue.Bytes(v.value) }
 }
 
-/** Scriptable [VaultOpenPort]: returns [session] or throws [openError]; records opened folders. */
+/**
+ * Scriptable [VaultOpenPort]: returns [session] or throws the matching error; records every open by
+ * credential kind so dispatch tests can assert which path fired with which bytes.
+ */
 class FakeVaultOpenPort(
     private val session: VaultSession = FakeVaultSession("00", emptyList()),
     private val openError: VaultBrowseError? = null,
+    private val recoveryError: VaultBrowseError? = null,
 ) : VaultOpenPort {
     val openedFolders: MutableList<String> = mutableListOf()
+    /** Copies of the password bytes seen by each openWithPassword call, in order. */
+    val openedWithPassword: MutableList<ByteArray> = mutableListOf()
+    /** Copies of the phrase bytes seen by each openWithRecovery call, in order. */
+    val openedWithRecovery: MutableList<ByteArray> = mutableListOf()
+
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession {
         openedFolders += vaultFolder
+        openedWithPassword += password.copyOf()
         openError?.let { throw it }
+        return session
+    }
+
+    override suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession {
+        openedFolders += vaultFolder
+        openedWithRecovery += phrase.copyOf()
+        recoveryError?.let { throw it }
         return session
     }
 }

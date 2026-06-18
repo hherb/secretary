@@ -1,7 +1,9 @@
 package org.secretary.app
 
+import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
+import org.secretary.browse.openWithCredential
 import org.secretary.browse.ui.VaultBrowseViewModel
 import org.secretary.sync.ChangeDetectionMonitor
 import org.secretary.sync.makeVaultSync
@@ -20,26 +22,28 @@ data class BrowseSession(
 )
 
 /**
- * Opens the vault for browsing and assembles the sync model+monitor for the same folder.
+ * Opens the vault for browsing with the supplied [credential] and assembles the sync model+monitor
+ * for the same folder.
  *
- * MUST be called on the main thread: [makeVaultSync] is Looper-gated. [openPort.openWithPassword]
- * suspends and hops to IO internally, returning to the caller's (main) dispatcher afterward, so the
- * subsequent [makeVaultSync] call is still on main.
+ * MUST be called on the main thread: [makeVaultSync] is Looper-gated. The open suspends and hops to
+ * IO internally, returning to the caller's (main) dispatcher afterward, so [makeVaultSync] is still
+ * on main.
  *
- * Does NOT launch sync-at-unlock and does NOT zeroize [password] — the caller owns the original
- * buffer (it zeroizes the original after handing a copy to [launchSyncAtUnlock]; see AppRoot).
+ * Does NOT zeroize the credential bytes and does NOT launch sync-at-unlock — the caller owns both.
+ * AppRoot zeroizes the credential bytes unconditionally (both credentials, in its `finally` block);
+ * the copy handed to launchSyncAtUnlock is password-only (a recovery open has no password to sync with).
  *
- * @throws the same typed open errors as [VaultOpenPort.openWithPassword] (e.g. wrong password) —
- *   the caller catches and returns the user to Unlock.
+ * @throws the typed open errors from [VaultOpenPort] (e.g. WrongPasswordOrCorrupt /
+ *   WrongRecoveryOrCorrupt / InvalidRecoveryPhrase) — the caller catches and returns to Unlock.
  */
 suspend fun openBrowseWithSync(
     openPort: VaultOpenPort,
     folder: File,
     stateDir: File,
     vaultUuid: ByteArray,
-    password: ByteArray,
+    credential: UnlockCredential,
 ): BrowseSession {
-    val session = openPort.openWithPassword(folder.path, password)
+    val session = openWithCredential(openPort, folder.path, credential)
     val browseModel = VaultBrowseModel(session)
     browseModel.loadBlocks()
     val (syncModel, monitor) = makeVaultSync(folder, stateDir, vaultUuid)

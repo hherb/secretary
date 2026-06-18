@@ -43,7 +43,15 @@ object AppVaultProvisioning {
     }
 
     /** The pinned 16-byte vault UUID, parsed from the bundled inputs JSON (single source of truth). */
-    fun goldenVaultUuid(context: Context): ByteArray {
+    fun goldenVaultUuid(context: Context): ByteArray =
+        parseVaultUuidHex(loadInputsJson(context).getString("vault_uuid"))
+
+    /** The golden vault's 24-word BIP-39 recovery phrase, read from the bundled inputs JSON
+     *  (single source of truth — a published KAT, not a real secret). */
+    fun goldenRecoveryPhrase(context: Context): String =
+        loadInputsJson(context).getString("recovery_mnemonic_phrase")
+
+    private fun loadInputsJson(context: Context): JSONObject {
         val json = try {
             context.assets.open(INPUTS_ASSET).bufferedReader().use { it.readText() }
         } catch (e: IOException) {
@@ -52,7 +60,7 @@ object AppVaultProvisioning {
                 e,
             )
         }
-        return parseVaultUuidHex(JSONObject(json).getString("vault_uuid"))
+        return JSONObject(json)
     }
 
     // AssetManager.list() returns the children of a directory, or an empty array for a leaf

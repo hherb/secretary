@@ -11,6 +11,7 @@ import uniffi.secretary.Record
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
+import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.readBlock as ffiReadBlock
 import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
@@ -24,17 +25,25 @@ import java.security.SecureRandom
  *
  * [openWithPassword] re-derives the vault key with Argon2id, so it runs on [ioDispatcher]
  * (default [Dispatchers.IO]) to keep the caller responsive. The password [ByteArray] is forwarded
- * per call (UTF-8 path + raw password bytes) and never retained. The open function is an injectable
- * seam defaulting to the real binding.
+ * per call (UTF-8 path + raw password bytes) and never retained. [openWithRecovery] behaves
+ * identically — it also runs on [ioDispatcher] (Argon2id) and forwards the phrase bytes per call
+ * without retaining them. The open function is an injectable seam defaulting to the real binding.
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val deviceUuids: DeviceUuidProvider? = null,
     private val openFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithPassword,
+    private val recoveryFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithRecovery,
 ) : VaultOpenPort {
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession =
         withContext(ioDispatcher) {
             val output = mapErrors { openFn(vaultFolder.toByteArray(Charsets.UTF_8), password) }
+            UniffiVaultSession(output, ioDispatcher, deviceUuids)
+        }
+
+    override suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession =
+        withContext(ioDispatcher) {
+            val output = mapErrors { recoveryFn(vaultFolder.toByteArray(Charsets.UTF_8), phrase) }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
 }

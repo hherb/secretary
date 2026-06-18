@@ -14,6 +14,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.UnlockCredential
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.sync.ui.SYNC_BADGE_TAG
 import java.io.File
@@ -49,7 +50,9 @@ class BrowseWithSyncScreenUiTest {
 
         val pw = goldenPassword.toByteArray()
         val session = withContext(Dispatchers.Main) {
-            openBrowseWithSync(uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, pw)
+            openBrowseWithSync(
+                uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid,
+                UnlockCredential.Password(pw))
         }
         pw.fill(0)
 
