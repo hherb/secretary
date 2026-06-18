@@ -2,11 +2,13 @@ package org.secretary.browse.ui
 
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 import org.secretary.browse.BlockSummaryView
@@ -43,6 +45,24 @@ class BrowseScreenSoftDeleteTest {
         composeRule.onNodeWithTag("delete-$liveUuid").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         composeRule.onAllNodesWithTag("delete-$liveUuid").assertCountEquals(0)   // gone from live view
+    }
+
+    @Test
+    fun deleteDisabledWhileWriteInFlight() {
+        val gate = CompletableDeferred<Unit>()
+        val session = FakeVaultSession(
+            "abcd", listOf(block), mapOf(block.uuidHex to listOf(live)),
+            writeGate = gate,
+        )
+        val vm = VaultBrowseViewModel(VaultBrowseModel(session))
+        openBlock(vm)
+        // Click Delete — the write coroutine parks on the gate, leaving main thread idle.
+        composeRule.onNodeWithTag("delete-$liveUuid").performClick()
+        composeRule.waitForIdle()
+        // The writing flag is true while the gate is open → Delete must be disabled.
+        composeRule.onNodeWithTag("delete-$liveUuid").assertIsNotEnabled()
+        // Let the write finish so the coroutine tears down cleanly.
+        gate.complete(Unit)
     }
 
     @Test

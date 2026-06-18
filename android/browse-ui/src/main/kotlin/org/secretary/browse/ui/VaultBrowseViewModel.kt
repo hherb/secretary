@@ -50,6 +50,9 @@ class VaultBrowseViewModel(private val model: VaultBrowseModel) : ViewModel() {
 
     val showDeleted: StateFlow<Boolean> = model.showDeleted
 
+    /** True while a delete/restore write is in flight (disables list write buttons). */
+    val writing: StateFlow<Boolean> = model.writing
+
     /** Toggle show-deleted (suspend on the model → launched on viewModelScope). */
     fun setShowDeleted(value: Boolean) {
         viewModelScope.launch { model.setShowDeleted(value) }

@@ -42,6 +42,7 @@ fun RecordEditForm(
     val fields by model.fields.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
     val loadFailed by model.loadFailed.collectAsStateWithLifecycle()
+    val inFlight by model.inFlight.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(
@@ -51,7 +52,7 @@ fun RecordEditForm(
             TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel-record")) { Text("Cancel") }
             TextButton(
                 onClick = onCommit,
-                enabled = !loadFailed,
+                enabled = !loadFailed && !inFlight,
                 modifier = Modifier.testTag("save-record"),
             ) { Text("Save") }
         }

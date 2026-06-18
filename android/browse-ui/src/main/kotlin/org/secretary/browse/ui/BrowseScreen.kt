@@ -50,6 +50,7 @@ fun BrowseScreen(
     val revealed by viewModel.revealed.collectAsStateWithLifecycle()
     val showDeleted by viewModel.showDeleted.collectAsStateWithLifecycle()
     val editing by viewModel.editing.collectAsStateWithLifecycle()
+    val writing by viewModel.writing.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
@@ -84,6 +85,7 @@ fun BrowseScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(
                         onClick = { viewModel.startAdd() },
+                        enabled = !writing,
                         modifier = Modifier.testTag("add-record"),
                     ) { Text("Add") }
                     TextButton(onClick = { viewModel.back() }) { Text("Back") }
@@ -106,6 +108,7 @@ fun BrowseScreen(
                         record = r,
                         revealed = revealed,
                         autoHideMillis = autoHideMillis,
+                        writing = writing,
                         onReveal = viewModel::reveal,
                         onHide = viewModel::hide,
                         onDelete = viewModel::delete,
@@ -133,6 +136,7 @@ private fun RecordRow(
     record: RecordSummaryView,
     revealed: Map<String, RevealedValue>,
     autoHideMillis: Long,
+    writing: Boolean,
     onReveal: (RecordSummaryView, RevealableField) -> Unit,
     onHide: (String, String) -> Unit,
     onDelete: (RecordSummaryView) -> Unit,
@@ -148,6 +152,7 @@ private fun RecordRow(
             if (record.tombstone) {
                 TextButton(
                     onClick = { onRestore(record) },
+                    enabled = !writing,
                     modifier = Modifier.testTag("restore-${record.uuidHex}"),
                 ) { Text("Restore") }
             } else {
@@ -158,6 +163,7 @@ private fun RecordRow(
                     ) { Text("Edit") }
                     TextButton(
                         onClick = { onDelete(record) },
+                        enabled = !writing,
                         modifier = Modifier.testTag("delete-${record.uuidHex}"),
                     ) { Text("Delete") }
                 }
