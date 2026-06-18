@@ -136,6 +136,21 @@ class DeviceUnlockCoordinatorTest {
     }
 
     @Test
+    fun `disenroll propagates a non-DeviceSlotNotFound removal error`() = runTest {
+        val slot = FakeVaultDeviceSlotPort(
+            deviceUuid = uuid, issuedSecret = secret,
+            removeError = VaultBrowseError.FolderInvalid("bad folder"),
+        )
+        val enclave = FakeDeviceSecretEnclave().apply { store(secret) }
+        val metadata = FakeEnrollmentMetadataStore().apply { save(DeviceEnrollment("golden", uuid)) }
+        val coordinator = DeviceUnlockCoordinator(slot, enclave, metadata)
+
+        assertThrows(VaultBrowseError.FolderInvalid::class.java) {
+            kotlinx.coroutines.runBlocking { coordinator.disenroll("/vault") }
+        }
+    }
+
+    @Test
     fun `disenroll on a never-enrolled coordinator is a no-op`() = runTest {
         val slot = FakeVaultDeviceSlotPort()
         val coordinator = DeviceUnlockCoordinator(slot, FakeDeviceSecretEnclave(), FakeEnrollmentMetadataStore())
