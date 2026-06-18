@@ -1,5 +1,7 @@
 package org.secretary.browse
 
+import kotlinx.coroutines.CompletableDeferred
+
 /** Build a text field whose reveal returns a canned value (host tests only). */
 fun textField(name: String, value: String): RevealableField =
     RevealableField(name, FieldKind.Text) { RevealedValue.Text(value) }
@@ -15,6 +17,9 @@ class FakeVaultSession(
     /** A non-[VaultBrowseError] throwable a write raises raw — models a uniffi InternalException
      *  (Rust panic) that mapErrors does NOT translate, so callers must fold it themselves. */
     private val rawWriteThrowable: Throwable? = null,
+    /** When set, every write suspends on this gate before recording — lets a test hold a write
+     *  in flight while a second call hits the model's re-entrancy guard (a faithful race, not a sleep). */
+    private val writeGate: CompletableDeferred<Unit>? = null,
 ) : VaultSession {
     var wiped: Boolean = false
         private set
@@ -45,16 +50,19 @@ class FakeVaultSession(
         return if (includeDeleted) all.toList() else all.filter { !it.tombstone }
     }
     override suspend fun tombstoneRecord(blockUuid: ByteArray, recordUuid: ByteArray) {
+        writeGate?.await()
         writeError?.let { throw it }
         tombstoned += hexOfBytes(blockUuid) to hexOfBytes(recordUuid)
         flipTombstone(hexOfBytes(blockUuid), hexOfBytes(recordUuid), tombstone = true)
     }
     override suspend fun resurrectRecord(blockUuid: ByteArray, recordUuid: ByteArray) {
+        writeGate?.await()
         writeError?.let { throw it }
         resurrected += hexOfBytes(blockUuid) to hexOfBytes(recordUuid)
         flipTombstone(hexOfBytes(blockUuid), hexOfBytes(recordUuid), tombstone = false)
     }
     override suspend fun appendRecord(blockUuid: ByteArray, content: RecordContentInput): ByteArray {
+        writeGate?.await()
         writeError?.let { throw it }
         rawWriteThrowable?.let { throw it }
         val blockHex = hexOfBytes(blockUuid)
@@ -76,6 +84,7 @@ class FakeVaultSession(
     }
 
     override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) {
+        writeGate?.await()
         writeError?.let { throw it }
         rawWriteThrowable?.let { throw it }
         val blockHex = hexOfBytes(blockUuid)

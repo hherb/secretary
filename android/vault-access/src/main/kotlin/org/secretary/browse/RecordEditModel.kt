@@ -55,6 +55,11 @@ class RecordEditModel(
     private val _committed = MutableStateFlow(false)
     val committed: StateFlow<Boolean> = _committed.asStateFlow()
 
+    private val _inFlight = MutableStateFlow(false)
+    /** True while a [commit] write is in flight. Blocks a concurrent second commit; the UI also
+     *  disables Save while set. Reset in [commit]'s finally on success, typed error, and raw throwable. */
+    val inFlight: StateFlow<Boolean> = _inFlight.asStateFlow()
+
     private val _loadFailed = MutableStateFlow(false)
     /** Set by [load] on a reveal failure; while true, [commit] refuses to write (never clobber a
      *  record we could not fully read). A fresh model (always built per-edit) starts clean. */
@@ -118,28 +123,33 @@ class RecordEditModel(
      * `RecordEditViewModel.commit`.
      */
     suspend fun commit() {
-        if (_loadFailed.value) return
-        val content = buildContent() ?: return // sets _error on hex failure
-        content.validate()?.let {
-            _error.value = mapValidation(it)
-            return
-        }
+        if (_inFlight.value || _committed.value || _loadFailed.value) return
+        _inFlight.value = true
         try {
-            when (val m = mode) {
-                Mode.Add -> session.appendRecord(blockUuid, content)
-                is Mode.Edit -> session.editRecord(blockUuid, m.recordUuid, content)
+            val content = buildContent() ?: return // sets _error on hex failure
+            content.validate()?.let {
+                _error.value = mapValidation(it)
+                return
             }
-            _error.value = null
-            _committed.value = true
-        } catch (e: VaultBrowseError) {
-            _error.value = e
-        } catch (e: CancellationException) {
-            throw e // never swallow coroutine cancellation (commit is suspend)
-        } catch (e: Exception) {
-            // Mirror load()/reveal(): an unexpected throwable from the FFI write (e.g. a uniffi
-            // InternalException from a Rust panic — NOT a VaultException, so mapErrors lets it
-            // through) must not escape commit() and crash the launching coroutine. Fold to Failed.
-            _error.value = VaultBrowseError.Failed(e.toString())
+            try {
+                when (val m = mode) {
+                    Mode.Add -> session.appendRecord(blockUuid, content)
+                    is Mode.Edit -> session.editRecord(blockUuid, m.recordUuid, content)
+                }
+                _error.value = null
+                _committed.value = true
+            } catch (e: VaultBrowseError) {
+                _error.value = e
+            } catch (e: CancellationException) {
+                throw e // never swallow coroutine cancellation (commit is suspend)
+            } catch (e: Exception) {
+                // Mirror load()/reveal(): an unexpected throwable from the FFI write (e.g. a uniffi
+                // InternalException from a Rust panic — NOT a VaultException, so mapErrors lets it
+                // through) must not escape commit() and crash the launching coroutine. Fold to Failed.
+                _error.value = VaultBrowseError.Failed(e.toString())
+            }
+        } finally {
+            _inFlight.value = false
         }
     }
 

@@ -1,5 +1,10 @@
 package org.secretary.browse
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -199,5 +204,45 @@ class RecordEditModelTest {
         assertEquals(listOf("x"), m.tags.value)
         m.removeTag(0)
         assertTrue(m.tags.value.isEmpty())
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `concurrent commit appends exactly once`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val s = FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to emptyList()), writeGate = gate)
+        val m = addModel(s)
+        m.setRecordType("note"); m.addField(); m.setFieldName(0, "body"); m.setFieldRawText(0, "x")
+        launch { m.commit() }   // grabs inFlight, parks on the gate inside appendRecord
+        launch { m.commit() }   // sees inFlight == true, returns without appending
+        runCurrent()
+        assertTrue(m.inFlight.value)
+        assertEquals(0, s.appended.size)
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(1, s.appended.size)
+        assertFalse(m.inFlight.value)
+        assertTrue(m.committed.value)
+    }
+
+    @Test
+    fun `second commit after success does not append again`() = runTest {
+        val s = session()
+        val m = addModel(s)
+        m.setRecordType("note"); m.addField(); m.setFieldName(0, "body"); m.setFieldRawText(0, "x")
+        m.commit()
+        assertTrue(m.committed.value)
+        m.commit()   // post-success re-tap (render gap before the form clears) — committed guard blocks it
+        assertEquals(1, s.appended.size)
+    }
+
+    @Test
+    fun `failed write resets inFlight`() = runTest {
+        val s = session(writeError = VaultBrowseError.SaveCryptoFailure("boom"))
+        val m = addModel(s)
+        m.setRecordType("note"); m.addField(); m.setFieldName(0, "body"); m.setFieldRawText(0, "x")
+        m.commit()
+        assertFalse(m.inFlight.value)
+        assertFalse(m.committed.value)
     }
 }
