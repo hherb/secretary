@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-18-c3-android-sync-on-browse-shipped.md
+docs/handoffs/2026-06-19-c3-android-recovery-open-shipped.md
