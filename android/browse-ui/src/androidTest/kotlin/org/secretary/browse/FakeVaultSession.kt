@@ -2,7 +2,15 @@ package org.secretary.browse
 
 import kotlinx.coroutines.CompletableDeferred
 
-/** Instrumented-source VaultSession double (androidTest can't see the unit-test fake). */
+/**
+ * Instrumented-source VaultSession double (androidTest can't see the unit-test fake).
+ *
+ * Deliberately minimal subset of the host `:vault-access` `FakeVaultSession`: covers the
+ * write gate and happy-path recording only. It does NOT include the `writeError` /
+ * `rawWriteThrowable` error-injection fields — those are exercised in the host unit tests
+ * where coroutine-test utilities are available. Do not add error-injection here; keep
+ * this double focused on gate-based concurrency and happy-path instrumented scenarios.
+ */
 class FakeVaultSession(
     private val vaultUuidHex: String,
     private val blocks: List<BlockSummaryView>,
