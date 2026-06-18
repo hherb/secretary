@@ -17,7 +17,14 @@ class UnlockScreenRecoveryUiTest {
     @Test
     fun recoveryMode_submitsANormalizedRecoveryCredential() {
         var captured: UnlockCredential? = null
-        composeRule.setContent { UnlockScreen(onUnlock = { captured = it }) }
+        composeRule.setContent {
+            UnlockScreen(
+                isEnrolled = false,
+                onUnlock = { captured = it },
+                onEnrollChoice = {},
+                onBiometricUnlock = {},
+            )
+        }
 
         // Switch to recovery mode, type a noisy phrase, submit.
         composeRule.onNodeWithTag("mode-recovery").performClick()
@@ -34,7 +41,14 @@ class UnlockScreenRecoveryUiTest {
     @Test
     fun passwordMode_submitsAPasswordCredential() {
         var captured: UnlockCredential? = null
-        composeRule.setContent { UnlockScreen(onUnlock = { captured = it }) }
+        composeRule.setContent {
+            UnlockScreen(
+                isEnrolled = false,
+                onUnlock = { captured = it },
+                onEnrollChoice = {},
+                onBiometricUnlock = {},
+            )
+        }
 
         composeRule.onNodeWithTag("password-field").performTextInput("hunter2")
         composeRule.onNodeWithTag("unlock-button").performClick()

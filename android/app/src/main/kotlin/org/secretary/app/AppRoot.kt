@@ -53,9 +53,15 @@ fun AppRoot() {
     }
 
     when (val r = route) {
-        is Route.Unlock -> UnlockScreen(onUnlock = { credential ->
-            scope.launch { route = unlockAndOpen(context, scope, credential) }
-        })
+        is Route.Unlock -> UnlockScreen(
+            // TODO(Task 6): wire device-unlock
+            isEnrolled = false,
+            onEnrollChoice = {},
+            onBiometricUnlock = {},
+            onUnlock = { credential ->
+                scope.launch { route = unlockAndOpen(context, scope, credential) }
+            },
+        )
         is Route.Browse -> {
             // The monitor runs only while Browse is composed: started on enter, stopped on dispose
             // (background → Unlock, or teardown). The browse session is also wiped on dispose so the
