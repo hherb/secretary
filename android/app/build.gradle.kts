@@ -69,6 +69,11 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // BiometricPrompt + CryptoObject for the device-secret unlock gate. Pulls androidx.fragment
+    // transitively; declared explicitly because MainActivity extends FragmentActivity.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+
     // Explicit version: the only contributor of a concrete activity-compose version was the
     // debugImplementation `ui-tooling` (a `debug`-only transitive), which does not extend into
     // the androidTest compile classpath — so a bare coordinate left debugAndroidTestCompileClasspath
