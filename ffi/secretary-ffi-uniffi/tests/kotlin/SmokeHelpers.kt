@@ -100,6 +100,21 @@ val RECORD_EDIT_BLOCK_UUID = ByteArray(16) { 0xB1.toByte() }
 val RECORD_EDIT_RECORD_UUID = ByteArray(16) { 0xC2.toByte() }
 val RECORD_EDIT_DEVICE_UUID = ByteArray(16) { 0x07.toByte() }
 
+// Block-CRUD slice pinned UUIDs (mirror the Swift SmokeHelpers.swift
+// blockCrud* constants). Distinct from all above to avoid collisions when
+// assertions run in sequence on fresh-copy vaults.
+// BLOCK_CRUD_BLOCK_UUID     — used by create_block and rename_block tests.
+// BLOCK_CRUD_SRC_BLOCK_UUID — source block in move_record tests.
+// BLOCK_CRUD_TGT_BLOCK_UUID — target block in move_record tests.
+// BLOCK_CRUD_SRC_RECORD_UUID— record seeded into source before the move.
+// BLOCK_CRUD_NEW_RECORD_UUID— caller-minted UUID assigned to the copy.
+val BLOCK_CRUD_BLOCK_UUID = ByteArray(16) { 0xE1.toByte() }
+val BLOCK_CRUD_SRC_BLOCK_UUID = ByteArray(16) { 0xE2.toByte() }
+val BLOCK_CRUD_TGT_BLOCK_UUID = ByteArray(16) { 0xE3.toByte() }
+val BLOCK_CRUD_SRC_RECORD_UUID = ByteArray(16) { 0xE4.toByte() }
+val BLOCK_CRUD_NEW_RECORD_UUID = ByteArray(16) { 0xE5.toByte() }
+val BLOCK_CRUD_DEVICE_UUID = ByteArray(16) { 0x07.toByte() }
+
 // =============================================================================
 // File-level mutable assertion state
 // =============================================================================
