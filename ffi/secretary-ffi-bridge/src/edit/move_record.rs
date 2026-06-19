@@ -255,7 +255,9 @@ mod tests {
     /// - `created_at_ms` is preserved (source = 1_000, now_ms = 5_000).
     /// - field `last_mod` and `device_uuid` are preserved from the source.
     /// - record-level `last_mod_ms` equals `now_ms`.
-    /// - all three-level `unknown` maps survive byte-faithfully.
+    /// - record-level and field-level `unknown` maps survive byte-faithfully
+    ///   (block-level `unknown` belongs to the source block's container and is
+    ///   intentionally NOT carried across a record move).
     #[test]
     fn move_record_happy_path() {
         let (_tmp, opened) = open_writable_golden_001();
@@ -325,7 +327,8 @@ mod tests {
             "field device_uuid must be preserved from source"
         );
 
-        // All three-level unknown maps survive.
+        // Record-level and field-level unknown maps survive the move
+        // (block-level unknown is not copied — it belongs to the source block).
         assert!(
             dst_rec.unknown.contains_key("x_rec"),
             "record-level unknown preserved"
