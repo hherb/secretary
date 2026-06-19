@@ -75,6 +75,7 @@ fun DeviceSettingsScreen(
 
         OutlinedButton(
             onClick = onBack,
+            enabled = !state.working,
             modifier = Modifier.fillMaxWidth().testTag("settings-back"),
         ) { Text("Back") }
     }

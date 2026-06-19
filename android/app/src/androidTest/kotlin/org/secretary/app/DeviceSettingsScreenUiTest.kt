@@ -81,7 +81,7 @@ class DeviceSettingsScreenUiTest {
     }
 
     @Test
-    fun working_disablesActionButton() {
+    fun working_disablesActionButton_andBack() {
         composeRule.setContent {
             DeviceSettingsScreen(
                 state = DeviceSettingsState(enrolled = false, working = true),
@@ -89,6 +89,9 @@ class DeviceSettingsScreenUiTest {
             )
         }
         composeRule.onNodeWithTag("enroll-button").assertIsNotEnabled()
+        // Back is also gated while an op is in flight, so a mid-enroll navigation can't strand the
+        // working-state mirror on a screen we've left.
+        composeRule.onNodeWithTag("settings-back").assertIsNotEnabled()
     }
 
     @Test
