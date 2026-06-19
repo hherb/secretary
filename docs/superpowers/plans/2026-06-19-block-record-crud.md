@@ -606,8 +606,8 @@ fn copy_record_into_target(
                 name.clone(),
                 RecordField {
                     value: f.value.clone(),
-                    last_mod: now_ms,
-                    device_uuid,
+                    last_mod: f.last_mod,          // faithful move: preserve per-field authorship
+                    device_uuid: f.device_uuid,    // faithful move: preserve authoring device
                     unknown: f.unknown.clone(),
                 },
             )
@@ -618,7 +618,7 @@ fn copy_record_into_target(
         record_type: source.record_type.clone(),
         fields,
         tags: source.tags.clone(),
-        created_at_ms: now_ms,
+        created_at_ms: source.created_at_ms,       // faithful move: preserve the secret's age
         last_mod_ms: now_ms,
         tombstone: false,
         tombstoned_at_ms: 0,

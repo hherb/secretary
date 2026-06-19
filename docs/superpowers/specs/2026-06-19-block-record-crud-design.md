@@ -90,14 +90,15 @@ void move_record(
 
 **Order of operations (copy-before-delete — a crash mid-move yields a recoverable transient duplicate, never data loss):**
 
-1. **Validate** `source_block_uuid != target_block_uuid` → else `InvalidArgument`. Wrong-length uuids → `InvalidArgument`.
+1. **Validate** `source_block_uuid != target_block_uuid` → else `InvalidArgument`. This check (and uuid-length validation) lives at the **uniffi wrapper** layer, returning the existing `VaultError::InvalidArgument` — the bridge `move_record` trusts its caller (the bridge has no `InvalidArgument` variant, and adding one is the workspace-wide-match obligation this slice avoids).
 2. **Decrypt source block**; find the **live** record by `source_record_uuid` → else `RecordNotFound(uuid_hex)`.
 3. **Decrypt target block** → else `BlockNotFound(target uuid_hex)`. (Done before any write, so a missing target fails with no side effect.)
-4. **Build the target copy** natively:
-   - `record_uuid = new_record_uuid`, `created_at_ms = now_ms`, `last_mod_ms = now_ms`, `tombstone = false`, `tombstoned_at_ms = 0`.
+4. **Build the target copy** natively — a **faithful move** (the moved entry keeps the secret's age + per-field authorship history; only its identity and record-level modification time are new):
+   - `record_uuid = new_record_uuid` (caller-minted), `last_mod_ms = now_ms`, `tombstone = false`, `tombstoned_at_ms = 0`.
+   - **Preserve `created_at_ms`** from the source record (the secret was not just created; it moved).
    - Copy `record_type`, `tags`, and each field's **value**.
    - **Preserve record-level `unknown` and each field's `unknown`** (forward-compat — same keystone principle as `edit_record`; a move round-trips the record's content into a new block and must not silently drop data a future schema added).
-   - Field clocks reset to `last_mod = now_ms` / `device_uuid = device_uuid` (fresh authorship under a fresh UUID; there is no prior merge history to honour).
+   - **Preserve each field's `last_mod` / `device_uuid`** (per-field authorship history survives the move). This is CRDT-safe: the fresh `record_uuid` means the copy never field-merges against the original, so preserved field clocks never cross-compare.
 5. **Save target first** (`save_plaintext`) — the copy is now committed.
 6. **Tombstone the source record** (`tombstone = true`, `tombstoned_at_ms = now_ms`, `last_mod_ms = now_ms`, fields retained so it stays resurrectable — identical to `tombstone_record`) and **save source second**.
 
@@ -105,7 +106,7 @@ void move_record(
 
 **Crash/sync safety:** a crash between steps 5 and 6 leaves the record live in both blocks (transient duplicate); the user re-runs the move (or a later move/tombstone reconciles), and no data is lost. The reverse order (tombstone-then-copy) would lose the record on a crash, so it is rejected.
 
-- Errors: `BlockNotFound` (source or target — `uuid_hex` disambiguates which), `RecordNotFound`, `InvalidArgument` (source==target, wrong-length uuids), `CorruptVault`. **All existing `FfiVaultError` → `VaultError` variants — no new variant** (a new variant is a workspace-wide exhaustive-match obligation across uniffi/pyo3/core-KAT + the Swift/Kotlin conformance harnesses; reusing existing variants avoids it).
+- Errors: `BlockNotFound` (source or target — `uuid_hex` disambiguates which), `RecordNotFound`, `CorruptVault` from the bridge; `InvalidArgument` (source==target, wrong-length uuids) from the uniffi wrapper. **No new `FfiVaultError` variant** (a new variant is a workspace-wide exhaustive-match obligation across uniffi/pyo3/core-KAT + the Swift/Kotlin conformance harnesses; the bridge has no `InvalidArgument`, so that check stays at the wrapper where `VaultError::InvalidArgument` already exists).
 
 ## Files touched
 
@@ -124,7 +125,7 @@ void move_record(
 - `create_block` round-trips: block appears in manifest, `block_count` increments, read-back has 0 records + the given name.
 - `rename_block` changes only the name: records + block/record/field `unknown` preserved; manifest `block_name` updated; `last_mod_ms` bumped.
 - `rename_block` on absent UUID → `BlockNotFound`.
-- `move_record` happy path: target gains a record with `new_record_uuid` + copied values + **preserved record-level & field-level `unknown`** + fresh `created_at_ms`; source record is tombstoned (live count drops, `include_deleted` shows it tombstoned).
+- `move_record` happy path: target gains a record with `new_record_uuid` + copied values + **preserved record-level & field-level `unknown`** + **preserved `created_at_ms` and per-field `last_mod`/`device_uuid`** (faithful move) + fresh record-level `last_mod_ms`; source record is tombstoned (live count drops, `include_deleted` shows it tombstoned).
 - `move_record` source == target → `InvalidArgument`; missing source/target block → `BlockNotFound`; non-live/absent source record → `RecordNotFound`.
 - `move_record` copy-before-delete ordering: a CRDT-merge / convergence check that the target copy and the source tombstone both survive a merge (target copy is an independent record; source converges to tombstoned).
 
