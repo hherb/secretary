@@ -87,6 +87,21 @@ let b5BlockUuid = Data(repeating: 0xBB, count: 16)
 let b5RecordUuid = Data(repeating: 0xCC, count: 16)
 let b5DeviceUuid = Data(repeating: 0x07, count: 16)
 
+// Block-CRUD slice pinned UUIDs (mirror the Kotlin SmokeHelpers.kt
+// BLOCK_CRUD_* constants). Distinct from all above to avoid collisions
+// when assertions run in sequence on fresh-copy vaults.
+// blockCrudBlockUuid      — used by createBlock and renameBlock tests.
+// blockCrudSrcBlockUuid   — source block in moveRecord tests.
+// blockCrudTgtBlockUuid   — target block in moveRecord tests.
+// blockCrudSrcRecordUuid  — record seeded into source before the move.
+// blockCrudNewRecordUuid  — caller-minted UUID assigned to the copy.
+let blockCrudBlockUuid = Data(repeating: 0xE1, count: 16)
+let blockCrudSrcBlockUuid = Data(repeating: 0xE2, count: 16)
+let blockCrudTgtBlockUuid = Data(repeating: 0xE3, count: 16)
+let blockCrudSrcRecordUuid = Data(repeating: 0xE4, count: 16)
+let blockCrudNewRecordUuid = Data(repeating: 0xE5, count: 16)
+let blockCrudDeviceUuid = Data(repeating: 0x07, count: 16)
+
 // =============================================================================
 // Module-level mutable assertion state
 // =============================================================================

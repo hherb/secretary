@@ -27,6 +27,7 @@ fun main() {
     runReadBlockAsserts(env)
     runSaveBlockAsserts(env)
     runRecordEditAsserts(env)
+    runBlockCrudAsserts(env)
     runShareBlockAsserts(env)
     runTrashRestoreAsserts(env)
     runDeviceSlotAsserts(env)
