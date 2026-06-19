@@ -132,13 +132,6 @@ fun AppRoot() {
                     r.session.browse.lock()
                 }
             }
-            // Refresh enrolled-vs-not (prompt-free) whenever the Settings sub-view is entered.
-            LaunchedEffect(r.showSettings) {
-                if (r.showSettings) {
-                    settingsVm.refresh()
-                    settingsState = settingsVm.state
-                }
-            }
             if (r.showSettings) {
                 DeviceSettingsScreen(
                     state = settingsState,
@@ -168,7 +161,13 @@ fun AppRoot() {
                 BrowseWithSyncScreen(
                     browse = r.session.browse,
                     sync = r.session.sync,
-                    onOpenSettings = { route = r.copy(showSettings = true) },
+                    onOpenSettings = {
+                        // Refresh enrolled-vs-not (prompt-free, synchronous) BEFORE routing in, so the
+                        // Settings screen's first frame shows the true status — no "not enrolled" flash.
+                        settingsVm.refresh()
+                        settingsState = settingsVm.state
+                        route = r.copy(showSettings = true)
+                    },
                 )
             }
         }
