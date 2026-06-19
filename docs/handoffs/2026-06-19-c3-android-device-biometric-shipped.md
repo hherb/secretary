@@ -1,8 +1,8 @@
-# NEXT_SESSION.md — C.3 Android real biometric device open, slice 2 ✅ (code-complete; manual biometric proof = your acceptance step)
+# NEXT_SESSION.md — C.3 Android real biometric device open, slice 2 ✅ (SHIPPED — on-device biometric proof PASSED on NX809J / Android 16)
 
 **Session date:** 2026-06-19. Flow: `/nextsession` → prior baton (device-open slice 1, "push + open PR") was already **squash-merged by a parallel session** (PR #262, `main` @ `c923be6a`) → housekeeping (removed the merged `c3-android-device-open-core` worktree + branch; left `hardcore-robinson` / `d4-browser-autofill` untouched) → chose **slice 2 (real biometric device open)** → brainstormed 4 decisions (minimal e2e round-trip; enroll-via-unlock-screen-checkbox; split enclave with an injected `BiometricGate`; `MainActivity`→`FragmentActivity`) → spec → 7-task TDD plan → **subagent-driven execution** (fresh implementer + spec/quality review per task; all review items fixed in-task) → final whole-branch review (opus, READY-WITH-MINORS) → 4 minor fixes → this handoff.
 
-**Status:** ✅ **code-complete + all automated gates green**, on branch `feature/c3-android-device-biometric` (worktree `.worktrees/c3-android-device-biometric`). **NOT pushed / no PR yet.** **Android-only — `core` / `ffi` / `ios` / on-disk-format / UDL all untouched** (both guardrails verified empty). **The one remaining item is the interactive on-device biometric proof (§4 acceptance), which is YOUR step** — the automated suite cannot exercise a real auth-required Keystore key (it needs a live biometric), exactly like iOS's #202 Face ID proof.
+**Status:** ✅ **SHIPPED — all gates green INCLUDING the on-device biometric proof.** Branch `feature/c3-android-device-biometric` pushed; **PR [#263](https://github.com/hherb/secretary/pull/263) open + MERGEABLE** (awaiting your squash-merge). **Android-only — `core` / `ffi` / `ios` / on-disk-format / UDL all untouched** (both guardrails verified empty). **Real-biometric on-device proof PASSED on an NX809J (Android 16, 2026-06-19):** enrol (with enroll-time biometric) → force-stop → "Unlock with biometrics" released the device secret behind a real `BiometricPrompt` and opened the vault to `BrowseWithSyncScreen`; a cancelled prompt returned cleanly to the unlock screen with no crash. README/ROADMAP flipped 🚧 → ✅.
 
 ## (1) What we shipped this session
 
@@ -50,7 +50,7 @@ App installs + launches cleanly to `MainActivity` on emulator-5554 (FragmentActi
 
 ## (2) What's next
 
-- **THE on-device biometric proof (§4) — your acceptance step.** Procedure: enrol a fingerprint on the emulator (Settings → Security → screen-lock PIN → add fingerprint), `./gradlew :app:installDebug`, launch, type the golden password + check "Remember this device with biometrics" + Unlock (approve enroll prompt via `adb -s emulator-5554 emu finger touch 1`), reach `BrowseWithSyncScreen`; `adb shell am force-stop org.secretary.app`; relaunch → tap "Unlock with biometrics" → `adb ... emu finger touch 1` → reach `BrowseWithSyncScreen`. Negative: cancel the prompt → stays on unlock, no crash. (`FLAG_SECURE` blocks screenshot automation — this is hands-on.) Flip the README/ROADMAP `🚧` → `✅` once confirmed.
+- **Merge PR [#263](https://github.com/hherb/secretary/pull/263)** (your squash-merge), then housekeeping (§4 step 1). The on-device biometric proof is DONE — slice 2 is fully shipped.
 - **Polished enrollment/settings UI + disenroll-from-UI** — deferred from this minimal slice (the coordinator's `disenroll` exists from slice 1; no UI yet).
 - **#261 (root-cause secret residue)** — UDL `take_secret()` `sequence<u8>?` → `bytes?` so bindings return a zeroizable `ByteArray`/`Data`. Cross-platform; needs the Swift+Kotlin conformance harness re-run.
 - **Block create/rename + record move-between-blocks** — next CRUD tier.
@@ -60,19 +60,14 @@ App installs + launches cleanly to `MainActivity` on emulator-5554 (FragmentActi
 **Open follow-up issues (carried):** #224 / #234 / #192 / #193 / #190 / #189 / #186 / #161 / #162 / #167 / #202 / #251 / #252 / #255 / #261. **None filed this session** (all review findings fixed in-task).
 
 ## (3) Open decisions and risks
-- **Manual biometric proof outstanding** — slice is 🚧 until you run §4. Everything automatable is green.
+- **Manual biometric proof DONE** — passed on NX809J / Android 16 (2026-06-19). Slice is ✅. No outstanding risks for this slice.
 - **`:kit` enclave + `:app` gate/wiring have no host test** — they need the real Keystore / Activity; the instrumented enclave round-trip (4/4) + the manual proof are the behavioral evidence. The pure logic (VM, mapping, metadata store) is fully host-tested.
 - **Final review verdict (opus, whole-branch):** READY-WITH-MINORS; 0 Critical, 0 Important. Verified against actual code: end-to-end secret-hygiene trace (zeroize on every path, enclave retains no plaintext), no secrets in logs/exception messages, the cryptographic `CryptoObject` gate (not a bypassable guard), no silent auth downgrade in the StrongBox fallback, the device open reusing verify-before-decrypt, guardrails empty, and test honesty. All 4 Minors fixed (`5cc1811`).
 
 ## (4) Exact commands to resume
 ```bash
-# 0) THIS BRANCH IS NOT PUSHED. Run the manual biometric proof (§2) first; then push + open the PR.
-cd /Users/hherb/src/secretary/.worktrees/c3-android-device-biometric
-git push -u origin feature/c3-android-device-biometric
-gh pr create --repo hherb/secretary \
-  --title "C.3 Android: real biometric device open slice 2 (Keystore enclave + BiometricPrompt + UI)" \
-  --body "<summary>"
-#    Then you review + squash-merge (this session does not merge).
+# 0) ALREADY DONE this session: branch pushed, PR #263 opened (MERGEABLE), on-device biometric proof PASSED.
+#    Your next action is simply to squash-merge PR #263.
 
 # 1) After the PR merges, housekeeping (from the MAIN checkout, not this worktree):
 cd /Users/hherb/src/secretary
@@ -98,8 +93,8 @@ git diff main...HEAD --name-only | grep -vE '^(android/|docs/|README.md|ROADMAP.
 `NEXT_SESSION.md` is a **relative symlink** to the latest file in `docs/handoffs/` (this file). Authored once; the symlink is the pointer. `origin/main` did NOT move during this session relative to the branch point (`c923be6a`), so the symlink retarget merges cleanly. Both this handoff + the retargeted symlink are committed on the feature branch ([[feedback_next_session_in_pr]]). If you resume this branch for fixups, first `git fetch origin && git merge origin/main` (branch-version-wins on the handoff path) before editing ([[feedback_next_session_main_authoritative]]).
 
 ## Closing inventory
-- **Branch on close:** `main` @ `c923be6a`; `feature/c3-android-device-biometric` carries spec + plan + 7 task commits (with per-task fixes) + 1 final-fix commit + this handoff commit. Squash-merge → one commit on `main`. **Not pushed; no PR yet.**
-- **Acceptance:** automated — green (host suites + `:kit` enclave 4/4 + `:app` UI 4/4 + slice-1 device-secret smoke 1/1 regression; app launches clean); both guardrails empty (incl. no `ios/`). **Manual biometric proof pending (your step).**
+- **Branch on close:** `main` @ `c923be6a`; `feature/c3-android-device-biometric` pushed; **PR #263 open + MERGEABLE.** Carries spec + plan + 7 task commits (with per-task fixes) + 1 final-fix commit + handoff + this proof-result commit. Squash-merge → one commit on `main`.
+- **Acceptance:** green — host suites + `:kit` enclave 4/4 + `:app` UI 4/4 + slice-1 device-secret smoke 1/1 regression; both guardrails empty (incl. no `ios/`). **Real-biometric on-device proof PASSED on NX809J / Android 16.**
 - **Process note:** subagent-driven (fresh implementer + spec/quality review per task; all per-task review items fixed in-task). Final whole-branch review (opus) = READY-WITH-MINORS; all 4 Minors fixed.
-- **README.md / ROADMAP.md:** updated — device-open slice 2 🚧 (real biometric), 2026-06-19; flip to ✅ after the manual proof.
+- **README.md / ROADMAP.md:** updated — device-open slice 2 ✅ (real biometric, on-device proof passed on NX809J/Android 16), 2026-06-19.
 - **NEXT_SESSION.md:** symlink retargeted to this file.
