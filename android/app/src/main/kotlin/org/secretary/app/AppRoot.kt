@@ -18,6 +18,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.secretary.browse.DeviceSettingsState
+import org.secretary.browse.DeviceSettingsViewModel
 import org.secretary.browse.DeviceUnlockCoordinator
 import org.secretary.browse.DeviceUnlockState
 import org.secretary.browse.DeviceUnlockViewModel
@@ -35,7 +37,11 @@ private const val TAG = "AppRoot"
 /** The app's two screens; Browse carries the live session for the unlocked vault. */
 private sealed interface Route {
     data object Unlock : Route
-    data class Browse(val session: BrowseSession) : Route
+    data class Browse(
+        val session: BrowseSession,
+        val folder: File,
+        val showSettings: Boolean = false,
+    ) : Route
 }
 
 /**
@@ -68,6 +74,8 @@ fun AppRoot() {
     }
     val deviceVm = remember(coordinator) { DeviceUnlockViewModel(coordinator) }
     var deviceState by remember { mutableStateOf<DeviceUnlockState>(DeviceUnlockState.Unenrolled) }
+    val settingsVm = remember(coordinator) { DeviceSettingsViewModel(coordinator) }
+    var settingsState by remember { mutableStateOf(DeviceSettingsState(enrolled = false)) }
     LaunchedEffect(route) {
         if (route is Route.Unlock) {
             deviceVm.refresh()
@@ -110,11 +118,9 @@ fun AppRoot() {
             },
         )
         is Route.Browse -> {
-            // The monitor runs only while Browse is composed: started on enter, stopped on dispose
-            // (background → Unlock, or teardown). The browse session is also wiped on dispose so the
-            // decrypted manifest/identity never outlives the on-screen session (re-entry re-opens
-            // from the password). A failed monitor start leaves detection advisory-blind (the badge
-            // falls back to manual "Sync now"); not fatal.
+            // Monitor + session lifecycle keyed on the SESSION instance only — flipping showSettings
+            // keeps the same instance, so a Settings excursion never disposes/locks the vault. Only
+            // ON_STOP (→ Route.Unlock) tears it down.
             DisposableEffect(r.session) {
                 try {
                     r.session.monitor.start()
@@ -126,7 +132,41 @@ fun AppRoot() {
                     r.session.browse.lock()
                 }
             }
-            BrowseWithSyncScreen(browse = r.session.browse, sync = r.session.sync)
+            // Refresh enrolled-vs-not (prompt-free) whenever the Settings sub-view is entered.
+            LaunchedEffect(r.showSettings) {
+                if (r.showSettings) {
+                    settingsVm.refresh()
+                    settingsState = settingsVm.state
+                }
+            }
+            if (r.showSettings) {
+                DeviceSettingsScreen(
+                    state = settingsState,
+                    onEnroll = { password ->
+                        scope.launch {
+                            try {
+                                settingsVm.enroll(r.folder.path, vaultId, password)
+                            } finally {
+                                password.fill(0) // zeroize the re-prompted password on every exit
+                            }
+                            settingsState = settingsVm.state
+                        }
+                    },
+                    onDisenroll = {
+                        scope.launch {
+                            settingsVm.disenroll(r.folder.path)
+                            settingsState = settingsVm.state
+                        }
+                    },
+                    onBack = { route = r.copy(showSettings = false) },
+                )
+            } else {
+                BrowseWithSyncScreen(
+                    browse = r.session.browse,
+                    sync = r.session.sync,
+                    onOpenSettings = { route = r.copy(showSettings = true) },
+                )
+            }
         }
     }
 }
@@ -187,7 +227,7 @@ private suspend fun unlockAndOpen(
                 ).show()
             }
         }
-        return Route.Browse(session)
+        return Route.Browse(session, folder)
     } catch (e: Exception) {
         Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
         return Route.Unlock
