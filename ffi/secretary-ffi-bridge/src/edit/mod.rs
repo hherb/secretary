@@ -17,6 +17,12 @@ pub use content::RecordContent;
 mod tombstone;
 pub use tombstone::{resurrect_record, tombstone_record};
 
+#[cfg(test)]
+mod test_support;
+
+mod rename;
+pub use rename::rename_block;
+
 use std::collections::BTreeMap;
 
 use rand_core::OsRng;

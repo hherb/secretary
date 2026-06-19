@@ -133,7 +133,8 @@ pub use device::{
     DeviceSecretOutput,
 };
 pub use edit::{
-    append_record, create_block, edit_record, resurrect_record, tombstone_record, RecordContent,
+    append_record, create_block, edit_record, rename_block, resurrect_record, tombstone_record,
+    RecordContent,
 };
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
