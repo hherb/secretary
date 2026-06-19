@@ -60,7 +60,7 @@ fun UnlockScreen(
     var mode by remember { mutableStateOf(UnlockMode.Password) }
     var password by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
-    var remember by remember { mutableStateOf(false) }
+    var rememberDevice by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -103,8 +103,8 @@ fun UnlockScreen(
                 if (!isEnrolled) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
-                            checked = remember,
-                            onCheckedChange = { remember = it; onEnrollChoice(it) },
+                            checked = rememberDevice,
+                            onCheckedChange = { rememberDevice = it; onEnrollChoice(it) },
                             modifier = Modifier.testTag("remember-device"),
                         )
                         Text("Remember this device with biometrics")
