@@ -53,7 +53,8 @@ fun AppRoot() {
     var route by remember { mutableStateOf<Route>(Route.Unlock) }
     var rememberDevice by remember { mutableStateOf(false) }
 
-    val activity = LocalContext.current as FragmentActivity
+    val activity = LocalContext.current as? FragmentActivity
+        ?: error("AppRoot must be hosted in a FragmentActivity")
     val vaultId = remember { hexOfBytes(AppVaultProvisioning.goldenVaultUuid(context)) }
     val coordinator = remember(activity) {
         val gate = biometricPromptGate(activity, title = "Unlock Secretary")
@@ -65,7 +66,13 @@ fun AppRoot() {
         DeviceUnlockCoordinator(UniffiVaultDeviceSlotPort(), enclave, metadata)
     }
     val deviceVm = remember(coordinator) { DeviceUnlockViewModel(coordinator) }
-    LaunchedEffect(coordinator) { deviceVm.refresh() }
+    var deviceState by remember { mutableStateOf<DeviceUnlockState>(DeviceUnlockState.Unenrolled) }
+    LaunchedEffect(route) {
+        if (route is Route.Unlock) {
+            deviceVm.refresh()
+            deviceState = deviceVm.state
+        }
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -78,7 +85,7 @@ fun AppRoot() {
 
     when (val r = route) {
         is Route.Unlock -> UnlockScreen(
-            isEnrolled = deviceVm.state is DeviceUnlockState.Enrolled,
+            isEnrolled = deviceState is DeviceUnlockState.Enrolled,
             onUnlock = { credential ->
                 scope.launch {
                     route = unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
@@ -92,6 +99,7 @@ fun AppRoot() {
                         vaultId = vaultId,
                         reason = "Unlock your vault",
                     ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                    deviceState = deviceVm.state
                 }
             },
         )
