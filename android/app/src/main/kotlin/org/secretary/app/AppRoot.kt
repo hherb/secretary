@@ -143,6 +143,9 @@ fun AppRoot() {
                 DeviceSettingsScreen(
                     state = settingsState,
                     onEnroll = { password ->
+                        // Publish working=true synchronously so the button disables during the
+                        // in-flight enroll (incl. the biometric prompt) — prevents a double-tap.
+                        settingsState = settingsState.copy(working = true, error = null)
                         scope.launch {
                             try {
                                 settingsVm.enroll(r.folder.path, vaultId, password)
@@ -153,6 +156,7 @@ fun AppRoot() {
                         }
                     },
                     onDisenroll = {
+                        settingsState = settingsState.copy(working = true, error = null)
                         scope.launch {
                             settingsVm.disenroll(r.folder.path)
                             settingsState = settingsVm.state
