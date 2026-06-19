@@ -94,8 +94,8 @@ fun runBlockCrudAsserts(env: SmokeEnv) {
         tmp?.let { cleanupTempVault(it) }
     }
 
-    // Assert: move_record → target read_block shows the record under
-    // newRecordUuid; source read_block (live only) shows it gone.
+    // Assert: move_record → target read_block has 1 record whose uuid equals
+    // BLOCK_CRUD_NEW_RECORD_UUID; source read_block (live only) shows it gone.
     tmp = null
     try {
         val (out, t) = freshWritableVault(env)
@@ -135,17 +135,18 @@ fun runBlockCrudAsserts(env: SmokeEnv) {
                     BLOCK_CRUD_SRC_RECORD_UUID, BLOCK_CRUD_NEW_RECORD_UUID,
                     BLOCK_CRUD_DEVICE_UUID, 4_000UL,
                 )
-                // Target shows the record under newRecordUuid.
-                val tgtCount = readBlock(id, mf, BLOCK_CRUD_TGT_BLOCK_UUID, false).use { block ->
-                    block.recordCount()
+                // Target shows 1 record; its uuid must equal the caller-minted BLOCK_CRUD_NEW_RECORD_UUID.
+                data class TgtState(val count: ULong, val firstUuid: List<Byte>)
+                val tgt = readBlock(id, mf, BLOCK_CRUD_TGT_BLOCK_UUID, false).use { block ->
+                    TgtState(block.recordCount(), block.recordAt(0u)!!.recordUuid().toList())
                 }
                 // Source live-only shows the original record gone (tombstoned).
                 val srcLiveCount = readBlock(id, mf, BLOCK_CRUD_SRC_BLOCK_UUID, false).use { block ->
                     block.recordCount()
                 }
                 check(
-                    tgtCount == 1uL && srcLiveCount == 0uL,
-                    "move_record → target.recordCount=$tgtCount source.liveCount=$srcLiveCount",
+                    tgt.count == 1uL && tgt.firstUuid == BLOCK_CRUD_NEW_RECORD_UUID.toList() && srcLiveCount == 0uL,
+                    "move_record → target.recordCount=${tgt.count} target.uuid=${tgt.firstUuid == BLOCK_CRUD_NEW_RECORD_UUID.toList()} source.liveCount=$srcLiveCount",
                 )
             }
         }

@@ -78,8 +78,8 @@ func runBlockCrudAsserts(env: SmokeEnv) {
         check(false, "rename_block round-trip threw \(error)")
     }
 
-    // Assert: move_record → target read_block shows the record under
-    // newRecordUuid; source read_block (live only) shows it gone.
+    // Assert: move_record → target read_block has 1 record whose uuid equals
+    // blockCrudNewRecordUuid; source read_block (live only) shows it gone.
     do {
         let (identity, manifest, tmp) = try _freshWritableVault(env: env)
         defer { identity.wipe() }
@@ -129,9 +129,11 @@ func runBlockCrudAsserts(env: SmokeEnv) {
             blockUuid: blockCrudSrcBlockUuid, includeDeleted: false
         )
         defer { src.wipe() }
+        // Target must have 1 record whose uuid equals the caller-minted blockCrudNewRecordUuid.
+        let tgtFirstUuid = tgt.recordAt(idx: 0)?.recordUuid()
         check(
-            tgt.recordCount() == 1 && src.recordCount() == 0,
-            "move_record → target.recordCount=\(tgt.recordCount()) source.liveCount=\(src.recordCount())"
+            tgt.recordCount() == 1 && tgtFirstUuid == blockCrudNewRecordUuid && src.recordCount() == 0,
+            "move_record → target.recordCount=\(tgt.recordCount()) target.uuid_match=\(tgtFirstUuid == blockCrudNewRecordUuid) source.liveCount=\(src.recordCount())"
         )
     } catch {
         check(false, "move_record round-trip threw \(error)")

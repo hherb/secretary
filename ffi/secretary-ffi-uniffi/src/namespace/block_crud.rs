@@ -209,6 +209,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rename_block_wrong_device_uuid_length_returns_invalid_argument() {
+        let (_tmp, identity, manifest) = open_writable_vault();
+        match rename_block(identity, manifest, vec![0u8; 16], "new".to_string(), vec![0u8; 17], 1_000) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_uuid") && detail.contains("16 bytes"),
+                    "detail should mention field and expected size: {detail}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
     // -------------------------------------------------------------------
     // move_record: wrong-length uuid returns InvalidArgument
     // -------------------------------------------------------------------
