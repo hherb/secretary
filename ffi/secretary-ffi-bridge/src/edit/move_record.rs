@@ -1,6 +1,7 @@
 //! Record-move primitive: copy a live record into the target block under a
-//! fresh UUID, preserving all secret field values and every forward-compat
-//! `unknown` (block / record / field), then tombstone the source record.
+//! caller-supplied UUID, preserving all secret field values and every
+//! forward-compat `unknown` (block / record / field), then tombstone the
+//! source record.
 //!
 //! The copy-before-delete order guarantees that the source survives a mid-move
 //! crash (the vault is never in a state where the record has been deleted but
@@ -13,118 +14,126 @@
 
 use std::collections::BTreeMap;
 
-use rand_core::{OsRng, RngCore};
-
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::record::orchestration::decrypt_block_plaintext;
 use crate::vault::OpenVaultManifest;
 use secretary_core::vault::record::{Record, RecordField};
 
-/// Move a live record from one block into another block under a fresh UUID.
+/// Move a live record from one block into another block under a caller-supplied
+/// UUID.
 ///
 /// The semantics are copy-before-delete:
-/// 1. Decrypt the **target** block (fails fast if the block UUID is absent
-///    from the manifest — the source is left untouched).
-/// 2. Copy the source record into the target plaintext under a new CSPRNG UUID,
-///    preserving all field values, field-level `unknown` maps, the record-level
-///    `unknown` map, `record_type`, `tags`, and `created_at_ms`.  `last_mod_ms`
-///    is set to `now_ms` (the copy was authored now by `device_uuid`); the copy
-///    starts out live (`tombstone = false`, `tombstoned_at_ms = 0`).
-/// 3. Save the mutated target block through [`super::save_plaintext`].
-/// 4. Decrypt the **source** block and tombstone the source record via
-///    [`super::tombstone::tombstone_record`].
+/// 1. Decrypt the **source** block; locate the live record (`RecordNotFound`
+///    if absent or already tombstoned).
+/// 2. Decrypt the **target** block *before any write* (`BlockNotFound` if
+///    absent — the source is left untouched).
+/// 3. Build the copy under the caller-supplied `new_record_uuid` — a
+///    **faithful move**: `created_at_ms`, per-field `last_mod`/`device_uuid`,
+///    field values, and every `unknown` map are preserved; only `record_uuid`
+///    and the record-level `last_mod_ms` are fresh (set to `new_record_uuid`
+///    and `now_ms` respectively).  `tombstone = false`, `tombstoned_at_ms = 0`.
+/// 4. Save the mutated target block through [`super::save_plaintext`]
+///    (copy-before-delete).
+/// 5. Tombstone the source record via [`super::tombstone::tombstone_record`].
 ///
 /// # Same-block precondition
 ///
-/// `src_block_uuid == dst_block_uuid` is enforced at the uniffi wrapper layer
-/// (the bridge trusts its caller, exactly as it trusts UUID lengths via
+/// `source_block_uuid == target_block_uuid` is enforced at the uniffi wrapper
+/// layer (the bridge trusts its caller, exactly as it trusts UUID lengths via
 /// `[u8; 16]`).
 ///
 /// # Errors
 ///
-/// - [`FfiVaultError::BlockNotFound`] — `dst_block_uuid` or `src_block_uuid`
-///   not in the manifest.
-/// - [`FfiVaultError::RecordNotFound`] — no LIVE record with `src_record_uuid`
-///   in the source block.
+/// - [`FfiVaultError::BlockNotFound`] — `source_block_uuid` or
+///   `target_block_uuid` not in the manifest.
+/// - [`FfiVaultError::RecordNotFound`] — no LIVE record with
+///   `source_record_uuid` in the source block.
 /// - [`FfiVaultError::CorruptVault`] — decrypt or identity/manifest-handle
 ///   failure.
 /// - Save-tail errors ([`FfiVaultError::FolderInvalid`] /
 ///   [`FfiVaultError::SaveCryptoFailure`]).
+#[allow(clippy::too_many_arguments)]
 pub fn move_record(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
-    src_block_uuid: [u8; 16],
-    src_record_uuid: [u8; 16],
-    dst_block_uuid: [u8; 16],
+    source_block_uuid: [u8; 16],
+    target_block_uuid: [u8; 16],
+    source_record_uuid: [u8; 16],
+    new_record_uuid: [u8; 16],
     device_uuid: [u8; 16],
     now_ms: u64,
-) -> Result<[u8; 16], FfiVaultError> {
-    // Step 1 + 2 + 3: decrypt target, copy record, save target.
-    let new_record_uuid = copy_record_into_target(
+) -> Result<(), FfiVaultError> {
+    // Steps 1–4: decrypt source, locate record, decrypt target, build copy,
+    // save target.
+    copy_record_into_target(
         identity,
         manifest,
-        src_block_uuid,
-        src_record_uuid,
-        dst_block_uuid,
+        source_block_uuid,
+        target_block_uuid,
+        source_record_uuid,
+        new_record_uuid,
         device_uuid,
         now_ms,
     )?;
 
-    // Step 4: tombstone the source record.
+    // Step 5: tombstone the source record.
     super::tombstone::tombstone_record(
         identity,
         manifest,
-        src_block_uuid,
-        src_record_uuid,
+        source_block_uuid,
+        source_record_uuid,
         device_uuid,
         now_ms,
     )?;
 
-    Ok(new_record_uuid)
+    Ok(())
 }
 
-/// Decrypt the target block, copy the source record (looked up in the source
-/// block) into the target under a fresh UUID, and save the target block.
+/// Decrypt the source block, locate the live source record, decrypt the target
+/// block, append the copy under `new_record_uuid`, and save the target block.
 ///
-/// Returns the freshly-minted UUID assigned to the copy.
+/// The target block is decrypted *before* the source is tombstoned so that any
+/// target decrypt failure leaves the source intact
+/// (`decrypt-target-before-write` safety).
 ///
 /// # Errors
 ///
-/// [`FfiVaultError::BlockNotFound`] — target or source UUID absent from the
-/// manifest.
-/// [`FfiVaultError::RecordNotFound`] — no LIVE record with `src_record_uuid`
-/// in the source block.
+/// [`FfiVaultError::BlockNotFound`] — `source_block_uuid` or
+/// `target_block_uuid` absent from the manifest.
+/// [`FfiVaultError::RecordNotFound`] — no LIVE record with
+/// `source_record_uuid` in the source block.
 /// [`FfiVaultError::CorruptVault`] — decrypt failure.
 /// Save-tail errors.
+#[allow(clippy::too_many_arguments)]
 fn copy_record_into_target(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
-    src_block_uuid: [u8; 16],
-    src_record_uuid: [u8; 16],
-    dst_block_uuid: [u8; 16],
+    source_block_uuid: [u8; 16],
+    target_block_uuid: [u8; 16],
+    source_record_uuid: [u8; 16],
+    new_record_uuid: [u8; 16],
     device_uuid: [u8; 16],
     now_ms: u64,
-) -> Result<[u8; 16], FfiVaultError> {
-    // Decrypt source block first to locate the record.
-    let src_plaintext = decrypt_block_plaintext(identity, manifest, &src_block_uuid)?;
+) -> Result<(), FfiVaultError> {
+    // Step 1: Decrypt source block first to locate the record.
+    let src_plaintext = decrypt_block_plaintext(identity, manifest, &source_block_uuid)?;
 
     // Locate the live source record.
     let src_record = src_plaintext
         .records
         .iter()
-        .find(|r| r.record_uuid == src_record_uuid && !r.tombstone)
+        .find(|r| r.record_uuid == source_record_uuid && !r.tombstone)
         .ok_or_else(|| FfiVaultError::RecordNotFound {
-            uuid_hex: hex::encode(src_record_uuid),
+            uuid_hex: hex::encode(source_record_uuid),
         })?;
 
-    // Mint a fresh UUID for the copy.
-    let mut new_uuid_bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut new_uuid_bytes);
+    // Step 2: Decrypt target block before any write (decrypt-target-before-write).
+    let mut dst_plaintext = decrypt_block_plaintext(identity, manifest, &target_block_uuid)?;
 
-    // Build the copied record.
+    // Step 3: Build the faithful copy under the caller-supplied new_record_uuid.
     let copy = Record {
-        record_uuid: new_uuid_bytes,
+        record_uuid: new_record_uuid,
         record_type: src_record.record_type.clone(),
         fields: src_record
             .fields
@@ -149,14 +158,11 @@ fn copy_record_into_target(
         unknown: src_record.unknown.clone(),
     };
 
-    // Decrypt target block and append copy.
-    let mut dst_plaintext = decrypt_block_plaintext(identity, manifest, &dst_block_uuid)?;
+    // Step 4: Append copy and save mutated target block.
     dst_plaintext.records.push(copy);
-
-    // Save mutated target block.
     super::save_plaintext(identity, manifest, dst_plaintext, device_uuid, now_ms)?;
 
-    Ok(new_uuid_bytes)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -178,7 +184,9 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /// Seed a block with one live record carrying synthetic unknowns at all
-    /// three levels (block / record / field).
+    /// three levels (block / record / field).  The record is created with
+    /// `created_at_ms = 1_000` and field `last_mod = 1_000` so tests can
+    /// prove faithful-move preservation independently of `now_ms`.
     fn seed_block_with_record(
         opened: &crate::OpenVaultOutput,
         block_uuid: [u8; 16],
@@ -242,57 +250,90 @@ mod tests {
 
     // ── tests ─────────────────────────────────────────────────────────────────
 
-    /// Happy path: record appears in target under a FRESH UUID, source record
-    /// is tombstoned, all three-level `unknown` maps survive byte-faithfully.
+    /// Happy path: record appears in target under the caller-supplied UUID,
+    /// source record is tombstoned, faithful-move semantics are locked in:
+    /// - `created_at_ms` is preserved (source = 1_000, now_ms = 5_000).
+    /// - field `last_mod` and `device_uuid` are preserved from the source.
+    /// - record-level `last_mod_ms` equals `now_ms`.
+    /// - all three-level `unknown` maps survive byte-faithfully.
     #[test]
     fn move_record_happy_path() {
         let (_tmp, opened) = open_writable_golden_001();
-        let src_block_uuid = [0xA1u8; 16];
-        let src_record_uuid = [0xA2u8; 16];
-        let dst_block_uuid = [0xA3u8; 16];
+        let source_block_uuid = [0xA1u8; 16];
+        let source_record_uuid = [0xA2u8; 16];
+        let target_block_uuid = [0xA3u8; 16];
+        let new_record_uuid = [0x84u8; 16];
 
-        seed_block_with_record(&opened, src_block_uuid, src_record_uuid);
-        seed_empty_target(&opened, dst_block_uuid);
+        seed_block_with_record(&opened, source_block_uuid, source_record_uuid);
+        seed_empty_target(&opened, target_block_uuid);
 
-        let new_uuid = move_record(
+        move_record(
             &opened.identity,
             &opened.manifest,
-            src_block_uuid,
-            src_record_uuid,
-            dst_block_uuid,
+            source_block_uuid,
+            target_block_uuid,
+            source_record_uuid,
+            new_record_uuid,
             DEVICE_UUID,
-            2_000,
+            5_000,
         )
         .expect("move_record");
 
-        // Fresh UUID: must differ from source.
-        assert_ne!(new_uuid, src_record_uuid, "new UUID must differ from source");
-
         // Source record is now tombstoned.
-        let src_after = decrypt_block_plaintext(&opened.identity, &opened.manifest, &src_block_uuid)
-            .expect("decrypt source after move");
+        let src_after =
+            decrypt_block_plaintext(&opened.identity, &opened.manifest, &source_block_uuid)
+                .expect("decrypt source after move");
         let src_rec = src_after
             .records
             .iter()
-            .find(|r| r.record_uuid == src_record_uuid)
+            .find(|r| r.record_uuid == source_record_uuid)
             .expect("source record still present (tombstoned)");
         assert!(src_rec.tombstone, "source record must be tombstoned");
 
-        // Target has the copied record under the new UUID.
-        let dst_after = decrypt_block_plaintext(&opened.identity, &opened.manifest, &dst_block_uuid)
-            .expect("decrypt target after move");
+        // Target has the copied record under the caller-supplied new_record_uuid.
+        let dst_after =
+            decrypt_block_plaintext(&opened.identity, &opened.manifest, &target_block_uuid)
+                .expect("decrypt target after move");
         let dst_rec = dst_after
             .records
             .iter()
-            .find(|r| r.record_uuid == new_uuid)
-            .expect("copied record present in target");
+            .find(|r| r.record_uuid == new_record_uuid)
+            .expect("copied record present in target under new_record_uuid");
         assert!(!dst_rec.tombstone, "copied record must be live");
         assert_eq!(dst_rec.record_type, "login");
         assert_eq!(dst_rec.tags, vec!["work".to_string()]);
-        assert!(dst_rec.unknown.contains_key("x_rec"), "record-level unknown preserved");
 
+        // Faithful-move: created_at_ms preserved from source (1_000), not now_ms (5_000).
+        assert_eq!(
+            dst_rec.created_at_ms, 1_000,
+            "created_at_ms must be preserved from source, not now_ms"
+        );
+        // Record-level last_mod_ms is fresh (now_ms).
+        assert_eq!(
+            dst_rec.last_mod_ms, 5_000,
+            "record-level last_mod_ms must equal now_ms"
+        );
+
+        // Per-field clocks and device_uuid are preserved from source.
         let user = dst_rec.fields.get("user").expect("field preserved");
-        assert!(user.unknown.contains_key("x_fld"), "field-level unknown preserved");
+        assert_eq!(
+            user.last_mod, 1_000,
+            "field last_mod must be preserved from source"
+        );
+        assert_eq!(
+            user.device_uuid, DEVICE_UUID,
+            "field device_uuid must be preserved from source"
+        );
+
+        // All three-level unknown maps survive.
+        assert!(
+            dst_rec.unknown.contains_key("x_rec"),
+            "record-level unknown preserved"
+        );
+        assert!(
+            user.unknown.contains_key("x_fld"),
+            "field-level unknown preserved"
+        );
         match &user.value {
             RecordFieldValue::Text(s) => assert_eq!(*s, SecretString::from("alice")),
             other => panic!("expected Text, got {other:?}"),
@@ -304,18 +345,20 @@ mod tests {
     #[test]
     fn move_record_missing_target_leaves_source_untouched() {
         let (_tmp, opened) = open_writable_golden_001();
-        let src_block_uuid = [0xC1u8; 16];
-        let src_record_uuid = [0xC2u8; 16];
-        seed_block_with_record(&opened, src_block_uuid, src_record_uuid);
+        let source_block_uuid = [0xC1u8; 16];
+        let source_record_uuid = [0xC2u8; 16];
+        seed_block_with_record(&opened, source_block_uuid, source_record_uuid);
 
         let absent_dst = [0xFFu8; 16]; // not seeded
+        let new_record_uuid = [0x84u8; 16];
 
         let err = move_record(
             &opened.identity,
             &opened.manifest,
-            src_block_uuid,
-            src_record_uuid,
+            source_block_uuid,
             absent_dst,
+            source_record_uuid,
+            new_record_uuid,
             DEVICE_UUID,
             2_000,
         )
@@ -326,12 +369,13 @@ mod tests {
         );
 
         // Source must still be live.
-        let src_after = decrypt_block_plaintext(&opened.identity, &opened.manifest, &src_block_uuid)
-            .expect("decrypt source after failed move");
+        let src_after =
+            decrypt_block_plaintext(&opened.identity, &opened.manifest, &source_block_uuid)
+                .expect("decrypt source after failed move");
         let src_rec = src_after
             .records
             .iter()
-            .find(|r| r.record_uuid == src_record_uuid)
+            .find(|r| r.record_uuid == source_record_uuid)
             .expect("source record still present");
         assert!(!src_rec.tombstone, "source must remain live after failed move");
     }
@@ -340,19 +384,21 @@ mod tests {
     #[test]
     fn move_record_absent_source_record_is_record_not_found() {
         let (_tmp, opened) = open_writable_golden_001();
-        let src_block_uuid = [0xD1u8; 16];
-        let dst_block_uuid = [0xD3u8; 16];
-        seed_block_with_record(&opened, src_block_uuid, [0xD2u8; 16]); // seeds a different record UUID
-        seed_empty_target(&opened, dst_block_uuid);
+        let source_block_uuid = [0xD1u8; 16];
+        let target_block_uuid = [0xD3u8; 16];
+        seed_block_with_record(&opened, source_block_uuid, [0xD2u8; 16]); // seeds a different record UUID
+        seed_empty_target(&opened, target_block_uuid);
 
         let absent_record = [0xDDu8; 16];
+        let new_record_uuid = [0x84u8; 16];
 
         let err = move_record(
             &opened.identity,
             &opened.manifest,
-            src_block_uuid,
+            source_block_uuid,
+            target_block_uuid,
             absent_record,
-            dst_block_uuid,
+            new_record_uuid,
             DEVICE_UUID,
             2_000,
         )
