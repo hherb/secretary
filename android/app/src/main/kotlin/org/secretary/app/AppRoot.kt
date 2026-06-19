@@ -4,19 +4,28 @@ import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.secretary.browse.DeviceUnlockCoordinator
+import org.secretary.browse.DeviceUnlockState
+import org.secretary.browse.DeviceUnlockViewModel
+import org.secretary.browse.FileDeviceEnrollmentMetadataStore
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.KeystoreDeviceSecretEnclave
+import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
+import org.secretary.browse.hexOfBytes
 import org.secretary.browse.uniffiVaultOpenPort
 import java.io.File
 
@@ -42,6 +51,21 @@ fun AppRoot() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var route by remember { mutableStateOf<Route>(Route.Unlock) }
+    var rememberDevice by remember { mutableStateOf(false) }
+
+    val activity = LocalContext.current as FragmentActivity
+    val vaultId = remember { hexOfBytes(AppVaultProvisioning.goldenVaultUuid(context)) }
+    val coordinator = remember(activity) {
+        val gate = biometricPromptGate(activity, title = "Unlock Secretary")
+        val enclave = KeystoreDeviceSecretEnclave(
+            dir = File(context.noBackupFilesDir, "devicesecret"),
+            gate = gate,
+        )
+        val metadata = FileDeviceEnrollmentMetadataStore(File(context.noBackupFilesDir, "devicesecret"))
+        DeviceUnlockCoordinator(UniffiVaultDeviceSlotPort(), enclave, metadata)
+    }
+    val deviceVm = remember(coordinator) { DeviceUnlockViewModel(coordinator) }
+    LaunchedEffect(coordinator) { deviceVm.refresh() }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -54,12 +78,21 @@ fun AppRoot() {
 
     when (val r = route) {
         is Route.Unlock -> UnlockScreen(
-            // TODO(Task 6): wire device-unlock
-            isEnrolled = false,
-            onEnrollChoice = {},
-            onBiometricUnlock = {},
+            isEnrolled = deviceVm.state is DeviceUnlockState.Enrolled,
             onUnlock = { credential ->
-                scope.launch { route = unlockAndOpen(context, scope, credential) }
+                scope.launch {
+                    route = unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
+                }
+            },
+            onEnrollChoice = { rememberDevice = it },
+            onBiometricUnlock = {
+                scope.launch {
+                    deviceVm.unlockWithBiometrics(
+                        AppVaultProvisioning.stageGoldenVault(context).path,
+                        vaultId = vaultId,
+                        reason = "Unlock your vault",
+                    ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                }
             },
         )
         is Route.Browse -> {
@@ -92,16 +125,20 @@ fun AppRoot() {
  * requires main — satisfied here).
  *
  * Secret hygiene: the credential bytes are zeroized in a `finally` wrapping the whole body — on
- * every exit (success, open failure, early provisioning throw). For the password credential the
- * background sync-at-unlock receives a COPY ([launchSyncAtUnlock]); zeroizing the original here
- * cannot corrupt that copy, and because [openBrowseWithSync] awaits the open the zeroize cannot race
- * the Argon2id that consumes the original. The recovery credential hands no copy to a background
- * job, so its bytes are fully owned here.
+ * every exit (success, open failure, early provisioning throw). Enroll (when [enrollAfter] is true)
+ * runs BEFORE the finally so it can copy the password into the enclave before zeroize. Enroll
+ * failure is non-fatal: it is logged and the successful Browse route is still returned. For the
+ * password credential the background sync-at-unlock receives a COPY ([launchSyncAtUnlock]);
+ * zeroizing the original here cannot corrupt that copy. The recovery credential hands no copy to a
+ * background job, so its bytes are fully owned here.
  */
 private suspend fun unlockAndOpen(
     context: Context,
     scope: CoroutineScope,
     credential: UnlockCredential,
+    enrollAfter: Boolean,
+    coordinator: DeviceUnlockCoordinator,
+    vaultId: String,
 ): Route {
     try {
         val folder = AppVaultProvisioning.stageGoldenVault(context)
@@ -120,6 +157,13 @@ private suspend fun unlockAndOpen(
             onPassword = { pw -> launchSyncAtUnlock(scope, pw, session.sync::syncAtUnlock) },
             onRecovery = { session.sync.refreshStatus() },
         )
+        if (enrollAfter && credential is UnlockCredential.Password) {
+            try {
+                coordinator.enroll(folder.path, vaultId, credential.secret)
+            } catch (e: Exception) {
+                Log.w(TAG, "device enroll failed; password open still succeeded", e)
+            }
+        }
         return Route.Browse(session)
     } catch (e: Exception) {
         Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
