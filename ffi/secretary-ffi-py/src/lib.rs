@@ -47,6 +47,7 @@
 
 use pyo3::prelude::*;
 
+mod block_crud;
 mod device;
 mod errors;
 mod identity;
@@ -60,6 +61,7 @@ mod trash;
 mod unlock;
 mod vault;
 
+use block_crud::{create_block, move_record, rename_block};
 use device::{
     add_device_slot, open_with_device_secret, remove_device_slot, DeviceEnrollOutput,
     DeviceSecretOutput,
@@ -205,6 +207,14 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edit_record, m)?)?;
     m.add_function(wrap_pyfunction!(tombstone_record, m)?)?;
     m.add_function(wrap_pyfunction!(resurrect_record, m)?)?;
+
+    // Block-CRUD surface — 3 primitives (create_block / rename_block /
+    // move_record). Error surface reuses VaultBlockNotFound /
+    // VaultRecordNotFound / VaultCorruptVault / the save-tail classes already
+    // registered above; the same-block + uuid-length guards raise ValueError.
+    m.add_function(wrap_pyfunction!(create_block, m)?)?;
+    m.add_function(wrap_pyfunction!(rename_block, m)?)?;
+    m.add_function(wrap_pyfunction!(move_record, m)?)?;
 
     // B.4d surface — share_block pyfunction + 4 typed exception classes.
     m.add_function(wrap_pyfunction!(share_block, m)?)?;
