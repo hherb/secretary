@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-19-c3-android-device-settings-shipped.md
+docs/handoffs/2026-06-19-261-udl-take-secret-bytes-shipped.md

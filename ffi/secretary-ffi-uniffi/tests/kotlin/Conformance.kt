@@ -491,9 +491,9 @@ fun main() {
             check(secret?.size == 32, enrolName, "device_secret expected 32 bytes, got ${secret?.size ?: -1}")
             check(enroll.deviceSecret.takeSecret() == null, enrolName, "takeSecret() second call expected null (one-shot)")
             if (secret != null) {
-                val secretBytes = ByteArray(secret.size) { secret[it].toByte() }
+                // takeSecret() is `bytes?` → a ByteArray? directly (#261); no boxed-list conversion.
                 try {
-                    val out = openWithDeviceSecret(folderPath, enroll.deviceUuid, secretBytes)
+                    val out = openWithDeviceSecret(folderPath, enroll.deviceUuid, secret)
                     check(out.identity.displayName() == "Owner", enrolName,
                         "enrol-then-open display_name mismatch (got '${out.identity.displayName()}', want 'Owner')")
                     check(out.manifest.blockCount().toInt() == 1, enrolName,

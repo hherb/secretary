@@ -52,12 +52,11 @@ func runDeviceSlotAsserts(env: SmokeEnv) {
             check(false, "add_device_slot: take_secret() returned nil; cannot continue device-slot smoke")
             return
         }
-        let secretData = Data(secret)
-
+        // takeSecret() is `bytes?` → a Data? directly (#261); pass it straight through.
         // open_with_device_secret → opens to the same owner (display_name "Owner").
         do {
             let out = try openWithDeviceSecret(
-                folderPath: folderPath, deviceUuid: enroll.deviceUuid, deviceSecret: secretData
+                folderPath: folderPath, deviceUuid: enroll.deviceUuid, deviceSecret: secret
             )
             defer { out.identity.wipe() }
             defer { out.manifest.wipe() }
@@ -78,7 +77,7 @@ func runDeviceSlotAsserts(env: SmokeEnv) {
         // open_with_device_secret AGAIN → VaultError.DeviceSlotNotFound (wrap deleted).
         do {
             _ = try openWithDeviceSecret(
-                folderPath: folderPath, deviceUuid: enroll.deviceUuid, deviceSecret: secretData
+                folderPath: folderPath, deviceUuid: enroll.deviceUuid, deviceSecret: secret
             )
             check(false, "open after remove should have thrown VaultError.DeviceSlotNotFound")
         } catch VaultError.DeviceSlotNotFound {
