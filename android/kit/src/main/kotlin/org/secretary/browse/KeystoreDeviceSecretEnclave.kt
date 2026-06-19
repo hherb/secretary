@@ -50,10 +50,12 @@ class KeystoreDeviceSecretEnclave(
     override val isEnrolled: Boolean get() = blobFile.exists()
 
     override suspend fun store(secret: ByteArray) {
-        val key = ensureKey()
         dir.mkdirs()
         val tmp = File(dir, "$BLOB_NAME.tmp")
         try {
+            // ensureKey() inside the try: key-gen can throw GeneralSecurityException (e.g. no strong
+            // biometric enrolled) — map it to the typed Enclave error instead of escaping uncaught.
+            val key = ensureKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key)
             val authorized = gate(cipher, STORE_REASON)

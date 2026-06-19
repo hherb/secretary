@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-19-c3-android-device-biometric-shipped.md
+docs/handoffs/2026-06-19-c3-android-device-settings-shipped.md
