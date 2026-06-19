@@ -450,10 +450,11 @@ struct ConformanceRunner {
                 _ = check(enroll.deviceSecret.takeSecret() == nil, enrolName, "takeSecret() second call expected nil (one-shot)")
                 if let secret = secret {
                     do {
+                        // takeSecret() is `bytes?` → a Data? directly (#261); pass it straight through.
                         let out = try openWithDeviceSecret(
                             folderPath: folderPath,
                             deviceUuid: enroll.deviceUuid,
-                            deviceSecret: Data(secret)
+                            deviceSecret: secret
                         )
                         _ = check(out.identity.displayName() == "Owner", enrolName,
                                   "enrol-then-open display_name mismatch (got '\(out.identity.displayName())', want 'Owner')")

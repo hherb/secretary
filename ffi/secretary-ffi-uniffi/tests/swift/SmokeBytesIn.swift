@@ -249,11 +249,12 @@ func runBytesInAsserts(env: SmokeEnv) {
         )
         defer { out.identity.wipe() }
         defer { out.mnemonic.wipe() }
+        // takePhrase() is `bytes?` → a Data? directly (#261); pass it straight through.
         if let phrase = out.mnemonic.takePhrase() {
             let reopened = try openWithRecovery(
                 vaultTomlBytes: out.vaultTomlBytes,
                 identityBundleBytes: out.identityBundleBytes,
-                mnemonic: Data(phrase)
+                mnemonic: phrase
             )
             defer { reopened.wipe() }
             check(

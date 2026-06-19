@@ -57,12 +57,9 @@ fun runDeviceSlotAsserts(env: SmokeEnv) {
             check(false, "addDeviceSlot: takeSecret() returned null; cannot continue device-slot smoke")
             return
         }
-        // takeSecret() yields List<UByte> (uniffi sequence<u8>); the device
-        // entry points want a ByteArray. Convert once.
-        val secretBytes = ByteArray(secret.size) { secret[it].toByte() }
-
+        // takeSecret() is `bytes?` → a ByteArray? directly (#261); no boxed-list conversion.
         // openWithDeviceSecret → opens to the same owner (display_name "Owner").
-        openWithDeviceSecret(folderPath, enroll.deviceUuid, secretBytes).let { out ->
+        openWithDeviceSecret(folderPath, enroll.deviceUuid, secret).let { out ->
             out.identity.use { id ->
                 out.manifest.use {
                     check(
@@ -83,7 +80,7 @@ fun runDeviceSlotAsserts(env: SmokeEnv) {
 
         // openWithDeviceSecret AGAIN → VaultException.DeviceSlotNotFound (wrap deleted).
         try {
-            openWithDeviceSecret(folderPath, enroll.deviceUuid, secretBytes)
+            openWithDeviceSecret(folderPath, enroll.deviceUuid, secret)
             check(false, "open after remove should have thrown VaultException.DeviceSlotNotFound")
         } catch (e: VaultException.DeviceSlotNotFound) {
             check(true, "openWithDeviceSecret after remove → VaultException.DeviceSlotNotFound")
