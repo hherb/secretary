@@ -24,14 +24,12 @@ class UniffiVaultDeviceSlotPort(
             mapErrors {
                 val out = addFn(vaultFolder.toByteArray(Charsets.UTF_8), password)
                 try {
-                    val taken = out.deviceSecret.takeSecret()
+                    // takeSecret() is `bytes?` in the UDL, so uniffi hands back a zeroizable ByteArray? directly —
+                    // no intermediate boxed List<UByte> left un-overwritable in the heap (#261). The FFI handle is
+                    // wiped in the finally; the coordinator zeroizes this caller-owned ByteArray after enclave.store
+                    // (see DeviceUnlockCoordinator.enroll).
+                    val secret = out.deviceSecret.takeSecret()
                         ?: throw VaultBrowseError.Failed("device secret handle was empty (already taken?)")
-                    // takeSecret() returns sequence<u8> (a boxed list); build the ByteArray directly to avoid an extra
-                    // boxed copy. The binding's own list is unavoidable here and cannot be zeroized in place — root-cause
-                    // fix (UDL bytes? return) tracked in #261. The FFI handle is wiped in the finally; the coordinator
-                    // zeroizes the returned ByteArray.
-                    val secret = ByteArray(taken.size) { taken[it].toByte() }
-                    // secret is a plain caller-owned ByteArray; the coordinator zeroizes it after enclave.store (see DeviceUnlockCoordinator.enroll).
                     EnrolledSlot(out.deviceUuid, secret)
                 } finally {
                     out.deviceSecret.wipe()

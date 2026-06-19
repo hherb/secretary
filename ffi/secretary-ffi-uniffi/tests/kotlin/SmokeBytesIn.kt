@@ -256,14 +256,11 @@ fun runBytesInAsserts(env: SmokeEnv) {
                 val phrase = mn.takePhrase()
                 check(phrase != null, "take_phrase returned null on first call")
                 if (phrase != null) {
-                    // takePhrase() returns List<UByte>? per uniffi 0.31's
-                    // mapping of `sequence<u8>?`; convert to ByteArray for
-                    // the `bytes` parameter on openWithRecovery.
-                    val phraseBytes = ByteArray(phrase.size) { phrase[it].toByte() }
+                    // takePhrase() is `bytes?` → a ByteArray? directly (#261); no boxed-list conversion.
                     openWithRecovery(
                         vaultTomlBytes = out.vaultTomlBytes,
                         identityBundleBytes = out.identityBundleBytes,
-                        mnemonic = phraseBytes,
+                        mnemonic = phrase,
                     ).use { reopened ->
                         check(
                             reopened.displayName() == "RoundTripCarol",

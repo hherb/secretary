@@ -141,10 +141,8 @@ fun runFolderInAsserts(env: SmokeEnv) {
                 val phrase = mn.takePhrase()
                 check(phrase != null, "create_vault_in_folder take_phrase returned null")
                 if (phrase != null) {
-                    // takePhrase() returns List<UByte>? per uniffi 0.31's
-                    // sequence<u8>? mapping; convert to a UTF-8 string to count words.
-                    val bytes = ByteArray(phrase.size) { phrase[it].toByte() }
-                    wordCount = bytes.toString(Charsets.UTF_8).split(" ").size
+                    // takePhrase() is `bytes?` → a ByteArray? directly (#261); decode UTF-8 to count words.
+                    wordCount = phrase.toString(Charsets.UTF_8).split(" ").size
                 }
             }
             val out = openVaultWithPassword(folderPath, pw)

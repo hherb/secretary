@@ -43,9 +43,13 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
             }
             defer { mnem.wipe() }
 
-            guard let phrase = mnem.takePhrase() else {
+            // takePhrase() is `bytes?` in the UDL → a zeroizable `Data?` (not a boxed list, #261).
+            guard var phrase = mnem.takePhrase() else {
                 throw VaultProvisioningError.createFailed("recovery phrase unavailable")
             }
+            // Zero the transient Data once the CreatedVault's `[UInt8]` copy is built; the
+            // view-model owns zeroizing that copy after the mnemonic step is dismissed.
+            defer { phrase.resetBytes(in: 0..<phrase.count) }
 
             // Bookmark the NEW subfolder while still inside the parent's scope (the
             // standard pattern for bookmarking a child URL). iOS uses `[]` options.
@@ -66,7 +70,7 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
 
             return CreatedVault(
                 location: VaultLocation(displayName: vaultName, bookmark: bookmark),
-                phrase: phrase)
+                phrase: [UInt8](phrase))
         }
     }
 }

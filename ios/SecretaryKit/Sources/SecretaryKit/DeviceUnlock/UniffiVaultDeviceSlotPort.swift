@@ -13,10 +13,14 @@ public struct UniffiVaultDeviceSlotPort: VaultDeviceSlotPort {
             // future fallible code inserted below), so the secret is never left
             // recoverable in the bridge handle.
             defer { out.deviceSecret.wipe() }
-            guard let secret = out.deviceSecret.takeSecret() else {
+            // takeSecret() is `bytes?` in the UDL → a zeroizable `Data?` (not a boxed list, #261).
+            guard var secret = out.deviceSecret.takeSecret() else {
                 throw VaultSlotError.other("device secret handle was empty")
             }
-            return EnrolledSlot(deviceUuid: [UInt8](out.deviceUuid), deviceSecret: secret)
+            // Zero the transient Data once the port's `[UInt8]` copy is built; the coordinator
+            // zeroizes that EnrolledSlot copy after enclave.store.
+            defer { secret.resetBytes(in: 0..<secret.count) }
+            return EnrolledSlot(deviceUuid: [UInt8](out.deviceUuid), deviceSecret: [UInt8](secret))
         } catch let e as VaultError {
             throw mapVaultError(e)
         }
