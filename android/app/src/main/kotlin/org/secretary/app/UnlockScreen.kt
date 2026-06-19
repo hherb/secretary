@@ -42,9 +42,10 @@ private enum class UnlockMode { Password, Recovery }
  *   shown above the mode toggle; tapping it invokes [onBiometricUnlock] so AppRoot can drive the
  *   BiometricPrompt flow.
  * - When [isEnrolled] is false and the user is in Password mode, a "Remember this device with
- *   biometrics" checkbox (testTag `remember-device`) is shown below the password field. Its checked
- *   state is reported via [onEnrollChoice] so AppRoot can enroll the device after a successful
- *   password unlock.
+ *   biometrics" checkbox (testTag `remember-device`) is shown below the password field. It is a
+ *   controlled checkbox: [rememberDevice] drives its checked state and every toggle is reported via
+ *   [onEnrollChoice], so AppRoot owns the single source of truth and can enroll the device after a
+ *   successful password unlock.
  *
  * Password hygiene: Compose `TextField` is String-backed, so the typed String lingers until GC —
  * acceptable for this demo skeleton (same tradeoff as the password field). The credential's byte
@@ -53,6 +54,7 @@ private enum class UnlockMode { Password, Recovery }
 @Composable
 fun UnlockScreen(
     isEnrolled: Boolean,
+    rememberDevice: Boolean,
     onUnlock: (UnlockCredential) -> Unit,
     onEnrollChoice: (Boolean) -> Unit,
     onBiometricUnlock: () -> Unit,
@@ -60,7 +62,6 @@ fun UnlockScreen(
     var mode by remember { mutableStateOf(UnlockMode.Password) }
     var password by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
-    var rememberDevice by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -104,7 +105,7 @@ fun UnlockScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = rememberDevice,
-                            onCheckedChange = { rememberDevice = it; onEnrollChoice(it) },
+                            onCheckedChange = onEnrollChoice,
                             modifier = Modifier.testTag("remember-device"),
                         )
                         Text("Remember this device with biometrics")

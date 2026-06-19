@@ -2,6 +2,7 @@ package org.secretary.app
 
 import android.content.Context
 import android.util.Log
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -86,6 +87,7 @@ fun AppRoot() {
     when (val r = route) {
         is Route.Unlock -> UnlockScreen(
             isEnrolled = deviceState is DeviceUnlockState.Enrolled,
+            rememberDevice = rememberDevice,
             onUnlock = { credential ->
                 scope.launch {
                     route = unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
@@ -98,6 +100,11 @@ fun AppRoot() {
                         vaultId = vaultId,
                         reason = "Unlock your vault",
                     ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                    // On success we've already routed to Browse. On a failed/cancelled prompt the VM
+                    // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
+                    // so the "Unlock with biometrics" button persists — a cancel must not strand the
+                    // user on the password-only screen (LaunchedEffect(route) won't re-fire here).
+                    deviceVm.refresh()
                     deviceState = deviceVm.state
                 }
             },
@@ -168,7 +175,16 @@ private suspend fun unlockAndOpen(
             try {
                 coordinator.enroll(folder.path, vaultId, credential.secret)
             } catch (e: Exception) {
+                // Non-fatal: the password open already succeeded, so we route to Browse regardless.
+                // Common cause is no strong biometric enrolled on the device (Keystore key-gen
+                // rejects auth-required keys then). Surface it so a user who ticked "remember this
+                // device" isn't left silently un-enrolled with no idea why.
                 Log.w(TAG, "device enroll failed; password open still succeeded", e)
+                Toast.makeText(
+                    context,
+                    "Couldn't enable biometric unlock — check that a fingerprint/face is enrolled.",
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
         return Route.Browse(session)

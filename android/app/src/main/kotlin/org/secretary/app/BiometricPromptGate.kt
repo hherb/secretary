@@ -29,6 +29,7 @@ fun biometricPromptGate(activity: FragmentActivity, title: String): BiometricGat
                 executor,
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        if (!cont.isActive) return
                         val authorized = result.cryptoObject?.cipher
                         if (authorized != null) {
                             cont.resume(authorized)
@@ -44,6 +45,11 @@ fun biometricPromptGate(activity: FragmentActivity, title: String): BiometricGat
                     // prompt remains until success / a terminal error / cancel.
                 },
             )
+            // If the awaiting coroutine is cancelled (e.g. composition disposed while the prompt is
+            // up), dismiss the dialog instead of leaving it stranded on screen. The coroutine is
+            // main-dispatched, so cancellation — and thus this dismissal — runs on the main thread,
+            // as BiometricPrompt requires.
+            cont.invokeOnCancellation { prompt.cancelAuthentication() }
             val info = BiometricPrompt.PromptInfo.Builder()
                 .setTitle(title)
                 .setSubtitle(reason)

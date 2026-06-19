@@ -20,6 +20,7 @@ class UnlockScreenDeviceUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = true,
+                rememberDevice = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = { biometricTapped = true },
@@ -35,6 +36,7 @@ class UnlockScreenDeviceUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = false,
+                rememberDevice = false,
                 onUnlock = {},
                 onEnrollChoice = { lastChoice = it },
                 onBiometricUnlock = {},
@@ -49,6 +51,7 @@ class UnlockScreenDeviceUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = true,
+                rememberDevice = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
@@ -63,6 +66,7 @@ class UnlockScreenDeviceUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = false,
+                rememberDevice = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},

@@ -20,6 +20,7 @@ class UnlockScreenRecoveryUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = false,
+                rememberDevice = false,
                 onUnlock = { captured = it },
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
@@ -44,6 +45,7 @@ class UnlockScreenRecoveryUiTest {
         composeRule.setContent {
             UnlockScreen(
                 isEnrolled = false,
+                rememberDevice = false,
                 onUnlock = { captured = it },
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
