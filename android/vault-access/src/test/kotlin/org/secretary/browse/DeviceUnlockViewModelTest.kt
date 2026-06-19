@@ -35,7 +35,7 @@ class DeviceUnlockViewModelTest {
         val vm = DeviceUnlockViewModel(coordinator())
         vm.enroll(folder, vaultId, "pw".toByteArray())
         var received: UnlockCredential.DeviceSecret? = null
-        vm.unlockWithBiometrics(folder, vaultId, "reason") { received = it }
+        vm.unlockWithBiometrics(vaultId, "reason") { received = it }
         assertTrue(received != null)
         assertEquals(DeviceUnlockState.Enrolled, vm.state)
     }
@@ -47,7 +47,7 @@ class DeviceUnlockViewModelTest {
         val vm = DeviceUnlockViewModel(coordinator(enclave = enclave, metadata = metadata))
         vm.enroll(folder, vaultId, "pw".toByteArray())
         var emitted = false
-        vm.unlockWithBiometrics(folder, vaultId, "reason") { emitted = true }
+        vm.unlockWithBiometrics(vaultId, "reason") { emitted = true }
         assertTrue(!emitted)
         val failed = vm.state as DeviceUnlockState.Failed
         assertSame(DeviceUnlockError.UserCancelled, failed.error)
@@ -60,7 +60,7 @@ class DeviceUnlockViewModelTest {
         val metadata = FakeEnrollmentMetadataStore()
         val vm = DeviceUnlockViewModel(coordinator(enclave = enclave, metadata = metadata))
         vm.enroll(folder, vaultId, "pw".toByteArray())
-        vm.unlockWithBiometrics(folder, "ffffffffffffffffffffffffffffffff", "reason") {}
+        vm.unlockWithBiometrics("ffffffffffffffffffffffffffffffff", "reason") {}
         assertSame(DeviceUnlockError.VaultSlotMismatch, (vm.state as DeviceUnlockState.Failed).error)
     }
 

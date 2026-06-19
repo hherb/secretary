@@ -95,7 +95,6 @@ fun AppRoot() {
             onBiometricUnlock = {
                 scope.launch {
                     deviceVm.unlockWithBiometrics(
-                        AppVaultProvisioning.stageGoldenVault(context).path,
                         vaultId = vaultId,
                         reason = "Unlock your vault",
                     ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }

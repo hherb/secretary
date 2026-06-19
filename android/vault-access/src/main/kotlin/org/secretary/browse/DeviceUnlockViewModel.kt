@@ -42,7 +42,6 @@ class DeviceUnlockViewModel(private val coordinator: DeviceUnlockCoordinator) {
      * prompt. On any [DeviceUnlockError] → [DeviceUnlockState.Failed] and [onCredential] is NOT called.
      */
     suspend fun unlockWithBiometrics(
-        _folder: String,
         vaultId: String,
         reason: String,
         onCredential: suspend (UnlockCredential.DeviceSecret) -> Unit,

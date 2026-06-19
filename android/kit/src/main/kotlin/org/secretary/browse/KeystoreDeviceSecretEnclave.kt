@@ -52,6 +52,7 @@ class KeystoreDeviceSecretEnclave(
     override suspend fun store(secret: ByteArray) {
         val key = ensureKey()
         dir.mkdirs()
+        val tmp = File(dir, "$BLOB_NAME.tmp")
         try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key)
@@ -60,16 +61,26 @@ class KeystoreDeviceSecretEnclave(
             val iv = authorized.iv
             val out = ByteBuffer.allocate(1 + iv.size + ct.size)
                 .put(iv.size.toByte()).put(iv).put(ct).array()
-            val tmp = File(dir, "$BLOB_NAME.tmp")
             tmp.writeBytes(out)
             check(tmp.renameTo(blobFile)) { "atomic rename of secret blob failed" }
         } catch (e: GeneralSecurityException) {
+            tmp.delete()
+            throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
+        } catch (e: java.io.IOException) {
+            tmp.delete()
+            throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
+        } catch (e: IllegalStateException) {
+            tmp.delete()
             throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
         }
     }
 
     override suspend fun release(reason: String): ByteArray {
-        val blob = blobFile.takeIf { it.exists() }?.readBytes() ?: throw DeviceUnlockError.NotEnrolled
+        val blob = try {
+            blobFile.takeIf { it.exists() }?.readBytes()
+        } catch (e: java.io.IOException) {
+            throw DeviceUnlockError.Enclave(e.javaClass.simpleName)
+        } ?: throw DeviceUnlockError.NotEnrolled
         if (blob.isEmpty()) throw DeviceUnlockError.WrappedSecretCorrupt
         val ivLen = blob[0].toInt() and 0xFF
         if (blob.size < 1 + ivLen + 1) throw DeviceUnlockError.WrappedSecretCorrupt
