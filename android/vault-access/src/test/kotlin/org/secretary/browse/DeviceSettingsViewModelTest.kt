@@ -79,4 +79,18 @@ class DeviceSettingsViewModelTest {
         assertFalse(vm.state.enrolled)
         assertNull(vm.state.error)
     }
+
+    @Test
+    fun disenroll_failure_keepsEnrolled_setsError() = runTest {
+        // removeDeviceSlot fails with a non-DeviceSlotNotFound VaultBrowseError; the coordinator
+        // propagates it before clearing the enclave/metadata, so the device stays enrolled.
+        val slot = FakeVaultDeviceSlotPort(removeError = VaultBrowseError.FolderInvalid("bad"))
+        val vm = DeviceSettingsViewModel(coordinator(slotPort = slot))
+        vm.enroll(folder, vaultId, "pw".toByteArray())
+        assertTrue(vm.state.enrolled)
+        vm.disenroll(folder)
+        assertTrue(vm.state.enrolled)
+        assertFalse(vm.state.working)
+        assertEquals(DISENROLL_FAILED_MESSAGE, vm.state.error)
+    }
 }
