@@ -12,7 +12,8 @@ interface DeviceSecretEnclave {
     /** True iff a secret is stored. A cheap, non-prompting check (no biometric). */
     val isEnrolled: Boolean
 
-    /** Store [secret], taking an internal COPY — the caller may zeroize its array after this returns. */
+    /** Store [secret], consuming it synchronously (encrypts, persists only ciphertext); the caller
+     *  may zeroize its array after this returns. */
     suspend fun store(secret: ByteArray)
 
     /** Release the stored secret (slice 2: behind a biometric prompt explained by [reason]). The
