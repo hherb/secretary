@@ -122,7 +122,7 @@ public final class UniffiVaultSession: VaultSession {
 
     @discardableResult
     public func appendRecord(blockUuid: [UInt8], content: RecordContentInput) throws -> [UInt8] {
-        let recordUuid = try Self.freshRecordUuid()
+        let recordUuid = try Self.freshUuid()
         try write { dev, now in
             try SecretaryKit.appendRecord(
                 identity: identity, manifest: manifest,
@@ -159,6 +159,41 @@ public final class UniffiVaultSession: VaultSession {
         }
     }
 
+    @discardableResult
+    public func createBlock(blockName: String) throws -> [UInt8] {
+        let blockUuid = try Self.freshUuid()
+        try write { dev, now in
+            try SecretaryKit.createBlock(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), blockName: blockName,
+                deviceUuid: Data(dev), nowMs: now)
+        }
+        return blockUuid
+    }
+
+    public func renameBlock(blockUuid: [UInt8], newName: String) throws {
+        try write { dev, now in
+            try SecretaryKit.renameBlock(
+                identity: identity, manifest: manifest,
+                blockUuid: Data(blockUuid), newBlockName: newName,
+                deviceUuid: Data(dev), nowMs: now)
+        }
+    }
+
+    @discardableResult
+    public func moveRecord(sourceBlockUuid: [UInt8], targetBlockUuid: [UInt8],
+                           sourceRecordUuid: [UInt8]) throws -> [UInt8] {
+        let newRecordUuid = try Self.freshUuid()
+        try write { dev, now in
+            try SecretaryKit.moveRecord(
+                identity: identity, manifest: manifest,
+                sourceBlockUuid: Data(sourceBlockUuid), targetBlockUuid: Data(targetBlockUuid),
+                sourceRecordUuid: Data(sourceRecordUuid), newRecordUuid: Data(newRecordUuid),
+                deviceUuid: Data(dev), nowMs: now)
+        }
+        return newRecordUuid
+    }
+
     /// Resolve (device uuid, now-ms), run the FFI write, map errors. Centralizes
     /// the device-uuid resolve + `VaultError` mapping for all four writers.
     ///
@@ -187,15 +222,15 @@ public final class UniffiVaultSession: VaultSession {
         UInt64(Date().timeIntervalSince1970 * 1000)
     }
 
-    /// 16 bytes — a record UUID. Named locally rather than borrowing the
-    /// device-uuid constant: both happen to be 16, but they are unrelated values.
-    private static let recordUuidByteLen = 16
+    /// 16 bytes — a UUID (block or record). Both kinds share the byte length but
+    /// are unrelated values; named generically since this mints both.
+    private static let uuidByteLen = 16
 
-    private static func freshRecordUuid() throws -> [UInt8] {
-        var u = [UInt8](repeating: 0, count: recordUuidByteLen)
+    private static func freshUuid() throws -> [UInt8] {
+        var u = [UInt8](repeating: 0, count: uuidByteLen)
         let status = SecRandomCopyBytes(kSecRandomDefault, u.count, &u)
         guard status == errSecSuccess else {
-            throw VaultAccessError.other("OS entropy unavailable for record UUID (status \(status))")
+            throw VaultAccessError.other("OS entropy unavailable for UUID (status \(status))")
         }
         return u
     }
