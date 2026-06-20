@@ -79,4 +79,56 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         XCTAssertEqual(vm.blockNameDialog, .rename(block: block))
         XCTAssertNotNil(vm.error)
     }
+
+    func testMoveRecordHappyPathTombstonesSourceAndClearsPicker() {
+        let (s, src, rec) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks()
+        let targetUuid = try! s.createBlock(blockName: "Target")  // pre-seed a target block
+        vm.loadBlocks()
+        let target = vm.blocks.first { $0.uuid == targetUuid }!
+        vm.selectBlock(src)
+        vm.startMoveRecord(rec)
+        XCTAssertEqual(vm.movingRecord?.uuid, rec.uuid)
+        vm.confirmMove(target: target)
+        XCTAssertNil(vm.movingRecord, "picker cleared on success")
+        XCTAssertNil(vm.error)
+        // source re-read shows the record tombstoned (withheld while showDeleted is off):
+        XCTAssertEqual(vm.visibleRecords.count, 0)
+        XCTAssertEqual(try! s.readBlock(blockUuid: target.uuid, includeDeleted: false).count, 1)
+    }
+
+    func testMoveToSameBlockKeepsPickerOpenAndSurfacesInvalidArgument() {
+        let (s, src, rec) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks(); vm.selectBlock(src)
+        vm.startMoveRecord(rec)
+        vm.confirmMove(target: src)  // same block
+        XCTAssertEqual(vm.movingRecord?.uuid, rec.uuid, "same-block move must keep the picker open")
+        guard case .invalidArgument = vm.error else { return XCTFail("expected invalidArgument, got \(String(describing: vm.error))") }
+    }
+
+    func testMoveWriteFailureKeepsPickerOpen() {
+        let (s, src, rec) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks()
+        let targetUuid = try! s.createBlock(blockName: "Target"); vm.loadBlocks()
+        let target = vm.blocks.first { $0.uuid == targetUuid }!
+        vm.selectBlock(src); vm.startMoveRecord(rec)
+        s.failNextWrite = .other("disk full")
+        vm.confirmMove(target: target)
+        XCTAssertEqual(vm.movingRecord?.uuid, rec.uuid)
+        XCTAssertNotNil(vm.error)
+    }
+
+    func testLockResetsDialogAndMovingRecord() {
+        let (s, src, rec) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks(); vm.selectBlock(src)
+        vm.startCreateBlock()
+        vm.startMoveRecord(rec)
+        vm.lock()
+        XCTAssertNil(vm.blockNameDialog)
+        XCTAssertNil(vm.movingRecord)
+    }
 }

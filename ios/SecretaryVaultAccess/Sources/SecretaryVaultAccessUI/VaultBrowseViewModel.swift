@@ -35,6 +35,9 @@ public final class VaultBrowseViewModel: ObservableObject {
     public enum BlockNameDialog: Equatable { case create; case rename(block: BlockSummary) }
     @Published public private(set) var blockNameDialog: BlockNameDialog?
 
+    /// The record currently being moved (drives the target-block picker sheet). nil = none.
+    @Published public private(set) var movingRecord: RecordView?
+
     /// The currently-selected block uuid, so delete/restore can re-read it.
     private var selectedBlockUuid: [UInt8]?
 
@@ -156,6 +159,8 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// After `lock`, this VM should be discarded (route back to unlock).
     public func lock() {
         revealed.removeAll()
+        blockNameDialog = nil
+        movingRecord = nil
         session.wipe()
     }
 
@@ -165,6 +170,30 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func startRenameBlock(_ block: BlockSummary) { blockNameDialog = .rename(block: block) }
     /// Dismiss the block-name prompt without writing.
     public func cancelBlockNameDialog() { blockNameDialog = nil }
+
+    /// Begin moving `record` — opens the target-block picker.
+    public func startMoveRecord(_ record: RecordView) { movingRecord = record }
+    /// Dismiss the move picker without writing.
+    public func cancelMove() { movingRecord = nil }
+
+    /// Confirm a move into `target`. Rejects a same-block move as a UI guard
+    /// (`.invalidArgument`, no write, picker stays open). On success the SOURCE
+    /// block is re-read (so the tombstone shows with show-deleted on) and the
+    /// picker cleared; on a failed write the picker stays open with `error` set.
+    public func confirmMove(target: BlockSummary) {
+        guard let record = movingRecord else { return }
+        guard let source = selectedBlockUuid else { return }
+        guard target.uuid != source else {
+            error = .invalidArgument("source and target block must differ")
+            return
+        }
+        let ok = guardedWrite(onSuccess: { self.refresh() }) {
+            try self.session.moveRecord(sourceBlockUuid: source,
+                                        targetBlockUuid: target.uuid,
+                                        sourceRecordUuid: record.uuid)
+        }
+        if ok { movingRecord = nil }
+    }
 
     /// Confirm the block-name prompt. Blank names are rejected as a UI policy
     /// (the spec/FFI permit empty block names; the UI requires a non-blank one) —
