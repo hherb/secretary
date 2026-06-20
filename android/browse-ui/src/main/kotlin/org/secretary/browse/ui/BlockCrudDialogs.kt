@@ -63,7 +63,7 @@ fun MovePickerDialog(
 ) {
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("Move to block") },
+        title = { Text("Move \"${record.type}\" to block") },
         text = {
             Column {
                 blocks.filter { it.uuidHex != sourceBlockUuidHex }.forEach { b ->
