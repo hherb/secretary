@@ -105,4 +105,57 @@ class VaultBrowseModelBlockCrudTest {
         assertTrue(model.error.value is VaultBrowseError.BlockNotFound)
         assertTrue(model.blockNameDialog.value is BlockNameDialogState.RenameBlock)
     }
+
+    private val src = BlockSummaryView(ByteArray(16) { 0x11 }, "Src", 1u, 2u)
+    private val tgt = BlockSummaryView(ByteArray(16) { 0x22 }, "Tgt", 1u, 2u)
+    private val movableRec =
+        RecordSummaryView(hexOfBytes(ByteArray(16) { 0x33 }), "login", listOf("t"), 1u, 2u, false,
+            listOf(textField("u", "secret")))
+    private fun moveFake() =
+        FakeVaultSession("abcd", listOf(src, tgt), mapOf(src.uuidHex to listOf(movableRec)))
+
+    @Test
+    fun `startMoveRecord opens the picker`() = runTest {
+        val model = VaultBrowseModel(moveFake())
+        model.startMoveRecord(movableRec)
+        assertEquals(movableRec, model.movingRecord.value)
+    }
+
+    @Test
+    fun `confirmMove moves the record to the target and re-reads the source`() = runTest {
+        val f = moveFake()
+        val model = VaultBrowseModel(f)
+        model.loadBlocks(); model.selectBlock(src)
+        model.startMoveRecord(movableRec)
+        model.confirmMove(tgt)
+        assertEquals(1, f.moved.size)
+        assertEquals(src.uuidHex, f.moved[0].first)
+        assertEquals(tgt.uuidHex, f.moved[0].second)
+        assertNull(model.movingRecord.value)
+        // source re-read: live view no longer shows it
+        assertTrue(model.selectedRecords.value!!.none { it.uuidHex == movableRec.uuidHex })
+        // target holds the copy with the value
+        assertEquals(1, f.readBlock(tgt.uuid, includeDeleted = false).size)
+    }
+
+    @Test
+    fun `confirmMove to the same block is rejected without writing`() = runTest {
+        val f = moveFake()
+        val model = VaultBrowseModel(f)
+        model.loadBlocks(); model.selectBlock(src)
+        model.startMoveRecord(movableRec)
+        model.confirmMove(src)   // same as selected source
+        assertTrue(model.error.value is VaultBrowseError.InvalidArgument)
+        assertTrue(f.moved.isEmpty())
+    }
+
+    @Test
+    fun `lock resets the dialogs`() = runTest {
+        val model = VaultBrowseModel(moveFake())
+        model.startMoveRecord(movableRec)
+        model.startCreateBlock()
+        model.lock()
+        assertNull(model.movingRecord.value)
+        assertNull(model.blockNameDialog.value)
+    }
 }

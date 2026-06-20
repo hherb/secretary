@@ -66,6 +66,11 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** Non-null when the create/rename-block name dialog is open. Cleared on confirm-success / cancel / lock. */
     val blockNameDialog: StateFlow<BlockNameDialogState?> = _blockNameDialog.asStateFlow()
 
+    private val _movingRecord = MutableStateFlow<RecordSummaryView?>(null)
+    /** Non-null when the move-record block-picker is open; the picker lists `blocks` minus the
+     *  source (selected) block. Cleared on confirm-success / cancel / lock. */
+    val movingRecord: StateFlow<RecordSummaryView?> = _movingRecord.asStateFlow()
+
     /** Set the show-deleted flag; on a real change, re-read the selected block (if any). */
     suspend fun setShowDeleted(value: Boolean) {
         if (value == _showDeleted.value) return
@@ -206,6 +211,33 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** Dismiss the block-name dialog without writing. */
     fun cancelBlockNameDialog() { _blockNameDialog.value = null }
 
+    /** Open the move-record block picker for [record]. */
+    fun startMoveRecord(record: RecordSummaryView) {
+        _movingRecord.value = record
+    }
+
+    /** Dismiss the move picker without writing. */
+    fun cancelMove() { _movingRecord.value = null }
+
+    /**
+     * Move the in-flight [movingRecord] from the selected (source) block into [target]. Defensive
+     * same-block guard (the picker already excludes the source). On success: move, close the picker,
+     * re-read the source so the moved record shows tombstoned/withheld. No-op if nothing is moving or
+     * no block is selected.
+     */
+    suspend fun confirmMove(target: BlockSummaryView) {
+        val record = _movingRecord.value ?: return
+        val source = _selectedBlock.value ?: return
+        if (target.uuid.contentEquals(source.uuid)) {
+            _error.value = VaultBrowseError.InvalidArgument("cannot move a record into its own block")
+            return
+        }
+        guardedWrite(reload = { selectBlock(source) }) {
+            session.moveRecord(source.uuid, target.uuid, hexToBytes(record.uuidHex))
+            _movingRecord.value = null
+        }
+    }
+
     /**
      * Confirm the open block-name dialog. Rejects a blank name (InvalidArgument, no write, dialog
      * stays open). On success: create or rename per the dialog state, close the dialog, refresh the
@@ -240,6 +272,7 @@ class VaultBrowseModel(private val session: VaultSession) {
         _revealed.value = emptyMap()
         _editing.value = null
         _blockNameDialog.value = null
+        _movingRecord.value = null
         _writing.value = false
         session.wipe()
         _blocks.value = emptyList()
