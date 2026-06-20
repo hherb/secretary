@@ -15,8 +15,8 @@ use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::error::FfiVaultError;
 use secretary_ffi_bridge::{
     append_record as bridge_append_record, create_block as bridge_create_block,
-    edit_record as bridge_edit_record, read_block as bridge_read_block, FieldInput,
-    FieldInputValue, RecordContent,
+    edit_record as bridge_edit_record, read_block as bridge_read_block,
+    rename_block as bridge_rename_block, FieldInput, FieldInputValue, RecordContent,
 };
 
 use crate::auto_lock::now_ms;
@@ -126,6 +126,50 @@ pub fn create_block_impl(
         let summary = crate::commands::vault::block_summary_for(&u.manifest, block_uuid)
             .ok_or_else(|| AppError::Internal {
                 detail: "created block missing from manifest".into(),
+            })?;
+        Ok(summary)
+    })
+}
+
+#[tauri::command]
+pub async fn rename_block(
+    state: State<'_, Mutex<VaultSession>>,
+    block_uuid_hex: String,
+    new_name: String,
+) -> Result<BlockSummaryDto, AppError> {
+    rename_block_impl(state.inner(), &block_uuid_hex, &new_name)
+}
+
+/// Rename a block to `new_name`, preserving every record. Blank/whitespace
+/// `new_name` is rejected here as `InvalidArgument` (a desktop UI policy;
+/// the bridge/spec permit empty names). Returns the updated summary so the
+/// block list can refresh with the new name.
+pub fn rename_block_impl(
+    state: &Mutex<VaultSession>,
+    block_uuid_hex: &str,
+    new_name: &str,
+) -> Result<BlockSummaryDto, AppError> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err(AppError::InvalidArgument {
+            detail: "block name must not be blank".to_string(),
+        });
+    }
+    let block_uuid = parse_uuid_16(block_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_rename_block(
+            &u.identity,
+            &u.manifest,
+            block_uuid,
+            new_name.to_string(),
+            u.device_uuid,
+            now_ms(),
+        )
+        .map_err(map_save_error)?;
+        let summary = crate::commands::vault::block_summary_for(&u.manifest, block_uuid)
+            .ok_or_else(|| AppError::Internal {
+                detail: "renamed block missing from manifest".into(),
             })?;
         Ok(summary)
     })

@@ -905,6 +905,34 @@ mod edit_path {
         .expect_err("missing");
         assert!(matches!(err, AppError::RecordNotFound { .. }));
     }
+
+    #[test]
+    fn rename_block_changes_name() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Before").expect("create_block");
+        let renamed =
+            edit::rename_block_impl(&state, &block.block_uuid_hex, "After").expect("rename_block");
+        assert_eq!(renamed.block_name, "After");
+        // Manifest reflects it on a fresh read.
+        let summary = secretary_desktop::commands::vault::list_blocks_impl(&state)
+            .expect("list_blocks")
+            .into_iter()
+            .find(|b| b.block_uuid_hex == block.block_uuid_hex)
+            .expect("block present");
+        assert_eq!(summary.block_name, "After");
+    }
+
+    #[test]
+    fn rename_block_blank_name_is_invalid_argument() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Keep").unwrap();
+        let err = edit::rename_block_impl(&state, &block.block_uuid_hex, "   ")
+            .expect_err("blank name must be rejected");
+        assert!(
+            matches!(err, AppError::InvalidArgument { .. }),
+            "got {err:?}"
+        );
+    }
 }
 
 /// D.1.5 delete/trash IPC commands over ephemeral tempdir vaults. Mirrors

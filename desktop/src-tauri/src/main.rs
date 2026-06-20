@@ -85,6 +85,7 @@ fn main() {
             create::create_vault,
             create::probe_create_target,
             edit::create_block,
+            edit::rename_block,
             edit::save_record,
             edit::save_record_edit,
             edit::reveal_record,
