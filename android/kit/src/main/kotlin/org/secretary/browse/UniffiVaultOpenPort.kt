@@ -18,6 +18,9 @@ import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
 import uniffi.secretary.appendRecord as ffiAppendRecord
 import uniffi.secretary.editRecord as ffiEditRecord
+import uniffi.secretary.createBlock as ffiCreateBlock
+import uniffi.secretary.renameBlock as ffiRenameBlock
+import uniffi.secretary.moveRecord as ffiMoveRecord
 import java.security.SecureRandom
 
 /**
@@ -152,6 +155,30 @@ class UniffiVaultSession(
 
     override suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput) =
         write { dev, now -> ffiEditRecord(identity, manifest, blockUuid, recordUuid, toFfi(content), dev, now) }
+
+    override suspend fun createBlock(blockName: String): ByteArray =
+        write { dev, now ->
+            val blockUuid = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            ffiCreateBlock(identity, manifest, blockUuid, blockName, dev, now)
+            blockUuid
+        }
+
+    override suspend fun renameBlock(blockUuid: ByteArray, newName: String) =
+        write { dev, now -> ffiRenameBlock(identity, manifest, blockUuid, newName, dev, now) }
+
+    override suspend fun moveRecord(
+        sourceBlockUuid: ByteArray,
+        targetBlockUuid: ByteArray,
+        sourceRecordUuid: ByteArray,
+    ): ByteArray =
+        write { dev, now ->
+            val newRecordUuid = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            ffiMoveRecord(
+                identity, manifest, sourceBlockUuid, targetBlockUuid,
+                sourceRecordUuid, newRecordUuid, dev, now,
+            )
+            newRecordUuid
+        }
 
     /**
      * Resolve (device-uuid, now-ms), run the FFI write under [sessionLock] + the [wiped] guard, and

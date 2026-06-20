@@ -13,7 +13,7 @@ import kotlinx.coroutines.CompletableDeferred
  */
 class FakeVaultSession(
     private val vaultUuidHex: String,
-    private val blocks: List<BlockSummaryView>,
+    blocks: List<BlockSummaryView>,
     recordsByBlockHex: Map<String, List<RecordSummaryView>> = emptyMap(),
     private val writeGate: CompletableDeferred<Unit>? = null,
 ) : VaultSession {
@@ -22,13 +22,18 @@ class FakeVaultSession(
 
     val appended: MutableList<Pair<String, RecordContentInput>> = mutableListOf()
     val edited: MutableList<Triple<String, String, RecordContentInput>> = mutableListOf()
+    val created: MutableList<String> = mutableListOf()
+    val renamed: MutableList<Pair<String, String>> = mutableListOf()         // blockHex -> newName
+    val moved: MutableList<Triple<String, String, String>> = mutableListOf() // srcHex, tgtHex, recHex
     private var nextFakeUuidByte: Int = 0xA0
+    private var nextFakeBlockByte: Int = 0xB0
 
+    private val mutableBlocks: MutableList<BlockSummaryView> = blocks.toMutableList()
     private val records: MutableMap<String, MutableList<RecordSummaryView>> =
         recordsByBlockHex.mapValues { it.value.toMutableList() }.toMutableMap()
 
     override fun vaultUuidHex(): String = vaultUuidHex
-    override fun blockSummaries(): List<BlockSummaryView> = blocks
+    override fun blockSummaries(): List<BlockSummaryView> = mutableBlocks.toList()
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> {
         val all = records[hexOfBytes(blockUuid)] ?: return emptyList()
         return if (includeDeleted) all.toList() else all.filter { !it.tombstone }
@@ -75,6 +80,47 @@ class FakeVaultSession(
             tags = content.tags,
             fields = content.fields.map { it.toRevealableField() },
         )
+    }
+
+    override suspend fun createBlock(blockName: String): ByteArray {
+        writeGate?.await()
+        val uuid = ByteArray(16).also { it[15] = (nextFakeBlockByte and 0xff).toByte() }
+        nextFakeBlockByte += 1
+        created += blockName
+        mutableBlocks += BlockSummaryView(uuid, blockName, 0u, 0u)
+        records.getOrPut(hexOfBytes(uuid)) { mutableListOf() }
+        return uuid
+    }
+
+    override suspend fun renameBlock(blockUuid: ByteArray, newName: String) {
+        writeGate?.await()
+        val hex = hexOfBytes(blockUuid)
+        val i = mutableBlocks.indexOfFirst { it.uuidHex == hex }
+        if (i < 0) throw VaultBrowseError.BlockNotFound(hex)
+        renamed += hex to newName
+        val b = mutableBlocks[i]
+        mutableBlocks[i] = BlockSummaryView(b.uuid, newName, b.createdAtMs, b.lastModifiedMs)
+    }
+
+    override suspend fun moveRecord(
+        sourceBlockUuid: ByteArray,
+        targetBlockUuid: ByteArray,
+        sourceRecordUuid: ByteArray,
+    ): ByteArray {
+        writeGate?.await()
+        val srcHex = hexOfBytes(sourceBlockUuid)
+        val tgtHex = hexOfBytes(targetBlockUuid)
+        val recHex = hexOfBytes(sourceRecordUuid)
+        moved += Triple(srcHex, tgtHex, recHex)
+        val srcList = records[srcHex] ?: throw VaultBrowseError.BlockNotFound(srcHex)
+        val si = srcList.indexOfFirst { it.uuidHex == recHex && !it.tombstone }
+        if (si < 0) throw VaultBrowseError.RecordNotFound(recHex)
+        val moving = srcList[si]
+        val newUuid = ByteArray(16).also { it[15] = (nextFakeUuidByte and 0xff).toByte() }
+        nextFakeUuidByte += 1
+        records.getOrPut(tgtHex) { mutableListOf() } += moving.copy(uuidHex = hexOfBytes(newUuid))
+        srcList[si] = moving.copy(tombstone = true)
+        return newUuid
     }
 
     private fun flip(blockHex: String, recordHex: String, tombstone: Boolean) {
