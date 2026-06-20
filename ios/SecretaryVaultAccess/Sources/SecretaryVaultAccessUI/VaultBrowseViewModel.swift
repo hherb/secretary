@@ -30,6 +30,11 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// correctness guard.
     @Published public private(set) var isWriting = false
 
+    /// Drives the block-name prompt. nil = closed. `.create` = new block;
+    /// `.rename` carries the block being renamed.
+    public enum BlockNameDialog: Equatable { case create; case rename(block: BlockSummary) }
+    @Published public private(set) var blockNameDialog: BlockNameDialog?
+
     /// The currently-selected block uuid, so delete/restore can re-read it.
     private var selectedBlockUuid: [UInt8]?
 
@@ -85,24 +90,33 @@ public final class VaultBrowseViewModel: ObservableObject {
         reload(blockUuid: blockUuid)
     }
 
-    /// Run a mutation against the selected block, then re-read on success. A
-    /// failed mutation surfaces `error` but deliberately leaves `records` (and
-    /// any reveal) intact — a rejected delete must not blank the visible list.
-    private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
-        guard let blockUuid = selectedBlockUuid else { return }
-        guard !isWriting else { return }
+    /// Run `op`, then on SUCCESS run `onSuccess`. A failed write surfaces `error`
+    /// and runs neither `onSuccess` nor any caller-deferred dialog clear — so the
+    /// visible list / open dialog is preserved. Returns true iff the write
+    /// succeeded. Re-entrancy guarded by `isWriting`.
+    @discardableResult
+    private func guardedWrite(onSuccess: () -> Void, op: () throws -> Void) -> Bool {
+        guard !isWriting else { return false }
         isWriting = true
         defer { isWriting = false }
         do {
-            try op(blockUuid)
+            try op()
         } catch let e as VaultAccessError {
             error = e
-            return
+            return false
         } catch {
             self.error = .other(String(describing: error))
-            return
+            return false
         }
-        reload(blockUuid: blockUuid)
+        onSuccess()
+        return true
+    }
+
+    /// Run a mutation against the selected block, then re-read it on success.
+    /// Behavior-preserving wrapper over `guardedWrite` for the record mutations.
+    private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
+        guard let blockUuid = selectedBlockUuid else { return }
+        guardedWrite(onSuccess: { self.reload(blockUuid: blockUuid) }) { try op(blockUuid) }
     }
 
     /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always
@@ -143,6 +157,34 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func lock() {
         revealed.removeAll()
         session.wipe()
+    }
+
+    /// Open the name prompt for a NEW block.
+    public func startCreateBlock() { blockNameDialog = .create }
+    /// Dismiss the block-name prompt without writing.
+    public func cancelBlockNameDialog() { blockNameDialog = nil }
+
+    /// Confirm the block-name prompt. Blank names are rejected as a UI policy
+    /// (the spec/FFI permit empty block names; the UI requires a non-blank one) —
+    /// this surfaces `.invalidArgument` WITHOUT writing and keeps the dialog open.
+    /// On a successful write the block LIST is reloaded and the dialog cleared;
+    /// on a failed write the dialog stays open with `error` set.
+    public func confirmBlockName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            error = .invalidArgument("block name must not be blank")
+            return
+        }
+        guard let dialog = blockNameDialog else { return }
+        let ok = guardedWrite(onSuccess: { self.loadBlocks() }) {
+            switch dialog {
+            case .create:
+                try self.session.createBlock(blockName: trimmed)
+            case .rename(let block):
+                try self.session.renameBlock(blockUuid: block.uuid, newName: trimmed)
+            }
+        }
+        if ok { blockNameDialog = nil }
     }
 
     /// Build a record-edit VM bound to this session + the selected block.
