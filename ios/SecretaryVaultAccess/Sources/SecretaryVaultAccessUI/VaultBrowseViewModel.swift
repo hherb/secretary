@@ -105,15 +105,27 @@ public final class VaultBrowseViewModel: ObservableObject {
         reload(blockUuid: blockUuid)
     }
 
-    /// Run `op`, then on SUCCESS run `onSuccess`. A failed write surfaces `error`
-    /// and runs neither `onSuccess` nor any caller-deferred dialog clear — so the
-    /// visible list / open dialog is preserved. Returns true iff the write
-    /// succeeded. Re-entrancy guarded by `isWriting`.
-    @discardableResult
-    private func guardedWrite(onSuccess: () -> Void, op: () throws -> Void) -> Bool {
+    /// Re-auth, then run a guarded write. The `isWriting` guard is set BEFORE
+    /// the gate await, so a second action arriving while the biometric prompt is
+    /// suspended is rejected here (no second prompt, no second write) rather than
+    /// racing into the write body. Returns false if already writing, if re-auth is
+    /// refused, or if the write itself fails — leaving any open dialog/sheet
+    /// untouched. Returns true on success.
+    private func reauthedWrite(reason: String,
+                               onSuccess: () -> Void,
+                               op: () throws -> Void) async -> Bool {
         guard !isWriting else { return false }
         isWriting = true
         defer { isWriting = false }
+        do {
+            try await gate.authorizeWrite(reason: reason)
+        } catch let e as VaultAccessError {
+            error = e
+            return false
+        } catch {
+            self.error = .reauthFailed(String(describing: error))
+            return false
+        }
         do {
             try op()
         } catch let e as VaultAccessError {
@@ -125,24 +137,6 @@ public final class VaultBrowseViewModel: ObservableObject {
         }
         onSuccess()
         return true
-    }
-
-    /// Re-auth, then run a guarded write. Returns false (write not performed) if the
-    /// re-auth is refused — surfacing `.reauthFailed` and leaving any open dialog/sheet
-    /// untouched, exactly like a failed write. Otherwise delegates to `guardedWrite`.
-    private func reauthedWrite(reason: String,
-                               onSuccess: () -> Void,
-                               op: () throws -> Void) async -> Bool {
-        do {
-            try await gate.authorizeWrite(reason: reason)
-        } catch let e as VaultAccessError {
-            error = e
-            return false
-        } catch {
-            self.error = .reauthFailed(String(describing: error))
-            return false
-        }
-        return guardedWrite(onSuccess: onSuccess, op: op)
     }
 
     /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always
