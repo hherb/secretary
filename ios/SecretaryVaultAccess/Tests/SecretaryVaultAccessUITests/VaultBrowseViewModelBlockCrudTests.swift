@@ -46,13 +46,14 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         vm.startCreateBlock()
         vm.confirmBlockName("Archive")
         XCTAssertEqual(vm.blockNameDialog, .create, "failed write must keep the dialog open")
-        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.error, .other("disk full"))
     }
 
     func testCancelBlockNameDialogClearsIt() {
         let (s, _, _) = make()
         let vm = VaultBrowseViewModel(session: s)
         vm.startCreateBlock()
+        XCTAssertEqual(vm.blockNameDialog, .create, "dialog must be open before cancel")
         vm.cancelBlockNameDialog()
         XCTAssertNil(vm.blockNameDialog)
     }
@@ -77,7 +78,7 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         s.failNextWrite = .other("disk full")
         vm.confirmBlockName("Renamed")
         XCTAssertEqual(vm.blockNameDialog, .rename(block: block))
-        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.error, .other("disk full"))
     }
 
     func testMoveRecordHappyPathTombstonesSourceAndClearsPicker() {
@@ -118,7 +119,7 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         s.failNextWrite = .other("disk full")
         vm.confirmMove(target: target)
         XCTAssertEqual(vm.movingRecord?.uuid, rec.uuid)
-        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.error, .other("disk full"))
     }
 
     func testLockResetsDialogAndMovingRecord() {

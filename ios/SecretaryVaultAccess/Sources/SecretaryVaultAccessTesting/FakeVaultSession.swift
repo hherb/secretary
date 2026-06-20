@@ -88,9 +88,9 @@ public final class FakeVaultSession: VaultSession {
         try throwIfInjected()
         let idx = try liveIndex(sourceBlockUuid, sourceRecordUuid)
         try requireBlock(targetBlockUuid)
-        guard let src = recordsByBlock[sourceBlockUuid]?[idx] else {
-            throw VaultAccessError.recordNotFound(hex(sourceRecordUuid))
-        }
+        // liveIndex already verified sourceBlockUuid exists and idx is in-bounds,
+        // so a direct subscript is safe here.
+        let src = recordsByBlock[sourceBlockUuid]![idx]
         let newUuid = mintUuid()
         // copy-before-delete: land the copy in the target, THEN tombstone the source.
         recordsByBlock[targetBlockUuid]?.append(RecordView(
