@@ -154,6 +154,7 @@ final class RecordEditViewModelTests: XCTestCase {
         XCTAssertFalse(vm.committed, "a refused re-auth must not commit")
         // FakeVaultSession appended nothing: the block is still empty.
         XCTAssertEqual(try s.readBlock(blockUuid: block, includeDeleted: true).count, 0)
+        XCTAssertEqual(gate.authorizeCount, 1, "the gate must be consulted before the write is refused")
     }
 
     func testCommitProceedsWhenReauthAuthorizes() async {

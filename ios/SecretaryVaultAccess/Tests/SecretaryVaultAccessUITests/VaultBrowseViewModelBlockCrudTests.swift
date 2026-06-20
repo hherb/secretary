@@ -145,6 +145,7 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         XCTAssertEqual(vm.error, .reauthFailed("cancelled"))
         XCTAssertEqual(vm.blocks.count, before, "no block created on refused re-auth")
         XCTAssertNotNil(vm.blockNameDialog, "dialog stays open on a refused write")
+        XCTAssertEqual(gate.authorizeCount, 1, "the gate must be consulted before the write is refused")
     }
 
     func testNotEnrolledGateWritesAsBefore() async {
