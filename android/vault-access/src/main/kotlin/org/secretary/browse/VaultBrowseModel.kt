@@ -198,6 +198,11 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** Open the create-block name dialog. */
     fun startCreateBlock() { _blockNameDialog.value = BlockNameDialogState.CreateBlock }
 
+    /** Open the rename-block dialog for [block], pre-filled with its current name. */
+    fun startRenameBlock(block: BlockSummaryView) {
+        _blockNameDialog.value = BlockNameDialogState.RenameBlock(block.uuid, block.name)
+    }
+
     /** Dismiss the block-name dialog without writing. */
     fun cancelBlockNameDialog() { _blockNameDialog.value = null }
 

@@ -72,4 +72,37 @@ class VaultBrowseModelBlockCrudTest {
         assertTrue(model.error.value is VaultBrowseError.SaveCryptoFailure)
         assertTrue(model.blockNameDialog.value is BlockNameDialogState.CreateBlock)
     }
+
+    @Test
+    fun `startRenameBlock opens the dialog pre-filled with the current name`() = runTest {
+        val model = VaultBrowseModel(fake())
+        model.startRenameBlock(block)
+        val state = model.blockNameDialog.value
+        assertTrue(state is BlockNameDialogState.RenameBlock)
+        assertEquals("Logins", (state as BlockNameDialogState.RenameBlock).currentName)
+    }
+
+    @Test
+    fun `confirmBlockName rename changes the name and closes the dialog`() = runTest {
+        val f = fake()
+        val model = VaultBrowseModel(f)
+        model.loadBlocks()
+        model.startRenameBlock(block)
+        model.confirmBlockName("Passwords")
+        assertEquals(listOf(block.uuidHex to "Passwords"), f.renamed)
+        assertTrue(model.blocks.value.any { it.name == "Passwords" })
+        assertNull(model.blockNameDialog.value)
+    }
+
+    @Test
+    fun `rename of an absent block surfaces BlockNotFound and keeps the dialog open`() = runTest {
+        val absent = BlockSummaryView(ByteArray(16) { 0x77 }, "Ghost", 1u, 2u)
+        val f = fake()
+        val model = VaultBrowseModel(f)
+        model.loadBlocks()
+        model.startRenameBlock(absent)
+        model.confirmBlockName("X")
+        assertTrue(model.error.value is VaultBrowseError.BlockNotFound)
+        assertTrue(model.blockNameDialog.value is BlockNameDialogState.RenameBlock)
+    }
 }
