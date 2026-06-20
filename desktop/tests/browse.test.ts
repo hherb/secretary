@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { browseNav, openBlock, openRecord, back, resetBrowse, openContacts, shouldPopOnEscape } from '../src/lib/browse';
+import { browseNav, openBlock, openRecord, openRenameBlock, back, resetBrowse, openContacts, shouldPopOnEscape } from '../src/lib/browse';
 import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 import type { BrowseNav } from '../src/lib/browse';
 
@@ -55,6 +55,19 @@ describe('browse-nav store', () => {
     back();
     expect(get(browseNav).level).toBe('blocks');
   });
+
+  it('openRenameBlock sets renameBlock level and carries the block', () => {
+    openRenameBlock(BLOCK);
+    const s = get(browseNav);
+    expect(s.level).toBe('renameBlock');
+    if (s.level === 'renameBlock') expect(s.block.blockUuidHex).toBe('ab');
+  });
+
+  it('back from renameBlock returns to blocks', () => {
+    openRenameBlock(BLOCK);
+    back();
+    expect(get(browseNav).level).toBe('blocks');
+  });
 });
 
 // #164 - Esc pops one browse level, but only at the read-only browse levels
@@ -63,7 +76,7 @@ describe('browse-nav store', () => {
 // every guard so the wiring stays a thin adapter.
 const LEVELS: BrowseNav['level'][] = [
   'blocks', 'records', 'fields', 'newBlock',
-  'newRecord', 'editRecord', 'trash', 'contacts'
+  'newRecord', 'editRecord', 'renameBlock', 'trash', 'contacts'
 ];
 
 describe('shouldPopOnEscape', () => {

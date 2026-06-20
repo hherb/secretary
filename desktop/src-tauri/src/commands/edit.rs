@@ -15,7 +15,8 @@ use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::error::FfiVaultError;
 use secretary_ffi_bridge::{
     append_record as bridge_append_record, create_block as bridge_create_block,
-    edit_record as bridge_edit_record, read_block as bridge_read_block, FieldInput,
+    edit_record as bridge_edit_record, move_record as bridge_move_record,
+    read_block as bridge_read_block, rename_block as bridge_rename_block, FieldInput,
     FieldInputValue, RecordContent,
 };
 
@@ -126,6 +127,50 @@ pub fn create_block_impl(
         let summary = crate::commands::vault::block_summary_for(&u.manifest, block_uuid)
             .ok_or_else(|| AppError::Internal {
                 detail: "created block missing from manifest".into(),
+            })?;
+        Ok(summary)
+    })
+}
+
+#[tauri::command]
+pub async fn rename_block(
+    state: State<'_, Mutex<VaultSession>>,
+    block_uuid_hex: String,
+    new_name: String,
+) -> Result<BlockSummaryDto, AppError> {
+    rename_block_impl(state.inner(), &block_uuid_hex, &new_name)
+}
+
+/// Rename a block to `new_name`, preserving every record. Blank/whitespace
+/// `new_name` is rejected here as `InvalidArgument` (a desktop UI policy;
+/// the bridge/spec permit empty names). Returns the updated summary so the
+/// block list can refresh with the new name.
+pub fn rename_block_impl(
+    state: &Mutex<VaultSession>,
+    block_uuid_hex: &str,
+    new_name: &str,
+) -> Result<BlockSummaryDto, AppError> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err(AppError::InvalidArgument {
+            detail: "block name must not be blank".to_string(),
+        });
+    }
+    let block_uuid = parse_uuid_16(block_uuid_hex)?;
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_rename_block(
+            &u.identity,
+            &u.manifest,
+            block_uuid,
+            new_name.to_string(),
+            u.device_uuid,
+            now_ms(),
+        )
+        .map_err(map_save_error)?;
+        let summary = crate::commands::vault::block_summary_for(&u.manifest, block_uuid)
+            .ok_or_else(|| AppError::Internal {
+                detail: "renamed block missing from manifest".into(),
             })?;
         Ok(summary)
     })
@@ -277,6 +322,67 @@ pub fn reveal_record_impl(
         }
         output.wipe();
         Ok(RecordRevealDto { fields })
+    })
+}
+
+#[tauri::command]
+pub async fn move_record(
+    state: State<'_, Mutex<VaultSession>>,
+    source_block_uuid_hex: String,
+    target_block_uuid_hex: String,
+    source_record_uuid_hex: String,
+) -> Result<RecordRefDto, AppError> {
+    move_record_impl(
+        state.inner(),
+        &source_block_uuid_hex,
+        &target_block_uuid_hex,
+        &source_record_uuid_hex,
+    )
+}
+
+/// Move a live record from `source` to `target` under a fresh UUID
+/// (copy-before-delete). Same-block moves are rejected here as
+/// `InvalidArgument` (the bridge trusts its caller and does not check).
+/// Returns the target block uuid + the record's fresh uuid.
+///
+/// The same-block check runs on the hex strings *before* parsing so a
+/// malformed-but-equal pair is still caught as a same-block move. It is
+/// ASCII-case-insensitive because hex decoding is: `"AB"` and `"ab"` are the
+/// same UUID, so an upper/lower-case variant of the source must never pass as
+/// a distinct target. (In practice every UUID in the UI is canonical lowercase
+/// from `hex::encode`, but the guard does not rely on that.)
+pub fn move_record_impl(
+    state: &Mutex<VaultSession>,
+    source_block_uuid_hex: &str,
+    target_block_uuid_hex: &str,
+    source_record_uuid_hex: &str,
+) -> Result<RecordRefDto, AppError> {
+    if source_block_uuid_hex.eq_ignore_ascii_case(target_block_uuid_hex) {
+        return Err(AppError::InvalidArgument {
+            detail: "source and target block must differ".to_string(),
+        });
+    }
+    let source_block_uuid = parse_uuid_16(source_block_uuid_hex)?;
+    let target_block_uuid = parse_uuid_16(target_block_uuid_hex)?;
+    let source_record_uuid = parse_uuid_16(source_record_uuid_hex)?;
+    let new_record_uuid = new_uuid_16();
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_move_record(
+            &u.identity,
+            &u.manifest,
+            source_block_uuid,
+            target_block_uuid,
+            source_record_uuid,
+            new_record_uuid,
+            u.device_uuid,
+            now_ms(),
+        )
+        .map_err(map_save_error)?;
+        Ok(RecordRefDto {
+            block_uuid_hex: target_block_uuid_hex.to_string(),
+            record_uuid_hex: hex::encode(new_record_uuid),
+        })
     })
 }
 

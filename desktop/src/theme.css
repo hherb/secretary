@@ -1490,7 +1490,7 @@ body {
 .unlock__banner { background: var(--ok-bg, #1b4); color: #fff; border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 1rem; }
 .unlock__error-action { margin-top: 0.4rem; background: none; border: 1px solid currentColor; border-radius: 6px; padding: 0.3rem 0.6rem; cursor: pointer; }
 
-/* Editor — RecordEditor / FieldRowEditor / TagsEditor / NewBlock */
+/* Editor — RecordEditor / FieldRowEditor / TagsEditor / BlockNameDialog */
 .editor { display: flex; flex-direction: column; gap: 0.8rem; padding: 1rem; }
 .editor__title { margin: 0; }
 .editor__back { align-self: flex-start; background: none; border: none; cursor: pointer; color: var(--accent, #69f); }

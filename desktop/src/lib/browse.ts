@@ -16,6 +16,7 @@ export type BrowseNav =
   | { level: 'newBlock' }
   | { level: 'newRecord'; block: BlockSummaryDto }
   | { level: 'editRecord'; block: BlockSummaryDto; record: RecordDto }
+  | { level: 'renameBlock'; block: BlockSummaryDto }
   | { level: 'trash' }
   | { level: 'contacts' };
 
@@ -35,6 +36,10 @@ export function openRecord(record: RecordDto): void {
 
 export function openNewBlock(): void {
   store.set({ level: 'newBlock' });
+}
+
+export function openRenameBlock(block: BlockSummaryDto): void {
+  store.set({ level: 'renameBlock', block });
 }
 
 export function openNewRecord(block: BlockSummaryDto): void {
@@ -58,6 +63,7 @@ export function back(): void {
     if (s.level === 'editRecord') return { level: 'fields', block: s.block, record: s.record };
     if (s.level === 'newRecord') return { level: 'records', block: s.block };
     if (s.level === 'newBlock') return { level: 'blocks' };
+    if (s.level === 'renameBlock') return { level: 'blocks' };
     if (s.level === 'fields') return { level: 'records', block: s.block };
     if (s.level === 'records') return { level: 'blocks' };
     if (s.level === 'trash') return { level: 'blocks' };

@@ -6,10 +6,10 @@
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
   import { get } from 'svelte/store';
-  import { browseNav, openBlock, openNewBlock, openTrash, openContacts, back, shouldPopOnEscape } from '../lib/browse';
+  import { browseNav, openBlock, openNewBlock, openRenameBlock, openTrash, openContacts, back, shouldPopOnEscape } from '../lib/browse';
   import RecordList from '../components/RecordList.svelte';
   import FieldViewer from '../components/FieldViewer.svelte';
-  import NewBlock from '../components/edit/NewBlock.svelte';
+  import BlockNameDialog from '../components/edit/BlockNameDialog.svelte';
   import RecordEditor from '../components/edit/RecordEditor.svelte';
   import TrashView from '../components/delete/TrashView.svelte';
   import ContactsPane from '../components/contacts/ContactsPane.svelte';
@@ -122,6 +122,7 @@
             onClick={openBlock}
             onTrash={(b) => (pendingTrash = b)}
             onShare={(b) => (blockToShare = b)}
+            onRename={openRenameBlock}
           />
         {/each}
       </div>
@@ -134,8 +135,15 @@
     {:else if $browseNav.level === 'fields'}
       <FieldViewer block={$browseNav.block} record={$browseNav.record} />
     {:else if $browseNav.level === 'newBlock'}
-      <NewBlock
-        onCreated={async () => { try { await refreshManifest(); } finally { back(); } }}
+      <BlockNameDialog
+        mode={{ kind: 'create' }}
+        onDone={async () => { try { await refreshManifest(); } finally { back(); } }}
+        onCancel={() => back()}
+      />
+    {:else if $browseNav.level === 'renameBlock'}
+      <BlockNameDialog
+        mode={{ kind: 'rename', block: $browseNav.block }}
+        onDone={async () => { try { await refreshManifest(); } finally { back(); } }}
         onCancel={() => back()}
       />
     {:else if $browseNav.level === 'newRecord'}

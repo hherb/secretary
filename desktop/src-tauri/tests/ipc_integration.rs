@@ -905,6 +905,121 @@ mod edit_path {
         .expect_err("missing");
         assert!(matches!(err, AppError::RecordNotFound { .. }));
     }
+
+    #[test]
+    fn rename_block_changes_name() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Before").expect("create_block");
+        let renamed =
+            edit::rename_block_impl(&state, &block.block_uuid_hex, "After").expect("rename_block");
+        assert_eq!(renamed.block_name, "After");
+        // Manifest reflects it on a fresh read.
+        let summary = secretary_desktop::commands::vault::list_blocks_impl(&state)
+            .expect("list_blocks")
+            .into_iter()
+            .find(|b| b.block_uuid_hex == block.block_uuid_hex)
+            .expect("block present");
+        assert_eq!(summary.block_name, "After");
+    }
+
+    #[test]
+    fn rename_block_blank_name_is_invalid_argument() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Keep").unwrap();
+        let err = edit::rename_block_impl(&state, &block.block_uuid_hex, "   ")
+            .expect_err("blank name must be rejected");
+        assert!(
+            matches!(err, AppError::InvalidArgument { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn move_record_copies_to_target_and_tombstones_source() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let src = edit::create_block_impl(&state, "Source").unwrap();
+        let dst = edit::create_block_impl(&state, "Target").unwrap();
+        let rec = edit::save_record_impl(
+            &state,
+            &src.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "alice")],
+            },
+        )
+        .unwrap();
+
+        let moved = edit::move_record_impl(
+            &state,
+            &src.block_uuid_hex,
+            &dst.block_uuid_hex,
+            &rec.record_uuid_hex,
+        )
+        .expect("move_record");
+        assert_eq!(moved.block_uuid_hex, dst.block_uuid_hex);
+        assert_ne!(
+            moved.record_uuid_hex, rec.record_uuid_hex,
+            "fresh uuid in target"
+        );
+
+        // Source live view no longer shows it; include_deleted shows the tombstone.
+        let src_live = browse::read_block_impl(&state, &src.block_uuid_hex, false).unwrap();
+        assert_eq!(src_live.records.len(), 0, "source record tombstoned");
+        let src_all = browse::read_block_impl(&state, &src.block_uuid_hex, true).unwrap();
+        assert_eq!(src_all.records.len(), 1);
+        assert!(
+            src_all.records[0].tombstoned,
+            "source record marked tombstoned"
+        );
+
+        // Target has the live copy.
+        let dst_all = browse::read_block_impl(&state, &dst.block_uuid_hex, false).unwrap();
+        assert_eq!(dst_all.records.len(), 1);
+        assert_eq!(dst_all.records[0].record_uuid_hex, moved.record_uuid_hex);
+    }
+
+    #[test]
+    fn move_record_same_block_is_invalid_argument() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let b = edit::create_block_impl(&state, "B").unwrap();
+        let rec = edit::save_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "x")],
+            },
+        )
+        .unwrap();
+        let err = edit::move_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            &b.block_uuid_hex,
+            &rec.record_uuid_hex,
+        )
+        .expect_err("same-block move must be rejected");
+        assert!(
+            matches!(err, AppError::InvalidArgument { .. }),
+            "got {err:?}"
+        );
+
+        // A hex-case variant of the source is the SAME uuid (hex decodes
+        // case-insensitively), so it must also be rejected, not treated as a
+        // distinct target.
+        let err_upper = edit::move_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            &b.block_uuid_hex.to_uppercase(),
+            &rec.record_uuid_hex,
+        )
+        .expect_err("case-variant same-block move must be rejected");
+        assert!(
+            matches!(err_upper, AppError::InvalidArgument { .. }),
+            "got {err_upper:?}"
+        );
+    }
 }
 
 /// D.1.5 delete/trash IPC commands over ephemeral tempdir vaults. Mirrors

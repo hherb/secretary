@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-20-ios-block-crud-ui-shipped.md
+docs/handoffs/2026-06-20-desktop-block-crud-ui-shipped.md
