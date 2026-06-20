@@ -204,6 +204,18 @@ export async function createBlock(blockName: string): Promise<BlockSummaryDto> {
   return call<BlockSummaryDto>('create_block', { blockName });
 }
 
+export async function renameBlock(blockUuidHex: string, newName: string): Promise<BlockSummaryDto> {
+  return call<BlockSummaryDto>('rename_block', { blockUuidHex, newName });
+}
+
+export async function moveRecord(
+  sourceBlockUuidHex: string,
+  targetBlockUuidHex: string,
+  sourceRecordUuidHex: string
+): Promise<RecordRefDto> {
+  return call<RecordRefDto>('move_record', { sourceBlockUuidHex, targetBlockUuidHex, sourceRecordUuidHex });
+}
+
 export async function saveRecord(blockUuidHex: string, record: RecordInputDto): Promise<RecordRefDto> {
   return call<RecordRefDto>('save_record', { blockUuidHex, record });
 }
