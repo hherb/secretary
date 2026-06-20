@@ -9,8 +9,10 @@ export function isBlankName(name: string): boolean {
   return name.trim().length === 0;
 }
 
-/** True when source and target block UUIDs are identical (a same-block move
- *  is a no-op the bridge does not guard against). */
+/** True when source and target block UUIDs are the same (a same-block move is
+ *  a no-op the bridge does not guard against). ASCII-case-insensitive because
+ *  hex is: `"AB"` and `"ab"` decode to the same UUID. Mirrors the authoritative
+ *  Rust guard in `move_record_impl`. */
 export function isSameBlock(sourceBlockUuidHex: string, targetBlockUuidHex: string): boolean {
-  return sourceBlockUuidHex === targetBlockUuidHex;
+  return sourceBlockUuidHex.toLowerCase() === targetBlockUuidHex.toLowerCase();
 }

@@ -344,13 +344,20 @@ pub async fn move_record(
 /// (copy-before-delete). Same-block moves are rejected here as
 /// `InvalidArgument` (the bridge trusts its caller and does not check).
 /// Returns the target block uuid + the record's fresh uuid.
+///
+/// The same-block check runs on the hex strings *before* parsing so a
+/// malformed-but-equal pair is still caught as a same-block move. It is
+/// ASCII-case-insensitive because hex decoding is: `"AB"` and `"ab"` are the
+/// same UUID, so an upper/lower-case variant of the source must never pass as
+/// a distinct target. (In practice every UUID in the UI is canonical lowercase
+/// from `hex::encode`, but the guard does not rely on that.)
 pub fn move_record_impl(
     state: &Mutex<VaultSession>,
     source_block_uuid_hex: &str,
     target_block_uuid_hex: &str,
     source_record_uuid_hex: &str,
 ) -> Result<RecordRefDto, AppError> {
-    if source_block_uuid_hex == target_block_uuid_hex {
+    if source_block_uuid_hex.eq_ignore_ascii_case(target_block_uuid_hex) {
         return Err(AppError::InvalidArgument {
             detail: "source and target block must differ".to_string(),
         });

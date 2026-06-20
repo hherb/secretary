@@ -15,4 +15,8 @@ describe('blockCrud pure guards', () => {
     expect(isSameBlock('ab', 'ab')).toBe(true);
     expect(isSameBlock('ab', 'cd')).toBe(false);
   });
+  it('isSameBlock: case-insensitive (hex case variants are the same uuid)', () => {
+    expect(isSameBlock('AB', 'ab')).toBe(true);
+    expect(isSameBlock('aB', 'Ab')).toBe(true);
+  });
 });

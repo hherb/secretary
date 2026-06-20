@@ -1004,6 +1004,21 @@ mod edit_path {
             matches!(err, AppError::InvalidArgument { .. }),
             "got {err:?}"
         );
+
+        // A hex-case variant of the source is the SAME uuid (hex decodes
+        // case-insensitively), so it must also be rejected, not treated as a
+        // distinct target.
+        let err_upper = edit::move_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            &b.block_uuid_hex.to_uppercase(),
+            &rec.record_uuid_hex,
+        )
+        .expect_err("case-variant same-block move must be rejected");
+        assert!(
+            matches!(err_upper, AppError::InvalidArgument { .. }),
+            "got {err_upper:?}"
+        );
     }
 }
 
