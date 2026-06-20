@@ -1,6 +1,7 @@
 package org.secretary.browse
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class VaultBrowseModelBlockCrudTest {
     private val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
     private fun fake(

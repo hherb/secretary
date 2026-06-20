@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -45,6 +46,15 @@ class BlockCrudRoundTripUiTest {
     private val context get() = androidx.test.platform.app.InstrumentationRegistry
         .getInstrumentation().targetContext
     private val toClean = mutableListOf<File>()
+
+    /**
+     * Purge any staged vault left by a prior run that crashed after staging but before [cleanup].
+     * `stageGoldenVault` is idempotent (reuses an existing copy), so a mutated leftover would make
+     * this round-trip fail at "no live record in source"; start every run from a pristine fixture.
+     */
+    @Before fun purgeStaleStagedVault() {
+        File(context.filesDir, "golden_vault_001").deleteRecursively()
+    }
 
     @After fun cleanup() {
         toClean.forEach { it.deleteRecursively() }
