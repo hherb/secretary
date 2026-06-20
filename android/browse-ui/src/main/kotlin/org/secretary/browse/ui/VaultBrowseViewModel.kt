@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import org.secretary.browse.BlockNameDialogState
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.RecordEditModel
 import org.secretary.browse.RecordSummaryView
@@ -87,5 +88,33 @@ class VaultBrowseViewModel(private val model: VaultBrowseModel) : ViewModel() {
     /** After a successful commit: drop the form + re-read the block. */
     fun onEditCommitted() {
         viewModelScope.launch { model.onEditCommitted() }
+    }
+
+    val blockNameDialog: StateFlow<BlockNameDialogState?> = model.blockNameDialog
+    val movingRecord: StateFlow<RecordSummaryView?> = model.movingRecord
+
+    /** Open the create-block dialog. */
+    fun startCreateBlock() = model.startCreateBlock()
+
+    /** Open the rename-block dialog for [block]. */
+    fun startRenameBlock(block: BlockSummaryView) = model.startRenameBlock(block)
+
+    /** Dismiss the block-name dialog. */
+    fun cancelBlockNameDialog() = model.cancelBlockNameDialog()
+
+    /** Confirm the block-name dialog (suspend on the model → launched here). */
+    fun confirmBlockName(name: String) {
+        viewModelScope.launch { model.confirmBlockName(name) }
+    }
+
+    /** Open the move-record picker. */
+    fun startMoveRecord(record: RecordSummaryView) = model.startMoveRecord(record)
+
+    /** Dismiss the move picker. */
+    fun cancelMove() = model.cancelMove()
+
+    /** Confirm a move into [target] (suspend on the model → launched here). */
+    fun confirmMove(target: BlockSummaryView) {
+        viewModelScope.launch { model.confirmMove(target) }
     }
 }

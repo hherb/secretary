@@ -17,6 +17,7 @@ import org.secretary.browse.FakeVaultSession
 import org.secretary.browse.RecordSummaryView
 import org.secretary.browse.RevealedValue
 import org.secretary.browse.VaultBrowseModel
+import org.secretary.browse.hexOfBytes
 import org.secretary.browse.textField
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -80,5 +81,30 @@ class VaultBrowseViewModelTest {
         vm.reveal(rec, pw)
         vm.hideAll()
         assertTrue(vm.revealed.value.isEmpty())
+    }
+
+    @Test
+    fun `confirmBlockName create reaches the model`() = runTest {
+        val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Logins", 1u, 2u)
+        val fake = FakeVaultSession("abcd", listOf(block))
+        val vm = VaultBrowseViewModel(VaultBrowseModel(fake))
+        vm.startCreateBlock()
+        vm.confirmBlockName("Work")
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(listOf("Work"), fake.created)
+    }
+
+    @Test
+    fun `confirmMove reaches the model`() = runTest {
+        val src = BlockSummaryView(ByteArray(16) { 0x11 }, "Src", 1u, 2u)
+        val tgt = BlockSummaryView(ByteArray(16) { 0x22 }, "Tgt", 1u, 2u)
+        val rec = RecordSummaryView(hexOfBytes(ByteArray(16) { 0x33 }), "login", emptyList(), 1u, 2u, false,
+            listOf(textField("u", "v")))
+        val fake = FakeVaultSession("abcd", listOf(src, tgt), mapOf(src.uuidHex to listOf(rec)))
+        val vm = VaultBrowseViewModel(VaultBrowseModel(fake))
+        vm.selectBlock(src); dispatcher.scheduler.advanceUntilIdle()
+        vm.startMoveRecord(rec)
+        vm.confirmMove(tgt); dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(1, fake.moved.size)
     }
 }
