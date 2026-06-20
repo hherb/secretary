@@ -26,5 +26,12 @@ describe('RecordList move flow', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('move_record', {
       sourceBlockUuidHex: 'src', targetBlockUuidHex: 'dst', sourceRecordUuidHex: 'r1'
     }));
+    // the source block is re-read after the move so the moved record shows tombstoned
+    await waitFor(() => {
+      const readSrcCalls = invokeMock.mock.calls.filter(
+        ([cmd, args]) => cmd === 'read_block' && args?.blockUuidHex === 'src'
+      );
+      expect(readSrcCalls.length).toBeGreaterThanOrEqual(2);
+    });
   });
 });
