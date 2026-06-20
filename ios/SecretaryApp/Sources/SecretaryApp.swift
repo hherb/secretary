@@ -103,7 +103,10 @@ private struct RootView: View {
                             } else {
                                 Task { await syncVM.refreshStatus() }
                             }
-                            route = .browse(VaultBrowseViewModel(session: session),
+                            let gate = GraceWindowReauthGate(
+                                authorizer: EnclaveBiometricAuthorizer(
+                                    enclave: SecureEnclaveDeviceSecretStore()))
+                            route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                                             syncVM, monitor, scoped)
                         })
                 case .browse(let browseModel, let syncVM, let monitor, _):

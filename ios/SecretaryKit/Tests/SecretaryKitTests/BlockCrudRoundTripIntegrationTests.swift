@@ -2,6 +2,7 @@ import XCTest
 @testable import SecretaryKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
+import SecretaryDeviceUnlockTesting
 
 /// Real-FFI round-trip: drive the REAL VaultBrowseViewModel over a REAL
 /// UniffiVaultSession against a TEMP COPY of golden_vault_001 (never the tracked
@@ -41,7 +42,7 @@ final class BlockCrudRoundTripIntegrationTests: XCTestCase {
         func deviceUuid(forVaultHex vaultHex: String) throws -> [UInt8] { value }
     }
 
-    func testCreateThenMoveRoundTripThroughViewModel() throws {
+    func testCreateThenMoveRoundTripThroughViewModel() async throws {
         // 1. Stage a writable temp copy + open via the real adapter.
         //    Block/field/value confirmed from golden_vault_001_inputs.json:
         //    block_name "Personal logins", field "username", value "owner@example.com".
@@ -50,12 +51,14 @@ final class BlockCrudRoundTripIntegrationTests: XCTestCase {
             folderPath: path, password: Data(goldenPassword.utf8))
         let session = UniffiVaultSession(output: out, deviceUuids: FixedDeviceUuid(value: device))
         defer { session.wipe() }
-        let vm = VaultBrowseViewModel(session: session)
+        let gate = GraceWindowReauthGate(
+            authorizer: EnclaveBiometricAuthorizer(enclave: InMemoryDeviceSecretEnclave()))
+        let vm = VaultBrowseViewModel(session: session, gate: gate)
         vm.loadBlocks()
 
         // 2. Create a fresh target block.
         vm.startCreateBlock()
-        vm.confirmBlockName("Moved")
+        await vm.confirmBlockName("Moved")
         XCTAssertNil(vm.error, "createBlock should not error")
         let target = try XCTUnwrap(
             vm.blocks.first { $0.name == "Moved" },
@@ -73,7 +76,7 @@ final class BlockCrudRoundTripIntegrationTests: XCTestCase {
 
         // 4. Move it.
         vm.startMoveRecord(record)
-        vm.confirmMove(target: target)
+        await vm.confirmMove(target: target)
         XCTAssertNil(vm.error, "moveRecord should not error")
         XCTAssertNil(vm.movingRecord, "movingRecord should be cleared after a successful move")
 

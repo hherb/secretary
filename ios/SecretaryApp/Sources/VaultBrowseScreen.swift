@@ -145,7 +145,7 @@ struct VaultBrowseScreen: View {
             ) {
                 if let record = recordPendingDelete {
                     Button("Delete", role: .destructive) {
-                        viewModel.delete(record: record)
+                        Task { await viewModel.delete(record: record) }
                         recordPendingDelete = nil
                     }
                     .disabled(viewModel.isWriting)
@@ -161,7 +161,7 @@ struct VaultBrowseScreen: View {
             ) {
                 TextField("Block name", text: $blockNameField)
                     .accessibilityIdentifier("block-name-field")
-                Button("Save") { viewModel.confirmBlockName(blockNameField) }
+                Button("Save") { Task { await viewModel.confirmBlockName(blockNameField) } }
                     .accessibilityIdentifier("block-name-confirm")
                 Button("Cancel", role: .cancel) { viewModel.cancelBlockNameDialog() }
                     .accessibilityIdentifier("block-name-cancel")
@@ -216,7 +216,7 @@ struct VaultBrowseScreen: View {
         .swipeActions(edge: .trailing) {
             if record.tombstone {
                 Button {
-                    viewModel.restore(record: record)
+                    Task { await viewModel.restore(record: record) }
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
