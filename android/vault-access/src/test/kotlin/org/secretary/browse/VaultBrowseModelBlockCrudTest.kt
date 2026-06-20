@@ -6,7 +6,6 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -62,5 +61,15 @@ class VaultBrowseModelBlockCrudTest {
         advanceUntilIdle()
         first.join()
         assertEquals(listOf("A"), f.created)
+    }
+
+    @Test
+    fun `confirmBlockName leaves the create dialog open when the write fails`() = runTest {
+        val f = fake(writeError = VaultBrowseError.SaveCryptoFailure("boom"))
+        val model = VaultBrowseModel(f)
+        model.startCreateBlock()
+        model.confirmBlockName("Work")
+        assertTrue(model.error.value is VaultBrowseError.SaveCryptoFailure)
+        assertTrue(model.blockNameDialog.value is BlockNameDialogState.CreateBlock)
     }
 }
