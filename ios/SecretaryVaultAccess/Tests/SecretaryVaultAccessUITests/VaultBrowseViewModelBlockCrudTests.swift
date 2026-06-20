@@ -56,4 +56,27 @@ final class VaultBrowseViewModelBlockCrudTests: XCTestCase {
         vm.cancelBlockNameDialog()
         XCTAssertNil(vm.blockNameDialog)
     }
+
+    func testRenameBlockHappyPathRenamesAndClearsDialog() {
+        let (s, block, _) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks()
+        vm.startRenameBlock(block)
+        XCTAssertEqual(vm.blockNameDialog, .rename(block: block))
+        vm.confirmBlockName("Renamed")
+        XCTAssertNil(vm.blockNameDialog)
+        XCTAssertTrue(vm.blocks.contains { $0.uuid == block.uuid && $0.name == "Renamed" })
+        XCTAssertNil(vm.error)
+    }
+
+    func testRenameBlockWriteFailureKeepsDialogOpen() {
+        let (s, block, _) = make()
+        let vm = VaultBrowseViewModel(session: s)
+        vm.loadBlocks()
+        vm.startRenameBlock(block)
+        s.failNextWrite = .other("disk full")
+        vm.confirmBlockName("Renamed")
+        XCTAssertEqual(vm.blockNameDialog, .rename(block: block))
+        XCTAssertNotNil(vm.error)
+    }
 }

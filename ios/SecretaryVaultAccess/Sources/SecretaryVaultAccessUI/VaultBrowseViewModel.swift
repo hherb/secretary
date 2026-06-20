@@ -161,6 +161,8 @@ public final class VaultBrowseViewModel: ObservableObject {
 
     /// Open the name prompt for a NEW block.
     public func startCreateBlock() { blockNameDialog = .create }
+    /// Open the name prompt to RENAME `block` (pre-binds the current name in the UI).
+    public func startRenameBlock(_ block: BlockSummary) { blockNameDialog = .rename(block: block) }
     /// Dismiss the block-name prompt without writing.
     public func cancelBlockNameDialog() { blockNameDialog = nil }
 
