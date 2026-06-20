@@ -116,7 +116,10 @@ fun BrowseScreen(
                         enabled = !writing,
                         modifier = Modifier.testTag("add-record"),
                     ) { Text("Add") }
-                    TextButton(onClick = { viewModel.back() }) { Text("Back") }
+                    TextButton(
+                        onClick = { viewModel.back() },
+                        modifier = Modifier.testTag("back-to-blocks"),
+                    ) { Text("Back") }
                 }
             }
             Row(

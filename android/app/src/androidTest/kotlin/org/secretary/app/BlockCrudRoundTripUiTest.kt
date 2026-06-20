@@ -1,6 +1,7 @@
 package org.secretary.app
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -138,7 +139,7 @@ class BlockCrudRoundTripUiTest {
         }
 
         // ── Step 3: Navigate Back → enter the new block → assert read-back ──────────────────
-        composeRule.onNodeWithText("Back").performClick()
+        composeRule.onNodeWithTag("back-to-blocks").performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithTag("new-block").fetchSemanticsNodes().isNotEmpty()
         }
@@ -166,10 +167,13 @@ class BlockCrudRoundTripUiTest {
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithTag("value-$movedRecordHex-username").fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithTag("value-$movedRecordHex-username").assertIsDisplayed()
+        // Assert the decrypted value equals the golden vault's known username for this record
+        // (sourced from core/tests/data/conformance_kat.json read_block_happy vector).
+        composeRule.onNodeWithTag("value-$movedRecordHex-username")
+            .assertTextEquals("owner@example.com")
 
         // ── Step 4: Back → source block → toggle-show-deleted → tombstoned row appears ───────
-        composeRule.onNodeWithText("Back").performClick()
+        composeRule.onNodeWithTag("back-to-blocks").performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithTag("new-block").fetchSemanticsNodes().isNotEmpty()
         }
