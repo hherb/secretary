@@ -54,5 +54,28 @@ interface VaultSession {
      */
     suspend fun editRecord(blockUuid: ByteArray, recordUuid: ByteArray, content: RecordContentInput)
 
+    /**
+     * Create a new (empty) block named [blockName]; mints (SecureRandom in the real adapter) and
+     * returns its fresh 16-byte UUID. Device-uuid + now-ms are resolved inside the impl.
+     */
+    suspend fun createBlock(blockName: String): ByteArray
+
+    /**
+     * Rename the block identified by [blockUuid] to [newName]. `BlockNotFound` if no such block.
+     * Device-uuid + now-ms are resolved inside the impl.
+     */
+    suspend fun renameBlock(blockUuid: ByteArray, newName: String)
+
+    /**
+     * Move the live record [sourceRecordUuid] from [sourceBlockUuid] into [targetBlockUuid], minting
+     * (SecureRandom) and returning the fresh target record UUID. Copy-to-target then tombstone-in-
+     * source. Caller guarantees source != target. Device-uuid + now-ms resolved inside the impl.
+     */
+    suspend fun moveRecord(
+        sourceBlockUuid: ByteArray,
+        targetBlockUuid: ByteArray,
+        sourceRecordUuid: ByteArray,
+    ): ByteArray
+
     fun wipe()
 }

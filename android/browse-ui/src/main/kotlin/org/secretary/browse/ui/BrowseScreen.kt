@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import org.secretary.browse.BlockNameDialogState
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.RecordSummaryView
 import org.secretary.browse.RevealPolicy
@@ -51,10 +52,30 @@ fun BrowseScreen(
     val showDeleted by viewModel.showDeleted.collectAsStateWithLifecycle()
     val editing by viewModel.editing.collectAsStateWithLifecycle()
     val writing by viewModel.writing.collectAsStateWithLifecycle()
+    val blockNameDialog by viewModel.blockNameDialog.collectAsStateWithLifecycle()
+    val movingRecord by viewModel.movingRecord.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        // Dialogs rendered first so they overlay whichever branch is active and are not
+        // skipped by any early return@Column inside the block/record branches.
+        blockNameDialog?.let { state ->
+            BlockNameDialog(
+                state = state,
+                onConfirm = { viewModel.confirmBlockName(it) },
+                onCancel = { viewModel.cancelBlockNameDialog() },
+            )
+        }
+        movingRecord?.let { rec ->
+            MovePickerDialog(
+                record = rec,
+                blocks = blocks,
+                sourceBlockUuidHex = selectedBlock?.uuidHex ?: "",
+                onPick = { viewModel.confirmMove(it) },
+                onCancel = { viewModel.cancelMove() },
+            )
+        }
         val editModel = editing
         if (editModel != null) {
             val committed by editModel.committed.collectAsStateWithLifecycle()
@@ -69,10 +90,17 @@ fun BrowseScreen(
         error?.let { ErrorBanner(it) }
         val block = selectedBlock
         if (block == null) {
-            Text("Blocks", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Blocks", style = MaterialTheme.typography.titleMedium)
+                TextButton(
+                    onClick = { viewModel.startCreateBlock() },
+                    enabled = !writing,
+                    modifier = Modifier.testTag("new-block"),
+                ) { Text("New block") }
+            }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(blocks, key = { it.uuidHex }) { b ->
-                    BlockRow(b, onClick = { viewModel.selectBlock(b) })
+                    BlockRow(b, writing = writing, onClick = { viewModel.selectBlock(b) }, onRename = { viewModel.startRenameBlock(b) })
                     HorizontalDivider()
                 }
             }
@@ -88,7 +116,10 @@ fun BrowseScreen(
                         enabled = !writing,
                         modifier = Modifier.testTag("add-record"),
                     ) { Text("Add") }
-                    TextButton(onClick = { viewModel.back() }) { Text("Back") }
+                    TextButton(
+                        onClick = { viewModel.back() },
+                        modifier = Modifier.testTag("back-to-blocks"),
+                    ) { Text("Back") }
                 }
             }
             Row(
@@ -114,6 +145,7 @@ fun BrowseScreen(
                         onDelete = viewModel::delete,
                         onRestore = viewModel::restore,
                         onEdit = viewModel::startEdit,
+                        onMove = viewModel::startMoveRecord,
                     )
                     HorizontalDivider()
                 }
@@ -123,12 +155,17 @@ fun BrowseScreen(
 }
 
 @Composable
-private fun BlockRow(block: BlockSummaryView, onClick: () -> Unit) {
-    Text(
-        text = blockLabel(block),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        style = MaterialTheme.typography.bodyLarge,
-    )
+private fun BlockRow(block: BlockSummaryView, writing: Boolean, onClick: () -> Unit, onRename: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            text = blockLabel(block),
+            modifier = Modifier.weight(1f).clickable(onClick = onClick).padding(vertical = 12.dp),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        TextButton(onClick = onRename, enabled = !writing, modifier = Modifier.testTag("rename-${block.uuidHex}")) {
+            Text("Rename")
+        }
+    }
 }
 
 @Composable
@@ -142,6 +179,7 @@ private fun RecordRow(
     onDelete: (RecordSummaryView) -> Unit,
     onRestore: (RecordSummaryView) -> Unit,
     onEdit: (RecordSummaryView) -> Unit,
+    onMove: (RecordSummaryView) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Row(
@@ -161,6 +199,11 @@ private fun RecordRow(
                         onClick = { onEdit(record) },
                         modifier = Modifier.testTag("edit-${record.uuidHex}"),
                     ) { Text("Edit") }
+                    TextButton(
+                        onClick = { onMove(record) },
+                        enabled = !writing,
+                        modifier = Modifier.testTag("move-${record.uuidHex}"),
+                    ) { Text("Move") }
                     TextButton(
                         onClick = { onDelete(record) },
                         enabled = !writing,

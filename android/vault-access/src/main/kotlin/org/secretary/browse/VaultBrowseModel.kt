@@ -4,6 +4,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** Presentation state of the single block-name dialog (create OR rename). */
+sealed interface BlockNameDialogState {
+    /** The dialog is collecting a name for a brand-new block. */
+    data object CreateBlock : BlockNameDialogState
+
+    /** The dialog is renaming the block [blockUuid], pre-filled with [currentName]. */
+    data class RenameBlock(val blockUuid: ByteArray, val currentName: String) : BlockNameDialogState {
+        override fun equals(other: Any?): Boolean =
+            other is RenameBlock && blockUuid.contentEquals(other.blockUuid) && currentName == other.currentName
+        override fun hashCode(): Int = 31 * blockUuid.contentHashCode() + currentName.hashCode()
+    }
+}
+
 /**
  * The host-tested heart of the Android browse UI — Kotlin mirror of the iOS VaultBrowseViewModel's
  * coordinator role (metadata-only: it never reveals a field value). It owns the [VaultSession] and
@@ -48,6 +61,15 @@ class VaultBrowseModel(private val session: VaultSession) {
     /** True while a delete/restore write is in flight. Disables ALL delete/restore buttons in the UI
      *  (global flag — writes serialize under the session lock, so no concurrent write is allowed). */
     val writing: StateFlow<Boolean> = _writing.asStateFlow()
+
+    private val _blockNameDialog = MutableStateFlow<BlockNameDialogState?>(null)
+    /** Non-null when the create/rename-block name dialog is open. Cleared on confirm-success / cancel / lock. */
+    val blockNameDialog: StateFlow<BlockNameDialogState?> = _blockNameDialog.asStateFlow()
+
+    private val _movingRecord = MutableStateFlow<RecordSummaryView?>(null)
+    /** Non-null when the move-record block-picker is open; the picker lists `blocks` minus the
+     *  source (selected) block. Cleared on confirm-success / cancel / lock. */
+    val movingRecord: StateFlow<RecordSummaryView?> = _movingRecord.asStateFlow()
 
     /** Set the show-deleted flag; on a real change, re-read the selected block (if any). */
     suspend fun setShowDeleted(value: Boolean) {
@@ -146,6 +168,28 @@ class VaultBrowseModel(private val session: VaultSession) {
     }
 
     /**
+     * Re-entrancy + error-preservation core shared by record writes (delete/restore/edit) and
+     * block-list writes (create/rename/move). Runs [op]; on success runs [reload]; a typed failure
+     * surfaces via [error] and skips [reload] (the visible list stays intact). No-op if a write is
+     * already in flight.
+     */
+    private suspend fun guardedWrite(reload: suspend () -> Unit, op: suspend () -> Unit) {
+        if (_writing.value) return
+        _writing.value = true
+        try {
+            try {
+                op()
+            } catch (e: VaultBrowseError) {
+                _error.value = e
+                return
+            }
+            reload()
+        } finally {
+            _writing.value = false
+        }
+    }
+
+    /**
      * Run a mutation against the selected block, then re-read on SUCCESS only. A failed mutation
      * surfaces [error] but deliberately leaves [selectedRecords] (and any reveal) intact — a rejected
      * delete must not blank the visible list. No-op if no block is selected or a write is already
@@ -153,18 +197,65 @@ class VaultBrowseModel(private val session: VaultSession) {
      */
     private suspend fun commitThenReload(op: suspend (BlockSummaryView) -> Unit) {
         val block = _selectedBlock.value ?: return
-        if (_writing.value) return
-        _writing.value = true
-        try {
-            try {
-                op(block)
-            } catch (e: VaultBrowseError) {
-                _error.value = e
-                return
+        guardedWrite(reload = { selectBlock(block) }) { op(block) }
+    }
+
+    /** Open the create-block name dialog. */
+    fun startCreateBlock() { _blockNameDialog.value = BlockNameDialogState.CreateBlock }
+
+    /** Open the rename-block dialog for [block], pre-filled with its current name. */
+    fun startRenameBlock(block: BlockSummaryView) {
+        _blockNameDialog.value = BlockNameDialogState.RenameBlock(block.uuid, block.name)
+    }
+
+    /** Dismiss the block-name dialog without writing. */
+    fun cancelBlockNameDialog() { _blockNameDialog.value = null }
+
+    /** Open the move-record block picker for [record]. */
+    fun startMoveRecord(record: RecordSummaryView) {
+        _movingRecord.value = record
+    }
+
+    /** Dismiss the move picker without writing. */
+    fun cancelMove() { _movingRecord.value = null }
+
+    /**
+     * Move the in-flight [movingRecord] from the selected (source) block into [target]. Defensive
+     * same-block guard (the picker already excludes the source). On success: move, close the picker,
+     * re-read the source so the moved record shows tombstoned/withheld. No-op if nothing is moving or
+     * no block is selected.
+     */
+    suspend fun confirmMove(target: BlockSummaryView) {
+        val record = _movingRecord.value ?: return
+        val source = _selectedBlock.value ?: return
+        if (target.uuid.contentEquals(source.uuid)) {
+            _error.value = VaultBrowseError.InvalidArgument("cannot move a record into its own block")
+            return
+        }
+        guardedWrite(reload = { selectBlock(source) }) {
+            session.moveRecord(source.uuid, target.uuid, hexToBytes(record.uuidHex))
+            _movingRecord.value = null
+        }
+    }
+
+    /**
+     * Confirm the open block-name dialog. Rejects a blank name (InvalidArgument, no write, dialog
+     * stays open). On success: create or rename per the dialog state, close the dialog, refresh the
+     * block summaries. No-op if no dialog is open.
+     */
+    suspend fun confirmBlockName(name: String) {
+        val dialog = _blockNameDialog.value ?: return
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _error.value = VaultBrowseError.InvalidArgument("block name is empty")
+            return
+        }
+        guardedWrite(reload = { loadBlocks() }) {
+            when (dialog) {
+                BlockNameDialogState.CreateBlock -> session.createBlock(trimmed)
+                is BlockNameDialogState.RenameBlock -> session.renameBlock(dialog.blockUuid, trimmed)
             }
-            selectBlock(block)
-        } finally {
-            _writing.value = false
+            _blockNameDialog.value = null
         }
     }
 
@@ -180,6 +271,8 @@ class VaultBrowseModel(private val session: VaultSession) {
     fun lock() {
         _revealed.value = emptyMap()
         _editing.value = null
+        _blockNameDialog.value = null
+        _movingRecord.value = null
         _writing.value = false
         session.wipe()
         _blocks.value = emptyList()

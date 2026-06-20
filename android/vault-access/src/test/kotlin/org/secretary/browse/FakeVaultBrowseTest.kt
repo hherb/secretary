@@ -77,6 +77,43 @@ class FakeVaultBrowseTest {
         BlockSummaryView(uuid = ByteArray(16) { name.first().code.toByte() }, name = name, createdAtMs = 1u, lastModifiedMs = 2u)
 
     @Test
+    fun `fake createBlock adds a block and returns its uuid`() = kotlinx.coroutines.test.runTest {
+        val fake = FakeVaultSession("abcd", emptyList())
+        val uuid = fake.createBlock("Work")
+        assertEquals(16, uuid.size)
+        assertEquals(listOf("Work"), fake.blockSummaries().map { it.name })
+        assertEquals(listOf("Work"), fake.created)
+    }
+
+    @Test
+    fun `fake renameBlock changes the name and preserves records`() = kotlinx.coroutines.test.runTest {
+        val block = BlockSummaryView(ByteArray(16) { 0x4c }, "Old", 1u, 2u)
+        val rec = RecordSummaryView("aa", "login", emptyList(), 1u, 2u, false, listOf(textField("u", "v")))
+        val fake = FakeVaultSession("abcd", listOf(block), mapOf(block.uuidHex to listOf(rec)))
+        fake.renameBlock(block.uuid, "New")
+        assertEquals(listOf("New"), fake.blockSummaries().map { it.name })
+        assertEquals(listOf(rec), fake.readBlock(block.uuid, includeDeleted = false))
+    }
+
+    @Test
+    fun `fake moveRecord copies to target under a fresh uuid and tombstones the source`() = kotlinx.coroutines.test.runTest {
+        val src = BlockSummaryView(ByteArray(16) { 0x11 }, "Src", 1u, 2u)
+        val tgt = BlockSummaryView(ByteArray(16) { 0x22 }, "Tgt", 1u, 2u)
+        val rec = RecordSummaryView(hexOfBytes(ByteArray(16) { 0x33 }), "login", listOf("t"), 1u, 2u, false, listOf(textField("u", "secret")))
+        val fake = FakeVaultSession("abcd", listOf(src, tgt), mapOf(src.uuidHex to listOf(rec)))
+        val newUuid = fake.moveRecord(src.uuid, tgt.uuid, ByteArray(16) { 0x33 })
+            .also { assertEquals(16, it.size) }
+        // target holds a live copy whose field value reads back
+        val tgtRecs = fake.readBlock(tgt.uuid, includeDeleted = false)
+        assertEquals(1, tgtRecs.size)
+        assertEquals("secret", (tgtRecs[0].fields[0].reveal() as RevealedValue.Text).value)
+        // source: live view empty, show-deleted view shows the tombstone
+        assertTrue(fake.readBlock(src.uuid, includeDeleted = false).isEmpty())
+        assertEquals(1, fake.readBlock(src.uuid, includeDeleted = true).size)
+        assertTrue(fake.readBlock(src.uuid, includeDeleted = true)[0].tombstone)
+    }
+
+    @Test
     fun `fake port opens to a seeded session`() = runTest {
         val session = FakeVaultSession(vaultUuidHex = "abcd", blocks = listOf(block("Logins")))
         val port = FakeVaultOpenPort(session = session)

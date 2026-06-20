@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-20-pyo3-block-crud-shipped.md
+docs/handoffs/2026-06-20-android-block-crud-ui-shipped.md
