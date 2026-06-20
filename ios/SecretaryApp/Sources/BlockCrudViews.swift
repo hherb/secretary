@@ -3,9 +3,12 @@ import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
 /// Identifiable wrapper so `.sheet(item:)` can drive the move-target picker.
+/// `sourceBlockUuid` is captured at item-creation time so the sheet body does
+/// not need to read `selectedBlock` at render time (which may be nil on dismiss).
 struct MovingRecordItem: Identifiable {
     let id = UUID()
     let record: RecordView
+    let sourceBlockUuid: [UInt8]
 }
 
 /// Lists the blocks a record can be moved INTO — every block except the source.

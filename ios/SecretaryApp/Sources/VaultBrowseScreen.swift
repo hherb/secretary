@@ -166,14 +166,19 @@ struct VaultBrowseScreen: View {
                 Button("Cancel", role: .cancel) { viewModel.cancelBlockNameDialog() }
                     .accessibilityIdentifier("block-name-cancel")
             }
-            .sheet(item: $movingItem) { item in
-                if let source = selectedBlock?.uuid {
-                    MoveTargetPickerSheet(viewModel: viewModel, record: item.record, sourceBlockUuid: source)
-                }
+            .sheet(item: $movingItem, onDismiss: { viewModel.cancelMove() }) { item in
+                MoveTargetPickerSheet(viewModel: viewModel, record: item.record, sourceBlockUuid: item.sourceBlockUuid)
             }
             .onChange(of: viewModel.movingRecord?.uuidHex) { _, _ in
                 // Bridge the VM's movingRecord → the Identifiable sheet item.
-                movingItem = viewModel.movingRecord.map { MovingRecordItem(record: $0) }
+                // Both the record AND the source block uuid must be known at
+                // creation time; if either is missing we clear the item instead
+                // of presenting a broken sheet.
+                if let rec = viewModel.movingRecord, let src = selectedBlock?.uuid {
+                    movingItem = MovingRecordItem(record: rec, sourceBlockUuid: src)
+                } else {
+                    movingItem = nil
+                }
             }
         }
     }
