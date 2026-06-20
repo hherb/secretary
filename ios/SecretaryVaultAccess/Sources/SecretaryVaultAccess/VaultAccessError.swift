@@ -26,6 +26,10 @@ public enum VaultAccessError: Error, Equatable {
     case invalidArgument(String)
     /// Vault folder missing or unreadable.
     case folderInvalid(String)
+    /// Biometric re-auth before a write failed or was cancelled. Carries a short
+    /// human label derived from the underlying `DeviceUnlockError`. The write was
+    /// NOT performed. Local to this Swift enum — NOT a Rust-bridge `FfiVaultError`.
+    case reauthFailed(String)
     /// Any other / unmapped failure, carried as a string (never a raw panic).
     case other(String)
 }

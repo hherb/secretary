@@ -38,12 +38,14 @@ public final class RecordEditViewModel: ObservableObject {
 
     private let session: VaultSession
     private let blockUuid: [UInt8]
+    private let gate: WriteReauthGate
     public let mode: Mode
 
-    public init(session: VaultSession, blockUuid: [UInt8], mode: Mode) {
+    public init(session: VaultSession, blockUuid: [UInt8], mode: Mode, gate: WriteReauthGate) {
         self.session = session
         self.blockUuid = blockUuid
         self.mode = mode
+        self.gate = gate
     }
 
     /// Append a blank field row. Removal + kind changes are driven directly
@@ -84,12 +86,14 @@ public final class RecordEditViewModel: ObservableObject {
         }
     }
 
-    /// Build → validate → write. Sets `committed` on success; sets `error` and
-    /// writes nothing on any validation or FFI failure.
+    /// Build → validate → re-auth gate → write. Sets `committed` on success; sets
+    /// `error` and writes nothing on any validation, gate, or FFI failure.
     ///
     /// Guards on `committed` (render-gap re-tap), `isWriting` (in-flight re-entry),
     /// and `loadFailed` (refuse to overwrite a record we couldn't fully read).
-    public func commit() {
+    /// The gate is awaited AFTER content validation so that a biometric prompt is
+    /// never shown for input the VM would reject anyway.
+    public func commit() async {
         guard !committed, !isWriting, !loadFailed else { return }
         isWriting = true
         defer { isWriting = false }
@@ -105,6 +109,17 @@ public final class RecordEditViewModel: ObservableObject {
         }
         if let v = content.validate() {
             error = Self.mapValidation(v)
+            return
+        }
+        // Re-auth gate: a refused biometric stops the write and surfaces the error,
+        // leaving the form intact (committed stays false → screen does not dismiss).
+        do {
+            try await gate.authorizeWrite(reason: "Confirm saving this entry")
+        } catch let e as VaultAccessError {
+            error = e
+            return
+        } catch {
+            self.error = .reauthFailed(String(describing: error))
             return
         }
         do {

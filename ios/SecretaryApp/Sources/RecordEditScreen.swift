@@ -58,7 +58,7 @@ struct RecordEditScreen: View {
                     Button("Add field") { viewModel.addField() }
                 }
                 Section {
-                    Button("Save") { viewModel.commit() }
+                    Button("Save") { Task { await viewModel.commit() } }
                         .disabled(viewModel.loadFailed || viewModel.committed || viewModel.isWriting)
                 }
                 if let err = viewModel.error {

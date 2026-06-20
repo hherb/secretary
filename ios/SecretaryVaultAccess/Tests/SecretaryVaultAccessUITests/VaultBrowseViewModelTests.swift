@@ -22,7 +22,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
     func testLoadBlocksThenSelectReadsRecordsWithoutRevealing() throws {
         var reveals = 0
         let (session, block, _) = makeSession { reveals += 1 }
-        let vm = VaultBrowseViewModel(session: session)
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.loadBlocks()
         XCTAssertEqual(vm.blocks, [block])
         vm.selectBlock(block)
@@ -34,7 +34,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
     func testRevealStoresValueThenHideDropsIt() throws {
         var reveals = 0
         let (session, block, rec) = makeSession { reveals += 1 }
-        let vm = VaultBrowseViewModel(session: session)
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(block)
         let field = try XCTUnwrap(vm.records?.first?.fields.first)
 
@@ -48,7 +48,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
 
     func testLockClearsRevealedAndWipesSession() throws {
         let (session, block, rec) = makeSession {}
-        let vm = VaultBrowseViewModel(session: session)
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(block)
         let field = try XCTUnwrap(vm.records?.first?.fields.first)
         vm.reveal(record: rec, field: field)
@@ -60,7 +60,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
 
     func testHideAllClearsRevealedWithoutWipingSession() throws {
         let (session, block, rec) = makeSession {}
-        let vm = VaultBrowseViewModel(session: session)
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(block)
         let field = try XCTUnwrap(vm.records?.first?.fields.first)
         vm.reveal(record: rec, field: field)
@@ -74,7 +74,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
 
     func testSelectUnknownBlockSurfacesTypedError() {
         let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [], recordsByBlock: [:])
-        let vm = VaultBrowseViewModel(session: session)
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.selectBlock(BlockSummary(uuid: [0xde], name: "x", createdAtMs: 0, lastModMs: 0))
         XCTAssertEqual(vm.error, .blockNotFound("de"))
         XCTAssertNil(vm.records)

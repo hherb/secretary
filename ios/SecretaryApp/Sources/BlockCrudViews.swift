@@ -22,7 +22,7 @@ struct MoveTargetPickerSheet: View {
         NavigationStack {
             List {
                 ForEach(viewModel.blocks.filter { $0.uuid != sourceBlockUuid }, id: \.uuidHex) { block in
-                    Button(block.name) { viewModel.confirmMove(target: block) }
+                    Button(block.name) { Task { await viewModel.confirmMove(target: block) } }
                         .accessibilityIdentifier("move-target-\(block.uuidHex)")
                 }
             }
