@@ -21,7 +21,8 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
 
     func testRecordsHideTombstonedByDefault() {
         let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false),
-                                                        record(2, tombstone: true)]))
+                                                        record(2, tombstone: true)]),
+                                      gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         // The gate (modeled by the fake) withheld the tombstoned record.
         XCTAssertEqual(vm.visibleRecords.map(\.uuid), [[1]])
@@ -29,7 +30,7 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
 
     func testTogglingShowDeletedRereadsWithFlag() {
         let s = session([record(1, tombstone: false), record(2, tombstone: true)])
-        let vm = VaultBrowseViewModel(session: s)
+        let vm = VaultBrowseViewModel(session: s, gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         XCTAssertEqual(s.lastIncludeDeleted, false)   // initial read was live-only
         let readsBefore = s.readCount
@@ -39,20 +40,22 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
         XCTAssertEqual(vm.visibleRecords.map(\.uuid), [[1], [2]])
     }
 
-    func testDeleteThenRestoreUpdatesVisibility() {
-        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+    func testDeleteThenRestoreUpdatesVisibility() async {
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]),
+                                      gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
-        vm.delete(record: vm.visibleRecords[0])
+        await vm.delete(record: vm.visibleRecords[0])
         XCTAssertTrue(vm.visibleRecords.isEmpty)       // gone from live list
         vm.showDeleted = true
         XCTAssertEqual(vm.visibleRecords.count, 1)     // re-read shows it
-        vm.restore(record: vm.visibleRecords[0])
+        await vm.restore(record: vm.visibleRecords[0])
         vm.showDeleted = false
         XCTAssertEqual(vm.visibleRecords.count, 1)     // back in live list
     }
 
     func testMakeEditViewModelNilBeforeSelectThenNonNilAfter() {
-        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]),
+                                      gate: FakeWriteReauthGate())
         XCTAssertNil(vm.makeEditViewModel(mode: .add))
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         XCTAssertNotNil(vm.makeEditViewModel(mode: .add))
@@ -60,7 +63,7 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
 
     func testRefreshRereadsSelectedBlock() throws {
         let s = session([record(1, tombstone: false)])
-        let vm = VaultBrowseViewModel(session: s)
+        let vm = VaultBrowseViewModel(session: s, gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         try s.appendRecord(blockUuid: vm.blocks[0].uuid,
             content: RecordContentInput(recordType: "note", tags: [], fields: []))
@@ -70,16 +73,18 @@ final class VaultBrowseViewModelDeletedTests: XCTestCase {
     }
 
     func testRefreshNoOpWhenNoBlockSelected() {
-        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]),
+                                      gate: FakeWriteReauthGate())
         vm.refresh()
         XCTAssertNil(vm.error)
     }
 
-    func testIsWritingFalseAtRestAndAfterDelete() {
-        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]))
+    func testIsWritingFalseAtRestAndAfterDelete() async {
+        let vm = VaultBrowseViewModel(session: session([record(1, tombstone: false)]),
+                                      gate: FakeWriteReauthGate())
         vm.loadBlocks(); vm.selectBlock(vm.blocks[0])
         XCTAssertFalse(vm.isWriting)              // false at rest
-        vm.delete(record: vm.visibleRecords[0])
+        await vm.delete(record: vm.visibleRecords[0])
         XCTAssertFalse(vm.isWriting)              // defer reset ran on synchronous path
     }
 }

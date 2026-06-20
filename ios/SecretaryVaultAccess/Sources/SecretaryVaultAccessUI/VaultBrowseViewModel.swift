@@ -42,7 +42,11 @@ public final class VaultBrowseViewModel: ObservableObject {
     private var selectedBlockUuid: [UInt8]?
 
     private let session: VaultSession
-    public init(session: VaultSession) { self.session = session }
+    private let gate: WriteReauthGate
+    public init(session: VaultSession, gate: WriteReauthGate) {
+        self.session = session
+        self.gate = gate
+    }
 
     public var vaultUuidHex: String { session.vaultUuidHex }
 
@@ -76,13 +80,21 @@ public final class VaultBrowseViewModel: ObservableObject {
     public var visibleRecords: [RecordView] { records ?? [] }
 
     /// Soft-delete a record, then re-read so `visibleRecords` reflects it.
-    public func delete(record: RecordView) {
-        commitThenReload { try session.tombstoneRecord(blockUuid: $0, recordUuid: record.uuid) }
+    public func delete(record: RecordView) async {
+        guard let blockUuid = selectedBlockUuid else { return }
+        _ = await reauthedWrite(reason: "Confirm deleting this entry",
+                                onSuccess: { self.reload(blockUuid: blockUuid) }) {
+            try self.session.tombstoneRecord(blockUuid: blockUuid, recordUuid: record.uuid)
+        }
     }
 
     /// Restore a soft-deleted record, then re-read.
-    public func restore(record: RecordView) {
-        commitThenReload { try session.resurrectRecord(blockUuid: $0, recordUuid: record.uuid) }
+    public func restore(record: RecordView) async {
+        guard let blockUuid = selectedBlockUuid else { return }
+        _ = await reauthedWrite(reason: "Confirm restoring this entry",
+                                onSuccess: { self.reload(blockUuid: blockUuid) }) {
+            try self.session.resurrectRecord(blockUuid: blockUuid, recordUuid: record.uuid)
+        }
     }
 
     /// Re-read the currently-selected block (e.g. after the edit sheet writes),
@@ -115,11 +127,22 @@ public final class VaultBrowseViewModel: ObservableObject {
         return true
     }
 
-    /// Run a mutation against the selected block, then re-read it on success.
-    /// Behavior-preserving wrapper over `guardedWrite` for the record mutations.
-    private func commitThenReload(_ op: ([UInt8]) throws -> Void) {
-        guard let blockUuid = selectedBlockUuid else { return }
-        guardedWrite(onSuccess: { self.reload(blockUuid: blockUuid) }) { try op(blockUuid) }
+    /// Re-auth, then run a guarded write. Returns false (write not performed) if the
+    /// re-auth is refused — surfacing `.reauthFailed` and leaving any open dialog/sheet
+    /// untouched, exactly like a failed write. Otherwise delegates to `guardedWrite`.
+    private func reauthedWrite(reason: String,
+                               onSuccess: () -> Void,
+                               op: () throws -> Void) async -> Bool {
+        do {
+            try await gate.authorizeWrite(reason: reason)
+        } catch let e as VaultAccessError {
+            error = e
+            return false
+        } catch {
+            self.error = .reauthFailed(String(describing: error))
+            return false
+        }
+        return guardedWrite(onSuccess: onSuccess, op: op)
     }
 
     /// Composite reveal-map key. Collision-safe: `recordUuidHex` is always
@@ -180,14 +203,15 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// (`.invalidArgument`, no write, picker stays open). On success the SOURCE
     /// block is re-read (so the tombstone shows with show-deleted on) and the
     /// picker cleared; on a failed write the picker stays open with `error` set.
-    public func confirmMove(target: BlockSummary) {
+    public func confirmMove(target: BlockSummary) async {
         guard let record = movingRecord else { return }
         guard let source = selectedBlockUuid else { return }
         guard target.uuid != source else {
             error = .invalidArgument("source and target block must differ")
             return
         }
-        let ok = guardedWrite(onSuccess: { self.refresh() }) {
+        let ok = await reauthedWrite(reason: "Confirm moving this entry",
+                                     onSuccess: { self.refresh() }) {
             try self.session.moveRecord(sourceBlockUuid: source,
                                         targetBlockUuid: target.uuid,
                                         sourceRecordUuid: record.uuid)
@@ -200,14 +224,15 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// this surfaces `.invalidArgument` WITHOUT writing and keeps the dialog open.
     /// On a successful write the block LIST is reloaded and the dialog cleared;
     /// on a failed write the dialog stays open with `error` set.
-    public func confirmBlockName(_ name: String) {
+    public func confirmBlockName(_ name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             error = .invalidArgument("block name must not be blank")
             return
         }
         guard let dialog = blockNameDialog else { return }
-        let ok = guardedWrite(onSuccess: { self.loadBlocks() }) {
+        let ok = await reauthedWrite(reason: "Confirm saving this block",
+                                     onSuccess: { self.loadBlocks() }) {
             switch dialog {
             case .create:
                 try self.session.createBlock(blockName: trimmed)
@@ -223,6 +248,6 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// on success the browse screen re-selects the block to refresh the list.
     public func makeEditViewModel(mode: RecordEditViewModel.Mode) -> RecordEditViewModel? {
         guard let blockUuid = selectedBlockUuid else { return nil }
-        return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode)
+        return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode, gate: gate)
     }
 }
