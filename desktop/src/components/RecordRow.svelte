@@ -3,16 +3,17 @@
   import { formatShortDate } from '../lib/format';
   import { isContentlessTombstone } from '../lib/records';
 
-  // onDelete / onRestore are optional so existing call sites that only
-  // browse (no write actions wired) keep working unchanged. When supplied,
-  // a live row gets a Delete action and a tombstoned row gets Restore.
+  // onDelete / onRestore / onMove are optional so existing call sites that
+  // only browse (no write actions wired) keep working unchanged. When supplied,
+  // a live row gets Delete + Move actions and a tombstoned row gets Restore.
   type Props = {
     record: RecordDto;
     onClick: (record: RecordDto) => void;
     onDelete?: (record: RecordDto) => void;
     onRestore?: (record: RecordDto) => void;
+    onMove?: (record: RecordDto) => void;
   };
-  let { record, onClick, onDelete, onRestore }: Props = $props();
+  let { record, onClick, onDelete, onRestore, onMove }: Props = $props();
 
   let countLabel = $derived(`${record.fieldCount} field${record.fieldCount === 1 ? '' : 's'}`);
   let deleted = $derived(record.tombstoned === true);
@@ -41,22 +42,13 @@
   </button>
 
   {#if deleted && onRestore}
-    <button
-      type="button"
-      class="record-row__restore"
-      aria-label="Restore record"
-      onclick={() => onRestore(record)}
-    >
-      Restore
-    </button>
-  {:else if !deleted && onDelete}
-    <button
-      type="button"
-      class="record-row__delete"
-      aria-label="Delete record"
-      onclick={() => onDelete(record)}
-    >
-      Delete
-    </button>
+    <button type="button" class="record-row__restore" aria-label="Restore record" onclick={() => onRestore(record)}>Restore</button>
+  {:else if !deleted}
+    {#if onMove}
+      <button type="button" class="record-row__move" aria-label="Move record" onclick={() => onMove(record)}>Move</button>
+    {/if}
+    {#if onDelete}
+      <button type="button" class="record-row__delete" aria-label="Delete record" onclick={() => onDelete(record)}>Delete</button>
+    {/if}
   {/if}
 </div>

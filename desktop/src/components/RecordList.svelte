@@ -3,6 +3,7 @@
     readBlock,
     tombstoneRecord,
     resurrectRecord,
+    moveRecord,
     isAppError,
     type BlockSummaryDto,
     type RecordDto
@@ -12,6 +13,7 @@
   import RecordRow from './RecordRow.svelte';
   import BlockRecipients from './BlockRecipients.svelte';
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
+  import MoveTargetPicker from './edit/MoveTargetPicker.svelte';
   import { isContentlessTombstone } from '../lib/records';
 
   type Props = { block: BlockSummaryDto };
@@ -25,6 +27,8 @@
   // Record awaiting resurrect confirmation (only set for a contentless
   // tombstone — a resurrect that would bring back an empty shell).
   let pendingRestore = $state<RecordDto | null>(null);
+  // Record awaiting move-target selection; the MoveTargetPicker mounts while set.
+  let pendingMove = $state<RecordDto | null>(null);
 
   // Monotonic generation counter guarding against out-of-order fetches: each
   // load() bumps it and only writes state if it is still the newest call. One
@@ -104,6 +108,23 @@
     pendingRestore = null;
     await doRestore(target);
   }
+
+  function onMove(record: RecordDto) {
+    pendingMove = record;
+  }
+
+  async function confirmMove(target: BlockSummaryDto) {
+    const record = pendingMove;
+    if (!record) return;
+    pendingMove = null;
+    error = null;
+    try {
+      await moveRecord(block.blockUuidHex, target.blockUuidHex, record.recordUuidHex);
+      await load(); // re-read the SOURCE block: the moved record now shows tombstoned
+    } catch (e) {
+      error = isAppError(e) ? e : { code: 'internal' };
+    }
+  }
 </script>
 
 <section class="record-list">
@@ -125,7 +146,7 @@
     <p class="record-list__empty">No records.</p>
   {:else}
     {#each records as record (record.recordUuidHex)}
-      <RecordRow {record} onClick={openRecord} {onDelete} {onRestore} />
+      <RecordRow {record} onClick={openRecord} {onDelete} {onRestore} {onMove} />
     {/each}
   {/if}
 </section>
@@ -147,5 +168,13 @@
     confirmLabel="Resurrect"
     onConfirm={confirmRestore}
     onCancel={() => (pendingRestore = null)}
+  />
+{/if}
+
+{#if pendingMove}
+  <MoveTargetPicker
+    sourceBlockUuidHex={block.blockUuidHex}
+    onSelect={confirmMove}
+    onCancel={() => (pendingMove = null)}
   />
 {/if}
