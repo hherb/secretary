@@ -106,5 +106,7 @@ class VaultBrowseViewModelTest {
         vm.startMoveRecord(rec)
         vm.confirmMove(tgt); dispatcher.scheduler.advanceUntilIdle()
         assertEquals(1, fake.moved.size)
+        assertEquals(src.uuidHex, fake.moved[0].first)
+        assertEquals(tgt.uuidHex, fake.moved[0].second)
     }
 }
