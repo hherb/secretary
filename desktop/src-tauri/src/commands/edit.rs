@@ -15,8 +15,9 @@ use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::error::FfiVaultError;
 use secretary_ffi_bridge::{
     append_record as bridge_append_record, create_block as bridge_create_block,
-    edit_record as bridge_edit_record, read_block as bridge_read_block,
-    rename_block as bridge_rename_block, FieldInput, FieldInputValue, RecordContent,
+    edit_record as bridge_edit_record, move_record as bridge_move_record,
+    read_block as bridge_read_block, rename_block as bridge_rename_block, FieldInput,
+    FieldInputValue, RecordContent,
 };
 
 use crate::auto_lock::now_ms;
@@ -321,6 +322,60 @@ pub fn reveal_record_impl(
         }
         output.wipe();
         Ok(RecordRevealDto { fields })
+    })
+}
+
+#[tauri::command]
+pub async fn move_record(
+    state: State<'_, Mutex<VaultSession>>,
+    source_block_uuid_hex: String,
+    target_block_uuid_hex: String,
+    source_record_uuid_hex: String,
+) -> Result<RecordRefDto, AppError> {
+    move_record_impl(
+        state.inner(),
+        &source_block_uuid_hex,
+        &target_block_uuid_hex,
+        &source_record_uuid_hex,
+    )
+}
+
+/// Move a live record from `source` to `target` under a fresh UUID
+/// (copy-before-delete). Same-block moves are rejected here as
+/// `InvalidArgument` (the bridge trusts its caller and does not check).
+/// Returns the target block uuid + the record's fresh uuid.
+pub fn move_record_impl(
+    state: &Mutex<VaultSession>,
+    source_block_uuid_hex: &str,
+    target_block_uuid_hex: &str,
+    source_record_uuid_hex: &str,
+) -> Result<RecordRefDto, AppError> {
+    if source_block_uuid_hex == target_block_uuid_hex {
+        return Err(AppError::InvalidArgument {
+            detail: "source and target block must differ".to_string(),
+        });
+    }
+    let source_block_uuid = parse_uuid_16(source_block_uuid_hex)?;
+    let target_block_uuid = parse_uuid_16(target_block_uuid_hex)?;
+    let source_record_uuid = parse_uuid_16(source_record_uuid_hex)?;
+    let new_record_uuid = new_uuid_16();
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        bridge_move_record(
+            &u.identity,
+            &u.manifest,
+            source_block_uuid,
+            target_block_uuid,
+            source_record_uuid,
+            new_record_uuid,
+            u.device_uuid,
+            now_ms(),
+        )
+        .map_err(map_save_error)?;
+        Ok(RecordRefDto {
+            block_uuid_hex: target_block_uuid_hex.to_string(),
+            record_uuid_hex: hex::encode(new_record_uuid),
+        })
     })
 }
 

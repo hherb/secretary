@@ -89,6 +89,7 @@ fn main() {
             edit::save_record,
             edit::save_record_edit,
             edit::reveal_record,
+            edit::move_record,
             delete::tombstone_record,
             delete::resurrect_record,
             delete::trash_block,

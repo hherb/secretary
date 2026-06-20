@@ -933,6 +933,78 @@ mod edit_path {
             "got {err:?}"
         );
     }
+
+    #[test]
+    fn move_record_copies_to_target_and_tombstones_source() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let src = edit::create_block_impl(&state, "Source").unwrap();
+        let dst = edit::create_block_impl(&state, "Target").unwrap();
+        let rec = edit::save_record_impl(
+            &state,
+            &src.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "alice")],
+            },
+        )
+        .unwrap();
+
+        let moved = edit::move_record_impl(
+            &state,
+            &src.block_uuid_hex,
+            &dst.block_uuid_hex,
+            &rec.record_uuid_hex,
+        )
+        .expect("move_record");
+        assert_eq!(moved.block_uuid_hex, dst.block_uuid_hex);
+        assert_ne!(
+            moved.record_uuid_hex, rec.record_uuid_hex,
+            "fresh uuid in target"
+        );
+
+        // Source live view no longer shows it; include_deleted shows the tombstone.
+        let src_live = browse::read_block_impl(&state, &src.block_uuid_hex, false).unwrap();
+        assert_eq!(src_live.records.len(), 0, "source record tombstoned");
+        let src_all = browse::read_block_impl(&state, &src.block_uuid_hex, true).unwrap();
+        assert_eq!(src_all.records.len(), 1);
+        assert!(
+            src_all.records[0].tombstoned,
+            "source record marked tombstoned"
+        );
+
+        // Target has the live copy.
+        let dst_all = browse::read_block_impl(&state, &dst.block_uuid_hex, false).unwrap();
+        assert_eq!(dst_all.records.len(), 1);
+        assert_eq!(dst_all.records[0].record_uuid_hex, moved.record_uuid_hex);
+    }
+
+    #[test]
+    fn move_record_same_block_is_invalid_argument() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let b = edit::create_block_impl(&state, "B").unwrap();
+        let rec = edit::save_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            RecordInputDto {
+                record_type: "login".into(),
+                tags: vec![],
+                fields: vec![text_field("user", "x")],
+            },
+        )
+        .unwrap();
+        let err = edit::move_record_impl(
+            &state,
+            &b.block_uuid_hex,
+            &b.block_uuid_hex,
+            &rec.record_uuid_hex,
+        )
+        .expect_err("same-block move must be rejected");
+        assert!(
+            matches!(err, AppError::InvalidArgument { .. }),
+            "got {err:?}"
+        );
+    }
 }
 
 /// D.1.5 delete/trash IPC commands over ephemeral tempdir vaults. Mirrors
