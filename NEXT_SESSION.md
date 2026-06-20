@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-21-ios-write-reauth-shipped.md
+docs/handoffs/2026-06-21-ios-se-release-zeroize-shipped.md
