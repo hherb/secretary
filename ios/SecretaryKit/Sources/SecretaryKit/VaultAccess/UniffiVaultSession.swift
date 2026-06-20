@@ -195,7 +195,8 @@ public final class UniffiVaultSession: VaultSession {
     }
 
     /// Resolve (device uuid, now-ms), run the FFI write, map errors. Centralizes
-    /// the device-uuid resolve + `VaultError` mapping for all four writers.
+    /// the device-uuid resolve + `VaultError` mapping for every writer
+    /// (append/edit/tombstone/resurrect + createBlock/renameBlock/moveRecord).
     ///
     /// - Throws: `VaultAccessError` for any FFI `VaultError`; additionally, the
     ///   **first write** of a session may throw a `DeviceUuidStoreError` (an I/O
