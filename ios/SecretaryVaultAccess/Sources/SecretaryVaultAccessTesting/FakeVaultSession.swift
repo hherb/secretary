@@ -6,13 +6,15 @@ import SecretaryVaultAccess
 /// `reveal` closures capture the stored plaintext.
 public final class FakeVaultSession: VaultSession {
     public let vaultUuidHex: String
-    private let blocks: [BlockSummary]
+    private var blocks: [BlockSummary]
     private var recordsByBlock: [[UInt8]: [RecordView]]
     private var nextUuidByte: UInt8 = 0xA0
     public private(set) var readCount = 0
     public private(set) var wipeCount = 0
     /// Spy: the includeDeleted value passed to the most recent readBlock.
     public private(set) var lastIncludeDeleted = false
+    /// Test seam: when set, the NEXT create/rename/move throws this once, then clears.
+    public var failNextWrite: VaultAccessError?
 
     public init(vaultUuidHex: String,
                 blocks: [BlockSummary],
@@ -61,9 +63,49 @@ public final class FakeVaultSession: VaultSession {
         setTombstone(blockUuid, idx, false)
     }
 
+    @discardableResult
+    public func createBlock(blockName: String) throws -> [UInt8] {
+        try throwIfInjected()
+        let uuid = mintUuid()
+        blocks.append(BlockSummary(uuid: uuid, name: blockName, createdAtMs: 0, lastModMs: 0))
+        recordsByBlock[uuid] = []
+        return uuid
+    }
+
+    public func renameBlock(blockUuid: [UInt8], newName: String) throws {
+        try throwIfInjected()
+        guard let idx = blocks.firstIndex(where: { $0.uuid == blockUuid }) else {
+            throw VaultAccessError.blockNotFound(hex(blockUuid))
+        }
+        let old = blocks[idx]
+        blocks[idx] = BlockSummary(uuid: old.uuid, name: newName,
+                                   createdAtMs: old.createdAtMs, lastModMs: old.lastModMs)
+    }
+
+    @discardableResult
+    public func moveRecord(sourceBlockUuid: [UInt8], targetBlockUuid: [UInt8],
+                           sourceRecordUuid: [UInt8]) throws -> [UInt8] {
+        try throwIfInjected()
+        let idx = try liveIndex(sourceBlockUuid, sourceRecordUuid)
+        try requireBlock(targetBlockUuid)
+        guard let src = recordsByBlock[sourceBlockUuid]?[idx] else {
+            throw VaultAccessError.recordNotFound(hex(sourceRecordUuid))
+        }
+        let newUuid = mintUuid()
+        // copy-before-delete: land the copy in the target, THEN tombstone the source.
+        recordsByBlock[targetBlockUuid]?.append(RecordView(
+            uuid: newUuid, type: src.type, tags: src.tags, fields: src.fields, tombstone: false))
+        setTombstone(sourceBlockUuid, idx, true)
+        return newUuid
+    }
+
     public func wipe() { wipeCount += 1 }
 
     // MARK: - helpers
+
+    private func throwIfInjected() throws {
+        if let e = failNextWrite { failNextWrite = nil; throw e }
+    }
 
     private func requireBlock(_ blockUuid: [UInt8]) throws {
         guard recordsByBlock[blockUuid] != nil else {

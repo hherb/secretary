@@ -28,6 +28,20 @@ public protocol VaultSession: AnyObject {
     func tombstoneRecord(blockUuid: [UInt8], recordUuid: [UInt8]) throws
     /// Restore a TOMBSTONED record. Throws `.recordNotFound`.
     func resurrectRecord(blockUuid: [UInt8], recordUuid: [UInt8]) throws
+    /// Create a new, empty block. The session mints a fresh 16-byte block UUID,
+    /// stamps this device's UUID + now, and returns the new UUID. Empty names are
+    /// permitted by the spec (the UI may impose its own policy).
+    @discardableResult
+    func createBlock(blockName: String) throws -> [UInt8]
+    /// Rename a block in place (records + unknown maps preserved).
+    /// Throws `.blockNotFound` if `blockUuid` is absent.
+    func renameBlock(blockUuid: [UInt8], newName: String) throws
+    /// Move a LIVE record to another block under a FRESH uuid (copy-before-delete:
+    /// the source is tombstoned only after the copy lands). Returns the new uuid.
+    /// Throws `.recordNotFound` (no live source record) / `.blockNotFound`.
+    @discardableResult
+    func moveRecord(sourceBlockUuid: [UInt8], targetBlockUuid: [UInt8],
+                    sourceRecordUuid: [UInt8]) throws -> [UInt8]
     /// Release ALL secret material held by this session. Idempotent.
     func wipe()
 }
