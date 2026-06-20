@@ -28,6 +28,11 @@ struct VaultBrowseScreen: View {
     // Delete-confirmation state
     @State private var recordPendingDelete: RecordView?
 
+    // Block-name alert field (create/rename share the one prompt).
+    @State private var blockNameField = ""
+    // Identifiable wrapper bridging viewModel.movingRecord → .sheet(item:).
+    @State private var movingItem: MovingRecordItem?
+
     init(viewModel: VaultBrowseViewModel, syncModel: VaultSyncViewModel) {
         self._viewModel = StateObject(wrappedValue: viewModel)
         self.syncModel = syncModel
@@ -44,6 +49,17 @@ struct VaultBrowseScreen: View {
                         Button(block.name) {
                             selectedBlock = block
                             viewModel.selectBlock(block)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                blockNameField = block.name
+                                viewModel.startRenameBlock(block)
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            .tint(.orange)
+                            .disabled(viewModel.isWriting)
+                            .accessibilityIdentifier("rename-\(block.uuidHex)")
                         }
                     }
                 }
@@ -82,6 +98,16 @@ struct VaultBrowseScreen: View {
                         }
                         .disabled(viewModel.isWriting)
                     }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        blockNameField = ""
+                        viewModel.startCreateBlock()
+                    } label: {
+                        Label("New block", systemImage: "folder.badge.plus")
+                    }
+                    .disabled(viewModel.isWriting)
+                    .accessibilityIdentifier("new-block")
                 }
             }
             .onAppear { viewModel.loadBlocks() }
@@ -126,6 +152,36 @@ struct VaultBrowseScreen: View {
                 }
                 Button("Cancel", role: .cancel) { recordPendingDelete = nil }
             }
+            .alert(
+                blockNameAlertTitle,
+                isPresented: Binding(
+                    get: { viewModel.blockNameDialog != nil },
+                    set: { if !$0 { viewModel.cancelBlockNameDialog() } }
+                )
+            ) {
+                TextField("Block name", text: $blockNameField)
+                    .accessibilityIdentifier("block-name-field")
+                Button("Save") { viewModel.confirmBlockName(blockNameField) }
+                    .accessibilityIdentifier("block-name-confirm")
+                Button("Cancel", role: .cancel) { viewModel.cancelBlockNameDialog() }
+                    .accessibilityIdentifier("block-name-cancel")
+            }
+            .sheet(item: $movingItem) { item in
+                if let source = selectedBlock?.uuid {
+                    MoveTargetPickerSheet(viewModel: viewModel, record: item.record, sourceBlockUuid: source)
+                }
+            }
+            .onChange(of: viewModel.movingRecord?.uuidHex) { _, _ in
+                // Bridge the VM's movingRecord → the Identifiable sheet item.
+                movingItem = viewModel.movingRecord.map { MovingRecordItem(record: $0) }
+            }
+        }
+    }
+
+    private var blockNameAlertTitle: String {
+        switch viewModel.blockNameDialog {
+        case .rename: return "Rename block"
+        case .create, .none: return "New block"
         }
     }
 
@@ -181,6 +237,14 @@ struct VaultBrowseScreen: View {
                     Label("Edit", systemImage: "pencil")
                 }
                 .tint(.orange)
+                Button {
+                    viewModel.startMoveRecord(record)
+                } label: {
+                    Label("Move", systemImage: "folder")
+                }
+                .tint(.indigo)
+                .disabled(viewModel.isWriting)
+                .accessibilityIdentifier("move-\(record.uuidHex)")
             }
         }
     }
