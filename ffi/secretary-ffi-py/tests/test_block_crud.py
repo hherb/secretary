@@ -209,16 +209,26 @@ def test_move_record_same_block_raises_value_error(tmp_path: Path) -> None:
                 )
 
 
-def test_move_record_wrong_length_uuid_raises_value_error(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad_pos", [0, 1, 2, 3, 4])
+def test_move_record_wrong_length_uuid_raises_value_error(
+    tmp_path: Path, bad_pos: int
+) -> None:
+    """Every one of move_record's five uuid args is length-validated at the
+    wrapper — a wrong-length value in any position raises ``ValueError``
+    before the bridge is reached."""
     out, _dst = _fresh_writable_vault(tmp_path)
     with out as vault:
         with vault.identity as identity, vault.manifest as manifest:
             _seed_source_block(identity, manifest)
+            # source_block, target_block, source_record, new_record, device.
+            uuids = [
+                SOURCE_BLOCK_UUID, TARGET_BLOCK_UUID, RECORD_UUID,
+                NEW_RECORD_UUID, DEVICE_UUID,
+            ]
+            uuids[bad_pos] = b"\x01" * 15
             with pytest.raises(ValueError):
                 secretary_ffi_py.move_record(
-                    identity, manifest,
-                    b"\x01" * 15, TARGET_BLOCK_UUID, RECORD_UUID, NEW_RECORD_UUID,
-                    DEVICE_UUID, NOW_MS_BASE + 2_000,
+                    identity, manifest, *uuids, NOW_MS_BASE + 2_000,
                 )
 
 
