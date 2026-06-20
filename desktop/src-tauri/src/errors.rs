@@ -96,6 +96,15 @@ pub enum AppError {
         detail: String,
     },
 
+    /// A frontend-supplied argument was semantically invalid (blank block
+    /// name on rename; same-block move). The bridge trusts its caller, so
+    /// desktop enforces these guards here. `detail` is developer-facing only.
+    #[error("Invalid request")]
+    InvalidArgument {
+        #[serde(skip_serializing)]
+        detail: String,
+    },
+
     #[error("Cannot restore: a block with this id is already live")]
     BlockRestoreConflict { block_uuid_hex: String },
 
@@ -647,6 +656,15 @@ mod tests {
     fn map_ffi_error_promotes_sync_decisions_incomplete() {
         let mapped = map_ffi_error(FfiVaultError::SyncDecisionsIncomplete);
         assert!(matches!(mapped, AppError::SyncDecisionsIncomplete));
+    }
+
+    #[test]
+    fn invalid_argument_serializes_without_detail() {
+        let err = AppError::InvalidArgument {
+            detail: "source_block_uuid and target_block_uuid must differ".into(),
+        };
+        let v = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(v, serde_json::json!({ "code": "invalid_argument" }));
     }
 
     #[test]

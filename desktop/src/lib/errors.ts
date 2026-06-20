@@ -46,6 +46,7 @@ export const APP_ERROR_CODES = [
   'sync_state_corrupt',
   'sync_failed',
   'sync_decisions_incomplete',
+  'invalid_argument',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -75,6 +76,7 @@ export type AppError =
   | { code: 'field_not_found'; field_name: string }
   | { code: 'invalid_field_value'; field_name: string }
   | { code: 'record_save_failed' }
+  | { code: 'invalid_argument' }
   | { code: 'vault_folder_not_empty'; path: string }
   | { code: 'vault_create_failed' }
   | { code: 'block_restore_conflict'; block_uuid_hex: string }
@@ -185,6 +187,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "Couldn't save the record",
         actionHint: 'Please try again.'
+      };
+    case 'invalid_argument':
+      return {
+        title: 'Invalid request',
+        actionHint: 'Check the value and try again.'
       };
     case 'vault_folder_not_empty':
       return {
