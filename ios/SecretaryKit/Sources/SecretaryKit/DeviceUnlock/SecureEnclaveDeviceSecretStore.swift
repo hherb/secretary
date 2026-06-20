@@ -59,10 +59,16 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
         return try await withCheckedThrowingContinuation { continuation in
             // SecKeyCreateDecryptedData on an SE key triggers the biometric prompt.
             var error: Unmanaged<CFError>?
-            guard let plain = SecKeyCreateDecryptedData(key, algorithm, blob as CFData, &error) as Data? else {
+            guard var plain = SecKeyCreateDecryptedData(key, algorithm, blob as CFData, &error) as Data? else {
                 continuation.resume(throwing: mapDecryptError(error))
                 return
             }
+            // Zero the transient decrypt buffer in place once the returned `[UInt8]`
+            // copy is built, so no residue of the device secret lingers in this
+            // `Data` after release — mirrors the `Data.resetBytes` discipline in
+            // `UniffiVaultDeviceSlotPort`/`UniffiVaultCreatePort`. The caller (e.g.
+            // `EnclaveBiometricAuthorizer`) zeroizes the returned `[UInt8]` copy.
+            defer { plain.resetBytes(in: 0..<plain.count) }
             continuation.resume(returning: [UInt8](plain))
         }
     }
