@@ -342,7 +342,7 @@ mod tests {
             .expect("unknown field must not be a hard error");
         assert_eq!(parsed.auto_lock_timeout_ms, 600_000);
         assert_eq!(warnings.len(), 1);
-        matches!(warnings[0], AppWarning::SettingsCorrupt { .. });
+        assert!(matches!(warnings[0], AppWarning::SettingsCorrupt { .. }));
     }
 
     #[test]
@@ -421,7 +421,7 @@ mod tests {
             reauth_grace_window_ms: REAUTH_WINDOW_MAX_MS + 1,
         };
         let err = validate_save_settings(&s).expect_err("must reject");
-        matches!(err, AppError::SettingsOutOfRange { .. });
+        assert!(matches!(err, AppError::SettingsOutOfRange { .. }));
     }
 
     // =========================================================================

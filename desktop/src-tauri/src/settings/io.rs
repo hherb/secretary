@@ -9,7 +9,7 @@
 //!    `secretary.settings.v1` record through the bridge's `read_block` /
 //!    `save_block` entry points. Load is lenient (broken record shapes
 //!    fall through to defaults + warnings); save is strict
-//!    (`validate_save_value` rejects out-of-range adversarial inputs).
+//!    (`validate_save_settings` rejects out-of-range adversarial inputs).
 //! 2. [`load_or_create_device_uuid_in`] — atomic per-vault device UUID
 //!    persistence under `<data_dir>/secretary-desktop/devices/`. Used by
 //!    the bridge's `save_block` for vector-clock semantics. The `_in`
@@ -118,7 +118,7 @@ pub fn load_from_vault(
     // #141 closed: RecordInput now carries record_type, so a record this
     // client wrote reads back with its real type. An empty type still maps
     // to v1 (records written before #141 landed); any other value flows to
-    // parse_settings_field, which surfaces SettingsUnknownVersion for a
+    // parse_settings_fields, which surfaces SettingsUnknownVersion for a
     // future v2 record.
     let stored_record_type = record.record_type();
     let effective_record_type = if stored_record_type.is_empty() {
@@ -140,7 +140,7 @@ pub fn load_from_vault(
 /// (the bridge's `save_block` semantics: same `block_uuid` replaces the
 /// existing manifest entry).
 ///
-/// Validates bounds via `validate_save_value` before constructing the
+/// Validates bounds via `validate_save_settings` before constructing the
 /// `BlockInput` — adversarial in-bounds-on-frontend / out-of-bounds-on-IPC
 /// inputs are rejected here with `SettingsOutOfRange`. (Clamping is
 /// load-side only per spec §8; silently clamping on save would mask user
