@@ -11,6 +11,9 @@ import { findUngatedWrites } from '../src/lib/writeGateScanner';
 
 /** Command idents registered in the Rust `generate_handler![ … ]` block. */
 function registeredCommands(rust: string): Set<string> {
+  // Non-greedy capture stops at the first `]`. Safe because the handler list holds
+  // only `module::ident` paths (no nested `[...]`); if a generic/array literal is
+  // ever added inside the macro this must switch to a brace-balanced parse.
   const block = rust.match(/generate_handler!\s*\[([\s\S]*?)\]/);
   if (!block) throw new Error('generate_handler! block not found in main.rs');
   const withoutComments = block[1].replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -58,6 +61,9 @@ describe('write-gate coverage (#280)', () => {
       const rest = ipcSrc.slice(decl.index + decl[0].length);
       const next = rest.search(/\bexport\s+(?:async\s+)?function\b/);
       const body = next === -1 ? rest : rest.slice(0, next);
+      // `[^>]*` matches a single-level generic arg; every command wrapper uses a
+      // flat return type today. A nested generic (`call<Foo<Bar>>(...)`) would need
+      // a balanced-angle match here.
       if (!new RegExp(`call<[^>]*>\\(\\s*'${cmd}'`).test(body)) {
         problems.push(`${cmd}: wrapper ${c.wrapper} not bound to command '${cmd}'`);
       }

@@ -61,7 +61,7 @@ Final whole-branch review (opus): **READY TO MERGE — no Critical/Important.** 
 - **No README / on-device / manual-checklist follow-up** — test-only, zero user-visible behaviour change.
 - **Natural next desktop write-reauth lineage items** (if you want to continue the thread): **#277** OS biometric on desktop (Touch ID / Windows Hello, mirroring the mobile presence-proof model — the largest remaining write-reauth piece); configurable/persisted grace-window settings; presence proof for password-only sessions with no device-secret enrollment (all platforms).
 
-**Open follow-up issues (carried):** #277 (desktop OS biometric) / #279 (pre-existing ffi rustfmt drift on main) / #255 / #252 / #251 / #234 / #224 / #193 / #192 / #190 / #189 / #186 / #167 / #162 / #161.
+**Open follow-up issues (carried):** #286 (scanner method-shorthand gap — filed from this PR's review; doc-noted, not present-tense) / #277 (desktop OS biometric) / #279 (pre-existing ffi rustfmt drift on main) / #255 / #252 / #251 / #234 / #224 / #193 / #192 / #190 / #189 / #186 / #167 / #162 / #161.
 
 ## (3) Open decisions and risks
 - **Presence layer, NOT a hard boundary** — same framing as #278/#281/#282. This guard protects the *coverage* of that UX layer; it does not change the trust model.

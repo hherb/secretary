@@ -15,6 +15,16 @@
  * when that closure is itself `=> { ... }` (so it is still checked), but a write
  * in an expression-bodied arrow shares its parent body. This codebase keeps one
  * write per flat handler, so these edge cases do not arise in practice.
+ *
+ * KNOWN GAP (#286): only `=> {` arrows and `function ...()` declarations are
+ * recognized as function bodies. Object/class method-shorthand handlers
+ * (`async confirmSave() { ... }`) are NOT — two such methods in one object share
+ * an enclosing scope, so a gate in a sibling method would mask an ungated write
+ * (the #280 bug class). No current desktop handler uses method shorthand (all are
+ * flat `async function` / `const x = async () =>`), so layer 3 is sound today; a
+ * robust matcher is deferred to #286 because it must disambiguate method-def from
+ * arrow params / call-then-block and exclude control-flow keywords without
+ * false-positiving legitimately-gated code.
  */
 
 export interface UngatedWrite {
