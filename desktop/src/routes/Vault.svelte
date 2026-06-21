@@ -2,6 +2,7 @@
   import { sessionState, refreshManifest } from '../lib/stores';
   import { userMessageForWarning, userMessageFor, type AppError } from '../lib/errors';
   import { trashBlock, isAppError, type BlockSummaryDto } from '../lib/ipc';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
@@ -56,6 +57,13 @@
     if (!target) return;
     pendingTrash = null;
     trashError = null;
+    try {
+      await authorizeWrite('Confirm trashing this block');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      trashError = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
     try {
       await trashBlock(target.blockUuidHex);
       await refreshManifest();

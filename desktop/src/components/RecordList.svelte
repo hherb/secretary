@@ -15,6 +15,7 @@
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
   import MoveTargetPicker from './edit/MoveTargetPicker.svelte';
   import { isContentlessTombstone } from '../lib/records';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
 
   type Props = { block: BlockSummaryDto };
   let { block }: Props = $props();
@@ -74,6 +75,13 @@
     pendingDelete = null;
     error = null;
     try {
+      await authorizeWrite('Confirm deleting this entry');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    try {
       await tombstoneRecord(block.blockUuidHex, target.recordUuidHex);
       await load();
     } catch (e) {
@@ -94,6 +102,13 @@
 
   async function doRestore(record: RecordDto) {
     error = null;
+    try {
+      await authorizeWrite('Confirm restoring this entry');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
     try {
       await resurrectRecord(block.blockUuidHex, record.recordUuidHex);
       await load();
@@ -118,6 +133,13 @@
     if (!record) return;
     pendingMove = null;
     error = null;
+    try {
+      await authorizeWrite('Confirm moving this entry');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
     try {
       await moveRecord(block.blockUuidHex, target.blockUuidHex, record.recordUuidHex);
       await load(); // re-read the SOURCE block: the moved record now shows tombstoned

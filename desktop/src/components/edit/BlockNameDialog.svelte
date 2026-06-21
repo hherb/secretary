@@ -2,6 +2,7 @@
   import { createBlock, renameBlock, type BlockSummaryDto } from '../../lib/ipc';
   import { userMessageFor, type AppError } from '../../lib/errors';
   import { isBlankName } from '../../lib/blockCrud';
+  import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
 
   type Mode = { kind: 'create' } | { kind: 'rename'; block: BlockSummaryDto };
   let { mode, onDone, onCancel }: {
@@ -31,6 +32,15 @@
       return;
     }
     submitting = true; errMsg = null;
+    const reason = mode.kind === 'rename' ? 'Confirm renaming this block' : 'Confirm creating this block';
+    try {
+      await authorizeWrite(reason);
+    } catch (err) {
+      if (err === ReauthCancelled) { submitting = false; return; }
+      errMsg = userMessageFor(err as AppError);
+      submitting = false;
+      return;
+    }
     try {
       const block = mode.kind === 'rename'
         ? await renameBlock(mode.block.blockUuidHex, trimmed)
