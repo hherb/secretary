@@ -105,8 +105,9 @@ export interface UngatedWrite { wrapper: string; functionName: string; index: nu
  *  in the SAME body. Returns one entry per violation. Pure — no I/O. */
 export function findUngatedWrites(
   source: string,
+  isSvelte: boolean,
   gatedWrappers: readonly string[],
-  gate = 'authorizeWrite',
+  gate?: string,
 ): UngatedWrite[];
 ```
 

@@ -56,6 +56,13 @@ describe('findUngatedWrites', () => {
     expect(scan(src)).toEqual([]);
   });
 
+  it('flags a gated write called at module top level (no enclosing function)', () => {
+    const src = `const x = 1;\nsaveRecord(uuid, rec);`;
+    const violations = scan(src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ wrapper: 'saveRecord', functionName: '<top-level>' });
+  });
+
   it('extracts the <script> block from a .svelte file', () => {
     const src = `
       <script lang="ts">
