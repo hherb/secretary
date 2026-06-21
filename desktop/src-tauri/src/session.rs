@@ -107,6 +107,13 @@ impl VaultSession {
         self.idle.last_activity_ms
     }
 
+    /// Absolute folder the current vault was opened from, or `None` if locked.
+    /// Used by `verify_password` to re-run `open_vault_with_password` against
+    /// the same folder for write re-auth.
+    pub fn vault_folder(&self) -> Option<std::path::PathBuf> {
+        self.inner.as_ref().map(|u| u.vault_folder.clone())
+    }
+
     /// Current settings, or `Settings::default()` if locked.
     ///
     /// Returning a defensive default on the locked path (rather than

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
-    browse, create, delete, edit, lock, settings, sync, unlock, vault,
+    browse, create, delete, edit, lock, reauth, settings, sync, unlock, vault,
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
@@ -457,7 +457,10 @@ fn settings_round_trip_persists_all_three_fields() {
         loaded.auto_lock_timeout_ms, 600_000,
         "auto_lock_timeout_ms must survive round-trip"
     );
-    assert!(warnings.is_empty(), "clean round-trip must produce no warnings; got: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "clean round-trip must produce no warnings; got: {warnings:?}"
+    );
 }
 
 /// A vault written by an older client (only the `auto_lock_timeout_ms`
@@ -1582,5 +1585,38 @@ fn sync_commit_decisions_impl_requires_unlock() {
     let pw = Password::from_bytes(b"unused while locked");
     let err = sync::sync_commit_decisions_impl(&state, &pw, Vec::new(), Vec::new(), 0)
         .expect_err("locked session must error");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+// ============================================================================
+// verify_password (write re-auth presence proof)
+// ============================================================================
+
+#[test]
+fn verify_password_correct_password_while_unlocked_ok() {
+    // Reuses unlocked_state() and GOLDEN_VAULT_PASSWORD from this harness.
+    // A second open_vault_with_password against the same folder while the
+    // session is live must succeed — there is NO exclusive file lock on the
+    // vault folder (the only LockfileGuard is in the sync path). This test
+    // pins that invariant: verify runs concurrently with an open session.
+    let (state, _device_dir) = unlocked_state();
+    reauth::verify_password_impl(&state, GOLDEN_VAULT_PASSWORD.as_bytes())
+        .expect("correct password while unlocked must verify ok");
+}
+
+#[test]
+fn verify_password_wrong_password_is_wrong_password_error() {
+    let (state, _device_dir) = unlocked_state();
+    let err = reauth::verify_password_impl(&state, b"not the password")
+        .expect_err("wrong password must be rejected");
+    assert!(matches!(err, AppError::WrongPassword), "got {err:?}");
+}
+
+#[test]
+fn verify_password_while_locked_is_not_unlocked() {
+    // Fresh session, never unlocked — vault_folder() returns None.
+    let (state, _device_dir) = fresh_state();
+    let err =
+        reauth::verify_password_impl(&state, b"whatever").expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }

@@ -25,6 +25,7 @@ pub mod create;
 pub mod delete;
 pub mod edit;
 pub mod lock;
+pub mod reauth;
 pub mod settings;
 pub(crate) mod shared;
 pub mod sync;
