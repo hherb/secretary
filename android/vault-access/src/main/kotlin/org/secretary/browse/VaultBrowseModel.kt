@@ -28,7 +28,10 @@ sealed interface BlockNameDialogState {
  * Secret hygiene: no record field value is ever materialized here — [readBlock] returns metadata-only
  * [RecordSummaryView]s. [lock] wipes the session (called on background) and resets all state.
  */
-class VaultBrowseModel(private val session: VaultSession) {
+class VaultBrowseModel(
+    private val session: VaultSession,
+    private val gate: WriteReauthGate = NoopReauthGate,
+) {
     private val _blocks = MutableStateFlow<List<BlockSummaryView>>(emptyList())
     val blocks: StateFlow<List<BlockSummaryView>> = _blocks.asStateFlow()
 
@@ -134,25 +137,29 @@ class VaultBrowseModel(private val session: VaultSession) {
         }
     }
 
-    /** Soft-delete [record], then re-read the selected block so the list reflects it. */
+    /** Soft-delete [record] (after a presence proof), then re-read the selected block. */
     suspend fun delete(record: RecordSummaryView) =
-        commitThenReload { block -> session.tombstoneRecord(block.uuid, hexToBytes(record.uuidHex)) }
+        commitThenReload("Confirm deleting this entry") { block ->
+            session.tombstoneRecord(block.uuid, hexToBytes(record.uuidHex))
+        }
 
-    /** Restore [record], then re-read. */
+    /** Restore [record] (after a presence proof), then re-read. */
     suspend fun restore(record: RecordSummaryView) =
-        commitThenReload { block -> session.resurrectRecord(block.uuid, hexToBytes(record.uuidHex)) }
+        commitThenReload("Confirm restoring this entry") { block ->
+            session.resurrectRecord(block.uuid, hexToBytes(record.uuidHex))
+        }
 
     /** Open a blank add form for the selected block. No-op if no block is selected. */
     fun startAdd() {
         val block = _selectedBlock.value ?: return
-        _editing.value = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Add)
+        _editing.value = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Add, gate)
     }
 
     /** Open an edit form prefilled from [record] (reveals its fields into the form). No-op if no
      *  block is selected. */
     fun startEdit(record: RecordSummaryView) {
         val block = _selectedBlock.value ?: return
-        val model = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Edit(hexToBytes(record.uuidHex)))
+        val model = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Edit(hexToBytes(record.uuidHex)), gate)
         model.load(record)
         _editing.value = model
     }
@@ -173,10 +180,25 @@ class VaultBrowseModel(private val session: VaultSession) {
      * surfaces via [error] and skips [reload] (the visible list stays intact). No-op if a write is
      * already in flight.
      */
-    private suspend fun guardedWrite(reload: suspend () -> Unit, op: suspend () -> Unit) {
+    private suspend fun guardedWrite(
+        reason: String,
+        reload: suspend () -> Unit,
+        op: suspend () -> Unit,
+    ) {
         if (_writing.value) return
         _writing.value = true
         try {
+            // Note: CancellationException is NOT caught here — it propagates past these
+            // DeviceUnlockError catches so coroutine cancellation is never swallowed.
+            // Do NOT widen these catches to catch (e: Exception).
+            try {
+                gate.authorizeWrite(reason)
+            } catch (e: DeviceUnlockError.UserCancelled) {
+                return // silent: no write, no error; the originating dialog stays open (op never ran)
+            } catch (e: DeviceUnlockError) {
+                _error.value = VaultBrowseError.ReauthFailed(reauthFailedMessage(e))
+                return
+            }
             try {
                 op()
             } catch (e: VaultBrowseError) {
@@ -195,9 +217,9 @@ class VaultBrowseModel(private val session: VaultSession) {
      * delete must not blank the visible list. No-op if no block is selected or a write is already
      * in flight (global re-entrancy guard — writes serialize under the session lock). Mirror of iOS commitThenReload.
      */
-    private suspend fun commitThenReload(op: suspend (BlockSummaryView) -> Unit) {
+    private suspend fun commitThenReload(reason: String, op: suspend (BlockSummaryView) -> Unit) {
         val block = _selectedBlock.value ?: return
-        guardedWrite(reload = { selectBlock(block) }) { op(block) }
+        guardedWrite(reason, reload = { selectBlock(block) }) { op(block) }
     }
 
     /** Open the create-block name dialog. */
@@ -232,7 +254,7 @@ class VaultBrowseModel(private val session: VaultSession) {
             _error.value = VaultBrowseError.InvalidArgument("cannot move a record into its own block")
             return
         }
-        guardedWrite(reload = { selectBlock(source) }) {
+        guardedWrite("Confirm moving this entry", reload = { selectBlock(source) }) {
             session.moveRecord(source.uuid, target.uuid, hexToBytes(record.uuidHex))
             _movingRecord.value = null
         }
@@ -250,7 +272,11 @@ class VaultBrowseModel(private val session: VaultSession) {
             _error.value = VaultBrowseError.InvalidArgument("block name is empty")
             return
         }
-        guardedWrite(reload = { loadBlocks() }) {
+        val reason = when (dialog) {
+            BlockNameDialogState.CreateBlock -> "Confirm creating this block"
+            is BlockNameDialogState.RenameBlock -> "Confirm renaming this block"
+        }
+        guardedWrite(reason, reload = { loadBlocks() }) {
             when (dialog) {
                 BlockNameDialogState.CreateBlock -> session.createBlock(trimmed)
                 is BlockNameDialogState.RenameBlock -> session.renameBlock(dialog.blockUuid, trimmed)
@@ -269,6 +295,7 @@ class VaultBrowseModel(private val session: VaultSession) {
 
     /** Wipe the session (zeroize handles) and reset every flow. Called on background / lock. */
     fun lock() {
+        gate.reset()
         _revealed.value = emptyMap()
         _editing.value = null
         _blockNameDialog.value = null

@@ -33,6 +33,7 @@ class RecordEditModel(
     private val session: VaultSession,
     private val blockUuid: ByteArray,
     val mode: Mode,
+    private val gate: WriteReauthGate = NoopReauthGate,
 ) {
     /** Add a brand-new record, or replace an existing one identified by its 16-byte UUID. */
     sealed interface Mode {
@@ -129,6 +130,17 @@ class RecordEditModel(
             val content = buildContent() ?: return // sets _error on hex failure
             content.validate()?.let {
                 _error.value = mapValidation(it)
+                return
+            }
+            // Note: CancellationException is NOT caught here — it propagates past these
+            // DeviceUnlockError catches so coroutine cancellation is never swallowed.
+            // Do NOT widen these catches to catch (e: Exception).
+            try {
+                gate.authorizeWrite("Confirm saving this entry")
+            } catch (e: DeviceUnlockError.UserCancelled) {
+                return // silent: no write, no error; the edit form stays open
+            } catch (e: DeviceUnlockError) {
+                _error.value = VaultBrowseError.ReauthFailed(reauthFailedMessage(e))
                 return
             }
             try {

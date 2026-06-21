@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-21-desktop-write-reauth-shipped.md
+docs/handoffs/2026-06-21-android-write-reauth-shipped.md

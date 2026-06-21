@@ -1,8 +1,11 @@
 package org.secretary.app
 
+import android.os.SystemClock
+import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
+import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.openWithCredential
 import org.secretary.browse.ui.VaultBrowseViewModel
 import org.secretary.sync.ChangeDetectionMonitor
@@ -42,9 +45,14 @@ suspend fun openBrowseWithSync(
     stateDir: File,
     vaultUuid: ByteArray,
     credential: UnlockCredential,
+    gate: WriteReauthGate = NoopReauthGate,
 ): BrowseSession {
     val session = openWithCredential(openPort, folder.path, credential)
-    val browseModel = VaultBrowseModel(session)
+    val browseModel = VaultBrowseModel(session, gate)
+    // Monotonic clock (elapsedRealtime, not wall-clock): the grace window measures *elapsed* time
+    // since the last proof, so it must not move under NTP corrections or a user-set system clock.
+    // MUST share the same time base as the gate's clock in AppRoot.unlockAndOpen.
+    gate.seed(SystemClock.elapsedRealtime()) // just unlocked → open the grace window
     browseModel.loadBlocks()
     val (syncModel, monitor) = makeVaultSync(folder, stateDir, vaultUuid)
     return BrowseSession(

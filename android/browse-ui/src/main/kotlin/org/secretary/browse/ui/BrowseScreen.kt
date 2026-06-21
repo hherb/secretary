@@ -270,8 +270,13 @@ private fun FieldRow(
 
 @Composable
 private fun ErrorBanner(error: VaultBrowseError) {
+    val text = if (error is VaultBrowseError.ReauthFailed) {
+        "Couldn't authorize the change: ${error.detail}"
+    } else {
+        "Couldn't read the vault: ${error::class.simpleName}"
+    }
     Text(
-        text = "Couldn't read the vault: ${error::class.simpleName}",
+        text = text,
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.padding(bottom = 8.dp),
