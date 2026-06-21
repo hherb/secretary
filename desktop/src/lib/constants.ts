@@ -41,3 +41,15 @@ export const REVEAL_AUTO_HIDE_MS = 20_000;
 /** How long after a copy the clipboard is best-effort cleared. Frontend-only
  *  UX timer — no backend mirror. 30 seconds. */
 export const CLIPBOARD_CLEAR_MS = 30_000;
+
+/** Write re-auth grace window (password re-entry before a mutating write).
+ *  Mirror of `desktop/src-tauri/src/constants.rs::REAUTH_WINDOW_DEFAULT_MS` — change both. */
+export const REAUTH_WINDOW_DEFAULT_MS = 120_000;
+
+/** Lower bound for `require_password_before_edits_window_ms`.
+ *  Mirror of `desktop/src-tauri/src/constants.rs::REAUTH_WINDOW_MIN_MS` — change both. */
+export const REAUTH_WINDOW_MIN_MS = 0;
+
+/** Upper bound for `require_password_before_edits_window_ms`.
+ *  Mirror of `desktop/src-tauri/src/constants.rs::REAUTH_WINDOW_MAX_MS` — change both. */
+export const REAUTH_WINDOW_MAX_MS = 3_600_000;
