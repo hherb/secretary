@@ -33,7 +33,8 @@ import {
   probeCreateTarget,
   syncStatus,
   syncNow,
-  syncCommitDecisions
+  syncCommitDecisions,
+  type SettingsDto
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -61,10 +62,9 @@ describe('ipc wrappers — argument shape', () => {
 
   it('setSettings nests the DTO under a `settings` key', async () => {
     invokeMock.mockResolvedValue(undefined);
-    await setSettings({ autoLockTimeoutMs: 60_000 });
-    expect(invokeMock).toHaveBeenCalledWith('set_settings', {
-      settings: { autoLockTimeoutMs: 60_000 }
-    });
+    const dto: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
+    await setSettings(dto);
+    expect(invokeMock).toHaveBeenCalledWith('set_settings', { settings: dto });
   });
 
   it('argument-less commands invoke with no args object', async () => {

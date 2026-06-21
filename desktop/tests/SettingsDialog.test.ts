@@ -50,7 +50,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const INITIAL_SETTINGS: SettingsDto = { autoLockTimeoutMs: 900_000 }; // 15 minutes
+const INITIAL_SETTINGS: SettingsDto = { autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }; // 15 minutes
 
 // Hoist the setSettings IPC mock so individual tests can drive
 // resolve / reject as needed.
@@ -112,7 +112,7 @@ describe('SettingsDialog.svelte — open / closed state', () => {
 
 describe('SettingsDialog.svelte — initial value', () => {
   it('pre-populates the input from sessionState.settings (rounded to minutes)', async () => {
-    unlockWith({ autoLockTimeoutMs: 900_000 }); // 15 min
+    unlockWith({ autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }); // 15 min
     const { container } = renderOpen();
     await waitFor(() => {
       const input = container.querySelector('input[type="number"]') as HTMLInputElement;
@@ -151,7 +151,7 @@ describe('SettingsDialog.svelte — Save happy path', () => {
 
     await waitFor(() => {
       expect(setSettingsMock).toHaveBeenCalledTimes(1);
-      expect(setSettingsMock).toHaveBeenCalledWith({ autoLockTimeoutMs: 5 * MS_PER_MINUTE });
+      expect(setSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ autoLockTimeoutMs: 5 * MS_PER_MINUTE }));
     });
   });
 

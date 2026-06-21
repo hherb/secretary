@@ -41,7 +41,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
 // `listen()` returns a `Promise<() => void>` — the resolved value is
 // the unlisten function. Capture both the handler (so tests can drive
@@ -271,7 +271,7 @@ describe('App.svelte — activity-tracking lifecycle (Task 10)', () => {
     // change, so the activity-tracking lifecycle must not restart —
     // otherwise the dialog's Save flow would tear down + re-install
     // document listeners on every settings change.
-    settingsUpdated({ autoLockTimeoutMs: 300_000 });
+    settingsUpdated({ autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 });
 
     // Give any racy $effect a tick to settle before asserting.
     await new Promise((resolve) => setTimeout(resolve, 0));

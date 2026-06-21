@@ -34,7 +34,7 @@ vi.mock('../src/lib/ipc', async () => {
   return { ...real, lock: lockMock, setSettings: setSettingsMock, readBlock: readBlockMock };
 });
 
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
 function blockFixture(name: string, uuidHex: string): BlockSummaryDto {
   return {

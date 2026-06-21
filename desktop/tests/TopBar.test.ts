@@ -24,7 +24,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
 // LockButton imports `lock` from ipc; SyncPill imports `syncStatus` —
 // stub both so the rendered TopBar mounts without side-effects.

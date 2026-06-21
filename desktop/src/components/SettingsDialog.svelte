@@ -92,7 +92,12 @@
     formError = null;
     try {
       const newMs = inputMinutes * MS_PER_MINUTE;
-      await setSettings({ autoLockTimeoutMs: newMs });
+      // Spread the full current settings and override only the edited
+      // field — keeps the other settings (requirePasswordBeforeEdits,
+      // reauthGraceWindowMs) intact and satisfies SettingsDto's shape.
+      const current = $sessionState.status === 'unlocked' ? $sessionState.settings : null;
+      const newSettings = { ...(current ?? { requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }), autoLockTimeoutMs: newMs };
+      await setSettings(newSettings);
       // Race-guard: a vault-locked event may arrive between the IPC
       // firing and resolving (auto-lock at the boundary). In that case
       // the session has already left `unlocked` and `settingsUpdated`
@@ -100,7 +105,7 @@
       // persisted the new value either way, so the next unlock observes
       // it — skipping the in-memory update here is safe.
       if ($sessionState.status === 'unlocked') {
-        settingsUpdated({ autoLockTimeoutMs: newMs });
+        settingsUpdated(newSettings);
       }
       onClose();
     } catch (err) {

@@ -24,7 +24,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
 // Mock the IPC layer + dialog plugin (both used by the form). `vi.hoisted`
 // returns the mocks before the `vi.mock` factories run.
