@@ -15,6 +15,7 @@
   import ContactsPane from '../components/contacts/ContactsPane.svelte';
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
   import ShareDialog from '../components/share/ShareDialog.svelte';
+  import ReauthPasswordDialog from '../components/ReauthPasswordDialog.svelte';
   import Trash from '../components/icons/Trash.svelte';
   import Users from '../components/icons/Users.svelte';
 
@@ -166,6 +167,8 @@
       bind:open={settingsOpen}
       onClose={() => (settingsOpen = false)}
     />
+
+    <ReauthPasswordDialog />
 
     {#if pendingTrash}
       <ConfirmDialog

@@ -4,6 +4,7 @@
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
   import { unlockWithPassword, getSettings } from '../lib/ipc';
   import { userMessageFor } from '../lib/errors';
+  import { seedReauthClock } from '../lib/writeGuard';
   import { openCreateWizard, createdVaultPath } from '../lib/route';
   import { get } from 'svelte/store';
 
@@ -48,6 +49,9 @@
       // timeout (etc.) readily available.
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
+      // Seed the reauth grace-window clock: the unlock password proves
+      // presence, so a write within the grace window should not re-prompt.
+      seedReauthClock(Date.now());
     } catch (err) {
       // `unlockFailed` accepts `unknown` and narrows internally; no cast
       // required at the call site.
