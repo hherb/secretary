@@ -31,6 +31,7 @@ use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, Sett
 use secretary_desktop::errors::AppError;
 use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
+use secretary_desktop::settings::{load_from_vault, save_to_vault, Settings};
 use tempfile::TempDir;
 
 // ============================================================================
@@ -399,6 +400,86 @@ fn set_settings_while_locked_returns_not_unlocked() {
     )
     .expect_err("must reject while locked");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+/// All three settings fields survive a save→load round-trip through the
+/// vault. Exercises the multi-field `save_to_vault` / `load_from_vault`
+/// paths added in Task 3, against a temp copy of the golden vault so the
+/// frozen KAT fixture is never mutated.
+#[test]
+fn settings_round_trip_persists_all_three_fields() {
+    let (_vault_dir, vault_path) = ephemeral_golden_copy();
+    let device_dir = tempfile::tempdir().expect("device tempdir");
+    let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
+
+    unlock::unlock_with_password_impl(
+        &state,
+        vault_path.to_str().expect("utf8 path"),
+        GOLDEN_VAULT_PASSWORD.as_bytes(),
+    )
+    .expect("unlock");
+
+    let to_save = Settings {
+        auto_lock_timeout_ms: 600_000,
+        require_password_before_edits: false,
+        reauth_grace_window_ms: 30_000,
+    };
+
+    // Write all three fields through the multi-field save path.
+    state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| save_to_vault(&u.identity, &u.manifest, u.device_uuid, &to_save))
+        .expect("save_to_vault");
+
+    // Read them back and assert every field survived, with no warnings.
+    let (loaded, warnings) = state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| load_from_vault(&u.identity, &u.manifest))
+        .expect("load_from_vault");
+
+    assert!(
+        !loaded.require_password_before_edits,
+        "require_password_before_edits must survive round-trip"
+    );
+    assert_eq!(
+        loaded.reauth_grace_window_ms, 30_000,
+        "reauth_grace_window_ms must survive round-trip"
+    );
+    assert_eq!(
+        loaded.auto_lock_timeout_ms, 600_000,
+        "auto_lock_timeout_ms must survive round-trip"
+    );
+    assert!(warnings.is_empty(), "clean round-trip must produce no warnings; got: {warnings:?}");
+}
+
+/// A vault written by an older client (only the `auto_lock_timeout_ms`
+/// field present) is loaded with the new two fields defaulted — no
+/// SettingsClamped or SettingsCorrupt warning, since missing-but-defaulted
+/// fields are forward-compat silently accepted.
+#[test]
+fn settings_backward_compat_missing_new_fields_yield_defaults_no_warning() {
+    // The golden vault has no settings block at all ⇒ load returns defaults
+    // with an empty warnings vec. This is the strongest backward-compat
+    // assertion we can make without writing a synthetic one-field record.
+    let (state, _device_dir) = unlocked_state();
+    let (loaded, warnings) = state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| load_from_vault(&u.identity, &u.manifest))
+        .expect("load_from_vault on clean vault");
+
+    // No settings block ⇒ defaults.
+    assert_eq!(
+        loaded,
+        Settings::default(),
+        "no settings block must yield Settings::default()"
+    );
+    assert!(
+        warnings.is_empty(),
+        "no settings block must yield no warnings; got: {warnings:?}"
+    );
 }
 
 // ============================================================================

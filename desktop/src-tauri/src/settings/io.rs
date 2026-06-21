@@ -77,43 +77,28 @@ pub fn load_from_vault(
         .record_at(0)
         .expect("record_count==1 ⇒ record_at(0) is Some");
 
-    if record.field_count() != 1 {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
-                detail: format!(
-                    "settings record has {} fields (expected 1)",
-                    record.field_count()
-                ),
-            }],
-        ));
-    }
-    let field = record
-        .field_at(0)
-        .expect("field_count==1 ⇒ field_at(0) is Some");
-
-    // Both shape-checks fall through to defaults+warning rather than an
-    // `AppError` for the same reason `record_count != 1` and
-    // `field_count != 1` do: a settings record that's shaped wrong on
-    // disk must not block vault access, since the user's only recourse
-    // is the Settings dialog itself. Severity is uniform across all four
-    // "settings record disagrees with v1 shape" cases.
-    if !field.is_text() {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
+    // Collect every text field of the (single) settings record into
+    // (name, text) pairs. A non-text or payload-missing field is skipped
+    // with a warning (lenient posture: a shaped-wrong field must not block
+    // vault access since the user's only recourse is the Settings dialog).
+    let mut field_pairs: Vec<(String, String)> = Vec::new();
+    let mut shape_warnings: Vec<AppWarning> = Vec::new();
+    for i in 0..record.field_count() {
+        let field = record.field_at(i).expect("i < field_count ⇒ Some");
+        if !field.is_text() {
+            shape_warnings.push(AppWarning::SettingsCorrupt {
                 detail: format!("settings field '{}' is not text-typed", field.name()),
-            }],
-        ));
-    }
-    let Some(field_text) = field.expose_text() else {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
+            });
+            continue;
+        }
+        let Some(text) = field.expose_text() else {
+            shape_warnings.push(AppWarning::SettingsCorrupt {
                 detail: "settings field text payload missing".to_string(),
-            }],
-        ));
-    };
+            });
+            continue;
+        };
+        field_pairs.push((field.name(), text));
+    }
 
     // #141 closed: RecordInput now carries record_type, so a record this
     // client wrote reads back with its real type. An empty type still maps
@@ -122,17 +107,15 @@ pub fn load_from_vault(
     // future v2 record.
     let stored_record_type = record.record_type();
     let effective_record_type = if stored_record_type.is_empty() {
-        SETTINGS_RECORD_TYPE
+        SETTINGS_RECORD_TYPE.to_string()
     } else {
-        stored_record_type.as_str()
+        stored_record_type
     };
 
-    // Minimal shim: io.rs reads one field per record for now; Task 3
-    // will extend this to iterate all fields.
-    parse_settings_fields(
-        effective_record_type,
-        &[(field.name().to_string(), field_text.to_string())],
-    )
+    let (settings, mut parse_warnings) = parse_settings_fields(&effective_record_type, &field_pairs)?;
+    let mut warnings = shape_warnings;
+    warnings.append(&mut parse_warnings);
+    Ok((settings, warnings))
 }
 
 /// Save settings to the vault. Creates the settings block on first call
@@ -162,14 +145,17 @@ pub fn save_to_vault(
         .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
-    // serialize_settings returns one triple per field; for now io.rs only
-    // persists the auto-lock field (index 0) — Task 3 will extend this to
-    // all fields.
+    // serialize_settings returns one triple per field; build a FieldInput
+    // for each so all three settings fields land in the vault record.
     let triples = serialize_settings(new_settings);
-    let (record_type, field_name, field_value_text) = triples
+    let record_type = triples[0].0.clone();
+    let fields: Vec<FieldInput> = triples
         .into_iter()
-        .next()
-        .expect("serialize_settings always returns at least one triple");
+        .map(|(_, name, value_text)| FieldInput {
+            name,
+            value: FieldInputValue::Text(SecretString::from(value_text)),
+        })
+        .collect();
 
     let block_input = BlockInput {
         block_uuid,
@@ -178,10 +164,7 @@ pub fn save_to_vault(
             record_uuid,
             record_type,
             tags: Vec::new(),
-            fields: vec![FieldInput {
-                name: field_name,
-                value: FieldInputValue::Text(SecretString::from(field_value_text)),
-            }],
+            fields,
         }],
     };
 
