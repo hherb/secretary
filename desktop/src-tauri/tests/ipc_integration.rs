@@ -337,6 +337,8 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect("set_settings must succeed");
@@ -362,6 +364,8 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: BELOW_MIN_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect_err("below-min input must reject");
@@ -396,6 +400,8 @@ fn set_settings_while_locked_returns_not_unlocked() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect_err("must reject while locked");

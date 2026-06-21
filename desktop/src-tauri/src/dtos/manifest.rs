@@ -74,12 +74,16 @@ impl ManifestDto {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDto {
     pub auto_lock_timeout_ms: u64,
+    pub require_password_before_edits: bool,
+    pub reauth_grace_window_ms: u64,
 }
 
 impl From<&Settings> for SettingsDto {
     fn from(s: &Settings) -> Self {
         Self {
             auto_lock_timeout_ms: s.auto_lock_timeout_ms,
+            require_password_before_edits: s.require_password_before_edits,
+            reauth_grace_window_ms: s.reauth_grace_window_ms,
         }
     }
 }
@@ -95,13 +99,16 @@ impl From<&Settings> for SettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsInput {
     pub auto_lock_timeout_ms: u64,
+    pub require_password_before_edits: bool,
+    pub reauth_grace_window_ms: u64,
 }
 
 impl From<&SettingsInput> for Settings {
     fn from(s: &SettingsInput) -> Self {
         Self {
             auto_lock_timeout_ms: s.auto_lock_timeout_ms,
-            ..Default::default()
+            require_password_before_edits: s.require_password_before_edits,
+            reauth_grace_window_ms: s.reauth_grace_window_ms,
         }
     }
 }
@@ -169,21 +176,28 @@ mod tests {
     fn settings_dto_serializes_as_camel_case() {
         let dto = SettingsDto::from(&Settings {
             auto_lock_timeout_ms: 600_000,
-            ..Default::default()
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         });
         let v = to_json_value(&dto);
         assert_eq!(v["autoLockTimeoutMs"], 600_000_u64);
+        assert_eq!(v["requirePasswordBeforeEdits"], false);
+        assert_eq!(v["reauthGraceWindowMs"], 120_000_u64);
         assert!(v.get("auto_lock_timeout_ms").is_none());
     }
 
     #[test]
     fn settings_input_deserializes_from_camel_case() {
         let input: SettingsInput =
-            serde_json::from_str(r#"{"autoLockTimeoutMs":900000}"#).expect("deserialize");
+            serde_json::from_str(r#"{"autoLockTimeoutMs":900000,"requirePasswordBeforeEdits":true,"reauthGraceWindowMs":120000}"#).expect("deserialize");
         assert_eq!(input.auto_lock_timeout_ms, 900_000);
+        assert!(input.require_password_before_edits);
+        assert_eq!(input.reauth_grace_window_ms, 120_000);
 
         let settings = Settings::from(&input);
         assert_eq!(settings.auto_lock_timeout_ms, 900_000);
+        assert!(settings.require_password_before_edits);
+        assert_eq!(settings.reauth_grace_window_ms, 120_000);
     }
 
     #[test]
@@ -193,7 +207,7 @@ mod tests {
         // regression surfaces immediately at the boundary rather than
         // silently overwriting the field with the type's default.
         let result: Result<SettingsInput, _> =
-            serde_json::from_str(r#"{"auto_lock_timeout_ms":900000}"#);
+            serde_json::from_str(r#"{"auto_lock_timeout_ms":900000,"require_password_before_edits":true,"reauth_grace_window_ms":120000}"#);
         assert!(
             result.is_err(),
             "snake_case input must fail to deserialize (got Ok)"
@@ -238,5 +252,28 @@ mod tests {
         assert_eq!(v["warnings"][0]["code"], "settings_clamped");
         assert_eq!(v["warnings"][0]["original_ms"], 30_000_u64);
         assert_eq!(v["warnings"][0]["clamped_ms"], 60_000_u64);
+    }
+
+    #[test]
+    fn settings_dto_serializes_reauth_fields_camel_case() {
+        let dto = SettingsDto::from(&Settings {
+            auto_lock_timeout_ms: 600_000,
+            require_password_before_edits: true,
+            reauth_grace_window_ms: 120_000,
+        });
+        let v = to_json_value(&dto);
+        assert_eq!(v["requirePasswordBeforeEdits"], true);
+        assert_eq!(v["reauthGraceWindowMs"], 120_000_u64);
+    }
+
+    #[test]
+    fn settings_input_deserializes_reauth_fields() {
+        let input: SettingsInput = serde_json::from_str(
+            r#"{"autoLockTimeoutMs":600000,"requirePasswordBeforeEdits":false,"reauthGraceWindowMs":30000}"#,
+        )
+        .expect("deserialize");
+        let settings = Settings::from(&input);
+        assert!(!settings.require_password_before_edits);
+        assert_eq!(settings.reauth_grace_window_ms, 30_000);
     }
 }
