@@ -46,9 +46,10 @@ class GraceWindowReauthGate(
 
     override suspend fun authorizeWrite(reason: String) {
         if (!authorizer.isEnrolled) return                          // no enrollment → no gate
-        if (!needsReauth(lastAuthAtMs, clock(), windowMs)) return   // inside the grace window
+        val nowMs = clock()                                         // snapshot once: same instant for check + record
+        if (!needsReauth(lastAuthAtMs, nowMs, windowMs)) return     // inside the grace window
         authorizer.authorize(reason)                                // throws on cancel/failure
-        lastAuthAtMs = clock()                                      // advance ONLY on success
+        lastAuthAtMs = nowMs                                        // advance ONLY on success
     }
 
     override fun seed(nowMs: Long) { lastAuthAtMs = nowMs }

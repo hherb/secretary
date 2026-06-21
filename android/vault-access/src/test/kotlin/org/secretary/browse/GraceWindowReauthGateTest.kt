@@ -1,8 +1,8 @@
 package org.secretary.browse
 
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -81,29 +81,24 @@ class GraceWindowReauthGateTest {
     fun `a cancelled prompt throws and does NOT advance the window`() = runTest {
         val auth = FakeBiometricAuthorizer(error = DeviceUnlockError.UserCancelled)
         val gate = GraceWindowReauthGate(auth, ::clock, windowMs = 30_000L)
-        assertThrows(DeviceUnlockError.UserCancelled::class.java) {
-            kotlinx.coroutines.runBlocking { gate.authorizeWrite("write") }
-        }
-        // Window did not advance: a follow-up still prompts (would be silent if it had advanced).
-        val ok = FakeBiometricAuthorizer()
-        val gate2 = GraceWindowReauthGate(ok, ::clock, windowMs = 30_000L)
-        gate2.authorizeWrite("again")
-        assertEquals(listOf("again"), ok.reasons)
+        // First attempt cancels — must throw and NOT advance lastAuthAtMs.
+        assertFailsWith<DeviceUnlockError.UserCancelled> { gate.authorizeWrite("write") }
+        // Second attempt on the SAME gate (same nowMs, still inside where the window would be if
+        // it had advanced) must ALSO attempt authorize — proving the window never moved.
+        assertFailsWith<DeviceUnlockError.UserCancelled> { gate.authorizeWrite("write2") }
+        assertEquals(listOf("write", "write2"), auth.reasons)
     }
 
     @Test
     fun `a failed prompt throws and does NOT advance the window`() = runTest {
         val auth = FakeBiometricAuthorizer(error = DeviceUnlockError.BiometryLockout)
         val gate = GraceWindowReauthGate(auth, ::clock, windowMs = 30_000L)
-        assertThrows(DeviceUnlockError.BiometryLockout::class.java) {
-            kotlinx.coroutines.runBlocking { gate.authorizeWrite("write") }
-        }
+        // First attempt fails — must throw and NOT advance lastAuthAtMs.
+        assertFailsWith<DeviceUnlockError.BiometryLockout> { gate.authorizeWrite("write") }
         nowMs += 1L
         // Still no valid proof → the next write prompts again (same authorizer, set to succeed now is N/A;
         // assert by observing a second call IS attempted).
-        assertThrows(DeviceUnlockError.BiometryLockout::class.java) {
-            kotlinx.coroutines.runBlocking { gate.authorizeWrite("write2") }
-        }
+        assertFailsWith<DeviceUnlockError.BiometryLockout> { gate.authorizeWrite("write2") }
         assertEquals(listOf("write", "write2"), auth.reasons)
     }
 }
