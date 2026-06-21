@@ -18,20 +18,32 @@ import {
 import { openBlock, resetBrowse, browseNav } from '../src/lib/browse';
 import type { ManifestDto, SettingsDto, BlockSummaryDto } from '../src/lib/ipc';
 import type { AppWarning } from '../src/lib/errors';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 // LockButton (transitively imported via TopBar) calls `lock` ipc, and
 // SettingsDialog calls `setSettings`. Stub both so the rendered tree
 // doesn't blow up on missing Tauri. readBlock is stubbed so that the
 // RecordList view (rendered when browseNav.level === 'records') can
-// resolve without hitting the Tauri bridge.
-const { lockMock, setSettingsMock, readBlockMock } = vi.hoisted(() => ({
+// resolve without hitting the Tauri bridge. trashBlock and refreshManifest
+// are stubbed for the block-trash reauth gate tests below.
+const { lockMock, setSettingsMock, readBlockMock, trashBlockMock, refreshManifestMock } = vi.hoisted(() => ({
   lockMock: vi.fn(),
   setSettingsMock: vi.fn(),
-  readBlockMock: vi.fn()
+  readBlockMock: vi.fn(),
+  trashBlockMock: vi.fn(),
+  refreshManifestMock: vi.fn()
 }));
 vi.mock('../src/lib/ipc', async () => {
   const real = await vi.importActual<typeof import('../src/lib/ipc')>('../src/lib/ipc');
-  return { ...real, lock: lockMock, setSettings: setSettingsMock, readBlock: readBlockMock };
+  return { ...real, lock: lockMock, setSettings: setSettingsMock, readBlock: readBlockMock, trashBlock: trashBlockMock };
+});
+vi.mock('../src/lib/stores', async () => {
+  const real = await vi.importActual<typeof import('../src/lib/stores')>('../src/lib/stores');
+  return { ...real, refreshManifest: refreshManifestMock };
 });
 
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
@@ -74,6 +86,10 @@ beforeEach(() => {
   setSettingsMock.mockResolvedValue(undefined);
   readBlockMock.mockReset();
   readBlockMock.mockResolvedValue({ blockUuidHex: 'ab', blockName: 'B', records: [] });
+  trashBlockMock.mockReset();
+  trashBlockMock.mockResolvedValue(undefined);
+  refreshManifestMock.mockReset();
+  refreshManifestMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -272,5 +288,61 @@ describe('Vault.svelte — browse navigation', () => {
     await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
     // Block-list should no longer be visible.
     expect(document.querySelector('.block-card')).toBeNull();
+  });
+});
+
+describe('Vault.svelte — block-trash reauth gate', () => {
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → trash_block NOT called, ConfirmDialog stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    const block = blockFixture('Banking', 'aa');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    const { getByRole, container } = render(Vault);
+
+    // Click the per-card trash button to open the ConfirmDialog.
+    await fireEvent.click(getByRole('button', { name: /trash block/i }));
+    const confirmBtn = await waitFor(() => {
+      const btn = container.querySelector('.confirm-dialog__button--danger') as HTMLButtonElement | null;
+      expect(btn).not.toBeNull();
+      return btn!;
+    });
+
+    // Click the confirm (danger) button — triggers confirmTrash → authorizeWrite → ReauthCancelled.
+    await fireEvent.click(confirmBtn);
+
+    // Guard cancelled → trash_block must NOT have been called; dialog stays open.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(trashBlockMock).not.toHaveBeenCalled();
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
+  });
+
+  it('happy: guard resolves → trash_block called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    const block = blockFixture('Banking', 'aa');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    const { getByRole, container } = render(Vault);
+
+    await fireEvent.click(getByRole('button', { name: /trash block/i }));
+    const confirmBtn = await waitFor(() => {
+      const btn = container.querySelector('.confirm-dialog__button--danger') as HTMLButtonElement | null;
+      expect(btn).not.toBeNull();
+      return btn!;
+    });
+
+    await fireEvent.click(confirmBtn);
+
+    await waitFor(() => expect(trashBlockMock).toHaveBeenCalledOnce());
+    expect(trashBlockMock).toHaveBeenCalledWith('aa');
   });
 });

@@ -55,15 +55,15 @@
   async function confirmTrash() {
     const target = pendingTrash;
     if (!target) return;
-    pendingTrash = null;
     trashError = null;
     try {
       await authorizeWrite('Confirm trashing this block');
     } catch (err) {
-      if (err === ReauthCancelled) return;
+      if (err === ReauthCancelled) return; // ConfirmDialog stays open (pendingTrash still set)
       trashError = isAppError(err) ? err : { code: 'internal' };
       return;
     }
+    pendingTrash = null; // now AFTER the gate; dialog closes only on success or non-cancel error
     try {
       await trashBlock(target.blockUuidHex);
       await refreshManifest();
