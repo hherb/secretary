@@ -1,7 +1,7 @@
 <script lang="ts">
   // Settings dialog — native <dialog> overlay for editing app settings.
-  // Currently one field (auto-lock timeout in minutes); structured for
-  // future fields by keeping the validation + save flow generic.
+  // Edits auto-lock timeout (minutes) + write re-auth toggle and grace window.
+  // Validation + save flow kept generic for future fields.
   //
   // Contract (pinned by SettingsDialog.test.ts):
   //   - Parent toggles `open` (bindable). $effect drives showModal/close

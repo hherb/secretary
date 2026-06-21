@@ -371,7 +371,7 @@ describe('SettingsDialog.svelte — reauth controls', () => {
     });
   });
 
-  it('Save with a window minutes value below REAUTH_WINDOW_MIN_MS surfaces settings_out_of_range', async () => {
+  it('Save with a window minutes value above REAUTH_WINDOW_MAX_MS surfaces settings_out_of_range', async () => {
     // REAUTH_WINDOW_MIN_MS is 0 (0 min is valid); there is no sub-zero
     // integer we can enter in a min=0 number field — the browser/JSDOM
     // clamps. Test a value above MAX instead.
