@@ -152,14 +152,14 @@ class VaultBrowseModel(
     /** Open a blank add form for the selected block. No-op if no block is selected. */
     fun startAdd() {
         val block = _selectedBlock.value ?: return
-        _editing.value = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Add)
+        _editing.value = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Add, gate)
     }
 
     /** Open an edit form prefilled from [record] (reveals its fields into the form). No-op if no
      *  block is selected. */
     fun startEdit(record: RecordSummaryView) {
         val block = _selectedBlock.value ?: return
-        val model = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Edit(hexToBytes(record.uuidHex)))
+        val model = RecordEditModel(session, block.uuid, RecordEditModel.Mode.Edit(hexToBytes(record.uuidHex)), gate)
         model.load(record)
         _editing.value = model
     }
