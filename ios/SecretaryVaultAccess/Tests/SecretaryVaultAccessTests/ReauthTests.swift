@@ -2,31 +2,31 @@ import XCTest
 @testable import SecretaryVaultAccess
 
 final class ReauthTests: XCTestCase {
-    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+    // Arbitrary monotonic origin; only differences from it matter.
+    private let t0 = MonotonicInstant(nanoseconds: 1_000_000)
+    private let window: Duration = .seconds(30)
+
+    private func at(_ seconds: Int) -> MonotonicInstant { t0.advanced(by: .seconds(seconds)) }
 
     func testNeverAuthedNeedsReauth() {
-        XCTAssertTrue(needsReauth(lastAuthAt: nil, now: t0, window: 30))
+        XCTAssertTrue(needsReauth(lastAuthAt: nil, now: t0, window: window))
     }
 
     func testWithinWindowDoesNotNeedReauth() {
-        let last = t0
-        let now = t0.addingTimeInterval(29)
-        XCTAssertFalse(needsReauth(lastAuthAt: last, now: now, window: 30))
+        XCTAssertFalse(needsReauth(lastAuthAt: t0, now: at(29), window: window))
     }
 
     func testAtExactWindowNeedsReauth() {
-        let last = t0
-        let now = t0.addingTimeInterval(30)
-        XCTAssertTrue(needsReauth(lastAuthAt: last, now: now, window: 30),
+        XCTAssertTrue(needsReauth(lastAuthAt: t0, now: at(30), window: window),
                       "boundary is inclusive: exactly `window` ⇒ re-auth")
     }
 
     func testPastWindowNeedsReauth() {
-        XCTAssertTrue(needsReauth(lastAuthAt: t0, now: t0.addingTimeInterval(31), window: 30))
+        XCTAssertTrue(needsReauth(lastAuthAt: t0, now: at(31), window: window))
     }
 
     func testV1DefaultIsThirtySeconds() {
-        XCTAssertEqual(ReauthWindow.v1Default, 30)
+        XCTAssertEqual(ReauthWindow.v1Default, .seconds(30))
     }
 
     func testReauthFailedEquatable() {

@@ -52,7 +52,8 @@ final class BlockCrudRoundTripIntegrationTests: XCTestCase {
         let session = UniffiVaultSession(output: out, deviceUuids: FixedDeviceUuid(value: device))
         defer { session.wipe() }
         let gate = GraceWindowReauthGate(
-            authorizer: EnclaveBiometricAuthorizer(enclave: InMemoryDeviceSecretEnclave()))
+            authorizer: EnclaveBiometricAuthorizer(enclave: InMemoryDeviceSecretEnclave()),
+            clock: MonotonicInstant.now)
         let vm = VaultBrowseViewModel(session: session, gate: gate)
         vm.loadBlocks()
 

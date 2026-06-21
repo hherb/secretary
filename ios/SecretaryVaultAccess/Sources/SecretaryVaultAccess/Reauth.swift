@@ -23,13 +23,19 @@ public protocol WriteReauthGate {
 /// v1 re-auth grace window. Writes inside this window after the last successful auth
 /// do not re-prompt. One global value (no per-write-type tuning in v1).
 public enum ReauthWindow {
-    public static let v1Default: TimeInterval = 30
+    public static let v1Default: Duration = .seconds(30)
 }
 
 /// Pure policy: does a write need a fresh biometric prompt? `true` when never authed
-/// (`lastAuthAt == nil`) or when at least `window` seconds have elapsed since the last
-/// auth. Boundary is inclusive: exactly `window` seconds ⇒ re-auth required.
-public func needsReauth(lastAuthAt: Date?, now: Date, window: TimeInterval) -> Bool {
+/// (`lastAuthAt == nil`) or when at least `window` has elapsed since the last auth.
+/// Boundary is inclusive: exactly `window` ⇒ re-auth required.
+///
+/// Times are `MonotonicInstant`s — a **monotonic** timeline, not wall-clock: the window
+/// measures true elapsed time and must not move under an NTP correction or a user
+/// clock-set, which on a wall clock can jump backward and silently extend the
+/// silent-write window past `window` (issue #282). Only the gap between the two
+/// instants is meaningful, so they must come from the same clock.
+public func needsReauth(lastAuthAt: MonotonicInstant?, now: MonotonicInstant, window: Duration) -> Bool {
     guard let last = lastAuthAt else { return true }
-    return now.timeIntervalSince(last) >= window
+    return last.duration(to: now) >= window
 }
