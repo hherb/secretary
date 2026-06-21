@@ -261,6 +261,7 @@ fn set_settings_persists_and_reloads() {
         session
             .set_settings(&Settings {
                 auto_lock_timeout_ms: new_value,
+                ..Default::default()
             })
             .expect("set_settings must succeed");
         // session drops at end of scope → UnlockedSession::Drop runs.
@@ -295,6 +296,7 @@ fn set_settings_out_of_range_errors_without_writing() {
         let err_low = session
             .set_settings(&Settings {
                 auto_lock_timeout_ms: 30_000,
+                ..Default::default()
             })
             .expect_err("must reject below min");
         assert!(
@@ -306,6 +308,7 @@ fn set_settings_out_of_range_errors_without_writing() {
         let err_high = session
             .set_settings(&Settings {
                 auto_lock_timeout_ms: 86_400_001,
+                ..Default::default()
             })
             .expect_err("must reject above max");
         assert!(

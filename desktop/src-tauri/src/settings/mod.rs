@@ -23,5 +23,5 @@ pub use io::{
     load_or_create_device_uuid_in, save_to_vault,
 };
 pub use parse::{
-    parse_settings_field, serialize_settings, validate_save_value, ParseResult, Settings,
+    parse_settings_fields, serialize_settings, validate_save_settings, ParseResult, Settings,
 };

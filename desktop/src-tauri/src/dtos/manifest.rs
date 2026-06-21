@@ -101,6 +101,7 @@ impl From<&SettingsInput> for Settings {
     fn from(s: &SettingsInput) -> Self {
         Self {
             auto_lock_timeout_ms: s.auto_lock_timeout_ms,
+            ..Default::default()
         }
     }
 }
@@ -168,6 +169,7 @@ mod tests {
     fn settings_dto_serializes_as_camel_case() {
         let dto = SettingsDto::from(&Settings {
             auto_lock_timeout_ms: 600_000,
+            ..Default::default()
         });
         let v = to_json_value(&dto);
         assert_eq!(v["autoLockTimeoutMs"], 600_000_u64);

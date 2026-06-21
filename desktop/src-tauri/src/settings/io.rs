@@ -27,7 +27,7 @@ use secretary_ffi_bridge::{
     RecordInput, UnlockedIdentity,
 };
 
-use super::parse::{parse_settings_field, serialize_settings, validate_save_value, Settings};
+use super::parse::{parse_settings_fields, serialize_settings, validate_save_settings, Settings};
 use crate::auto_lock::now_ms;
 use crate::constants::{deterministic_uuid_16, SETTINGS_BLOCK_NAME, SETTINGS_RECORD_TYPE};
 use crate::errors::{AppError, AppWarning};
@@ -127,7 +127,12 @@ pub fn load_from_vault(
         stored_record_type.as_str()
     };
 
-    parse_settings_field(effective_record_type, &field.name(), &field_text)
+    // Minimal shim: io.rs reads one field per record for now; Task 3
+    // will extend this to iterate all fields.
+    parse_settings_fields(
+        effective_record_type,
+        &[(field.name().to_string(), field_text.to_string())],
+    )
 }
 
 /// Save settings to the vault. Creates the settings block on first call
@@ -146,7 +151,7 @@ pub fn save_to_vault(
     device_uuid: [u8; 16],
     new_settings: &Settings,
 ) -> Result<(), AppError> {
-    validate_save_value(new_settings.auto_lock_timeout_ms)?;
+    validate_save_settings(new_settings)?;
 
     // Re-use the on-disk block_uuid if a settings block already exists; fall
     // back to the deterministic UUID for first-save. The deterministic value
@@ -157,7 +162,14 @@ pub fn save_to_vault(
         .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
-    let (record_type, field_name, field_value_text) = serialize_settings(new_settings);
+    // serialize_settings returns one triple per field; for now io.rs only
+    // persists the auto-lock field (index 0) — Task 3 will extend this to
+    // all fields.
+    let triples = serialize_settings(new_settings);
+    let (record_type, field_name, field_value_text) = triples
+        .into_iter()
+        .next()
+        .expect("serialize_settings always returns at least one triple");
 
     let block_input = BlockInput {
         block_uuid,
