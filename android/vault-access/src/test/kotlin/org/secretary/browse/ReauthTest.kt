@@ -1,5 +1,6 @@
 package org.secretary.browse
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -34,6 +35,38 @@ class ReauthTest {
 
     @Test
     fun `the v1 default window is 30 seconds`() {
-        org.junit.jupiter.api.Assertions.assertEquals(30_000L, ReauthWindow.V1_DEFAULT_MS)
+        assertEquals(30_000L, ReauthWindow.V1_DEFAULT_MS)
+    }
+
+    @Test
+    fun `reauthFailedMessage maps lockout to a try-again clause`() {
+        assertEquals(
+            "too many attempts — try again later",
+            reauthFailedMessage(DeviceUnlockError.BiometryLockout),
+        )
+    }
+
+    @Test
+    fun `reauthFailedMessage maps unavailable and not-enrolled to the same clause`() {
+        val unavailable = reauthFailedMessage(DeviceUnlockError.BiometryUnavailable)
+        val notEnrolled = reauthFailedMessage(DeviceUnlockError.BiometryNotEnrolled)
+        assertEquals("biometric authentication is unavailable on this device", unavailable)
+        assertEquals(unavailable, notEnrolled)
+    }
+
+    @Test
+    fun `reauthFailedMessage folds the integrity and generic arms to one message (no oracle)`() {
+        val generic = "biometric authentication failed"
+        assertEquals(generic, reauthFailedMessage(DeviceUnlockError.AuthenticationFailed))
+        assertEquals(generic, reauthFailedMessage(DeviceUnlockError.WrappedSecretCorrupt))
+        assertEquals(generic, reauthFailedMessage(DeviceUnlockError.Enclave("boom")))
+    }
+
+    @Test
+    fun `reauthFailedMessage never leaks a raw exception string`() {
+        // Detail must be a curated clause, never the class name / toString of the error.
+        val msg = reauthFailedMessage(DeviceUnlockError.Enclave("se-internal-detail"))
+        assertFalse(msg.contains("Enclave"))
+        assertFalse(msg.contains("se-internal-detail"))
     }
 }

@@ -13,8 +13,8 @@ object ReauthWindow {
  *
  * Pure policy — the single source of truth shared by every gate decision (host-tested in isolation).
  *
- * @param lastAuthAtMs epoch-millis of the last successful proof this session, or null if none yet.
- * @param nowMs        current epoch-millis.
+ * @param lastAuthAtMs monotonic-clock millis of the last successful proof this session, or null if none yet.
+ * @param nowMs        current monotonic-clock millis (same time base as [lastAuthAtMs]).
  * @param windowMs     grace window; within it a write is silently authorized.
  * @return true if the user must re-prove presence:
  *   - `lastAuthAtMs == null`            → true  (never authed this session)
@@ -24,4 +24,22 @@ object ReauthWindow {
 fun needsReauth(lastAuthAtMs: Long?, nowMs: Long, windowMs: Long): Boolean {
     if (lastAuthAtMs == null) return true
     return nowMs - lastAuthAtMs >= windowMs
+}
+
+/**
+ * Human-readable clause for a write that failed its presence proof, used as the
+ * [VaultBrowseError.ReauthFailed] detail (the UI banner prepends "Couldn't authorize the change: ").
+ *
+ * Pure (host-tested). Never surfaces a raw exception string or internal class name. [DeviceUnlockError.UserCancelled]
+ * is intentionally absent — a cancel is silent at the call site and never reaches here. The terminal
+ * device-secret-integrity / generic arms all fold to one message (no oracle, per threat-model §13).
+ */
+fun reauthFailedMessage(e: DeviceUnlockError): String = when (e) {
+    is DeviceUnlockError.BiometryLockout ->
+        "too many attempts — try again later"
+    is DeviceUnlockError.BiometryUnavailable,
+    is DeviceUnlockError.BiometryNotEnrolled ->
+        "biometric authentication is unavailable on this device"
+    else ->
+        "biometric authentication failed"
 }

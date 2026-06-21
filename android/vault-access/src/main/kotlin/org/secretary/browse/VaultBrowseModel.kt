@@ -196,7 +196,7 @@ class VaultBrowseModel(
             } catch (e: DeviceUnlockError.UserCancelled) {
                 return // silent: no write, no error; the originating dialog stays open (op never ran)
             } catch (e: DeviceUnlockError) {
-                _error.value = VaultBrowseError.ReauthFailed(e.toString())
+                _error.value = VaultBrowseError.ReauthFailed(reauthFailedMessage(e))
                 return
             }
             try {

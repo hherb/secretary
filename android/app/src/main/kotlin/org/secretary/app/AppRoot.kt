@@ -1,6 +1,7 @@
 package org.secretary.app
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.compose.runtime.Composable
@@ -205,8 +206,9 @@ private suspend fun unlockAndOpen(
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
         val writeReauthGate = GraceWindowReauthGate(
+            // Monotonic clock — see BrowseSession.openBrowseWithSync; the seed there shares this base.
             authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId),
-            clock = { System.currentTimeMillis() },
+            clock = { SystemClock.elapsedRealtime() },
         )
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate)

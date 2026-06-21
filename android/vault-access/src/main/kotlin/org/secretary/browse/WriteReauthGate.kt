@@ -36,6 +36,15 @@ interface BiometricAuthorizer {
  * last successful proof a write is silently authorized. The proof timestamp advances ONLY on success,
  * so a cancelled/failed prompt never opens the window. Pure (no I/O); [clock] and [authorizer] are
  * injected for host tests. Mirror of iOS `GraceWindowReauthGate`.
+ *
+ * [clock] MUST be a **monotonic** elapsed-time source (production wires `SystemClock.elapsedRealtime`):
+ * the window measures elapsed time since the last proof, so a wall-clock source would let an NTP
+ * correction or a user-set system clock move or extend the silent window.
+ *
+ * NOT thread-safe: [lastAuthAtMs] is plain mutable state. The holder is single-threaded by
+ * construction — every caller (both write VMs) runs on the main dispatcher and writes serialize
+ * under the VM re-entrancy guard, so there is no concurrent mutation (the Android analogue of the
+ * iOS sibling's `@MainActor`). Do not call from a background dispatcher.
  */
 class GraceWindowReauthGate(
     private val authorizer: BiometricAuthorizer,
