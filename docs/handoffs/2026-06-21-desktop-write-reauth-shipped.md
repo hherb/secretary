@@ -18,7 +18,7 @@
 | **Pure policy** (`lib/reauth.ts`) | `needsReauth({enabled,lastAuthAtMs,nowMs,windowMs})` — disabled→false; null→true; elapsed≥window→true (boundary inclusive). TS reauth-window constants mirror Rust. |
 | **Gate** (`lib/writeGuard.ts` + `lib/stores.ts`) | `authorizeWrite(reason)`: if `!needsReauth` resolve; else `await prompt(reason)`; advance `lastAuthAtMs` **only on resolve**; reject `ReauthCancelled` on cancel. **Design B: the dialog owns verify**, the guard stays simple. `reauthPrompt` store + `seedReauthClock`/`resetReauthGuard` + a test seam. |
 | **Prompt UI** (`components/ReauthPasswordDialog.svelte`) | Native `<dialog>` modal; shows the reason; verifies via `verifyPassword`; wrong password → inline `role="alert"`, stays open; success → `__resolveReauthPrompt()`; cancel/Escape → `__cancelReauthPrompt()`. Mounted once in `Vault.svelte`. Clock seeded at unlock (`Unlock.svelte`), reset on lock+auto-lock (`App.svelte`). |
-| **Gated writes (12)** | record save/saveEdit/tombstone/resurrect/move; block create/rename/trash/restore; sharing share/revoke (×2 components); contact delete. Each: validation → `authorizeWrite('<reason>')` → ipc write. Cancel = no write + **originating dialog stays open** (enforced incl. the confirm-dialog flows). `set_settings` deliberately NOT gated (avoids the "re-auth to disable re-auth" loop). |
+| **Gated writes (13)** | record save/saveEdit/tombstone/resurrect/move; block create/rename/trash/restore; sharing share/revoke (×2 components); contact import + delete. Each: validation → `authorizeWrite('<reason>')` → ipc write. Cancel = no write + **originating dialog stays open** (enforced incl. the confirm-dialog flows). **Security-reducing `set_settings` changes are also gated** (see review-round note below). |
 | **Settings dialog** (`SettingsDialog.svelte`) | "Require password before edits" checkbox + "Re-authentication grace window" minutes input (0 = every write); all 3 fields in the save payload; window range validation. |
 | **Docs** | README status note + ROADMAP parity update (write-reauth now iOS + desktop). Spec + plan under `docs/superpowers/`. |
 
@@ -31,7 +31,7 @@ cd /Users/hherb/src/secretary/.worktrees/desktop-write-reauth
 cargo test --release --workspace            # green
 cargo clippy --release --workspace --tests -- -D warnings   # clean
 # Frontend (pnpm — NOT npm):
-cd desktop && pnpm test                      # 537 passing
+cd desktop && pnpm test                      # 543 passing (537 + 6 review-round gate tests)
 pnpm lint && pnpm svelte-check               # clean (0 errors/warnings)
 ```
 Guardrails (this slice):
@@ -46,8 +46,16 @@ git diff main...HEAD --name-only | grep -E '^desktop/'                          
 - **Verify = full `open_vault_with_password`** — the only sound check without retaining password material; the grace window amortizes the Argon2id cost; mutex released before the KDF so it never blocks writes/auto-lock.
 - **No new `AppError` variant** — `WrongPassword`/`NotUnlocked` already exist; `errors.ts`/conformance harnesses untouched ([[project_secretary_ffivaulterror_workspace_match]] did NOT apply).
 - **Settings record stays v1, multi-field, lenient** — missing fields default, unknown extra fields warn (forward-compat), reject-on-save / clamp-on-load.
-- **`set_settings` is NOT gated** — gating it would require re-auth to *disable* re-auth; the dialog is already behind unlock.
+- **`set_settings` — only security-REDUCING changes are gated** (review-round fix). Turning the gate off, or widening its grace window, now routes through `authorizeWrite` (so an attacker at an unlocked-but-unattended session can't trivially disable the gate to bypass it). Enabling the gate or tightening the window strengthens protection and is never gated, avoiding the "re-auth to enable re-auth" friction. Within the live grace window the prompt is silent — same as any other write.
 - **Cancel keeps the originating dialog open** — the spec's terminal-outcome contract; enforced at all confirm-dialog sites (the `pending* = null` clear happens only after a successful authorize). The final review caught one missed site (block-trash in `Vault.svelte`) — fixed in `9c1a40d0` with a regression test.
+
+### Review-round fixes (PR #278 `/review` → `/fixall`)
+A post-open review (Opus, on the diff) raised three actionable items; all fixed on-branch:
+1. **`set_settings` policy-bypass (security).** The original "never gate settings" decision left the gate disable-able by the very actor it defends against. Fixed: security-reducing settings saves (toggle off / widen window) now go through `authorizeWrite`; strengthening/neutral saves don't. New tests in `SettingsDialog.test.ts`.
+2. **Contact import was ungated** despite being claimed (a vault-mutating write). Fixed: `ShareDialog.onImport` now `authorizeWrite`s before `importContact`; cancel/happy gate tests added.
+3. **Wall-clock `Date.now()` clock-jump behaviour** documented in `reauth.ts` (forward = fail-safe re-prompt; backward = bounded, session-scoped grace widening; never bypasses a never-authed session).
+
+**Scope/boundary note (important for future readers):** the gate is enforced **per-call-site in the frontend** (now 13 sites) and the backend write commands are **not** themselves gated (the design doc explains why the gate lives in the frontend rather than wrapping the Rust commands). This makes write re-auth a **presence-assurance UX layer for an unlocked-but-unattended session — NOT a hard security boundary against a compromised renderer.** An attacker with JS execution in the WebView already holds the in-memory plaintext (the vault is unlocked), so backend gating would buy little. Two consequences worth tracking: (a) a new mutating IPC wrapper can ship ungated if a `authorizeWrite` is forgotten (the missed import gate is proof) — filed **#280** for a centralized gate-coverage test; (b) anyone reframing this as a defence against renderer compromise is mistaken — it isn't, and shouldn't be sold as one.
 
 ## (2) What's next
 - **Push the final commits + let PR #278 merge** (§4), then housekeeping (remove this worktree + branch). PR #278 was opened mid-session (before the fmt + final-review-fix commits) — those must be pushed so the PR is complete.
@@ -90,7 +98,7 @@ git worktree prune && git worktree list   # leaves hardcore-robinson + d4-browse
 
 ## Closing inventory
 - **Branch on close:** `feature/desktop-write-reauth` @ `9c1a40d0` + the handoff commit; `main`/`origin/main` @ `f5346611`. PR #278 open — push to update. Squash-merge → one commit on `main`.
-- **Acceptance:** green — `cargo test --release --workspace` + clippy `-D warnings`; `pnpm test` (537) + lint + svelte-check (0/0). Guardrails empty (desktop-only).
+- **Acceptance:** green — `cargo test --release --workspace` + clippy `-D warnings` (Rust untouched in the review round); `pnpm test` (543) + lint + svelte-check (0/0). Guardrails empty (desktop-only).
 - **Reviews:** per-task spec+quality reviews (all approved, fixes applied) + final whole-branch review on opus (1 Important + 1 Minor, both fixed in `9c1a40d0`).
 - **README.md / ROADMAP.md:** updated (write-reauth now iOS + desktop; Android + OS-biometric pending).
 - **Issues filed:** #277 (desktop OS biometric), #279 (pre-existing ffi fmt drift on main).

@@ -68,8 +68,18 @@
 
   async function onImport(path: string): Promise<void> {
     if (busy) return;
-    busy = true;
     error = null;
+    // Importing a contact card is a mutating vault write (it adds the recipient
+    // to the manifest), so it goes through the same re-auth gate as the other
+    // writes. Gate BEFORE setting busy so a cancel leaves the dialog untouched.
+    try {
+      await authorizeWrite('Confirm importing this contact');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // dialog stays open
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    busy = true;
     try {
       await importContact(path);
       await refresh();

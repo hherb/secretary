@@ -164,4 +164,49 @@ describe('ShareDialog — write-reauth gate', () => {
       })
     );
   });
+
+  it('import cancel: guard rejects ReauthCancelled → import_contact NOT called', async () => {
+    // Importing a contact card mutates the vault, so it is gated too. A cancel
+    // must abort the import and leave the picker dialog open.
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
+    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker resolves before the gate
+
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
+    await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Import a contact/i }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'import_contact')).toBe(false);
+    expect(getByRole('dialog')).toBeTruthy();
+  });
+
+  it('import happy: guard resolves → import_contact called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
+    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
+    invokeMock.mockResolvedValueOnce({ contactUuidHex: 'rcp', displayName: 'Carol' }); // import_contact
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'rcp', displayName: 'Carol' }],
+      unreadableCount: 0
+    }); // refresh list_contacts
+
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
+    await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Import a contact/i }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('import_contact', { cardPath: '/tmp/carol.card' })
+    );
+  });
 });

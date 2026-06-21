@@ -15,6 +15,7 @@
 
   import { sessionState, settingsUpdated } from '../lib/stores';
   import { setSettings, isAppError } from '../lib/ipc';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import { userMessageFor, type AppError } from '../lib/errors';
   import {
     MS_PER_MINUTE,
@@ -123,14 +124,41 @@
       formError = validationErr;
       return;
     }
+    const newSettings = {
+      autoLockTimeoutMs: inputMinutes * MS_PER_MINUTE,
+      requirePasswordBeforeEdits: inputRequirePassword,
+      reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE
+    };
     submitting = true;
     formError = null;
+
+    // Gate security-REDUCING changes to the re-auth policy behind the same
+    // write re-auth as any other mutating write. Without this, an attacker at
+    // an unlocked-but-unattended session could simply disable the gate (or
+    // widen its grace window) here to bypass write re-auth entirely. Only
+    // matters when the gate is currently effective; enabling it or tightening
+    // the window strengthens protection and needs no prompt. `authorizeWrite`
+    // reads the CURRENT (pre-save) policy, so within the live grace window it
+    // resolves silently — consistent with every other write.
+    const reducesProtection =
+      currentRequirePassword &&
+      (!newSettings.requirePasswordBeforeEdits ||
+        newSettings.reauthGraceWindowMs > currentWindowMs);
+    if (reducesProtection) {
+      try {
+        await authorizeWrite('Confirm changing the write re-auth setting');
+      } catch (err) {
+        if (err === ReauthCancelled) {
+          submitting = false;
+          return;
+        }
+        formError = isAppError(err) ? err : { code: 'internal' };
+        submitting = false;
+        return;
+      }
+    }
+
     try {
-      const newSettings = {
-        autoLockTimeoutMs: inputMinutes * MS_PER_MINUTE,
-        requirePasswordBeforeEdits: inputRequirePassword,
-        reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE
-      };
       await setSettings(newSettings);
       // Race-guard: a vault-locked event may arrive between the IPC
       // firing and resolving (auto-lock at the boundary). In that case

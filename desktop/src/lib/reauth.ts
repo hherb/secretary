@@ -21,6 +21,15 @@ export interface NeedsReauthOpts {
  * - never authed (null) → true
  * - elapsed >= window   → true  (boundary inclusive)
  * - else                → false (inside grace)
+ *
+ * `nowMs`/`lastAuthAtMs` are wall-clock (`Date.now()` at the call site).
+ * Clock-jump behaviour: a FORWARD jump grows `nowMs - lastAuthAtMs`, so it only
+ * ever re-prompts early (fail-safe). A BACKWARD jump shrinks it, widening the
+ * grace window so a prompt may be deferred — but the effect is bounded by the
+ * jump size, lives only within one unlocked session (lock reseeds the clock),
+ * and never bypasses the gate for a session that has not authed at all (null →
+ * always prompts). This matches the iOS gate (#275); a monotonic clock isn't
+ * worth the friction for a presence-assurance window.
  */
 export function needsReauth(opts: NeedsReauthOpts): boolean {
   if (!opts.enabled) return false;

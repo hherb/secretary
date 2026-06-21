@@ -24,7 +24,7 @@
 // attribute, so the `open` bindable prop drives real native dialog
 // state — no polyfill needed.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import SettingsDialog from '../src/components/SettingsDialog.svelte';
@@ -44,8 +44,22 @@ import {
   REAUTH_WINDOW_DEFAULT_MS,
   REQUIRE_PASSWORD_DEFAULT
 } from '../src/lib/constants';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
 import type { AppError } from '../src/lib/errors';
+
+// Default: a pass-through guard so the bulk of the suite (which doesn't seed
+// the reauth clock) never opens the real prompt. The gate-specific tests below
+// install their own seam.
+const PASS_THROUGH_SEAM = {
+  readSettings: () => ({ enabled: false, windowMs: 0 }),
+  now: () => 0,
+  prompt: () => Promise.resolve()
+};
 
 const MANIFEST: ManifestDto = {
   vaultUuidHex: 'aa',
@@ -73,7 +87,10 @@ beforeEach(() => {
   setSettingsMock.mockResolvedValue(undefined);
   lockMock.mockReset();
   lockMock.mockResolvedValue(undefined);
+  __setWriteGuardTestSeam(PASS_THROUGH_SEAM);
 });
+
+afterEach(() => resetReauthGuard());
 
 function unlockWith(settings: SettingsDto = INITIAL_SETTINGS) {
   beginUnlock(0);
@@ -423,6 +440,94 @@ describe('SettingsDialog.svelte — reauth controls', () => {
       const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
       expect(windowInput.value).toBe(String(REAUTH_WINDOW_DEFAULT_MS / MS_PER_MINUTE));
     });
+  });
+});
+
+describe('SettingsDialog.svelte — security-reducing changes are gated', () => {
+  // The whole point of write re-auth is to defend an unlocked-but-unattended
+  // session. Disabling the gate (or widening its window) from Settings without
+  // re-auth would be a trivial bypass, so those saves route through the same
+  // authorizeWrite chokepoint as any other write.
+
+  it('disabling the toggle prompts re-auth; cancel aborts the save', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    const onClose = vi.fn();
+    const { getByLabelText, getByRole } = renderOpen(onClose);
+
+    await fireEvent.click(getByLabelText(/require password before edits/i)); // true → false
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(setSettingsMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('widening the grace window prompts re-auth; resolve lets the save proceed', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt
+    });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 }); // 2 min
+    const { getByLabelText, getByRole } = renderOpen();
+
+    await fireEvent.input(getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i), {
+      target: { value: '5' } // 2 min → 5 min: wider = weaker
+    });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(setSettingsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ reauthGraceWindowMs: 5 * MS_PER_MINUTE })
+      )
+    );
+  });
+
+  it('security-NEUTRAL/strengthening changes do not prompt (tighten window, auto-lock only)', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt
+    });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 300_000 }); // 5 min
+    const { getByLabelText, getByRole } = renderOpen();
+
+    // Tighten the window (5 → 1 min) — strengthens protection, must not prompt.
+    await fireEvent.input(getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i), {
+      target: { value: '1' }
+    });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('does not prompt when the gate is currently off (nothing to bypass)', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: false, windowMs: 0 }),
+      now: () => 0,
+      prompt
+    });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 });
+    const { getByLabelText, getByRole } = renderOpen();
+
+    // Widen the window while the gate is off — no live protection to reduce.
+    await fireEvent.input(getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i), {
+      target: { value: '30' }
+    });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
+    expect(prompt).not.toHaveBeenCalled();
   });
 });
 
