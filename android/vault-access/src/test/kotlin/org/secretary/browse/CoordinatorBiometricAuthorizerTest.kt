@@ -1,9 +1,9 @@
 package org.secretary.browse
 
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -31,7 +31,7 @@ class CoordinatorBiometricAuthorizerTest {
 
     @Test
     fun `isEnrolled reflects the coordinator`() {
-        val auth = CoordinatorBiometricAuthorizer(coordinator(FakeDeviceSecretEnclave().apply { }, enrolled = false), vaultId)
+        val auth = CoordinatorBiometricAuthorizer(coordinator(FakeDeviceSecretEnclave(), enrolled = false), vaultId)
         assertFalse(auth.isEnrolled)
     }
 
@@ -51,9 +51,7 @@ class CoordinatorBiometricAuthorizerTest {
         // coordinator gets past its enrollment guard and reaches release().
         enclave.store(ByteArray(32) { 2 })
         val auth = CoordinatorBiometricAuthorizer(coordinator(enclave), vaultId)
-        assertThrows(DeviceUnlockError.UserCancelled::class.java) {
-            kotlinx.coroutines.runBlocking { auth.authorize("write") }
-        }
+        assertFailsWith<DeviceUnlockError.UserCancelled> { auth.authorize("write") }
     }
 
     @Test
@@ -61,9 +59,7 @@ class CoordinatorBiometricAuthorizerTest {
         val enclave = CapturingEnclave()
         val auth = CoordinatorBiometricAuthorizer(coordinator(enclave), vaultId = " ffff ".trim())
         // coordinator was built for vaultId="abcd"; authorizer asks for "ffff" → mismatch, no release.
-        assertThrows(DeviceUnlockError.VaultSlotMismatch::class.java) {
-            kotlinx.coroutines.runBlocking { auth.authorize("write") }
-        }
+        assertFailsWith<DeviceUnlockError.VaultSlotMismatch> { auth.authorize("write") }
         assertTrue(enclave.released == null)
     }
 }
