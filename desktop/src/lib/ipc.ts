@@ -32,6 +32,8 @@ export interface ManifestDto {
 
 export interface SettingsDto {
   autoLockTimeoutMs: number;
+  requirePasswordBeforeEdits: boolean;
+  reauthGraceWindowMs: number;
 }
 
 export interface FieldMetaDto {
@@ -264,6 +266,16 @@ export async function getSettings(): Promise<SettingsDto> {
 
 export async function setSettings(settings: SettingsDto): Promise<void> {
   return call<void>('set_settings', { settings });
+}
+
+/**
+ * Verify the vault password for a write re-auth. Resolves on a correct
+ * password; rejects with `wrong_password` on a bad one, `not_unlocked` if
+ * the session has been locked meanwhile. Runs a full Argon2id on the backend
+ * (~1-2s) — callers await it behind the grace window.
+ */
+export async function verifyPassword(password: string): Promise<void> {
+  return call<void>('verify_password', { password });
 }
 
 export async function listContacts(): Promise<ListContactsDto> {

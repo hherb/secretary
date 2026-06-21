@@ -25,6 +25,7 @@ import {
   getManifest,
   getSettings,
   setSettings,
+  verifyPassword,
   lock,
   notifyActivity,
   readBlock,
@@ -102,6 +103,17 @@ describe('ipc wrappers — return shape', () => {
     invokeMock.mockResolvedValue({ autoLockTimeoutMs: 60_000 });
     const settings = await getSettings();
     expect(settings.autoLockTimeoutMs).toBe(60_000);
+  });
+
+  it('verifyPassword invokes verify_password with the password arg', async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await verifyPassword('hunter2');
+    expect(invokeMock).toHaveBeenCalledWith('verify_password', { password: 'hunter2' });
+  });
+
+  it('verifyPassword surfaces a wrong_password AppError', async () => {
+    invokeMock.mockRejectedValueOnce({ code: 'wrong_password' });
+    await expect(verifyPassword('bad')).rejects.toEqual({ code: 'wrong_password' });
   });
 });
 
