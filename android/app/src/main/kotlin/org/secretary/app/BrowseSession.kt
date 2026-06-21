@@ -1,8 +1,10 @@
 package org.secretary.app
 
+import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
+import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.openWithCredential
 import org.secretary.browse.ui.VaultBrowseViewModel
 import org.secretary.sync.ChangeDetectionMonitor
@@ -42,9 +44,11 @@ suspend fun openBrowseWithSync(
     stateDir: File,
     vaultUuid: ByteArray,
     credential: UnlockCredential,
+    gate: WriteReauthGate = NoopReauthGate,
 ): BrowseSession {
     val session = openWithCredential(openPort, folder.path, credential)
-    val browseModel = VaultBrowseModel(session)
+    val browseModel = VaultBrowseModel(session, gate)
+    gate.seed(System.currentTimeMillis()) // just unlocked → open the grace window
     browseModel.loadBlocks()
     val (syncModel, monitor) = makeVaultSync(folder, stateDir, vaultUuid)
     return BrowseSession(

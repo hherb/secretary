@@ -18,9 +18,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.DeviceSettingsState
 import org.secretary.browse.DeviceSettingsViewModel
 import org.secretary.browse.DeviceUnlockCoordinator
+import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.DeviceUnlockState
 import org.secretary.browse.DeviceUnlockViewModel
 import org.secretary.browse.FileDeviceEnrollmentMetadataStore
@@ -202,8 +204,12 @@ private suspend fun unlockAndOpen(
         val deviceUuids = FileDeviceUuidStore(File(context.noBackupFilesDir, "devices"))
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
+        val writeReauthGate = GraceWindowReauthGate(
+            authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId),
+            clock = { System.currentTimeMillis() },
+        )
         val session = openBrowseWithSync(
-            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential)
+            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate)
         // Password → background sync-at-unlock from a COPY (deliberately outlives Browse disposal:
         // it opens its own vault handle and never touches the browse session; binding it to the
         // Browse scope would cancel the in-flight Argon2id on background). Recovery → status refresh
