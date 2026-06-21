@@ -30,7 +30,7 @@ const RAW = {
 } as Record<string, string>;
 const EXCLUDE = ['/lib/ipc.ts', '/lib/writeCommands.ts', '/lib/writeGateScanner.ts'];
 const SCANNED = Object.entries(RAW).filter(
-  ([p]) => !p.endsWith('.test.ts') && !EXCLUDE.some((e) => p.endsWith(e)),
+  ([p]) => !p.endsWith('.test.ts') && !EXCLUDE.some((e) => p.endsWith(e)), // defensive: no .test.ts files live under src/ today, but guard against future ones
 );
 
 describe('write-gate coverage (#280)', () => {
@@ -46,9 +46,19 @@ describe('write-gate coverage (#280)', () => {
     const problems: string[] = [];
     for (const [cmd, c] of Object.entries(COMMAND_CLASSIFICATION)) {
       if (c.kind !== 'write' || !c.wrapper) continue;
-      const fnRe = new RegExp(`export\\s+async\\s+function\\s+${c.wrapper}\\b`);
-      if (!fnRe.test(ipcSrc)) problems.push(`${cmd}: missing wrapper ${c.wrapper}`);
-      else if (!new RegExp(`call<[^>]*>\\(\\s*'${cmd}'`).test(ipcSrc)) {
+      const declRe = new RegExp(`export\\s+async\\s+function\\s+${c.wrapper}\\b`);
+      const decl = declRe.exec(ipcSrc);
+      if (!decl) {
+        problems.push(`${cmd}: missing wrapper ${c.wrapper}`);
+        continue;
+      }
+      // Scope the binding check to THIS wrapper's body (declaration → next function
+      // declaration) so a wrapper bound to a different command elsewhere in the file
+      // cannot satisfy it.
+      const rest = ipcSrc.slice(decl.index + decl[0].length);
+      const next = rest.search(/\bexport\s+(?:async\s+)?function\b/);
+      const body = next === -1 ? rest : rest.slice(0, next);
+      if (!new RegExp(`call<[^>]*>\\(\\s*'${cmd}'`).test(body)) {
         problems.push(`${cmd}: wrapper ${c.wrapper} not bound to command '${cmd}'`);
       }
     }
@@ -56,6 +66,13 @@ describe('write-gate coverage (#280)', () => {
   });
 
   it('layer 3: no gated write wrapper is called without a preceding authorizeWrite', () => {
+    // Anti-vacuous guard: if the glob ever resolves to an empty set (bad path or
+    // Vite config drift) layer 3 would pass trivially and silently disable the
+    // whole check. Assert the scan actually saw the source tree and a known
+    // gated-write call site (RecordEditor.svelte calls the gated saveRecord/saveRecordEdit).
+    expect(SCANNED.length).toBeGreaterThan(0);
+    expect(SCANNED.some(([p]) => p.includes('RecordEditor.svelte'))).toBe(true);
+
     const gated = gatedWrappers();
     const violations = SCANNED.flatMap(([path, src]) =>
       findUngatedWrites(src, path.endsWith('.svelte'), gated).map(
