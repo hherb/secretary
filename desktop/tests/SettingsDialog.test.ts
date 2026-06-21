@@ -38,7 +38,11 @@ import {
   MS_PER_MINUTE,
   AUTO_LOCK_MIN_MS,
   AUTO_LOCK_MAX_MS,
-  AUTO_LOCK_DEFAULT_MS
+  AUTO_LOCK_DEFAULT_MS,
+  REAUTH_WINDOW_MIN_MS,
+  REAUTH_WINDOW_MAX_MS,
+  REAUTH_WINDOW_DEFAULT_MS,
+  REQUIRE_PASSWORD_DEFAULT
 } from '../src/lib/constants';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
 import type { AppError } from '../src/lib/errors';
@@ -343,6 +347,82 @@ describe('SettingsDialog.svelte — IPC error path', () => {
     // userMessageFor(internal) → title "Internal error"
     expect(await findByText(/internal error/i)).toBeTruthy();
     errorSpy.mockRestore();
+  });
+});
+
+describe('SettingsDialog.svelte — reauth controls', () => {
+  it('saves the reauth toggle and window', async () => {
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    setSettingsMock.mockResolvedValueOnce(undefined);
+    const { getByLabelText, getByText } = renderOpen();
+
+    // Toggle the checkbox off (currently true → false).
+    await fireEvent.click(getByLabelText(/require password before edits/i));
+    // Set the window to 1 minute.
+    await fireEvent.input(getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i), {
+      target: { value: '1' }
+    });
+    await fireEvent.click(getByText('Save'));
+
+    await waitFor(() => {
+      expect(setSettingsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ requirePasswordBeforeEdits: false, reauthGraceWindowMs: 60_000 })
+      );
+    });
+  });
+
+  it('Save with a window minutes value below REAUTH_WINDOW_MIN_MS surfaces settings_out_of_range', async () => {
+    // REAUTH_WINDOW_MIN_MS is 0 (0 min is valid); there is no sub-zero
+    // integer we can enter in a min=0 number field — the browser/JSDOM
+    // clamps. Test a value above MAX instead.
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    const { container, getByLabelText, getByRole, findByText } = renderOpen();
+    // Sanity: the auto-lock input must not be affected by an out-of-range
+    // window value — only the window field triggers the error.
+    const autoLockInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(autoLockInput, { target: { value: '10' } }); // valid
+    const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i);
+    // REAUTH_WINDOW_MAX_MS = 3_600_000 ms = 60 minutes; 999 > 60.
+    await fireEvent.input(windowInput, { target: { value: '999' } });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    expect(await findByText(/value out of range/i)).toBeTruthy();
+    expect(setSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('window input has min=0 and max=REAUTH_WINDOW_MAX_MS/60000 attributes', () => {
+    unlockWith();
+    const { getByLabelText } = renderOpen();
+    const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
+    expect(windowInput.getAttribute('min')).toBe(String(REAUTH_WINDOW_MIN_MS / MS_PER_MINUTE));
+    expect(windowInput.getAttribute('max')).toBe(String(REAUTH_WINDOW_MAX_MS / MS_PER_MINUTE));
+  });
+
+  it('pre-populates the window input from sessionState.settings.reauthGraceWindowMs', async () => {
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 180_000 }); // 3 min
+    const { getByLabelText } = renderOpen();
+    await waitFor(() => {
+      const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
+      expect(windowInput.value).toBe('3');
+    });
+  });
+
+  it('fallback requirePasswordBeforeEdits uses REQUIRE_PASSWORD_DEFAULT (true) when not unlocked', async () => {
+    // Dialog opened without unlocking first — defensive. The checkbox
+    // should reflect the secure-by-default value (true), not hardcoded false.
+    const { getByLabelText } = renderOpen();
+    await waitFor(() => {
+      const checkbox = getByLabelText(/require password before edits/i) as HTMLInputElement;
+      expect(checkbox.checked).toBe(REQUIRE_PASSWORD_DEFAULT);
+    });
+  });
+
+  it('fallback reauthGraceWindowMs uses REAUTH_WINDOW_DEFAULT_MS when not unlocked', async () => {
+    const { getByLabelText } = renderOpen();
+    await waitFor(() => {
+      const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
+      expect(windowInput.value).toBe(String(REAUTH_WINDOW_DEFAULT_MS / MS_PER_MINUTE));
+    });
   });
 });
 

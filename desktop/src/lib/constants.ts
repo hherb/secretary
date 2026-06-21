@@ -53,3 +53,8 @@ export const REAUTH_WINDOW_MIN_MS = 0;
 /** Upper bound for `require_password_before_edits_window_ms`.
  *  Mirror of `desktop/src-tauri/src/constants.rs::REAUTH_WINDOW_MAX_MS` — change both. */
 export const REAUTH_WINDOW_MAX_MS = 3_600_000;
+
+/** Whether password re-auth before edits is required by default.
+ *  Mirror of `desktop/src-tauri/src/constants.rs::REQUIRE_PASSWORD_DEFAULT` — change both.
+ *  Secure-by-default: on. */
+export const REQUIRE_PASSWORD_DEFAULT = true;

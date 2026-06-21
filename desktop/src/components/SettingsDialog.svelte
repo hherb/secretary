@@ -20,7 +20,11 @@
     MS_PER_MINUTE,
     AUTO_LOCK_MIN_MS,
     AUTO_LOCK_MAX_MS,
-    AUTO_LOCK_DEFAULT_MS
+    AUTO_LOCK_DEFAULT_MS,
+    REAUTH_WINDOW_MIN_MS,
+    REAUTH_WINDOW_MAX_MS,
+    REAUTH_WINDOW_DEFAULT_MS,
+    REQUIRE_PASSWORD_DEFAULT
   } from '../lib/constants';
 
   type Props = {
@@ -33,7 +37,11 @@
   const MAX_MINUTES = AUTO_LOCK_MAX_MS / MS_PER_MINUTE;
   const DEFAULT_MINUTES = AUTO_LOCK_DEFAULT_MS / MS_PER_MINUTE;
 
-  // Source-of-truth for the displayed value is the current store; the
+  const WINDOW_MIN_MINUTES = REAUTH_WINDOW_MIN_MS / MS_PER_MINUTE;
+  const WINDOW_MAX_MINUTES = REAUTH_WINDOW_MAX_MS / MS_PER_MINUTE;
+  const WINDOW_DEFAULT_MINUTES = REAUTH_WINDOW_DEFAULT_MS / MS_PER_MINUTE;
+
+  // Source-of-truth for the displayed values is the current store; the
   // dialog is a thin editor. The $derived means re-opening after a
   // store change (e.g. a sync push from another device, when D.2 lands)
   // shows the fresh value rather than the stale on-mount snapshot.
@@ -43,18 +51,34 @@
       : AUTO_LOCK_DEFAULT_MS
   );
 
+  let currentRequirePassword = $derived(
+    $sessionState.status === 'unlocked'
+      ? $sessionState.settings.requirePasswordBeforeEdits
+      : REQUIRE_PASSWORD_DEFAULT
+  );
+
+  let currentWindowMs = $derived(
+    $sessionState.status === 'unlocked'
+      ? $sessionState.settings.reauthGraceWindowMs
+      : REAUTH_WINDOW_DEFAULT_MS
+  );
+
   let inputMinutes = $state(DEFAULT_MINUTES);
+  let inputRequirePassword = $state(REQUIRE_PASSWORD_DEFAULT);
+  let inputWindowMinutes = $state(WINDOW_DEFAULT_MINUTES);
   let formError = $state<AppError | null>(null);
   let submitting = $state(false);
   let dialogEl: HTMLDialogElement | undefined = $state();
 
-  // Re-seed the input from the store value whenever the store changes
+  // Re-seed the inputs from the store values whenever the store changes
   // OR the dialog re-opens. The latter handles the user typing 7,
   // pressing Cancel, then re-opening — they should see the persisted
   // value again, not their abandoned edit.
   $effect(() => {
     void open;
     inputMinutes = Math.round(currentMs / MS_PER_MINUTE);
+    inputRequirePassword = currentRequirePassword;
+    inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
     formError = null;
   });
 
@@ -79,6 +103,17 @@
         max: AUTO_LOCK_MAX_MS
       };
     }
+    if (
+      !Number.isInteger(inputWindowMinutes) ||
+      inputWindowMinutes < WINDOW_MIN_MINUTES ||
+      inputWindowMinutes > WINDOW_MAX_MINUTES
+    ) {
+      return {
+        code: 'settings_out_of_range',
+        min: REAUTH_WINDOW_MIN_MS,
+        max: REAUTH_WINDOW_MAX_MS
+      };
+    }
     return null;
   }
 
@@ -91,12 +126,11 @@
     submitting = true;
     formError = null;
     try {
-      const newMs = inputMinutes * MS_PER_MINUTE;
-      // Spread the full current settings and override only the edited
-      // field — keeps the other settings (requirePasswordBeforeEdits,
-      // reauthGraceWindowMs) intact and satisfies SettingsDto's shape.
-      const current = $sessionState.status === 'unlocked' ? $sessionState.settings : null;
-      const newSettings = { ...(current ?? { requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }), autoLockTimeoutMs: newMs };
+      const newSettings = {
+        autoLockTimeoutMs: inputMinutes * MS_PER_MINUTE,
+        requirePasswordBeforeEdits: inputRequirePassword,
+        reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE
+      };
       await setSettings(newSettings);
       // Race-guard: a vault-locked event may arrive between the IPC
       // firing and resolving (auto-lock at the boundary). In that case
@@ -124,6 +158,8 @@
   function cancel() {
     formError = null;
     inputMinutes = Math.round(currentMs / MS_PER_MINUTE);
+    inputRequirePassword = currentRequirePassword;
+    inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
     onClose();
   }
 
@@ -152,6 +188,32 @@
         max={MAX_MINUTES}
         step="1"
         bind:value={inputMinutes}
+        disabled={submitting}
+      />
+      <span class="settings-dialog__suffix">minutes</span>
+    </div>
+  </label>
+
+  <label class="settings-dialog__field settings-dialog__field--checkbox">
+    <input
+      type="checkbox"
+      class="settings-dialog__checkbox"
+      bind:checked={inputRequirePassword}
+      disabled={submitting}
+    />
+    <span class="settings-dialog__label">Require password before edits</span>
+  </label>
+
+  <label class="settings-dialog__field">
+    <span class="settings-dialog__label">Re-authentication grace window</span>
+    <div class="settings-dialog__input-row">
+      <input
+        type="number"
+        class="settings-dialog__input"
+        min={WINDOW_MIN_MINUTES}
+        max={WINDOW_MAX_MINUTES}
+        step="1"
+        bind:value={inputWindowMinutes}
         disabled={submitting}
       />
       <span class="settings-dialog__suffix">minutes</span>
