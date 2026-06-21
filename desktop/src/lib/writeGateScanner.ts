@@ -22,7 +22,10 @@
  * `catch`/`with`) so a write nested in such a block is still attributed to its parent
  * handler (and not false-flagged when the parent already gated), and excludes `) =>`
  * arrows (matched separately). A property/method literally *named* after one of those
- * keywords is the one accepted blind spot — see NON_METHOD_KEYWORDS.
+ * keywords is the one accepted blind spot — see NON_METHOD_KEYWORDS. Computed method
+ * names (`['x']() {}`, `[Symbol.iterator]() {}`) are not matched as bodies either, but
+ * that fails STRICT: their writes fall through to the `<top-level>` scope and are
+ * flagged unless gated there, never silently masked.
  */
 
 export interface UngatedWrite {

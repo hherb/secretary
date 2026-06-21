@@ -169,6 +169,23 @@ describe('findUngatedWrites', () => {
     expect(scan(src)).toEqual([]);
   });
 
+  it('does NOT false-positive a write nested in a while/with block under a gated handler (#286)', () => {
+    // Locks the rest of NON_METHOD_KEYWORDS that the if/for/switch/catch fixtures
+    // above do not directly exercise — `while` and `with` must also be excluded as
+    // bodies, or the parent gate would not be seen as enclosing the nested write.
+    const src = `
+      async function bulkSave() {
+        await authorizeWrite('Confirm saving these entries');
+        while (more) {
+          await saveRecord(u, r);
+        }
+        with (ctx) {
+          await saveRecord(u, r);
+        }
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
   it('recognizes a method-shorthand body carrying a TS return-type annotation (#286)', () => {
     // The `): Promise<void> {` form puts a `:` (not `=>`) after the param list, so the
     // arrow-exclusion must NOT fire and the annotated body must still be scanned.
