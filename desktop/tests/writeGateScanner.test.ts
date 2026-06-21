@@ -75,15 +75,18 @@ describe('findUngatedWrites', () => {
     expect(findUngatedWrites(src, true, GATED)).toEqual([]);
   });
 
-  it('still scans a <script> block closed with a whitespace end tag (</script >)', () => {
-    // Regression for js/bad-tag-filter: a tolerant end-tag match must not drop the
-    // block (which would leave the ungated write below UNSCANNED — a false negative).
+  it('still scans a <script> block closed with a whitespace/attribute end tag', () => {
+    // Regression for js/bad-tag-filter: the HTML tokenizer closes a script on any
+    // `</script ...>` (trailing whitespace or ignored attributes). A tolerant end-tag
+    // match must not drop the block — that would leave the ungated write below
+    // UNSCANNED (a false negative). The attribute-bearing end tag locks the `[^>]*`
+    // form: a bare `</script>` or whitespace-only `</script\s*>` regex fails here.
     const src = `
       <script lang="ts">
         async function onImport() {
           await importContact(path);
         }
-      </script >
+      </script\n data-x>
       <div/>`;
     const violations = findUngatedWrites(src, true, GATED);
     expect(violations.map((v) => v.wrapper)).toEqual(['importContact']);
