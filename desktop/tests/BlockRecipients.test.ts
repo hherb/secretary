@@ -1,7 +1,12 @@
 // D.1.8 — BlockRecipients banner: loads block_recipients on mount, renders a
 // collapsed summary, expands to a per-recipient list, surfaces errors.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -164,5 +169,65 @@ describe('BlockRecipients', () => {
     await fireEvent.click(toggle); // expand so the region renders
     const region = container.querySelector(`#${controls}`);
     expect(region).not.toBeNull();
+  });
+});
+
+describe('BlockRecipients — revoke write-reauth gate', () => {
+  beforeEach(() => invokeMock.mockReset());
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → revoke_block_from NOT called, ConfirmDialog stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce([
+      { uuidHex: '00', kind: 'owner', displayName: null },
+      { uuidHex: 'a1', kind: 'contact', displayName: 'Alice' }
+    ]); // initial load
+
+    const { getByRole, getByText, container } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i })); // expand
+    await fireEvent.click(getByRole('button', { name: /Revoke Alice/i })); // row ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    // Guard cancelled → revoke_block_from must NOT have been called; dialog stays open.
+    // Wait for any async tails to settle, then assert.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'revoke_block_from')).toBe(false);
+    // ConfirmDialog must still be present
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
+  });
+
+  it('happy: guard resolves → revoke_block_from called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock
+      .mockResolvedValueOnce([
+        { uuidHex: '00', kind: 'owner', displayName: null },
+        { uuidHex: 'a1', kind: 'contact', displayName: 'Alice' }
+      ]) // initial load
+      .mockResolvedValueOnce(undefined) // revoke_block_from
+      .mockResolvedValueOnce([{ uuidHex: '00', kind: 'owner', displayName: null }]); // reload
+
+    const { getByRole, getByText } = render(BlockRecipients, { block });
+    await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /shared with/i })); // expand
+    await fireEvent.click(getByRole('button', { name: /Revoke Alice/i })); // row ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('revoke_block_from', {
+        blockUuidHex: 'deadbeef',
+        recipientUuidHex: 'a1'
+      })
+    );
   });
 });

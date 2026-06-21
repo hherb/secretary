@@ -1,8 +1,13 @@
 // D.1.9 — ContactRow inline reverse map: lazy-fetch the contact's blocks on
 // first expand, render them sorted, click a block to open it. Mocks ipc invoke
 // and the browse store's openBlock seam.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -209,5 +214,79 @@ describe('ContactRow reverse map', () => {
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/no longer a recipient/i);
     expect(onRevoked).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContactRow — revoke write-reauth gate', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openBlockMock.mockReset();
+  });
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → revoke_block_from NOT called, ConfirmDialog stays open', async () => {
+    const onRevoked = vi.fn();
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce([
+      { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+    ]); // list_contact_blocks
+
+    const testContact = { contactUuidHex: 'c1', displayName: 'Alice', sharedBlockCount: 1 };
+    const { getByRole, getByText, container } = render(ContactRow, {
+      contact: testContact,
+      onDelete: vi.fn(),
+      onRevoked
+    });
+
+    await fireEvent.click(getByRole('button', { name: /receives 1 block/i })); // expand
+    await waitFor(() => expect(getByText('Logins')).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Stop sharing .*Logins.* with Alice/i })); // ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    // Guard cancelled → revoke_block_from must NOT have been called; dialog stays open.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'revoke_block_from')).toBe(false);
+    expect(onRevoked).not.toHaveBeenCalled();
+    // ConfirmDialog must still be present
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
+  });
+
+  it('happy: guard resolves → revoke_block_from called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock
+      .mockResolvedValueOnce([
+        { blockUuidHex: 'b1', blockName: 'Logins', createdAtMs: 0, lastModifiedMs: 0 }
+      ]) // list_contact_blocks
+      .mockResolvedValueOnce(undefined) // revoke_block_from
+      .mockResolvedValueOnce([]); // list_contact_blocks reload
+
+    const testContact = { contactUuidHex: 'c1', displayName: 'Alice', sharedBlockCount: 1 };
+    const { getByRole, getByText } = render(ContactRow, {
+      contact: testContact,
+      onDelete: vi.fn(),
+      onRevoked: vi.fn()
+    });
+
+    await fireEvent.click(getByRole('button', { name: /receives 1 block/i })); // expand
+    await waitFor(() => expect(getByText('Logins')).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Stop sharing .*Logins.* with Alice/i })); // ✕
+    await fireEvent.click(getByRole('button', { name: 'Revoke' })); // confirm
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('revoke_block_from', {
+        blockUuidHex: 'b1',
+        recipientUuidHex: 'c1'
+      })
+    );
   });
 });

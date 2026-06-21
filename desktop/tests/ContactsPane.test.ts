@@ -4,8 +4,13 @@
 // allow delete flow (ConfirmDialog → deleteContactCard), and offers an
 // "Export my card" PathPicker.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 const { invokeMock, openMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -164,6 +169,82 @@ describe('ContactsPane', () => {
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('export_contact_card', { destDir: '/tmp/exports' })
+    );
+  });
+});
+
+describe('ContactsPane — delete write-reauth gate', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openMock.mockReset();
+  });
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → delete_contact_card NOT called, ConfirmDialog stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'aa', displayName: 'Alice', sharedBlockCount: 0 }],
+      unreadableCount: 0
+    }); // list_contacts
+
+    const { getAllByText, findByText, container } = render(ContactsPane);
+    await waitFor(() => expect(getAllByText('Alice').length).toBeGreaterThan(0));
+
+    // Click Delete on Alice's row
+    await fireEvent.click(getAllByText('Delete')[0]);
+
+    // ConfirmDialog appears — click the danger button
+    const confirmBtn = await findByText(
+      (text, element) =>
+        element?.tagName === 'BUTTON' &&
+        element.classList.contains('confirm-dialog__button--danger') &&
+        text === 'Delete'
+    );
+    await fireEvent.click(confirmBtn);
+
+    // Guard cancelled → delete_contact_card must NOT have been called; dialog stays open.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'delete_contact_card')).toBe(false);
+    // ConfirmDialog must still be present
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
+  });
+
+  it('happy: guard resolves → delete_contact_card called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'aa', displayName: 'Alice', sharedBlockCount: 0 }],
+      unreadableCount: 0
+    }); // list_contacts
+
+    const { getAllByText, findByText } = render(ContactsPane);
+    await waitFor(() => expect(getAllByText('Alice').length).toBeGreaterThan(0));
+
+    await fireEvent.click(getAllByText('Delete')[0]);
+
+    const confirmBtn = await findByText(
+      (text, element) =>
+        element?.tagName === 'BUTTON' &&
+        element.classList.contains('confirm-dialog__button--danger') &&
+        text === 'Delete'
+    );
+
+    invokeMock.mockResolvedValueOnce(undefined); // delete_contact_card
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // reload list_contacts
+
+    await fireEvent.click(confirmBtn);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('delete_contact_card', { contactUuidHex: 'aa' })
     );
   });
 });

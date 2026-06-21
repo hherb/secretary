@@ -20,6 +20,7 @@
   import { sortContacts } from '../../lib/contacts';
   import { userMessageFor, type AppError } from '../../lib/errors';
   import PathPicker from '../PathPicker.svelte';
+  import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
 
   type Props = {
     block: BlockSummaryDto;
@@ -85,8 +86,15 @@
 
   async function confirmShare(): Promise<void> {
     if (!selected || busy) return;
-    busy = true;
     error = null;
+    try {
+      await authorizeWrite('Confirm sharing this block');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // dialog stays open
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    busy = true;
     try {
       await shareBlock(block.blockUuidHex, selected);
       onClose();
