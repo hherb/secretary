@@ -75,6 +75,20 @@ describe('findUngatedWrites', () => {
     expect(findUngatedWrites(src, true, GATED)).toEqual([]);
   });
 
+  it('still scans a <script> block closed with a whitespace end tag (</script >)', () => {
+    // Regression for js/bad-tag-filter: a tolerant end-tag match must not drop the
+    // block (which would leave the ungated write below UNSCANNED — a false negative).
+    const src = `
+      <script lang="ts">
+        async function onImport() {
+          await importContact(path);
+        }
+      </script >
+      <div/>`;
+    const violations = findUngatedWrites(src, true, GATED);
+    expect(violations.map((v) => v.wrapper)).toEqual(['importContact']);
+  });
+
   it('does not treat braces inside template-literal strings as block boundaries', () => {
     const src = `
       async function confirmSave() {

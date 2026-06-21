@@ -105,7 +105,10 @@ function matchBrace(src: string, openIdx: number): number {
  *  executable wrapper calls, so dropping it avoids false matches. */
 export function extractScript(source: string, isSvelte: boolean): string {
   if (!isSvelte) return source;
-  const re = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  // `<\/script\s*>` tolerates whitespace before `>` (a valid end tag, e.g.
+  // `</script >`); matching only `</script>` would drop the whole block on such a
+  // tag and leave its writes UNSCANNED — a false negative, not over-matching.
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
   let out = '';
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) out += `${m[1]}\n`;
