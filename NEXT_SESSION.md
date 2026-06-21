@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-21-ios-monotonic-reauth-shipped.md
+docs/handoffs/2026-06-21-desktop-write-gate-coverage-shipped.md
