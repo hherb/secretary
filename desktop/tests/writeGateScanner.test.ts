@@ -101,4 +101,98 @@ describe('findUngatedWrites', () => {
       }`;
     expect(scan(src)).toEqual([]);
   });
+
+  it('flags an ungated method-shorthand handler when a SIBLING method gates another write (#286)', () => {
+    // The #280 sibling-gated bug class, but expressed as object method shorthand:
+    // `good` gates shareBlock; `bad` must NOT inherit that gate for importContact.
+    const src = `
+      const handlers = {
+        async good() {
+          await authorizeWrite('Confirm sharing this block');
+          await shareBlock(b, r);
+        },
+        async bad() {
+          await importContact(path);
+        },
+      };`;
+    const violations = scan(src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ wrapper: 'importContact', functionName: 'bad' });
+  });
+
+  it('passes a gated method-shorthand handler (#286)', () => {
+    const src = `
+      const handlers = {
+        async confirmSave() {
+          await authorizeWrite('Confirm saving this entry');
+          await saveRecord(uuid, rec);
+        },
+      };`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('detects get/set accessor method bodies (#286)', () => {
+    const src = `
+      const obj = {
+        set value(v) {
+          importContact(v);
+        },
+      };`;
+    expect(scan(src).map((v) => v.functionName)).toEqual(['value']);
+  });
+
+  it('does NOT false-positive a write nested in an if-block under a gated handler (#286)', () => {
+    // The control-flow exclusion: `if (...) {` must not be treated as a function body,
+    // or the gate in the parent handler would not be seen as enclosing the nested write.
+    const src = `
+      async function confirmSave() {
+        await authorizeWrite('Confirm saving this entry');
+        if (dirty) {
+          await saveRecord(uuid, rec);
+        }
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('does NOT false-positive a write nested in a for/switch block under a gated handler (#286)', () => {
+    const src = `
+      async function bulkSave() {
+        await authorizeWrite('Confirm saving these entries');
+        for (const rec of recs) {
+          switch (rec.kind) {
+            case 'a':
+              await saveRecord(rec.uuid, rec);
+              break;
+          }
+        }
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('recognizes a method-shorthand body carrying a TS return-type annotation (#286)', () => {
+    // The `): Promise<void> {` form puts a `:` (not `=>`) after the param list, so the
+    // arrow-exclusion must NOT fire and the annotated body must still be scanned.
+    const src = `
+      const handlers = {
+        async save(rec: Rec): Promise<void> {
+          await saveRecord(rec.uuid, rec);
+        },
+      };`;
+    const violations = scan(src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ wrapper: 'saveRecord', functionName: 'save' });
+  });
+
+  it('does NOT false-positive a write nested in a catch block under a gated handler (#286)', () => {
+    const src = `
+      async function confirmSave() {
+        await authorizeWrite('Confirm saving this entry');
+        try {
+          await primarySave(rec);
+        } catch (e) {
+          await saveRecord(uuid, rec);
+        }
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
 });
