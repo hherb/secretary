@@ -11,6 +11,7 @@
   import { refreshManifest } from '../../lib/stores';
   import { userMessageFor, type AppError } from '../../lib/errors';
   import TrashedBlockRow from './TrashedBlockRow.svelte';
+  import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
 
   let entries = $state<TrashedBlockDto[] | null>(null);
   let error = $state<AppError | null>(null);
@@ -36,6 +37,13 @@
 
   async function restore(entry: TrashedBlockDto) {
     error = null;
+    try {
+      await authorizeWrite('Confirm restoring this block');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
     try {
       await restoreBlock(entry.blockUuidHex);
       await refreshManifest();

@@ -2,6 +2,7 @@
   import { sessionState, refreshManifest } from '../lib/stores';
   import { userMessageForWarning, userMessageFor, type AppError } from '../lib/errors';
   import { trashBlock, isAppError, type BlockSummaryDto } from '../lib/ipc';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
@@ -15,6 +16,7 @@
   import ContactsPane from '../components/contacts/ContactsPane.svelte';
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
   import ShareDialog from '../components/share/ShareDialog.svelte';
+  import ReauthPasswordDialog from '../components/ReauthPasswordDialog.svelte';
   import Trash from '../components/icons/Trash.svelte';
   import Users from '../components/icons/Users.svelte';
 
@@ -53,8 +55,15 @@
   async function confirmTrash() {
     const target = pendingTrash;
     if (!target) return;
-    pendingTrash = null;
     trashError = null;
+    try {
+      await authorizeWrite('Confirm trashing this block');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // ConfirmDialog stays open (pendingTrash still set)
+      trashError = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    pendingTrash = null; // now AFTER the gate; dialog closes only on success or non-cancel error
     try {
       await trashBlock(target.blockUuidHex);
       await refreshManifest();
@@ -166,6 +175,8 @@
       bind:open={settingsOpen}
       onClose={() => (settingsOpen = false)}
     />
+
+    <ReauthPasswordDialog />
 
     {#if pendingTrash}
       <ConfirmDialog

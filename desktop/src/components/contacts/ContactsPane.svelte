@@ -16,6 +16,7 @@
   import PathPicker from '../PathPicker.svelte';
   import ConfirmDialog from '../delete/ConfirmDialog.svelte';
   import ContactRow from './ContactRow.svelte';
+  import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
 
   let contacts = $state<ContactSummaryDto[] | null>(null);
   let unreadable = $state(0);
@@ -58,10 +59,17 @@
 
   async function confirmDelete() {
     const target = pendingDelete;
-    pendingDelete = null;
     if (!target) return;
     error = null;
     notice = null;
+    try {
+      await authorizeWrite('Confirm deleting this contact');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // ConfirmDialog stays open (pendingDelete still set)
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    pendingDelete = null; // now AFTER the gate; dialog closes only on success
     try {
       await deleteContactCard(target.contactUuidHex);
       await load();

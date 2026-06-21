@@ -4,6 +4,7 @@
   import { sessionState, autoLockNotice, vaultLocked } from './lib/stores';
   import { resetBrowse } from './lib/browse';
   import { startActivityTracking } from './lib/auto_lock';
+  import { resetReauthGuard } from './lib/writeGuard';
   import { appRoute } from './lib/route';
   import Unlock from './routes/Unlock.svelte';
   import Vault from './routes/Vault.svelte';
@@ -43,6 +44,9 @@
       // level instead of a stale drill-down (records/fields) left over from
       // before the lock.
       resetBrowse();
+      // Clear the reauth guard clock so the next session always re-prompts
+      // (the unlock password re-seeds it in Unlock.svelte).
+      resetReauthGuard();
       vaultLocked(notice);
     }).then((fn) => {
       if (unmounted) {

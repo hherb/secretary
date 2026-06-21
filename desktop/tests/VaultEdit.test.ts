@@ -50,7 +50,7 @@ vi.mock('../src/lib/ipc', async () => {
   };
 });
 
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 60_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
 function blockFixture(name: string, uuidHex: string): BlockSummaryDto {
   return {

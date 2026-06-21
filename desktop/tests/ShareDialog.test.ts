@@ -3,8 +3,13 @@
 // ConfirmDialog; callback prop (onClose); list_contacts on mount, share_block
 // on confirm. JSDOM's <dialog> showModal/close are polyfilled in tests/setup.ts.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 const { invokeMock, openMock } = vi.hoisted(() => ({ invokeMock: vi.fn(), openMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -96,5 +101,112 @@ describe('ShareDialog.svelte', () => {
     await waitFor(() => expect(getByText(/already shared/i)).toBeTruthy());
     // The dialog stays open on error (onClose only fires on success).
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('ShareDialog — write-reauth gate', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openMock.mockReset();
+  });
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → share_block NOT called, dialog stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'rcp', displayName: 'Alice' }],
+      unreadableCount: 0
+    }); // list_contacts
+
+    const onClose = vi.fn();
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose } });
+    await waitFor(() => expect(getByText('Alice')).toBeTruthy());
+    await fireEvent.click(getByText('Alice'));
+    await fireEvent.click(getByRole('button', { name: /^Share$/ }));
+
+    // Guard cancelled → share_block must NOT have been called; the dialog stays open.
+    // Let any async tails settle before asserting the negative.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'share_block')).toBe(false);
+    // The dialog element must still be in the document
+    expect(getByRole('dialog')).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('happy: guard resolves → share_block called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'rcp', displayName: 'Alice' }],
+      unreadableCount: 0
+    }); // list_contacts
+    invokeMock.mockResolvedValueOnce(undefined); // share_block
+
+    const onClose = vi.fn();
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose } });
+    await waitFor(() => expect(getByText('Alice')).toBeTruthy());
+    await fireEvent.click(getByText('Alice'));
+    await fireEvent.click(getByRole('button', { name: /^Share$/ }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('share_block', {
+        blockUuidHex: 'blk',
+        recipientUuidHex: 'rcp'
+      })
+    );
+  });
+
+  it('import cancel: guard rejects ReauthCancelled → import_contact NOT called', async () => {
+    // Importing a contact card mutates the vault, so it is gated too. A cancel
+    // must abort the import and leave the picker dialog open.
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
+    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker resolves before the gate
+
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
+    await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Import a contact/i }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invokeMock.mock.calls.some(([c]) => c === 'import_contact')).toBe(false);
+    expect(getByRole('dialog')).toBeTruthy();
+  });
+
+  it('import happy: guard resolves → import_contact called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
+    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
+    invokeMock.mockResolvedValueOnce({ contactUuidHex: 'rcp', displayName: 'Carol' }); // import_contact
+    invokeMock.mockResolvedValueOnce({
+      contacts: [{ contactUuidHex: 'rcp', displayName: 'Carol' }],
+      unreadableCount: 0
+    }); // refresh list_contacts
+
+    const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
+    await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
+    await fireEvent.click(getByRole('button', { name: /Import a contact/i }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('import_contact', { cardPath: '/tmp/carol.card' })
+    );
   });
 });

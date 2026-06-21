@@ -9,7 +9,7 @@
 //!    `secretary.settings.v1` record through the bridge's `read_block` /
 //!    `save_block` entry points. Load is lenient (broken record shapes
 //!    fall through to defaults + warnings); save is strict
-//!    (`validate_save_value` rejects out-of-range adversarial inputs).
+//!    (`validate_save_settings` rejects out-of-range adversarial inputs).
 //! 2. [`load_or_create_device_uuid_in`] — atomic per-vault device UUID
 //!    persistence under `<data_dir>/secretary-desktop/devices/`. Used by
 //!    the bridge's `save_block` for vector-clock semantics. The `_in`
@@ -27,7 +27,7 @@ use secretary_ffi_bridge::{
     RecordInput, UnlockedIdentity,
 };
 
-use super::parse::{parse_settings_field, serialize_settings, validate_save_value, Settings};
+use super::parse::{parse_settings_fields, serialize_settings, validate_save_settings, Settings};
 use crate::auto_lock::now_ms;
 use crate::constants::{deterministic_uuid_16, SETTINGS_BLOCK_NAME, SETTINGS_RECORD_TYPE};
 use crate::errors::{AppError, AppWarning};
@@ -77,57 +77,46 @@ pub fn load_from_vault(
         .record_at(0)
         .expect("record_count==1 ⇒ record_at(0) is Some");
 
-    if record.field_count() != 1 {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
-                detail: format!(
-                    "settings record has {} fields (expected 1)",
-                    record.field_count()
-                ),
-            }],
-        ));
-    }
-    let field = record
-        .field_at(0)
-        .expect("field_count==1 ⇒ field_at(0) is Some");
-
-    // Both shape-checks fall through to defaults+warning rather than an
-    // `AppError` for the same reason `record_count != 1` and
-    // `field_count != 1` do: a settings record that's shaped wrong on
-    // disk must not block vault access, since the user's only recourse
-    // is the Settings dialog itself. Severity is uniform across all four
-    // "settings record disagrees with v1 shape" cases.
-    if !field.is_text() {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
+    // Collect every text field of the (single) settings record into
+    // (name, text) pairs. A non-text or payload-missing field is skipped
+    // with a warning (lenient posture: a shaped-wrong field must not block
+    // vault access since the user's only recourse is the Settings dialog).
+    let mut field_pairs: Vec<(String, String)> = Vec::new();
+    let mut shape_warnings: Vec<AppWarning> = Vec::new();
+    for i in 0..record.field_count() {
+        let field = record.field_at(i).expect("i < field_count ⇒ Some");
+        if !field.is_text() {
+            shape_warnings.push(AppWarning::SettingsCorrupt {
                 detail: format!("settings field '{}' is not text-typed", field.name()),
-            }],
-        ));
-    }
-    let Some(field_text) = field.expose_text() else {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
+            });
+            continue;
+        }
+        let Some(text) = field.expose_text() else {
+            shape_warnings.push(AppWarning::SettingsCorrupt {
                 detail: "settings field text payload missing".to_string(),
-            }],
-        ));
-    };
+            });
+            continue;
+        };
+        field_pairs.push((field.name(), text));
+    }
 
     // #141 closed: RecordInput now carries record_type, so a record this
     // client wrote reads back with its real type. An empty type still maps
     // to v1 (records written before #141 landed); any other value flows to
-    // parse_settings_field, which surfaces SettingsUnknownVersion for a
+    // parse_settings_fields, which surfaces SettingsUnknownVersion for a
     // future v2 record.
     let stored_record_type = record.record_type();
     let effective_record_type = if stored_record_type.is_empty() {
-        SETTINGS_RECORD_TYPE
+        SETTINGS_RECORD_TYPE.to_string()
     } else {
-        stored_record_type.as_str()
+        stored_record_type
     };
 
-    parse_settings_field(effective_record_type, &field.name(), &field_text)
+    let (settings, mut parse_warnings) =
+        parse_settings_fields(&effective_record_type, &field_pairs)?;
+    let mut warnings = shape_warnings;
+    warnings.append(&mut parse_warnings);
+    Ok((settings, warnings))
 }
 
 /// Save settings to the vault. Creates the settings block on first call
@@ -135,7 +124,7 @@ pub fn load_from_vault(
 /// (the bridge's `save_block` semantics: same `block_uuid` replaces the
 /// existing manifest entry).
 ///
-/// Validates bounds via `validate_save_value` before constructing the
+/// Validates bounds via `validate_save_settings` before constructing the
 /// `BlockInput` — adversarial in-bounds-on-frontend / out-of-bounds-on-IPC
 /// inputs are rejected here with `SettingsOutOfRange`. (Clamping is
 /// load-side only per spec §8; silently clamping on save would mask user
@@ -146,7 +135,7 @@ pub fn save_to_vault(
     device_uuid: [u8; 16],
     new_settings: &Settings,
 ) -> Result<(), AppError> {
-    validate_save_value(new_settings.auto_lock_timeout_ms)?;
+    validate_save_settings(new_settings)?;
 
     // Re-use the on-disk block_uuid if a settings block already exists; fall
     // back to the deterministic UUID for first-save. The deterministic value
@@ -157,7 +146,17 @@ pub fn save_to_vault(
         .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
-    let (record_type, field_name, field_value_text) = serialize_settings(new_settings);
+    // serialize_settings returns one triple per field; build a FieldInput
+    // for each so all three settings fields land in the vault record.
+    let triples = serialize_settings(new_settings);
+    let record_type = triples[0].0.clone();
+    let fields: Vec<FieldInput> = triples
+        .into_iter()
+        .map(|(_, name, value_text)| FieldInput {
+            name,
+            value: FieldInputValue::Text(SecretString::from(value_text)),
+        })
+        .collect();
 
     let block_input = BlockInput {
         block_uuid,
@@ -166,10 +165,7 @@ pub fn save_to_vault(
             record_uuid,
             record_type,
             tags: Vec::new(),
-            fields: vec![FieldInput {
-                name: field_name,
-                value: FieldInputValue::Text(SecretString::from(field_value_text)),
-            }],
+            fields,
         }],
     };
 

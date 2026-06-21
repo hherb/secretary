@@ -8,6 +8,7 @@
   import { userMessageFor, type AppError } from '../../lib/errors';
   import FieldRowEditor from './FieldRowEditor.svelte';
   import TagsEditor from './TagsEditor.svelte';
+  import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
 
   // record === null → add mode; otherwise edit mode (prefilled via revealRecord).
   let { block, record, onSaved, onCancel }: {
@@ -52,6 +53,15 @@
   async function save(): Promise<void> {
     if (!canSave) return;
     submitting = true; errMsg = null;
+    const reason = record === null ? 'Confirm saving this entry' : 'Confirm saving your changes';
+    try {
+      await authorizeWrite(reason);
+    } catch (err) {
+      if (err === ReauthCancelled) { submitting = false; return; }
+      errMsg = userMessageFor(err as AppError);
+      submitting = false;
+      return;
+    }
     const dto = draftToRecordInputDto(draft);
     try {
       const ref = record === null

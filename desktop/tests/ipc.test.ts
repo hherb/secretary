@@ -25,6 +25,7 @@ import {
   getManifest,
   getSettings,
   setSettings,
+  verifyPassword,
   lock,
   notifyActivity,
   readBlock,
@@ -32,7 +33,8 @@ import {
   probeCreateTarget,
   syncStatus,
   syncNow,
-  syncCommitDecisions
+  syncCommitDecisions,
+  type SettingsDto
 } from '../src/lib/ipc';
 
 beforeEach(() => {
@@ -60,10 +62,9 @@ describe('ipc wrappers — argument shape', () => {
 
   it('setSettings nests the DTO under a `settings` key', async () => {
     invokeMock.mockResolvedValue(undefined);
-    await setSettings({ autoLockTimeoutMs: 60_000 });
-    expect(invokeMock).toHaveBeenCalledWith('set_settings', {
-      settings: { autoLockTimeoutMs: 60_000 }
-    });
+    const dto: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
+    await setSettings(dto);
+    expect(invokeMock).toHaveBeenCalledWith('set_settings', { settings: dto });
   });
 
   it('argument-less commands invoke with no args object', async () => {
@@ -102,6 +103,17 @@ describe('ipc wrappers — return shape', () => {
     invokeMock.mockResolvedValue({ autoLockTimeoutMs: 60_000 });
     const settings = await getSettings();
     expect(settings.autoLockTimeoutMs).toBe(60_000);
+  });
+
+  it('verifyPassword invokes verify_password with the password arg', async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await verifyPassword('hunter2');
+    expect(invokeMock).toHaveBeenCalledWith('verify_password', { password: 'hunter2' });
+  });
+
+  it('verifyPassword surfaces a wrong_password AppError', async () => {
+    invokeMock.mockRejectedValueOnce({ code: 'wrong_password' });
+    await expect(verifyPassword('bad')).rejects.toEqual({ code: 'wrong_password' });
   });
 });
 

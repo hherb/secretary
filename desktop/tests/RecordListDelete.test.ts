@@ -3,8 +3,13 @@
 // become visible (for restore). Initial mount reads with
 // includeDeleted: false.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -14,8 +19,18 @@ import type { BlockSummaryDto } from '../src/lib/ipc';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'Personal logins', createdAtMs: 1, lastModifiedMs: 2 };
 
+const PASS_THROUGH_SEAM = {
+  readSettings: () => ({ enabled: false, windowMs: 0 }),
+  now: () => 0,
+  prompt: () => Promise.resolve()
+};
+
 describe('RecordList — show-deleted toggle', () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    __setWriteGuardTestSeam(PASS_THROUGH_SEAM);
+  });
+  afterEach(() => resetReauthGuard());
 
   it('reads the block with includeDeleted: false on mount', async () => {
     invokeMock.mockResolvedValue({ blockUuidHex: 'ab', blockName: 'Personal logins', records: [] });
@@ -41,8 +56,83 @@ describe('RecordList — show-deleted toggle', () => {
   });
 });
 
+describe('RecordList — delete guard (write-reauth gate)', () => {
+  const LIVE_RECORD = {
+    recordUuidHex: 'cd',
+    recordType: 'login',
+    tags: [] as string[],
+    fieldCount: 2,
+    lastModMs: 5,
+    tombstoned: false
+  };
+
+  beforeEach(() => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'read_block') {
+        return Promise.resolve({ blockUuidHex: 'ab', blockName: 'Personal logins', records: [LIVE_RECORD] });
+      }
+      return Promise.resolve(null);
+    });
+  });
+  afterEach(() => resetReauthGuard());
+
+  it('cancel: guard rejects ReauthCancelled → tombstone_record NOT called, dialog stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
+    await fireEvent.click(deleteBtn);
+
+    // ConfirmDialog is open
+    const confirmBtn = await waitFor(() => {
+      const el = container.querySelector('.confirm-dialog__button--danger');
+      if (!el) throw new Error('confirm dialog not yet mounted');
+      return el as HTMLButtonElement;
+    });
+    await fireEvent.click(confirmBtn);
+
+    // Guard rejected → tombstone must not have been called
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some(([c]) => c === 'tombstone_record')).toBe(false)
+    );
+    // The confirm dialog MUST STILL BE PRESENT — cancel keeps the dialog open
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
+  });
+
+  it('happy path: guard resolves → tombstone_record called once', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.resolve()
+    });
+
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
+    await fireEvent.click(deleteBtn);
+
+    const confirmBtn = await waitFor(() => {
+      const el = container.querySelector('.confirm-dialog__button--danger');
+      if (!el) throw new Error('confirm dialog not yet mounted');
+      return el as HTMLButtonElement;
+    });
+    await fireEvent.click(confirmBtn);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('tombstone_record', { blockUuidHex: 'ab', recordUuidHex: 'cd' })
+    );
+  });
+});
+
 describe('RecordList — delete confirm → tombstoneRecord', () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    __setWriteGuardTestSeam(PASS_THROUGH_SEAM);
+  });
+  afterEach(() => resetReauthGuard());
 
   const LIVE_RECORD = {
     recordUuidHex: 'cd',

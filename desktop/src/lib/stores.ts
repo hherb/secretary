@@ -78,6 +78,21 @@ export const currentSettings = derived(sessionState, ($s) =>
   $s.status === 'unlocked' ? $s.settings : null
 );
 
+// --- Write re-auth prompt --------------------------------------------------
+// A single shared modal driven by writeGuard.authorizeWrite. The payload is
+// just the reason string; the resolve/reject handlers live in the guard, not
+// the store, so the store stays a plain view-model the dialog subscribes to.
+const _reauthPrompt = writable<{ reason: string } | null>(null);
+export const reauthPrompt: Readable<{ reason: string } | null> = {
+  subscribe: _reauthPrompt.subscribe
+};
+export function openReauthPrompt(reason: string): void {
+  _reauthPrompt.set({ reason });
+}
+export function closeReauthPrompt(): void {
+  _reauthPrompt.set(null);
+}
+
 // --- Transition helpers ----------------------------------------------------
 
 /**

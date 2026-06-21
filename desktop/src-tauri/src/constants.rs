@@ -82,6 +82,45 @@ pub const SETTINGS_RECORD_TYPE: &str = "secretary.settings.v1";
 pub const SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS: &str = "auto_lock_timeout_ms";
 
 // =============================================================================
+// Write re-auth (password re-entry before a mutating write)
+// =============================================================================
+
+/// Default grace window for write re-auth, in milliseconds. One successful
+/// password re-entry covers all mutating writes within this window before the
+/// next prompt.
+///
+/// **Value:** 120_000 (2 minutes).
+/// **Rationale:** Long enough that a normal editing burst costs one prompt,
+/// short enough to bound exposure on an unattended-but-unlocked machine. The
+/// verify runs a full Argon2id (m=256 MiB, t=3); this window amortises it.
+/// User-configurable (Settings dialog) — "Secretary enables maximum security;
+/// the user decides what is necessary."
+pub const REAUTH_WINDOW_DEFAULT_MS: u64 = 120_000;
+
+/// Lower bound for `reauth_grace_window_ms` validation.
+///
+/// **Value:** 0. Zero means "re-auth before EVERY mutating write" — a valid
+/// maximum-security choice. The frontend offers it explicitly.
+pub const REAUTH_WINDOW_MIN_MS: u64 = 0;
+
+/// Upper bound for `reauth_grace_window_ms` validation.
+///
+/// **Value:** 3_600_000 (1 hour). Beyond an hour the gate adds little over
+/// auto-lock; we won't ship a larger configurable value.
+pub const REAUTH_WINDOW_MAX_MS: u64 = 3_600_000;
+
+/// Default for `require_password_before_edits`.
+///
+/// **Value:** true (secure by default; user may disable).
+pub const REQUIRE_PASSWORD_DEFAULT: bool = true;
+
+/// Settings field name: the on/off toggle for write re-auth.
+pub const SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS: &str = "require_password_before_edits";
+
+/// Settings field name: the grace window in milliseconds.
+pub const SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS: &str = "reauth_grace_window_ms";
+
+// =============================================================================
 // Deterministic UUID derivation (for the settings block and record)
 // =============================================================================
 
@@ -154,6 +193,34 @@ mod tests {
             hex::encode(uuid),
             FROZEN_SETTINGS_RECORD_UUID_HEX,
             "settings record UUID drift — vault-format break risk"
+        );
+    }
+
+    #[test]
+    fn reauth_window_bounds_are_ordered() {
+        const _: () = assert!(REAUTH_WINDOW_MIN_MS < REAUTH_WINDOW_DEFAULT_MS);
+        const _: () = assert!(REAUTH_WINDOW_DEFAULT_MS < REAUTH_WINDOW_MAX_MS);
+    }
+
+    #[test]
+    fn reauth_default_is_two_minutes() {
+        const TWO_MINUTES_MS: u64 = 2 * 60 * 1_000;
+        assert_eq!(REAUTH_WINDOW_DEFAULT_MS, TWO_MINUTES_MS);
+    }
+
+    #[test]
+    fn reauth_field_names_are_snake_case_and_distinct() {
+        assert_eq!(
+            SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+            "require_password_before_edits"
+        );
+        assert_eq!(
+            SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS,
+            "reauth_grace_window_ms"
+        );
+        assert_ne!(
+            SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+            SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS
         );
     }
 }

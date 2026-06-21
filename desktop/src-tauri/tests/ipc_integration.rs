@@ -25,12 +25,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
-    browse, create, delete, edit, lock, settings, sync, unlock, vault,
+    browse, create, delete, edit, lock, reauth, settings, sync, unlock, vault,
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
 use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
+use secretary_desktop::settings::{load_from_vault, save_to_vault, Settings};
 use tempfile::TempDir;
 
 // ============================================================================
@@ -336,6 +337,8 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect("set_settings must succeed");
@@ -361,6 +364,8 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: BELOW_MIN_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect_err("below-min input must reject");
@@ -395,10 +400,95 @@ fn set_settings_while_locked_returns_not_unlocked() {
         &state,
         &SettingsInput {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
+            require_password_before_edits: false,
+            reauth_grace_window_ms: 120_000,
         },
     )
     .expect_err("must reject while locked");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+/// All three settings fields survive a save→load round-trip through the
+/// vault. Exercises the multi-field `save_to_vault` / `load_from_vault`
+/// paths added in Task 3, against a temp copy of the golden vault so the
+/// frozen KAT fixture is never mutated.
+#[test]
+fn settings_round_trip_persists_all_three_fields() {
+    let (_vault_dir, vault_path) = ephemeral_golden_copy();
+    let device_dir = tempfile::tempdir().expect("device tempdir");
+    let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
+
+    unlock::unlock_with_password_impl(
+        &state,
+        vault_path.to_str().expect("utf8 path"),
+        GOLDEN_VAULT_PASSWORD.as_bytes(),
+    )
+    .expect("unlock");
+
+    let to_save = Settings {
+        auto_lock_timeout_ms: 600_000,
+        require_password_before_edits: false,
+        reauth_grace_window_ms: 30_000,
+    };
+
+    // Write all three fields through the multi-field save path.
+    state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| save_to_vault(&u.identity, &u.manifest, u.device_uuid, &to_save))
+        .expect("save_to_vault");
+
+    // Read them back and assert every field survived, with no warnings.
+    let (loaded, warnings) = state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| load_from_vault(&u.identity, &u.manifest))
+        .expect("load_from_vault");
+
+    assert!(
+        !loaded.require_password_before_edits,
+        "require_password_before_edits must survive round-trip"
+    );
+    assert_eq!(
+        loaded.reauth_grace_window_ms, 30_000,
+        "reauth_grace_window_ms must survive round-trip"
+    );
+    assert_eq!(
+        loaded.auto_lock_timeout_ms, 600_000,
+        "auto_lock_timeout_ms must survive round-trip"
+    );
+    assert!(
+        warnings.is_empty(),
+        "clean round-trip must produce no warnings; got: {warnings:?}"
+    );
+}
+
+/// A vault written by an older client (only the `auto_lock_timeout_ms`
+/// field present) is loaded with the new two fields defaulted — no
+/// SettingsClamped or SettingsCorrupt warning, since missing-but-defaulted
+/// fields are forward-compat silently accepted.
+#[test]
+fn settings_backward_compat_missing_new_fields_yield_defaults_no_warning() {
+    // The golden vault has no settings block at all ⇒ load returns defaults
+    // with an empty warnings vec. This is the strongest backward-compat
+    // assertion we can make without writing a synthetic one-field record.
+    let (state, _device_dir) = unlocked_state();
+    let (loaded, warnings) = state
+        .lock()
+        .expect("mutex")
+        .with_unlocked(|u| load_from_vault(&u.identity, &u.manifest))
+        .expect("load_from_vault on clean vault");
+
+    // No settings block ⇒ defaults.
+    assert_eq!(
+        loaded,
+        Settings::default(),
+        "no settings block must yield Settings::default()"
+    );
+    assert!(
+        warnings.is_empty(),
+        "no settings block must yield no warnings; got: {warnings:?}"
+    );
 }
 
 // ============================================================================
@@ -1495,5 +1585,38 @@ fn sync_commit_decisions_impl_requires_unlock() {
     let pw = Password::from_bytes(b"unused while locked");
     let err = sync::sync_commit_decisions_impl(&state, &pw, Vec::new(), Vec::new(), 0)
         .expect_err("locked session must error");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+// ============================================================================
+// verify_password (write re-auth presence proof)
+// ============================================================================
+
+#[test]
+fn verify_password_correct_password_while_unlocked_ok() {
+    // Reuses unlocked_state() and GOLDEN_VAULT_PASSWORD from this harness.
+    // A second open_vault_with_password against the same folder while the
+    // session is live must succeed — there is NO exclusive file lock on the
+    // vault folder (the only LockfileGuard is in the sync path). This test
+    // pins that invariant: verify runs concurrently with an open session.
+    let (state, _device_dir) = unlocked_state();
+    reauth::verify_password_impl(&state, GOLDEN_VAULT_PASSWORD.as_bytes())
+        .expect("correct password while unlocked must verify ok");
+}
+
+#[test]
+fn verify_password_wrong_password_is_wrong_password_error() {
+    let (state, _device_dir) = unlocked_state();
+    let err = reauth::verify_password_impl(&state, b"not the password")
+        .expect_err("wrong password must be rejected");
+    assert!(matches!(err, AppError::WrongPassword), "got {err:?}");
+}
+
+#[test]
+fn verify_password_while_locked_is_not_unlocked() {
+    // Fresh session, never unlocked — vault_folder() returns None.
+    let (state, _device_dir) = fresh_state();
+    let err =
+        reauth::verify_password_impl(&state, b"whatever").expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }

@@ -14,6 +14,7 @@
   import { revokeConfirmCopy } from '../lib/revoke';
   import { userMessageFor, type AppError } from '../lib/errors';
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
 
   type Props = { block: BlockSummaryDto };
   let { block }: Props = $props();
@@ -50,9 +51,16 @@
 
   async function confirmRevoke() {
     const target = pendingRevoke;
-    pendingRevoke = null;
     if (!target) return;
     error = null;
+    try {
+      await authorizeWrite('Confirm revoking access');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // ConfirmDialog stays open (pendingRevoke still set)
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    pendingRevoke = null; // now AFTER the gate; dialog closes only on success
     try {
       await revokeBlockFrom(block.blockUuidHex, target.uuidHex);
       await load(); // re-fetch this banner's recipient list from disk
