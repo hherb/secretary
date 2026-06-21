@@ -39,7 +39,7 @@ describe('findUngatedWrites', () => {
 
   it('detects named arrow-function handlers', () => {
     const src = `const onDelete = async () => { await tombstoneRecord(b, r); };`;
-    expect(scan(src).map((v) => v.functionName)).toEqual(['<arrow>']);
+    expect(scan(src).map((v) => v.functionName)).toEqual(['onDelete']);
   });
 
   it('discriminates saveRecord from saveRecordEdit (word boundary)', () => {

@@ -102,9 +102,11 @@ export function extractScript(source: string, isSvelte: boolean): string {
   return out;
 }
 
-/** Arrow-function bodies are always reported as `<arrow>`. */
-function arrowName(_src: string, _arrowIdx: number): string {
-  return '<arrow>';
+/** Look backward from a `=>` token for a `const|let|var NAME =` binding name. */
+function arrowName(src: string, arrowIdx: number): string {
+  const before = src.slice(Math.max(0, arrowIdx - 200), arrowIdx);
+  const m = before.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*(?:async\s+)?\([^)]*\)\s*(?::[^=]*)?$/);
+  return m ? m[1] : '<arrow>';
 }
 
 /** First `{` at or after `from`, skipping whitespace, strings, comments and a TS
