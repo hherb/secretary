@@ -6,17 +6,23 @@ import SecretaryVaultAccess
 /// `@MainActor` because it holds mutable `lastAuthAt` consumed on the main actor
 /// alongside the view models. `initialAuthAt` lets a device-unlock open seed the
 /// clock (the unlock biometric counts); the password open path passes `nil`.
+///
+/// The clock is a **monotonic** source (`MonotonicInstant`, see issue #282) — wall-clock
+/// would let a backward clock jump extend the silent window. It is injected (no default)
+/// so the pure module stays clock-free; the composition root supplies the real
+/// `MonotonicInstant.now`, exactly as the folder-change detector does. `clock` and
+/// `initialAuthAt` must share the same monotonic base.
 @MainActor
 public final class GraceWindowReauthGate: WriteReauthGate {
     private let authorizer: BiometricAuthorizer
-    private let window: TimeInterval
-    private let clock: () -> Date
-    private var lastAuthAt: Date?
+    private let window: Duration
+    private let clock: () -> MonotonicInstant
+    private var lastAuthAt: MonotonicInstant?
 
     public init(authorizer: BiometricAuthorizer,
-                window: TimeInterval = ReauthWindow.v1Default,
-                clock: @escaping () -> Date = Date.init,
-                initialAuthAt: Date? = nil) {
+                window: Duration = ReauthWindow.v1Default,
+                clock: @escaping () -> MonotonicInstant,
+                initialAuthAt: MonotonicInstant? = nil) {
         self.authorizer = authorizer
         self.window = window
         self.clock = clock

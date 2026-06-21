@@ -105,7 +105,8 @@ private struct RootView: View {
                             }
                             let gate = GraceWindowReauthGate(
                                 authorizer: EnclaveBiometricAuthorizer(
-                                    enclave: SecureEnclaveDeviceSecretStore()))
+                                    enclave: SecureEnclaveDeviceSecretStore()),
+                                clock: MonotonicInstant.now)
                             route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                                             syncVM, monitor, scoped)
                         })
