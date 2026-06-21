@@ -16,15 +16,16 @@
  * in an expression-bodied arrow shares its parent body. This codebase keeps one
  * write per flat handler, so these edge cases do not arise in practice.
  *
- * KNOWN GAP (#286): only `=> {` arrows and `function ...()` declarations are
- * recognized as function bodies. Object/class method-shorthand handlers
- * (`async confirmSave() { ... }`) are NOT — two such methods in one object share
- * an enclosing scope, so a gate in a sibling method would mask an ungated write
- * (the #280 bug class). No current desktop handler uses method shorthand (all are
- * flat `async function` / `const x = async () =>`), so layer 3 is sound today; a
- * robust matcher is deferred to #286 because it must disambiguate method-def from
- * arrow params / call-then-block and exclude control-flow keywords without
- * false-positiving legitimately-gated code.
+ * Function bodies recognized: `=> {` arrows, `function ...()` declarations, and
+ * object/class method shorthand (`(async )?(get|set )?name(...) {`, #286). The
+ * method-shorthand matcher excludes control-flow heads (`if`/`for`/`while`/`switch`/
+ * `catch`/`with`) so a write nested in such a block is still attributed to its parent
+ * handler (and not false-flagged when the parent already gated), and excludes `) =>`
+ * arrows (matched separately). A property/method literally *named* after one of those
+ * keywords is the one accepted blind spot — see NON_METHOD_KEYWORDS. Computed method
+ * names (`['x']() {}`, `[Symbol.iterator]() {}`) are not matched as bodies either, but
+ * that fails STRICT: their writes fall through to the `<top-level>` scope and are
+ * flagged unless gated there, never silently masked.
  */
 
 export interface UngatedWrite {
@@ -147,7 +148,41 @@ function nextBodyBrace(src: string, from: number): number {
   return -1;
 }
 
-/** Enumerate brace-delimited function bodies (declarations, named/anonymous arrows). */
+/** First non-whitespace, non-comment char index at or after `from` (or src.length). */
+function firstNonTrivia(src: string, from: number): number {
+  let i = from;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      i += 1;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      i = nl < 0 ? src.length : nl + 1;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+      continue;
+    }
+    return i;
+  }
+  return src.length;
+}
+
+/** Keywords that read as `name(...) {` but are NOT method bodies. Treating a
+ *  control-flow head as a body would attribute a write inside its block to the
+ *  wrong scope and FALSE-POSITIVE legitimately-gated code (gate in the parent
+ *  handler, write in a nested `if`/`for`/`switch`/`catch` block, #286). `function`
+ *  is here because declarations are matched separately by `fnRe`. A handler
+ *  literally named after one of these (valid as a property name, e.g. `{ for() {} }`)
+ *  is skipped — an accepted, vanishingly-rare limitation. */
+const NON_METHOD_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with', 'function']);
+
+/** Enumerate brace-delimited function bodies: declarations, named/anonymous arrows,
+ *  and object/class method shorthand. */
 function findFunctionBodies(src: string): FunctionBody[] {
   const bodies: FunctionBody[] = [];
 
@@ -169,7 +204,31 @@ function findFunctionBodies(src: string): FunctionBody[] {
     bodies.push({ name: m[1] ?? '<function>', start: open, end: matchBrace(src, open) });
   }
 
-  return bodies;
+  // Object/class method shorthand: `(async )?(get|set )?name(params) {`. The
+  // lookbehind rejects member access / call chains (`.name(`), so a method *call* is
+  // never mistaken for a *definition*. NON_METHOD_KEYWORDS excludes control-flow heads;
+  // a `) =>` after the param list means an arrow (already found above), not a method.
+  // The body `{` must follow the param list (modulo a `:` return-type annotation) before
+  // any `;`, so a plain call `name(args);` — which ends in `;` — is correctly not a body.
+  const methodRe = /(?<![.\w$])(?:async\s+)?(?:(?:get|set)\s+)?([A-Za-z_$][\w$]*)\s*\(/g;
+  while ((m = methodRe.exec(src)) !== null) {
+    const name = m[1];
+    if (NON_METHOD_KEYWORDS.has(name)) continue;
+    const parenOpen = src.indexOf('(', m.index);
+    if (parenOpen < 0) continue;
+    const parenClose = matchBracket(src, parenOpen, '(', ')');
+    const after = firstNonTrivia(src, parenClose);
+    if (src[after] === '=' && src[after + 1] === '>') continue; // arrow, not a method
+    const open = nextBodyBrace(src, parenClose);
+    if (open < 0) continue;
+    bodies.push({ name, start: open, end: matchBrace(src, open) });
+  }
+
+  // A method shorthand whose name coincides with a `function NAME(` declaration is
+  // matched by both loops and yields the same body `{` — dedupe so each body is
+  // attributed once. Keep the first (arrow/declaration) occurrence; the names agree.
+  const seen = new Set<number>();
+  return bodies.filter((b) => (seen.has(b.start) ? false : (seen.add(b.start), true)));
 }
 
 /** All start indices of `\bname\s*\(` calls in `src`. */

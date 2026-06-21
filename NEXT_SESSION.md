@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-21-desktop-write-gate-coverage-shipped.md
+docs/handoffs/2026-06-22-scanner-method-shorthand-shipped.md
