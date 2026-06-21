@@ -203,8 +203,7 @@ mod tests {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             "300000".to_string(),
         )];
-        let (s, warnings) =
-            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(s.auto_lock_timeout_ms, 300_000);
         assert!(warnings.is_empty());
     }
@@ -237,23 +236,31 @@ mod tests {
         let (parsed, warnings) =
             parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(parsed.auto_lock_timeout_ms, 600_000);
-        assert_eq!(parsed.require_password_before_edits, REQUIRE_PASSWORD_DEFAULT);
+        assert_eq!(
+            parsed.require_password_before_edits,
+            REQUIRE_PASSWORD_DEFAULT
+        );
         assert_eq!(parsed.reauth_grace_window_ms, REAUTH_WINDOW_DEFAULT_MS);
-        assert!(warnings.is_empty(), "missing-but-defaulted fields are not a warning");
+        assert!(
+            warnings.is_empty(),
+            "missing-but-defaulted fields are not a warning"
+        );
     }
 
     #[test]
     fn parse_require_password_accepts_bool_text() {
         for (text, expected) in [("true", true), ("false", false)] {
             let fields = vec![
-                (SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(), "600000".to_string()),
+                (
+                    SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
+                    "600000".to_string(),
+                ),
                 (
                     SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS.to_string(),
                     text.to_string(),
                 ),
             ];
-            let (parsed, _) =
-                parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+            let (parsed, _) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
             assert_eq!(parsed.require_password_before_edits, expected);
         }
     }
@@ -268,8 +275,7 @@ mod tests {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             "30000".to_string(),
         )];
-        let (s, warnings) =
-            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(s.auto_lock_timeout_ms, AUTO_LOCK_MIN_MS);
         assert_eq!(warnings.len(), 1);
         match &warnings[0] {
@@ -291,8 +297,7 @@ mod tests {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             oversized.to_string(),
         )];
-        let (s, warnings) =
-            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(s.auto_lock_timeout_ms, AUTO_LOCK_MAX_MS);
         assert_eq!(warnings.len(), 1);
     }
@@ -300,7 +305,10 @@ mod tests {
     #[test]
     fn parse_window_above_max_clamps_with_warning() {
         let fields = vec![
-            (SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(), "600000".to_string()),
+            (
+                SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
+                "600000".to_string(),
+            ),
             (
                 SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS.to_string(),
                 (REAUTH_WINDOW_MAX_MS + 1).to_string(),
@@ -322,8 +330,7 @@ mod tests {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             "600000".to_string(),
         )];
-        let err =
-            parse_settings_fields("secretary.settings.v99", &fields).expect_err("must error");
+        let err = parse_settings_fields("secretary.settings.v99", &fields).expect_err("must error");
         match err {
             AppError::SettingsUnknownVersion { version } => {
                 assert_eq!(version, "secretary.settings.v99");
@@ -335,7 +342,10 @@ mod tests {
     #[test]
     fn parse_unknown_extra_field_warns_not_errors() {
         let fields = vec![
-            (SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(), "600000".to_string()),
+            (
+                SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
+                "600000".to_string(),
+            ),
             ("some_future_field".to_string(), "x".to_string()),
         ];
         let (parsed, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields)
@@ -351,8 +361,7 @@ mod tests {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             "not-a-number".to_string(),
         )];
-        let err =
-            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect_err("must error");
+        let err = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect_err("must error");
         match err {
             AppError::SettingsCorrupt { .. } => {}
             other => panic!("expected SettingsCorrupt, got {other:?}"),

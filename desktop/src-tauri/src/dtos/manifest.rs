@@ -206,8 +206,9 @@ mod tests {
         // round-trip from snake_case must fail so a Task 6 TS-pin
         // regression surfaces immediately at the boundary rather than
         // silently overwriting the field with the type's default.
-        let result: Result<SettingsInput, _> =
-            serde_json::from_str(r#"{"auto_lock_timeout_ms":900000,"require_password_before_edits":true,"reauth_grace_window_ms":120000}"#);
+        let result: Result<SettingsInput, _> = serde_json::from_str(
+            r#"{"auto_lock_timeout_ms":900000,"require_password_before_edits":true,"reauth_grace_window_ms":120000}"#,
+        );
         assert!(
             result.is_err(),
             "snake_case input must fail to deserialize (got Ok)"

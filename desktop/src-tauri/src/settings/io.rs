@@ -112,7 +112,8 @@ pub fn load_from_vault(
         stored_record_type
     };
 
-    let (settings, mut parse_warnings) = parse_settings_fields(&effective_record_type, &field_pairs)?;
+    let (settings, mut parse_warnings) =
+        parse_settings_fields(&effective_record_type, &field_pairs)?;
     let mut warnings = shape_warnings;
     warnings.append(&mut parse_warnings);
     Ok((settings, warnings))

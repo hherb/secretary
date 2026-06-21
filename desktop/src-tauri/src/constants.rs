@@ -210,8 +210,14 @@ mod tests {
 
     #[test]
     fn reauth_field_names_are_snake_case_and_distinct() {
-        assert_eq!(SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS, "require_password_before_edits");
-        assert_eq!(SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS, "reauth_grace_window_ms");
+        assert_eq!(
+            SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+            "require_password_before_edits"
+        );
+        assert_eq!(
+            SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS,
+            "reauth_grace_window_ms"
+        );
         assert_ne!(
             SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
             SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS
