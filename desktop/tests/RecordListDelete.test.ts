@@ -96,10 +96,11 @@ describe('RecordList — delete guard (write-reauth gate)', () => {
     await fireEvent.click(confirmBtn);
 
     // Guard rejected → tombstone must not have been called
-    await new Promise((r) => setTimeout(r, 50));
-    expect(invokeMock.mock.calls.some(([c]) => c === 'tombstone_record')).toBe(false);
-    // The confirm dialog is gone (pendingDelete was cleared before authorizeWrite)
-    // but no write was made and no error shown.
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some(([c]) => c === 'tombstone_record')).toBe(false)
+    );
+    // The confirm dialog MUST STILL BE PRESENT — cancel keeps the dialog open
+    expect(container.querySelector('.confirm-dialog__button--danger')).not.toBeNull();
   });
 
   it('happy path: guard resolves → tombstone_record called once', async () => {

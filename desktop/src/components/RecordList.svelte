@@ -72,15 +72,15 @@
   async function confirmDelete() {
     const target = pendingDelete;
     if (!target) return;
-    pendingDelete = null;
     error = null;
     try {
       await authorizeWrite('Confirm deleting this entry');
     } catch (err) {
-      if (err === ReauthCancelled) return;
+      if (err === ReauthCancelled) return; // leave pendingDelete set → dialog stays open
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
+    pendingDelete = null;
     try {
       await tombstoneRecord(block.blockUuidHex, target.recordUuidHex);
       await load();
@@ -131,15 +131,15 @@
   async function confirmMove(target: BlockSummaryDto) {
     const record = pendingMove;
     if (!record) return;
-    pendingMove = null;
     error = null;
     try {
       await authorizeWrite('Confirm moving this entry');
     } catch (err) {
-      if (err === ReauthCancelled) return;
+      if (err === ReauthCancelled) return; // leave pendingMove set → picker stays open
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
+    pendingMove = null;
     try {
       await moveRecord(block.blockUuidHex, target.blockUuidHex, record.recordUuidHex);
       await load(); // re-read the SOURCE block: the moved record now shows tombstoned

@@ -1,5 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 import RecordList from '../src/components/RecordList.svelte';
@@ -10,6 +15,7 @@ const targets = [block, { blockUuidHex: 'dst', blockName: 'Target', createdAtMs:
 
 describe('RecordList move flow', () => {
   beforeEach(() => invokeMock.mockReset());
+  afterEach(() => resetReauthGuard());
 
   it('moves a record into the chosen target then reloads the source', async () => {
     invokeMock.mockImplementation((cmd: string) => {
@@ -33,5 +39,33 @@ describe('RecordList move flow', () => {
       );
       expect(readSrcCalls.length).toBeGreaterThanOrEqual(2);
     });
+  });
+
+  it('cancel: guard rejects ReauthCancelled → move_record NOT called, MoveTargetPicker stays open', async () => {
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'read_block') return Promise.resolve({ blockUuidHex: 'src', blockName: 'Source', records: [rec] });
+      if (cmd === 'list_blocks') return Promise.resolve(targets);
+      return Promise.resolve(null);
+    });
+
+    const { getByRole, findByRole, container } = render(RecordList, { props: { block } });
+    await waitFor(() => getByRole('button', { name: /move record/i }));
+    await fireEvent.click(getByRole('button', { name: /move record/i }));
+
+    // MoveTargetPicker is open; click a target to trigger confirmMove
+    const targetBtn = await findByRole('button', { name: /Target/ });
+    await fireEvent.click(targetBtn);
+
+    // Guard cancelled → move_record must not have been called
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some(([c]) => c === 'move_record')).toBe(false)
+    );
+    // MoveTargetPicker MUST STILL BE PRESENT — cancel keeps the picker open
+    expect(container.querySelector('.move-picker')).not.toBeNull();
   });
 });
