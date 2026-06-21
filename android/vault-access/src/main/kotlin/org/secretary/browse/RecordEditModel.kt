@@ -132,6 +132,9 @@ class RecordEditModel(
                 _error.value = mapValidation(it)
                 return
             }
+            // Note: CancellationException is NOT caught here — it propagates past these
+            // DeviceUnlockError catches so coroutine cancellation is never swallowed.
+            // Do NOT widen these catches to catch (e: Exception).
             try {
                 gate.authorizeWrite("Confirm saving this entry")
             } catch (e: DeviceUnlockError.UserCancelled) {

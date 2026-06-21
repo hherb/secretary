@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReauthTest {
-    private val window = 30_000L
+    private val window = ReauthWindow.V1_DEFAULT_MS
 
     @Test
     fun `null lastAuth always needs reauth`() {

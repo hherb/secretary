@@ -28,10 +28,12 @@ class WriteReauthInstrumentedTest {
         val authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId = "deadbeef")
         val gate = GraceWindowReauthGate(authorizer, clock = { System.currentTimeMillis() })
 
-        // Not enrolled → the gate authorizes silently (no exception, no prompt).
-        gate.authorizeWrite("smoke")
-        assertTrue("not-enrolled gate must be a no-op", !authorizer.isEnrolled)
-
-        enclave.clear(); metadata.clear()
+        try {
+            // Not enrolled → the gate authorizes silently (no exception, no prompt).
+            gate.authorizeWrite("smoke")
+            assertTrue("not-enrolled gate must be a no-op", !authorizer.isEnrolled)
+        } finally {
+            enclave.clear(); metadata.clear()
+        }
     }
 }

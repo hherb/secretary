@@ -22,11 +22,11 @@ import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.DeviceSettingsState
 import org.secretary.browse.DeviceSettingsViewModel
 import org.secretary.browse.DeviceUnlockCoordinator
-import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.DeviceUnlockState
 import org.secretary.browse.DeviceUnlockViewModel
 import org.secretary.browse.FileDeviceEnrollmentMetadataStore
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential

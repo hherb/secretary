@@ -104,6 +104,8 @@ present), and `authorize(reason)` calls `enclave.release(reason)` through the re
 `BiometricPromptGate`, then **zeroizes and discards** the released secret. No new
 Keystore key, no new file format, no FFI change.
 
+Implementation note: `CoordinatorBiometricAuthorizer` was placed in `:vault-access` (not `:kit` / `:app` as originally planned) because it turned out to be pure — it operates over the `DeviceUnlockCoordinator` and the `BiometricAuthorizer` / `DeviceEnrollmentMetadataStore` interfaces already defined in `:vault-access`, with no Android-framework imports — and it is therefore host-tested alongside the other `:vault-access` classes.
+
 ## 4. Injection points (the chokepoint advantage)
 
 Android's browse VM already funnels **every** write through a single helper, so the
