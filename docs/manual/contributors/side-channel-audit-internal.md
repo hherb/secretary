@@ -299,8 +299,13 @@ cross-check).
 - `Argon2idParams::V1_MIN_MEMORY_KIB` floor is enforced as a
   **typed error** (`UnlockError::WeakKdfParams`,
   [core/src/unlock/mod.rs:46-48](../../../core/src/unlock/mod.rs#L46-L48))
-  *before* any Argon2id work runs, so a tampered `vault.toml`
-  cannot silently downgrade the cost.
+  at vault *creation* (`unlock::create_vault`), not at open. A
+  tampered `vault.toml` cannot downgrade the effective cost: a
+  changed KDF param yields a different Master KEK (so `wrap_pw` AEAD
+  fails), and the orchestrator open path cross-checks `vault.toml
+  [kdf]` against the signed manifest (`KdfParamsMismatch`). No
+  constant-time concern here — the comparison is over public
+  cleartext metadata.
 
 **Constant-time discipline:** delegated to `argon2 = "0.5"` (the
 KDF itself); RustCrypto's Argon2 implementation is memory-hard by
