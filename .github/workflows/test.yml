@@ -61,8 +61,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # pnpm version comes from desktop/package.json "packageManager".
+      # `defaults.run.working-directory` only applies to `run:` steps, NOT
+      # `uses:` actions — so the action runs from the repo root (which has no
+      # package.json) unless we point it at the desktop one explicitly.
       - name: Install pnpm
         uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
       - name: Install Node
         uses: actions/setup-node@v4
         with:
