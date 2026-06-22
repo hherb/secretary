@@ -1,0 +1,51 @@
+name: Rust lint
+
+# Format + clippy gate. Mirrors the documented local commands in CLAUDE.md
+# so drift (e.g. #279) cannot reach `main` unnoticed. CodeQL's default setup
+# covers security analysis only; it does not run fmt/clippy.
+#
+# Scope: the cargo workspace. `core/fuzz/` is excluded from the workspace
+# (and uses a separate nightly toolchain), so it is intentionally not linted
+# here. The toolchain + rustfmt/clippy components come from rust-toolchain.toml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: rust-lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Formatting is platform-independent, so one runner suffices.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: cargo clippy
+    # Linux + macOS are the project's primary targets (Windows is explicitly
+    # not vouched for); both run so platform-gated code is linted.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: Clippy (lib + tests, deny warnings)
+        run: cargo clippy --release --workspace --tests -- -D warnings
