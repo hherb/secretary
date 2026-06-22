@@ -1,8 +1,8 @@
-# NEXT_SESSION.md — Add test CI (rust + desktop + swift/kotlin conformance) (#279 follow-up) ✅ (code-complete; PR to open)
+# NEXT_SESSION.md — Add test CI (rust + desktop + swift/kotlin conformance) (#279 follow-up) ✅ SHIPPED + MERGED (PR #289)
 
 **Session date:** 2026-06-22. Flow: continuation of the same session that shipped **#279** (ffi rustfmt drift + the repo's first committed CI, the fmt/clippy `rust-lint.yml` gate — PR #288, **MERGED** @ `f498206c`). You approved the follow-up: a behaviour-test CI gate. Picked **all three** candidate job groups (rust workspace tests, desktop vitest, Swift+Kotlin uniffi conformance).
 
-**Status:** ✅ **code-complete; PR #289 OPEN, all checks GREEN (status CLEAN/MERGEABLE) — awaiting your merge.** Branch `feature/test-ci` (worktree `.worktrees/test-ci`), branched from `main` @ `f498206c`. **CI workflow + handoff only** — no source code touched (`core/`, spec, `*.udl`, `ffi/` bridge/uniffi API, `ios/`, `android/`, `desktop/` source all untouched).
+**Status:** ✅ **SHIPPED + MERGED.** PR #289 squash-merged to `main` @ `ef005160` (all CI green). **No in-flight work — this baton describes what's next (§2).** The merge was CI workflow + handoff only — no source code touched (`core/`, spec, `*.udl`, `ffi/` bridge/uniffi API, `ios/`, `android/`, `desktop/` source all untouched).
 
 ## (1) What we shipped this session
 
@@ -11,7 +11,7 @@
 | Job | Command | Runner(s) | Notes |
 |---|---|---|---|
 | `rust-test` | `cargo test --release --workspace` | matrix ubuntu + macOS | Linux leg installs Tauri GTK/WebKit deps (`libwebkit2gtk-4.1-dev` etc.) — same step as `rust-lint.yml`, because `--workspace` pulls in `secretary-desktop`. `Swatinem/rust-cache`. |
-| `desktop-test` | `pnpm test` (vitest) | ubuntu | `pnpm/action-setup@v4` (version from `desktop/package.json` `packageManager` = pnpm 11.3.0), `actions/setup-node@v4` Node 20 + pnpm cache, `pnpm install --frozen-lockfile`. `working-directory: desktop`. |
+| `desktop-test` | `pnpm test` (vitest) | ubuntu | `pnpm/action-setup@v4` with `package_json_file: desktop/package.json` (version = pnpm 11.3.0; see first-run fixes below), `actions/setup-node@v4` **Node 22** (pnpm 11.3.0 needs Node ≥22.13) + pnpm cache, `pnpm install --frozen-lockfile`. `working-directory: desktop` (applies to `run:` steps only). |
 | `swift-conformance` | `bash …/tests/swift/run_conformance.sh` | macOS | swiftc ships with the runner's Xcode. Builds only the uniffi cdylib (no Tauri crate → no GUI deps). Script hard-requires Darwin by design. |
 | `kotlin-conformance` | `bash …/tests/kotlin/run_conformance.sh` | ubuntu | `actions/setup-java@v4` Temurin JDK 17 + `sudo snap install --classic kotlin` (JetBrains-published snap — avoids unpinned third-party actions). Script fetches JNA + org.json (pinned, SHA-256 verified inside the script). Builds only the uniffi cdylib (no GUI deps). |
 
@@ -23,13 +23,16 @@
 
 **Docs:** README + ROADMAP **not** touched (internal CI tooling, zero behaviour change). Only this handoff + the retargeted `NEXT_SESSION.md` symlink.
 
-**Branch commits:**
+**Squash-merged to `main` @ `ef005160`.** Branch commits that went in:
 - `95186afa` ci: add test workflow (rust workspace, desktop vitest, swift+kotlin conformance) (#279 follow-up)
 - `baae3f3a` docs: session handoff for test CI + retarget NEXT_SESSION symlink
-- `308b92f9` ci: fix pnpm action version resolution in desktop-test job (see "first-run fix" below)
-- (+ this handoff update — one more commit)
+- `308b92f9` ci: fix pnpm action version resolution in desktop-test job (first-run fix #1)
+- `0243951e` ci: bump desktop-test Node to 22 (pnpm 11.3.0 needs Node ≥22.13) (first-run fix #2)
+- (post-merge: this handoff was corrected directly on `main` — it had been squashed in stale because the merge landed before the "CI-green" handoff edit.)
 
-**First-run CI fix (`308b92f9`):** the first PR run was 9/10 green; only `desktop vitest` failed in 8s. Cause: `pnpm/action-setup` reads `packageManager` from `package.json` at the **repo root**, but `defaults.run.working-directory: desktop` applies only to `run:` steps, NOT `uses:` actions — and there is no root `package.json`, so it errored "No pnpm version is specified." Fix: `package_json_file: desktop/package.json` on the action. (Predicted in §2 as a likely first-run friction point; this is exactly the #288 "local-green ≠ CI-green" precedent.) Re-run: all green.
+**First-run CI fixes (`desktop vitest`, the only failing job — both predicted in §2 as likely friction):**
+1. **`308b92f9`** — first run 9/10 green; `desktop vitest` failed in 8s. `pnpm/action-setup` reads `packageManager` from `package.json` at the **repo root**, but `defaults.run.working-directory: desktop` applies only to `run:` steps, NOT `uses:` actions — no root `package.json` → "No pnpm version is specified." Fix: `package_json_file: desktop/package.json` on the action.
+2. **`0243951e`** — next run surfaced the real version constraint: pnpm 11.3.0 requires Node ≥22.13, so `actions/setup-node` `node-version: 20` failed. Fix: bump to `node-version: 22`. After this, all green. (This is the #288 "local-green ≠ CI-green" precedent twice over — local pnpm/node already satisfied these.)
 
 ### Acceptance (all four baselines verified green LOCALLY before commit)
 ```bash
@@ -47,11 +50,11 @@ git diff main...HEAD --name-only | grep -vE '^(\.github/|docs/handoffs/|NEXT_SES
 ```
 
 ## (2) What's next
-- **Merge PR #289** (your call; not auto-merge) — all checks green, status CLEAN.
-- After merge: housekeeping (remove this worktree + branch — §4).
-- **If a job proves flaky/expensive:** the cheapest trims are dropping the macOS `rust-test` leg (ubuntu still covers the suite) or moving `kotlin-conformance` to its own less-frequent trigger. Don't trim Swift (it's the only macOS-binding coverage).
+**#279 and its two CI follow-ups (`rust-lint.yml` + `test.yml`) are DONE and merged. No in-flight work — pick a fresh item.**
+- **Top candidate: #277** — desktop OS biometric (Touch ID / Windows Hello), the largest open write-reauth piece, mirroring the mobile presence-proof model. **Heads-up:** parallel desktop sessions were live (`d4-browser-autofill`, `desktop-block-crud-ui`) — coordinate before a desktop-heavy pick.
+- **If a CI job proves flaky/expensive** down the line: cheapest trims are dropping the macOS `rust-test` leg (ubuntu still covers the suite) or moving `kotlin-conformance` to a less-frequent trigger. Don't trim Swift (only macOS-binding coverage). A `cargo test --features differential-replay` job (needs `uv` on the runner) is a possible future addition.
 
-**Open follow-up issues (carried):** #277 (desktop OS biometric — largest open write-reauth piece) / #255 / #252 / #251 / #234 / #224 / #193 / #192 / #190 / #189 / #186 / #167 / #162 / #161. **Heads-up:** parallel desktop sessions were live (`d4-browser-autofill`, `desktop-block-crud-ui`) — coordinate before a desktop-heavy pick.
+**Open follow-up issues (carried):** #277 (desktop OS biometric — largest open write-reauth piece) / #255 / #252 / #251 / #234 / #224 / #193 / #192 / #190 / #189 / #186 / #167 / #162 / #161.
 
 ## (3) Open decisions and risks
 - **CI cost** — this roughly triples CI minutes per PR (rust ×2 OS + desktop + swift + kotlin, on top of fmt + clippy ×2). Acceptable for a security-critical crypto repo. If it bites, cheapest trims: drop the macOS `rust-test` leg (ubuntu still covers the suite) or move `kotlin-conformance` to a less-frequent trigger. Don't trim Swift (only macOS-binding coverage).
@@ -59,27 +62,20 @@ git diff main...HEAD --name-only | grep -vE '^(\.github/|docs/handoffs/|NEXT_SES
 
 ## (4) Exact commands to resume
 ```bash
-# 0) Push the branch + open the PR (worktree kept alive for PR iteration):
-cd /Users/hherb/src/secretary/.worktrees/test-ci
-git push -u origin feature/test-ci
-gh pr create --base main --head feature/test-ci \
-  --title "Add test CI: rust workspace + desktop vitest + swift/kotlin conformance (#279 follow-up)" --body "<summary>"
-
-# Then WATCH the first CI run (the real acceptance):
-gh pr checks <PR#> --watch
-
-# 1) After the PR merges, housekeeping (from the MAIN checkout, not this worktree):
+# PR #289 is already merged to main @ ef005160. Just sync + start the next item.
 cd /Users/hherb/src/secretary
 git fetch --prune origin && git checkout main && git pull --ff-only origin main
-git worktree remove .worktrees/test-ci && git branch -D feature/test-ci
-git worktree prune && git worktree list
+git status -s && git worktree list      # confirm clean; .worktrees/test-ci should be gone (cleaned up this session)
+
+# Run any gate locally (now also enforced in CI by rust-lint.yml + test.yml):
+cargo test --release --workspace        # or: ( cd desktop && pnpm test )
 ```
 
 ## (5) Handoff file model
-`NEXT_SESSION.md` is a **relative symlink** to the latest file in `docs/handoffs/` (this file). Authored once; the symlink is the pointer. Both this handoff + the retargeted symlink are committed on the feature branch ([[feedback_next_session_in_pr]]). If you resume this branch for fixups, first `git fetch origin && git merge origin/main` (branch-version-wins on the handoff path) before editing ([[feedback_next_session_main_authoritative]]). `origin/main` was at `f498206c` (the branch point) at close.
+`NEXT_SESSION.md` is a **relative symlink** to the latest file in `docs/handoffs/` (this file). **Lesson from this session:** PR #289 was merged before the final "CI-green" handoff edit was pushed, so `main` got a *stale* baton (it still said "PR to open" / "awaiting your merge"). The correction was applied **directly on `main`** afterward (the work is merged, no open PR to ride — [[feedback_next_session_main_authoritative]]). Takeaway: when a PR is squash-merged, immediately verify `NEXT_SESSION.md` on `main` reflects the merged reality and fix it on `main` if not; the in-PR handoff only covers state up to the last pushed commit before merge.
 
 ## Closing inventory
-- **Branch on close:** `feature/test-ci` @ `308b92f9` + this handoff-update commit; `main`/`origin/main` @ `f498206c`. **PR #289 OPEN + CLEAN.** Squash-merge → one commit on `main`.
-- **Acceptance:** GREEN on CI (PR #289) — `cargo test` ubuntu + macOS, desktop vitest, swift 27/27, kotlin 27/27, plus fmt/clippy/CodeQL. Local baselines first: rust 1411 pass/0 fail; desktop vitest 569 pass; swift 27/27; kotlin 27/27.
+- **State on close:** **PR #289 MERGED to `main` @ `ef005160`** (commits `95186afa`, `baae3f3a`, `308b92f9`, `0243951e`). This handoff corrected directly on `main` post-merge. Worktree `.worktrees/test-ci` + branch `feature/test-ci` cleaned up.
+- **Acceptance:** GREEN on CI (PR #289) — `cargo test` ubuntu 3m46s + macOS 3m46s, desktop vitest 45s, swift 27/27 (1m25s), kotlin 27/27 (1m34s), plus fmt/clippy/CodeQL. Local baselines first: rust 1411 pass/0 fail; desktop vitest 569 pass; swift 27/27; kotlin 27/27.
 - **README.md / ROADMAP.md:** both intentionally unchanged (internal CI tooling, behaviour identical).
-- **NEXT_SESSION.md:** symlink retargeted to this file.
+- **NEXT_SESSION.md:** symlink points to this file (`docs/handoffs/2026-06-22-test-ci-shipped.md`).
