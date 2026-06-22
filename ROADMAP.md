@@ -42,7 +42,7 @@ NIST KAT-pinned v1 cipher suite: Argon2id (RFC 9106), XChaCha20-Poly1305, HKDF-S
 
 ### Phase A.3 — Unlock module ✅
 
-`secretary_core::unlock`: BIP-39 24-word mnemonic, identity bundle (master KEK + recovery KEK dual wrap), `vault.toml` metadata, orchestrators (`create_vault`, `open_with_password`, `open_with_recovery`). Argon2id v1 floor enforced as a typed error (`UnlockError::WeakKdfParams`).
+`secretary_core::unlock`: BIP-39 24-word mnemonic, identity bundle (master KEK + recovery KEK dual wrap), `vault.toml` metadata, orchestrators (`create_vault`, `open_with_password`, `open_with_recovery`). Argon2id v1 floor enforced at vault creation as a typed error (`UnlockError::WeakKdfParams`); the open path is not floor-gated (a downgraded `vault.toml` is defeated by the differing Master KEK and the signed-manifest `[kdf]` cross-check — see threat-model.md §3.2).
 
 ### Phase A.4 — Vault block format ✅
 
