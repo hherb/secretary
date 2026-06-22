@@ -1,0 +1,118 @@
+name: Tests
+
+# Behaviour gate (complements the fmt/clippy gate in rust-lint.yml). Runs the
+# Rust workspace suite, the desktop vitest suite, and the Swift + Kotlin uniffi
+# conformance KAT replays. CodeQL's default setup covers security analysis only;
+# nothing here overlaps it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-test:
+    name: cargo test
+    # Linux + macOS are the project's primary targets (Windows is explicitly
+    # not vouched for); both run so platform-gated code is exercised.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # `--workspace` includes the Tauri desktop crate (`secretary-desktop`),
+      # which needs GTK3/WebKitGTK system libs to compile on Linux. macOS
+      # runners already have what they need. (Same step as rust-lint.yml.)
+      - name: Install Tauri Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      # Mirrors the documented local command in CLAUDE.md. The
+      # differential-replay tests (which shell out to `uv`) are behind an
+      # opt-in Cargo feature and stay off here, so the suite is Rust-only.
+      - name: cargo test --release --workspace
+        run: cargo test --release --workspace
+
+  desktop-test:
+    name: desktop vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version comes from desktop/package.json "packageManager".
+      # `defaults.run.working-directory` only applies to `run:` steps, NOT
+      # `uses:` actions — so the action runs from the repo root (which has no
+      # package.json) unless we point it at the desktop one explicitly.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
+      # pnpm 11.3.0 (from desktop/package.json "packageManager") requires
+      # Node >= 22.13; Node 20 is also now deprecated on the runners.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: pnpm test (vitest)
+        run: pnpm test
+
+  swift-conformance:
+    name: swift conformance
+    # The Swift conformance runner hard-requires a macOS host (swiftc + the
+    # generated .modulemap); it exits non-zero on any other OS by design.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps);
+      # swiftc ships with the runner's Xcode.
+      - name: Swift uniffi conformance KAT replay
+        run: bash ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh
+
+  kotlin-conformance:
+    name: kotlin conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      # JDK 17+ is required for Kotlin 2.x output (the script checks for it).
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # kotlinc via the JetBrains-published snap (avoids unpinned third-party
+      # actions). The script also fetches JNA + org.json jars, pinned and
+      # SHA-256 verified inside the script.
+      - name: Install Kotlin compiler
+        run: sudo snap install --classic kotlin
+      # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps).
+      - name: Kotlin uniffi conformance KAT replay
+        run: bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh
