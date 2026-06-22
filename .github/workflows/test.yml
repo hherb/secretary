@@ -68,10 +68,12 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           package_json_file: desktop/package.json
+      # pnpm 11.3.0 (from desktop/package.json "packageManager") requires
+      # Node >= 22.13; Node 20 is also now deprecated on the runners.
       - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
       - name: Install dependencies
