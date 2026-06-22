@@ -18,7 +18,7 @@
 
 All changes are line breaks + rustfmt's trailing commas on the now-multiline arg lists. No logic, no token semantics, no public API touched.
 
-**Root cause of the merge-time miss (the issue's open question):** the repo has **no `.github/` directory at all** — there is no GitHub Actions CI, hence no automated `cargo fmt --all --check` gate at merge time. Formatting is enforced only by local runs. This is consistent with the repo's documented local-gates discipline (solo dev; CLAUDE.md "verify where you are / run gates locally"), so it's surfaced here rather than treated as a CI bug. **Open question for you:** want a tracking issue to add a minimal fmt/clippy CI workflow, or is local-gates-only deliberate? (Not filed — your call.)
+**Root cause of the merge-time miss (the issue's open question):** there are **no committed CI workflow files** (`.github/` is absent from the repo — not tracked, not in the working tree). The CI that *does* run on PRs is GitHub's **CodeQL "default setup"** (the `Analyze (rust / python / javascript-typescript)` checks visible on PR #288) — it's configured in repo **Settings → Code security**, not via committed `.github/workflows/*.yml`, which is why a `find .github` finds nothing. CodeQL is **security analysis only**; it does **not** run `cargo fmt --all --check` or `clippy`, so formatting/lint drift is never gated at merge. Net: there is no automated fmt/lint gate; formatting is enforced only by local runs (consistent with CLAUDE.md's local-gates discipline). **Open question for you:** want a minimal fmt + clippy GitHub Actions workflow added (would catch this class at merge), or is local-gates-only deliberate? (Not filed — your call.)
 
 **Docs:** README **not** touched (formatting-only, zero behaviour change). ROADMAP **not** touched (no roadmap-level change). Only this handoff + the retargeted `NEXT_SESSION.md` symlink.
 
@@ -43,14 +43,14 @@ git diff main...HEAD --name-only | grep -vE '^(ffi/|docs/handoffs/|NEXT_SESSION.
 ## (2) What's next
 - **Push + open the PR** (§4), then after merge, housekeeping (remove this worktree + branch).
 - **No README / ROADMAP / on-device follow-up** — formatting-only, zero user-visible change.
-- **Decide on CI:** the absence of any `.github/` CI is the real systemic gap behind #279. A minimal `cargo fmt --all --check` + `clippy -D warnings` GitHub Actions workflow would prevent future fmt drift from reaching `main`. Awaiting your call (above) before filing.
+- **Decide on CI:** the absence of any committed fmt/lint CI is the real systemic gap behind #279 (the only PR CI is GitHub's CodeQL default setup — security analysis, no fmt/clippy). A minimal `cargo fmt --all --check` + `clippy -D warnings` GitHub Actions workflow would prevent future fmt drift from reaching `main`. Awaiting your call (above) before filing.
 - **Larger threads still open:** the desktop **write-reauth** lineage — **#277** OS biometric on desktop (Touch ID / Windows Hello, the largest remaining piece); configurable/persisted grace-window settings; presence proof for password-only sessions. **Heads-up:** parallel desktop sessions were live this session (`d4-browser-autofill`, `desktop-block-crud-ui`) — coordinate before a desktop-heavy pick.
 
 **Open follow-up issues (carried):** #277 (desktop OS biometric) / #255 / #252 / #251 / #234 / #224 / #193 / #192 / #190 / #189 / #186 / #167 / #162 / #161. (#279 closed by this PR; #286 closed last session by PR #287.)
 
 ## (3) Open decisions and risks
 - **Formatting-only, zero risk** — no behaviour change, no public API change, test modules only; clippy + ffi tests green.
-- **No CI exists** — the merge-time miss was not a misconfigured gate but the absence of any GitHub Actions CI. Decide whether to add one (see §2).
+- **No fmt/lint CI exists** — the merge-time miss was not a misconfigured gate but the absence of any committed fmt/clippy CI. The only PR CI is GitHub's CodeQL default setup (security analysis, no formatting check). Decide whether to add a fmt/lint workflow (see §2).
 - **ffi only** — guardrail empty by construction (verified); no cross-language / desktop / iOS / Android run needed.
 
 ## (4) Exact commands to resume
