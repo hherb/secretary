@@ -201,7 +201,10 @@ fn open_with_password_downgraded_kdf_params_fails() {
     // runs — the open fails on the AEAD tag, not on a rejected param.
     let vt_str = std::str::from_utf8(&v.vault_toml_bytes).unwrap();
     let mut vt = unlock::vault_toml::decode(vt_str).unwrap();
-    assert_ne!(vt.kdf.memory_kib, 8, "tamper value must differ from original");
+    assert_ne!(
+        vt.kdf.memory_kib, 8,
+        "tamper value must differ from original"
+    );
     vt.kdf.memory_kib = 8;
     let tampered_toml = unlock::vault_toml::encode(&vt).unwrap();
 
