@@ -174,3 +174,49 @@ fn bip39_recovery_kat_vectors() {
         );
     }
 }
+
+#[test]
+fn open_with_password_downgraded_kdf_params_fails() {
+    // #204: open_with_password does NOT enforce the v1 memory floor, but a
+    // tampered/downgraded vault.toml still cannot open the vault — changing
+    // memory_kib changes the derived Master KEK, so the wrap_pw AEAD unwrap
+    // fails its auth tag and we get WrongPasswordOrCorrupt. This characterizes
+    // the real defense the threat model relies on (no open-time floor check
+    // needed). The original (strong) Argon2 cost stays bound into the
+    // ciphertext regardless of what vault.toml claims.
+    let pw = b"hunter2";
+    let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+    // Create at a higher-than-tamper memory cost (still tiny → fast test).
+    let v = create_vault_unchecked(
+        &SecretBytes::new(pw.to_vec()),
+        "Alice",
+        1_714_060_800_000,
+        Argon2idParams::new(32, 1, 1),
+        &mut rng,
+    )
+    .expect("create_vault_unchecked");
+
+    // Downgrade memory_kib in the cleartext vault.toml to a different (lower)
+    // sub-floor value. 8 KiB is the argon2 minimum, so the KDF itself still
+    // runs — the open fails on the AEAD tag, not on a rejected param.
+    let vt_str = std::str::from_utf8(&v.vault_toml_bytes).unwrap();
+    let mut vt = unlock::vault_toml::decode(vt_str).unwrap();
+    assert_ne!(
+        vt.kdf.memory_kib, 8,
+        "tamper value must differ from original"
+    );
+    vt.kdf.memory_kib = 8;
+    let tampered_toml = unlock::vault_toml::encode(&vt).unwrap();
+
+    let err = open_with_password(
+        tampered_toml.as_bytes(),
+        &v.identity_bundle_bytes,
+        &SecretBytes::new(pw.to_vec()),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, UnlockError::WrongPasswordOrCorrupt),
+        "downgraded kdf params must fail to open (different KEK → AEAD fail), got {err:?}"
+    );
+}
