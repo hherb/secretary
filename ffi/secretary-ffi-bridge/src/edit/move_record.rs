@@ -230,8 +230,14 @@ mod tests {
             }],
             unknown: block_unknown,
         };
-        super::super::save_plaintext(&opened.identity, &opened.manifest, plaintext, DEVICE_UUID, 1_000)
-            .expect("seed source block");
+        super::super::save_plaintext(
+            &opened.identity,
+            &opened.manifest,
+            plaintext,
+            DEVICE_UUID,
+            1_000,
+        )
+        .expect("seed source block");
     }
 
     /// Seed an empty target block.
@@ -244,8 +250,14 @@ mod tests {
             records: vec![],
             unknown: BTreeMap::new(),
         };
-        super::super::save_plaintext(&opened.identity, &opened.manifest, plaintext, DEVICE_UUID, 1_000)
-            .expect("seed target block");
+        super::super::save_plaintext(
+            &opened.identity,
+            &opened.manifest,
+            plaintext,
+            DEVICE_UUID,
+            1_000,
+        )
+        .expect("seed target block");
     }
 
     // ── tests ─────────────────────────────────────────────────────────────────
@@ -380,7 +392,10 @@ mod tests {
             .iter()
             .find(|r| r.record_uuid == source_record_uuid)
             .expect("source record still present");
-        assert!(!src_rec.tombstone, "source must remain live after failed move");
+        assert!(
+            !src_rec.tombstone,
+            "source must remain live after failed move"
+        );
     }
 
     /// Absent source record UUID in source block → `RecordNotFound`.

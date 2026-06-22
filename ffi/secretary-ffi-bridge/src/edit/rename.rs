@@ -99,22 +99,44 @@ mod tests {
             }],
             unknown: block_unknown,
         };
-        super::super::save_plaintext(&opened.identity, &opened.manifest, plaintext, DEVICE_UUID, 1_000)
-            .expect("seed plaintext");
+        super::super::save_plaintext(
+            &opened.identity,
+            &opened.manifest,
+            plaintext,
+            DEVICE_UUID,
+            1_000,
+        )
+        .expect("seed plaintext");
 
-        rename_block(&opened.identity, &opened.manifest, block_uuid, "After".to_string(), DEVICE_UUID, 2_000)
-            .expect("rename_block");
+        rename_block(
+            &opened.identity,
+            &opened.manifest,
+            block_uuid,
+            "After".to_string(),
+            DEVICE_UUID,
+            2_000,
+        )
+        .expect("rename_block");
 
         let after = decrypt_block_plaintext(&opened.identity, &opened.manifest, &block_uuid)
             .expect("decrypt after rename");
         assert_eq!(after.block_name, "After", "block_name updated");
-        assert!(after.unknown.contains_key("x_block"), "block-level unknown survives");
+        assert!(
+            after.unknown.contains_key("x_block"),
+            "block-level unknown survives"
+        );
         assert_eq!(after.records.len(), 1, "record preserved");
         let rec = &after.records[0];
         assert_eq!(rec.record_uuid, record_uuid);
-        assert!(rec.unknown.contains_key("x_rec"), "record-level unknown survives");
+        assert!(
+            rec.unknown.contains_key("x_rec"),
+            "record-level unknown survives"
+        );
         let user = rec.fields.get("user").expect("field preserved");
-        assert!(user.unknown.contains_key("x_fld"), "field-level unknown survives");
+        assert!(
+            user.unknown.contains_key("x_fld"),
+            "field-level unknown survives"
+        );
         match &user.value {
             RecordFieldValue::Text(s) => assert_eq!(*s, SecretString::from("alice")),
             other => panic!("expected Text, got {other:?}"),
@@ -126,8 +148,18 @@ mod tests {
     #[test]
     fn rename_block_absent_uuid_is_block_not_found() {
         let (_tmp, opened) = open_writable_golden_001();
-        let err = rename_block(&opened.identity, &opened.manifest, [0xEEu8; 16], "x".to_string(), DEVICE_UUID, 2_000)
-            .expect_err("absent block must error");
-        assert!(matches!(err, FfiVaultError::BlockNotFound { .. }), "got {err:?}");
+        let err = rename_block(
+            &opened.identity,
+            &opened.manifest,
+            [0xEEu8; 16],
+            "x".to_string(),
+            DEVICE_UUID,
+            2_000,
+        )
+        .expect_err("absent block must error");
+        assert!(
+            matches!(err, FfiVaultError::BlockNotFound { .. }),
+            "got {err:?}"
+        );
     }
 }

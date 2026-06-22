@@ -39,8 +39,15 @@ pub fn create_block(
 ) -> Result<(), VaultError> {
     let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
     let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
-    secretary_ffi_bridge::create_block(&identity.0, &manifest.0, block_uuid, block_name, device_uuid, now_ms)
-        .map_err(VaultError::from)
+    secretary_ffi_bridge::create_block(
+        &identity.0,
+        &manifest.0,
+        block_uuid,
+        block_name,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(VaultError::from)
 }
 
 /// Rename a block: replace only `block_name`, preserving every record and
@@ -68,8 +75,15 @@ pub fn rename_block(
 ) -> Result<(), VaultError> {
     let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
     let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
-    secretary_ffi_bridge::rename_block(&identity.0, &manifest.0, block_uuid, new_block_name, device_uuid, now_ms)
-        .map_err(VaultError::from)
+    secretary_ffi_bridge::rename_block(
+        &identity.0,
+        &manifest.0,
+        block_uuid,
+        new_block_name,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(VaultError::from)
 }
 
 /// Move a live record from one block to another under a caller-supplied UUID.
@@ -154,7 +168,11 @@ mod tests {
         }
     }
 
-    fn open_writable_vault() -> (tempfile::TempDir, std::sync::Arc<crate::wrappers::identity::UnlockedIdentity>, std::sync::Arc<crate::wrappers::vault::OpenVaultManifest>) {
+    fn open_writable_vault() -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::wrappers::identity::UnlockedIdentity>,
+        std::sync::Arc<crate::wrappers::vault::OpenVaultManifest>,
+    ) {
         let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../core/tests/data/golden_vault_001");
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -172,10 +190,19 @@ mod tests {
     #[test]
     fn create_block_wrong_block_uuid_length_returns_invalid_argument() {
         let (_tmp, identity, manifest) = open_writable_vault();
-        match create_block(identity, manifest, vec![0u8; 15], "test".to_string(), vec![0u8; 16], 1_000) {
+        match create_block(
+            identity,
+            manifest,
+            vec![0u8; 15],
+            "test".to_string(),
+            vec![0u8; 16],
+            1_000,
+        ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("block_uuid") && detail.contains("16 bytes"),
-                    "detail should mention field and expected size: {detail}");
+                assert!(
+                    detail.contains("block_uuid") && detail.contains("16 bytes"),
+                    "detail should mention field and expected size: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -184,10 +211,19 @@ mod tests {
     #[test]
     fn create_block_wrong_device_uuid_length_returns_invalid_argument() {
         let (_tmp, identity, manifest) = open_writable_vault();
-        match create_block(identity, manifest, vec![0u8; 16], "test".to_string(), vec![0u8; 17], 1_000) {
+        match create_block(
+            identity,
+            manifest,
+            vec![0u8; 16],
+            "test".to_string(),
+            vec![0u8; 17],
+            1_000,
+        ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("device_uuid") && detail.contains("16 bytes"),
-                    "detail should mention field and expected size: {detail}");
+                assert!(
+                    detail.contains("device_uuid") && detail.contains("16 bytes"),
+                    "detail should mention field and expected size: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -200,10 +236,19 @@ mod tests {
     #[test]
     fn rename_block_wrong_block_uuid_length_returns_invalid_argument() {
         let (_tmp, identity, manifest) = open_writable_vault();
-        match rename_block(identity, manifest, vec![0u8; 10], "new".to_string(), vec![0u8; 16], 1_000) {
+        match rename_block(
+            identity,
+            manifest,
+            vec![0u8; 10],
+            "new".to_string(),
+            vec![0u8; 16],
+            1_000,
+        ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("block_uuid") && detail.contains("16 bytes"),
-                    "detail: {detail}");
+                assert!(
+                    detail.contains("block_uuid") && detail.contains("16 bytes"),
+                    "detail: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -212,10 +257,19 @@ mod tests {
     #[test]
     fn rename_block_wrong_device_uuid_length_returns_invalid_argument() {
         let (_tmp, identity, manifest) = open_writable_vault();
-        match rename_block(identity, manifest, vec![0u8; 16], "new".to_string(), vec![0u8; 17], 1_000) {
+        match rename_block(
+            identity,
+            manifest,
+            vec![0u8; 16],
+            "new".to_string(),
+            vec![0u8; 17],
+            1_000,
+        ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("device_uuid") && detail.contains("16 bytes"),
-                    "detail should mention field and expected size: {detail}");
+                assert!(
+                    detail.contains("device_uuid") && detail.contains("16 bytes"),
+                    "detail should mention field and expected size: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -229,13 +283,20 @@ mod tests {
     fn move_record_wrong_uuid_length_returns_invalid_argument() {
         let (_tmp, identity, manifest) = open_writable_vault();
         match move_record(
-            identity, manifest,
-            vec![0u8; 15], vec![0u8; 16], vec![0u8; 16], vec![0u8; 16], vec![0u8; 16],
+            identity,
+            manifest,
+            vec![0u8; 15],
+            vec![0u8; 16],
+            vec![0u8; 16],
+            vec![0u8; 16],
+            vec![0u8; 16],
             1_000,
         ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("source_block_uuid") && detail.contains("16 bytes"),
-                    "detail: {detail}");
+                assert!(
+                    detail.contains("source_block_uuid") && detail.contains("16 bytes"),
+                    "detail: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -250,14 +311,20 @@ mod tests {
         let (_tmp, identity, manifest) = open_writable_vault();
         let same_uuid = vec![0x01u8; 16];
         match move_record(
-            identity, manifest,
-            same_uuid.clone(), same_uuid.clone(),
-            vec![0u8; 16], vec![0u8; 16], vec![0u8; 16],
+            identity,
+            manifest,
+            same_uuid.clone(),
+            same_uuid.clone(),
+            vec![0u8; 16],
+            vec![0u8; 16],
+            vec![0u8; 16],
             1_000,
         ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("source_block_uuid") && detail.contains("target_block_uuid"),
-                    "detail should name both fields: {detail}");
+                assert!(
+                    detail.contains("source_block_uuid") && detail.contains("target_block_uuid"),
+                    "detail should name both fields: {detail}"
+                );
             }
             other => panic!("expected InvalidArgument for same-block move, got {other:?}"),
         }
