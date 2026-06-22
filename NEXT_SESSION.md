@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-22-ffi-rustfmt-drift-shipped.md
+docs/handoffs/2026-06-22-test-ci-shipped.md
