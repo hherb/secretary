@@ -1120,6 +1120,101 @@ fn restore_block_ignores_larger_suffix_forgery() {
     assert!(!authentic.exists(), "authentic copy moved out of trash/");
 }
 
+/// #205 regression (the real attack): an attacker plants a **valid,
+/// genuinely owner-signed** *older* copy of the same `block_uuid` at a
+/// LARGER suffix. Unlike `restore_block_ignores_larger_suffix_forgery`
+/// (which plants a *corrupt* file that the §6.1 hybrid-verify would
+/// reject regardless of selection), this plant verifies fine — so this
+/// test proves the **selection** logic, not verification, is what
+/// rejects the rollback. On the pre-#205 largest-suffix logic restore
+/// would pick the plant, hybrid-verify would PASS (authenticity ≠
+/// currency), and the stale content would go live; the content assertion
+/// below catches exactly that.
+#[test]
+fn restore_block_selects_signed_timestamp_over_valid_larger_suffix_plant() {
+    let (dir, _mnemonic, pw) = make_fast_vault(11, b"hunter2", "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xdb; 16];
+    let block_uuid = [0xbb; 16];
+    let recipients = vec![open.owner_card.clone()];
+
+    // First save: the STALE content. Capture its valid owner-signed
+    // envelope bytes before overwriting it.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "stale-old-secret"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let live_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let stale_bytes = fs::read(&live_path).unwrap();
+
+    // Second save (update — same block_uuid): the AUTHENTIC-CURRENT
+    // content. Different plaintext + a second clock tick → different
+    // bytes, but still a valid owner-signed envelope.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "authentic-current-secret"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let trash_ts = 5_000u64;
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_ts,
+        &mut rng,
+    )
+    .unwrap();
+
+    // The authentic-current envelope now lives at suffix == signed ts.
+    let trash_dir = folder.join("trash");
+    let authentic = trash_dir.join(format!("{uuid_hex}.cbor.enc.{trash_ts}"));
+    let authentic_bytes = fs::read(&authentic).unwrap();
+    assert_ne!(
+        stale_bytes, authentic_bytes,
+        "sanity: the two valid envelopes must differ in content",
+    );
+
+    // Plant the VALID stale envelope at a LARGER suffix. Largest-suffix
+    // selection (pre-#205) would pick this, verify it successfully, and
+    // restore the stale secret.
+    let plant_ts = 9_000u64;
+    let plant = trash_dir.join(format!("{uuid_hex}.cbor.enc.{plant_ts}"));
+    fs::write(&plant, &stale_bytes).unwrap();
+
+    restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng).unwrap();
+
+    // The restored live file is the authentic-current envelope, NOT the
+    // valid-but-stale larger-suffix plant — selection bound to the signed
+    // timestamp, not the largest suffix.
+    assert_eq!(
+        fs::read(&live_path).unwrap(),
+        authentic_bytes,
+        "restored file must be the signed-timestamp (current) copy, not the valid larger-suffix stale plant",
+    );
+    assert!(
+        !plant.exists(),
+        "valid larger-suffix stale plant must be purged"
+    );
+    assert!(!authentic.exists(), "authentic copy moved out of trash/");
+}
+
 /// #205: when a signed `TrashEntry` exists and trash files are present
 /// but NONE has a suffix equal to the signed `tombstoned_at_ms` (the
 /// authentic file was renamed to a larger suffix, leaving only a planted

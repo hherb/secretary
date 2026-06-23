@@ -115,10 +115,12 @@ Both follow the existing `trash_restore.rs` fixture patterns. Crypto values are 
 
 - No change to `trash_block` (it already writes the file suffix == signed timestamp).
 - No change to the §6.1 hybrid-verify, recipient-resolution, or atomic-write steps.
-- No re-signing of the trash filename into the block payload (a heavier format change; equality-to-`TrashEntry` closes the gap within the frozen v1 format).
+- No re-signing of the trash filename into the block payload (a heavier format change; equality-to-`TrashEntry` closes the *suffix-selection* gap within the frozen v1 format).
 - No new `FfiVaultError` variant (folds to `CorruptVault`).
+- **No content-freshness binding** — see the residual gap in Risk below (tracked as #293). This fix scopes to the suffix-selection vector only.
 
 ## Risk
 
 - Behavior change is narrow: the only externally-observable change for honest vaults is nil (the authentic file's suffix already equals `tombstoned_at_ms`, so equality selects the same file "largest" did in the single-trash case). The change bites only when extra files are present.
 - The new error path is reachable by a tampered/partially-purged trash dir; folding to `CorruptVault` at the FFI boundary matches existing operator expectations for integrity failures.
+- **Residual gap (tracked as #293):** this fix narrows but does **not** fully eliminate authentic-but-stale rollback. An attacker who *overwrites the suffix-matching file in place* — writing a previously-retained, genuinely owner-signed *older* copy of the same `block_uuid` to `trash/<uuid>.cbor.enc.<T_recent>` where `T_recent` is the signed `tombstoned_at_ms` — defeats equality selection (it is the only match) and passes hybrid-verify (authenticity ≠ currency). Closing this requires binding a *content* commitment (e.g. a hash or the trashed `vector_clock_summary`) into the signed `TrashEntry` and verifying it post-decrypt; that binding is what suffix-equality approximates but cannot provide. Deliberately out of scope here (frozen-v1 format consideration) — #293 tracks it.
