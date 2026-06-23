@@ -1964,6 +1964,18 @@ mod tests {
         let mut m = populated_manifest();
         m.trash[0].fingerprint = None;
         let bytes = encode_manifest(&m).unwrap();
+        // The "fingerprint" key must be byte-absent from the TrashEntry
+        // encoding (legacy-byte-identical — the frozen-v1 no-format-bump
+        // guarantee). We encode the trash entry in isolation so the check is
+        // scoped to TrashEntry bytes only (BlockEntry.fingerprint is always
+        // present and would otherwise be a false positive).
+        let entry_value = trash_entry_to_value(&m.trash[0]).unwrap();
+        let mut entry_bytes = Vec::new();
+        ciborium::ser::into_writer(&entry_value, &mut entry_bytes).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&entry_bytes).contains("fingerprint"),
+            "None must not emit the fingerprint key"
+        );
         let decoded = decode_manifest(&bytes).unwrap();
         assert_eq!(decoded.trash[0].fingerprint, None, "None must round-trip");
     }
