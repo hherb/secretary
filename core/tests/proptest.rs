@@ -1416,14 +1416,21 @@ mod manifest_props {
     }
 
     fn trash_entry_strategy() -> impl Strategy<Value = TrashEntry> {
-        (arr16(), any::<u64>(), arr16()).prop_map(
-            |(block_uuid, tombstoned_at_ms, tombstoned_by)| TrashEntry {
-                block_uuid,
-                tombstoned_at_ms,
-                tombstoned_by,
-                unknown: BTreeMap::new(),
-            },
+        (
+            arr16(),
+            any::<u64>(),
+            arr16(),
+            prop::option::of(arr32_fp()), // arr32_fp(): in-scope [u8; FINGERPRINT_LEN] strategy
         )
+            .prop_map(
+                |(block_uuid, tombstoned_at_ms, tombstoned_by, fingerprint)| TrashEntry {
+                    block_uuid,
+                    tombstoned_at_ms,
+                    tombstoned_by,
+                    fingerprint,
+                    unknown: BTreeMap::new(),
+                },
+            )
     }
 
     fn trash_strategy() -> impl Strategy<Value = Vec<TrashEntry>> {
