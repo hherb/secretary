@@ -569,7 +569,10 @@ fn trash_entry_to_value(entry: &TrashEntry) -> Result<Value, ManifestError> {
     // (separate map from BlockEntry, so no collision). Omitted when None so
     // legacy-shaped entries stay byte-identical (no format bump).
     if let Some(fp) = entry.fingerprint {
-        inner.push((Value::Text(KEY_FINGERPRINT.into()), Value::Bytes(fp.to_vec())));
+        inner.push((
+            Value::Text(KEY_FINGERPRINT.into()),
+            Value::Bytes(fp.to_vec()),
+        ));
     }
     for (k, v) in &entry.unknown {
         inner.push((Value::Text(k.clone()), unknown_value_inner(v)?));
@@ -974,8 +977,10 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
                 tombstoned_by = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_TOMBSTONED_BY)?);
             }
             KEY_FINGERPRINT => {
-                fingerprint =
-                    Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)?);
+                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(
+                    val,
+                    KEY_FINGERPRINT,
+                )?);
             }
             _ => {
                 unknown.insert(key, value_to_unknown(val)?);

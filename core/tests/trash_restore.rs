@@ -1395,7 +1395,15 @@ fn restore_block_rejects_in_place_overwrite_with_stale_signed_copy() {
     .unwrap();
 
     let trash_ts = 5_000u64;
-    trash_block(folder, &mut open, block_uuid, device_uuid, trash_ts, &mut rng).unwrap();
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_ts,
+        &mut rng,
+    )
+    .unwrap();
 
     // The authentic-current envelope is at suffix == signed ts; the signed
     // TrashEntry commits to ITS fingerprint.
@@ -1423,11 +1431,18 @@ fn restore_block_rejects_in_place_overwrite_with_stale_signed_copy() {
     );
     // Manifest + trash untouched; no live block; nothing renamed into blocks/.
     assert!(
-        open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
         "TrashEntry must remain after a rejected restore",
     );
     assert!(
-        !open.manifest.blocks.iter().any(|b| b.block_uuid == block_uuid),
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
         "no BlockEntry must be created on a rejected restore",
     );
     assert!(
@@ -1473,11 +1488,18 @@ fn restore_block_legacy_entry_without_fingerprint_falls_back() {
     restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng)
         .expect("legacy (None-commitment) restore must succeed via suffix-equality");
     assert!(
-        open.manifest.blocks.iter().any(|b| b.block_uuid == block_uuid),
+        open.manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
         "block must be live after legacy restore",
     );
     assert!(
-        !open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
         "TrashEntry must be gone after legacy restore",
     );
 }
