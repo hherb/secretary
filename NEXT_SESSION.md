@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-23-argon2-floor-doc-reconcile-shipped.md
+docs/handoffs/2026-06-23-restore-block-signed-timestamp-shipped.md
