@@ -1833,6 +1833,11 @@ pub fn trash_block(
         .iter()
         .position(|b| b.block_uuid == block_uuid)
         .ok_or(VaultError::BlockNotFound { block_uuid })?;
+    // #293: capture the live content commitment before removing the entry.
+    // The file is moved (rename) unchanged into trash/, so this BLAKE3-256
+    // (authenticated at the most recent open_vault) is exactly the hash of
+    // the trashed bytes restore will recompute and check.
+    let content_fingerprint = open.manifest.blocks[entry_idx].fingerprint;
 
     // Step 2: lazy mkdir for trash/.
     let trash_dir = folder.join(TRASH_SUBDIR);
@@ -1868,7 +1873,7 @@ pub fn trash_block(
         block_uuid,
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
-        fingerprint: None, // populated in Task 2
+        fingerprint: Some(content_fingerprint),
         unknown: std::collections::BTreeMap::new(),
     });
 

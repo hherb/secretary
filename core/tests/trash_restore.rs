@@ -393,6 +393,58 @@ fn trash_block_then_reopen_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// trash_block — content commitment (#293)
+// ---------------------------------------------------------------------------
+
+/// `trash_block` captures the live `BlockEntry.fingerprint` into the new
+/// `TrashEntry.fingerprint` (the content commitment that `restore_block`
+/// later verifies, #293).
+#[test]
+fn trash_block_captures_content_commitment() {
+    let (dir, _mnemonic, pw) = make_fast_vault(20, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x20; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd2; 16];
+    let block_uuid = [0xb2; 16];
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "secret"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Capture the live block's fingerprint BEFORE trashing.
+    let live_fp = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("block must be live before trash")
+        .fingerprint;
+
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    let entry = open
+        .manifest
+        .trash
+        .iter()
+        .find(|t| t.block_uuid == block_uuid)
+        .expect("TrashEntry for the trashed block");
+    assert_eq!(
+        entry.fingerprint,
+        Some(live_fp),
+        "trash_block must commit the live BlockEntry.fingerprint into the TrashEntry",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // restore_block — happy path: trash → restore round-trip
 // ---------------------------------------------------------------------------
 
