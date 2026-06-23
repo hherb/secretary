@@ -4,7 +4,8 @@
 //! in the filename, removes the matching `BlockEntry` from
 //! `manifest.blocks`, appends a `TrashEntry` to `manifest.trash`, and
 //! re-signs the manifest. The restore side reverses the move: scans
-//! `trash/<uuid>.cbor.enc.*`, picks the largest-timestamp file,
+//! `trash/<uuid>.cbor.enc.*`, picks the file whose suffix matches the
+//! signed `TrashEntry.tombstoned_at_ms` (#205),
 //! decrypts + hybrid-verifies, renames into `blocks/`, purges older
 //! copies, and re-signs the manifest. The §7 / §7.1 file-renaming
 //! semantics are atomic per POSIX `rename(2)`.
@@ -47,14 +48,17 @@ fn fast_kdf() -> Argon2idParams {
     Argon2idParams::new(8, 1, 1)
 }
 
-fn make_fast_vault(
-    seed: u8,
-    password: &[u8],
-    display_name: &str,
-) -> (tempfile::TempDir, Mnemonic, SecretBytes) {
+fn make_fast_vault(seed: u8, display_name: &str) -> (tempfile::TempDir, Mnemonic, SecretBytes) {
     let dir = tempfile::tempdir().unwrap();
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
-    let pw = SecretBytes::new(password.to_vec());
+    // Derive the vault password from the seeded RNG rather than a
+    // hard-coded literal: keeps the fixture deterministic per `seed`
+    // while avoiding CodeQL's "hard-coded value used as a password"
+    // (rust/hard-coded-cryptographic-value) — see
+    // feedback_test_crypto_random_not_hardcoded.
+    let mut pw_bytes = [0u8; 16];
+    rng.fill_bytes(&mut pw_bytes);
+    let pw = SecretBytes::new(pw_bytes.to_vec());
     let created_at_ms = 1_714_060_800_000u64;
     let created =
         create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng).unwrap();
@@ -188,7 +192,7 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
 /// drops the matching `BlockEntry`, and appends a `TrashEntry`.
 #[test]
 fn trash_block_moves_file_and_updates_manifest() {
-    let (dir, _mnemonic, pw) = make_fast_vault(1, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(1, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc1; 32]);
 
@@ -258,7 +262,7 @@ fn trash_block_moves_file_and_updates_manifest() {
 /// not in `manifest.blocks`; the manifest is left untouched.
 #[test]
 fn trash_block_rejects_unknown_uuid() {
-    let (dir, _mnemonic, pw) = make_fast_vault(2, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(2, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc2; 32]);
 
@@ -297,7 +301,7 @@ fn trash_block_rejects_unknown_uuid() {
 /// (frozen into the on-disk bytes) is therefore unchanged.
 #[test]
 fn trash_block_ticks_manifest_clock() {
-    let (dir, _mnemonic, pw) = make_fast_vault(3, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(3, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc3; 32]);
 
@@ -346,7 +350,7 @@ fn trash_block_ticks_manifest_clock() {
 /// authoritative, not just the in-memory `OpenVault`.
 #[test]
 fn trash_block_then_reopen_round_trip() {
-    let (dir, _mnemonic, pw) = make_fast_vault(4, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(4, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc4; 32]);
 
@@ -398,7 +402,7 @@ fn trash_block_then_reopen_round_trip() {
 /// `TrashEntry` is gone.
 #[test]
 fn restore_block_round_trip_after_single_trash() {
-    let (dir, _mnemonic, pw) = make_fast_vault(5, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(5, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc5; 32]);
 
@@ -452,11 +456,12 @@ fn restore_block_round_trip_after_single_trash() {
 
 /// When multiple files match `<uuid>.cbor.enc.*` (the same block was
 /// trashed → restored → re-trashed, or an older copy was manually
-/// preserved), `restore_block` picks the newest timestamp and physically
+/// preserved), `restore_block` picks the file matching the signed
+/// `tombstoned_at_ms` (here the newest, suffix 4000) and physically
 /// removes the older copies.
 #[test]
 fn restore_block_purges_older_copies() {
-    let (dir, _mnemonic, pw) = make_fast_vault(6, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(6, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc6; 32]);
 
@@ -514,7 +519,7 @@ fn restore_block_purges_older_copies() {
 /// fork.
 #[test]
 fn restore_block_preserves_block_vector_clock() {
-    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(7, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
 
@@ -569,7 +574,7 @@ fn restore_block_preserves_block_vector_clock() {
 /// mutated.
 #[test]
 fn restore_block_rejects_live_uuid_collision() {
-    let (dir, _mnemonic, pw) = make_fast_vault(8, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(8, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc8; 32]);
 
@@ -626,7 +631,7 @@ fn restore_block_rejects_live_uuid_collision() {
 /// manifest is left untouched.
 #[test]
 fn restore_block_rejects_when_not_in_trash() {
-    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(9, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
 
@@ -661,7 +666,7 @@ fn restore_block_rejects_when_not_in_trash() {
 /// verification to cover for the missing pre-check.
 #[test]
 fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
-    let (dir, _mnemonic, pw) = make_fast_vault(28, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(28, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd1; 32]);
 
@@ -732,7 +737,7 @@ fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
 /// has not yet run when step 5's wrap-resolution loop bails).
 #[test]
 fn restore_block_skips_contact_cards_failing_self_verify() {
-    let (dir, _mnemonic, pw) = make_fast_vault(29, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(29, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd2; 32]);
 
@@ -829,7 +834,7 @@ fn restore_block_skips_contact_cards_failing_self_verify() {
 /// that file's contents.
 #[test]
 fn restore_block_skips_noncanonical_trash_suffixes() {
-    let (dir, _mnemonic, pw) = make_fast_vault(30, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(30, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd3; 32]);
 
@@ -928,7 +933,7 @@ fn restore_block_skips_noncanonical_trash_suffixes() {
 /// capture.
 #[test]
 fn restore_block_rejects_tampered_file() {
-    let (dir, _mnemonic, pw) = make_fast_vault(10, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(10, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xca; 32]);
 
@@ -1003,7 +1008,7 @@ fn restore_block_rejects_tampered_file() {
 /// the on-disk manifest is authoritative.
 #[test]
 fn restore_block_then_reopen_round_trip() {
-    let (dir, _mnemonic, pw) = make_fast_vault(11, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(11, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
 
@@ -1042,5 +1047,251 @@ fn restore_block_then_reopen_round_trip() {
             .iter()
             .any(|t| t.block_uuid == block_uuid),
         "TrashEntry must be gone on disk after restore_block manifest re-sign"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// restore_block — #205: selection binds to the signed tombstoned_at_ms
+// ---------------------------------------------------------------------------
+
+/// #205 regression: `restore_block` MUST select the trashed file whose
+/// suffix equals the signed `TrashEntry.tombstoned_at_ms`, NOT the file
+/// with the largest suffix. An attacker with write access to `trash/`
+/// plants a forged copy with a LARGER suffix; the pre-#205 largest-suffix
+/// selection would pick it (and, on a corrupt plant, fail to verify).
+/// Equality selection picks the authentic file and purges the plant.
+#[test]
+fn restore_block_ignores_larger_suffix_forgery() {
+    let (dir, _mnemonic, pw) = make_fast_vault(9, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd9; 16];
+    let block_uuid = [0xb9; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "authentic-current");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let trash_ts = 5_000u64;
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_ts,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Capture the authentic trashed bytes (suffix == signed tombstoned_at_ms).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_dir = folder.join("trash");
+    let authentic = trash_dir.join(format!("{uuid_hex}.cbor.enc.{trash_ts}"));
+    let authentic_bytes = fs::read(&authentic).unwrap();
+
+    // Plant a corrupt forgery with a LARGER suffix. The largest-suffix
+    // selection (pre-#205) would pick this and fail verification.
+    let forgery_ts = 9_000u64;
+    let forgery = trash_dir.join(format!("{uuid_hex}.cbor.enc.{forgery_ts}"));
+    let mut corrupt = authentic_bytes.clone();
+    let mid = corrupt.len() / 2;
+    corrupt[mid] ^= 0xff; // flip a byte → fails decode/hybrid-verify if selected
+    fs::write(&forgery, &corrupt).unwrap();
+
+    // Restore MUST succeed by selecting the authentic (signed-ts) file.
+    restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng).unwrap();
+
+    // The restored live file is byte-identical to the authentic trashed
+    // file (rename is a move), proving the forgery was NOT selected.
+    let restored = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    assert_eq!(
+        fs::read(&restored).unwrap(),
+        authentic_bytes,
+        "restored file must be the authentic signed-timestamp copy, not the larger-suffix forgery",
+    );
+    assert!(!forgery.exists(), "larger-suffix forgery must be purged");
+    assert!(!authentic.exists(), "authentic copy moved out of trash/");
+}
+
+/// #205 regression (the real attack): an attacker plants a **valid,
+/// genuinely owner-signed** *older* copy of the same `block_uuid` at a
+/// LARGER suffix. Unlike `restore_block_ignores_larger_suffix_forgery`
+/// (which plants a *corrupt* file that the §6.1 hybrid-verify would
+/// reject regardless of selection), this plant verifies fine — so this
+/// test proves the **selection** logic, not verification, is what
+/// rejects the rollback. On the pre-#205 largest-suffix logic restore
+/// would pick the plant, hybrid-verify would PASS (authenticity ≠
+/// currency), and the stale content would go live; the content assertion
+/// below catches exactly that.
+#[test]
+fn restore_block_selects_signed_timestamp_over_valid_larger_suffix_plant() {
+    let (dir, _mnemonic, pw) = make_fast_vault(11, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xdb; 16];
+    let block_uuid = [0xbb; 16];
+    let recipients = vec![open.owner_card.clone()];
+
+    // First save: the STALE content. Capture its valid owner-signed
+    // envelope bytes before overwriting it.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "stale-old-secret"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let live_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let stale_bytes = fs::read(&live_path).unwrap();
+
+    // Second save (update — same block_uuid): the AUTHENTIC-CURRENT
+    // content. Different plaintext + a second clock tick → different
+    // bytes, but still a valid owner-signed envelope.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "authentic-current-secret"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let trash_ts = 5_000u64;
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_ts,
+        &mut rng,
+    )
+    .unwrap();
+
+    // The authentic-current envelope now lives at suffix == signed ts.
+    let trash_dir = folder.join("trash");
+    let authentic = trash_dir.join(format!("{uuid_hex}.cbor.enc.{trash_ts}"));
+    let authentic_bytes = fs::read(&authentic).unwrap();
+    assert_ne!(
+        stale_bytes, authentic_bytes,
+        "sanity: the two valid envelopes must differ in content",
+    );
+
+    // Plant the VALID stale envelope at a LARGER suffix. Largest-suffix
+    // selection (pre-#205) would pick this, verify it successfully, and
+    // restore the stale secret.
+    let plant_ts = 9_000u64;
+    let plant = trash_dir.join(format!("{uuid_hex}.cbor.enc.{plant_ts}"));
+    fs::write(&plant, &stale_bytes).unwrap();
+
+    restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng).unwrap();
+
+    // The restored live file is the authentic-current envelope, NOT the
+    // valid-but-stale larger-suffix plant — selection bound to the signed
+    // timestamp, not the largest suffix.
+    assert_eq!(
+        fs::read(&live_path).unwrap(),
+        authentic_bytes,
+        "restored file must be the signed-timestamp (current) copy, not the valid larger-suffix stale plant",
+    );
+    assert!(
+        !plant.exists(),
+        "valid larger-suffix stale plant must be purged"
+    );
+    assert!(!authentic.exists(), "authentic copy moved out of trash/");
+}
+
+/// #205: when a signed `TrashEntry` exists and trash files are present
+/// but NONE has a suffix equal to the signed `tombstoned_at_ms` (the
+/// authentic file was renamed to a larger suffix, leaving only a planted
+/// — but genuinely owner-signed — copy), `restore_block` rejects with
+/// `RestoreTargetMissing` rather than silently restoring the stale copy.
+/// On the pre-#205 largest-suffix logic this would succeed (the rollback),
+/// so this test also pins the security fix.
+#[test]
+fn restore_block_missing_signed_target_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(10, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xca; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xda; 16];
+    let block_uuid = [0xba; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "authentic");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let trash_ts = 5_000u64;
+    trash_block(
+        folder,
+        &mut open,
+        block_uuid,
+        device_uuid,
+        trash_ts,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Attacker renames the authentic file to a LARGER suffix, removing the
+    // suffix == signed tombstoned_at_ms file. Only a non-matching (but
+    // genuinely owner-signed) copy remains; the manifest's signed
+    // TrashEntry still says tombstoned_at_ms = 5000.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_dir = folder.join("trash");
+    let authentic = trash_dir.join(format!("{uuid_hex}.cbor.enc.{trash_ts}"));
+    let planted = trash_dir.join(format!("{uuid_hex}.cbor.enc.9000"));
+    fs::rename(&authentic, &planted).unwrap();
+
+    let err = restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng)
+        .expect_err("restore must reject when no file matches the signed timestamp");
+    assert!(
+        matches!(
+            err,
+            VaultError::RestoreTargetMissing { block_uuid: b, expected_tombstoned_at_ms }
+                if b == block_uuid && expected_tombstoned_at_ms == trash_ts
+        ),
+        "expected RestoreTargetMissing {{ expected_tombstoned_at_ms: {trash_ts} }}, got {err:?}",
+    );
+    // Manifest untouched: the TrashEntry is still present, no live BlockEntry.
+    assert!(
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must remain after a rejected restore",
+    );
+    assert!(
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "no BlockEntry must be created on a rejected restore",
     );
 }

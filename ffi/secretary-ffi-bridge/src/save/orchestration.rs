@@ -187,6 +187,9 @@ pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }
         | VaultError::RestoreVerificationFailed { .. }
+        // #205: restore-only; unreachable from save_block, listed for
+        // exhaustiveness per issue #40.
+        | VaultError::RestoreTargetMissing { .. }
         // Unreachable from save_block (open_vault always precedes and
         // would have surfaced this earlier), but listed for exhaustiveness
         // per issue #40. The generic `From<VaultError>` impl routes this

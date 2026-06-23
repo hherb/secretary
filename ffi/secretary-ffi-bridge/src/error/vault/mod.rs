@@ -474,6 +474,21 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 ),
             },
 
+            // restore_block (#205): the file whose suffix equals the signed
+            // tombstoned_at_ms is absent — a signed-data ↔ on-disk-bytes
+            // integrity failure, folded to CorruptVault exactly like
+            // RestoreVerificationFailed (no dedicated FFI variant; the §13
+            // anti-oracle policy conflates integrity failures here).
+            VE::RestoreTargetMissing {
+                block_uuid,
+                expected_tombstoned_at_ms,
+            } => FfiVaultError::CorruptVault {
+                detail: format!(
+                    "restore target for block {} is missing (expected tombstoned_at_ms {expected_tombstoned_at_ms})",
+                    hex::encode(block_uuid),
+                ),
+            },
+
             // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault
             // fold in B.1 before the device-slot FFI surface existed).
             VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,

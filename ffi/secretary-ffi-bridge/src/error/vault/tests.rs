@@ -455,3 +455,16 @@ fn block_not_in_trash_display_format() {
     };
     assert_eq!(e.to_string(), "block is not in trash: [4, 5, 6]");
 }
+
+#[test]
+fn from_core_vault_error_restore_target_missing_maps_to_corrupt_vault() {
+    // #205: restore_block's signed-timestamp file is absent — a
+    // signed-data ↔ on-disk-bytes integrity failure, folded to
+    // CorruptVault like RestoreVerificationFailed (no dedicated FFI variant).
+    let core_err = VaultError::RestoreTargetMissing {
+        block_uuid: [0x11; 16],
+        expected_tombstoned_at_ms: 1_714_060_900_000,
+    };
+    let ffi: FfiVaultError = core_err.into();
+    assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+}
