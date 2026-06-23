@@ -1347,3 +1347,137 @@ fn restore_block_missing_signed_target_rejected() {
         "no BlockEntry must be created on a rejected restore",
     );
 }
+
+/// #293: an attacker with write access to the synced trash/ folder overwrites
+/// the suffix-matching file IN PLACE with a previously-retained, genuinely
+/// owner-signed, OLDER copy of the same block_uuid. The §6.1 hybrid-verify
+/// passes (authenticity != currency), and the suffix still equals the signed
+/// tombstoned_at_ms — so #205's suffix-equality cannot defend it. The content
+/// commitment in the signed TrashEntry rejects it: BLAKE3 of the stale bytes
+/// != the committed fingerprint. On `main` (no commitment) this restore would
+/// SUCCEED and resurrect the stale secret (the rollback this test pins shut).
+#[test]
+fn restore_block_rejects_in_place_overwrite_with_stale_signed_copy() {
+    let (dir, _mnemonic, pw) = make_fast_vault(21, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x21; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd3; 16];
+    let block_uuid = [0xb3; 16];
+    let recipients = vec![open.owner_card.clone()];
+
+    // First save: STALE content. Capture its valid owner-signed bytes.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "stale-old-secret"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let live_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let stale_bytes = fs::read(&live_path).unwrap();
+
+    // Second save (update — same block_uuid): the AUTHENTIC-CURRENT content.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "authentic-current-secret"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let trash_ts = 5_000u64;
+    trash_block(folder, &mut open, block_uuid, device_uuid, trash_ts, &mut rng).unwrap();
+
+    // The authentic-current envelope is at suffix == signed ts; the signed
+    // TrashEntry commits to ITS fingerprint.
+    let trash_dir = folder.join("trash");
+    let authentic = trash_dir.join(format!("{uuid_hex}.cbor.enc.{trash_ts}"));
+    let authentic_bytes = fs::read(&authentic).unwrap();
+    assert_ne!(
+        stale_bytes, authentic_bytes,
+        "sanity: the two valid envelopes must differ in content",
+    );
+
+    // ATTACK: overwrite the suffix-matching file IN PLACE with the valid stale
+    // envelope. Suffix unchanged (== signed ts); bytes are genuinely signed.
+    fs::write(&authentic, &stale_bytes).unwrap();
+
+    let err = restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng)
+        .expect_err("restore must reject an in-place stale-content overwrite");
+    assert!(
+        matches!(
+            &err,
+            VaultError::RestoreVerificationFailed { block_uuid: b, detail }
+                if *b == block_uuid && detail.contains("content commitment mismatch")
+        ),
+        "expected RestoreVerificationFailed(content commitment mismatch), got {err:?}",
+    );
+    // Manifest + trash untouched; no live block; nothing renamed into blocks/.
+    assert!(
+        open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must remain after a rejected restore",
+    );
+    assert!(
+        !open.manifest.blocks.iter().any(|b| b.block_uuid == block_uuid),
+        "no BlockEntry must be created on a rejected restore",
+    );
+    assert!(
+        !live_path.exists(),
+        "nothing must be renamed into blocks/ on a rejected restore",
+    );
+}
+
+/// #293: a legacy TrashEntry (fingerprint None — trashed by a pre-#293 client)
+/// must still restore via the #205 suffix-equality + §6.1 hybrid-verify path.
+/// We simulate the legacy shape by nulling the in-memory committed fingerprint
+/// (restore_block reads the commitment from the open, already-verified
+/// manifest). The authentic file is unchanged, so restore succeeds.
+#[test]
+fn restore_block_legacy_entry_without_fingerprint_falls_back() {
+    let (dir, _mnemonic, pw) = make_fast_vault(22, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x22; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd4; 16];
+    let block_uuid = [0xb4; 16];
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "secret"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    // Simulate a legacy (pre-#293) signed TrashEntry: no content commitment.
+    for t in &mut open.manifest.trash {
+        if t.block_uuid == block_uuid {
+            t.fingerprint = None;
+        }
+    }
+
+    restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng)
+        .expect("legacy (None-commitment) restore must succeed via suffix-equality");
+    assert!(
+        open.manifest.blocks.iter().any(|b| b.block_uuid == block_uuid),
+        "block must be live after legacy restore",
+    );
+    assert!(
+        !open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        "TrashEntry must be gone after legacy restore",
+    );
+}

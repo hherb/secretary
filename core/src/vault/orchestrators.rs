@@ -2053,13 +2053,13 @@ pub fn restore_block(
     // tampered selected file; this step adds the freshness binding that
     // verification alone cannot provide (an authentic-but-stale file
     // verifies fine — authenticity is not currency).
-    let expected_ts = match open
+    let (expected_ts, committed_fp) = match open
         .manifest
         .trash
         .iter()
         .find(|t| t.block_uuid == block_uuid)
     {
-        Some(entry) => entry.tombstoned_at_ms,
+        Some(entry) => (entry.tombstoned_at_ms, entry.fingerprint),
         None => return Err(VaultError::BlockNotInTrash { block_uuid }),
     };
     if matches.is_empty() {
@@ -2091,6 +2091,28 @@ pub fn restore_block(
         context: "restore_block: failed to read trash file",
         source: e,
     })?;
+
+    // #293: content-freshness binding. If the signed TrashEntry commits to a
+    // BLAKE3-256 of the trashed bytes (captured at trash_block), the selected
+    // file's bytes MUST hash to it. This rejects an in-place overwrite of the
+    // suffix-matching file with a genuinely-owner-signed but OLDER copy —
+    // authenticity is not currency, so the §6.1 hybrid-verify below cannot
+    // catch it, and #205's suffix-equality does not defend it. The check runs
+    // before any rename/purge, so the manifest and trash/ stay untouched on
+    // reject. `None` = legacy entry (pre-#293) → fall through to the existing
+    // suffix-equality + hybrid-verify path.
+    if let Some(committed_fp) = committed_fp {
+        let got = *blake3_hash(&bytes).as_bytes();
+        if got != committed_fp {
+            return Err(VaultError::RestoreVerificationFailed {
+                block_uuid,
+                detail: "content commitment mismatch: trashed file bytes do not \
+                         match the signed TrashEntry.fingerprint"
+                    .to_string(),
+            });
+        }
+    }
+
     let block_file =
         block::decode_block_file(&bytes).map_err(|e| VaultError::RestoreVerificationFailed {
             block_uuid,
