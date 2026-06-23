@@ -358,6 +358,13 @@ pub struct TrashEntry {
     pub tombstoned_at_ms: u64,
     /// `device_uuid` that performed the deletion.
     pub tombstoned_by: [u8; UUID_LEN],
+    /// BLAKE3-256 of the trashed block file bytes, captured at trash time
+    /// (the value the live `BlockEntry.fingerprint` committed to). Binds the
+    /// restored content's freshness to the signed manifest (#293). `None`
+    /// for entries written before this field existed (legacy vaults); restore
+    /// then falls back to suffix-equality + §6.1 hybrid-verify only.
+    pub fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]>,
+    /// Forward-compat unknown keys preserved verbatim per the §6.3.2 pattern.
     pub unknown: BTreeMap<String, UnknownValue>,
 }
 
@@ -558,6 +565,12 @@ fn trash_entry_to_value(entry: &TrashEntry) -> Result<Value, ManifestError> {
             Value::Bytes(entry.tombstoned_by.to_vec()),
         ),
     ];
+    // #293: optional content commitment. Reuses the "fingerprint" key
+    // (separate map from BlockEntry, so no collision). Omitted when None so
+    // legacy-shaped entries stay byte-identical (no format bump).
+    if let Some(fp) = entry.fingerprint {
+        inner.push((Value::Text(KEY_FINGERPRINT.into()), Value::Bytes(fp.to_vec())));
+    }
     for (k, v) in &entry.unknown {
         inner.push((Value::Text(k.clone()), unknown_value_inner(v)?));
     }
@@ -945,6 +958,7 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
     let mut block_uuid: Option<[u8; UUID_LEN]> = None;
     let mut tombstoned_at_ms: Option<u64> = None;
     let mut tombstoned_by: Option<[u8; UUID_LEN]> = None;
+    let mut fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
 
     for (k, val) in entries {
@@ -958,6 +972,10 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
             }
             KEY_TOMBSTONED_BY => {
                 tombstoned_by = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_TOMBSTONED_BY)?);
+            }
+            KEY_FINGERPRINT => {
+                fingerprint =
+                    Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)?);
             }
             _ => {
                 unknown.insert(key, value_to_unknown(val)?);
@@ -975,6 +993,7 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
         tombstoned_by: tombstoned_by.ok_or(ManifestError::MissingField {
             field: KEY_TOMBSTONED_BY,
         })?,
+        fingerprint,
         unknown,
     })
 }
@@ -1888,6 +1907,7 @@ mod tests {
             block_uuid: [0xde; UUID_LEN],
             tombstoned_at_ms: 1_714_060_900_000,
             tombstoned_by: [0xaa; UUID_LEN],
+            fingerprint: Some([0xcd; BLOCK_FINGERPRINT_LEN]),
             unknown: BTreeMap::new(),
         }];
         Manifest {
@@ -1907,6 +1927,40 @@ mod tests {
             },
             unknown: BTreeMap::new(),
         }
+    }
+
+    // ---- TrashEntry content-commitment round-trip (#293) -----------------
+
+    #[test]
+    fn trash_entry_fingerprint_some_round_trips() {
+        // A TrashEntry carrying a content commitment must survive a full
+        // encode → decode cycle with the fingerprint intact (#293).
+        let mut m = populated_manifest();
+        m.trash[0].fingerprint = Some([0x7a; BLOCK_FINGERPRINT_LEN]);
+        let bytes = encode_manifest(&m).unwrap();
+        let decoded = decode_manifest(&bytes).unwrap();
+        assert_eq!(
+            decoded.trash[0].fingerprint,
+            Some([0x7a; BLOCK_FINGERPRINT_LEN]),
+            "Some(fingerprint) must round-trip"
+        );
+        // The typed key must NOT leak into the forward-compat `unknown` map.
+        assert!(
+            decoded.trash[0].unknown.is_empty(),
+            "fingerprint must decode as a typed field, not into unknown"
+        );
+    }
+
+    #[test]
+    fn trash_entry_fingerprint_none_omits_key() {
+        // A legacy-shaped entry (no commitment) must encode WITHOUT the
+        // "fingerprint" key and decode back to None — byte-compatible with
+        // pre-#293 manifests.
+        let mut m = populated_manifest();
+        m.trash[0].fingerprint = None;
+        let bytes = encode_manifest(&m).unwrap();
+        let decoded = decode_manifest(&bytes).unwrap();
+        assert_eq!(decoded.trash[0].fingerprint, None, "None must round-trip");
     }
 
     // ---- Round-trip ------------------------------------------------------

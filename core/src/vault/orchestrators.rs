@@ -1868,6 +1868,7 @@ pub fn trash_block(
         block_uuid,
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
+        fingerprint: None, // populated in Task 2
         unknown: std::collections::BTreeMap::new(),
     });
 
