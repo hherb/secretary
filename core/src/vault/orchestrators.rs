@@ -1928,9 +1928,14 @@ pub fn trash_block(
 /// 2. Scan `trash/` for files matching `<uuid>.cbor.enc.<unix-millis>`.
 ///    Parse each suffix as `u64`; reject ill-formed suffixes as
 ///    integrity failures.
-/// 3. Pick the largest-timestamp file as the *restore target*; all
-///    other matches are *purge targets*. Empty match list AND no
-///    matching `TrashEntry` → [`VaultError::BlockNotInTrash`].
+/// 3. Pick the file whose suffix **equals** the signed
+///    `TrashEntry.tombstoned_at_ms` as the *restore target* (#205 — the
+///    suffix is unauthenticated filename metadata, so selection must
+///    bind to the signed value, not the largest suffix); all other
+///    matches are *purge targets*. No matching `TrashEntry`, or an empty
+///    match list → [`VaultError::BlockNotInTrash`]; a `TrashEntry`
+///    present with files but none matching its `tombstoned_at_ms` →
+///    [`VaultError::RestoreTargetMissing`].
 /// 4. Read the restore target's bytes; decode + AEAD-decrypt +
 ///    hybrid-verify against the owner's pubkeys + IBK + owner reader
 ///    keys. Failure → [`VaultError::RestoreVerificationFailed`]. The
@@ -2003,8 +2008,9 @@ pub fn restore_block(
             // resistance — a buggy peer client or filesystem cruft on a
             // shared sync folder must not deny the legitimate
             // restore). Correctness is still gated by the §6.1 hybrid
-            // verify on the largest-canonical-timestamp match in
-            // step 4.
+            // verify on the file whose suffix equals the signed
+            // `TrashEntry.tombstoned_at_ms` (selected in step 3, verified
+            // in step 4).
             //
             // Note: `u64::from_str` already rejects `+`-prefixed and
             // sign-bearing forms, but accepts leading-zero forms
@@ -2019,33 +2025,56 @@ pub fn restore_block(
             matches.push((ts, path));
         }
     }
-    let trash_entry_present = open
+    // Step 3: bind selection to the signed TrashEntry.tombstoned_at_ms.
+    // The authentic trashed file's filename suffix EQUALS this signed
+    // value by construction — trash_block writes the file
+    // `<uuid>.cbor.enc.<now_ms>` and the TrashEntry {tombstoned_at_ms:
+    // now_ms} in the same operation. The suffix alone is unauthenticated
+    // filename metadata an attacker with write access to trash/ can forge;
+    // selecting the largest suffix would let a planted older-but-owner-
+    // signed copy with a larger suffix be restored (authentic-but-stale
+    // rollback, #205). We therefore select by EQUALITY to the signed
+    // timestamp, not by largest suffix.
+    //
+    // The §7.1 contract pairs the file and the manifest entry; a
+    // disagreement is an integrity failure. Error precedence:
+    //   - no signed TrashEntry            → BlockNotInTrash (as before)
+    //   - signed entry, but no trash file → BlockNotInTrash (as before)
+    //   - signed entry, files present, but none with suffix == signed ts
+    //                                     → RestoreTargetMissing (#205)
+    //
+    // The §6.1 hybrid-verify at step 4 still independently rejects a
+    // tampered selected file; this step adds the freshness binding that
+    // verification alone cannot provide (an authentic-but-stale file
+    // verifies fine — authenticity is not currency).
+    let expected_ts = match open
         .manifest
         .trash
         .iter()
-        .any(|t| t.block_uuid == block_uuid);
-
-    // Step 3: pick restore target + purge targets. The §7.1 contract is
-    // strict: the file and the manifest entry MUST be paired. A
-    // disagreement in *either* direction (file without manifest entry,
-    // or manifest entry without file) is an integrity failure and
-    // surfaces as `BlockNotInTrash` — `VaultError::BlockNotInTrash`'s
-    // own doc-string lists both halves of the pair as required.
-    //
-    // The "file without manifest entry" half is defense-in-depth: an
-    // attacker with write access to `trash/` could plant a forged file,
-    // and the §6.1 hybrid-verify at step 4 would still reject it. But
-    // we reject earlier and with a typed error rather than relying on
-    // verification to cover for a missing spec check.
-    if matches.is_empty() || !trash_entry_present {
+        .find(|t| t.block_uuid == block_uuid)
+    {
+        Some(entry) => entry.tombstoned_at_ms,
+        None => return Err(VaultError::BlockNotInTrash { block_uuid }),
+    };
+    if matches.is_empty() {
         return Err(VaultError::BlockNotInTrash { block_uuid });
     }
-    matches.sort_by_key(|(ts, _)| *ts);
-    let (_restore_ts, restore_path) = matches.last().cloned().expect("non-empty checked above");
+    // At most one file can match — suffix ↔ filename is 1:1.
+    let Some(restore_path) = matches
+        .iter()
+        .find(|(ts, _)| *ts == expected_ts)
+        .map(|(_, p)| p.clone())
+    else {
+        return Err(VaultError::RestoreTargetMissing {
+            block_uuid,
+            expected_tombstoned_at_ms: expected_ts,
+        });
+    };
+    // Purge targets = every other match (older stale copies AND larger-
+    // suffix attacker plants).
     let purge_targets: Vec<PathBuf> = matches
         .iter()
-        .rev()
-        .skip(1)
+        .filter(|(ts, _)| *ts != expected_ts)
         .map(|(_, p)| p.clone())
         .collect();
 

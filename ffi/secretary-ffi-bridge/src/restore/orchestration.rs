@@ -115,6 +115,19 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
                 ),
             }
         }
+        // #205: the file whose suffix equals the signed tombstoned_at_ms is
+        // absent (authentic-current trashed file removed/renamed). Same
+        // "data on disk doesn't match what we signed" contract as
+        // RestoreVerificationFailed → fold to CorruptVault.
+        VaultError::RestoreTargetMissing {
+            block_uuid,
+            expected_tombstoned_at_ms,
+        } => FfiVaultError::CorruptVault {
+            detail: format!(
+                "restore target for block {} is missing (expected tombstoned_at_ms {expected_tombstoned_at_ms})",
+                hex::encode(block_uuid),
+            ),
+        },
         // The contacts/-scan in restore step 5 surfaces this when a
         // wrap's recipient is not in contacts/.
         VaultError::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {

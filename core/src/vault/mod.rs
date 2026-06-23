@@ -292,6 +292,25 @@ pub enum VaultError {
         detail: String,
     },
 
+    /// `restore_block`: a signed `TrashEntry` exists for this `block_uuid`,
+    /// and one or more `trash/<uuid>.cbor.enc.*` files are present, but
+    /// NONE has a suffix equal to the entry's `tombstoned_at_ms`. The
+    /// authentic-current trashed file — whose suffix MUST equal the signed
+    /// timestamp by the `trash_block` construction — is absent (removed or
+    /// renamed), leaving only stale or attacker-planted copies. Restoring
+    /// any of those would resurrect authentic-but-stale content (#205), so
+    /// restore halts; the manifest is NOT modified and `trash/` is NOT
+    /// modified. Distinct from `BlockNotInTrash` (no signed record that the
+    /// block was ever trashed, or no trash file at all).
+    #[error(
+        "restore target for block {block_uuid:?} is missing: no trashed file's \
+         suffix matches the signed tombstoned_at_ms {expected_tombstoned_at_ms}"
+    )]
+    RestoreTargetMissing {
+        block_uuid: [u8; 16],
+        expected_tombstoned_at_ms: u64,
+    },
+
     /// No `devices/<device-uuid>.wrap` file found for the requested device
     /// (ADR 0009 / vault-format §3a). Returned by
     /// [`device_slot::open_identity_with_device_secret`] and
