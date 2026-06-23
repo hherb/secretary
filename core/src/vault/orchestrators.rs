@@ -2092,6 +2092,12 @@ pub fn restore_block(
         source: e,
     })?;
 
+    // BLAKE3-256 of the restore-target bytes — computed once and reused for
+    // both the #293 content-commitment check (below) and the rebuilt
+    // `BlockEntry.fingerprint` (step 8). rename is a move, not a rewrite, so
+    // this equals the on-disk hash after the file is restored into blocks/.
+    let restored_fp: [u8; 32] = *blake3_hash(&bytes).as_bytes();
+
     // #293: content-freshness binding. If the signed TrashEntry commits to a
     // BLAKE3-256 of the trashed bytes (captured at trash_block), the selected
     // file's bytes MUST hash to it. This rejects an in-place overwrite of the
@@ -2102,8 +2108,7 @@ pub fn restore_block(
     // reject. `None` = legacy entry (pre-#293) → fall through to the existing
     // suffix-equality + hybrid-verify path.
     if let Some(committed_fp) = committed_fp {
-        let got = *blake3_hash(&bytes).as_bytes();
-        if got != committed_fp {
+        if restored_fp != committed_fp {
             return Err(VaultError::RestoreVerificationFailed {
                 block_uuid,
                 detail: "content commitment mismatch: trashed file bytes do not \
@@ -2277,11 +2282,14 @@ pub fn restore_block(
     // populate this map in any code path, and the spec explicitly
     // documents trash → restore as a continuation of the block's
     // *content* lineage, not of its manifest-side metadata.
-    let block_fp: [u8; 32] = *blake3_hash(&bytes).as_bytes();
+    //
+    // fingerprint reuses `restored_fp` (BLAKE3-256 of the same `bytes`,
+    // computed once above): the restored block commits to exactly the bytes
+    // the #293 check validated against the signed `TrashEntry.fingerprint`.
     let new_entry = BlockEntry {
         block_uuid,
         block_name: plaintext.block_name.clone(),
-        fingerprint: block_fp,
+        fingerprint: restored_fp,
         recipients: recipients_uuids,
         vector_clock_summary: block_file.header.vector_clock.clone(),
         suite_id: block_file.header.suite_id,
