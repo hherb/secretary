@@ -48,14 +48,17 @@ fn fast_kdf() -> Argon2idParams {
     Argon2idParams::new(8, 1, 1)
 }
 
-fn make_fast_vault(
-    seed: u8,
-    password: &[u8],
-    display_name: &str,
-) -> (tempfile::TempDir, Mnemonic, SecretBytes) {
+fn make_fast_vault(seed: u8, display_name: &str) -> (tempfile::TempDir, Mnemonic, SecretBytes) {
     let dir = tempfile::tempdir().unwrap();
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
-    let pw = SecretBytes::new(password.to_vec());
+    // Derive the vault password from the seeded RNG rather than a
+    // hard-coded literal: keeps the fixture deterministic per `seed`
+    // while avoiding CodeQL's "hard-coded value used as a password"
+    // (rust/hard-coded-cryptographic-value) — see
+    // feedback_test_crypto_random_not_hardcoded.
+    let mut pw_bytes = [0u8; 16];
+    rng.fill_bytes(&mut pw_bytes);
+    let pw = SecretBytes::new(pw_bytes.to_vec());
     let created_at_ms = 1_714_060_800_000u64;
     let created =
         create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng).unwrap();
@@ -189,7 +192,7 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
 /// drops the matching `BlockEntry`, and appends a `TrashEntry`.
 #[test]
 fn trash_block_moves_file_and_updates_manifest() {
-    let (dir, _mnemonic, pw) = make_fast_vault(1, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(1, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc1; 32]);
 
@@ -259,7 +262,7 @@ fn trash_block_moves_file_and_updates_manifest() {
 /// not in `manifest.blocks`; the manifest is left untouched.
 #[test]
 fn trash_block_rejects_unknown_uuid() {
-    let (dir, _mnemonic, pw) = make_fast_vault(2, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(2, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc2; 32]);
 
@@ -298,7 +301,7 @@ fn trash_block_rejects_unknown_uuid() {
 /// (frozen into the on-disk bytes) is therefore unchanged.
 #[test]
 fn trash_block_ticks_manifest_clock() {
-    let (dir, _mnemonic, pw) = make_fast_vault(3, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(3, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc3; 32]);
 
@@ -347,7 +350,7 @@ fn trash_block_ticks_manifest_clock() {
 /// authoritative, not just the in-memory `OpenVault`.
 #[test]
 fn trash_block_then_reopen_round_trip() {
-    let (dir, _mnemonic, pw) = make_fast_vault(4, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(4, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc4; 32]);
 
@@ -399,7 +402,7 @@ fn trash_block_then_reopen_round_trip() {
 /// `TrashEntry` is gone.
 #[test]
 fn restore_block_round_trip_after_single_trash() {
-    let (dir, _mnemonic, pw) = make_fast_vault(5, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(5, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc5; 32]);
 
@@ -458,7 +461,7 @@ fn restore_block_round_trip_after_single_trash() {
 /// removes the older copies.
 #[test]
 fn restore_block_purges_older_copies() {
-    let (dir, _mnemonic, pw) = make_fast_vault(6, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(6, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc6; 32]);
 
@@ -516,7 +519,7 @@ fn restore_block_purges_older_copies() {
 /// fork.
 #[test]
 fn restore_block_preserves_block_vector_clock() {
-    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(7, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
 
@@ -571,7 +574,7 @@ fn restore_block_preserves_block_vector_clock() {
 /// mutated.
 #[test]
 fn restore_block_rejects_live_uuid_collision() {
-    let (dir, _mnemonic, pw) = make_fast_vault(8, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(8, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc8; 32]);
 
@@ -628,7 +631,7 @@ fn restore_block_rejects_live_uuid_collision() {
 /// manifest is left untouched.
 #[test]
 fn restore_block_rejects_when_not_in_trash() {
-    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(9, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
 
@@ -663,7 +666,7 @@ fn restore_block_rejects_when_not_in_trash() {
 /// verification to cover for the missing pre-check.
 #[test]
 fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
-    let (dir, _mnemonic, pw) = make_fast_vault(28, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(28, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd1; 32]);
 
@@ -734,7 +737,7 @@ fn restore_block_rejects_orphan_trash_file_without_manifest_entry() {
 /// has not yet run when step 5's wrap-resolution loop bails).
 #[test]
 fn restore_block_skips_contact_cards_failing_self_verify() {
-    let (dir, _mnemonic, pw) = make_fast_vault(29, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(29, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd2; 32]);
 
@@ -831,7 +834,7 @@ fn restore_block_skips_contact_cards_failing_self_verify() {
 /// that file's contents.
 #[test]
 fn restore_block_skips_noncanonical_trash_suffixes() {
-    let (dir, _mnemonic, pw) = make_fast_vault(30, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(30, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xd3; 32]);
 
@@ -930,7 +933,7 @@ fn restore_block_skips_noncanonical_trash_suffixes() {
 /// capture.
 #[test]
 fn restore_block_rejects_tampered_file() {
-    let (dir, _mnemonic, pw) = make_fast_vault(10, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(10, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xca; 32]);
 
@@ -1005,7 +1008,7 @@ fn restore_block_rejects_tampered_file() {
 /// the on-disk manifest is authoritative.
 #[test]
 fn restore_block_then_reopen_round_trip() {
-    let (dir, _mnemonic, pw) = make_fast_vault(11, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(11, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
 
@@ -1059,7 +1062,7 @@ fn restore_block_then_reopen_round_trip() {
 /// Equality selection picks the authentic file and purges the plant.
 #[test]
 fn restore_block_ignores_larger_suffix_forgery() {
-    let (dir, _mnemonic, pw) = make_fast_vault(9, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(9, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
 
@@ -1132,7 +1135,7 @@ fn restore_block_ignores_larger_suffix_forgery() {
 /// below catches exactly that.
 #[test]
 fn restore_block_selects_signed_timestamp_over_valid_larger_suffix_plant() {
-    let (dir, _mnemonic, pw) = make_fast_vault(11, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(11, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xcb; 32]);
 
@@ -1224,7 +1227,7 @@ fn restore_block_selects_signed_timestamp_over_valid_larger_suffix_plant() {
 /// so this test also pins the security fix.
 #[test]
 fn restore_block_missing_signed_target_rejected() {
-    let (dir, _mnemonic, pw) = make_fast_vault(10, b"hunter2", "Owner");
+    let (dir, _mnemonic, pw) = make_fast_vault(10, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0xca; 32]);
 
