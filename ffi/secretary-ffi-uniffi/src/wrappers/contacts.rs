@@ -3,6 +3,7 @@
 
 /// uniffi dictionary projection of `secretary_ffi_bridge::ContactSummary`.
 /// All fields are non-secret public metadata.
+#[derive(Debug)]
 pub struct ContactSummary {
     pub contact_uuid: Vec<u8>,
     pub display_name: String,

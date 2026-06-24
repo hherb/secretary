@@ -22,7 +22,9 @@ pub fn import_contact_card(
 /// Share a block with a recipient by `new_recipient_uuid`. All cards are
 /// loaded from `contacts/` and re-verified before re-keying — no
 /// caller-supplied card bytes enter the trust path. Prefer over `share_block`.
-#[allow(clippy::too_many_arguments)]
+///
+/// `block_uuid`, `new_recipient_uuid`, and `device_uuid` must each be 16 bytes;
+/// passing any other length returns `VaultError::InvalidArgument`.
 pub fn share_block_to(
     identity: std::sync::Arc<UnlockedIdentity>,
     manifest: std::sync::Arc<OpenVaultManifest>,
