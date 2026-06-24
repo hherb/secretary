@@ -18,6 +18,7 @@
 
 mod share_block_helpers;
 
+use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::format_uuid_hyphenated;
 use secretary_ffi_bridge::{share_block, FfiVaultError};
 use std::fs;
@@ -428,7 +429,9 @@ fn share_block_raw_rejects_substituting_a_trusted_card() {
 
 #[test]
 fn share_block_raw_rejects_unsigned_new_card() {
-    // New card parses but fails verify_self → CardDecodeFailure (gate 1).
+    // New card parses cleanly but fails verify_self (both-halves gate) →
+    // CardDecodeFailure with a detail string proving the VERIFY path fired,
+    // not the CBOR-parse path.
     let (_tmp, identity, manifest) = fresh_writable_vault();
     save_one_record_block(
         &identity,
@@ -440,29 +443,42 @@ fn share_block_raw_rejects_unsigned_new_card() {
         NOW_MS_BASE,
     );
     let owner = manifest.owner_card_bytes().unwrap().unwrap();
-    let (_b, mut alice) = mint_external_card(0xB1, "Alice");
-    let n = alice.len();
-    alice[n - 1] ^= 0xFF; // still parses; self-sig now invalid
+    let (_b, alice_bytes) = mint_external_card(0xB1, "Alice");
+    // Corrupt the self_sig_ed field (inside the structure) so re-encoding
+    // stays valid CBOR while the Ed25519 signature is wrong.
+    let mut card = ContactCard::from_canonical_cbor(&alice_bytes).expect("genuine card must parse");
+    card.self_sig_ed[0] ^= 0xFF;
+    let tampered = card
+        .to_canonical_cbor()
+        .expect("re-encode of tampered card must succeed");
+    assert!(
+        ContactCard::from_canonical_cbor(&tampered).is_ok(),
+        "tampered card must still parse so the verify gate is what rejects it",
+    );
     let err = share_block(
         &identity,
         &manifest,
         NEW_BLOCK_UUID,
         std::slice::from_ref(&owner),
-        &alice,
+        &tampered,
         DEVICE_UUID,
         NOW_MS_BASE + 1,
     )
-    .expect_err("unsigned new card must reject");
-    assert!(
-        matches!(err, FfiVaultError::CardDecodeFailure { .. }),
-        "got {err:?}"
-    );
+    .expect_err("card with invalid self-sig must be rejected");
+    match err {
+        FfiVaultError::CardDecodeFailure { detail } => assert!(
+            detail.contains("self-signature"),
+            "must fail at verify gate, got: {detail}",
+        ),
+        other => panic!("expected CardDecodeFailure, got {other:?}"),
+    }
 }
 
 #[test]
 fn share_block_raw_rejects_unsigned_existing_card() {
-    // An existing card that parses but fails verify_self → CardDecodeFailure
-    // (gate 3), surfaced earlier than core's MissingRecipientCard.
+    // An existing card that parses cleanly but fails verify_self (both-halves
+    // gate) → CardDecodeFailure (gate 3), surfaced earlier than core's
+    // MissingRecipientCard. The detail string proves the VERIFY path fired.
     let (_tmp, identity, manifest) = fresh_writable_vault();
     save_one_record_block(
         &identity,
@@ -473,24 +489,37 @@ fn share_block_raw_rejects_unsigned_existing_card() {
         "v",
         NOW_MS_BASE,
     );
-    let mut owner = manifest.owner_card_bytes().unwrap().unwrap();
-    let n = owner.len();
-    owner[n - 1] ^= 0xFF; // tampered owner card in the existing list
+    let owner_bytes = manifest.owner_card_bytes().unwrap().unwrap();
+    // Corrupt the self_sig_ed field so re-encoding stays valid CBOR while the
+    // Ed25519 signature is wrong.
+    let mut owner_card =
+        ContactCard::from_canonical_cbor(&owner_bytes).expect("owner card must parse");
+    owner_card.self_sig_ed[0] ^= 0xFF;
+    let tampered_owner = owner_card
+        .to_canonical_cbor()
+        .expect("re-encode of tampered owner card must succeed");
+    assert!(
+        ContactCard::from_canonical_cbor(&tampered_owner).is_ok(),
+        "tampered owner card must still parse so the verify gate is what rejects it",
+    );
     let (_b, alice) = mint_external_card(0xB1, "Alice");
     let err = share_block(
         &identity,
         &manifest,
         NEW_BLOCK_UUID,
-        std::slice::from_ref(&owner),
+        std::slice::from_ref(&tampered_owner),
         &alice,
         DEVICE_UUID,
         NOW_MS_BASE + 1,
     )
-    .expect_err("unsigned existing card must reject");
-    assert!(
-        matches!(err, FfiVaultError::CardDecodeFailure { .. }),
-        "got {err:?}"
-    );
+    .expect_err("existing card with invalid self-sig must be rejected");
+    match err {
+        FfiVaultError::CardDecodeFailure { detail } => assert!(
+            detail.contains("self-signature"),
+            "must fail at verify gate, got: {detail}",
+        ),
+        other => panic!("expected CardDecodeFailure, got {other:?}"),
+    }
 }
 
 #[test]
