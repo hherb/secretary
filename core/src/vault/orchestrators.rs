@@ -1258,6 +1258,14 @@ fn rewrite_block_with_recipients(
     // calling share_block), we overwrite with the same canonical
     // bytes — no semantic difference. `revoke_block_recipient` passes
     // `None` (no new card is granted access).
+    //
+    // Trust contract (#206): callers MUST supply already-verified,
+    // non-substituting card bytes. This orchestrator writes `card_bytes`
+    // verbatim and does NOT itself guard against overwriting a trusted
+    // card with attacker-controlled keys. The FFI projection enforces this
+    // in `secretary-ffi-bridge`'s `share::share_block` (verify_self every
+    // card + a TOFU non-overwrite guard); in-repo Rust callers must uphold
+    // the same contract or route through the bridge / `share_block_to`.
     if let Some((card_bytes, card_uuid)) = card_to_persist {
         let contacts_dir = folder.join(CONTACTS_SUBDIR);
         std::fs::create_dir_all(&contacts_dir).map_err(|e| VaultError::Io {
