@@ -69,16 +69,17 @@ class UniffiVaultOpenPort(
 
 /**
  * The real [VaultSession]: owns the decrypted [OpenVaultManifest] + [UnlockedIdentity] handles,
- * plus every [BlockReadOutput] retained from [readBlock]. [blockSummaries] reads in-memory manifest
- * metadata. [readBlock] decrypts ONE block, retains it in [openBlocks] (NO `.use{}`), and builds
- * one [RevealableField] per field whose `reveal` lambda calls `expose_text`/`expose_bytes` ON DEMAND
- * — no secret value is materialized until the user taps. [wipe] zeroizes blocks → manifest →
- * identity in that order (mirrors iOS UniffiVaultSession). Kotlin mirror of iOS `UniffiVaultSession`.
+ * plus the single on-screen [BlockReadOutput] retained from [readBlock] (at most one at a time).
+ * [blockSummaries] reads in-memory manifest metadata. [readBlock] decrypts ONE block, evicts the
+ * prior [currentBlock], retains the new one (NO `.use{}`), and builds one [RevealableField] per
+ * field whose `reveal` lambda calls `expose_text`/`expose_bytes` ON DEMAND — no secret value is
+ * materialized until the user taps. [wipe] zeroizes the current block → manifest → identity in
+ * that order (mirrors iOS UniffiVaultSession). Kotlin mirror of iOS `UniffiVaultSession`.
  *
  * Thread-safety: unlike iOS (whose `readBlock` is synchronous), Android runs [readBlock] on
  * [ioDispatcher] while [wipe] runs on the main thread (the slice-7 `ON_STOP` lock-on-background).
- * Every touch of the shared FFI state — the `identity`/`manifest` handles and the [openBlocks]
- * list — is therefore serialized under [sessionLock], and a [wiped] flag makes a read that loses
+ * Every touch of the shared FFI state — the `identity`/`manifest` handles and [currentBlock] —
+ * is therefore serialized under [sessionLock], and a [wiped] flag makes a read that loses
  * the race to a concurrent [wipe] zeroize its just-decrypted block instead of leaving plaintext
  * resident after a lock the caller believed cleared everything.
  */
@@ -90,7 +91,7 @@ class UniffiVaultSession(
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
 
-    /** Serializes all access to the FFI handles + [openBlocks] across the IO dispatcher (reads)
+    /** Serializes all access to the FFI handles + [currentBlock] across the IO dispatcher (reads)
      *  and the main thread (wipe). The held section spans the block decrypt, so a concurrent
      *  [wipe] waits for an in-flight read (bounded — one block decrypt is milliseconds). */
     private val sessionLock = Any()
@@ -101,11 +102,11 @@ class UniffiVaultSession(
     /** Resolved once per session (first write) so every write stamps the same device UUID. */
     private var cachedDeviceUuid: ByteArray? = null
 
-    /** Decrypted blocks retained so the per-field reveal closures (which capture a FieldHandle)
-     *  stay valid until wipe(). Mirror of iOS UniffiVaultSession.openBlocks. NOTE: this currently
-     *  accumulates every visited block's plaintext until wipe() (no per-navigation eviction); the
-     *  cross-platform residency tradeoff is tracked in #251. */
-    private val openBlocks: MutableList<BlockReadOutput> = mutableListOf()
+    /** The single retained decrypted block — the on-screen one. Bounding to one block (not a
+     *  growing list) makes "≤1 block resident" a type-level invariant and dedups re-selection.
+     *  The VM clears the reveal map on selectBlock, so no live reveal closure references a prior
+     *  block when we evict it here. Mirror of iOS UniffiVaultSession.currentBlock (#251). */
+    private var currentBlock: BlockReadOutput? = null
 
     override fun vaultUuidHex(): String = hexOfBytes(manifest.vaultUuid())
 
@@ -125,7 +126,11 @@ class UniffiVaultSession(
                         block.wipe()
                         return@synchronized emptyList<RecordSummaryView>()
                     }
-                    openBlocks += block   // retained (NO .use{}) — reveal closures depend on it
+                    // Decrypt-first ordering: `block` is decoded above; a thrown read left the
+                    // prior block retained. Evict it before retaining the new one (NO .use{} —
+                    // reveal closures depend on currentBlock until wipe()).
+                    currentBlock?.wipe()
+                    currentBlock = block
                     val count = block.recordCount().toInt()
                     (0 until count).map { i ->
                         // Record is a transient Kotlin wrapper; the FieldHandle secrets it
@@ -249,8 +254,8 @@ class UniffiVaultSession(
         // repeatedly, e.g. ON_STOP then explicit lock).
         synchronized(sessionLock) {
             wiped = true
-            openBlocks.forEach { it.wipe() }
-            openBlocks.clear()
+            currentBlock?.wipe()
+            currentBlock = null
             manifest.wipe()
             identity.wipe()
         }
