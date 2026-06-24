@@ -184,6 +184,12 @@ pub fn share_block(
 /// - file exists, byte-identical → `Ok` (legit re-share);
 /// - file absent → `Ok` (trust-on-first-use of a brand-new contact);
 /// - read error other than not-found → `FolderInvalid`.
+///
+/// The comparison is intentionally against the caller's RAW `new_bytes`, not
+/// a re-canonicalized encoding of the decoded card. This is fail-closed: a
+/// non-canonical re-encoding of a genuine card is treated as a substitution
+/// (rejected) rather than silently accepted. Do NOT "fix" this to compare
+/// `new_decoded.to_canonical_cbor()` — that would weaken the guard.
 fn guard_new_recipient_no_substitution(
     vault_folder: &std::path::Path,
     card_uuid: &[u8; 16],
