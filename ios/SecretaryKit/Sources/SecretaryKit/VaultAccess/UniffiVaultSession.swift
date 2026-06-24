@@ -104,7 +104,8 @@ public final class UniffiVaultSession: VaultSession {
     private func makeFieldView(_ handle: FieldHandle) -> FieldView {
         let kind: FieldView.Kind = handle.isText() ? .text : .bytes
         // `handle` is captured: calling reveal() invokes expose_* ON DEMAND.
-        // The owning BlockReadOutput is retained in `currentBlock` until wipe() or the next readBlock().
+        // The owning BlockReadOutput is retained in `currentBlock` until wipe()
+        // or the next readBlock().
         return FieldView(name: handle.name(), kind: kind) {
             switch kind {
             case .text:

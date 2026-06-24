@@ -44,6 +44,8 @@ class RevealResidencyInstrumentedTest {
             session.readBlock(blockUuid, false)
 
             // Pre-fix: prior block still in openBlocks → still reveals. Post-fix: throws.
+            // (No-growth on re-selection is enforced by the `currentBlock: BlockReadOutput?`
+            // type itself — a runtime count assertion would be redundant.)
             assertThrows(VaultBrowseError.CorruptVault::class.java) { staleField.reveal() }
             Unit
         } finally {

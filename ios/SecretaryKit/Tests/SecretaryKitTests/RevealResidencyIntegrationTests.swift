@@ -47,6 +47,8 @@ final class RevealResidencyIntegrationTests: XCTestCase {
 
         // Pre-fix: the prior block stays in `openBlocks`, so this still yields plaintext.
         // Post-fix: the prior block was wiped, so reveal() throws.
+        // (No-growth on re-selection is enforced by the `currentBlock: BlockReadOutput?`
+        // type itself — a runtime count assertion would be redundant.)
         XCTAssertThrowsError(try staleField.reveal(),
             "stale reveal closure must fail after navigating away (block evicted)")
     }
