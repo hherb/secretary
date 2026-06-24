@@ -52,7 +52,7 @@ File: `ffi/secretary-ffi-bridge/src/share/orchestration.rs`. Before calling `cor
 
 The guard is a pure helper (`fn new_recipient_overwrite_ok(vault_folder, card_uuid, new_bytes) -> Result<(), FfiVaultError>` or similar) so it is unit-testable. `share_block_to` flows through this same hardened `share::share_block` with disk-loaded, already-verified, byte-identical bytes → never false-rejects.
 
-The existing `existing_recipient_cards` handling is unchanged (see §6 non-goals).
+3. **Verify every existing recipient card** — route each entry of `existing_recipient_cards` through `read_verified_card` (both halves) instead of decode-only, so the *entire* raw `share_block` card-input surface is uniformly self-verified before any key is trusted for re-keying. Malformed/unsigned → `CardDecodeFailure`. This upholds the workspace-wide "both halves verified" property at the FFI boundary and surfaces a clear typed error earlier than core's fingerprint-coverage mismatch (`MissingRecipientCard`) would. Legitimate paths are unaffected: `share_block_to` already loads existing cards via `load_card_bytes` (which calls `read_verified_card`), so re-verification is redundant-but-harmless and never false-rejects a genuinely-signed card.
 
 ### B. Core — doc-contract only
 
@@ -98,6 +98,7 @@ Write tests first; each reproduces a gap or pins a behavior.
 - new card identical to the on-disk card → allowed (no false reject);
 - new card UUID absent from `contacts/` → allowed (TOFU first contact);
 - unsigned/malformed new card → `CardDecodeFailure`;
+- unsigned/malformed *existing* recipient card → `CardDecodeFailure` (the new §3.A.3 gate, distinct from core's `MissingRecipientCard`);
 - `share_block_to` happy path (import then share-by-uuid) succeeds;
 - `import_contact_card` duplicate UUID → `ContactAlreadyExists`.
 
@@ -118,7 +119,6 @@ bash ffi/secretary-ffi-uniffi/tests/kotlin/run.sh
 
 ## 6. Explicit non-goals
 
-- **Not** verifying the *existing* recipient cards inside raw `share_block`. The cited vulnerability is the new-recipient overwrite; existing cards are fingerprint-matched against the on-disk recipient set (`MissingRecipientCard`), and `share_block_to` verifies all cards from disk anyway. Noted as a possible follow-up.
 - **Not** projecting the other already-built contact primitives (`enumerate_contact_cards`, `delete_contact_card`, `block_recipients`, `owner_card_export`, `revoke_block_from`, `contact_blocks`) — out of scope for the security fix.
 - **Not** removing raw `share_block` from the FFI surface — it is load-bearing for the smoke/conformance harness and the pinned uniffi checksum.
 
