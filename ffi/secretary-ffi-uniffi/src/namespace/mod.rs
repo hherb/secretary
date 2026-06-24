@@ -14,6 +14,9 @@ use zeroize::Zeroize;
 mod block_crud;
 pub use block_crud::{create_block, move_record, rename_block};
 
+mod contacts;
+pub use contacts::{import_contact_card, share_block_to};
+
 mod record_edit;
 pub use record_edit::{append_record, edit_record, resurrect_record, tombstone_record};
 
@@ -584,7 +587,7 @@ pub fn remove_device_slot(folder_path: Vec<u8>, device_uuid: Vec<u8>) -> Result<
 
 /// Validate a 16-byte UUID slice; surface wrong length as
 /// [`VaultError::InvalidArgument`] with the field name in the detail.
-pub(super) fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
+pub(crate) fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
     bytes.try_into().map_err(|_| VaultError::InvalidArgument {
         detail: format!("{field} must be 16 bytes, got {}", bytes.len()),
     })

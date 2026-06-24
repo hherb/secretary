@@ -158,6 +158,47 @@ func runShareBlockAsserts(env: SmokeEnv) {
         check(false, "share_block missing-existing-card setup threw \(error)")
     }
 
+    // Assert 31 (#206): verified safe path — import Alice, then
+    // share_block_to by UUID; manifest grows to 2 recipients. A second
+    // import of the same card → ContactAlreadyExists.
+    do {
+        let aliceBytes = try _aliceCardBytes(env: env)
+        let (identity, manifest, tmp) = try _freshWritableVault(env: env)
+        defer { identity.wipe() }
+        defer { manifest.wipe() }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try saveBlock(
+            identity: identity, manifest: manifest,
+            input: BlockInput(blockUuid: shareBlockBlockUuid, blockName: "shared", records: []),
+            deviceUuid: shareBlockDeviceUuid, nowMs: 1_000
+        )
+        let summary = try importContactCard(manifest: manifest, cardBytes: aliceBytes)
+        check(summary.contactUuid.count == 16, "import_contact_card → 16-byte uuid")
+
+        try shareBlockTo(
+            identity: identity, manifest: manifest,
+            blockUuid: shareBlockBlockUuid,
+            newRecipientUuid: summary.contactUuid,
+            deviceUuid: shareBlockDeviceUuid, nowMs: 2_000
+        )
+        let entry = manifest.findBlock(blockUuid: shareBlockBlockUuid)
+        check(entry?.recipientUuids.count == 2, "share_block_to → 2 recipients")
+
+        do {
+            _ = try importContactCard(manifest: manifest, cardBytes: aliceBytes)
+            check(false, "duplicate import should throw ContactAlreadyExists")
+        } catch let e as VaultError {
+            if case .ContactAlreadyExists = e {
+                check(true, "duplicate import → ContactAlreadyExists")
+            } else {
+                check(false, "duplicate import wrong variant: \(e)")
+            }
+        }
+    } catch {
+        check(false, "#206 safe-path smoke threw \(error)")
+    }
+
     // Assert 30: share_block with garbage card bytes → CardDecodeFailure.
     do {
         let aliceBytes = try _aliceCardBytes(env: env)
