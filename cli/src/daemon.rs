@@ -324,8 +324,8 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 /// unit-tested because its only logic is the closure composition —
 /// the integration test suite (Task 10) will exercise it end-to-end
 /// against `golden_vault_001`. Each individual piece (`NotifyWatcher`,
-/// `debounce_step`, `wait_for_ready`, `run_one`) is unit-tested in
-/// place.
+/// `debounce_step`, `wait_for_ready`, `run_one`, `after_sync`) is
+/// unit-tested in place.
 #[allow(clippy::too_many_arguments)] // production seam — all params are distinct, non-groupable
 pub fn run_against_vault(
     vault_folder: &Path,
@@ -505,6 +505,26 @@ mod tests {
             after_sync(Ok(outcome), &state, &mut sink);
             assert_eq!(saves, 0);
         }
+    }
+
+    /// `after_sync` swallows a save-sink failure on an advancing arm.
+    /// The in-memory clock still advanced; a transient FS error must not
+    /// propagate — the next advancing pass will retry the persist.
+    #[test]
+    fn after_sync_swallows_save_error() {
+        let state = SyncState::empty([4; 16]);
+        let mut sink_called = false;
+        let mut sink = |_: &SyncState| {
+            sink_called = true;
+            Err(StateError::Io(std::io::Error::other("disk full")))
+        };
+        // AppliedAutomatically is an advancing arm — the sink is invoked
+        // but its Err must be swallowed (after_sync returns (), not a panic).
+        after_sync(Ok(RunOutcome::AppliedAutomatically), &state, &mut sink);
+        assert!(sink_called, "sink must be invoked on an advancing arm");
+        // No assertion needed for the return value: if after_sync propagated
+        // the error it would not compile (returns ()), and if it panicked
+        // the test would fail.
     }
 
     #[test]

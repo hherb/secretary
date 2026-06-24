@@ -91,7 +91,8 @@ impl RunOutcome {
     /// and therefore must be persisted before the next daemon iteration.
     /// Matches the C.2 spec §"State persistence" persist-list (extended
     /// to include `SilentMerge`, which post-dates the spec text but does
-    /// advance the clock — see `run_one`'s state-mutation contract).
+    /// advance the clock — see `run_one`'s `# State mutation contract`
+    /// doc section for the per-variant details).
     #[must_use]
     pub fn advanced_state(&self) -> bool {
         matches!(

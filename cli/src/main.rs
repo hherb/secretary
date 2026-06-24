@@ -154,7 +154,8 @@ fn run(cli: Cli) -> ExitCode {
         Err(e) => {
             error!("final state save failed: {e}");
             // Don't override a more specific non-success code (e.g.
-            // RollbackRejected, LockfileHeld); only escalate a Success.
+            // RollbackRejected, EvidenceStale); only escalate a Success.
+            // (LockfileHeld returns earlier at line ~133 and never reaches here.)
             if matches!(exit_code, ExitCode::Success) {
                 ExitCode::GenericError
             } else {
@@ -353,4 +354,34 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secretary_core::sync::RollbackEvidence;
+
+    /// `RollbackRejected` (with empty evidence) must map to the
+    /// `RollbackRejected` exit code, not `Success`.
+    #[test]
+    fn outcome_to_exit_code_rollback_rejected_returns_rollback_code() {
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        assert!(matches!(
+            outcome_to_exit_code(RunOutcome::RollbackRejected(ev)),
+            ExitCode::RollbackRejected
+        ));
+    }
+
+    /// Non-rollback arms (e.g. `AppliedAutomatically`) must map to
+    /// `Success` — the disk state advanced normally.
+    #[test]
+    fn outcome_to_exit_code_applied_automatically_returns_success() {
+        assert!(matches!(
+            outcome_to_exit_code(RunOutcome::AppliedAutomatically),
+            ExitCode::Success
+        ));
+    }
 }
