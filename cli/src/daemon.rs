@@ -35,8 +35,9 @@ use std::time::{Duration, Instant};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::{SyncError, SyncState};
 use secretary_core::unlock::UnlockedIdentity;
+use secretary_core::vault::block::VectorClockEntry;
 
-use crate::pipeline::run_one;
+use crate::pipeline::{run_one, RunOutcome};
 use crate::veto::VetoUx;
 use crate::watcher::debounce::step as debounce_step;
 use crate::watcher::notify_driver::NotifyWatcher;
@@ -200,6 +201,60 @@ fn compute_wait(
     wait
 }
 
+/// What (if anything) a successful [`RunOutcome`] should announce to the
+/// operator. Pure classification — the caller maps it to a `tracing`
+/// call. Kept separate from the emission so the decision is unit-testable
+/// without a subscriber, and so `pipeline.rs` stays free of logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutcomeLog {
+    /// Manifest-rollback attack indicator (threat-model §3.1). Carries
+    /// the two clocks an operator needs for forensics.
+    RollbackRejected {
+        disk: Vec<VectorClockEntry>,
+        local: Vec<VectorClockEntry>,
+    },
+    /// `n > 0` tombstone vetoes were auto-resolved — a peer record
+    /// deletion was overridden this pass.
+    VetoesResolved(usize),
+}
+
+/// Classify an `Ok(RunOutcome)` into the operator-visible log event, if
+/// any. The silent arms (`NothingToDo`, `AppliedAutomatically`,
+/// `SilentMerge`, and `MergedAndCommitted { vetoes_resolved: 0 }`) return
+/// `None`.
+fn outcome_log(outcome: &RunOutcome) -> Option<OutcomeLog> {
+    match outcome {
+        RunOutcome::RollbackRejected(ev) => Some(OutcomeLog::RollbackRejected {
+            disk: ev.disk_vector_clock.clone(),
+            local: ev.local_highest_seen.clone(),
+        }),
+        RunOutcome::MergedAndCommitted { vetoes_resolved } if *vetoes_resolved > 0 => {
+            Some(OutcomeLog::VetoesResolved(*vetoes_resolved))
+        }
+        RunOutcome::NothingToDo
+        | RunOutcome::AppliedAutomatically
+        | RunOutcome::SilentMerge
+        | RunOutcome::MergedAndCommitted { .. } => None,
+    }
+}
+
+/// Emit the operator-visible log line (if any) for a successful sync
+/// outcome. The side-effecting edge over the pure [`outcome_log`].
+fn log_outcome(outcome: &RunOutcome) {
+    match outcome_log(outcome) {
+        Some(OutcomeLog::RollbackRejected { disk, local }) => tracing::warn!(
+            disk_clock = ?disk,
+            local_clock = ?local,
+            "manifest rollback rejected (threat-model §3.1 attack indicator); daemon continues",
+        ),
+        Some(OutcomeLog::VetoesResolved(n)) => tracing::warn!(
+            vetoes_resolved = n,
+            "auto-resolved {n} tombstone veto(es): a peer record deletion was overridden",
+        ),
+        None => {}
+    }
+}
+
 /// Threshold of consecutive `wait_for_ready` → `Ok(false)` returns that
 /// triggers a single operator-visible warn log. After this many
 /// debounce-fired or periodic-fired cycles in a row where the folder
@@ -290,8 +345,9 @@ pub fn run_against_vault(
                     return;
                 }
             }
-            if let Err(e) = run_one(vault_folder, identity, password, state, veto_ux, now_ms()) {
-                tracing::warn!("pipeline error (continuing): {e}");
+            match run_one(vault_folder, identity, password, state, veto_ux, now_ms()) {
+                Ok(outcome) => log_outcome(&outcome),
+                Err(e) => tracing::warn!("pipeline error (continuing): {e}"),
             }
         },
     );
@@ -350,6 +406,37 @@ mod tests {
     //! under a second of real time.
 
     use super::*;
+    use crate::pipeline::RunOutcome;
+    use secretary_core::sync::RollbackEvidence;
+
+    #[test]
+    fn outcome_log_rollback_carries_clocks() {
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        let log = outcome_log(&RunOutcome::RollbackRejected(ev));
+        assert!(matches!(log, Some(OutcomeLog::RollbackRejected { .. })));
+    }
+
+    #[test]
+    fn outcome_log_vetoes_only_when_nonzero() {
+        assert_eq!(
+            outcome_log(&RunOutcome::MergedAndCommitted { vetoes_resolved: 3 }),
+            Some(OutcomeLog::VetoesResolved(3))
+        );
+        assert_eq!(
+            outcome_log(&RunOutcome::MergedAndCommitted { vetoes_resolved: 0 }),
+            None
+        );
+    }
+
+    #[test]
+    fn outcome_log_silent_arms_are_none() {
+        assert_eq!(outcome_log(&RunOutcome::NothingToDo), None);
+        assert_eq!(outcome_log(&RunOutcome::AppliedAutomatically), None);
+        assert_eq!(outcome_log(&RunOutcome::SilentMerge), None);
+    }
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;

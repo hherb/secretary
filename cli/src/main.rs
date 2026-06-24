@@ -333,7 +333,7 @@ fn dispatch_run_subcommand(
 /// command completed.
 fn outcome_to_exit_code(outcome: RunOutcome) -> ExitCode {
     match outcome {
-        RunOutcome::RollbackRejected => ExitCode::RollbackRejected,
+        RunOutcome::RollbackRejected(_) => ExitCode::RollbackRejected,
         RunOutcome::NothingToDo
         | RunOutcome::AppliedAutomatically
         | RunOutcome::SilentMerge
