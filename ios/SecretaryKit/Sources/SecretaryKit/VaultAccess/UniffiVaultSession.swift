@@ -3,15 +3,20 @@ import Security
 import SecretaryVaultAccess
 
 /// Real `VaultSession` over the uniffi `OpenVaultOutput` (identity + manifest)
-/// plus `readBlock`. Retains every `BlockReadOutput` it decodes so the
-/// per-field `reveal` closures (which capture an FFI `FieldHandle`) stay valid
-/// until `wipe()`. `wipe()` releases blocks, then manifest, then identity.
+/// plus `readBlock`. Retains only the most-recently-decoded `BlockReadOutput`
+/// (`currentBlock`) so the per-field `reveal` closures (which capture an FFI
+/// `FieldHandle`) stay valid while the block is on screen. Prior blocks are
+/// wiped on each `readBlock` call (#251). `wipe()` releases the current block,
+/// then manifest, then identity.
 public final class UniffiVaultSession: VaultSession {
     private let identity: UnlockedIdentity
     private let manifest: OpenVaultManifest
     private let deviceUuids: DeviceUuidProviding?
-    /// Retained decrypted-block handles, so reveal closures remain valid.
-    private var openBlocks: [BlockReadOutput] = []
+    /// The single retained decrypted block — the on-screen one. Bounding to one
+    /// block (not a growing list) makes "≤1 block resident" a type-level invariant
+    /// and dedups re-selection. The VM clears the reveal map on `selectBlock`, so no
+    /// live reveal closure references a prior block when we evict it here (#251).
+    private var currentBlock: BlockReadOutput?
     /// Cached per this session so every write stamps the same device UUID.
     private var cachedDeviceUuid: [UInt8]?
 
@@ -53,7 +58,10 @@ public final class UniffiVaultSession: VaultSession {
         } catch let e as VaultError {
             throw mapVaultAccessError(e)
         }
-        openBlocks.append(out)  // keep alive for reveal closures + wipe
+        // Decrypt-first ordering: `out` is already decoded above, so a thrown read
+        // left the prior block retained. Now evict it before retaining the new one.
+        currentBlock?.wipe()
+        currentBlock = out  // keep alive for reveal closures + wipe
         let count = out.recordCount()
         var records: [RecordView] = []
         records.reserveCapacity(Int(count))
@@ -96,7 +104,7 @@ public final class UniffiVaultSession: VaultSession {
     private func makeFieldView(_ handle: FieldHandle) -> FieldView {
         let kind: FieldView.Kind = handle.isText() ? .text : .bytes
         // `handle` is captured: calling reveal() invokes expose_* ON DEMAND.
-        // The owning BlockReadOutput is retained in `openBlocks` until wipe().
+        // The owning BlockReadOutput is retained in `currentBlock` until wipe() or the next readBlock().
         return FieldView(name: handle.name(), kind: kind) {
             switch kind {
             case .text:
@@ -114,8 +122,8 @@ public final class UniffiVaultSession: VaultSession {
     }
 
     public func wipe() {
-        for b in openBlocks { b.wipe() }
-        openBlocks.removeAll()
+        currentBlock?.wipe()
+        currentBlock = nil
         manifest.wipe()
         identity.wipe()
     }
