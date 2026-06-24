@@ -41,6 +41,12 @@ const STATE_FILE_EXTENSION: &str = "state.cbor";
 const LOCK_FILE_EXTENSION: &str = "lock";
 const VAULT_UUID_HEX_LEN: usize = 32;
 
+/// Mode the state directory is created with on first run (Unix only).
+/// C.2 spec §"State persistence": "Directory created on first run with
+/// mode 0700 (Unix)." Non-secret metadata, but the spec/code divergence
+/// is resolved in favour of the spec.
+const STATE_DIR_MODE: u32 = 0o700;
+
 #[derive(Debug, Error)]
 pub enum StateError {
     #[error("I/O error reading or writing state file: {0}")]
@@ -56,6 +62,101 @@ pub enum StateError {
     Encode(SyncError),
     #[error("lockfile {0} already held by another secretary-sync process")]
     LockfileHeld(PathBuf),
+}
+
+/// Why a usable state directory could not be established. Distinct from
+/// [`StateError`] (I/O / decode / lock): these are operator
+/// misconfigurations caught before any vault work, mapped by `main` to
+/// the usage exit code.
+#[derive(Debug, Error)]
+pub enum StateDirError {
+    #[error(
+        "could not resolve a state directory (no --state-dir given and no OS data dir available); \
+         pass --state-dir to a host-local path outside the vault folder"
+    )]
+    Unresolvable,
+    #[error(
+        "refusing to place rollback-detection state inside the vault folder \
+         (state dir {state_dir} is within {vault}); pass --state-dir to a host-local path \
+         outside the vault"
+    )]
+    InsideVault { state_dir: String, vault: String },
+}
+
+/// Absolute, lexically-normalized form of `p`: joins the current dir if
+/// relative, then folds `.` and `..` components. Does NOT resolve
+/// symlinks — this is a misconfiguration guard, not a defence against an
+/// attacker who can plant symlinks on the operator's local filesystem
+/// (the in-scope adversary controls the synced folder's *contents*, not
+/// the host's FS layout).
+fn normalize_abs(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(p)
+    };
+    let mut out = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `true` iff `child` is `ancestor` or lives beneath it, compared over
+/// the lexically-normalized absolute forms.
+fn is_within(child: &Path, ancestor: &Path) -> bool {
+    normalize_abs(child).starts_with(normalize_abs(ancestor))
+}
+
+/// Resolve the state directory. `explicit` is `--state-dir`; `os_default`
+/// is [`default_state_dir`]. An explicit path always wins (even `.` —
+/// an informed operator choice). Otherwise the OS data dir. If neither is
+/// available the result is [`StateDirError::Unresolvable`] — there is
+/// **no** silent current-working-directory fallback. The resolved path is
+/// rejected with [`StateDirError::InsideVault`] if it lies within
+/// `vault_folder`.
+pub fn resolve_state_dir(
+    explicit: Option<PathBuf>,
+    os_default: Option<PathBuf>,
+    vault_folder: &Path,
+) -> Result<PathBuf, StateDirError> {
+    let dir = explicit.or(os_default).ok_or(StateDirError::Unresolvable)?;
+    if is_within(&dir, vault_folder) {
+        return Err(StateDirError::InsideVault {
+            state_dir: dir.display().to_string(),
+            vault: vault_folder.display().to_string(),
+        });
+    }
+    Ok(dir)
+}
+
+/// Create `path` and any missing parents. On Unix the directory is
+/// created with mode [`STATE_DIR_MODE`] (0700); other platforms use a
+/// plain recursive create. An already-existing directory is left as-is
+/// (its mode is not changed), matching the spec wording "created on first
+/// run with mode 0700".
+fn create_dir_secure(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(STATE_DIR_MODE)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
 }
 
 /// 16-byte vault UUID → lowercase hex string (32 chars, no separator).
@@ -132,7 +233,7 @@ pub fn load(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<SyncState, StateEr
 /// Uses `tempfile::NamedTempFile::persist` for rename(2) / MoveFileExW
 /// semantics — same `=3.27.0` exact pin as the vault format layer.
 pub fn save(state_dir: &Path, state: &SyncState) -> Result<(), StateError> {
-    fs::create_dir_all(state_dir)?;
+    create_dir_secure(state_dir)?;
     let final_path = state_file_path(state_dir, state.vault_uuid);
     let bytes = state.to_canonical_cbor().map_err(StateError::Encode)?;
 
@@ -156,7 +257,7 @@ impl LockfileGuard {
     /// Returns `Err(StateError::LockfileHeld)` if another process already
     /// holds it.
     pub fn acquire(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<Self, StateError> {
-        fs::create_dir_all(state_dir)?;
+        create_dir_secure(state_dir)?;
         let path = lock_file_path(state_dir, vault_uuid);
         let file = OpenOptions::new()
             .create(true)
@@ -317,5 +418,71 @@ mod tests {
             matches!(err, StateError::Decode(_)),
             "expected Decode, got {err:?}"
         );
+    }
+
+    #[test]
+    fn is_within_detects_nested_and_rejects_sibling() {
+        assert!(is_within(
+            Path::new("/vault/sub/state"),
+            Path::new("/vault")
+        ));
+        assert!(is_within(Path::new("/vault"), Path::new("/vault")));
+        assert!(!is_within(Path::new("/other/state"), Path::new("/vault")));
+    }
+
+    #[test]
+    fn is_within_folds_parent_dir_escape() {
+        // /vault/../else normalizes out of /vault.
+        assert!(!is_within(Path::new("/vault/../else"), Path::new("/vault")));
+    }
+
+    #[test]
+    fn resolve_explicit_wins_even_if_no_os_default() {
+        let got = resolve_state_dir(
+            Some(PathBuf::from("/etc/secretary")),
+            None,
+            Path::new("/vault"),
+        )
+        .unwrap();
+        assert_eq!(got, PathBuf::from("/etc/secretary"));
+    }
+
+    #[test]
+    fn resolve_falls_back_to_os_default() {
+        let got = resolve_state_dir(
+            None,
+            Some(PathBuf::from("/home/u/.local")),
+            Path::new("/vault"),
+        )
+        .unwrap();
+        assert_eq!(got, PathBuf::from("/home/u/.local"));
+    }
+
+    #[test]
+    fn resolve_unresolvable_when_no_source() {
+        let err = resolve_state_dir(None, None, Path::new("/vault")).unwrap_err();
+        assert!(matches!(err, StateDirError::Unresolvable));
+    }
+
+    #[test]
+    fn resolve_rejects_state_dir_inside_vault() {
+        let err = resolve_state_dir(
+            Some(PathBuf::from("/vault/state")),
+            None,
+            Path::new("/vault"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, StateDirError::InsideVault { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_dir_secure_sets_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempDir::new().unwrap();
+        let dir = base.path().join("nested").join("sync");
+        create_dir_secure(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, STATE_DIR_MODE);
     }
 }
