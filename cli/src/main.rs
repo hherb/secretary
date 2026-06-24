@@ -22,12 +22,12 @@
 //! [`secretary_cli::pipeline::run_one`]'s state-mutation contract.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode as ProcExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use tracing::{error, warn};
+use tracing::error;
 
 use secretary_cli::args::{Cli, Command, CommonArgs, RunArgs};
 use secretary_cli::daemon::{self, DaemonConfig, DEFAULT_SHUTDOWN_POLL_INTERVAL};
@@ -48,12 +48,6 @@ const VAULT_TOML_FILENAME: &str = "vault.toml";
 /// folder. Spec: `docs/vault-format.md` §5 (note the `.enc` extension —
 /// AEAD-sealed, not raw CBOR).
 const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
-/// Fallback `--state-dir` when neither `--state-dir` nor
-/// `dirs::data_dir()` produces a path. The current working directory is
-/// a safe last-resort that lets minimal headless installs (no `$HOME`,
-/// no XDG vars) at least run; the operator can pin a better location
-/// via `--state-dir` once they notice the state-file sprawl.
-const STATE_DIR_FALLBACK: &str = ".";
 
 fn main() -> ProcExitCode {
     let cli = Cli::parse();
@@ -110,7 +104,15 @@ fn run(cli: Cli) -> ExitCode {
         Err(e) => return fail_generic(format_args!("decode vault.toml failed: {e}")),
     };
 
-    let state_dir = resolve_state_dir(common);
+    let state_dir =
+        match state::resolve_state_dir(common.state_dir.clone(), state::default_state_dir(), vault)
+        {
+            Ok(d) => d,
+            Err(e) => {
+                error!("{e}");
+                return ExitCode::UsageError;
+            }
+        };
     let mut state = match state::load(&state_dir, vault_uuid) {
         Ok(s) => s,
         Err(e) => return fail_generic(format_args!("state load failed: {e}")),
@@ -141,14 +143,26 @@ fn run(cli: Cli) -> ExitCode {
             &identity,
             &password,
             &mut state,
+            &state_dir,
             interactive,
         ),
         None => dispatch_once_subcommand(vault, &identity, &password, &mut state, interactive),
     };
 
-    if let Err(e) = state::save(&state_dir, &state) {
-        warn!("final state save failed: {e}");
-    }
+    let exit_code = match state::save(&state_dir, &state) {
+        Ok(()) => exit_code,
+        Err(e) => {
+            error!("final state save failed: {e}");
+            // Don't override a more specific non-success code (e.g.
+            // RollbackRejected, EvidenceStale); only escalate a Success.
+            // (LockfileHeld returns earlier at line ~133 and never reaches here.)
+            if matches!(exit_code, ExitCode::Success) {
+                ExitCode::GenericError
+            } else {
+                exit_code
+            }
+        }
+    };
 
     exit_code
 }
@@ -169,20 +183,6 @@ fn decompose(cmd: &Command) -> (&CommonArgs, &Path, Option<&RunArgs>) {
             vault_folder,
         } => (common, vault_folder.as_path(), Some(run_args)),
     }
-}
-
-/// Resolve the state directory using the documented precedence:
-/// `--state-dir` ⟶ `dirs::data_dir()`-derived default ⟶
-/// [`STATE_DIR_FALLBACK`]. Falling back to `.` rather than erroring
-/// keeps minimal headless installs (no `$HOME`, no XDG vars) at least
-/// runnable; the operator can pin a real location via `--state-dir`
-/// once they notice the sprawl.
-fn resolve_state_dir(common: &CommonArgs) -> PathBuf {
-    common
-        .state_dir
-        .clone()
-        .or_else(state::default_state_dir)
-        .unwrap_or_else(|| PathBuf::from(STATE_DIR_FALLBACK))
 }
 
 /// Extract the 16-byte `vault_uuid` from already-read `vault.toml`
@@ -278,6 +278,7 @@ fn dispatch_run_subcommand(
     identity: &UnlockedIdentity,
     password: &SecretBytes,
     state: &mut SyncState,
+    state_dir: &Path,
     interactive: bool,
 ) -> ExitCode {
     let guard = match cli_signal::install_shutdown_handlers() {
@@ -303,6 +304,7 @@ fn dispatch_run_subcommand(
             password,
             state,
             &mut ux,
+            state_dir,
             config,
             ready_window,
         )
@@ -314,6 +316,7 @@ fn dispatch_run_subcommand(
             password,
             state,
             &mut ux,
+            state_dir,
             config,
             ready_window,
         )
@@ -333,7 +336,7 @@ fn dispatch_run_subcommand(
 /// command completed.
 fn outcome_to_exit_code(outcome: RunOutcome) -> ExitCode {
     match outcome {
-        RunOutcome::RollbackRejected => ExitCode::RollbackRejected,
+        RunOutcome::RollbackRejected(_) => ExitCode::RollbackRejected,
         RunOutcome::NothingToDo
         | RunOutcome::AppliedAutomatically
         | RunOutcome::SilentMerge
@@ -351,4 +354,34 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secretary_core::sync::RollbackEvidence;
+
+    /// `RollbackRejected` (with empty evidence) must map to the
+    /// `RollbackRejected` exit code, not `Success`.
+    #[test]
+    fn outcome_to_exit_code_rollback_rejected_returns_rollback_code() {
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        assert!(matches!(
+            outcome_to_exit_code(RunOutcome::RollbackRejected(ev)),
+            ExitCode::RollbackRejected
+        ));
+    }
+
+    /// Non-rollback arms (e.g. `AppliedAutomatically`) must map to
+    /// `Success` — the disk state advanced normally.
+    #[test]
+    fn outcome_to_exit_code_applied_automatically_returns_success() {
+        assert!(matches!(
+            outcome_to_exit_code(RunOutcome::AppliedAutomatically),
+            ExitCode::Success
+        ));
+    }
 }

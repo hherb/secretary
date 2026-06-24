@@ -25,8 +25,8 @@ use std::path::Path;
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::draft::RecordCollisionSummary;
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, ManifestHash, RecordTombstoneVeto, SyncError,
-    SyncOutcome, SyncState, VetoDecision,
+    commit_with_decisions, prepare_merge, sync_once, ManifestHash, RecordTombstoneVeto,
+    RollbackEvidence, SyncError, SyncOutcome, SyncState, VetoDecision,
 };
 use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
@@ -80,8 +80,26 @@ pub enum RunOutcome {
     /// `highest_vector_clock_seen` (rollback per
     /// `docs/crypto-design.md` §10). `state` is NOT advanced — caller
     /// surfaces [`crate::exit::ExitCode::RollbackRejected`] and the
-    /// next attempt sees the same disk state.
-    RollbackRejected,
+    /// next attempt sees the same disk state. Carries the
+    /// [`RollbackEvidence`] (disk clock + local clock) so the daemon
+    /// loop can log the attack indicator with forensic detail (#207).
+    RollbackRejected(RollbackEvidence),
+}
+
+impl RunOutcome {
+    /// `true` iff this outcome advanced `state.highest_vector_clock_seen`
+    /// and therefore must be persisted before the next daemon iteration.
+    /// Matches the C.2 spec §"State persistence" persist-list (extended
+    /// to include `SilentMerge`, which post-dates the spec text but does
+    /// advance the clock — see `run_one`'s `# State mutation contract`
+    /// doc section for the per-variant details).
+    #[must_use]
+    pub fn advanced_state(&self) -> bool {
+        matches!(
+            self,
+            Self::AppliedAutomatically | Self::SilentMerge | Self::MergedAndCommitted { .. }
+        )
+    }
 }
 
 /// Outcome of one [`sync_pass_pause_on_conflict`] pass. Mirrors
@@ -223,7 +241,7 @@ pub fn run_one(
             *state = new_state;
             Ok(RunOutcome::AppliedAutomatically)
         }
-        SyncOutcome::RollbackRejected(_evidence) => Ok(RunOutcome::RollbackRejected),
+        SyncOutcome::RollbackRejected(evidence) => Ok(RunOutcome::RollbackRejected(evidence)),
         SyncOutcome::ConcurrentDetected {
             bundle,
             plan,
@@ -554,6 +572,13 @@ mod tests {
 
     use super::*;
 
+    fn sample_evidence() -> RollbackEvidence {
+        RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        }
+    }
+
     /// Identical variants compare equal via the derived [`Eq`] impl.
     #[test]
     fn nothing_to_do_is_self_equal() {
@@ -578,7 +603,10 @@ mod tests {
     /// Identical `RollbackRejected` values compare equal.
     #[test]
     fn rollback_rejected_is_self_equal() {
-        assert_eq!(RunOutcome::RollbackRejected, RunOutcome::RollbackRejected);
+        assert_eq!(
+            RunOutcome::RollbackRejected(sample_evidence()),
+            RunOutcome::RollbackRejected(sample_evidence())
+        );
     }
 
     /// Two `MergedAndCommitted` with the same `vetoes_resolved` count
@@ -619,8 +647,14 @@ mod tests {
     fn distinct_variants_are_not_equal() {
         assert_ne!(RunOutcome::NothingToDo, RunOutcome::AppliedAutomatically);
         assert_ne!(RunOutcome::AppliedAutomatically, RunOutcome::SilentMerge);
-        assert_ne!(RunOutcome::SilentMerge, RunOutcome::RollbackRejected);
-        assert_ne!(RunOutcome::NothingToDo, RunOutcome::RollbackRejected);
+        assert_ne!(
+            RunOutcome::SilentMerge,
+            RunOutcome::RollbackRejected(sample_evidence())
+        );
+        assert_ne!(
+            RunOutcome::NothingToDo,
+            RunOutcome::RollbackRejected(sample_evidence())
+        );
         assert_ne!(
             RunOutcome::AppliedAutomatically,
             RunOutcome::MergedAndCommitted { vetoes_resolved: 0 }
@@ -641,7 +675,10 @@ mod tests {
         assert!(format!("{:?}", RunOutcome::NothingToDo).contains("NothingToDo"));
         assert!(format!("{:?}", RunOutcome::AppliedAutomatically).contains("AppliedAutomatically"));
         assert!(format!("{:?}", RunOutcome::SilentMerge).contains("SilentMerge"));
-        assert!(format!("{:?}", RunOutcome::RollbackRejected).contains("RollbackRejected"));
+        assert!(
+            format!("{:?}", RunOutcome::RollbackRejected(sample_evidence()))
+                .contains("RollbackRejected")
+        );
         let merged = RunOutcome::MergedAndCommitted { vetoes_resolved: 3 };
         let dbg = format!("{merged:?}");
         assert!(dbg.contains("MergedAndCommitted"));
@@ -770,6 +807,20 @@ mod tests {
         assert!(dbg.contains('7'));
     }
 
+    #[test]
+    fn advanced_state_true_for_advancing_arms() {
+        assert!(RunOutcome::AppliedAutomatically.advanced_state());
+        assert!(RunOutcome::SilentMerge.advanced_state());
+        assert!(RunOutcome::MergedAndCommitted { vetoes_resolved: 0 }.advanced_state());
+        assert!(RunOutcome::MergedAndCommitted { vetoes_resolved: 5 }.advanced_state());
+    }
+
+    #[test]
+    fn advanced_state_false_for_non_advancing_arms() {
+        assert!(!RunOutcome::NothingToDo.advanced_state());
+        assert!(!RunOutcome::RollbackRejected(sample_evidence()).advanced_state());
+    }
+
     /// `Clone` round-trip preserves variant + payload. Pins the
     /// derived impl in place — callers in the daemon loop will clone
     /// outcomes for logging while continuing to dispatch on the
@@ -780,7 +831,7 @@ mod tests {
             RunOutcome::NothingToDo,
             RunOutcome::AppliedAutomatically,
             RunOutcome::SilentMerge,
-            RunOutcome::RollbackRejected,
+            RunOutcome::RollbackRejected(sample_evidence()),
             RunOutcome::MergedAndCommitted {
                 vetoes_resolved: 42,
             },

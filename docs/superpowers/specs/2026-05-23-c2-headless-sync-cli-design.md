@@ -105,6 +105,8 @@ Where `<state-dir>` resolves via the `dirs` crate:
 
 Override via `--state-dir PATH`. Filename uses 32-char lowercase hex of `vault_uuid` (mirrors core's block-UUID naming convention). Directory created on first run with mode 0700 (Unix).
 
+If neither `--state-dir` nor the OS data dir resolves, the binary exits with the usage error code rather than falling back to the current working directory — host-local state must never land inside the (attacker-controlled) vault folder. A state dir resolving inside the vault folder is likewise a hard error.
+
 Rationale: `SyncState` carries `vault_uuid` + `highest_vector_clock_seen` — public material, not secret. The OS keyring buys nothing. Per-vault filename allows multiple vaults to coexist on one host without collision. Host-local placement (not inside the vault folder) means each device's local state stays local; the two-instance convergence test uses one `--state-dir` per simulated device.
 
 Forecloses: OS keychain (no security gain); sibling file inside vault folder (cross-device coupling); user-mandatory `--state-file` (high friction for casual users).
@@ -310,7 +312,7 @@ state::save(state_dir: &Path, state: &SyncState) -> Result<(), _>
     write atomically via tempfile::NamedTempFile + persist
 ```
 
-Persists ONLY after `AppliedAutomatically` or successful `commit_with_decisions`. NOT after `NothingToDo` (no change), NOT after `RollbackRejected` (intentionally unchanged), NOT after `ConcurrentDetected` before commit.
+Persists after every state-advancing outcome: `AppliedAutomatically`, `SilentMerge`, and successful `commit_with_decisions` (`MergedAndCommitted`). NOT after `NothingToDo` (no change), NOT after `RollbackRejected` (intentionally unchanged), NOT after `ConcurrentDetected` before commit. (`SilentMerge` post-dates the original draft but advances `highest_vector_clock_seen`; see `cli/src/pipeline.rs` `run_one`.)
 
 `tempfile = "=3.27.0"` exact pin propagates from `core/Cargo.toml` to `cli/Cargo.toml` — same atomic-rename discipline applies to the state file as to the vault format.
 

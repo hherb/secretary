@@ -35,8 +35,10 @@ use std::time::{Duration, Instant};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::{SyncError, SyncState};
 use secretary_core::unlock::UnlockedIdentity;
+use secretary_core::vault::block::VectorClockEntry;
 
-use crate::pipeline::run_one;
+use crate::pipeline::{run_one, RunOutcome};
+use crate::state::{self, StateError};
 use crate::veto::VetoUx;
 use crate::watcher::debounce::step as debounce_step;
 use crate::watcher::notify_driver::NotifyWatcher;
@@ -200,6 +202,85 @@ fn compute_wait(
     wait
 }
 
+/// What (if anything) a successful [`RunOutcome`] should announce to the
+/// operator. Pure classification — the caller maps it to a `tracing`
+/// call. Kept separate from the emission so the decision is unit-testable
+/// without a subscriber, and so `pipeline.rs` stays free of logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutcomeLog {
+    /// Manifest-rollback attack indicator (threat-model §3.1). Carries
+    /// the two clocks an operator needs for forensics.
+    RollbackRejected {
+        disk: Vec<VectorClockEntry>,
+        local: Vec<VectorClockEntry>,
+    },
+    /// `n > 0` tombstone vetoes were auto-resolved — a peer record
+    /// deletion was overridden this pass.
+    VetoesResolved(usize),
+}
+
+/// Classify an `Ok(RunOutcome)` into the operator-visible log event, if
+/// any. The silent arms (`NothingToDo`, `AppliedAutomatically`,
+/// `SilentMerge`, and `MergedAndCommitted { vetoes_resolved: 0 }`) return
+/// `None`.
+fn outcome_log(outcome: &RunOutcome) -> Option<OutcomeLog> {
+    match outcome {
+        RunOutcome::RollbackRejected(ev) => Some(OutcomeLog::RollbackRejected {
+            disk: ev.disk_vector_clock.clone(),
+            local: ev.local_highest_seen.clone(),
+        }),
+        RunOutcome::MergedAndCommitted { vetoes_resolved } if *vetoes_resolved > 0 => {
+            Some(OutcomeLog::VetoesResolved(*vetoes_resolved))
+        }
+        RunOutcome::NothingToDo
+        | RunOutcome::AppliedAutomatically
+        | RunOutcome::SilentMerge
+        | RunOutcome::MergedAndCommitted { .. } => None,
+    }
+}
+
+/// Emit the operator-visible log line (if any) for a successful sync
+/// outcome. The side-effecting edge over the pure [`outcome_log`].
+fn log_outcome(outcome: &RunOutcome) {
+    match outcome_log(outcome) {
+        Some(OutcomeLog::RollbackRejected { disk, local }) => tracing::warn!(
+            disk_clock = ?disk,
+            local_clock = ?local,
+            "manifest rollback rejected (threat-model §3.1 attack indicator); daemon continues",
+        ),
+        Some(OutcomeLog::VetoesResolved(n)) => tracing::warn!(
+            vetoes_resolved = n,
+            "auto-resolved {n} tombstone veto(es): a peer record deletion was overridden",
+        ),
+        None => {}
+    }
+}
+
+/// Handle the result of one `run_one` pass: log the operator-visible
+/// outcome (#207) and persist `state` (#208) whenever it advanced. `save`
+/// is injected (not a direct `state::save` call) so the loop body is
+/// unit-testable without a real watcher or filesystem. A save failure is
+/// logged and swallowed — the in-memory clock has still advanced, and a
+/// transient FS error must not kill a daemon that may run for weeks; the
+/// next advancing pass retries the persist.
+fn after_sync(
+    result: Result<RunOutcome, SyncError>,
+    state: &SyncState,
+    save: &mut dyn FnMut(&SyncState) -> Result<(), StateError>,
+) {
+    match result {
+        Ok(outcome) => {
+            log_outcome(&outcome);
+            if outcome.advanced_state() {
+                if let Err(e) = save(state) {
+                    tracing::warn!("state persist after sync failed (continuing): {e}");
+                }
+            }
+        }
+        Err(e) => tracing::warn!("pipeline error (continuing): {e}"),
+    }
+}
+
 /// Threshold of consecutive `wait_for_ready` → `Ok(false)` returns that
 /// triggers a single operator-visible warn log. After this many
 /// debounce-fired or periodic-fired cycles in a row where the folder
@@ -227,9 +308,11 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 ///    returns a warn-level log fires once so operators notice when
 ///    something external is continuously modifying the folder and
 ///    starving the sync; the counter resets on the next `Ok(true)`.
-/// 2. Calls [`run_one`] for one sync attempt; any [`SyncError`] is
-///    logged at warn level and the loop continues per spec §"Daemon
-///    loop sketch" ("on pipeline error: log + continue").
+/// 2. Calls [`run_one`] for one sync attempt, then calls
+///    [`after_sync`] to log the outcome and persist state if it
+///    advanced (#208). A save failure is logged and swallowed;
+///    any pipeline [`SyncError`] is logged at warn level and the loop
+///    continues per spec §"Daemon loop sketch".
 ///
 /// # Errors
 ///
@@ -241,14 +324,16 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 /// unit-tested because its only logic is the closure composition —
 /// the integration test suite (Task 10) will exercise it end-to-end
 /// against `golden_vault_001`. Each individual piece (`NotifyWatcher`,
-/// `debounce_step`, `wait_for_ready`, `run_one`) is unit-tested in
-/// place.
+/// `debounce_step`, `wait_for_ready`, `run_one`, `after_sync`) is
+/// unit-tested in place.
+#[allow(clippy::too_many_arguments)] // production seam — all params are distinct, non-groupable
 pub fn run_against_vault(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
     password: &SecretBytes,
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
+    state_dir: &Path,
     config: DaemonConfig,
     ready_window: Duration,
 ) -> Result<(), SyncError> {
@@ -290,9 +375,9 @@ pub fn run_against_vault(
                     return;
                 }
             }
-            if let Err(e) = run_one(vault_folder, identity, password, state, veto_ux, now_ms()) {
-                tracing::warn!("pipeline error (continuing): {e}");
-            }
+            let result = run_one(vault_folder, identity, password, state, veto_ux, now_ms());
+            let mut save = |s: &SyncState| state::save(state_dir, s);
+            after_sync(result, state, &mut save);
         },
     );
     Ok(())
@@ -349,10 +434,114 @@ mod tests {
     //! Debounce windows are kept short (~50 ms) so the suite stays
     //! under a second of real time.
 
-    use super::*;
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+
+    use super::*;
+    use crate::pipeline::RunOutcome;
+    use secretary_core::sync::{RollbackEvidence, SyncError, SyncState};
+
+    #[test]
+    fn outcome_log_rollback_carries_clocks() {
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        let log = outcome_log(&RunOutcome::RollbackRejected(ev));
+        assert!(matches!(log, Some(OutcomeLog::RollbackRejected { .. })));
+    }
+
+    #[test]
+    fn outcome_log_vetoes_only_when_nonzero() {
+        assert_eq!(
+            outcome_log(&RunOutcome::MergedAndCommitted { vetoes_resolved: 3 }),
+            Some(OutcomeLog::VetoesResolved(3))
+        );
+        assert_eq!(
+            outcome_log(&RunOutcome::MergedAndCommitted { vetoes_resolved: 0 }),
+            None
+        );
+    }
+
+    #[test]
+    fn outcome_log_silent_arms_are_none() {
+        assert_eq!(outcome_log(&RunOutcome::NothingToDo), None);
+        assert_eq!(outcome_log(&RunOutcome::AppliedAutomatically), None);
+        assert_eq!(outcome_log(&RunOutcome::SilentMerge), None);
+    }
+
+    #[test]
+    fn after_sync_saves_on_advancing_arms() {
+        let state = SyncState::empty([1; 16]);
+        for outcome in [
+            RunOutcome::AppliedAutomatically,
+            RunOutcome::SilentMerge,
+            RunOutcome::MergedAndCommitted { vetoes_resolved: 0 },
+        ] {
+            let mut saves = 0u32;
+            let mut sink = |_: &SyncState| {
+                saves += 1;
+                Ok(())
+            };
+            after_sync(Ok(outcome), &state, &mut sink);
+            assert_eq!(saves, 1);
+        }
+    }
+
+    #[test]
+    fn after_sync_skips_save_on_non_advancing_arms() {
+        let state = SyncState::empty([2; 16]);
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        for outcome in [RunOutcome::NothingToDo, RunOutcome::RollbackRejected(ev)] {
+            let mut saves = 0u32;
+            let mut sink = |_: &SyncState| {
+                saves += 1;
+                Ok(())
+            };
+            after_sync(Ok(outcome), &state, &mut sink);
+            assert_eq!(saves, 0);
+        }
+    }
+
+    /// `after_sync` swallows a save-sink failure on an advancing arm.
+    /// The in-memory clock still advanced; a transient FS error must not
+    /// propagate — the next advancing pass will retry the persist.
+    #[test]
+    fn after_sync_swallows_save_error() {
+        let state = SyncState::empty([4; 16]);
+        let mut sink_called = false;
+        let mut sink = |_: &SyncState| {
+            sink_called = true;
+            Err(StateError::Io(std::io::Error::other("disk full")))
+        };
+        // AppliedAutomatically is an advancing arm — the sink is invoked
+        // but its Err must be swallowed (after_sync returns (), not a panic).
+        after_sync(Ok(RunOutcome::AppliedAutomatically), &state, &mut sink);
+        assert!(sink_called, "sink must be invoked on an advancing arm");
+        // No assertion needed for the return value: if after_sync propagated
+        // the error it would not compile (returns ()), and if it panicked
+        // the test would fail.
+    }
+
+    #[test]
+    fn after_sync_does_not_save_on_err() {
+        let state = SyncState::empty([3; 16]);
+        let mut saves = 0u32;
+        let mut sink = |_: &SyncState| {
+            saves += 1;
+            Ok(())
+        };
+        let err = SyncError::Vault(secretary_core::vault::VaultError::Io {
+            context: "test",
+            source: std::io::Error::other("boom"),
+        });
+        after_sync(Err(err), &state, &mut sink);
+        assert_eq!(saves, 0);
+    }
 
     /// Short debounce window used across daemon tests. Tuned to be
     /// comfortably larger than typical iteration overhead (sub-ms)

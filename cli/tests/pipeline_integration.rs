@@ -268,7 +268,7 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
         TEST_NOW_MS,
     )
     .expect("run_one must succeed (rollback returns Ok, not Err)");
-    assert_eq!(outcome, RunOutcome::RollbackRejected);
+    assert!(matches!(outcome, RunOutcome::RollbackRejected(_)));
     assert_eq!(
         dominating_state.highest_vector_clock_seen, dominating_clock,
         "RollbackRejected must NOT mutate state — the local clock stays dominating"
