@@ -11,9 +11,9 @@ use crate::vault::OpenVaultManifest;
 /// Secret-free projection of one contact card (uuid + label + share count).
 #[pyclass]
 pub(crate) struct ContactSummary {
-    pub(crate) contact_uuid: [u8; 16],
-    pub(crate) display_name: String,
-    pub(crate) shared_block_count: u32,
+    contact_uuid: [u8; 16],
+    display_name: String,
+    shared_block_count: u32,
 }
 
 #[pymethods]
@@ -45,9 +45,11 @@ impl From<secretary_ffi_bridge::ContactSummary> for ContactSummary {
     }
 }
 
-/// TOFU import of one contact card. Verifies both self-signature halves and
-/// refuses to overwrite an existing card (`VaultContactAlreadyExists`).
-/// Tampered/unsigned bytes raise `VaultCardDecodeFailure`.
+/// TOFU import of one contact card. The manifest's vault folder is used to
+/// resolve `contacts/` for the duplicate-check and atomic write. Verifies
+/// both self-signature halves and refuses to overwrite an existing card
+/// (`VaultContactAlreadyExists`). Tampered/unsigned bytes raise
+/// `VaultCardDecodeFailure`.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn import_contact_card(

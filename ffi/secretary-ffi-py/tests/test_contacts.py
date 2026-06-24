@@ -5,6 +5,7 @@ gets its own writable copy of golden_vault_001 in tmp_path.
 """
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -18,7 +19,6 @@ def _golden(n: int = 1) -> Path:
 
 
 def _password(n: int = 1) -> bytes:
-    import json
     p = Path(__file__).resolve().parents[3] / "core" / "tests" / "data" / f"golden_vault_{n:03d}_inputs.json"
     return json.loads(p.read_text())["password"].encode()
 
@@ -34,7 +34,7 @@ def _uuid_from_card_filename(name: str) -> bytes:
     return bytes.fromhex(name[: -len(".card")].replace("-", ""))
 
 
-def _open(vault: Path):
+def _open(vault: Path) -> secretary_ffi_py.OpenVaultOutput:
     return secretary_ffi_py.open_vault_with_password(str(vault), _password())
 
 
