@@ -6,6 +6,10 @@ use crate::errors::{ffi_vault_error_to_pyerr, uuid_array_or_value_error};
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
 
+/// **Discouraged** — trusts caller-supplied recipient card bytes verbatim.
+/// FFI consumers should `import_contact_card` the peer once (TOFU, both
+/// self-signature halves verified), then `share_block_to` by UUID (#206).
+///
 /// Append one new recipient to an existing block. v1 single-author: only
 /// the vault owner can share blocks they authored.
 ///
