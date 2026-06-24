@@ -86,6 +86,21 @@ pub enum RunOutcome {
     RollbackRejected(RollbackEvidence),
 }
 
+impl RunOutcome {
+    /// `true` iff this outcome advanced `state.highest_vector_clock_seen`
+    /// and therefore must be persisted before the next daemon iteration.
+    /// Matches the C.2 spec §"State persistence" persist-list (extended
+    /// to include `SilentMerge`, which post-dates the spec text but does
+    /// advance the clock — see `run_one`'s state-mutation contract).
+    #[must_use]
+    pub fn advanced_state(&self) -> bool {
+        matches!(
+            self,
+            Self::AppliedAutomatically | Self::SilentMerge | Self::MergedAndCommitted { .. }
+        )
+    }
+}
+
 /// Outcome of one [`sync_pass_pause_on_conflict`] pass. Mirrors
 /// [`RunOutcome`] for the safe arms, but replaces the always-commit
 /// `MergedAndCommitted` with two outcomes: [`Self::MergedClean`] (a
@@ -789,6 +804,20 @@ mod tests {
         let dbg = format!("{c:?}");
         assert!(dbg.contains("ConflictsPending"));
         assert!(dbg.contains('7'));
+    }
+
+    #[test]
+    fn advanced_state_true_for_advancing_arms() {
+        assert!(RunOutcome::AppliedAutomatically.advanced_state());
+        assert!(RunOutcome::SilentMerge.advanced_state());
+        assert!(RunOutcome::MergedAndCommitted { vetoes_resolved: 0 }.advanced_state());
+        assert!(RunOutcome::MergedAndCommitted { vetoes_resolved: 5 }.advanced_state());
+    }
+
+    #[test]
+    fn advanced_state_false_for_non_advancing_arms() {
+        assert!(!RunOutcome::NothingToDo.advanced_state());
+        assert!(!RunOutcome::RollbackRejected(sample_evidence()).advanced_state());
     }
 
     /// `Clone` round-trip preserves variant + payload. Pins the

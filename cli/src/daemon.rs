@@ -38,6 +38,7 @@ use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
 
 use crate::pipeline::{run_one, RunOutcome};
+use crate::state::{self, StateError};
 use crate::veto::VetoUx;
 use crate::watcher::debounce::step as debounce_step;
 use crate::watcher::notify_driver::NotifyWatcher;
@@ -255,6 +256,31 @@ fn log_outcome(outcome: &RunOutcome) {
     }
 }
 
+/// Handle the result of one `run_one` pass: log the operator-visible
+/// outcome (#207) and persist `state` (#208) whenever it advanced. `save`
+/// is injected (not a direct `state::save` call) so the loop body is
+/// unit-testable without a real watcher or filesystem. A save failure is
+/// logged and swallowed — the in-memory clock has still advanced, and a
+/// transient FS error must not kill a daemon that may run for weeks; the
+/// next advancing pass retries the persist.
+fn after_sync(
+    result: Result<RunOutcome, SyncError>,
+    state: &SyncState,
+    save: &mut dyn FnMut(&SyncState) -> Result<(), StateError>,
+) {
+    match result {
+        Ok(outcome) => {
+            log_outcome(&outcome);
+            if outcome.advanced_state() {
+                if let Err(e) = save(state) {
+                    tracing::warn!("state persist after sync failed (continuing): {e}");
+                }
+            }
+        }
+        Err(e) => tracing::warn!("pipeline error (continuing): {e}"),
+    }
+}
+
 /// Threshold of consecutive `wait_for_ready` → `Ok(false)` returns that
 /// triggers a single operator-visible warn log. After this many
 /// debounce-fired or periodic-fired cycles in a row where the folder
@@ -282,9 +308,11 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 ///    returns a warn-level log fires once so operators notice when
 ///    something external is continuously modifying the folder and
 ///    starving the sync; the counter resets on the next `Ok(true)`.
-/// 2. Calls [`run_one`] for one sync attempt; any [`SyncError`] is
-///    logged at warn level and the loop continues per spec §"Daemon
-///    loop sketch" ("on pipeline error: log + continue").
+/// 2. Calls [`run_one`] for one sync attempt, then calls
+///    [`after_sync`] to log the outcome and persist state if it
+///    advanced (#208). A save failure is logged and swallowed;
+///    any pipeline [`SyncError`] is logged at warn level and the loop
+///    continues per spec §"Daemon loop sketch".
 ///
 /// # Errors
 ///
@@ -298,12 +326,14 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 /// against `golden_vault_001`. Each individual piece (`NotifyWatcher`,
 /// `debounce_step`, `wait_for_ready`, `run_one`) is unit-tested in
 /// place.
+#[allow(clippy::too_many_arguments)] // production seam — all params are distinct, non-groupable
 pub fn run_against_vault(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
     password: &SecretBytes,
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
+    state_dir: &Path,
     config: DaemonConfig,
     ready_window: Duration,
 ) -> Result<(), SyncError> {
@@ -345,10 +375,9 @@ pub fn run_against_vault(
                     return;
                 }
             }
-            match run_one(vault_folder, identity, password, state, veto_ux, now_ms()) {
-                Ok(outcome) => log_outcome(&outcome),
-                Err(e) => tracing::warn!("pipeline error (continuing): {e}"),
-            }
+            let result = run_one(vault_folder, identity, password, state, veto_ux, now_ms());
+            let mut save = |s: &SyncState| state::save(state_dir, s);
+            after_sync(result, state, &mut save);
         },
     );
     Ok(())
@@ -405,9 +434,13 @@ mod tests {
     //! Debounce windows are kept short (~50 ms) so the suite stays
     //! under a second of real time.
 
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
     use super::*;
     use crate::pipeline::RunOutcome;
-    use secretary_core::sync::RollbackEvidence;
+    use secretary_core::sync::{RollbackEvidence, SyncError, SyncState};
 
     #[test]
     fn outcome_log_rollback_carries_clocks() {
@@ -437,9 +470,58 @@ mod tests {
         assert_eq!(outcome_log(&RunOutcome::AppliedAutomatically), None);
         assert_eq!(outcome_log(&RunOutcome::SilentMerge), None);
     }
-    use std::collections::VecDeque;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
+
+    #[test]
+    fn after_sync_saves_on_advancing_arms() {
+        let state = SyncState::empty([1; 16]);
+        for outcome in [
+            RunOutcome::AppliedAutomatically,
+            RunOutcome::SilentMerge,
+            RunOutcome::MergedAndCommitted { vetoes_resolved: 0 },
+        ] {
+            let mut saves = 0u32;
+            let mut sink = |_: &SyncState| {
+                saves += 1;
+                Ok(())
+            };
+            after_sync(Ok(outcome), &state, &mut sink);
+            assert_eq!(saves, 1);
+        }
+    }
+
+    #[test]
+    fn after_sync_skips_save_on_non_advancing_arms() {
+        let state = SyncState::empty([2; 16]);
+        let ev = RollbackEvidence {
+            disk_vector_clock: Vec::new(),
+            local_highest_seen: Vec::new(),
+        };
+        for outcome in [RunOutcome::NothingToDo, RunOutcome::RollbackRejected(ev)] {
+            let mut saves = 0u32;
+            let mut sink = |_: &SyncState| {
+                saves += 1;
+                Ok(())
+            };
+            after_sync(Ok(outcome), &state, &mut sink);
+            assert_eq!(saves, 0);
+        }
+    }
+
+    #[test]
+    fn after_sync_does_not_save_on_err() {
+        let state = SyncState::empty([3; 16]);
+        let mut saves = 0u32;
+        let mut sink = |_: &SyncState| {
+            saves += 1;
+            Ok(())
+        };
+        let err = SyncError::Vault(secretary_core::vault::VaultError::Io {
+            context: "test",
+            source: std::io::Error::other("boom"),
+        });
+        after_sync(Err(err), &state, &mut sink);
+        assert_eq!(saves, 0);
+    }
 
     /// Short debounce window used across daemon tests. Tuned to be
     /// comfortably larger than typical iteration overhead (sub-ms)

@@ -27,7 +27,7 @@ use std::process::ExitCode as ProcExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use tracing::{error, warn};
+use tracing::error;
 
 use secretary_cli::args::{Cli, Command, CommonArgs, RunArgs};
 use secretary_cli::daemon::{self, DaemonConfig, DEFAULT_SHUTDOWN_POLL_INTERVAL};
@@ -141,14 +141,25 @@ fn run(cli: Cli) -> ExitCode {
             &identity,
             &password,
             &mut state,
+            &state_dir,
             interactive,
         ),
         None => dispatch_once_subcommand(vault, &identity, &password, &mut state, interactive),
     };
 
-    if let Err(e) = state::save(&state_dir, &state) {
-        warn!("final state save failed: {e}");
-    }
+    let exit_code = match state::save(&state_dir, &state) {
+        Ok(()) => exit_code,
+        Err(e) => {
+            error!("final state save failed: {e}");
+            // Don't override a more specific non-success code (e.g.
+            // RollbackRejected, LockfileHeld); only escalate a Success.
+            if matches!(exit_code, ExitCode::Success) {
+                ExitCode::GenericError
+            } else {
+                exit_code
+            }
+        }
+    };
 
     exit_code
 }
@@ -278,6 +289,7 @@ fn dispatch_run_subcommand(
     identity: &UnlockedIdentity,
     password: &SecretBytes,
     state: &mut SyncState,
+    state_dir: &Path,
     interactive: bool,
 ) -> ExitCode {
     let guard = match cli_signal::install_shutdown_handlers() {
@@ -303,6 +315,7 @@ fn dispatch_run_subcommand(
             password,
             state,
             &mut ux,
+            state_dir,
             config,
             ready_window,
         )
@@ -314,6 +327,7 @@ fn dispatch_run_subcommand(
             password,
             state,
             &mut ux,
+            state_dir,
             config,
             ready_window,
         )

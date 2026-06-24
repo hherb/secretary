@@ -310,7 +310,7 @@ state::save(state_dir: &Path, state: &SyncState) -> Result<(), _>
     write atomically via tempfile::NamedTempFile + persist
 ```
 
-Persists ONLY after `AppliedAutomatically` or successful `commit_with_decisions`. NOT after `NothingToDo` (no change), NOT after `RollbackRejected` (intentionally unchanged), NOT after `ConcurrentDetected` before commit.
+Persists after every state-advancing outcome: `AppliedAutomatically`, `SilentMerge`, and successful `commit_with_decisions` (`MergedAndCommitted`). NOT after `NothingToDo` (no change), NOT after `RollbackRejected` (intentionally unchanged), NOT after `ConcurrentDetected` before commit. (`SilentMerge` post-dates the original draft but advances `highest_vector_clock_seen`; see `cli/src/pipeline.rs` `run_one`.)
 
 `tempfile = "=3.27.0"` exact pin propagates from `core/Cargo.toml` to `cli/Cargo.toml` — same atomic-rename discipline applies to the state file as to the vault format.
 
