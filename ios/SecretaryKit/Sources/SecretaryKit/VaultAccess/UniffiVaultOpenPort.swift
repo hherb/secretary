@@ -10,8 +10,10 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
     public func openWithPassword(vaultPath: Data, password: [UInt8]) async throws -> VaultSession {
         try await runOffMainActor {
             do {
-                let out = try SecretaryKit.openVaultWithPassword(
-                    folderPath: vaultPath, password: Data(password))
+                let out = try withZeroizingData(password) { pw in
+                    try SecretaryKit.openVaultWithPassword(
+                        folderPath: vaultPath, password: pw)
+                }
                 return UniffiVaultSession(output: out)
             } catch let e as VaultError {
                 throw mapVaultAccessError(e)
@@ -22,8 +24,10 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
     public func openWithRecovery(vaultPath: Data, phrase: [UInt8]) async throws -> VaultSession {
         try await runOffMainActor {
             do {
-                let out = try SecretaryKit.openVaultWithRecovery(
-                    folderPath: vaultPath, mnemonic: Data(phrase))
+                let out = try withZeroizingData(phrase) { ph in
+                    try SecretaryKit.openVaultWithRecovery(
+                        folderPath: vaultPath, mnemonic: ph)
+                }
                 return UniffiVaultSession(output: out)
             } catch let e as VaultError {
                 throw mapVaultAccessError(e)

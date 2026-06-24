@@ -24,9 +24,11 @@ public struct UniffiVaultSyncPort: VaultSyncPort {
                      password: [UInt8], nowMs: UInt64) async throws -> SyncOutcome {
         try await runOffMainActor {
             do {
-                let dto = try SecretaryKit.syncVault(
-                    stateDir: stateDir, vaultFolder: vaultFolder,
-                    password: Data(password), nowMs: nowMs)
+                let dto = try withZeroizingData(password) { pw in
+                    try SecretaryKit.syncVault(
+                        stateDir: stateDir, vaultFolder: vaultFolder,
+                        password: pw, nowMs: nowMs)
+                }
                 return Self.mapOutcome(dto)
             } catch let e as VaultError {
                 throw mapVaultSyncError(e)
@@ -42,9 +44,11 @@ public struct UniffiVaultSyncPort: VaultSyncPort {
                 let dtoDecisions = decisions.map {
                     VetoDecisionDto(recordUuidHex: $0.recordUuidHex, keepLocal: $0.keepLocal)
                 }
-                let dto = try SecretaryKit.syncCommitDecisions(
-                    stateDir: stateDir, vaultFolder: vaultFolder, password: Data(password),
-                    decisions: dtoDecisions, manifestHash: Data(manifestHash), nowMs: nowMs)
+                let dto = try withZeroizingData(password) { pw in
+                    try SecretaryKit.syncCommitDecisions(
+                        stateDir: stateDir, vaultFolder: vaultFolder, password: pw,
+                        decisions: dtoDecisions, manifestHash: Data(manifestHash), nowMs: nowMs)
+                }
                 return Self.mapOutcome(dto)
             } catch let e as VaultError {
                 throw mapVaultSyncError(e)

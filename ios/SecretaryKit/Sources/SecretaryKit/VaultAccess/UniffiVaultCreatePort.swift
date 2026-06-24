@@ -33,11 +33,13 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
 
             let mnem: MnemonicOutput
             do {
-                mnem = try SecretaryKit.createVaultInFolder(
-                    folderPath: Data(folder.path.utf8),
-                    password: Data(password),
-                    displayName: displayName,
-                    createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000))
+                mnem = try withZeroizingData(password) { pw in
+                    try SecretaryKit.createVaultInFolder(
+                        folderPath: Data(folder.path.utf8),
+                        password: pw,
+                        displayName: displayName,
+                        createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000))
+                }
             } catch let e as VaultError {
                 throw mapProvisioningError(e)
             }
