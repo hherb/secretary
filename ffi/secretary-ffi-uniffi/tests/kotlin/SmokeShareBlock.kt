@@ -168,9 +168,11 @@ fun runShareBlockAsserts(env: SmokeEnv) {
             }
         }
     } catch (e: Throwable) {
-        if (e !is VaultException.ContactAlreadyExists) {
-            check(false, "#206 safe-path smoke threw $e")
-        }
+        // Unconditional, mirroring the Swift smoke: ContactAlreadyExists is the
+        // very variant the #206 guard produces, so a stray throw of it (e.g.
+        // shareBlockTo erroneously rejecting) must fail the test, not be
+        // swallowed. The expected duplicate-import throw is caught inline above.
+        check(false, "#206 safe-path smoke threw $e")
     } finally {
         shareTmp?.let { cleanupTempVault(it) }
     }
