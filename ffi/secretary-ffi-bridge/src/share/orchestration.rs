@@ -14,7 +14,7 @@ use rand_core::OsRng;
 use secretary_core::crypto::secret::Sensitive;
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::card::ContactCard;
-use secretary_core::vault::{OpenVault, VaultError};
+use secretary_core::vault::{format_uuid_hyphenated, OpenVault, VaultError};
 use zeroize::Zeroize as _;
 
 use crate::error::FfiVaultError;
@@ -52,6 +52,16 @@ use crate::vault::OpenVaultManifest;
 ///   `existing_recipient_cards` did not cover every recipient on disk.
 /// - [`FfiVaultError::SaveCryptoFailure`] — crypto / encoding failure on
 ///   already-validated inputs.
+/// - [`FfiVaultError::ContactAlreadyExists`] — an existing trusted card for
+///   `new_recipient`'s uuid would be overwritten with different bytes (TOFU
+///   substitution guard, #206).
+///
+/// # Security note
+///
+/// This function is **discouraged / bridge-internal**. FFI consumers should
+/// prefer `share_block_to` + `import_contact_card`, which never trust
+/// caller-supplied card bytes for the recipient key and do not expose the
+/// raw TOFU guard directly.
 #[allow(clippy::too_many_arguments)]
 pub fn share_block(
     identity: &UnlockedIdentity,
@@ -62,22 +72,15 @@ pub fn share_block(
     device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<(), FfiVaultError> {
-    // Step 0: decode every input card into core::ContactCard. Bytes-in is
-    // the canonical wire shape (per spec §2 design decision). Any decode
-    // failure surfaces as CardDecodeFailure — bridge-internal, never
-    // reachable through From<core::VaultError>.
+    // Step 0: decode AND self-verify every input card (both Ed25519 ∧
+    // ML-DSA-65 halves) via the shared contacts gate. #206: raw share_block
+    // must not trust an unverified card for re-keying. Any parse/verify
+    // failure surfaces as CardDecodeFailure (bridge-internal).
     let existing_decoded: Vec<ContactCard> = existing_recipient_cards
         .iter()
-        .map(|b| ContactCard::from_canonical_cbor(b))
-        .collect::<Result<_, _>>()
-        .map_err(|e| FfiVaultError::CardDecodeFailure {
-            detail: e.to_string(),
-        })?;
-    let new_decoded = ContactCard::from_canonical_cbor(new_recipient).map_err(|e| {
-        FfiVaultError::CardDecodeFailure {
-            detail: e.to_string(),
-        }
-    })?;
+        .map(|b| crate::contacts::read_verified_card(b))
+        .collect::<Result<_, _>>()?;
+    let new_decoded = crate::contacts::read_verified_card(new_recipient)?;
 
     // Step 1: snapshot manifest under one lock acquisition. Re-uses save's
     // snapshot fn unchanged — share_block needs the same 5-tuple.
@@ -86,6 +89,14 @@ pub fn share_block(
         .ok_or_else(|| FfiVaultError::CorruptVault {
             detail: "vault manifest handle has been closed".into(),
         })?;
+
+    // Step 1.5 (#206): TOFU non-overwrite guard. If a card for this
+    // contact_uuid already exists on disk and differs from the bytes the
+    // caller supplied, refuse — overwriting it would substitute a trusted
+    // contact's keys (silent TOFU substitution). Byte-identical (legit
+    // re-share / the share_block_to path) and absent (first-contact TOFU)
+    // both pass.
+    guard_new_recipient_no_substitution(&vault_folder, &new_decoded.contact_uuid, new_recipient)?;
 
     // Step 2: snapshot identity. core::share_block takes the signing keys
     // as separate &Ed25519Secret + &MlDsa65Secret arguments (unlike
@@ -164,6 +175,38 @@ pub fn share_block(
                 detail: e.to_string(),
             }),
         Err(e) => Err(map_core_vault_error_share(e)),
+    }
+}
+
+/// Refuse to overwrite an existing, byte-different `contacts/<uuid>.card`.
+///
+/// - file exists, bytes differ → `ContactAlreadyExists` (the #206 guard);
+/// - file exists, byte-identical → `Ok` (legit re-share);
+/// - file absent → `Ok` (trust-on-first-use of a brand-new contact);
+/// - read error other than not-found → `FolderInvalid`.
+///
+/// The comparison is intentionally against the caller's RAW `new_bytes`, not
+/// a re-canonicalized encoding of the decoded card. This is fail-closed: a
+/// non-canonical re-encoding of a genuine card is treated as a substitution
+/// (rejected) rather than silently accepted. Do NOT "fix" this to compare
+/// `new_decoded.to_canonical_cbor()` — that would weaken the guard.
+fn guard_new_recipient_no_substitution(
+    vault_folder: &std::path::Path,
+    card_uuid: &[u8; 16],
+    new_bytes: &[u8],
+) -> Result<(), FfiVaultError> {
+    let path = vault_folder
+        .join("contacts")
+        .join(format!("{}.card", format_uuid_hyphenated(card_uuid)));
+    match std::fs::read(&path) {
+        Ok(on_disk) if on_disk != new_bytes => Err(FfiVaultError::ContactAlreadyExists {
+            uuid_hex: hex::encode(card_uuid),
+        }),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(FfiVaultError::FolderInvalid {
+            detail: format!("read existing contact card for overwrite check: {e}"),
+        }),
     }
 }
 

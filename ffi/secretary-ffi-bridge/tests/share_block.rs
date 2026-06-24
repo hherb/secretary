@@ -18,11 +18,14 @@
 
 mod share_block_helpers;
 
+use secretary_core::identity::card::ContactCard;
+use secretary_core::vault::format_uuid_hyphenated;
 use secretary_ffi_bridge::{share_block, FfiVaultError};
+use std::fs;
 
 use share_block_helpers::{
-    fresh_writable_vault, mint_external_card, save_one_record_block, DEVICE_UUID, NEW_BLOCK_UUID,
-    NEW_RECORD_UUID, NOW_MS_BASE,
+    fresh_writable_vault, mint_external_card, mint_forged_card, save_one_record_block, DEVICE_UUID,
+    NEW_BLOCK_UUID, NEW_RECORD_UUID, NOW_MS_BASE,
 };
 
 // ---------------------------------------------------------------------------
@@ -358,3 +361,199 @@ fn share_block_on_wiped_identity_returns_corrupt_vault() {
 // 3. Foreign integration: pytest will exercise NotAuthor end-to-end via
 //    create_vault (which is available at the foreign layer).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// #206: TOFU substitution guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn share_block_raw_rejects_substituting_a_trusted_card() {
+    // #206: a forged card carrying a TRUSTED contact's uuid but attacker
+    // keys must not (a) overwrite the on-disk trusted card nor (b) re-key
+    // the block. The hardened raw share_block rejects it as
+    // ContactAlreadyExists before core runs.
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    // Genuine Alice on disk (TOFU import via raw share to a fresh block path
+    // would also write her, but place the card directly for clarity).
+    let (alice_bundle, alice_genuine) = mint_external_card(0xB1, "Alice");
+    let alice_uuid = alice_bundle.user_uuid;
+    let card_path = tmp
+        .path()
+        .join("contacts")
+        .join(format!("{}.card", format_uuid_hyphenated(&alice_uuid)));
+    fs::write(&card_path, &alice_genuine).expect("place genuine alice card");
+
+    // Forged card: Alice's uuid, attacker keys, self-consistent.
+    let (_eve, forged) = mint_forged_card(0xE5, "Eve-as-Alice", alice_uuid);
+    assert_ne!(forged, alice_genuine, "forged bytes differ from genuine");
+
+    let owner_card_bytes = manifest.owner_card_bytes().unwrap().unwrap();
+    let err = share_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        std::slice::from_ref(&owner_card_bytes),
+        &forged,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1_000,
+    )
+    .expect_err("substituting a trusted card must be rejected");
+    assert!(
+        matches!(err, FfiVaultError::ContactAlreadyExists { .. }),
+        "got {err:?}"
+    );
+
+    // On-disk card unchanged.
+    let on_disk = fs::read(&card_path).unwrap();
+    assert_eq!(
+        on_disk, alice_genuine,
+        "trusted card must not be overwritten"
+    );
+
+    // Block not re-keyed: still owner-only.
+    let entry = manifest
+        .find_block(&NEW_BLOCK_UUID)
+        .expect("block findable");
+    assert_eq!(entry.recipient_uuids.len(), 1, "owner only; no re-key");
+    assert!(!entry.recipient_uuids.contains(&alice_uuid));
+}
+
+#[test]
+fn share_block_raw_rejects_unsigned_new_card() {
+    // New card parses cleanly but fails verify_self (both-halves gate) →
+    // CardDecodeFailure with a detail string proving the VERIFY path fired,
+    // not the CBOR-parse path.
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let owner = manifest.owner_card_bytes().unwrap().unwrap();
+    let (_b, alice_bytes) = mint_external_card(0xB1, "Alice");
+    // Corrupt the self_sig_ed field (inside the structure) so re-encoding
+    // stays valid CBOR while the Ed25519 signature is wrong.
+    let mut card = ContactCard::from_canonical_cbor(&alice_bytes).expect("genuine card must parse");
+    card.self_sig_ed[0] ^= 0xFF;
+    let tampered = card
+        .to_canonical_cbor()
+        .expect("re-encode of tampered card must succeed");
+    assert!(
+        ContactCard::from_canonical_cbor(&tampered).is_ok(),
+        "tampered card must still parse so the verify gate is what rejects it",
+    );
+    let err = share_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        std::slice::from_ref(&owner),
+        &tampered,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("card with invalid self-sig must be rejected");
+    match err {
+        FfiVaultError::CardDecodeFailure { detail } => assert!(
+            detail.contains("self-signature"),
+            "must fail at verify gate, got: {detail}",
+        ),
+        other => panic!("expected CardDecodeFailure, got {other:?}"),
+    }
+}
+
+#[test]
+fn share_block_raw_rejects_unsigned_existing_card() {
+    // An existing card that parses cleanly but fails verify_self (both-halves
+    // gate) → CardDecodeFailure (gate 3), surfaced earlier than core's
+    // MissingRecipientCard. The detail string proves the VERIFY path fired.
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let owner_bytes = manifest.owner_card_bytes().unwrap().unwrap();
+    // Corrupt the self_sig_ed field so re-encoding stays valid CBOR while the
+    // Ed25519 signature is wrong.
+    let mut owner_card =
+        ContactCard::from_canonical_cbor(&owner_bytes).expect("owner card must parse");
+    owner_card.self_sig_ed[0] ^= 0xFF;
+    let tampered_owner = owner_card
+        .to_canonical_cbor()
+        .expect("re-encode of tampered owner card must succeed");
+    assert!(
+        ContactCard::from_canonical_cbor(&tampered_owner).is_ok(),
+        "tampered owner card must still parse so the verify gate is what rejects it",
+    );
+    let (_b, alice) = mint_external_card(0xB1, "Alice");
+    let err = share_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        std::slice::from_ref(&tampered_owner),
+        &alice,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect_err("existing card with invalid self-sig must be rejected");
+    match err {
+        FfiVaultError::CardDecodeFailure { detail } => assert!(
+            detail.contains("self-signature"),
+            "must fail at verify gate, got: {detail}",
+        ),
+        other => panic!("expected CardDecodeFailure, got {other:?}"),
+    }
+}
+
+#[test]
+fn share_block_raw_allows_byte_identical_existing_card_on_disk() {
+    // Sharing a brand-new recipient whose genuine card is already on disk
+    // with IDENTICAL bytes must succeed (guard allows identical).
+    let (tmp, identity, manifest) = fresh_writable_vault();
+    save_one_record_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        NEW_RECORD_UUID,
+        "p",
+        "v",
+        NOW_MS_BASE,
+    );
+    let (alice_bundle, alice) = mint_external_card(0xB1, "Alice");
+    let path = tmp.path().join("contacts").join(format!(
+        "{}.card",
+        format_uuid_hyphenated(&alice_bundle.user_uuid)
+    ));
+    fs::write(&path, &alice).unwrap();
+    let owner = manifest.owner_card_bytes().unwrap().unwrap();
+    share_block(
+        &identity,
+        &manifest,
+        NEW_BLOCK_UUID,
+        std::slice::from_ref(&owner),
+        &alice,
+        DEVICE_UUID,
+        NOW_MS_BASE + 1,
+    )
+    .expect("identical on-disk card → allowed");
+    let entry = manifest.find_block(&NEW_BLOCK_UUID).unwrap();
+    assert_eq!(entry.recipient_uuids.len(), 2);
+    assert!(entry.recipient_uuids.contains(&alice_bundle.user_uuid));
+}

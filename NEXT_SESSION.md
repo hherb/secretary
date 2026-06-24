@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-24-daemon-rollback-hardening-shipped.md
+docs/handoffs/2026-06-25-ffi-share-tofu-hardening-shipped.md

@@ -118,6 +118,37 @@ pub fn save_one_record_block(
     save_block(identity, manifest, input, DEVICE_UUID, now_ms).expect("save_block");
 }
 
+/// Mint a FORGED card: attacker keys (from `seed`) but a chosen
+/// `contact_uuid` (the victim's). The card still self-verifies — it is
+/// signed by its own embedded attacker keys — so `verify_self` alone does
+/// NOT catch it; only the TOFU non-overwrite guard does. Used by the
+/// #206 substitution teeth test.
+#[allow(dead_code)]
+pub fn mint_forged_card(
+    seed: u8,
+    display_name: &str,
+    victim_uuid: [u8; 16],
+) -> (IdentityBundle, Vec<u8>) {
+    let mut rng = ChaCha20Rng::from_seed([seed; 32]);
+    let bundle = generate_bundle(display_name, 1_714_060_800_000, &mut rng);
+    let pq_sk = MlDsa65Secret::from_bytes(bundle.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: victim_uuid, // impersonated UUID, attacker keys below
+        display_name: bundle.display_name.clone(),
+        x25519_pk: bundle.x25519_pk,
+        ml_kem_768_pk: bundle.ml_kem_768_pk.clone(),
+        ed25519_pk: bundle.ed25519_pk,
+        ml_dsa_65_pk: bundle.ml_dsa_65_pk.clone(),
+        created_at_ms: bundle.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&bundle.ed25519_sk, &pq_sk).unwrap();
+    let bytes = card.to_canonical_cbor().unwrap();
+    (bundle, bytes)
+}
+
 /// Write raw card bytes into the vault's `contacts/` dir under the canonical
 /// hyphenated filename. Returns the card's `contact_uuid`.
 #[allow(dead_code)]

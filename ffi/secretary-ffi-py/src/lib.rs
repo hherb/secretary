@@ -48,6 +48,7 @@
 use pyo3::prelude::*;
 
 mod block_crud;
+mod contacts;
 mod device;
 mod errors;
 mod identity;
@@ -62,6 +63,7 @@ mod unlock;
 mod vault;
 
 use block_crud::{create_block, move_record, rename_block};
+use contacts::{import_contact_card, share_block_to, ContactSummary};
 use device::{
     add_device_slot, open_with_device_secret, remove_device_slot, DeviceEnrollOutput,
     DeviceSecretOutput,
@@ -217,6 +219,8 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_record, m)?)?;
 
     // B.4d surface — share_block pyfunction + 4 typed exception classes.
+    // raw `share_block` is discouraged for FFI consumers; prefer
+    // `share_block_to` + `import_contact_card` (#206).
     m.add_function(wrap_pyfunction!(share_block, m)?)?;
 
     // B.5 surface — trash_block + restore_block pyfunctions + 2 typed
@@ -272,6 +276,13 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultCannotDeleteOwnerContact",
         py.get_type::<VaultCannotDeleteOwnerContact>(),
     )?;
+
+    // D.1.6 contacts surface (#206) — verified share path. The
+    // ContactAlreadyExists / ContactNotFound exception classes are already
+    // registered above.
+    m.add_class::<ContactSummary>()?;
+    m.add_function(wrap_pyfunction!(import_contact_card, m)?)?;
+    m.add_function(wrap_pyfunction!(share_block_to, m)?)?;
 
     // Sync error surface — 6 typed exception classes mirroring the bridge's
     // FfiVaultError sync variants: the five from D.1.13 (StateVaultMismatch /
