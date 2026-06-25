@@ -8,10 +8,31 @@ import SecretaryVaultAccess
 /// `FieldHandle`) stay valid while the block is on screen. Prior blocks are
 /// wiped on each `readBlock` call (#251). `wipe()` releases the current block,
 /// then manifest, then identity.
+///
+/// Thread-safety (#300, mirror of the Android `UniffiVaultSession`, #250): every
+/// touch of the shared FFI state — the `identity`/`manifest` handles and
+/// `currentBlock` — is serialized under `lock`, and a `wiped` flag makes a read
+/// that loses the race to a concurrent `wipe()` zeroize its just-decrypted block
+/// (and a write short-circuit) instead of operating on handles a caller believed
+/// cleared. Today every production caller is `@MainActor` (`VaultBrowseViewModel`,
+/// including the scene-phase `.background` lock) and `readBlock` is synchronous, so
+/// the lock is uncontended; it makes the type thread-safe *by construction* rather
+/// than by an actor-isolation argument a future off-actor caller could silently
+/// break. (Marking the type `@MainActor` is not viable: the session is constructed
+/// off the main actor inside `UniffiVaultOpenPort`'s `runOffMainActor` so Argon2id
+/// open does not block the UI.) The lock is non-recursive — no method re-enters
+/// another; `currentBlock?.wipe()` is the FFI handle's own wipe, not `self.wipe()`.
 public final class UniffiVaultSession: VaultSession {
     private let identity: UnlockedIdentity
     private let manifest: OpenVaultManifest
     private let deviceUuids: DeviceUuidProviding?
+    /// Serializes all access to the FFI handles + `currentBlock`. The held section
+    /// spans the block decrypt, so a concurrent `wipe()` waits for an in-flight read
+    /// (bounded — one block decrypt is milliseconds).
+    private let lock = NSLock()
+    /// Set true by `wipe()`; a read that observes it must not retain its block and a
+    /// write must not touch the now-zeroized handles.
+    private var wiped = false
     /// The single retained decrypted block — the on-screen one. Bounding to one
     /// block (not a growing list) makes "≤1 block resident" a type-level invariant
     /// and dedups re-selection. The VM clears the reveal map on `selectBlock`, so no
@@ -40,44 +61,55 @@ public final class UniffiVaultSession: VaultSession {
     }
 
     public func blockSummaries() -> [SecretaryVaultAccess.BlockSummary] {
-        manifest.blockSummaries().map { s in
-            SecretaryVaultAccess.BlockSummary(
-                uuid: [UInt8](s.blockUuid),
-                name: s.blockName,
-                createdAtMs: s.createdAtMs,
-                lastModMs: s.lastModifiedMs)
+        lock.withLock {
+            manifest.blockSummaries().map { s in
+                SecretaryVaultAccess.BlockSummary(
+                    uuid: [UInt8](s.blockUuid),
+                    name: s.blockName,
+                    createdAtMs: s.createdAtMs,
+                    lastModMs: s.lastModifiedMs)
+            }
         }
     }
 
     public func readBlock(blockUuid: [UInt8], includeDeleted: Bool) throws -> [RecordView] {
-        let out: BlockReadOutput
-        do {
-            out = try SecretaryKit.readBlock(
-                identity: identity, manifest: manifest, blockUuid: Data(blockUuid),
-                includeDeleted: includeDeleted)
-        } catch let e as VaultError {
-            throw mapVaultAccessError(e)
-        }
-        // Decrypt-first ordering: `out` is already decoded above, so a thrown read
-        // left the prior block retained. Now evict it before retaining the new one.
-        currentBlock?.wipe()
-        currentBlock = out  // keep alive for reveal closures + wipe
-        let count = out.recordCount()
-        var records: [RecordView] = []
-        records.reserveCapacity(Int(count))
-        var i: UInt64 = 0
-        while i < count {
-            // An in-range `nil` on a freshly-decrypted, non-wiped block is not a
-            // routine skip — it signals corruption or an FFI bug. Surface it as a
-            // typed error rather than silently returning fewer records than the
-            // block declares (a silent drop could hide a tampered record).
-            guard let rec = out.recordAt(idx: i) else {
-                throw VaultAccessError.corruptVault("recordAt(\(i)) returned nil on an open block")
+        try lock.withLock {
+            let out: BlockReadOutput
+            do {
+                out = try SecretaryKit.readBlock(
+                    identity: identity, manifest: manifest, blockUuid: Data(blockUuid),
+                    includeDeleted: includeDeleted)
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
             }
-            records.append(try makeRecordView(rec))
-            i += 1
+            // Lost the race to a concurrent wipe(): the session is closed. Zeroize the
+            // block we just decrypted rather than retain plaintext past the lock the
+            // caller believed cleared everything.
+            if wiped {
+                out.wipe()
+                return []
+            }
+            // Decrypt-first ordering: `out` is already decoded above, so a thrown read
+            // left the prior block retained. Now evict it before retaining the new one.
+            currentBlock?.wipe()
+            currentBlock = out  // keep alive for reveal closures + wipe
+            let count = out.recordCount()
+            var records: [RecordView] = []
+            records.reserveCapacity(Int(count))
+            var i: UInt64 = 0
+            while i < count {
+                // An in-range `nil` on a freshly-decrypted, non-wiped block is not a
+                // routine skip — it signals corruption or an FFI bug. Surface it as a
+                // typed error rather than silently returning fewer records than the
+                // block declares (a silent drop could hide a tampered record).
+                guard let rec = out.recordAt(idx: i) else {
+                    throw VaultAccessError.corruptVault("recordAt(\(i)) returned nil on an open block")
+                }
+                records.append(try makeRecordView(rec))
+                i += 1
+            }
+            return records
         }
-        return records
     }
 
     private func makeRecordView(_ rec: Record) throws -> RecordView {
@@ -123,10 +155,16 @@ public final class UniffiVaultSession: VaultSession {
     }
 
     public func wipe() {
-        currentBlock?.wipe()
-        currentBlock = nil
-        manifest.wipe()
-        identity.wipe()
+        // Under `lock` so an in-flight readBlock/write either completes before we
+        // zeroize the handles or observes `wiped` and bails. Idempotent — wipe may be
+        // called repeatedly (e.g. scene-phase `.background` then an explicit lock).
+        lock.withLock {
+            wiped = true
+            currentBlock?.wipe()
+            currentBlock = nil
+            manifest.wipe()
+            identity.wipe()
+        }
     }
 
     @discardableResult
@@ -206,17 +244,24 @@ public final class UniffiVaultSession: VaultSession {
     /// Resolve (device uuid, now-ms), run the FFI write, map errors. Centralizes
     /// the device-uuid resolve + `VaultError` mapping for every writer
     /// (append/edit/tombstone/resurrect + createBlock/renameBlock/moveRecord).
+    /// Serialized under `lock` with the `wiped` guard checked **before** touching the
+    /// handles, so a write on a wiped session short-circuits cleanly rather than
+    /// calling the FFI on zeroized `identity`/`manifest`.
     ///
-    /// - Throws: `VaultAccessError` for any FFI `VaultError`; additionally, the
-    ///   **first write** of a session may throw a `DeviceUuidStoreError` (an I/O
-    ///   error from resolving the per-vault device UUID) which is deliberately NOT
-    ///   mapped to a `VaultAccessError` — callers must handle both error types.
+    /// - Throws: `VaultAccessError.other` if the session has been wiped;
+    ///   `VaultAccessError` for any FFI `VaultError`; additionally, the **first
+    ///   write** of a session may throw a `DeviceUuidStoreError` (an I/O error from
+    ///   resolving the per-vault device UUID) which is deliberately NOT mapped to a
+    ///   `VaultAccessError` — callers must handle both error types.
     private func write(_ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> Void) throws {
-        let dev = try deviceUuid()
-        do {
-            try body(dev, Self.nowMs())
-        } catch let e as VaultError {
-            throw mapVaultAccessError(e)
+        try lock.withLock {
+            if wiped { throw VaultAccessError.other("write on a wiped session") }
+            let dev = try deviceUuid()
+            do {
+                try body(dev, Self.nowMs())
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
+            }
         }
     }
 

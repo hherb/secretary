@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-25-once-mode-log-outcome-shipped.md
+docs/handoffs/2026-06-25-ios-readblock-wipe-race-shipped.md
