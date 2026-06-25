@@ -241,7 +241,13 @@ fn outcome_log(outcome: &RunOutcome) -> Option<OutcomeLog> {
 
 /// Emit the operator-visible log line (if any) for a successful sync
 /// outcome. The side-effecting edge over the pure [`outcome_log`].
-fn log_outcome(outcome: &RunOutcome) {
+///
+/// `pub` because both the daemon loop ([`after_sync`]) and the single-shot
+/// `once` dispatch (`main::once_ok_exit_code`, #295) route their `Ok`
+/// outcomes through it, so a `once` rollback/veto gets the same forensic
+/// log line — disk-vs-local vector clocks, auto-resolved veto counts — the
+/// daemon path emits, not just a bare exit code.
+pub fn log_outcome(outcome: &RunOutcome) {
     match outcome_log(outcome) {
         Some(OutcomeLog::RollbackRejected { disk, local }) => tracing::warn!(
             disk_clock = ?disk,
