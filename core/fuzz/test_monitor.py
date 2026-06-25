@@ -32,6 +32,7 @@ from monitor import (
     parse_runs_cap,
     parse_targets,
     render_log_tail_html,
+    run_kwargs,
     status_badge_class,
     terminate_process_group,
 )
@@ -1270,3 +1271,28 @@ class TestTerminateProcessGroup:
             return proc.returncode
 
         assert asyncio.run(run()) == 0
+
+
+class TestRunKwargs:
+    """The dashboard spawns/kills `cargo fuzz` subprocesses from unauthenticated
+    button handlers, so it MUST bind loopback only (issue #210). `run_kwargs`
+    isolates the `ui.run(...)` arguments as a pure value so the bind host is
+    assertable without launching the server."""
+
+    def test_binds_loopback_not_all_interfaces(self):
+        # The whole point of #210: never 0.0.0.0 (NiceGUI's non-native default,
+        # which exposes the process-control panel to the whole LAN).
+        kwargs = run_kwargs()
+        assert kwargs["host"] == "127.0.0.1"
+        assert kwargs["host"] != "0.0.0.0"
+
+    def test_port_matches_documented_dashboard_port(self):
+        # CLAUDE.md / README both point users at http://localhost:8080.
+        assert run_kwargs()["port"] == 8080
+
+    def test_no_dev_server_reload_or_browser_autolaunch(self):
+        # reload spins up a watcher subprocess; show would pop a browser on a
+        # headless CI host. Both stay off (regression guard on the call shape).
+        kwargs = run_kwargs()
+        assert kwargs["reload"] is False
+        assert kwargs["show"] is False

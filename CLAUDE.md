@@ -70,8 +70,9 @@ uv run core/tests/python/conformance.py
 # flag allowlist entries whose underlying citation now resolves)
 uv run core/tests/python/spec_test_name_freshness.py
 
-# Run the fuzz monitor's pytest suite
-cd core/fuzz && uv run --with pytest pytest test_monitor.py -v
+# Run the fuzz monitor's pytest suite (test_monitor imports monitor.py, which
+# imports nicegui at module load, so the dashboard dep must be on the path too)
+cd core/fuzz && uv run --with pytest --with "nicegui>=2" pytest test_monitor.py -v
 
 # Launch the NiceGUI fuzz dashboard at http://localhost:8080
 uv run core/fuzz/monitor.py

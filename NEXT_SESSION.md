@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-25-ios-android-memory-hygiene-shipped.md
+docs/handoffs/2026-06-25-fuzz-monitor-loopback-bind-shipped.md
