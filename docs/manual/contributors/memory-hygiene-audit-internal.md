@@ -362,7 +362,12 @@ verify both crates' drop discipline at their pinned versions.
   the foreign-runtime heap-copy caveat (Python `bytes`, Swift `String`,
   Kotlin `ByteArray` not being authoritatively zeroizable from the
   bridge) remains an inherent property of the FFI boundary and is
-  documented per-accessor on the bridge side.
+  documented per-accessor on the bridge side. The symmetric *inbound*
+  residue — uniffi's generated value-marshalling buffers for a
+  user-entered password / recovery phrase (#299) — is likewise an
+  accepted, in-scope-unfixable FFI-boundary limitation; see
+  [`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md)
+  → "Accepted limitation: uniffi value-marshalling secret residue".
 - **Clipboard hygiene** (Sub-project D): when a user copies a
   password to the system clipboard, the clipboard daemon owns a copy
   the Rust core has no visibility into. Mitigation is platform-UI
