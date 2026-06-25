@@ -66,10 +66,59 @@ pub const NEW_RECORD_UUID: [u8; 16] = [0xCD; 16];
 pub const DEVICE_UUID: [u8; 16] = [0x07; 16];
 pub const NOW_MS_BASE: u64 = 1_715_000_000_000;
 
-/// Mint an external identity from a deterministic seed and return its
+/// The all-equal-byte ChaCha seeds used to mint `golden_vault_001`'s bundled
+/// contacts: owner `[0xA0; 32]`, Alice `[0xA1; 32]`, Bob `[0xA2; 32]` (see the
+/// `_doc` fields in `core/tests/data/golden_vault_001_inputs.json`). Those three
+/// identities already live in the fixture's `contacts/` dir, so re-minting one
+/// and sharing a block to it trips `share_block`'s TOFU non-overwrite guard
+/// (`ContactAlreadyExists`). Share tests that mint *recipient* identities must
+/// keep them disjoint from these — trivially guaranteed by a seed whose bytes
+/// are NOT all equal (see [`mint_external_card_from_seed32`]).
+#[allow(dead_code)]
+pub const FIXTURE_CONTACT_MINT_SEEDS: [u8; 3] = [0xA0, 0xA1, 0xA2];
+
+/// Mint an external identity from a full 32-byte ChaCha seed and return its
 /// canonical-CBOR-encoded self-signed `ContactCard` alongside the
-/// `IdentityBundle` (kept in case future tests need to decrypt as that
-/// identity).
+/// `IdentityBundle`.
+///
+/// The array-seed form lets callers build identity spaces that are *disjoint by
+/// construction* from the golden-vault fixture contacts: those are minted from
+/// all-equal-byte seeds (`[k; 32]`, see [`FIXTURE_CONTACT_MINT_SEEDS`]), so any
+/// seed whose bytes are not all equal cannot reproduce a fixture contact's UUID,
+/// whatever `k` it might otherwise alias.
+#[allow(dead_code)]
+pub fn mint_external_card_from_seed32(
+    seed: [u8; 32],
+    display_name: &str,
+) -> (IdentityBundle, Vec<u8>) {
+    let mut rng = ChaCha20Rng::from_seed(seed);
+    let bundle = generate_bundle(display_name, 1_714_060_800_000, &mut rng);
+    let pq_sk = MlDsa65Secret::from_bytes(bundle.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: bundle.user_uuid,
+        display_name: bundle.display_name.clone(),
+        x25519_pk: bundle.x25519_pk,
+        ml_kem_768_pk: bundle.ml_kem_768_pk.clone(),
+        ed25519_pk: bundle.ed25519_pk,
+        ml_dsa_65_pk: bundle.ml_dsa_65_pk.clone(),
+        created_at_ms: bundle.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&bundle.ed25519_sk, &pq_sk).unwrap();
+    let bytes = card.to_canonical_cbor().unwrap();
+    (bundle, bytes)
+}
+
+/// Mint an external identity from a single-byte seed (expanded to `[seed; 32]`)
+/// and return its canonical-CBOR-encoded self-signed `ContactCard` alongside the
+/// `IdentityBundle` (kept in case future tests need to decrypt as that identity).
+///
+/// NOTE: the all-equal-byte expansion means `seed` values in
+/// [`FIXTURE_CONTACT_MINT_SEEDS`] reproduce the fixture's bundled contacts — mint
+/// fresh recipients via [`mint_external_card_from_seed32`] to stay disjoint.
+#[allow(dead_code)]
 pub fn mint_external_card(seed: u8, display_name: &str) -> (IdentityBundle, Vec<u8>) {
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
     let bundle = generate_bundle(display_name, 1_714_060_800_000, &mut rng);
