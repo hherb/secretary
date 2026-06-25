@@ -260,12 +260,23 @@ fn dispatch_once_subcommand(
         run_one(vault, identity, password, state, &mut ux, now)
     };
     match result {
-        Ok(outcome) => outcome_to_exit_code(outcome),
+        Ok(outcome) => once_ok_exit_code(outcome),
         Err(e) => {
             error!("pipeline error: {e}");
             ExitCode::from_sync_error(&e)
         }
     }
+}
+
+/// Handle a successful `once` outcome: emit the operator-visible forensic
+/// log line (#295 — the `once` path previously surfaced a manifest
+/// rollback / auto-resolved tombstone veto *only* via the exit code, losing
+/// the disk-vs-local vector-clock detail the daemon loop logs), then map the
+/// outcome to its [`ExitCode`]. Split out from [`dispatch_once_subcommand`]
+/// so the log-and-map step is unit-testable without standing up a vault.
+fn once_ok_exit_code(outcome: RunOutcome) -> ExitCode {
+    daemon::log_outcome(&outcome);
+    outcome_to_exit_code(outcome)
 }
 
 /// `run` dispatch: install signal handlers, build the [`DaemonConfig`],
@@ -360,6 +371,115 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use secretary_core::sync::RollbackEvidence;
+    use secretary_core::vault::block::VectorClockEntry;
+    use std::sync::{Arc, Mutex};
+
+    /// A `tracing` writer that appends all formatted output into a shared
+    /// buffer, so a test can assert which operator-visible log line the
+    /// `once` path emitted (or that it stayed silent) without a real
+    /// subscriber or stderr.
+    #[derive(Clone)]
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture buffer poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Route `outcome` through [`once_ok_exit_code`] under a capturing
+    /// `tracing` subscriber, returning the resulting exit code and the
+    /// formatted log text. The seam that proves the `once` dispatch emits
+    /// the same forensic line the daemon loop does (#295).
+    fn capture_once_logs(outcome: RunOutcome) -> (ExitCode, String) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(CaptureWriter(buf.clone()))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let code = tracing::subscriber::with_default(subscriber, || once_ok_exit_code(outcome));
+        let text = String::from_utf8(buf.lock().expect("capture buffer poisoned").clone())
+            .expect("log output is valid UTF-8");
+        (code, text)
+    }
+
+    /// On a `once` invocation, a rejected manifest rollback must emit the
+    /// forensic warn line (threat-model §3.1 attack indicator) carrying the
+    /// disk-vs-local vector clocks — not just the `RollbackRejected` exit
+    /// code. This is the #295 teeth: it fails on the pre-fix code, where
+    /// `once_ok_exit_code` mapped the outcome to an exit code without
+    /// logging.
+    #[test]
+    fn once_logs_rollback_forensics_not_just_exit_code() {
+        let ev = RollbackEvidence {
+            disk_vector_clock: vec![VectorClockEntry {
+                device_uuid: [0x11; 16],
+                counter: 7,
+            }],
+            local_highest_seen: vec![VectorClockEntry {
+                device_uuid: [0x22; 16],
+                counter: 4,
+            }],
+        };
+        let (code, logs) = capture_once_logs(RunOutcome::RollbackRejected(ev));
+        assert!(matches!(code, ExitCode::RollbackRejected));
+        assert!(
+            logs.contains("manifest rollback rejected"),
+            "once path must log the rollback forensic line; got: {logs:?}"
+        );
+        assert!(
+            logs.contains("disk_clock") && logs.contains("local_clock"),
+            "rollback log must carry the disk-vs-local vector clocks; got: {logs:?}"
+        );
+    }
+
+    /// On a `once` invocation, auto-resolved tombstone vetoes must surface
+    /// the resolved count at `warn!` — otherwise they are invisible except
+    /// to a caller inspecting committed state.
+    #[test]
+    fn once_logs_auto_resolved_veto_count() {
+        let (code, logs) = capture_once_logs(RunOutcome::MergedAndCommitted { vetoes_resolved: 2 });
+        assert!(matches!(code, ExitCode::Success));
+        assert!(
+            logs.contains("auto-resolved 2 tombstone"),
+            "once path must log the auto-resolved veto count; got: {logs:?}"
+        );
+    }
+
+    /// The silent outcome arms (nothing to do, clean apply, silent merge,
+    /// and a zero-veto commit) must emit no operator-visible warning — the
+    /// `once` path stays as quiet as the daemon loop on a no-op pass.
+    #[test]
+    fn once_silent_arms_emit_no_warning() {
+        for outcome in [
+            RunOutcome::NothingToDo,
+            RunOutcome::AppliedAutomatically,
+            RunOutcome::SilentMerge,
+            RunOutcome::MergedAndCommitted { vetoes_resolved: 0 },
+        ] {
+            let (code, logs) = capture_once_logs(outcome);
+            assert!(matches!(code, ExitCode::Success));
+            assert!(
+                !logs.contains("manifest rollback") && !logs.contains("auto-resolved"),
+                "silent outcome arm must not emit a warning; got: {logs:?}"
+            );
+        }
+    }
 
     /// `RollbackRejected` (with empty evidence) must map to the
     /// `RollbackRejected` exit code, not `Success`.

@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-25-fuzz-monitor-loopback-bind-shipped.md
+docs/handoffs/2026-06-25-once-mode-log-outcome-shipped.md
