@@ -6,9 +6,10 @@ import SecretaryVaultAccess
 /// `wiped` guard (mirror of the Android session, #250). After `wipe()`, the session
 /// is closed: a write must short-circuit with a typed wiped-session error WITHOUT
 /// touching the zeroized `identity`/`manifest` handles, and a `readBlock` must never
-/// yield plaintext records. The lock's mutual exclusion under genuine concurrency is
-/// by-construction + documented (not unit-tested — a deterministic interleave would
-/// need an injected mid-read seam; a stress test would be flaky).
+/// yield plaintext records. The lock's mutual exclusion under genuine concurrency
+/// is exercised separately by `SessionConcurrencyIntegrationTests` (run under
+/// ThreadSanitizer via `ios/scripts/run-ios-tsan.sh`); this file covers the
+/// single-threaded `wiped`-guard semantics.
 ///
 /// Opens a temp copy of the frozen `golden_vault_001` KAT (never mutates the
 /// original), mirroring `RecordEditIntegrationTests`.
