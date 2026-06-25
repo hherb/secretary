@@ -950,6 +950,34 @@ class MonitorApp:
                 ui.button("Stop", on_click=on_stop).props("color=negative")
 
 
+# Loopback-only bind. The dashboard's Start/Stop buttons spawn and kill
+# `cargo fuzz` subprocess groups with no authentication, so it must never be
+# reachable beyond the local host. NiceGUI's non-native default is 0.0.0.0
+# (all interfaces), which would expose unauthenticated process control plus
+# local-path/crash-filename disclosure to anyone on the LAN (issue #210).
+# Binding 127.0.0.1 makes the no-auth posture acceptable for this dev-only
+# tool and matches the "http://localhost:8080" the docs already advertise.
+_BIND_HOST = "127.0.0.1"
+_DASHBOARD_PORT = 8080
+
+
+def run_kwargs() -> dict:
+    """Return the keyword arguments for `ui.run`, isolated as a pure value.
+
+    Pulled out of `main` so the security-critical bind host (#210) is unit-
+    assertable without launching the server. `show=False` keeps a headless
+    host from popping a browser; `reload=False` keeps a file-watcher
+    subprocess from spawning.
+    """
+    return {
+        "host": _BIND_HOST,
+        "port": _DASHBOARD_PORT,
+        "show": False,
+        "reload": False,
+        "title": "Fuzz monitor",
+    }
+
+
 def main() -> None:
     """Entry point — launch the NiceGUI app."""
     cargo_toml_text = _CARGO_TOML.read_text()
@@ -966,7 +994,7 @@ def main() -> None:
     def index() -> None:
         app.render()
 
-    ui.run(port=8080, show=False, reload=False, title="Fuzz monitor")
+    ui.run(**run_kwargs())
 
 
 if __name__ == "__main__" or __name__ == "__mp_main__":
