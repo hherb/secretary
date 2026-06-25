@@ -30,11 +30,18 @@ jobs:
   ios-tsan:
     name: SecretaryKit ThreadSanitizer
     runs-on: macos-latest
+    # Bound the heaviest job: Argon2id under TSan runs ~5-15x slower, so a
+    # pathological hang would otherwise burn the default 6h macOS budget. 60 min
+    # is generous headroom over a healthy run; revisit once first-run duration is
+    # known.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
       # Builds the uniffi xcframework (compiles the Rust core for the iOS-sim
       # target) then runs the whole SecretaryKit suite under -enableThreadSanitizer.
+      # If a future macos-latest image drops the "iPhone 16" simulator, set the
+      # IOS_SIM env to an available device name (run-ios-tsan.sh honors it).
       - name: SecretaryKit suite under ThreadSanitizer
         run: bash ios/scripts/run-ios-tsan.sh
