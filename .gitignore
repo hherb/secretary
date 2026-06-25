@@ -20,6 +20,9 @@ lib64/
 # would otherwise mask this directory wholesale.
 !desktop/src/lib/
 !desktop/src/lib/**
+# iOS script helpers — same `lib/` exception for the bash shared library.
+!ios/scripts/lib/
+!ios/scripts/lib/**
 parts/
 sdist/
 var/
