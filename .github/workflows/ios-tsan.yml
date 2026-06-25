@@ -1,0 +1,40 @@
+name: iOS TSan
+
+# #300 follow-up: run the SecretaryKit XCTest suite under ThreadSanitizer so the
+# UniffiVaultSession lock is exercised under genuine concurrency
+# (SessionConcurrencyIntegrationTests). macOS-only and heavy (builds the uniffi
+# xcframework, then runs the suite instrumented), so it is path-gated to iOS
+# changes. A separate workflow file is the cleanest no-third-party-action way to
+# scope this without gating test.yml's rust/desktop/conformance jobs (which must
+# run on every PR).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-tsan.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-tsan.yml'
+
+concurrency:
+  group: ios-tsan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios-tsan:
+    name: SecretaryKit ThreadSanitizer
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      # Builds the uniffi xcframework (compiles the Rust core for the iOS-sim
+      # target) then runs the whole SecretaryKit suite under -enableThreadSanitizer.
+      - name: SecretaryKit suite under ThreadSanitizer
+        run: bash ios/scripts/run-ios-tsan.sh
