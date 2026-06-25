@@ -130,6 +130,8 @@ final class SessionConcurrencyIntegrationTests: XCTestCase {
         }
         let got = appended.snapshot
         XCTAssertEqual(got.count, Self.concurrentWorkers, "every concurrent append must succeed")
+        // All workers have finished (concurrentPerform joined), so read directly from
+        // `session` — the same object as `box.value`, now with no concurrent access.
         let records = try session.readBlock(blockUuid: block, includeDeleted: false)
         let present = Set(records.map { Data($0.uuid) })
         for uuid in got {
