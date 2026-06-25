@@ -994,6 +994,9 @@ def main() -> None:
     def index() -> None:
         app.render()
 
+    # The loopback bind (#210) lives entirely in run_kwargs(); TestRunKwargs
+    # guards it. Keep this `**run_kwargs()` spread — inlining literal args here
+    # would reintroduce the 0.0.0.0 exposure with the tests still green.
     ui.run(**run_kwargs())
 
 
