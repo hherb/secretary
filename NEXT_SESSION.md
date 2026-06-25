@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-25-ios-readblock-wipe-race-shipped.md
+docs/handoffs/2026-06-25-ios-tsan-concurrency-shipped.md
