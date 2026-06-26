@@ -7,7 +7,13 @@ import SecretaryVaultAccess
 /// most general fit for the security-scoped, possibly-iCloud folders the app
 /// opens via bookmarks. (Future: `NSMetadataQuery` for iCloud-download-specific
 /// detection.)
-public final class PresenterFolderWatch: NSObject, FolderWatchPort, NSFilePresenter {
+/// `@unchecked Sendable`: the OS retains this presenter and the monitor that owns
+/// it may be referenced from any thread, but its only mutable state — `onPulse` —
+/// is confined to the main queue (the presenter's `presentedItemOperationQueue`
+/// is `.main`, and `start`/`stop` are reached from the `@MainActor`; see the
+/// `init` comment). Main-queue confinement is the isolation discipline that earns
+/// `Sendable` here, the way `UniffiVaultSession` earns it via a lock (#231).
+public final class PresenterFolderWatch: NSObject, FolderWatchPort, NSFilePresenter, @unchecked Sendable {
     public let presentedItemURL: URL?
     public let presentedItemOperationQueue: OperationQueue
     private var onPulse: (@MainActor (MonotonicInstant) -> Void)?

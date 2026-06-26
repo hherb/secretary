@@ -7,16 +7,33 @@ import SecretaryDeviceUnlock
 /// biometry-bound access control wraps the 32-byte device secret via ECIES; the
 /// SE private key never leaves the enclave. NOT covered by an automated test —
 /// real Face ID / Touch ID needs a device (the #202 follow-up's manual proof).
-public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
+///
+/// `@unchecked Sendable`: `DeviceSecretEnclave` is `Sendable` (#231) and every
+/// non-`let` member of this conformer is the diagnostic below, whose access is
+/// serialized under `diagnosticLock` — so the guarantee is enforced by the lock,
+/// not merely assumed, mirroring `UniffiVaultSession`. All other state is
+/// immutable; the Keychain / Secure-Enclave APIs are themselves thread-safe.
+public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave, @unchecked Sendable {
     private let keyTag: Data
     private let blobService: String
     private let blobAccount: String
     private let algorithm: SecKeyAlgorithm = .eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
+    /// Serializes access to `unsafeLastReleaseDiagnostic`. The diagnostic is
+    /// written inside `release` (across its biometric `await`) and read by the UI
+    /// afterward; the lock makes that safe even if a future caller drives two
+    /// releases concurrently, rather than relying on serial-usage convention.
+    private let diagnosticLock = NSLock()
     /// Raw diagnostic from the most recent `release` failure (domain+code +
     /// mapped case). Surfaced via the `DeviceSecretEnclave` protocol so the UI
     /// can display the real Security-framework taxonomy (#202). nil after success.
-    public private(set) var lastReleaseDiagnostic: String?
+    /// Backing storage — always go through `lastReleaseDiagnostic` / `record`,
+    /// never touch this directly, so every access holds `diagnosticLock`.
+    private var unsafeLastReleaseDiagnostic: String?
+
+    public var lastReleaseDiagnostic: String? {
+        diagnosticLock.withLock { unsafeLastReleaseDiagnostic }
+    }
 
     public init(keyTag: String = "com.secretary.deviceSecret.seKey",
                 blobService: String = "com.secretary.deviceSecret",
@@ -50,7 +67,7 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     }
 
     public func release(reason: String) async throws -> [UInt8] {
-        lastReleaseDiagnostic = nil
+        diagnosticLock.withLock { unsafeLastReleaseDiagnostic = nil }
         guard let blob = try loadBlob() else { throw DeviceUnlockError.notEnrolled }
         let context = LAContext()
         context.localizedReason = reason
@@ -233,7 +250,9 @@ public final class SecureEnclaveDeviceSecretStore: DeviceSecretEnclave {
     }
 
     private func record(domain: String, code: Int, mappedTo: String) {
-        lastReleaseDiagnostic = "domain=\(domain) code=\(code) mappedTo=\(mappedTo)"
+        diagnosticLock.withLock {
+            unsafeLastReleaseDiagnostic = "domain=\(domain) code=\(code) mappedTo=\(mappedTo)"
+        }
     }
 
     private func cfErrorString(_ error: Unmanaged<CFError>?) -> String {
