@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-26-uniffi-secret-residue-299-shipped.md
+docs/handoffs/2026-06-26-pipeline-refactor-193-shipped.md
