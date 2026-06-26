@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-26-pipeline-refactor-193-shipped.md
+docs/handoffs/2026-06-26-session-wiped-guard-252-shipped.md
