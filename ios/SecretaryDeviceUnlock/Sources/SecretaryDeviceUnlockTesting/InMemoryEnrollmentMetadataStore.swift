@@ -1,6 +1,9 @@
 import SecretaryDeviceUnlock
 
-public final class InMemoryEnrollmentMetadataStore: DeviceEnrollmentMetadataStore {
+/// `@unchecked Sendable`: mutable spy/stub state satisfying the (now `Sendable`)
+/// metadata-store protocol. Safe because XCTest drives it serially through
+/// `await`; the assumption is stated, not hidden (#231).
+public final class InMemoryEnrollmentMetadataStore: DeviceEnrollmentMetadataStore, @unchecked Sendable {
     private var enrollment: DeviceEnrollment?
     /// Deliberately the untyped `Error?` (not a specific enum): unlike the
     /// enclave (`DeviceUnlockError`) and the slot port (`VaultSlotError`), the

@@ -9,7 +9,9 @@ public struct DeviceEnrollment: Equatable {
     }
 }
 
-public protocol DeviceEnrollmentMetadataStore {
+/// `Sendable` because conformers are injected into the (sendable)
+/// `DeviceUnlockCoordinator` and reached across the actor boundary (#231).
+public protocol DeviceEnrollmentMetadataStore: Sendable {
     func load() throws -> DeviceEnrollment?
     func save(_ enrollment: DeviceEnrollment) throws
     func clear() throws
