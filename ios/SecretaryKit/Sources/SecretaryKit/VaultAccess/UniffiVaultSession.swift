@@ -40,11 +40,18 @@ public final class UniffiVaultSession: VaultSession {
     private var currentBlock: BlockReadOutput?
     /// Cached per this session so every write stamps the same device UUID.
     private var cachedDeviceUuid: [UInt8]?
+    /// The vault UUID is immutable for the session's life, so it is snapshotted to
+    /// hex at construction (while the manifest handle is valid). `vaultUuidHex`
+    /// returns this stored value and never touches the FFI handle, so it stays
+    /// correct after `wipe()` zeroizes the manifest — a post-wipe read pre-fix
+    /// returned the bridge's all-zero default (#252).
+    private let vaultUuidHexValue: String
 
     public init(output: OpenVaultOutput) {
         self.identity = output.identity
         self.manifest = output.manifest
         self.deviceUuids = nil
+        self.vaultUuidHexValue = Self.hexEncode(output.manifest.vaultUuid())
     }
 
     /// Test/seam initializer: inject a device-uuid provider. Production uses
@@ -54,15 +61,25 @@ public final class UniffiVaultSession: VaultSession {
         self.identity = output.identity
         self.manifest = output.manifest
         self.deviceUuids = deviceUuids
+        self.vaultUuidHexValue = Self.hexEncode(output.manifest.vaultUuid())
     }
 
-    public var vaultUuidHex: String {
-        [UInt8](manifest.vaultUuid()).map { String(format: "%02x", $0) }.joined()
+    public var vaultUuidHex: String { vaultUuidHexValue }
+
+    /// Lowercase, dash-free hex of a uniffi byte blob.
+    private static func hexEncode(_ bytes: Data) -> String {
+        [UInt8](bytes).map { String(format: "%02x", $0) }.joined()
     }
 
     public func blockSummaries() -> [SecretaryVaultAccess.BlockSummary] {
         lock.withLock {
-            manifest.blockSummaries().map { s in
+            // After wipe() the session is closed: expose no blocks without touching
+            // the zeroized manifest handle (mirrors readBlock's lost-race empty return
+            // + the write-path guard). The bridge also returns empty for a wiped handle,
+            // but the session enforces its own contract rather than relying on that
+            // cross-crate default.
+            if wiped { return [] }
+            return manifest.blockSummaries().map { s in
                 SecretaryVaultAccess.BlockSummary(
                     uuid: [UInt8](s.blockUuid),
                     name: s.blockName,

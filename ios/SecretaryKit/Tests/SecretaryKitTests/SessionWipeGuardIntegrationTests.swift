@@ -77,6 +77,34 @@ final class SessionWipeGuardIntegrationTests: XCTestCase {
         }
     }
 
+    /// #252: the vault UUID is immutable for a session's life, so `vaultUuidHex`
+    /// must keep returning it after `wipe()`. Pre-fix the accessor re-read the
+    /// zeroized manifest handle and got the bridge's all-zero default (`00…00`) —
+    /// a silently-wrong UUID. The fix snapshots the hex at construction, so the
+    /// accessor never touches the FFI handle post-construction.
+    func testVaultUuidHexSurvivesWipe() throws {
+        let session = try openSession()
+        let hexBefore = session.vaultUuidHex
+        XCTAssertEqual(hexBefore.count, 32, "a 16-byte UUID is 32 hex chars")
+        XCTAssertNotEqual(hexBefore, String(repeating: "0", count: 32),
+                          "sanity: the golden vault's UUID is not all-zero")
+        session.wipe()
+        XCTAssertEqual(session.vaultUuidHex, hexBefore,
+                       "vaultUuidHex must survive wipe (immutable, snapshotted at construction)")
+    }
+
+    /// #252: `blockSummaries()` after `wipe()` must expose no blocks — the session
+    /// is closed. The bridge already returns an empty slice for a wiped handle, so
+    /// this pins the session-layer `wiped` guard that makes the contract explicit
+    /// (matching the already-guarded `readBlock`/write paths) rather than relying
+    /// on the cross-crate bridge default.
+    func testBlockSummariesAfterWipeIsEmpty() throws {
+        let session = try openSession()
+        XCTAssertFalse(session.blockSummaries().isEmpty, "sanity: the golden vault has ≥1 block")
+        session.wipe()
+        XCTAssertTrue(session.blockSummaries().isEmpty, "a wiped session must expose no blocks")
+    }
+
     /// `wipe()` is idempotent: calling it twice is a safe no-op, and the session stays
     /// closed (a subsequent write still throws the wiped-session error).
     func testWipeIsIdempotent() throws {
