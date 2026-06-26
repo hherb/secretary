@@ -5,7 +5,7 @@ import Foundation
 /// is NOT secret — it is a path-style token with no key material — so persisting
 /// it (e.g. in `UserDefaults`) carries no secret-residue risk. No vault key or
 /// credential ever flows through this type.
-public struct VaultLocation: Equatable {
+public struct VaultLocation: Equatable, Sendable {
     public let displayName: String
     /// Security-scoped bookmark data as returned by the system file picker.
     public let bookmark: Data

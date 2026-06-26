@@ -4,7 +4,12 @@ import SecretaryVaultAccess
 /// In-memory `VaultSession` for host tests. `recordsByBlock` is mutable so the
 /// write methods model real add/edit/delete/restore state transitions. Field
 /// `reveal` closures capture the stored plaintext.
-public final class FakeVaultSession: VaultSession {
+///
+/// `@unchecked Sendable`: mutable in-memory state satisfying the (now `Sendable`)
+/// `VaultSession` protocol. Safe because XCTest drives it serially through
+/// `await`; the assumption is stated, not hidden (#231). The real conformer
+/// (`UniffiVaultSession`) earns its `Sendable` via an FFI-handle lock instead.
+public final class FakeVaultSession: VaultSession, @unchecked Sendable {
     public let vaultUuidHex: String
     private var blocks: [BlockSummary]
     private var recordsByBlock: [[UInt8]: [RecordView]]

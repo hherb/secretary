@@ -8,7 +8,12 @@ import Foundation
 /// decrypted block handles, so it needs reference identity (callers compare
 /// sessions with `===`) and a single authoritative `wipe` — value-copy
 /// semantics would duplicate the handles and make `wipe` non-authoritative.
-public protocol VaultSession: AnyObject {
+///
+/// `Sendable` because `VaultOpenPort.openWith…` returns a session from a
+/// nonisolated `async` context back to a `@MainActor` caller (#231). The real
+/// conformer (`UniffiVaultSession`) is `@unchecked Sendable`, made safe by the
+/// lock that already serializes its FFI-handle access (#300/#304).
+public protocol VaultSession: AnyObject, Sendable {
     /// Opened vault UUID, lowercase hex, no dashes.
     var vaultUuidHex: String { get }
     /// Block metadata from the manifest (no plaintext).
