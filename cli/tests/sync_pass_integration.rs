@@ -830,15 +830,22 @@ fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
 
     // Call-1: obtain the GENUINE freshness token + veto set.
     let mut probe_state = state.clone();
-    let (vetoes, genuine_token) =
-        match sync_pass_inspect(&vault_folder, &identity, &password, &mut probe_state, 0).unwrap() {
-            InspectOutcome::ConflictsPending {
-                vetoes,
-                manifest_hash,
-                ..
-            } => (vetoes, manifest_hash),
-            other => panic!("expected ConflictsPending, got {other:?}"),
-        };
+    let (vetoes, genuine_token) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut probe_state,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::AcceptTombstone {
