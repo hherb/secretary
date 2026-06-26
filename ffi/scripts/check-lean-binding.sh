@@ -55,9 +55,15 @@ readonly POSITIVE_CONTROL_CRATE=secretary-cli
 forbidden_deps_in() {
   local crate=$1
   shift
-  # grep returns 1 on no-match; that is the clean (success) case here, so
-  # tolerate it without tripping `set -e` / `pipefail`.
-  cargo tree -p "$crate" -e normal --prefix none "$@" 2>/dev/null \
+  # `cargo tree`'s stderr is deliberately NOT redirected to /dev/null: a
+  # resolution error (bad crate name, registry-index update failure on an
+  # air-gapped runner) makes the pipeline exit non-zero, `pipefail` propagates
+  # it, and the `matches=$(...)` assignment in the callers aborts under `set -e`
+  # — fail-closed. Swallowing stderr would keep the fail-closed abort but leave
+  # the operator with no diagnostic for *why* the guard died. grep returns 1 on
+  # no-match (the clean case here), so tolerate only grep's exit without masking
+  # cargo's.
+  cargo tree -p "$crate" -e normal --prefix none "$@" \
     | { grep -E "$FORBIDDEN_RE" || true; }
 }
 
