@@ -30,7 +30,9 @@ use secretary_cli::state::{default_state_dir, load, save, state_file_path};
 use secretary_core::crypto::secret::{SecretBytes, SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
-use secretary_core::sync::{SyncError, SyncState, VetoDecision};
+use secretary_core::sync::{
+    prepare_merge, sync_once, SyncError, SyncOutcome, SyncState, VetoDecision,
+};
 use secretary_core::unlock::{open_with_password, vault_toml, UnlockedIdentity};
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{
@@ -159,12 +161,14 @@ fn sync_pass_returns_nothing_to_do_on_second_call() {
 
 // --- Pause-path (veto) fixture, rebuilt from public secretary_core API --
 
-/// Record UUID shared by both copies of the divergent block. `0xAA`
-/// repeated so it stays readable in failing-test output.
-const VETO_RECORD_UUID: [u8; 16] = [0xAA; 16];
+/// Record UUID shared by both copies of the divergent block — the record
+/// the canonical and sibling sides disagree on. `0xAA` repeated so it
+/// stays readable in failing-test output. Reused by both divergence
+/// fixtures (tombstone-veto and non-tombstone collision).
+const CONFLICT_RECORD_UUID: [u8; 16] = [0xAA; 16];
 /// Canonical-side device anchor (the LIVE local edit).
 const CANONICAL_DEVICE_UUID: [u8; 16] = [0x0A; 16];
-/// Sibling-side device anchor (the peer TOMBSTONE).
+/// Sibling-side device anchor (the peer TOMBSTONE / concurrent edit).
 const SIBLING_DEVICE_UUID: [u8; 16] = [0x0B; 16];
 /// Local device anchor — distinct from canonical/sibling so the
 /// caller's `SyncState` clock is `Concurrent` with the disk manifest
@@ -175,6 +179,15 @@ const LOCAL_DEVICE_UUID: [u8; 16] = [0x0C; 16];
 const LOCAL_LAST_MOD_MS: u64 = 100;
 /// Peer tombstone timestamp; strictly greater than `LOCAL_LAST_MOD_MS`.
 const DISK_TOMBSTONE_AT_MS: u64 = 200;
+/// Sibling-side concurrent-edit timestamp for the *collision* fixture;
+/// strictly greater than `LOCAL_LAST_MOD_MS` so field-level LWW resolves
+/// to the sibling value (the winner/loser asymmetry that records a
+/// `FieldCollision`). Distinct value from `DISK_TOMBSTONE_AT_MS` so the
+/// two fixtures stay legible side by side.
+const SIBLING_COLLISION_LAST_MOD_MS: u64 = 150;
+/// The field both sides of the collision fixture edit concurrently — the
+/// `record_id`/`field_names` assertion target for #192.
+const COLLISION_FIELD_NAME: &str = "k";
 /// Fixture build/commit timestamp.
 const FIXTURE_NOW_MS: u64 = 1_000_000;
 /// Sibling manifest filename — must start with `manifest.cbor.enc`.
@@ -215,7 +228,7 @@ fn block_file_path(folder: &Path, block_uuid: &[u8; 16]) -> PathBuf {
 fn live_record() -> Record {
     let mut fields = BTreeMap::new();
     fields.insert(
-        "k".to_string(),
+        COLLISION_FIELD_NAME.to_string(),
         RecordField {
             value: RecordFieldValue::Text(SecretString::from("local")),
             last_mod: LOCAL_LAST_MOD_MS,
@@ -224,7 +237,7 @@ fn live_record() -> Record {
         },
     );
     Record {
-        record_uuid: VETO_RECORD_UUID,
+        record_uuid: CONFLICT_RECORD_UUID,
         record_type: "kv".to_string(),
         fields,
         tags: Vec::new(),
@@ -242,7 +255,7 @@ fn live_record() -> Record {
 fn tombstoned_record() -> Record {
     let mut fields = BTreeMap::new();
     fields.insert(
-        "k".to_string(),
+        COLLISION_FIELD_NAME.to_string(),
         RecordField {
             value: RecordFieldValue::Text(SecretString::from("ignored")),
             last_mod: DISK_TOMBSTONE_AT_MS,
@@ -251,7 +264,7 @@ fn tombstoned_record() -> Record {
         },
     );
     Record {
-        record_uuid: VETO_RECORD_UUID,
+        record_uuid: CONFLICT_RECORD_UUID,
         record_type: "kv".to_string(),
         fields,
         tags: Vec::new(),
@@ -259,6 +272,40 @@ fn tombstoned_record() -> Record {
         last_mod_ms: DISK_TOMBSTONE_AT_MS,
         tombstone: true,
         tombstoned_at_ms: DISK_TOMBSTONE_AT_MS,
+        unknown: BTreeMap::new(),
+    }
+}
+
+/// Build the sibling-side **LIVE** record for the *collision* fixture: a
+/// concurrent edit of the same field (`COLLISION_FIELD_NAME`) on the same
+/// record UUID as `live_record`, but with a different value and a strictly
+/// greater `last_mod`. Because both sides are live and hold the field with
+/// differing values, the §11.3 field-level LWW merge picks the sibling
+/// (higher `last_mod`) and records a `FieldCollision`; because neither side
+/// tombstones, the per-record veto pass raises NO veto. This is the input
+/// `stage_concurrent_veto_vault`'s tombstone sibling cannot produce (see the
+/// `if tombstone` arm in `core/src/vault/conflict.rs`, which returns an empty
+/// collision set), and is exactly what #190/#192 need.
+fn collision_sibling_record() -> Record {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        COLLISION_FIELD_NAME.to_string(),
+        RecordField {
+            value: RecordFieldValue::Text(SecretString::from("remote")),
+            last_mod: SIBLING_COLLISION_LAST_MOD_MS,
+            device_uuid: SIBLING_DEVICE_UUID,
+            unknown: BTreeMap::new(),
+        },
+    );
+    Record {
+        record_uuid: CONFLICT_RECORD_UUID,
+        record_type: "kv".to_string(),
+        fields,
+        tags: Vec::new(),
+        created_at_ms: 50,
+        last_mod_ms: SIBLING_COLLISION_LAST_MOD_MS,
+        tombstone: false,
+        tombstoned_at_ms: 0,
         unknown: BTreeMap::new(),
     }
 }
@@ -397,12 +444,20 @@ fn write_manifest_with_block_entry(
 }
 
 /// Stage golden_vault_001 and force a per-block-divergent state: the
-/// first block exists as a canonical copy (record LIVE at t=100) and a
-/// sibling conflict-copy (same record TOMBSTONED at t=200), with the
-/// canonical and sibling manifests carrying concurrent clocks. Returns
-/// the tempdir, vault folder, unlocked identity, password, vault UUID,
-/// and the divergent block's UUID.
-fn stage_concurrent_veto_vault() -> (
+/// first block exists as a canonical copy (carrying `live_record`, LIVE at
+/// t=100) and a sibling conflict-copy (carrying `sibling_records`), with the
+/// canonical and sibling manifests carrying concurrent clocks. Returns the
+/// tempdir, vault folder, unlocked identity, password, vault UUID, and the
+/// divergent block's UUID.
+///
+/// The sibling records are the single axis the two divergence fixtures vary
+/// on: `stage_concurrent_veto_vault` passes a TOMBSTONED record (→ veto),
+/// `stage_concurrent_collision_vault` passes a LIVE concurrent field edit
+/// (→ field collision, no veto). Everything else — block envelopes, manifest
+/// re-signing, concurrent clocks, deterministic seeds — is shared.
+fn stage_concurrent_vault_with_sibling(
+    sibling_records: Vec<Record>,
+) -> (
     tempfile::TempDir,
     PathBuf,
     UnlockedIdentity,
@@ -443,7 +498,7 @@ fn stage_concurrent_veto_vault() -> (
     let (sibling_fp, sibling_bytes) = encrypt_block_bytes(
         &open,
         block_uuid,
-        vec![tombstoned_record()],
+        sibling_records,
         sibling_block_clock.clone(),
         golden_entry.block_name.clone(),
         golden_entry.created_at_ms,
@@ -490,6 +545,35 @@ fn stage_concurrent_veto_vault() -> (
     drop(open);
 
     (tmp, vault_dir, identity, password, vault_uuid, block_uuid)
+}
+
+/// Tombstone-veto divergence: the sibling conflict-copy TOMBSTONES the record
+/// the canonical side still holds live, so `prepare_merge`'s per-record veto
+/// pass fires. The original D.1.13 fixture — thin wrapper over the shared
+/// staging now that the sibling record is the only varying axis.
+fn stage_concurrent_veto_vault() -> (
+    tempfile::TempDir,
+    PathBuf,
+    UnlockedIdentity,
+    SecretBytes,
+    [u8; 16],
+    [u8; 16],
+) {
+    stage_concurrent_vault_with_sibling(vec![tombstoned_record()])
+}
+
+/// Non-tombstone collision divergence: both sides hold the record LIVE and
+/// edit the same field concurrently, so the merge resolves cleanly (zero
+/// vetoes) while recording a `FieldCollision`. The fixture #190/#192 need.
+fn stage_concurrent_collision_vault() -> (
+    tempfile::TempDir,
+    PathBuf,
+    UnlockedIdentity,
+    SecretBytes,
+    [u8; 16],
+    [u8; 16],
+) {
+    stage_concurrent_vault_with_sibling(vec![collision_sibling_record()])
 }
 
 /// The pause-path contract: a concurrent state whose merge raises a
@@ -631,6 +715,76 @@ fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
         hash_dir(&vault_dir),
         before,
         "inspect must not write to disk"
+    );
+}
+
+/// #192: prove `prepare_merge` POPULATES `DraftMerge.collisions` on a
+/// non-tombstone concurrent field edit — the path previously verified only
+/// by compilation. The sibling concurrent edit
+/// (`stage_concurrent_collision_vault`) keeps the record LIVE on both sides
+/// and edits the same field, so `merge_block` emits a `FieldCollision` that
+/// `prepare_merge` must thread onto the draft. This is the positive
+/// counterpart to `inspect_returns_veto_detail_and_leaves_disk_untouched`,
+/// whose tombstone fixture yields a veto but (per `merge_record`'s tombstone
+/// arm) an empty collision set.
+///
+/// Asserts at the `prepare_merge` layer directly: the zero-veto draft also
+/// distinguishes this CLEAN-merge path from the veto path, so a single test
+/// pins both halves (`vetoes` empty AND `collisions` populated). The bridge
+/// `MergedClean` projection of this same fixture is covered separately
+/// (#190).
+#[test]
+fn prepare_merge_populates_collisions_on_concurrent_field_edit() {
+    let (_tmp, vault_dir, identity, _password, vault_uuid, _block_uuid) =
+        stage_concurrent_collision_vault();
+
+    // Local clock references a device absent from both disk manifests so
+    // `sync_once` classifies the disk state as Concurrent (not dominated) —
+    // the precondition for reaching the merge layer at all.
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+
+    let (bundle, plan) =
+        match sync_once(&vault_dir, &identity, &state, 0).expect("sync_once must succeed") {
+            SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
+            other => panic!("expected ConcurrentDetected, got {other:?}"),
+        };
+    assert!(
+        !plan.diverging_blocks.is_empty(),
+        "the collision fixture must produce a diverging block"
+    );
+
+    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan).expect("prepare_merge");
+
+    // Zero vetoes: the non-tombstone edit resolves cleanly. This is the
+    // discriminator that proves we exercised the collision path, not the
+    // veto path — without it a fixture regression to a tombstone could
+    // silently pass the collision assertion as a no-op.
+    assert!(
+        draft.vetoes.is_empty(),
+        "a non-tombstone concurrent edit must raise no veto, got {:?}",
+        draft.vetoes
+    );
+
+    // The collision summary is populated with the exact record + field.
+    assert_eq!(
+        draft.collisions.len(),
+        1,
+        "exactly one record collided, got {:?}",
+        draft.collisions
+    );
+    let summary = &draft.collisions[0];
+    assert_eq!(
+        summary.record_id, CONFLICT_RECORD_UUID,
+        "collision summary must name the diverging record"
+    );
+    assert_eq!(
+        summary.field_names,
+        vec![COLLISION_FIELD_NAME.to_string()],
+        "collision summary must name the concurrently-edited field"
     );
 }
 
@@ -1055,6 +1209,95 @@ fn generate_sync_conflict_fixture() {
     .expect("write fixture README");
 
     eprintln!("wrote sync_conflict_fixture to {}", dest.display());
+}
+
+/// Generator (run on demand, human-reviewed diff) for the committed
+/// **clean-collision** divergence fixture consumed by the bridge-level #190
+/// `MergedClean` test. Sibling of `generate_sync_conflict_fixture`, but the
+/// sibling record is a LIVE concurrent field edit (not a tombstone), so the
+/// merge resolves cleanly (zero vetoes, ≥1 field collision) → `MergedClean`.
+///
+/// **Validation is read-only.** Unlike the veto generator — whose
+/// `sync_pass_inspect` self-check returns `ConflictsPending` and writes
+/// nothing — a clean collision merge COMMITS (rewrites the block, advances
+/// state). So this generator validates with the non-writing `sync_once` +
+/// `prepare_merge` pair and copies the still-PRE-merge divergence. The bridge
+/// test performs the actual merge against its own temp copy.
+///
+/// Run:
+///   cargo test --release -p secretary-cli --test sync_pass_integration -- \
+///       --ignored generate_sync_collision_fixture --nocapture
+///
+/// Diff is human-reviewed before commit; expected diff is scoped to
+/// `core/tests/data/sync_collision_fixture/` and nothing else.
+#[test]
+#[ignore = "fixture generator; run with --ignored generate_sync_collision_fixture --nocapture"]
+fn generate_sync_collision_fixture() {
+    let (_tmp, vault_dir, identity, _password, vault_uuid, _block_uuid) =
+        stage_concurrent_collision_vault();
+
+    // Seeded local clock: a device absent from both disk manifests -> the
+    // disk state classifies as Concurrent and the merge runs (cleanly).
+    let local_clock = vec![VectorClockEntry {
+        device_uuid: LOCAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let state = SyncState::new(vault_uuid, local_clock).expect("SyncState::new");
+
+    // Self-validate WITHOUT writing: sync_once must see Concurrent, and the
+    // prepared draft must be the clean-collision shape (zero vetoes, ≥1
+    // populated collision). prepare_merge does not commit, so the staged
+    // divergence on disk is untouched and faithfully copyable below.
+    let (bundle, plan) =
+        match sync_once(&vault_dir, &identity, &state, 0).expect("sync_once must succeed") {
+            SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
+            other => panic!("fixture is not Concurrent: {other:?}"),
+        };
+    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan).expect("prepare_merge");
+    assert!(
+        draft.vetoes.is_empty(),
+        "collision fixture must raise no veto, got {:?}",
+        draft.vetoes
+    );
+    assert!(
+        !draft.collisions.is_empty(),
+        "collision fixture must yield >=1 field collision"
+    );
+
+    // Destination tree under core/tests/data/.
+    let dest =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/tests/data/sync_collision_fixture");
+    let _ = fs::remove_dir_all(&dest);
+    let vault_dest = dest.join("vault");
+    let state_dest = dest.join("state");
+    fs::create_dir_all(&state_dest).expect("create_dir_all state/");
+    copy_dir_recursive_fixture(&vault_dir, &vault_dest);
+
+    // Persist the seeded concurrent SyncState into state/ (the bytes the
+    // bridge test loads as its state_dir, keyed by vault_uuid).
+    secretary_cli::state::save(&state_dest, &state).expect("save SyncState");
+
+    fs::write(
+        dest.join("README.md"),
+        "# sync_collision_fixture (#190, generated)\n\n\
+         Two-device divergence: `vault/` holds a canonical manifest + a sibling\n\
+         conflict-copy manifest. Both sides keep the same record LIVE and edit\n\
+         the same field concurrently, so the merge resolves CLEANLY — zero\n\
+         tombstone vetoes, but >=1 field-level LWW collision (informational).\n\
+         `state/<uuid>.state.cbor` is a seeded SyncState whose clock is\n\
+         Concurrent with both manifests. Loading `vault/` with password\n\
+         \"correct horse battery staple\" and `state/` as the state dir makes\n\
+         the bridge `sync_vault_in` return MergedClean (commits the merge,\n\
+         advances + persists state, rewrites the block). Contrast\n\
+         `sync_conflict_fixture` (#187), whose tombstone sibling yields\n\
+         ConflictsPending instead.\n\n\
+         Regenerate via: cargo test --release -p secretary-cli --test \
+         sync_pass_integration -- --ignored generate_sync_collision_fixture \
+         --nocapture\n",
+    )
+    .expect("write fixture README");
+
+    eprintln!("wrote sync_collision_fixture to {}", dest.display());
 }
 
 /// Local recursive dir copy for the generator (test-only).
