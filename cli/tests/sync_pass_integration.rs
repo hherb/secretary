@@ -761,6 +761,120 @@ fn commit_decisions_stale_token_is_rejected() {
     assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
 }
 
+/// Simulate a **real** concurrent writer advancing the canonical manifest
+/// on disk between call-1 (inspect) and call-2 (commit): re-sign the same
+/// logical manifest — same diverging block entry, same clocks — under a
+/// fresh AEAD nonce. The envelope ciphertext (and therefore the recomputed
+/// `manifest_hash` freshness token) changes, while the merge shape
+/// `sync_once` reclassifies stays identical, so call-2 still reaches the
+/// `ConcurrentDetected` freshness gate.
+///
+/// Reads the current block entry straight out of the on-disk canonical
+/// manifest (rather than reconstructing the staging constants) so the
+/// rewrite is a faithful no-op on merge semantics — only the bytes move.
+/// The nonce is runtime-generated, not a literal, to avoid CodeQL's
+/// `rust/hard-coded-cryptographic-value` sink rule (see CLAUDE.md
+/// `feedback_test_crypto_random_not_hardcoded`).
+fn rewrite_canonical_manifest_fresh_nonce(
+    vault_folder: &Path,
+    password: &SecretBytes,
+    block_uuid: [u8; 16],
+) {
+    use rand::RngCore as _;
+
+    let open = open_vault(vault_folder, Unlocker::Password(password), None)
+        .expect("re-open vault for concurrent manifest rewrite");
+    let entry = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("divergent block present in canonical manifest");
+
+    let mut fresh_nonce = [0u8; 24];
+    rand::rng().fill_bytes(&mut fresh_nonce);
+
+    write_manifest_with_block_entry(
+        vault_folder,
+        &open,
+        MANIFEST_FILENAME,
+        block_uuid,
+        entry.fingerprint,
+        entry.vector_clock_summary.clone(),
+        open.manifest.vector_clock.clone(),
+        entry.last_mod_ms,
+        &fresh_nonce,
+    );
+}
+
+/// Real-race counterpart to `commit_decisions_stale_token_is_rejected`.
+/// That test flips a byte of the token to *simulate* staleness; this one
+/// induces genuine staleness — a concurrent writer re-writes the canonical
+/// manifest on disk between call-1 and call-2 — while the operator still
+/// holds the **genuine, unmodified** call-1 token. The recomputed manifest
+/// hash no longer matches it, so the freshness gate trips with
+/// [`SyncError::EvidenceStale`] and writes nothing.
+///
+/// This is the wiring proof the byte-flip test cannot give: it shows the
+/// gate compares the token against the *live recompute source*, not against
+/// itself. An `expected != expected` bug (or one recomputing from a stale
+/// cached value) would pass `commit_decisions_stale_token_is_rejected` yet
+/// fail here.
+#[test]
+fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
+    let (_tmp, vault_folder, identity, password, vault_uuid, block_uuid) =
+        stage_concurrent_veto_vault();
+    let mut state = concurrent_state(vault_uuid);
+    let state_before = state.clone();
+
+    // Call-1: obtain the GENUINE freshness token + veto set.
+    let mut probe_state = state.clone();
+    let (vetoes, genuine_token) =
+        match sync_pass_inspect(&vault_folder, &identity, &password, &mut probe_state, 0).unwrap() {
+            InspectOutcome::ConflictsPending {
+                vetoes,
+                manifest_hash,
+                ..
+            } => (vetoes, manifest_hash),
+            other => panic!("expected ConflictsPending, got {other:?}"),
+        };
+    let decisions: Vec<VetoDecision> = vetoes
+        .iter()
+        .map(|v| VetoDecision::AcceptTombstone {
+            record_id: v.record_id,
+        })
+        .collect();
+
+    // A concurrent writer races the disk forward between call-1 and
+    // call-2: same merge shape, fresh manifest bytes.
+    rewrite_canonical_manifest_fresh_nonce(&vault_folder, &password, block_uuid);
+    let before = hash_dir(&vault_folder);
+
+    // Call-2 with the GENUINE (not flipped) token now trips the gate.
+    let err = sync_pass_commit_decisions(
+        &vault_folder,
+        &identity,
+        &password,
+        &mut state,
+        genuine_token,
+        decisions,
+        1,
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
+    assert_eq!(
+        hash_dir(&vault_folder),
+        before,
+        "no write on a genuinely stale token (real concurrent rewrite)"
+    );
+    assert_eq!(
+        state, state_before,
+        "state must not advance when the freshness gate rejects"
+    );
+}
+
 // --- Manual-smoke staging helper (#161) --------------------------------
 
 /// Materialize the two-device tombstone-veto divergence into a *persistent*
