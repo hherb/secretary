@@ -108,12 +108,14 @@ case and is accepted.
 ## Disposition (the deliverables)
 
 1. **Memo section** — add an "Accepted limitation: uniffi value-marshalling secret residue
-   (#299)" subsection to `docs/manual/contributors/memory-hygiene-audit-internal.md` capturing
+   (#299)" subsection to `docs/manual/contributors/ffi-secret-handling-internal.md` capturing
    the residue path, the two copies, the in-scope-unfixable evidence (uniffi 0.31.2 + #2080),
    the Android-equivalent note, threat framing, and the idiomatic mitigation. This is the
-   durable home (the memo is the principal handoff doc for the paid external review and already
-   has a "Deferred items" / "Out of scope" structure for exactly this kind of accepted
-   residual).
+   durable home: the FFI-secret memo already houses the outbound cross-FFI residue caveats
+   (`expose_*` / `take_*`) under a "What is *not* covered" section, so the symmetric inbound
+   residue is its natural sibling. `memory-hygiene-audit-internal.md` gets a cross-link pointer
+   from its Cross-FFI out-of-scope bullet. *(This refines the original plan, which placed the
+   section in the memory-hygiene memo; the FFI-secret memo is the better architectural fit.)*
 
 2. **Upstream comment on #2080** — a constructive comment from a real secrets-manager consumer:
    precise residue locations (the two copies above) + the specific opt-in `#[uniffi(zeroize)]`
