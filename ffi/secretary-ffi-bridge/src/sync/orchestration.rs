@@ -392,6 +392,17 @@ mod tests {
             secretary_core::vault::open_vault(&vault_folder, Unlocker::Password(&pw), None)
                 .expect("open collision fixture to read vault_uuid + block_uuid");
         let vault_uuid = core_out.manifest.vault_uuid;
+        // The collision fixture stages divergence on the single golden_vault_001
+        // block, so `blocks[0]` IS unambiguously the divergent block. Pin that
+        // invariant: if the fixture ever grows a second block where only a
+        // non-first block diverges, the post-merge `block_after != block_before`
+        // assertion would read an unchanged block and pass vacuously. Fail loudly
+        // here instead.
+        assert_eq!(
+            core_out.manifest.blocks.len(),
+            1,
+            "collision fixture must have exactly one block so blocks[0] is the divergent block"
+        );
         let block_uuid = core_out
             .manifest
             .blocks
