@@ -26,7 +26,7 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::draft::RecordCollisionSummary;
 use secretary_core::sync::{
     commit_with_decisions, prepare_merge, sync_once, ManifestHash, RecordTombstoneVeto,
-    RollbackEvidence, SyncError, SyncOutcome, SyncState, VetoDecision,
+    RollbackEvidence, SyncError, SyncOutcome, SyncState, VaultBundle, VetoDecision,
 };
 use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
@@ -256,11 +256,7 @@ pub fn run_one(
             // this moment — not just the canonical disk clock. See
             // `silent_merge_clock` for the full rationale.
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
-                    .copies
-                    .iter()
-                    .map(|c| c.manifest.vector_clock.as_slice())
-                    .collect();
+                let copy_clocks = gather_copy_clocks(&bundle);
                 state.highest_vector_clock_seen = silent_merge_clock(
                     &disk_vector_clock,
                     &copy_clocks,
@@ -317,11 +313,7 @@ pub fn sync_pass_pause_on_conflict(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
-                    .copies
-                    .iter()
-                    .map(|c| c.manifest.vector_clock.as_slice())
-                    .collect();
+                let copy_clocks = gather_copy_clocks(&bundle);
                 state.highest_vector_clock_seen = silent_merge_clock(
                     &disk_vector_clock,
                     &copy_clocks,
@@ -385,11 +377,7 @@ pub fn sync_pass_inspect(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
-                    .copies
-                    .iter()
-                    .map(|c| c.manifest.vector_clock.as_slice())
-                    .collect();
+                let copy_clocks = gather_copy_clocks(&bundle);
                 state.highest_vector_clock_seen = silent_merge_clock(
                     &disk_vector_clock,
                     &copy_clocks,
@@ -499,11 +487,7 @@ pub fn sync_pass_commit_decisions(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks: Vec<&[VectorClockEntry]> = bundle
-                    .copies
-                    .iter()
-                    .map(|c| c.manifest.vector_clock.as_slice())
-                    .collect();
+                let copy_clocks = gather_copy_clocks(&bundle);
                 state.highest_vector_clock_seen = silent_merge_clock(
                     &disk_vector_clock,
                     &copy_clocks,
@@ -524,6 +508,22 @@ pub fn sync_pass_commit_decisions(
             Ok(SyncPassOutcome::MergedClean)
         }
     }
+}
+
+/// Borrow every conflict-copy manifest's `vector_clock` out of `bundle`
+/// as a slice-of-slices, ready to feed [`silent_merge_clock`] as its
+/// `copy_clocks` argument.
+///
+/// Each of the four sync passes reaches the silent-merge fast path with
+/// the same need — fold every conflict copy's clock into the LUB — so the
+/// gather lives here once rather than copy-pasted per pass. Pure: borrows
+/// from `bundle` without allocating beyond the outer `Vec` of references.
+fn gather_copy_clocks(bundle: &VaultBundle) -> Vec<&[VectorClockEntry]> {
+    bundle
+        .copies
+        .iter()
+        .map(|c| c.manifest.vector_clock.as_slice())
+        .collect()
 }
 
 /// Compute the post-silent-merge `highest_vector_clock_seen` as the
