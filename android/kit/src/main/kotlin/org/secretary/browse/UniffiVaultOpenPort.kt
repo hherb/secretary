@@ -91,6 +91,12 @@ class UniffiVaultSession(
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
 
+    /** The vault UUID is immutable for the session's life, so it is snapshotted to hex at
+     *  construction (while the manifest handle is valid). [vaultUuidHex] returns this stored
+     *  value and never touches the FFI handle, so it stays correct after [wipe] zeroizes the
+     *  manifest — a post-wipe read pre-fix returned the bridge's all-zero default (#252). */
+    private val vaultUuidHexValue: String = hexOfBytes(manifest.vaultUuid())
+
     /** Serializes all access to the FFI handles + [currentBlock] across the IO dispatcher (reads)
      *  and the main thread (wipe). The held section spans the block decrypt, so a concurrent
      *  [wipe] waits for an in-flight read (bounded — one block decrypt is milliseconds). */
@@ -108,12 +114,19 @@ class UniffiVaultSession(
      *  block when we evict it here. Mirror of iOS UniffiVaultSession.currentBlock (#251). */
     private var currentBlock: BlockReadOutput? = null
 
-    override fun vaultUuidHex(): String = hexOfBytes(manifest.vaultUuid())
+    override fun vaultUuidHex(): String = vaultUuidHexValue
 
     override fun blockSummaries(): List<BlockSummaryView> =
-        // In-memory manifest metadata (no decryption), but route through mapErrors so any
-        // VaultException surfaces as a typed VaultBrowseError rather than a raw FFI throwable.
-        synchronized(sessionLock) { mapErrors { manifest.blockSummaries().map(::mapBlockSummary) } }
+        synchronized(sessionLock) {
+            // After wipe() the session is closed: return no blocks without touching the zeroized
+            // manifest handle (mirrors readBlock's lost-race empty return + the write-path guard).
+            // The bridge also returns empty for a wiped handle, but the session enforces its own
+            // contract rather than relying on that cross-crate default. In-memory manifest metadata
+            // (no decryption), routed through mapErrors so any VaultException surfaces as a typed
+            // VaultBrowseError rather than a raw FFI throwable.
+            if (wiped) emptyList()
+            else mapErrors { manifest.blockSummaries().map(::mapBlockSummary) }
+        }
 
     override suspend fun readBlock(blockUuid: ByteArray, includeDeleted: Boolean): List<RecordSummaryView> =
         withContext(ioDispatcher) {
