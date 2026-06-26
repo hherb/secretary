@@ -364,19 +364,43 @@ the `ByteArray` directly): the adapter copy and the generated-marshalling
 copy are different allocations; the marshalling residue applies to both
 bindings.
 
-**Not closeable in-scope.** uniffi 0.31 (current head 0.31.2, 2026-06-16)
-exposes no config flag, attribute, trait, custom-type mechanism, or
-"sensitive"/"secret" wire type that scrubs marshalling buffers —
-`custom_type!` only maps to an existing bridge type and then runs the
-*standard* `FfiConverter`, producing the same un-scrubbed copies. The
-RustBuffer allocator is only the cdylib's global `#[global_allocator]`;
-a zeroizing allocator would zero-on-free for the *entire* crate's heap
-traffic (heavyweight) and still would not touch copy #1. Upstream
+**Not closeable in any *released* uniffi (as of 0.31.2, 2026-06-16).**
+The latest release exposes no config flag, attribute, trait, custom-type
+mechanism, or "sensitive"/"secret" wire type that scrubs marshalling
+buffers — `custom_type!` only maps to an existing bridge type and then
+runs the *standard* `FfiConverter`, producing the same un-scrubbed
+copies. The RustBuffer allocator is only the cdylib's global
+`#[global_allocator]`; a zeroizing allocator would zero-on-free for the
+*entire* crate's heap traffic (heavyweight) and still would not touch
+copy #1. Upstream
 [mozilla/uniffi-rs#2080](https://github.com/mozilla/uniffi-rs/issues/2080)
-is **closed** with maintainers explicitly declining zeroize ("uniffi
-makes many copies … zeroize seems, frankly, pointless"); an opt-in
-`#[uniffi(zeroize)]` was floated but met "probably no appetite". We have
-registered the specific secrets-manager consumer ask on #2080.
+(zeroize-on-drop) is **closed** with maintainers explicitly declining
+zeroize ("uniffi makes many copies … zeroize seems, frankly,
+pointless"); an opt-in `#[uniffi(zeroize)]` was floated but met "probably
+no appetite". We have registered the specific secrets-manager consumer
+ask on #2080.
+
+**Remediation on the horizon — zero-copy `[ByRef] bytes` (uniffi
+[#2864](https://github.com/mozilla/uniffi-rs/issues/2864) /
+[#2878](https://github.com/mozilla/uniffi-rs/pull/2878)).** Rather than
+scrubbing the marshalling copies, upstream chose to *avoid* them:
+[#2878](https://github.com/mozilla/uniffi-rs/pull/2878) (merged to
+`main` 2026-05-10, **unreleased** as of 0.31.2) lets an inbound `bytes`
+argument declared `[ByRef] bytes` (UDL) / `&[u8]` (proc-macro) travel as
+a `ForeignBytes` (pointer + length) — a borrow of foreign memory —
+**instead of being copied through a `RustBuffer`.** For synchronous
+calls (which all our unlock entry points are) this eliminates *both*
+residue copies above: copy #2 (the Rust `RustBuffer`) never exists, and
+on Swift the `Data` is passed by pointer with no `createWriter` /
+`RustBuffer(bytes:)` dance, so copy #1 never exists either. The foreign
+side retains ownership of its buffer, which makes #298's
+`withZeroizingData` scrub of the adapter `Data` the *complete* scrub.
+(Async args still revert to copying; not applicable here. Kotlin
+call sites must pass a *direct* `java.nio.ByteBuffer` rather than a
+`ByteArray`.) Once a uniffi release ships #2878, migrating the inbound
+secret args (`open_vault_with_password` / `open_vault_with_recovery` /
+`create_vault_in_folder`, currently `Vec<u8>`) to `&[u8]` closes this
+limitation. Tracked as #307.
 
 **Threat framing.** Worst case is a residency window for one secret copy
 in freed-but-not-yet-reused heap — not a logic bug. The core
@@ -384,8 +408,10 @@ in freed-but-not-yet-reused heap — not a logic bug. The core
 idiomatic mitigation (keep secret material behind Rust-owned `Arc`
 handles, as the device-unlock path already does) is applied wherever the
 secret is *not* user-entered. For inbound user-entered password / phrase
-there is no avoidance path in any released uniffi; this is accepted as an
-inherent property of uniffi's value-marshalling model. See
+there is no avoidance path in any *released* uniffi as of 0.31.2, so this
+is accepted as a limitation of the released value-marshalling model —
+**not** an inherent one: the unreleased `[ByRef] bytes` zero-copy path
+above is the remediation once it ships. See
 [`docs/superpowers/specs/2026-06-25-uniffi-secret-residue-investigation-design.md`](../../superpowers/specs/2026-06-25-uniffi-secret-residue-investigation-design.md)
 for the full investigation record.
 

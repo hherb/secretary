@@ -54,7 +54,7 @@ Inbound secret, Swift → Rust (e.g. `openVaultWithPassword(folderPath:password:
 Net: a plaintext copy survives in (a) the freed Swift `writer` array and (b) the freed Rust
 `RustBuffer` allocation, until each heap region is reused. Both are in code we do not author.
 
-### Is it closeable in-scope? No.
+### Is it closeable today? No in any released uniffi — but a queued upstream remediation closes it.
 
 - **No hook in uniffi 0.31.** uniffi 0.31 (current head 0.31.2, released 2026-06-16) exposes no
   config flag, attribute, trait, custom-type mechanism, or "sensitive"/"secret" wire type that
@@ -74,10 +74,23 @@ Net: a plaintext copy survives in (a) the freed Swift `writer` array and (b) the
   purpose of that derive since UniFFI would be creating copies of the bytes that don't get
   zeroized on drop"; he floated an opt-in `#[uniffi(zeroize)]` but added "probably no appetite
   for it by the maintainers." @mhammond — "uniffi makes *many* copies … zeroize seems, frankly,
-  pointless." This treats the residue as an **inherent property of the value-marshalling
-  model**, not a bug.
-- **No newer release helps.** There is no uniffi > 0.31.2 as of 2026-06; no migration closes
-  the gap.
+  pointless." Note this declines *zeroize-on-drop* specifically — it does **not** mean the
+  residue is permanent (see the zero-copy remediation below).
+- **No newer *release* helps yet — but `main` does.** There is no uniffi > 0.31.2 as of
+  2026-06, so no released migration closes the gap. However, upstream chose to *avoid* the
+  copies rather than scrub them: [mozilla/uniffi-rs#2878](https://github.com/mozilla/uniffi-rs/pull/2878)
+  (part of [#2864](https://github.com/mozilla/uniffi-rs/issues/2864) "zero copy byte buffers",
+  merged to `main` 2026-05-10, **unreleased** as of 0.31.2) makes an inbound `[ByRef] bytes`
+  (UDL) / `&[u8]` (proc-macro) argument travel as a `ForeignBytes` (pointer + length) — a
+  borrow of foreign memory — **instead of a `RustBuffer` copy**. For synchronous calls (all our
+  unlock entry points) this eliminates *both* residue copies: copy #2 (the Rust `RustBuffer`)
+  never exists, and on Swift the `Data` is passed by pointer (no `createWriter` /
+  `RustBuffer(bytes:)`), so copy #1 never exists either — leaving #298's `withZeroizingData`
+  scrub of the foreign-owned `Data` as the complete scrub. Async args still copy (n/a here);
+  Kotlin call sites must pass a *direct* `java.nio.ByteBuffer`. Once a uniffi release ships
+  #2878, migrating the inbound secret args (`open_vault_with_password` /
+  `open_vault_with_recovery` / `create_vault_in_folder`, currently `Vec<u8>`) to `&[u8]` closes
+  this limitation. **Tracked as #307** so the migration isn't forgotten when the release lands.
 
 ### Android has the identical residue
 
@@ -102,8 +115,9 @@ The uniffi-blessed way to minimize residue is to keep secret material **behind R
 `Arc` handles** rather than ferrying raw bytes across the boundary — exactly the existing
 device-unlock shape (the secret goes in, the work happens behind the FFI, no raw key material
 is returned). For **inbound user-entered** secrets (master password / 24-word recovery phrase)
-there is no way to avoid the marshalling copies in any released uniffi; this is the unavoidable
-case and is accepted.
+there is no way to avoid the marshalling copies in any *released* uniffi (≤ 0.31.2); this is
+accepted **until** the queued zero-copy `[ByRef] bytes` path (above) ships in a release, at
+which point the inbound args migrate to `&[u8]` and the copies disappear.
 
 ## Disposition (the deliverables)
 
@@ -124,11 +138,18 @@ case and is accepted.
 
 3. **Close #299** referencing the memo section + #2080 with the documented rationale.
 
+4. **Follow-up issue #307** — migrate the inbound secret args to zero-copy `[ByRef] bytes`
+   / `&[u8]` once a uniffi release ships [#2878](https://github.com/mozilla/uniffi-rs/pull/2878),
+   so the accepted-until-then limitation is actually retired when the release lands rather than
+   silently lingering.
+
 ## Out of scope
 
-- Any change to generated code, the uniffi version, or a custom FFI shim (the residue is
-  inherent to value marshalling; a non-uniffi raw-pointer shim collides with the workspace
-  `#![forbid(unsafe_code)]` invariant and is disproportionate to the threat).
+- Any change to generated code, a uniffi version *bump to an unreleased build*, or a custom FFI
+  shim (the released-uniffi residue is unavoidable today, and a non-uniffi raw-pointer shim
+  collides with the workspace `#![forbid(unsafe_code)]` invariant and is disproportionate to the
+  threat). The *released* zero-copy `[ByRef] bytes` migration is the deliberate follow-up
+  (deliverable 4), not in-scope for this docs-only pass.
 - VM-owned input-array scrubbing (separate concern, already documented under #229).
 - The outbound (Rust → Swift) secret-return path (`take_phrase` / `take_secret`): it has the
   *mirror* residue, but #299 is scoped to the inbound password/phrase path. Noted in the memo
