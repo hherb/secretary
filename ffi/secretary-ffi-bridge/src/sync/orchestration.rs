@@ -364,6 +364,103 @@ mod tests {
         );
     }
 
+    /// Stage a writable copy of the committed `sync_collision_fixture` (#190):
+    /// a two-device clean-collision divergence (`vault/`) plus a seeded
+    /// Concurrent `SyncState` (`state/`). Returns both tempdir guards (keep
+    /// alive), the vault folder, the state dir, a fresh password, the
+    /// vault_uuid, and the divergent block's UUID — everything the
+    /// `MergedClean` test needs to assert state advance + block rewrite.
+    fn stage_collision_fixture_writable() -> (
+        TempDir,
+        TempDir,
+        PathBuf,
+        PathBuf,
+        SecretBytes,
+        [u8; 16],
+        [u8; 16],
+    ) {
+        let src = fixture_folder("sync_collision_fixture");
+        let vault_tmp = tempfile::tempdir().expect("vault tempdir");
+        let state_tmp = tempfile::tempdir().expect("state tempdir");
+        copy_dir_recursive(&src.join("vault"), vault_tmp.path());
+        copy_dir_recursive(&src.join("state"), state_tmp.path());
+        let vault_folder = vault_tmp.path().to_path_buf();
+        let state_dir = state_tmp.path().to_path_buf();
+
+        let pw = SecretBytes::new(VAULT_001_PASSWORD.to_vec());
+        let core_out =
+            secretary_core::vault::open_vault(&vault_folder, Unlocker::Password(&pw), None)
+                .expect("open collision fixture to read vault_uuid + block_uuid");
+        let vault_uuid = core_out.manifest.vault_uuid;
+        let block_uuid = core_out
+            .manifest
+            .blocks
+            .first()
+            .expect("collision fixture has >=1 block")
+            .block_uuid;
+        drop(core_out);
+
+        let password = SecretBytes::new(VAULT_001_PASSWORD.to_vec());
+        (
+            vault_tmp,
+            state_tmp,
+            vault_folder,
+            state_dir,
+            password,
+            vault_uuid,
+            block_uuid,
+        )
+    }
+
+    /// #190: the bridge `sync_vault_in` dispatch into a CLEAN concurrent merge
+    /// (`MergedClean`) while the per-vault lockfile is held — the only seam the
+    /// existing bridge tests (`AppliedAutomatically` / lock-held / wrong-pw) do
+    /// not exercise. Asserts the three observable effects: the outcome is
+    /// `MergedClean`, the persisted `SyncState` advanced (clock changed), and
+    /// the merged block was rewritten on disk.
+    ///
+    /// The fixture is the committed `sync_collision_fixture` — both devices
+    /// keep the record live and edit the same field, so the merge resolves
+    /// with zero tombstone vetoes (→ MergedClean, not ConflictsPending). The
+    /// underlying merge correctness is proven at the cli/core layer
+    /// (`prepare_merge_populates_collisions_on_concurrent_field_edit`, #192);
+    /// here we pin only the bridge glue.
+    #[test]
+    fn sync_vault_in_clean_concurrent_merge_commits_and_advances() {
+        let (_vault_tmp, _state_tmp, vault_folder, state_dir, password, vault_uuid, block_uuid) =
+            stage_collision_fixture_writable();
+
+        let block_path = vault_folder.join("blocks").join(format!(
+            "{}.cbor.enc",
+            secretary_core::vault::format_uuid_hyphenated(&block_uuid)
+        ));
+        let block_before = std::fs::read(&block_path).expect("read canonical block pre-merge");
+        let state_before = load(&state_dir, vault_uuid).expect("seeded state must load");
+
+        let outcome = sync_vault_in(&state_dir, &vault_folder, password, 1)
+            .expect("sync_vault_in on a clean-collision fixture must succeed");
+        assert_eq!(outcome, SyncOutcomeDto::MergedClean, "got {outcome:?}");
+
+        // State advanced + persisted: the merge folds the canonical + sibling
+        // clocks into a strictly greater LUB. (Asserting the clock *changed*
+        // is stronger than has_state here, since the fixture seeds a state file
+        // before the pass runs.)
+        let state_after = load(&state_dir, vault_uuid).expect("advanced state must persist");
+        assert_ne!(
+            state_after.highest_vector_clock_seen, state_before.highest_vector_clock_seen,
+            "MergedClean must advance + persist the sync clock"
+        );
+        let status = crate::sync::status::sync_status_in(&state_dir, vault_uuid).expect("status");
+        assert!(status.has_state);
+
+        // The merged block was rewritten (re-encrypted with the merged record).
+        let block_after = std::fs::read(&block_path).expect("read canonical block post-merge");
+        assert_ne!(
+            block_after, block_before,
+            "MergedClean must rewrite the merged block on disk"
+        );
+    }
+
     // -------------------------------------------------------------------
     // Commit-path (call-2) bridge-glue tests.
     //
