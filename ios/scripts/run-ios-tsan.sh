@@ -6,13 +6,14 @@
 # unsynchronized access to its mutable state (the #300 lock).
 #
 # Run from anywhere — paths resolve relative to this script.
-# Override the simulator with IOS_SIM, e.g.  IOS_SIM='iPhone 15' run-ios-tsan.sh
+# Override the simulator with IOS_SIM, e.g.  IOS_SIM='iPhone Air' run-ios-tsan.sh
+# (resolve-simulator.sh falls back to any available iPhone if this name is absent).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_DIR="$IOS_DIR/SecretaryKit"
-SIM_NAME="${IOS_SIM:-iPhone 16}"
+SIM_NAME="${IOS_SIM:-iPhone 17}"
 
 # --- Step 1: build the framework + stage fixtures (golden_vault_001) ---
 echo "==> build-xcframework.sh"

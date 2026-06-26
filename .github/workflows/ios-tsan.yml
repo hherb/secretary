@@ -41,7 +41,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       # Builds the uniffi xcframework (compiles the Rust core for the iOS-sim
       # target) then runs the whole SecretaryKit suite under -enableThreadSanitizer.
-      # If a future macos-latest image drops the "iPhone 16" simulator, set the
-      # IOS_SIM env to an available device name (run-ios-tsan.sh honors it).
+      # run-ios-tsan.sh defaults to "iPhone 17" and falls back to any available
+      # iPhone if the image rotates simulators; set IOS_SIM to pin a device.
       - name: SecretaryKit suite under ThreadSanitizer
         run: bash ios/scripts/run-ios-tsan.sh

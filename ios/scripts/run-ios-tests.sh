@@ -4,13 +4,14 @@
 #
 # Run from anywhere — paths resolve relative to this script.
 #
-# Override the simulator with IOS_SIM, e.g.  IOS_SIM='iPhone 15' run-ios-tests.sh
+# Override the simulator with IOS_SIM, e.g.  IOS_SIM='iPhone Air' run-ios-tests.sh
+# (resolve-simulator.sh falls back to any available iPhone if this name is absent).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_DIR="$IOS_DIR/SecretaryKit"
-SIM_NAME="${IOS_SIM:-iPhone 16}"
+SIM_NAME="${IOS_SIM:-iPhone 17}"
 
 # --- Step 1: host-run the pure SecretaryDeviceUnlock package (fast, no simulator) ---
 # Runs FIRST: the pure package has no XCFramework dependency, so a logic
