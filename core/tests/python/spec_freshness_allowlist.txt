@@ -61,3 +61,22 @@ docs/manual/contributors/ffi-secret-handling-internal.md::FfiUnlockError::WrongP
 
 # reason: ffi/secretary-ffi-bridge/src/error.rs::FfiUnlockError — FFI error type, not in core/
 docs/manual/contributors/ffi-secret-handling-internal.md::FfiUnlockError::WrongMnemonicOrCorrupt
+
+# --- uniffi inbound marshalling-residue section (#299). FFI-crate + upstream
+# --- uniffi symbols cited in the "Accepted limitation" subsection; none live
+# --- under core/, so they register as bare-unresolved.
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/mod.rs::open_vault_with_password — uniffi-projected fn, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::open_vault_with_password
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/mod.rs::open_vault_with_recovery — uniffi-projected fn, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::open_vault_with_recovery
+
+# reason: ffi/secretary-ffi-uniffi/src/secretary.udl::create_vault_in_folder — uniffi-projected fn, not in core/
+docs/manual/contributors/ffi-secret-handling-internal.md::create_vault_in_folder
+
+# reason: upstream uniffi_core crate name (the binding generator's runtime), not a project symbol
+docs/manual/contributors/ffi-secret-handling-internal.md::uniffi_core
+
+# reason: upstream uniffi-generated RustBuffer-free scaffolding symbol, not a project symbol
+docs/manual/contributors/ffi-secret-handling-internal.md::uniffi_rustbuffer_free
