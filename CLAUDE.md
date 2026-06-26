@@ -55,6 +55,12 @@ cargo clippy --release --workspace --tests -- -D warnings
 
 # Format
 cargo fmt --all
+
+# Assert the lean mobile-binding boundary (#189): notify/clap must NOT leak into
+# secretary-ffi-{uniffi,py,bridge}. `--self-test` first proves the matcher fires
+# on a known-positive control (secretary-cli) so a green guard is never vacuous.
+bash ffi/scripts/check-lean-binding.sh --self-test
+bash ffi/scripts/check-lean-binding.sh
 ```
 
 ### Python paths
