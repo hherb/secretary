@@ -3,7 +3,11 @@ import SecretaryDeviceUnlock
 
 /// In-memory `VaultDeviceSlotPort`. Records calls and supports error injection
 /// so the coordinator's every branch is reachable without the real FFI.
-public final class FakeVaultDeviceSlotPort: VaultDeviceSlotPort {
+///
+/// `@unchecked Sendable`: mutable spy/stub state satisfying the (now `Sendable`)
+/// port protocol. Safe because XCTest drives it serially through `await`; the
+/// assumption is stated, not hidden (#231).
+public final class FakeVaultDeviceSlotPort: VaultDeviceSlotPort, @unchecked Sendable {
     // Canned outputs / injected errors.
     public var addResult: Result<EnrolledSlot, VaultSlotError>
     public var openResult: Result<OpenedVault, VaultSlotError>

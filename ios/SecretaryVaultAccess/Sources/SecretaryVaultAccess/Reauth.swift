@@ -4,7 +4,10 @@ import Foundation
 /// Secure-Enclave key-release (the released secret is zeroized + discarded — re-auth
 /// only cares that the release succeeded). `isEnrolled` is the prompt-free predicate
 /// that decides whether the gate engages at all.
-public protocol BiometricAuthorizer {
+///
+/// `Sendable` because a `@MainActor` re-auth gate sends its conformer off-actor
+/// to `await authorize` (#231).
+public protocol BiometricAuthorizer: Sendable {
     var isEnrolled: Bool { get }
     /// Prove presence. Throws `DeviceUnlockError`-class failures on cancel / non-match
     /// / lockout. `async` because the real conformer drives an `LAContext` evaluation.
@@ -14,7 +17,10 @@ public protocol BiometricAuthorizer {
 /// A gate the view models `await` before each mutating write. Conformers decide
 /// whether a write needs a fresh biometric prompt (grace window) and engage the
 /// biometric only when required.
-public protocol WriteReauthGate {
+///
+/// `Sendable` because a `@MainActor` view model sends its gate off-actor to
+/// `await authorizeWrite` (#231).
+public protocol WriteReauthGate: Sendable {
     /// Returns normally when the write may proceed (authorized, within the grace
     /// window, or not enrolled); throws when biometry was required and failed.
     func authorizeWrite(reason: String) async throws

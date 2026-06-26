@@ -1,6 +1,10 @@
 /// A biometric-gated store for one 32-byte device secret. Conformers throw
 /// `DeviceUnlockError` for every failure (biometric, corruption, OS errors).
-public protocol DeviceSecretEnclave {
+///
+/// `Sendable` because conformers are injected into `DeviceUnlockCoordinator`,
+/// which a `@MainActor` view model sends across the actor boundary to call the
+/// `async` `release` (Swift 6 strict concurrency, #231).
+public protocol DeviceSecretEnclave: Sendable {
     var isEnrolled: Bool { get }
     /// Raw diagnostic from the most recent `release` failure ("domain=… code=…
     /// mappedTo=…"), for a UI to surface so the real Security-framework taxonomy

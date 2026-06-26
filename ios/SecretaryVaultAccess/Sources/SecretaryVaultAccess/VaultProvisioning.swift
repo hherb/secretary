@@ -34,7 +34,10 @@ public enum VaultProvisioningError: Error, Equatable {
 /// The product of a successful create: the persisted, openable location plus the
 /// one-shot recovery-phrase bytes (UTF-8). The caller (view-model) owns zeroizing
 /// `phrase` once the mnemonic step is dismissed.
-public struct CreatedVault {
+///
+/// `Sendable` because `VaultCreatePort.create` returns it from a nonisolated
+/// `async` context back to a `@MainActor` caller (#231).
+public struct CreatedVault: Sendable {
     public let location: VaultLocation
     public var phrase: [UInt8]
 
@@ -52,7 +55,10 @@ public struct CreatedVault {
 ///
 /// `async` because create runs Argon2id (CPU-heavy); implementations offload it
 /// off the calling actor (see `SecretaryKit.runOffMainActor`).
-public protocol VaultCreatePort {
+///
+/// `Sendable` because a `@MainActor` view model sends its conformer off-actor to
+/// `await create` (#231).
+public protocol VaultCreatePort: Sendable {
     func create(parent: URL,
                 vaultName: String,
                 password: [UInt8],

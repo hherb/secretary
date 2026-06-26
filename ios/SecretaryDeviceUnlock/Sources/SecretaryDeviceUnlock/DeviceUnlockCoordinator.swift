@@ -1,7 +1,12 @@
 import Foundation
 
 /// Pure orchestration over three injected ports. No I/O of its own.
-public struct DeviceUnlockCoordinator {
+///
+/// Explicitly `Sendable` (its three ports are `Sendable`): a non-frozen public
+/// struct does not export synthesized `Sendable` across the module boundary, and
+/// a `@MainActor` view model sends it off-actor to call the `async` `unlock`
+/// (#231).
+public struct DeviceUnlockCoordinator: Sendable {
     let slotPort: VaultDeviceSlotPort
     let enclave: DeviceSecretEnclave
     let metadata: DeviceEnrollmentMetadataStore

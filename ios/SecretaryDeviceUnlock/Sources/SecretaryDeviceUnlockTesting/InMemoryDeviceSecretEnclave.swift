@@ -3,7 +3,11 @@ import SecretaryDeviceUnlock
 /// In-memory `DeviceSecretEnclave`. Holds the bytes (no real crypto); supports
 /// injecting a `DeviceUnlockError` from `store`/`release` to simulate biometric
 /// failures. Reusable by the SecretaryKit Tier-2 integration test.
-public final class InMemoryDeviceSecretEnclave: DeviceSecretEnclave {
+///
+/// `@unchecked Sendable`: mutable spy/stub state satisfying the (now `Sendable`)
+/// enclave protocol. Safe because XCTest drives it serially through `await`; the
+/// assumption is stated, not hidden (#231).
+public final class InMemoryDeviceSecretEnclave: DeviceSecretEnclave, @unchecked Sendable {
     private var secret: [UInt8]?
     public var storeError: DeviceUnlockError?
     public var releaseError: DeviceUnlockError?

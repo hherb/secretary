@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-26-session-wiped-guard-252-shipped.md
+docs/handoffs/2026-06-26-ios-strict-concurrency-231-shipped.md

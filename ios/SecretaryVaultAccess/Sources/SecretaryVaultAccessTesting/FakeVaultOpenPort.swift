@@ -2,7 +2,11 @@ import Foundation
 import SecretaryVaultAccess
 
 /// In-memory `VaultOpenPort` returning pre-seeded results.
-public final class FakeVaultOpenPort: VaultOpenPort {
+///
+/// `@unchecked Sendable`: mutable spy state satisfying the (now `Sendable`) port
+/// protocol. Safe because XCTest drives it serially through `await`; the
+/// assumption is stated, not hidden (#231).
+public final class FakeVaultOpenPort: VaultOpenPort, @unchecked Sendable {
     private let passwordResult: Result<VaultSession, VaultAccessError>
     private let recoveryResult: Result<VaultSession, VaultAccessError>
     /// Spies asserted by the UnlockViewModel tests (which credential bytes the

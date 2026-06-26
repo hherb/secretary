@@ -14,7 +14,10 @@ import Foundation
 /// `async` is also kept for protocol uniformity.
 ///
 /// `password` is passed per call and never retained by callers.
-public protocol VaultSyncPort {
+///
+/// `Sendable` because the `SyncCoordinator` actor holds a conformer and reaches
+/// it across its actor boundary on every `async` call (#231).
+public protocol VaultSyncPort: Sendable {
     func status(stateDir: String, vaultUuid: [UInt8]) async throws -> SyncStatus
     func sync(stateDir: String, vaultFolder: String,
               password: [UInt8], nowMs: UInt64) async throws -> SyncOutcome

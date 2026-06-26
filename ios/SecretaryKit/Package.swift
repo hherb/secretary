@@ -1,6 +1,12 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
+// Swift 6 language mode (the tools-version 6.0 default) makes complete
+// strict-concurrency checking a hard compile error rather than an opt-in
+// warning. This closes the "vacuous concurrency bar" gap from #231 on the
+// highest-risk surface — the real uniffi / NSFilePresenter / dispatch adapters —
+// where a non-`Sendable` value crossing an actor/`@MainActor` boundary now fails
+// the build instead of slipping past minimal checking to manual review.
 let package = Package(
     name: "SecretaryKit",
     platforms: [.iOS(.v17)],

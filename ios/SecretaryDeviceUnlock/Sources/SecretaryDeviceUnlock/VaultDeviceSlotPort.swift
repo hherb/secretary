@@ -12,7 +12,10 @@ public struct EnrolledSlot {
 }
 
 /// Thin port over the three B.2 device-slot uniffi functions. Throws `VaultSlotError`.
-public protocol VaultDeviceSlotPort {
+///
+/// `Sendable` because conformers are injected into the (sendable)
+/// `DeviceUnlockCoordinator` and reached across the actor boundary (#231).
+public protocol VaultDeviceSlotPort: Sendable {
     func addDeviceSlot(vaultPath: Data, password: [UInt8]) throws -> EnrolledSlot
     func openWithDeviceSecret(vaultPath: Data, deviceUuid: [UInt8], deviceSecret: [UInt8]) throws -> OpenedVault
     func removeDeviceSlot(vaultPath: Data, deviceUuid: [UInt8]) throws

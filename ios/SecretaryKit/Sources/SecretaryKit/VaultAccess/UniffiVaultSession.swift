@@ -22,7 +22,13 @@ import SecretaryVaultAccess
 /// off the main actor inside `UniffiVaultOpenPort`'s `runOffMainActor` so Argon2id
 /// open does not block the UI.) The lock is non-recursive — no method re-enters
 /// another; `currentBlock?.wipe()` is the FFI handle's own wipe, not `self.wipe()`.
-public final class UniffiVaultSession: VaultSession {
+///
+/// `@unchecked Sendable`: `VaultSession` is `Sendable` (a session returns across
+/// the open port's `async` boundary, #231), and this conformer earns it through
+/// the `lock` above rather than immutability — the compiler cannot see that the
+/// mutable `wiped`/`currentBlock`/`cachedDeviceUuid` state and the `deviceUuids`
+/// provider are all lock-serialized, so the guarantee is asserted here.
+public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
     private let identity: UnlockedIdentity
     private let manifest: OpenVaultManifest
     private let deviceUuids: DeviceUuidProviding?

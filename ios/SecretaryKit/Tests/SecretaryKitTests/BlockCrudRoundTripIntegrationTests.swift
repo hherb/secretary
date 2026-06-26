@@ -12,7 +12,11 @@ import SecretaryDeviceUnlockTesting
 /// Staging pattern mirrors RecordEditIntegrationTests: cp -R the bundled fixture
 /// into a fresh tempdir, open via SecretaryKit.openVaultWithPassword, inject a
 /// FixedDeviceUuid so the test is deterministic.
-@MainActor
+// Only the test method is `@MainActor` (it drives the @MainActor
+// VaultBrowseViewModel); the class is nonisolated so `setUpWithError` /
+// `tearDownWithError` — which override nonisolated XCTestCase requirements — can
+// stage `vaultCopy` without a main-actor isolation clash (#231). Mirrors the
+// nonisolated RecordEditIntegrationTests.
 final class BlockCrudRoundTripIntegrationTests: XCTestCase {
     private let goldenPassword = "correct horse battery staple"
     private var vaultCopy: URL!
@@ -42,6 +46,7 @@ final class BlockCrudRoundTripIntegrationTests: XCTestCase {
         func deviceUuid(forVaultHex vaultHex: String) throws -> [UInt8] { value }
     }
 
+    @MainActor
     func testCreateThenMoveRoundTripThroughViewModel() async throws {
         // 1. Stage a writable temp copy + open via the real adapter.
         //    Block/field/value confirmed from golden_vault_001_inputs.json:

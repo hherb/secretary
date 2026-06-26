@@ -3,7 +3,11 @@ import SecretaryVaultAccess
 
 /// In-memory `VaultSyncPort` returning pre-seeded results and spying on inputs.
 /// Mirrors `FakeVaultOpenPort`'s convention.
-public final class FakeVaultSyncPort: VaultSyncPort {
+///
+/// `@unchecked Sendable`: mutable spy state satisfying the (now `Sendable`) port
+/// protocol. Safe because XCTest drives it serially through `await`; the
+/// assumption is stated, not hidden (#231).
+public final class FakeVaultSyncPort: VaultSyncPort, @unchecked Sendable {
     private let statusResult: Result<SyncStatus, VaultSyncError>
     private let syncResult: Result<SyncOutcome, VaultSyncError>
     private let commitResult: Result<SyncOutcome, VaultSyncError>
