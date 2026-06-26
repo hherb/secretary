@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-25-ios-tsan-concurrency-shipped.md
+docs/handoffs/2026-06-26-uniffi-secret-residue-299-shipped.md
