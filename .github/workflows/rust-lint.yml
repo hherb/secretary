@@ -61,3 +61,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Clippy (lib + tests, deny warnings)
         run: cargo clippy --release --workspace --tests -- -D warnings
+
+  lean-binding:
+    name: lean mobile-binding boundary
+    # Regression tripwire for #189: the daemon deps (notify/clap) must not leak
+    # into the FFI bridge or the mobile bindings beneath it. `cargo tree` only
+    # resolves the dependency graph — it never compiles the crates — so this job
+    # needs no GTK/WebKit/Tauri system libs and runs ubuntu-only and fast.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Prove the matcher actually fires (positive control) before trusting a
+      # green guard — a vacuous check is the failure mode #231 surfaced.
+      - name: Self-test the guard matcher
+        run: bash ffi/scripts/check-lean-binding.sh --self-test
+      - name: Assert binding crates stay lean (no notify/clap)
+        run: bash ffi/scripts/check-lean-binding.sh
