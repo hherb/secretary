@@ -59,7 +59,10 @@ demo (no prefilled password).
   device-unlock walking-skeleton (`DeviceUnlockScreen` over the real
   `DeviceUnlockCoordinator`) remains in the package as a reference but is not
   currently wired into the root flow.
-  Built (and the demo vault staged) via `scripts/build-app.sh`. The SE store
+  Built (and the demo vault staged) via `scripts/build-app.sh`, under the
+  **Swift 6 language mode** (`SWIFT_VERSION: "6.0"`) — the same complete
+  strict-concurrency bar the SwiftPM packages already enforce (#231), so the app
+  shell is no longer the one target on minimal checking. The SE store
   records the raw `domain`+`code` diagnostic on each unlock attempt.
   [#202](https://github.com/hherb/secretary/issues/202) ✅ **proven on an
   iPhone 13 Pro Max** (2026-06-11): real SE + Face ID released the secret and

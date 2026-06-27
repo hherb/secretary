@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-trash-list-name-memo-172-shipped.md
+docs/handoffs/2026-06-27-secretaryapp-swift6-shipped.md
