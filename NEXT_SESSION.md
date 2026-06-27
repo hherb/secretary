@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-sync-toctou-block-writes-103-shipped.md
+docs/handoffs/2026-06-27-timer-poison-distinct-147-shipped.md
