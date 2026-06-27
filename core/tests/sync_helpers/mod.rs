@@ -10,13 +10,15 @@
 //! across rewrites) holds even within a single tempdir. See the
 //! "Atomic-write contract" section of CLAUDE.md for the rationale.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use secretary_core::crypto::secret::Sensitive;
+use secretary_core::crypto::secret::{SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::vault::{
-    encode_manifest_file, open_vault, sign_manifest, ManifestHeader, Unlocker, VectorClockEntry,
+    encode_manifest_file, open_vault, sign_manifest, ManifestHeader, Record, RecordField,
+    RecordFieldValue, Unlocker, VectorClockEntry,
 };
 use zeroize::Zeroize as _;
 
@@ -223,6 +225,44 @@ pub fn write_manifest_at(
 /// Local copy because the matching constant in `manifest::UUID_LEN` is
 /// `pub(crate)` to the core crate.
 const SYNC_HELPERS_UUID_LEN: usize = 16;
+
+/// Build a LIVE single-field `"kv"` record. `uuid` controls the
+/// `record_uuid` so callers can give the canonical and sibling sides of
+/// a divergence fixture distinct (non-conflicting) records; `marker`
+/// becomes the value of the sole field `"k"`. Pure: no I/O, no globals —
+/// every field is derived from the four arguments.
+///
+/// `dead_code` is tolerated because not every test target that compiles
+/// `sync_helpers` exercises this constructor.
+#[allow(dead_code)]
+pub fn live_record(
+    uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    last_mod_ms: u64,
+    marker: &str,
+) -> Record {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "k".to_string(),
+        RecordField {
+            value: RecordFieldValue::Text(SecretString::from(marker)),
+            last_mod: last_mod_ms,
+            device_uuid,
+            unknown: BTreeMap::new(),
+        },
+    );
+    Record {
+        record_uuid: uuid,
+        record_type: "kv".to_string(),
+        fields,
+        tags: Vec::new(),
+        created_at_ms: 50,
+        last_mod_ms,
+        tombstone: false,
+        tombstoned_at_ms: 0,
+        unknown: BTreeMap::new(),
+    }
+}
 
 /// Look up the first block_uuid in the golden vault's manifest. Used
 /// by helpers that need a real on-disk block to rewrite.
