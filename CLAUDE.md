@@ -53,6 +53,10 @@ cargo test --release --workspace --features differential-replay
 # Lint — must stay clean with -D warnings (covers both lib + test targets)
 cargo clippy --release --workspace --tests -- -D warnings
 
+# Doc links — must stay warning-clean (#92 CI gate; rustdoc only documents the
+# cfg-active code, so run on both Linux and macOS to catch platform-gated links)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
+
 # Format
 cargo fmt --all
 
