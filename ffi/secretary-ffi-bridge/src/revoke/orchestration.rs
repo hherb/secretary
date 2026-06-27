@@ -26,7 +26,7 @@ use rand_core::OsRng;
 use secretary_core::crypto::secret::Sensitive;
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::card::ContactCard;
-use secretary_core::vault::{OpenVault, VaultError};
+use secretary_core::vault::{BlockUuid, DeviceUuid, OpenVault, RecipientUuid, VaultError};
 use zeroize::Zeroize as _;
 
 use crate::error::FfiVaultError;
@@ -141,13 +141,13 @@ pub fn revoke_block(
     let result = secretary_core::vault::revoke_block_recipient(
         &vault_folder,
         &mut open_vault,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &author_card,
         &sk_ed,
         &sk_pq,
         &existing_decoded,
-        revoked_recipient_uuid,
-        device_uuid,
+        RecipientUuid::new(revoked_recipient_uuid),
+        DeviceUuid::new(device_uuid),
         now_ms,
         &mut OsRng,
     );

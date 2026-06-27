@@ -52,8 +52,8 @@ use secretary_core::unlock::{self, bundle::IdentityBundle, create_vault_unchecke
 use secretary_core::vault::block::encode_plaintext;
 use secretary_core::vault::{
     decode_block_file, decrypt_block, encode_manifest_file, open_vault, revoke_block_recipient,
-    save_block, sign_manifest, BlockFile, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader,
-    Unlocker,
+    save_block, sign_manifest, BlockFile, BlockPlaintext, BlockUuid, DeviceUuid, KdfParamsRef,
+    Manifest, ManifestHeader, RecipientUuid, Unlocker,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -342,13 +342,13 @@ fn generate_revoke_kat() {
     revoke_block_recipient(
         vault_dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
-        bob_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )

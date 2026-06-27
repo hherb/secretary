@@ -35,8 +35,8 @@ use secretary_core::unlock::{
 };
 use secretary_core::vault::{
     decode_block_file, decrypt_block, encode_manifest_file, manifest, open_vault, save_block,
-    share_block, sign_manifest, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker,
-    VaultError,
+    share_block, sign_manifest, BlockPlaintext, BlockUuid, DeviceUuid, KdfParamsRef, Manifest,
+    ManifestHeader, Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -293,13 +293,13 @@ fn share_block_round_trip() {
     share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card),
         &alice_card,
-        device_uuid,
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -387,13 +387,13 @@ fn share_block_with_pre_existing_recipients_preserved() {
     share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
         &bob_card,
-        device_uuid,
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -470,13 +470,13 @@ fn share_block_non_author_rejected() {
     let err = share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &alice_card, // wrong author card!
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card),
         &carol_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -511,13 +511,13 @@ fn share_block_block_not_found_rejected() {
     let err = share_block(
         dir.path(),
         &mut open,
-        bogus_uuid,
+        BlockUuid::new(bogus_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card),
         &alice_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -565,13 +565,13 @@ fn share_block_duplicate_recipient_rejected() {
     let err = share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
         &alice_card, // duplicate!
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -619,13 +619,13 @@ fn share_block_re_sign_verifies() {
     share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card),
         &alice_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -734,13 +734,13 @@ fn share_block_send_only_mode() {
     let err = share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[alice_card.clone(), bob_card.clone()],
         &carol_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -789,13 +789,13 @@ fn share_block_atomic_no_torn() {
     share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card),
         &alice_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -876,13 +876,13 @@ fn share_block_missing_recipient_card_rejected() {
     let err = share_block(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&owner_card), // alice intentionally omitted
         &bob_card,
-        [0xd1u8; 16],
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )

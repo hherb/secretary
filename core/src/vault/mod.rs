@@ -24,6 +24,7 @@ pub mod block;
 pub(crate) mod canonical;
 pub mod conflict;
 pub mod device_slot;
+pub mod ids;
 pub(crate) mod io;
 pub mod manifest;
 pub(crate) mod orchestrators;
@@ -38,6 +39,7 @@ pub use conflict::{
     clock_relation, merge_block, merge_record, merge_vector_clocks, ClockRelation, ConflictError,
     FieldCollision, MergedBlock, MergedRecord, RecordCollision,
 };
+pub use ids::{BlockUuid, DeviceUuid, RecipientUuid};
 pub use manifest::{
     decode_manifest, decode_manifest_file, decrypt_manifest_body, encode_manifest,
     encode_manifest_file, encrypt_manifest_body, sign_manifest, verify_manifest, BlockEntry,

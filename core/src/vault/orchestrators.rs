@@ -34,11 +34,12 @@ use crate::crypto::sig::{
     Ed25519Secret, MlDsa65Public, MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
 };
 use crate::identity::card::{ContactCard, CARD_VERSION_V1};
-use crate::identity::fingerprint::fingerprint;
+use crate::identity::fingerprint::{fingerprint, Fingerprint};
 use crate::unlock::{
     self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity,
 };
 
+use super::ids::{BlockUuid, DeviceUuid, RecipientUuid};
 use super::{block, io, manifest};
 use super::{
     BlockEntry, BlockHeader, BlockPlaintext, KdfParamsRef, Manifest, ManifestFile, ManifestHeader,
@@ -1104,6 +1105,48 @@ pub fn save_block(
 // rewrite_block_with_recipients — shared re-key engine
 // ---------------------------------------------------------------------------
 
+/// The author's signing identity, threaded into the re-key engine as a cohesive
+/// unit (was four adjacent positional args). For v1 single-owner vaults the
+/// author is the calling owner; `fingerprint` is the BLAKE3 fingerprint of
+/// `card`'s canonical bytes, supplied by the caller (which already derived it for
+/// its own author check) to avoid recomputation.
+struct AuthorSigner<'a> {
+    card: &'a ContactCard,
+    fingerprint: Fingerprint,
+    sk_ed: &'a Ed25519Secret,
+    sk_pq: &'a MlDsa65Secret,
+}
+
+/// Parameter object for [`rewrite_block_with_recipients`]: every per-call input
+/// other than the ambient vault context (`folder`, `open`) and the `rng`.
+///
+/// Constructed by field name at each call site, so a positional transposition of
+/// same-typed values (the original `#[allow(clippy::too_many_arguments)]`
+/// hazard) is no longer expressible. `device_uuid` is a [`DeviceUuid`] newtype
+/// and `card_to_persist`'s owner is a [`RecipientUuid`], so even those scalar
+/// roles are type-distinct.
+struct BlockRekey<'a> {
+    /// The decoded §6.1 envelope of the block being re-keyed (read by the caller).
+    block_file: &'a block::BlockFile,
+    /// Index of this block's `BlockEntry` in `open.manifest.blocks` (located by
+    /// the caller for its own steps; reused here to avoid a second scan).
+    entry_idx: usize,
+    /// The author's signing identity (card + fingerprint + hybrid secret keys).
+    signer: AuthorSigner<'a>,
+    /// The final recipient set in wire order (cards), as resolved by the caller.
+    final_recipient_cards: &'a [&'a ContactCard],
+    /// The final recipient set as manifest UUIDs. Kept as raw `[u8; 16]` (the
+    /// on-disk `BlockEntry.recipients` type); set-semantics, not positional.
+    final_recipient_uuids: Vec<[u8; 16]>,
+    /// Optional contact card to persist to `contacts/<uuid>.card` (share grants a
+    /// new recipient access; revoke passes `None`).
+    card_to_persist: Option<(&'a [u8], RecipientUuid)>,
+    /// The device performing the write; ticks the manifest-level vector clock.
+    device_uuid: DeviceUuid,
+    /// Wall-clock millis stamped onto the block + manifest `last_mod_ms`.
+    now_ms: u64,
+}
+
 /// Re-key a block for a given final recipient set and re-sign the manifest.
 ///
 /// Shared crypto engine behind both `share_block` (final set = existing ++ new)
@@ -1114,24 +1157,30 @@ pub fn save_block(
 /// block-first → manifest-second ordering of §9.
 ///
 /// Callers perform steps 1–6 (locate entry, read+decode block, author check,
-/// single-owner check, wire-table resolution) and pass the results in.
-#[allow(clippy::too_many_arguments)]
+/// single-owner check, wire-table resolution) and pass the results in via
+/// [`BlockRekey`].
 fn rewrite_block_with_recipients(
     folder: &Path,
     open: &mut OpenVault,
-    block_file: &block::BlockFile,
-    entry_idx: usize,
-    author_card: &ContactCard,
-    author_fp: crate::identity::fingerprint::Fingerprint,
-    author_sk_ed: &Ed25519Secret,
-    author_sk_pq: &MlDsa65Secret,
-    final_recipient_cards: &[&ContactCard],
-    final_recipient_uuids: Vec<[u8; 16]>,
-    card_to_persist: Option<(&[u8], [u8; 16])>,
-    device_uuid: [u8; 16],
-    now_ms: u64,
+    req: BlockRekey<'_>,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    let BlockRekey {
+        block_file,
+        entry_idx,
+        signer,
+        final_recipient_cards,
+        final_recipient_uuids,
+        card_to_persist,
+        device_uuid,
+        now_ms,
+    } = req;
+    let AuthorSigner {
+        card: author_card,
+        fingerprint: author_fp,
+        sk_ed: author_sk_ed,
+        sk_pq: author_sk_pq,
+    } = signer;
     // Recompute the block path from the block UUID (callers read the block
     // from this same location in step 2).
     let blocks_dir = folder.join(BLOCKS_SUBDIR);
@@ -1272,7 +1321,7 @@ fn rewrite_block_with_recipients(
             context: "failed to ensure contacts/ subdirectory",
             source: e,
         })?;
-        let recipient_uuid_hex = format_uuid_hyphenated(&card_uuid);
+        let recipient_uuid_hex = format_uuid_hyphenated(card_uuid.as_bytes());
         let recipient_card_path = contacts_dir.join(format!("{recipient_uuid_hex}.card"));
         io::write_atomic(&recipient_card_path, card_bytes).map_err(|e| VaultError::Io {
             context: "failed to write new recipient contact card",
@@ -1304,7 +1353,7 @@ fn rewrite_block_with_recipients(
     // Step 14: tick the manifest-level vector clock for this device.
     // Sharing changes the manifest's content (recipient list +
     // block-fingerprint), so the vault-level clock advances.
-    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
+    tick_clock(&mut open.manifest.vector_clock, device_uuid.as_bytes())?;
 
     // Step 15: refresh manifest header. vault_uuid + created_at_ms
     // are preserved; only last_mod_ms advances.
@@ -1460,16 +1509,21 @@ fn rewrite_block_with_recipients(
 pub fn share_block(
     folder: &Path,
     open: &mut OpenVault,
-    block_uuid: [u8; 16],
+    block_uuid: BlockUuid,
     author_card: &ContactCard,
     author_sk_ed: &Ed25519Secret,
     author_sk_pq: &MlDsa65Secret,
     existing_recipient_cards: &[ContactCard],
     new_recipient: &ContactCard,
-    device_uuid: [u8; 16],
+    device_uuid: DeviceUuid,
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    // Unwrap the block-id newtype once; the body addresses the block by raw
+    // bytes (manifest scan, on-disk path). `device_uuid` stays a `DeviceUuid`
+    // and flows typed into the re-key engine.
+    let block_uuid = block_uuid.into_inner();
+
     // Step 1: locate the manifest BlockEntry. Bail before any I/O if
     // the caller is asking about an unknown block.
     let entry_idx = open
@@ -1597,17 +1651,24 @@ pub fn share_block(
     rewrite_block_with_recipients(
         folder,
         open,
-        &block_file,
-        entry_idx,
-        author_card,
-        author_fp,
-        author_sk_ed,
-        author_sk_pq,
-        &final_cards,
-        final_uuids,
-        Some((&new_recipient_card_bytes, new_recipient.contact_uuid)),
-        device_uuid,
-        now_ms,
+        BlockRekey {
+            block_file: &block_file,
+            entry_idx,
+            signer: AuthorSigner {
+                card: author_card,
+                fingerprint: author_fp,
+                sk_ed: author_sk_ed,
+                sk_pq: author_sk_pq,
+            },
+            final_recipient_cards: &final_cards,
+            final_recipient_uuids: final_uuids,
+            card_to_persist: Some((
+                &new_recipient_card_bytes,
+                RecipientUuid::new(new_recipient.contact_uuid),
+            )),
+            device_uuid,
+            now_ms,
+        },
         rng,
     )
 }
@@ -1662,16 +1723,24 @@ pub fn share_block(
 pub fn revoke_block_recipient(
     folder: &Path,
     open: &mut OpenVault,
-    block_uuid: [u8; 16],
+    block_uuid: BlockUuid,
     author_card: &ContactCard,
     author_sk_ed: &Ed25519Secret,
     author_sk_pq: &MlDsa65Secret,
     existing_recipient_cards: &[ContactCard],
-    revoked_recipient_uuid: [u8; 16],
-    device_uuid: [u8; 16],
+    revoked_recipient_uuid: RecipientUuid,
+    device_uuid: DeviceUuid,
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    // Unwrap the id newtypes once; the body addresses the block / revoke target
+    // by raw bytes (manifest scan, set filter, owner check). The three roles
+    // (`block_uuid`, `revoked_recipient_uuid`, `device_uuid`) are distinct types
+    // at the call boundary, so a transposition is a compile error (#183);
+    // `device_uuid` stays a `DeviceUuid` and flows typed into the re-key engine.
+    let block_uuid = block_uuid.into_inner();
+    let revoked_recipient_uuid = revoked_recipient_uuid.into_inner();
+
     // Step 1: locate the manifest BlockEntry (mirror share_block step 1).
     let entry_idx = open
         .manifest
@@ -1778,17 +1847,21 @@ pub fn revoke_block_recipient(
     rewrite_block_with_recipients(
         folder,
         open,
-        &block_file,
-        entry_idx,
-        author_card,
-        author_fp,
-        author_sk_ed,
-        author_sk_pq,
-        &final_cards,
-        final_uuids,
-        None,
-        device_uuid,
-        now_ms,
+        BlockRekey {
+            block_file: &block_file,
+            entry_idx,
+            signer: AuthorSigner {
+                card: author_card,
+                fingerprint: author_fp,
+                sk_ed: author_sk_ed,
+                sk_pq: author_sk_pq,
+            },
+            final_recipient_cards: &final_cards,
+            final_recipient_uuids: final_uuids,
+            card_to_persist: None,
+            device_uuid,
+            now_ms,
+        },
         rng,
     )
 }
