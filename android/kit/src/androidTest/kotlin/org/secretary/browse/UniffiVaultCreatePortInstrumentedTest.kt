@@ -7,16 +7,13 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.nio.file.Files
 
 @RunWith(AndroidJUnit4::class)
 class UniffiVaultCreatePortInstrumentedTest {
 
     private fun freshDir(prefix: String): File =
-        File.createTempFile(prefix, "").let { f ->
-            f.delete()
-            check(f.mkdirs()) { "could not mkdir ${f.path}" }
-            f
-        }
+        Files.createTempDirectory(prefix).toFile()
 
     @Test
     fun create_then_open_round_trips_with_24_word_phrase() = runBlocking {
