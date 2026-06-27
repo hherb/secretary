@@ -74,7 +74,7 @@ pub fn list_trashed_blocks(
     let mut out: Vec<TrashedBlock> = Vec::with_capacity(manifest_body.trash.len());
 
     for entry in &manifest_body.trash {
-        let path = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
+        let (path, _ts) = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
             FfiVaultError::CorruptVault {
                 detail: format!(
                     "trash entry has no matching file for {}",
@@ -102,9 +102,11 @@ pub fn list_trashed_blocks(
 }
 
 /// Scan `trash_dir` for files named `<uuid_hyphenated>.cbor.enc.<ts>`
-/// and return the path with the highest `<ts>` suffix (newest-wins,
-/// matching `core::vault::restore_block`'s selection). Returns
-/// `Ok(None)` when the directory is missing or holds no matching file.
+/// and return the path with the highest `<ts>` suffix together with that
+/// `<ts>` (newest-wins, matching `core::vault::restore_block`'s
+/// selection). The `<ts>` doubles as the #172 name-memo version key.
+/// Returns `Ok(None)` when the directory is missing or holds no matching
+/// file.
 ///
 /// Suffixes that are not a canonical decimal `u64` — non-`u64`-parseable
 /// forms AND non-canonical decimals such as leading-zero forms (e.g.
@@ -114,7 +116,7 @@ pub fn list_trashed_blocks(
 fn newest_trash_file(
     trash_dir: &Path,
     block_uuid: &[u8; 16],
-) -> Result<Option<PathBuf>, FfiVaultError> {
+) -> Result<Option<(PathBuf, u64)>, FfiVaultError> {
     let prefix = format!("{}.cbor.enc.", uuid_hyphenated(block_uuid));
 
     let read_dir = match std::fs::read_dir(trash_dir) {
@@ -154,5 +156,5 @@ fn newest_trash_file(
         }
     }
 
-    Ok(best.map(|(_, p)| p))
+    Ok(best.map(|(ts, p)| (p, ts)))
 }
