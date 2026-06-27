@@ -39,6 +39,13 @@ pub enum TickOutcome {
     /// The tick is dropped — the next tick will retry. Distinct from
     /// `NoAction` so the thread loop can record metrics if useful later.
     Skipped,
+    /// Session mutex is **poisoned**: a prior holder panicked while owning
+    /// the guard, so the auto-lock timer can never make progress again until
+    /// the process restarts. Distinct from [`TickOutcome::Skipped`] (benign,
+    /// self-healing contention) so the thread loop can surface a one-shot
+    /// `tracing::error!` rather than stalling silently forever (#147). `tick`
+    /// stays pure — it reports the condition; the loop edge does the logging.
+    Poisoned,
 }
 
 /// Single timer-tick body. Non-blocking: acquires the session mutex via
@@ -51,11 +58,18 @@ pub enum TickOutcome {
 /// [`TickOutcome::AutoLocked`] so the caller can emit the
 /// `vault-locked` event.
 ///
-/// Pure function — no Tauri dependency, no thread::sleep, no I/O. The
-/// thread spawn + sleep + event emission live in `main.rs`.
+/// Pure function — no Tauri dependency, no thread::sleep, no I/O (a poisoned
+/// mutex is reported as [`TickOutcome::Poisoned`], not logged here; the loop
+/// edge owns the I/O). The thread spawn + sleep + event emission live in
+/// `main.rs`.
 pub fn tick(session_mutex: &Mutex<VaultSession>) -> TickOutcome {
-    let Ok(mut session) = session_mutex.try_lock() else {
-        return TickOutcome::Skipped;
+    let mut session = match session_mutex.try_lock() {
+        Ok(guard) => guard,
+        // Another caller holds the mutex; benign — the next tick retries.
+        Err(std::sync::TryLockError::WouldBlock) => return TickOutcome::Skipped,
+        // A prior holder panicked while locked: the timer is dead until the
+        // process restarts. Report it distinctly so the loop edge logs once.
+        Err(std::sync::TryLockError::Poisoned(_)) => return TickOutcome::Poisoned,
     };
 
     let threshold_ms = session.current_settings().auto_lock_timeout_ms;
@@ -64,6 +78,25 @@ pub fn tick(session_mutex: &Mutex<VaultSession>) -> TickOutcome {
         TickOutcome::AutoLocked
     } else {
         TickOutcome::NoAction
+    }
+}
+
+/// One-shot latch for the poisoned-mutex error log. A poisoned session mutex
+/// stays poisoned for the life of the process, so the timer loop emits
+/// [`TickOutcome::Poisoned`] on every tick — logging each one would spam
+/// `error!` once per interval forever. This returns `true` exactly once (the
+/// first call), flipping `already_logged`, so the caller logs a single
+/// operator-visible signal and stays quiet thereafter (#147).
+///
+/// Pure decision — the actual `tracing::error!` lives at the call site in
+/// `main.rs`; keeping the anti-spam logic here makes it unit-testable without
+/// driving the binary's infinite timer loop.
+pub fn poison_should_log(already_logged: &mut bool) -> bool {
+    if *already_logged {
+        false
+    } else {
+        *already_logged = true;
+        true
     }
 }
 
@@ -125,13 +158,59 @@ mod tests {
     }
 
     #[test]
+    fn tick_returns_poisoned_when_mutex_poisoned() {
+        // A panic while a prior holder owned the session mutex poisons it.
+        // Unlike a command `*_impl` (which surfaces poison → `AppError::Internal`
+        // to its caller), the timer thread has no caller — so `tick` must report
+        // `Poisoned` distinctly from the benign contended `Skipped` path, letting
+        // the loop edge log once instead of silently stalling forever (#147).
+        //
+        // Poison by panicking a thread while it holds the guard — the established
+        // pattern in `commands::shared`. `thread::scope` lets the child borrow the
+        // local mutex without an `Arc`; the explicit `.join()` swallows the
+        // expected `Err(panicked)`.
+        let (mutex, _tmp) = locked_session();
+        std::thread::scope(|s| {
+            let _ = s
+                .spawn(|| {
+                    let _guard = mutex.lock().expect("acquire to poison");
+                    panic!("deliberate poison");
+                })
+                .join(); // Err(panicked)
+        });
+        assert!(mutex.is_poisoned(), "thread panic must poison the mutex");
+        assert_eq!(tick(&mutex), TickOutcome::Poisoned);
+    }
+
+    #[test]
+    fn poison_should_log_fires_exactly_once() {
+        // The anti-spam guarantee (#147): the loop sees `Poisoned` on every
+        // tick once the mutex is poisoned, but the operator must get a single
+        // error log, not one per interval forever. The latch returns `true`
+        // only on the first call and `false` for every call after.
+        let mut latch = false;
+        assert!(
+            poison_should_log(&mut latch),
+            "first poisoned tick must log"
+        );
+        assert!(latch, "latch must flip on the first log");
+        for _ in 0..5 {
+            assert!(
+                !poison_should_log(&mut latch),
+                "subsequent poisoned ticks must stay quiet"
+            );
+        }
+    }
+
+    #[test]
     fn tick_outcome_distinct_variants() {
-        // Sanity for the three-state enum — keep the variants distinct
-        // so a future "AutoLocked → NoAction" merge can't slip through
-        // a refactor.
+        // Sanity for the enum — keep the variants distinct so a future
+        // "AutoLocked → NoAction" merge can't slip through a refactor.
         assert_ne!(TickOutcome::NoAction, TickOutcome::AutoLocked);
         assert_ne!(TickOutcome::NoAction, TickOutcome::Skipped);
         assert_ne!(TickOutcome::AutoLocked, TickOutcome::Skipped);
+        assert_ne!(TickOutcome::Skipped, TickOutcome::Poisoned);
+        assert_ne!(TickOutcome::NoAction, TickOutcome::Poisoned);
     }
 
     // The `AutoLocked` happy path requires an `UnlockedSession`, which

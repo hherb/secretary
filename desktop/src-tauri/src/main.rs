@@ -25,7 +25,7 @@ use secretary_desktop::commands::{
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
-use secretary_desktop::timer::{tick, TickOutcome};
+use secretary_desktop::timer::{poison_should_log, tick, TickOutcome};
 
 fn main() {
     // Init `tracing` subscriber for structured logs on stderr. Developer-
@@ -137,6 +137,11 @@ fn main() {
 /// loop body is easy to read top-down.
 fn auto_lock_timer_loop(app: tauri::AppHandle) {
     let tick_interval = Duration::from_millis(AUTO_LOCK_TICK_MS);
+    // One-shot latch: a poisoned session mutex stays poisoned for the life of
+    // the process, so logging on every tick would spam `error!` once per
+    // interval forever. Log the first time we observe `Poisoned`, then stay
+    // quiet (#147).
+    let mut poison_logged = false;
     loop {
         // Sleep *before* the first tick — at startup the session is always
         // locked, so an immediate first tick would be a wasted lock-and-
@@ -152,6 +157,14 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
                     tracing::error!(
                         error = %e,
                         "failed to emit vault-locked event from auto-lock timer"
+                    );
+                }
+            }
+            TickOutcome::Poisoned => {
+                if poison_should_log(&mut poison_logged) {
+                    tracing::error!(
+                        "session mutex poisoned (a prior handler panicked while locked); \
+                         auto-lock timer cannot make progress until the process restarts"
                     );
                 }
             }
