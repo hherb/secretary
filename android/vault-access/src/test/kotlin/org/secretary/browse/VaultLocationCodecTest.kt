@@ -52,6 +52,11 @@ class VaultLocationCodecTest {
     }
 
     @Test
+    fun `decodes null when tree URI is empty (name exhausts payload)`() {
+        assertNull(decodeVaultLocation("v1:3:abc"))
+    }
+
+    @Test
     fun `VaultLocation is value-equal (deliberate data class, unlike CreatedVault)`() {
         assertEquals(VaultLocation("n", "u"), VaultLocation("n", "u"))
         assertNotEquals(VaultLocation("n", "u"), VaultLocation("n", "v"))

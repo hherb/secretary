@@ -37,5 +37,7 @@ fun decodeVaultLocation(encoded: String): VaultLocation? {
     if (payload.length < nameLen) return null
     val displayName = payload.substring(0, nameLen)
     val treeUri = payload.substring(nameLen)
+    // An empty SAF tree URI is never valid — conservative under-report, same as other malformed cases.
+    if (treeUri.isEmpty()) return null
     return VaultLocation(displayName, treeUri)
 }
