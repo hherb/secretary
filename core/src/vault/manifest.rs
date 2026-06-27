@@ -196,6 +196,12 @@ pub enum ManifestError {
     #[error("blocks array contains duplicate block_uuid")]
     DuplicateBlockUuid,
 
+    /// Two or more `trash` entries shared the same `block_uuid`. The
+    /// manifest tracks only the most-recent tombstone per block (§7), so a
+    /// repeated `block_uuid` is nonsensical — a sign of corruption or attack.
+    #[error("trash array contains duplicate block_uuid")]
+    DuplicateTrashUuid,
+
     /// A canonical-CBOR rule was violated (float, tag, …). Lifted from
     /// the shared `crate::vault::canonical` helpers.
     #[error("canonical CBOR violation: {0}")]
@@ -631,6 +637,8 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// 8. `vector_clock` and every `vector_clock_summary` have no duplicate
 ///    `device_uuid`.
 /// 9. `blocks` has no duplicate `block_uuid`.
+/// 10. `trash` has no duplicate `block_uuid` (§7 tracks the most-recent
+///     tombstone per block only).
 ///
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.
@@ -945,7 +953,16 @@ fn parse_trash(v: Value) -> Result<Vec<TrashEntry>, ManifestError> {
             })
         }
     };
-    items.into_iter().map(parse_trash_entry).collect()
+    let out: Vec<TrashEntry> = items
+        .into_iter()
+        .map(parse_trash_entry)
+        .collect::<Result<_, _>>()?;
+    let mut ids: Vec<[u8; UUID_LEN]> = out.iter().map(|t| t.block_uuid).collect();
+    ids.sort();
+    if ids.windows(2).any(|w| w[0] == w[1]) {
+        return Err(ManifestError::DuplicateTrashUuid);
+    }
+    Ok(out)
 }
 
 fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
@@ -2269,6 +2286,41 @@ mod tests {
         assert!(
             matches!(err, ManifestError::DuplicateBlockUuid),
             "expected DuplicateBlockUuid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_trash_uuid() {
+        // The manifest carries the most-recent tombstone per block_uuid only
+        // (vault-format §7), so two trash entries sharing a block_uuid are
+        // nonsensical — a sign of corruption or attack — and rejected on
+        // decode, mirroring the `blocks` duplicate rule.
+        let dupe = [0x88; UUID_LEN];
+        let make_trash = |suffix: u8| TrashEntry {
+            block_uuid: dupe,
+            tombstoned_at_ms: u64::from(suffix),
+            tombstoned_by: [0xd1; UUID_LEN],
+            fingerprint: Some([suffix; BLOCK_FINGERPRINT_LEN]),
+            unknown: BTreeMap::new(),
+        };
+        let m = Manifest {
+            manifest_version: MANIFEST_VERSION_V1,
+            vault_uuid: [0x01; UUID_LEN],
+            format_version: FORMAT_VERSION_V1,
+            suite_id: SUITE_ID_V1,
+            owner_user_uuid: [0x02; UUID_LEN],
+            vector_clock: Vec::new(),
+            blocks: Vec::new(),
+            trash: vec![make_trash(1), make_trash(2)],
+            kdf_params: dummy_kdf_params(),
+            unknown: BTreeMap::new(),
+        };
+        let bytes = encode_manifest(&m).expect("encode duplicates");
+        let err = decode_manifest(&bytes)
+            .expect_err("duplicate trash block_uuid must be rejected on decode");
+        assert!(
+            matches!(err, ManifestError::DuplicateTrashUuid),
+            "expected DuplicateTrashUuid, got {err:?}"
         );
     }
 
