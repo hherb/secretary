@@ -2,7 +2,6 @@ package org.secretary.browse
 
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import uniffi.secretary.VaultException
@@ -39,37 +38,47 @@ class UniffiVaultCreatePortTest {
 
     @Test
     fun `null phrase maps to CreateFailed`() = runTest {
+        // NOTE: mirrors UniffiVaultSyncPortTest error-path idiom — await inside runTest (which
+        // drains the test scheduler) rather than nesting runBlocking inside a separate event loop.
         val port = UniffiVaultCreatePort(createFn = { _, _, _, _ -> null })
-        val e = assertThrows(VaultProvisioningError.CreateFailed::class.java) {
-            kotlinx.coroutines.runBlocking {
-                port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
-            }
+        val thrown = try {
+            port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
+            null
+        } catch (e: VaultProvisioningError.CreateFailed) {
+            e
         }
-        assertTrue(e.detail.contains("recovery phrase"))
+        assertTrue(thrown is VaultProvisioningError.CreateFailed)
+        assertTrue((thrown as VaultProvisioningError.CreateFailed).detail.contains("recovery phrase"))
     }
 
     @Test
     fun `VaultFolderNotEmpty maps to FolderNotEmpty`() = runTest {
+        // NOTE: mirrors UniffiVaultSyncPortTest error-path idiom — see null-phrase test above.
         val port = UniffiVaultCreatePort(
             createFn = { _, _, _, _ -> throw VaultException.VaultFolderNotEmpty() },
         )
-        assertThrows(VaultProvisioningError.FolderNotEmpty::class.java) {
-            kotlinx.coroutines.runBlocking {
-                port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
-            }
+        val thrown = try {
+            port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
+            null
+        } catch (e: VaultProvisioningError.FolderNotEmpty) {
+            e
         }
+        assertTrue(thrown is VaultProvisioningError.FolderNotEmpty)
     }
 
     @Test
     fun `other VaultException maps to CreateFailed`() = runTest {
+        // NOTE: mirrors UniffiVaultSyncPortTest error-path idiom — see null-phrase test above.
         val port = UniffiVaultCreatePort(
             createFn = { _, _, _, _ -> throw VaultException.CorruptVault("bad bytes") },
         )
-        val e = assertThrows(VaultProvisioningError.CreateFailed::class.java) {
-            kotlinx.coroutines.runBlocking {
-                port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
-            }
+        val thrown = try {
+            port.createInFolder("/tmp/v", "pw".toByteArray(Charsets.UTF_8), "Bob")
+            null
+        } catch (e: VaultProvisioningError.CreateFailed) {
+            e
         }
-        assertTrue(e.detail.isNotBlank())
+        assertTrue(thrown is VaultProvisioningError.CreateFailed)
+        assertTrue((thrown as VaultProvisioningError.CreateFailed).detail.isNotBlank())
     }
 }
