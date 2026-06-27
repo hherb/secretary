@@ -16,8 +16,9 @@ import uniffi.secretary.createVaultInFolder
  * caller-owned (caller zeroizes after the user acknowledges it).
  *
  * [createFn] is the injectable FFI seam: it returns the one-shot recovery-phrase bytes (or null).
- * Its default invokes the real binding inside `.use { … }` so the native [uniffi.secretary.MnemonicOutput]
- * handle is always released. [clockMs] supplies `created_at_ms` (injected for deterministic tests).
+ * Its default invokes the real binding inside `.use { … }` so the native
+ * [uniffi.secretary.MnemonicOutput] handle is always released.
+ * [clockMs] supplies `created_at_ms` (injected for deterministic tests).
  */
 class UniffiVaultCreatePort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
