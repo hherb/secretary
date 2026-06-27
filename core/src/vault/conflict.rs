@@ -76,7 +76,7 @@ pub enum ClockRelation {
     /// greater. The incoming clock is "newer" than the local one in the
     /// happens-before partial order.
     IncomingDominates,
-    /// `local` dominates `incoming` (mirror of [`IncomingDominates`]).
+    /// `local` dominates `incoming` (mirror of [`IncomingDominates`](Self::IncomingDominates)).
     /// In a manifest-load context this is the rollback signal.
     IncomingDominated,
     /// Neither dominates the other: there exists a device where
@@ -142,7 +142,7 @@ pub fn clock_relation(local: &[VectorClockEntry], incoming: &[VectorClockEntry])
 ///
 /// Pure function. Does **not** apply `+1` for any "merging device" —
 /// that is an orchestrator concern (see
-/// [`super::orchestrators`]'s private `tick_clock`). The merge primitive
+/// `super::orchestrators`'s private `tick_clock`). The merge primitive
 /// here only computes the join in the lattice of vector clocks.
 ///
 /// Properties (proved by `core/tests/proptest.rs` in a subsequent
@@ -281,7 +281,7 @@ pub struct MergedRecord {
 /// `tombstoned_at_ms == last_mod_ms`, live inputs are clamped to
 /// `tombstoned_at_ms ≤ last_mod_ms`. On well-formed inputs (where
 /// the invariant already holds) the clamp is a no-op. See
-/// [`clamp_death_clock`] for the helper.
+/// `clamp_death_clock` for the helper.
 ///
 /// Pure function. Total over all `Record` pairs that share a
 /// `record_uuid`: returns a complete [`MergedRecord`] with no error

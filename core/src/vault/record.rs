@@ -48,7 +48,7 @@
 //!
 //! - We collect every unrecognised key into the `unknown` map.
 //! - On re-encode we splice unknown entries back alongside the known
-//!   entries and let [`encode_canonical_map`] re-sort them by canonical
+//!   entries and let `encode_canonical_map` re-sort them by canonical
 //!   CBOR-encoded key. Since canonical sort is total and stable, the
 //!   resulting byte layout matches the input exactly when the input was
 //!   itself canonical.
@@ -336,7 +336,7 @@ pub struct Record {
     pub record_type: String,
     /// Field name → field. [`BTreeMap`] for in-memory iteration
     /// determinism only; the wire ordering is decided by
-    /// [`canonical_sort_entries`] against materialised CBOR-encoded key
+    /// `canonical_sort_entries` against materialised CBOR-encoded key
     /// bytes (length-then-bytewise), which differs from `BTreeMap`'s
     /// `String` ordering for keys of differing UTF-8 lengths (e.g. `"z"`
     /// sorts before `"ab"` in canonical CBOR but after it in

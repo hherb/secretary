@@ -894,8 +894,9 @@ fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) -> Resu
 /// caller's own owner card is NOT automatically included — pass it
 /// explicitly if the caller should be a recipient (this matches the
 /// "send-only mode" semantics where the owner can encrypt for others
-/// without keeping a copy themselves). [`encrypt_block`] rejects an empty
-/// recipient list with [`BlockError::EmptyRecipientList`].
+/// without keeping a copy themselves). [`encrypt_block`](crate::vault::block::encrypt_block)
+/// rejects an empty recipient list with
+/// [`BlockError::EmptyRecipientList`](crate::vault::block::BlockError::EmptyRecipientList).
 ///
 /// `device_uuid` identifies the writing device. This device's counter in
 /// both the block's vector clock AND the manifest's vault-level vector
@@ -1430,7 +1431,7 @@ fn rewrite_block_with_recipients(
 /// `save_block` time (the "send-only" mode where the author encrypts
 /// for others without keeping a copy) cannot later call `share_block`
 /// on that same block; the decrypt step in §6.4 surfaces as
-/// [`BlockError::NotARecipient`] propagated through
+/// [`BlockError::NotARecipient`](crate::vault::block::BlockError::NotARecipient) propagated through
 /// [`VaultError::Block`]. This restriction is intentional: the
 /// alternative would mean retaining the BCK in some side channel,
 /// which is exactly the property send-only mode opts out of.
@@ -1696,7 +1697,7 @@ pub fn share_block(
 /// revoke instead requires the target *be* present
 /// ([`VaultError::RecipientNotPresent`] otherwise) and splits the resolved
 /// cards into the "keep" set vs the revoked one. The shared re-key engine
-/// ([`rewrite_block_with_recipients`]) is then invoked with
+/// (`rewrite_block_with_recipients`) is then invoked with
 /// `card_to_persist = None` — revoke grants no new access, so no contact card
 /// is written.
 ///

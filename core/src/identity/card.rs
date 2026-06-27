@@ -186,9 +186,9 @@ pub struct ContactCard {
     /// Creation timestamp, Unix milliseconds. Encoded under the §6 CBOR key
     /// `"created_at"`; the struct name is more descriptive of the unit.
     pub created_at_ms: u64,
-    /// Ed25519 self-signature over [`signed_bytes`]. 64 bytes.
+    /// Ed25519 self-signature over [`Self::signed_bytes`]. 64 bytes.
     pub self_sig_ed: Ed25519Sig,
-    /// ML-DSA-65 self-signature over [`signed_bytes`]. 3309 bytes.
+    /// ML-DSA-65 self-signature over [`Self::signed_bytes`]. 3309 bytes.
     pub self_sig_pq: Vec<u8>,
 }
 
@@ -272,13 +272,13 @@ impl ContactCard {
             .map_err(|e| CardError::CborEncode(e.to_string()))
     }
 
-    /// Inverse of [`to_canonical_cbor`]. Validates that `card_version == 1`
+    /// Inverse of [`Self::to_canonical_cbor`]. Validates that `card_version == 1`
     /// and that every fixed-size field has the correct byte length.
     /// Tolerates inputs whose map keys arrive in non-§6 order; canonical
-    /// re-encoding via [`to_canonical_cbor`] then yields the spec byte form
+    /// re-encoding via [`Self::to_canonical_cbor`] then yields the spec byte form
     /// — see module docs.
     ///
-    /// Does **not** verify signatures. Call [`verify_self`] for that.
+    /// Does **not** verify signatures. Call [`Self::verify_self`] for that.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, CardError> {
         let value: Value =
             ciborium::de::from_reader(bytes).map_err(|e| CardError::CborDecode(e.to_string()))?;
@@ -397,7 +397,7 @@ impl ContactCard {
         Ok(card)
     }
 
-    /// Self-sign: build [`signed_bytes`], hand to
+    /// Self-sign: build [`Self::signed_bytes`], hand to
     /// [`crate::crypto::sig::sign`] with [`SigRole::Card`], and stash the
     /// resulting two signatures into [`Self::self_sig_ed`] and
     /// [`Self::self_sig_pq`].
@@ -405,7 +405,7 @@ impl ContactCard {
     /// The `pk_*` fields on `self` must already match the keypairs whose
     /// secret halves are passed here — the card commits to the embedded
     /// public keys, so a mismatch goes undetected by `sign` but is caught
-    /// by [`verify_self`].
+    /// by [`Self::verify_self`].
     pub fn sign(&mut self, ed_sk: &Ed25519Secret, pq_sk: &MlDsa65Secret) -> Result<(), CardError> {
         let m = self.signed_bytes()?;
         let HybridSig { sig_ed, sig_pq } = sig::sign(SigRole::Card, &m, ed_sk, pq_sk)?;

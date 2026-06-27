@@ -17,7 +17,7 @@
 //! The PR-B orchestrators ([`create_vault`], [`open_vault`],
 //! [`save_block`], [`share_block`]) compose the lower pure-function
 //! layers into a single side-effecting entry point per user-visible
-//! operation. They live in [`orchestrators`] (re-exported here so the
+//! operation. They live in the `orchestrators` module (re-exported here so the
 //! public API stays `secretary_core::vault::create_vault`, etc.).
 
 pub mod block;
