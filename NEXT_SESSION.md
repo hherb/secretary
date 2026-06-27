@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-secretaryapp-swift6-shipped.md
+docs/handoffs/2026-06-27-sync-toctou-block-writes-103-shipped.md
