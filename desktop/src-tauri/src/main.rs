@@ -152,13 +152,7 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
         let state = app.state::<Mutex<VaultSession>>();
         match tick(&state) {
             TickOutcome::AutoLocked => {
-                if let Err(e) = app.emit(VAULT_LOCKED_EVENT, vault_locked_payload(LOCK_REASON_AUTO))
-                {
-                    tracing::error!(
-                        error = %e,
-                        "failed to emit vault-locked event from auto-lock timer"
-                    );
-                }
+                emit_vault_locked(&app, "from auto-lock timer");
             }
             TickOutcome::PoisonedLocked => {
                 // The mutex was poisoned while a vault was unlocked; `tick`
@@ -166,13 +160,7 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
                 // reflects the locked state, and log the underlying fault once.
                 // The transition can only happen once (the session is `None`
                 // afterwards), so this emit is not part of the anti-spam latch.
-                if let Err(e) = app.emit(VAULT_LOCKED_EVENT, vault_locked_payload(LOCK_REASON_AUTO))
-                {
-                    tracing::error!(
-                        error = %e,
-                        "failed to emit vault-locked event after poison force-lock"
-                    );
-                }
+                emit_vault_locked(&app, "after poison force-lock");
                 if poison_should_log(&mut poison_logged) {
                     tracing::error!(
                         "session mutex poisoned (a prior handler panicked while a vault was \
@@ -194,5 +182,19 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
                 // command holds the mutex and we'll retry next tick.
             }
         }
+    }
+}
+
+/// Emit the `vault-locked` Tauri event (`{ "reason": "auto" }`) from the timer
+/// thread, logging a single `error!` if the emit fails. The `AutoLocked` and
+/// `PoisonedLocked` tick outcomes share this path; `on_failure` names the
+/// originating outcome so a failed emit is still attributable in the logs.
+fn emit_vault_locked(app: &tauri::AppHandle, on_failure: &str) {
+    if let Err(e) = app.emit(VAULT_LOCKED_EVENT, vault_locked_payload(LOCK_REASON_AUTO)) {
+        tracing::error!(
+            error = %e,
+            outcome = on_failure,
+            "failed to emit vault-locked event"
+        );
     }
 }
