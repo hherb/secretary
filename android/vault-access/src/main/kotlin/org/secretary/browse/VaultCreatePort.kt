@@ -16,6 +16,8 @@ class CreatedVault(val phrase: ByteArray)
  *
  * [folderPath] is a real POSIX path (UTF-8) to an existing empty directory — the caller is
  * responsible for creating it. A non-empty folder surfaces [VaultProvisioningError.FolderNotEmpty].
+ * A missing or non-directory [folderPath] is implementation-defined and surfaces as
+ * [VaultProvisioningError.CreateFailed].
  */
 interface VaultCreatePort {
     suspend fun createInFolder(folderPath: String, password: ByteArray, displayName: String): CreatedVault
