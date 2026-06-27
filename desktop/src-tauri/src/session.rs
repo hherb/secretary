@@ -207,7 +207,7 @@ impl VaultSession {
 
     /// Persist new settings to the vault. Validates bounds via
     /// [`settings::save_to_vault`] (which calls
-    /// [`settings::validate_save_value`] before the bridge's `save_block`);
+    /// `settings::validate_save_value` before the bridge's `save_block`);
     /// on success, updates the in-memory `inner.settings` to match disk.
     pub fn set_settings(&mut self, new_settings: &Settings) -> Result<(), AppError> {
         self.with_unlocked_mut(|u| {

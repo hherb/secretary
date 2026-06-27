@@ -158,7 +158,8 @@ pub enum BundleError {
 /// Carries the four `(sk, pk)` pairs of the v1 hybrid suite, plus the
 /// 16-byte user UUID, a display name, and a creation timestamp.
 ///
-/// Secret-key fields are wrapped in [`Sensitive`] (or [`SecretBytes`] for
+/// Secret-key fields are wrapped in [`Sensitive`] (or
+/// [`SecretBytes`](crate::crypto::secret::SecretBytes) for
 /// runtime-sized PQC keys) so they zeroize on drop. The bundle does not
 /// derive `Clone`, `Debug`, or `PartialEq`: cloning would silently
 /// duplicate secret material; a derived `Debug` would leak it; equality is
@@ -325,7 +326,7 @@ impl IdentityBundle {
         encode_map(&entries)
     }
 
-    /// Inverse of [`to_canonical_cbor`]. Validates that every required field
+    /// Inverse of [`Self::to_canonical_cbor`]. Validates that every required field
     /// is present, fixed-size fields have the correct byte length, no
     /// unknown fields appear, no duplicates appear, and the input was
     /// already in RFC 8949 §4.2.1 canonical form.

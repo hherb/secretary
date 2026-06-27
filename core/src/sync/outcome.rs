@@ -16,7 +16,7 @@ pub struct RollbackEvidence {
 
 /// Block UUIDs whose state diverges between the canonical manifest
 /// and at least one authenticated conflict-copy. Computed by
-/// [`crate::sync::ingest::compute_diff_plan`] from the assembled
+/// `crate::sync::ingest::compute_diff_plan` from the assembled
 /// [`VaultBundle`]. Consumed by C.1.1b's `prepare_merge`.
 ///
 /// Sorted ascending (BTreeMap key order in the bundle's

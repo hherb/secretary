@@ -1,8 +1,8 @@
 name: Rust lint
 
-# Format + clippy gate. Mirrors the documented local commands in CLAUDE.md
-# so drift (e.g. #279) cannot reach `main` unnoticed. CodeQL's default setup
-# covers security analysis only; it does not run fmt/clippy.
+# Format + clippy + doc gate. Mirrors the documented local commands in
+# CLAUDE.md so drift (e.g. #279) cannot reach `main` unnoticed. CodeQL's
+# default setup covers security analysis only; it does not run fmt/clippy/doc.
 #
 # Scope: the cargo workspace. `core/fuzz/` is excluded from the workspace
 # (and uses a separate nightly toolchain), so it is intentionally not linted
@@ -61,6 +61,40 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Clippy (lib + tests, deny warnings)
         run: cargo clippy --release --workspace --tests -- -D warnings
+
+  doc:
+    name: cargo doc (deny warnings)
+    # Gate intra-doc links so broken / private-item references (#92) cannot
+    # silently re-accumulate. Mirrors clippy's matrix + Tauri Linux deps
+    # because rustdoc only documents the `#[cfg]`-active code per platform,
+    # so a macOS-only doc-link bug would slip past a Linux-only run.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Turn every rustdoc warning (unresolved link, private-item link, …)
+      # into a hard error. --no-deps keeps the scope to this workspace's own
+      # crates; dependency docs are not our gate.
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      # The Tauri desktop crate (`secretary-desktop`) needs GTK3/WebKitGTK to
+      # build before rustdoc can document it; ubuntu-latest lacks them.
+      - name: Install Tauri Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      - name: cargo doc --no-deps --workspace
+        run: cargo doc --no-deps --workspace
 
   lean-binding:
     name: lean mobile-binding boundary

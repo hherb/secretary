@@ -35,8 +35,8 @@
 //!
 //! # Submodule layout
 //!
-//! - [`inner`] — `OpenVaultManifestInner` + [`BlockSummary`].
-//! - [`manifest`] — [`OpenVaultManifest`] + accessors + write-back +
+//! - `inner` — `OpenVaultManifestInner` + [`BlockSummary`].
+//! - `manifest` — [`OpenVaultManifest`] + accessors + write-back +
 //!   `ReplaceManifestError`.
 //! - [`orchestration`] — [`OpenVaultOutput`] + [`open_vault_with_password`] +
 //!   [`open_vault_with_recovery`] + the `core::vault::OpenVault`-to-handles

@@ -1511,7 +1511,7 @@ pub fn decode_block_file(bytes: &[u8]) -> Result<BlockFile, BlockError> {
 ///
 /// Returns `Ok(())` only if BOTH signature halves verify — there is no
 /// OR-short-circuit. A failure of either Ed25519 or ML-DSA-65 yields
-/// [`BlockError::Signature`] (or its inner variants), matching the
+/// [`BlockError::Sig`] (or its inner variants), matching the
 /// same enforcement as [`decrypt_block`] step 2.
 pub fn verify_block_signature(
     block: &BlockFile,

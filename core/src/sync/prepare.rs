@@ -6,7 +6,7 @@
 //! See `docs/superpowers/specs/2026-05-18-c1-1b-sync-merge-design.md`
 //! §"prepare_merge". The module exposes [`prepare_merge`] (the
 //! orchestrator entry point, re-exported via [`crate::sync`]) and
-//! [`tombstone_veto_set`] (pure-function veto detector, `pub(crate)` —
+//! `tombstone_veto_set` (pure-function veto detector, `pub(crate)` —
 //! kept internal and consumed by `prepare_merge` per record).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -303,7 +303,7 @@ fn parent_block_clock(
 /// Turn the C.1.1a [`VaultBundle`] into a [`DraftMerge`]. AEAD-decrypts
 /// each diverging block envelope on demand, composes pairwise merges
 /// via the existing [`merge_block`] primitive, and surfaces
-/// record-level tombstone vetoes via [`tombstone_veto_set`].
+/// record-level tombstone vetoes via `tombstone_veto_set`.
 ///
 /// # Inputs
 ///
@@ -322,11 +322,11 @@ fn parent_block_clock(
 /// # Algorithm
 ///
 /// 1. Derive the owner public-key material + reader secret keys once
-///    (see [`derive_block_reader_keys`]).
+///    (see `derive_block_reader_keys`).
 /// 2. For each `block_uuid` in `plan.diverging_blocks`, AEAD-decrypt the
 ///    canonical envelope and every copy envelope, then iteratively merge
 ///    via [`merge_block`]; the accumulator's records + per-block vector
-///    clock advance per fold step. Run [`tombstone_veto_set`] across
+///    clock advance per fold step. Run `tombstone_veto_set` across
 ///    the merged record set vs the per-copy plaintexts for the same
 ///    `record_uuid` and collect any vetoes. Extend the running
 ///    `merged_records` map (keyed by `record_uuid` — `merge_block`
@@ -340,7 +340,7 @@ fn parent_block_clock(
 /// The per-copy block clock is looked up by matching each envelope's
 /// BLAKE3-256 fingerprint against [`crate::vault::manifest::BlockEntry`]
 /// `::fingerprint` on every copy manifest in `bundle.copies` (see
-/// [`parent_block_clock`]). The 1a ingestion layer does NOT guarantee
+/// `parent_block_clock`). The 1a ingestion layer does NOT guarantee
 /// positional alignment between `bundle.copies[i]` and
 /// `divergence.copy_envelopes[i]` — the two slices come from
 /// independent filesystem scans (`enumerate_manifest_siblings` vs.
@@ -360,7 +360,7 @@ fn parent_block_clock(
 ///   bundle/plan disagreement), when the canonical manifest is missing
 ///   a `BlockEntry` for a divergent block_uuid, or when a copy block
 ///   envelope's fingerprint matches no copy manifest's `BlockEntry`
-///   (orphan sibling — see [`parent_block_clock`]).
+///   (orphan sibling — see `parent_block_clock`).
 ///
 /// # Purity & cost
 ///
@@ -707,7 +707,7 @@ mod tests {
 
 #[cfg(test)]
 mod parent_block_clock_tests {
-    //! Unit tests for [`parent_block_clock`] — proves the
+    //! Unit tests for `parent_block_clock` — proves the
     //! fingerprint-matching pairing is sound across the cases that
     //! positional-index pairing got wrong: copies missing this block,
     //! copies referencing a different envelope for the same block_uuid,

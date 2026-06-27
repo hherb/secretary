@@ -54,7 +54,7 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// Re-opens the vault (verifies the manifest hybrid signature and runs
 /// `verify_block_fingerprints` per design §D6), re-hashes the on-disk
 /// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
-/// applies the caller's [`VetoDecision`] slice via [`apply_decisions`],
+/// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
 /// re-encrypts every diverging block with a fresh AEAD nonce and BLAKE3-
 /// fingerprints the new bytes, builds a new manifest body (updated
 /// `BlockEntry.fingerprint` / `vector_clock_summary` / `last_mod_ms`
@@ -70,7 +70,7 @@ const SCHEMA_VERSION_V1: u32 = 1;
 ///   between [`crate::sync::prepare_merge`] and this call. The disk is
 ///   untouched; caller retries from [`crate::sync::sync_once`].
 /// - [`SyncError::MissingVetoDecision`] / [`SyncError::UnknownVetoDecision`]
-///   — propagated from [`apply_decisions`] when `decisions` does not
+///   — propagated from `apply_decisions` when `decisions` does not
 ///   form a bijection with `draft.vetoes`.
 /// - [`SyncError::InvalidArgument`] — structural mismatch between
 ///   `draft` and the on-disk manifest (a `block_uuid` in

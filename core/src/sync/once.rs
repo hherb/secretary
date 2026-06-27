@@ -27,7 +27,7 @@ use crate::vault::orchestrators::{read_vault_manifest_full, MANIFEST_FILENAME};
 /// (this slice's Concurrent-arm extension).
 ///
 /// Steps:
-///   1. Calls [`crate::vault::orchestrators::read_vault_manifest_full`]
+///   1. Calls `crate::vault::orchestrators::read_vault_manifest_full`
 ///      with the caller-held `&UnlockedIdentity` to read + verify-and-
 ///      decrypt the manifest body without re-running Argon2, AND
 ///      surface the verified owner contact card + raw on-disk envelope
@@ -43,7 +43,7 @@ use crate::vault::orchestrators::{read_vault_manifest_full, MANIFEST_FILENAME};
 ///   4. On `Concurrent`, BLAKE3-hashes the envelope bytes from step 1
 ///      to produce the freshness [`ManifestHash`] (TOCTOU anchor for
 ///      C.1.1b's commit path), then calls
-///      [`crate::sync::ingest::ingest_conflict_copies`] with the same
+///      `crate::sync::ingest::ingest_conflict_copies` with the same
 ///      bytes + the pre-derived owner public keys + IBK to assemble
 ///      the [`VaultBundle`], and finally computes a [`DiffPlan`] from
 ///      its diverging blocks.

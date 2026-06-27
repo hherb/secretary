@@ -7,7 +7,7 @@
 //!
 //! Each mutating primitive (`append_record` / `edit_record`) decrypts the
 //! target block to a native [`BlockPlaintext`] via
-//! [`decrypt_block_plaintext`], mutates only the target record, and
+//! `decrypt_block_plaintext`, mutates only the target record, and
 //! re-encrypts through `core::vault::save_block`. `create_block` is the
 //! insert path: a fresh empty `BlockPlaintext`.
 

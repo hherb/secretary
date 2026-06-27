@@ -7,9 +7,11 @@
 //! the per-fill open path can be exercised end to end; the Tauri UI is a later
 //! slice.
 //!
-//! **Development-only.** It calls the genuine ADR 0009 [`add_device_slot`] (so
+//! **Development-only.** It calls the genuine ADR 0009
+//! [`add_device_slot`](secretary_core::vault::device_slot::add_device_slot) (so
 //! the enrolled slot is real), but it then writes the 32-byte device secret to
-//! a **cleartext file** for the [`DevFileSecretSource`]. That is not a
+//! a **cleartext file** for the
+//! [`DevFileSecretSource`](crate::secret_source::DevFileSecretSource). That is not a
 //! production key-storage path — see the loud warning on
 //! [`crate::secret_source::DevFileSecretSource`].
 
@@ -35,7 +37,8 @@ pub enum EnrollError {
 /// Mint a device slot on `vault_path` using `password`, write the dev secret to
 /// `secret_path` and the helper config to `config_path`, and return the config.
 ///
-/// On a wrong password, [`add_device_slot`] fails **before** any file is
+/// On a wrong password,
+/// [`add_device_slot`](secretary_core::vault::device_slot::add_device_slot) fails **before** any file is
 /// written (and before any config/secret file is touched here).
 pub fn enroll(
     vault_path: &Path,

@@ -6,7 +6,7 @@
 //! # Why a one-shot handle
 //!
 //! `secretary_core::vault::device_slot::add_device_slot` returns an
-//! [`EnrolledDevice`] whose `device_secret` is a `SecretBytes` — the only
+//! [`EnrolledDevice`](secretary_core::vault::device_slot::EnrolledDevice) whose `device_secret` is a `SecretBytes` — the only
 //! copy of the 32-byte device secret that leaves the core.  The caller (B.3)
 //! must deliver it exactly once to the platform Secure Enclave / biometric
 //! release layer, then drop it.  The three foreign languages lack a
@@ -212,7 +212,7 @@ pub fn add_device_slot(
 /// manifest decode + signature verification.  Returns two opaque handles:
 /// the live `UnlockedIdentity` and the read-only `OpenVaultManifest`.
 ///
-/// Reuses [`crate::vault::orchestration::split_core_open_vault`] — same
+/// Reuses `crate::vault::orchestration::split_core_open_vault` — same
 /// [`OpenVaultOutput`] shape as the password / recovery folder-in paths.
 ///
 /// # Inputs

@@ -17,7 +17,7 @@ use crate::vault::OpenVaultManifest;
 /// the owner AND, because the revoke target is a current recipient, the target
 /// itself). Every card loaded from `contacts/` is re-verified (both
 /// Ed25519 ∧ ML-DSA-65 self-signature halves) at load time via
-/// [`load_card_bytes`] before its public keys are trusted — identical to the
+/// `load_card_bytes` before its public keys are trusted — identical to the
 /// share path, because the cards are re-read from disk here where a post-import
 /// swap would otherwise feed an unverified KEM key to the re-key.
 /// CannotRevokeOwner / RecipientNotPresent / NotAuthor / MissingRecipientCard

@@ -8,7 +8,8 @@
 //!
 //! **No key material is held between fills.** The device secret is fetched from
 //! the [`DeviceSecretSource`] port, lives only for the duration of one open as
-//! a zeroize-on-drop [`SecretBytes`], and the opened [`OpenVault`] (which
+//! a zeroize-on-drop [`SecretBytes`](secretary_core::crypto::secret::SecretBytes),
+//! and the opened [`OpenVault`](secretary_core::vault::OpenVault) (which
 //! carries the IBK + identity) is dropped — zeroizing — before the count
 //! returns (design §12 invariant 1).
 //!

@@ -1,6 +1,6 @@
 //! `run` subcommand event loop. Composes the watcher submodule's pure
-//! pieces ([`watcher::debounce::step`], [`watcher::notify_driver`]) +
-//! the existing [`pipeline::run_one`] into a single-threaded blocking
+//! pieces ([`crate::watcher::debounce::step`], [`crate::watcher::notify_driver`]) +
+//! the existing [`crate::pipeline::run_one`] into a single-threaded blocking
 //! daemon.
 //!
 //! Spec: [`docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`](../../docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md)
@@ -10,14 +10,14 @@
 //! the event source and an `on_sync` closure as the sync action. This
 //! lets the unit tests drive the loop with a scripted event source +
 //! a counter, while the production wire-up (see
-//! [`run_against_vault`]) plugs in [`watcher::notify_driver::NotifyWatcher`]
-//! and a [`pipeline::run_one`] call.
+//! [`run_against_vault`]) plugs in [`crate::watcher::notify_driver::NotifyWatcher`]
+//! and a [`crate::pipeline::run_one`] call.
 //!
 //! ## Trailing-edge debounce
 //!
 //! The loop honours the trailing-edge debounce semantic that
-//! [`watcher::debounce`] documents: every fresh
-//! [`watcher::WatcherEvent::SyncCandidate`] *resets* the deadline. The
+//! [`crate::watcher::debounce`] documents: every fresh
+//! [`crate::watcher::WatcherEvent::SyncCandidate`] *resets* the deadline. The
 //! sync only fires once an entire debounce window has elapsed without
 //! a new event. The previous design (see C.2 Task 7 plan §"Plan
 //! deviation" in the handoff) used a blocking `std::thread::sleep` in
@@ -240,9 +240,9 @@ fn outcome_log(outcome: &RunOutcome) -> Option<OutcomeLog> {
 }
 
 /// Emit the operator-visible log line (if any) for a successful sync
-/// outcome. The side-effecting edge over the pure [`outcome_log`].
+/// outcome. The side-effecting edge over the pure `outcome_log`.
 ///
-/// `pub` because both the daemon loop ([`after_sync`]) and the single-shot
+/// `pub` because both the daemon loop (`after_sync`) and the single-shot
 /// `once` dispatch (`main::once_ok_exit_code`, #295) route their `Ok`
 /// outcomes through it, so a `once` rollback/veto gets the same forensic
 /// log line — disk-vs-local vector clocks, auto-resolved veto counts — the
@@ -295,7 +295,7 @@ fn after_sync(
 /// should know — debug-level "skipping sync" lines would otherwise
 /// stay invisible at default verbosity.
 ///
-/// Pinned by the [`note_not_ready_and_should_warn`] unit test so the
+/// Pinned by the `note_not_ready_and_should_warn` unit test so the
 /// fire-exactly-once-at-threshold semantic is durable.
 pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 
@@ -315,7 +315,7 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 ///    something external is continuously modifying the folder and
 ///    starving the sync; the counter resets on the next `Ok(true)`.
 /// 2. Calls [`run_one`] for one sync attempt, then calls
-///    [`after_sync`] to log the outcome and persist state if it
+///    `after_sync` to log the outcome and persist state if it
 ///    advanced (#208). A save failure is logged and swallowed;
 ///    any pipeline [`SyncError`] is logged at warn level and the loop
 ///    continues per spec §"Daemon loop sketch".

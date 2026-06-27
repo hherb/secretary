@@ -1,6 +1,6 @@
 //! Folder-in vault open orchestrators ([`open_vault_with_password`] /
 //! [`open_vault_with_recovery`]) plus the [`OpenVaultOutput`] return shape
-//! and the bridge-internal [`split_core_open_vault`] helper that lifts a
+//! and the bridge-internal `split_core_open_vault` helper that lifts a
 //! `core::vault::OpenVault` into the two FFI handles.
 
 use std::path::Path;

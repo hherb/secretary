@@ -52,7 +52,7 @@ pub enum UnlockReadError {
 }
 
 /// Strategy for sourcing the unlock password. Carried by the CLI's
-/// top-level dispatch into [`pipeline::run_one`] (Task 5), which selects
+/// top-level dispatch into [`crate::pipeline::run_one`] (Task 5), which selects
 /// between the TTY prompt and a `Read`-backed stream based on
 /// `--password-stdin`.
 ///

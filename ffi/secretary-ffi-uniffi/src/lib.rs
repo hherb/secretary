@@ -19,12 +19,12 @@
 //!
 //! # Module layout
 //!
-//! - [`errors`] — `UnlockError`, `VaultError`, and the bridge-to-uniffi
+//! - `errors` — `UnlockError`, `VaultError`, and the bridge-to-uniffi
 //!   `From` conversions.
-//! - [`wrappers`] — opaque-handle wrappers around bridge-crate handle
-//!   types, grouped by domain ([`wrappers::identity`],
-//!   [`wrappers::vault`], [`wrappers::block`]).
-//! - [`namespace`] — the namespace functions declared in `secretary.udl`
+//! - `wrappers` — opaque-handle wrappers around bridge-crate handle
+//!   types, grouped by domain (`wrappers::identity`,
+//!   `wrappers::vault`, `wrappers::block`).
+//! - `namespace` — the namespace functions declared in `secretary.udl`
 //!   (open, create, read_block, ...).
 //!
 //! Everything declared in those modules is `pub use`d at crate root so

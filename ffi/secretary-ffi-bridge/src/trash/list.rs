@@ -9,7 +9,7 @@
 //! same file `core::vault::restore_block` would (highest canonical-decimal
 //! `<ts>` suffix; non-canonical suffixes such as leading-zero forms are
 //! skipped to match core's §7 grammar) — using the shared
-//! [`decrypt_block_file_bytes`] tail, then immediately let the decrypted
+//! `decrypt_block_file_bytes` tail, then immediately let the decrypted
 //! plaintext drop (zeroize) — only the name is projected out. Record
 //! plaintext NEVER escapes this function.
 
@@ -58,7 +58,7 @@ pub struct TrashedBlock {
 /// - [`FfiVaultError::CorruptVault`] — the manifest handle has been
 ///   wiped, a trash entry has no matching file on disk (an integrity
 ///   violation, surfaced as a typed error rather than silently skipped),
-///   or any decrypt failure from [`decrypt_block_file_bytes`]
+///   or any decrypt failure from `decrypt_block_file_bytes`
 ///   (malformed file, signature/decap/tag failure, closed identity).
 /// - [`FfiVaultError::FolderInvalid`] — a trashed file is present but
 ///   unreadable for non-NotFound IO reasons (permissions, EBUSY, etc).

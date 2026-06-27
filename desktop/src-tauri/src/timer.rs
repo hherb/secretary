@@ -1,6 +1,6 @@
 //! Auto-lock timer logic.
 //!
-//! The actual OS-thread spawn + Tauri event emission live in [`main`];
+//! The actual OS-thread spawn + Tauri event emission live in `main`;
 //! this module is the pure tick body — testable without spinning up a
 //! Tauri runtime.
 //!
@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use crate::session::VaultSession;
 
-/// Outcome of a single timer tick. The thread loop in [`main`] uses this
+/// Outcome of a single timer tick. The thread loop in `main` uses this
 /// to decide whether to emit the `vault-locked` event.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TickOutcome {

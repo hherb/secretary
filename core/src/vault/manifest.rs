@@ -197,7 +197,7 @@ pub enum ManifestError {
     DuplicateBlockUuid,
 
     /// A canonical-CBOR rule was violated (float, tag, …). Lifted from
-    /// the shared [`crate::vault::canonical`] helpers.
+    /// the shared `crate::vault::canonical` helpers.
     #[error("canonical CBOR violation: {0}")]
     Canonical(#[from] CanonicalError),
 

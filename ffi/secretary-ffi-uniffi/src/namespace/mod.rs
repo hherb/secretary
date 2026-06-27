@@ -304,7 +304,7 @@ pub fn read_block(
 /// rationale as [`read_block`].
 ///
 /// Converts uniffi-flat input dictionaries to bridge-side types
-/// ([`secretary_ffi_bridge::SecretString`] / [`secretary_core::crypto::secret::SecretBytes`]
+/// ([`secretary_core::crypto::secret::SecretString`] / [`secretary_core::crypto::secret::SecretBytes`]
 /// wrappers preserve zeroize-on-drop) and forwards to
 /// [`secretary_ffi_bridge::save_block`].
 ///

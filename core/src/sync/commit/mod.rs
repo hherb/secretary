@@ -3,11 +3,11 @@
 //!
 //! The module ships two entry points, split across files:
 //!
-//! - [`apply_decisions`] (C.1.1b Task 10, in [`apply`]): pure helper
+//! - `apply_decisions` (C.1.1b Task 10, in the `apply` submodule): pure helper
 //!   that enforces the bijection between [`crate::sync::DraftMerge::vetoes`]
 //!   and the caller's [`crate::sync::VetoDecision`] slice and returns
 //!   the post-decision merged record set.
-//! - [`commit_with_decisions`] (C.1.1b Task 11, in [`write`]): the disk-
+//! - [`commit_with_decisions`] (C.1.1b Task 11, in the `write` submodule): the disk-
 //!   mutation orchestrator. Re-opens the vault (signature + block-
 //!   fingerprint verification), re-checks the on-disk manifest envelope's
 //!   BLAKE3 against `draft.manifest_hash` for TOCTOU freshness, applies
