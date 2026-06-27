@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-android-cloud-drive-slice1-vault-create-port-shipped.md
+docs/handoffs/2026-06-27-android-cloud-drive-slice2-location-store-shipped.md
