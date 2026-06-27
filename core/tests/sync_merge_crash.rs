@@ -21,17 +21,12 @@
 //! because that file already sits at ~500 LOC after Task 13.4 and crash
 //! recovery is a distinct concern from veto handling.
 
-use std::collections::BTreeMap;
-
-use secretary_core::crypto::secret::SecretString;
 use secretary_core::sync::{
     commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState,
 };
 use secretary_core::unlock::open_with_password;
 use secretary_core::vault::block::VectorClockEntry;
-use secretary_core::vault::{
-    open_vault, Record, RecordField, RecordFieldValue, Unlocker, VaultError,
-};
+use secretary_core::vault::{open_vault, Record, Unlocker, VaultError};
 
 mod fixtures;
 mod sync_helpers;
@@ -71,32 +66,8 @@ const SIBLING_MANIFEST_FILENAME: &str = "manifest.cbor.enc.sync-conflict-from-de
 /// `enumerate_block_siblings` picks it up.
 const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
 
-/// Build a LIVE record with a single field. `uuid` controls the
-/// `record_uuid` so the canonical and sibling sides carry distinct
-/// (non-conflicting) records.
-fn live_record(uuid: [u8; 16], device_uuid: [u8; 16], last_mod_ms: u64, marker: &str) -> Record {
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        "k".to_string(),
-        RecordField {
-            value: RecordFieldValue::Text(SecretString::from(marker)),
-            last_mod: last_mod_ms,
-            device_uuid,
-            unknown: BTreeMap::new(),
-        },
-    );
-    Record {
-        record_uuid: uuid,
-        record_type: "kv".to_string(),
-        fields,
-        tags: Vec::new(),
-        created_at_ms: 50,
-        last_mod_ms,
-        tombstone: false,
-        tombstoned_at_ms: 0,
-        unknown: BTreeMap::new(),
-    }
-}
+// `live_record` now lives in `sync_helpers` (shared with sync_merge_toctou.rs);
+// call sites below use `sync_helpers::live_record`.
 
 /// Read the canonical block file at `block_uuid` and return the
 /// decrypted records inside. The block is decrypted via a freshly opened
@@ -168,7 +139,7 @@ fn partial_commit_recovers_via_idempotent_re_run() {
 
     let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
         block_uuid,
-        vec![live_record(
+        vec![sync_helpers::live_record(
             CANONICAL_RECORD_UUID,
             CANONICAL_DEVICE_UUID,
             CANONICAL_LAST_MOD_MS,
@@ -176,7 +147,7 @@ fn partial_commit_recovers_via_idempotent_re_run() {
         )],
         canonical_block_clock.clone(),
         canonical_block_clock,
-        vec![live_record(
+        vec![sync_helpers::live_record(
             SIBLING_RECORD_UUID,
             SIBLING_DEVICE_UUID,
             SIBLING_LAST_MOD_MS,
