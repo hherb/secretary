@@ -44,7 +44,16 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "$(DEVELOPMENT_TEAM)"
-        SWIFT_VERSION: "5.9"
+        # Swift 6 language mode — matches the #231 bar already in force on every
+        # SwiftPM package (SecretaryKit / SecretaryDeviceUnlock / SecretaryVaultAccess,
+        # all `swift-tools-version: 6.0`). The app shell was the last target on the
+        # Swift 5 mode; promoting it makes complete strict-concurrency a hard compile
+        # error here too, so a non-`Sendable` value crossing a `@MainActor` / actor
+        # boundary in the SwiftUI app fails the build instead of slipping past minimal
+        # checking. SWIFT_VERSION (not SWIFT_STRICT_CONCURRENCY) is the lever: in
+        # Xcode 16 the value "6.0" selects the Swift 6 language mode, whose default
+        # IS complete concurrency checking — same contract as the packages.
+        SWIFT_VERSION: "6.0"
         # Disable the Xcode 16 "debug dylib" split: it leaves Secretary.debug.dylib
         # unsigned by the linker (-no_adhoc_codesign) and breaks on-device codesign
         # ("code object is not signed at all"). Off → single signed executable.
