@@ -383,6 +383,53 @@ fn timer_tick_auto_locks_expired_unlocked_session() {
 }
 
 #[test]
+fn timer_tick_force_locks_poisoned_unlocked_session() {
+    // Fail-secure (#147 follow-up): if a prior holder panicked while owning the
+    // session mutex *with a vault unlocked*, the resident key material would
+    // otherwise linger in memory until process exit (the timer can never make
+    // progress on a poisoned mutex). `tick` recovers the guard via
+    // `into_inner()` and force-locks — dropping (zeroizing) the unlocked inner
+    // state — then reports `PoisonedLocked` so the loop edge emits `vault-locked`
+    // and logs once. This is the *security-relevant* assertion: poison leaves no
+    // secrets resident, it does not merely get reported.
+    let (mutex, _device_dir) = locked_session_mutex();
+    {
+        let mut session = mutex.lock().expect("session mutex");
+        session
+            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .expect("unlock golden vault");
+        assert!(session.is_unlocked(), "precondition: unlocked");
+    }
+
+    // Poison the mutex by panicking a thread while it holds the (unlocked)
+    // guard — the established `commands::shared` pattern. `thread::scope` lets
+    // the child borrow the local mutex without an `Arc`; `.join()` swallows the
+    // expected `Err(panicked)`.
+    std::thread::scope(|s| {
+        let _ = s
+            .spawn(|| {
+                let _guard = mutex.lock().expect("acquire to poison");
+                panic!("deliberate poison while unlocked");
+            })
+            .join(); // Err(panicked)
+    });
+    assert!(mutex.is_poisoned(), "thread panic must poison the mutex");
+
+    assert_eq!(
+        tick(&mutex),
+        TickOutcome::PoisonedLocked,
+        "poisoned-while-unlocked tick must force-lock and report the transition"
+    );
+
+    // The mutex stays poisoned forever — recover the guard to inspect state.
+    let session = mutex.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        !session.is_unlocked(),
+        "force-lock must have dropped the unlocked inner state (secrets zeroized)"
+    );
+}
+
+#[test]
 fn timer_tick_no_action_on_unlocked_not_yet_expired() {
     let (mutex, _device_dir) = locked_session_mutex();
 

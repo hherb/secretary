@@ -160,6 +160,27 @@ fn auto_lock_timer_loop(app: tauri::AppHandle) {
                     );
                 }
             }
+            TickOutcome::PoisonedLocked => {
+                // The mutex was poisoned while a vault was unlocked; `tick`
+                // fail-secure force-locked it this tick. Tell the frontend so it
+                // reflects the locked state, and log the underlying fault once.
+                // The transition can only happen once (the session is `None`
+                // afterwards), so this emit is not part of the anti-spam latch.
+                if let Err(e) = app.emit(VAULT_LOCKED_EVENT, vault_locked_payload(LOCK_REASON_AUTO))
+                {
+                    tracing::error!(
+                        error = %e,
+                        "failed to emit vault-locked event after poison force-lock"
+                    );
+                }
+                if poison_should_log(&mut poison_logged) {
+                    tracing::error!(
+                        "session mutex poisoned (a prior handler panicked while a vault was \
+                         unlocked); vault force-locked, auto-lock timer cannot make progress \
+                         until the process restarts"
+                    );
+                }
+            }
             TickOutcome::Poisoned => {
                 if poison_should_log(&mut poison_logged) {
                     tracing::error!(

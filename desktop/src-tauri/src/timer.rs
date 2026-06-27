@@ -39,13 +39,25 @@ pub enum TickOutcome {
     /// The tick is dropped — the next tick will retry. Distinct from
     /// `NoAction` so the thread loop can record metrics if useful later.
     Skipped,
-    /// Session mutex is **poisoned**: a prior holder panicked while owning
-    /// the guard, so the auto-lock timer can never make progress again until
-    /// the process restarts. Distinct from [`TickOutcome::Skipped`] (benign,
-    /// self-healing contention) so the thread loop can surface a one-shot
-    /// `tracing::error!` rather than stalling silently forever (#147). `tick`
-    /// stays pure — it reports the condition; the loop edge does the logging.
+    /// Session mutex is **poisoned** and was **already locked**: a prior holder
+    /// panicked while owning the guard, so the auto-lock timer can never make
+    /// progress again until the process restarts. No vault state was resident,
+    /// so there is nothing to force-lock — `tick` recovers the guard, confirms
+    /// the session is locked, and reports this. Distinct from
+    /// [`TickOutcome::Skipped`] (benign, self-healing contention) so the thread
+    /// loop can surface a one-shot `tracing::error!` rather than stalling
+    /// silently forever (#147).
     Poisoned,
+    /// Session mutex was **poisoned while a vault was unlocked**, and this tick
+    /// **force-locked it** (fail-secure). A panicked holder leaves the mutex
+    /// poisoned, which would otherwise strand the unlocked key material in
+    /// memory until the process exits. `tick` recovers the guard via
+    /// `into_inner()` and drops the unlocked inner state (zeroizing the
+    /// secrets), then reports this so the loop edge emits `vault-locked` (the
+    /// frontend must reflect the lock) and logs the underlying fault once.
+    /// Force-locking *discards* the session rather than trusting it — see
+    /// [`tick`].
+    PoisonedLocked,
 }
 
 /// Single timer-tick body. Non-blocking: acquires the session mutex via
@@ -58,18 +70,38 @@ pub enum TickOutcome {
 /// [`TickOutcome::AutoLocked`] so the caller can emit the
 /// `vault-locked` event.
 ///
-/// Pure function — no Tauri dependency, no thread::sleep, no I/O (a poisoned
-/// mutex is reported as [`TickOutcome::Poisoned`], not logged here; the loop
-/// edge owns the I/O). The thread spawn + sleep + event emission live in
-/// `main.rs`.
+/// On a **poisoned** mutex the timer fails secure: it recovers the guard via
+/// [`PoisonError::into_inner`](std::sync::PoisonError::into_inner) and
+/// force-locks the session, dropping (zeroizing) any resident key material
+/// rather than leaving it stranded in memory until the process exits. This is
+/// safe to do on a possibly half-mutated session precisely because
+/// [`VaultSession::lock`] only sets `inner = None` — it *discards* the session,
+/// it does not resume or read it. The transition is reported as
+/// [`TickOutcome::PoisonedLocked`] (was unlocked → emit `vault-locked` + log) or
+/// [`TickOutcome::Poisoned`] (already locked → log only).
+///
+/// Pure function — no Tauri dependency, no thread::sleep, no I/O (the poison is
+/// reported, not logged here; the loop edge owns the I/O). The thread spawn +
+/// sleep + event emission live in `main.rs`.
 pub fn tick(session_mutex: &Mutex<VaultSession>) -> TickOutcome {
     let mut session = match session_mutex.try_lock() {
         Ok(guard) => guard,
         // Another caller holds the mutex; benign — the next tick retries.
         Err(std::sync::TryLockError::WouldBlock) => return TickOutcome::Skipped,
-        // A prior holder panicked while locked: the timer is dead until the
-        // process restarts. Report it distinctly so the loop edge logs once.
-        Err(std::sync::TryLockError::Poisoned(_)) => return TickOutcome::Poisoned,
+        // A prior holder panicked while locked: the mutex is poisoned for the
+        // life of the process. Fail secure — recover the guard and force-lock,
+        // dropping any unlocked key material. Locking *discards* the (possibly
+        // half-mutated) session; it never trusts or resumes it.
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            let mut session = poisoned.into_inner();
+            let was_unlocked = session.is_unlocked();
+            session.lock();
+            return if was_unlocked {
+                TickOutcome::PoisonedLocked
+            } else {
+                TickOutcome::Poisoned
+            };
+        }
     };
 
     let threshold_ms = session.current_settings().auto_lock_timeout_ms;
@@ -165,6 +197,12 @@ mod tests {
         // `Poisoned` distinctly from the benign contended `Skipped` path, letting
         // the loop edge log once instead of silently stalling forever (#147).
         //
+        // This is the *already-locked* poison case (a fresh `VaultSession` is
+        // locked): there is nothing to force-lock, so `tick` recovers the guard
+        // and reports `Poisoned`. The poisoned-while-*unlocked* case (force-lock
+        // → `PoisonedLocked`) needs a golden-vault `UnlockedSession` and lives in
+        // `tests/session_integration.rs::timer_tick_force_locks_poisoned_unlocked_session`.
+        //
         // Poison by panicking a thread while it holds the guard — the established
         // pattern in `commands::shared`. `thread::scope` lets the child borrow the
         // local mutex without an `Arc`; the explicit `.join()` swallows the
@@ -211,6 +249,11 @@ mod tests {
         assert_ne!(TickOutcome::AutoLocked, TickOutcome::Skipped);
         assert_ne!(TickOutcome::Skipped, TickOutcome::Poisoned);
         assert_ne!(TickOutcome::NoAction, TickOutcome::Poisoned);
+        // `PoisonedLocked` (force-locked an unlocked session) must stay distinct
+        // from `Poisoned` (already locked) so the loop edge can emit
+        // `vault-locked` on exactly the transition and not on every poisoned tick.
+        assert_ne!(TickOutcome::Poisoned, TickOutcome::PoisonedLocked);
+        assert_ne!(TickOutcome::AutoLocked, TickOutcome::PoisonedLocked);
     }
 
     // The `AutoLocked` happy path requires an `UnlockedSession`, which
