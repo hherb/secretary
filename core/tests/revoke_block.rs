@@ -39,8 +39,8 @@ use secretary_core::unlock::{
 };
 use secretary_core::vault::{
     decode_block_file, decrypt_block, encode_manifest_file, manifest, open_vault,
-    revoke_block_recipient, save_block, sign_manifest, BlockPlaintext, KdfParamsRef, Manifest,
-    ManifestHeader, Unlocker,
+    revoke_block_recipient, save_block, sign_manifest, BlockPlaintext, BlockUuid, DeviceUuid,
+    KdfParamsRef, Manifest, ManifestHeader, RecipientUuid, Unlocker,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -341,13 +341,13 @@ fn revoke_block_round_trip() {
     revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
-        bob_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -450,13 +450,13 @@ fn revoke_block_last_recipient_returns_owner_only() {
     revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
-        alice_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(alice_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -522,13 +522,13 @@ fn revoke_block_re_sign_verifies() {
     revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
-        bob_card.contact_uuid,
-        [0xd1u8; 16],
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -599,13 +599,13 @@ fn revoke_block_manifest_recipients_shrink() {
     revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
-        bob_card.contact_uuid,
-        [0xd1u8; 16],
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -685,13 +685,13 @@ fn revoke_block_owner_rejected() {
     let err = revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
-        owner_uuid,
-        device_uuid,
+        RecipientUuid::new(owner_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -762,13 +762,13 @@ fn revoke_block_not_found_rejected() {
     let err = revoke_block_recipient(
         dir.path(),
         &mut open,
-        bogus_uuid,
+        BlockUuid::new(bogus_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
-        alice_card.contact_uuid,
-        [0xd1u8; 16],
+        RecipientUuid::new(alice_card.contact_uuid),
+        DeviceUuid::new([0xd1u8; 16]),
         1_714_060_910_000,
         &mut rng,
     )
@@ -838,13 +838,13 @@ fn revoke_block_non_author_rejected() {
     let err = revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &alice_card, // wrong author card!
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone()],
-        alice_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(alice_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -927,13 +927,13 @@ fn revoke_block_non_recipient_rejected() {
     let err = revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         &[owner_card.clone(), alice_card.clone(), bob_card.clone()],
-        bob_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )
@@ -1007,13 +1007,13 @@ fn revoke_block_missing_remaining_card_rejected() {
     let err = revoke_block_recipient(
         dir.path(),
         &mut open,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &owner_card,
         &owner_sk_ed,
         &owner_sk_pq,
         std::slice::from_ref(&bob_card),
-        bob_card.contact_uuid,
-        device_uuid,
+        RecipientUuid::new(bob_card.contact_uuid),
+        DeviceUuid::new(device_uuid),
         1_714_060_910_000,
         &mut rng,
     )

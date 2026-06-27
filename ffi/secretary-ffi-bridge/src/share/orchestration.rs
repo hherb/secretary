@@ -14,7 +14,7 @@ use rand_core::OsRng;
 use secretary_core::crypto::secret::Sensitive;
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::card::ContactCard;
-use secretary_core::vault::{format_uuid_hyphenated, OpenVault, VaultError};
+use secretary_core::vault::{format_uuid_hyphenated, BlockUuid, DeviceUuid, OpenVault, VaultError};
 use zeroize::Zeroize as _;
 
 use crate::error::FfiVaultError;
@@ -154,13 +154,13 @@ pub fn share_block(
     let result = secretary_core::vault::share_block(
         &vault_folder,
         &mut open_vault,
-        block_uuid,
+        BlockUuid::new(block_uuid),
         &author_card,
         &sk_ed,
         &sk_pq,
         &existing_decoded,
         &new_decoded,
-        device_uuid,
+        DeviceUuid::new(device_uuid),
         now_ms,
         &mut OsRng,
     );

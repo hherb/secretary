@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-crdt-collision-test-gaps-190-192-shipped.md
+docs/handoffs/2026-06-27-rekey-newtypes-183-shipped.md
