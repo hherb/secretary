@@ -48,7 +48,7 @@ pub struct NotifyWatcher {
 impl NotifyWatcher {
     /// Begin watching `folder` recursively. Subsequent calls to
     /// [`Self::poll`] surface any filesystem activity that
-    /// [`is_sync_relevant`] accepts.
+    /// `is_sync_relevant` accepts.
     ///
     /// # Errors
     ///

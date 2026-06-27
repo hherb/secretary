@@ -15,7 +15,7 @@ use crate::vault::OpenVaultManifest;
 /// `BlockEntry.recipients` (always includes the owner). Every card loaded from
 /// `contacts/` — existing recipients AND the new recipient — is re-verified
 /// (both Ed25519 ∧ ML-DSA-65 self-signature halves) at load time via
-/// [`load_card_bytes`] before its public keys are trusted; verification at
+/// `load_card_bytes` before its public keys are trusted; verification at
 /// import time does NOT cover this path because the cards are re-read from disk
 /// here, where a post-import swap (an attacker with write access to `contacts/`,
 /// the threat `core::vault::restore_block` guards against) would otherwise pass

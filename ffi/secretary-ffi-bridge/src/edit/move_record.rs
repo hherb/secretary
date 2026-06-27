@@ -33,7 +33,7 @@ use secretary_core::vault::record::{Record, RecordField};
 ///    field values, and every `unknown` map are preserved; only `record_uuid`
 ///    and the record-level `last_mod_ms` are fresh (set to `new_record_uuid`
 ///    and `now_ms` respectively).  `tombstone = false`, `tombstoned_at_ms = 0`.
-/// 4. Save the mutated target block through [`super::save_plaintext`]
+/// 4. Save the mutated target block through `super::save_plaintext`
 ///    (copy-before-delete).
 /// 5. Tombstone the source record via [`super::tombstone::tombstone_record`].
 ///

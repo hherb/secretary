@@ -26,7 +26,7 @@ use crate::vault::OpenVaultManifest;
 /// Fields are NOT cleared — the record stays fully resurrectable. Sets
 /// `tombstone = true`, `tombstoned_at_ms = now_ms`, `last_mod_ms = now_ms`
 /// (maintaining the death-clock invariant), preserves everything else, and
-/// re-encrypts through [`super::save_plaintext`].
+/// re-encrypts through `super::save_plaintext`.
 ///
 /// # Errors
 ///

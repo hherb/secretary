@@ -7,7 +7,7 @@
 //! [`VaultSession::with_unlocked`].
 //!
 //! Error mapping is split by primitive class:
-//! - record tombstone/resurrect use a local [`map_record_delete_error`]
+//! - record tombstone/resurrect use a local `map_record_delete_error`
 //!   mirroring `edit::map_save_error` (BlockNotFound / RecordNotFound stay
 //!   typed; everything else folds to `RecordSaveFailed`),
 //! - block trash/restore/list use the shared [`map_ffi_error`], which already

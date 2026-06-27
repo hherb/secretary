@@ -10,11 +10,11 @@
 //! - `From<&BridgeType>` impls live next to the DTO.
 //! - All DTOs `#[serde(rename_all = "camelCase")]`.
 //!
-//! Submodules: [`manifest`] (D.1.1 manifest/summary/settings DTOs),
-//! [`browse`] (D.1.2 block-detail / record / field / revealed-field DTOs),
-//! [`create`] (D.1.3 vault-create DTOs), [`edit`] (D.1.4 record-edit DTOs),
-//! [`trash`] (D.1.5 trashed-block DTO), [`contact`] (D.1.6 contact-summary
-//! DTOs), [`recipient`] (D.1.8 per-block recipient DTOs), and [`sync`]
+//! Submodules: `manifest` (D.1.1 manifest/summary/settings DTOs),
+//! `browse` (D.1.2 block-detail / record / field / revealed-field DTOs),
+//! `create` (D.1.3 vault-create DTOs), `edit` (D.1.4 record-edit DTOs),
+//! `trash` (D.1.5 trashed-block DTO), `contact` (D.1.6 contact-summary
+//! DTOs), `recipient` (D.1.8 per-block recipient DTOs), and `sync`
 //! (D.1.14 sync-status / outcome DTOs).
 
 mod browse;

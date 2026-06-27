@@ -4,7 +4,7 @@
 //! for PyO3's #[pymodule] / #[pyfunction] macros, which expand to unsafe
 //! blocks (the CPython C-API bridge is inherently unsafe). The crate-local
 //! lint relaxation (workspace `forbid` → crate-local `deny`) is required
-//! because `forbid` is non-overridable by inner #[allow]; see Cargo.toml.
+//! because `forbid` is non-overridable by inner `#[allow]`; see Cargo.toml.
 //!
 //! The `#[allow]` is **crate-level** rather than item-level because the
 //! function-style `#[pymodule]` macro generates code at crate scope (an
@@ -17,23 +17,23 @@
 //!
 //! # Module layout
 //!
-//! - [`errors`] — `create_exception!` macros + `FfiUnlockError` /
+//! - `errors` — `create_exception!` macros + `FfiUnlockError` /
 //!   `FfiVaultError` → `PyErr` translators + the `uuid_array_or_value_error`
 //!   length-validation helper.
-//! - [`identity`] — `UnlockedIdentity` pyclass (shared by every entry
+//! - `identity` — `UnlockedIdentity` pyclass (shared by every entry
 //!   point that produces or consumes a live identity).
-//! - [`unlock`] — bytes-in unlock + create entry points (B.2 / B.3a /
+//! - `unlock` — bytes-in unlock + create entry points (B.2 / B.3a /
 //!   B.3b): `open_with_password`, `open_with_recovery`, `create_vault`,
 //!   `MnemonicOutput`, `CreateVaultOutput`.
-//! - [`vault`] — folder-in vault open entry points (B.4a):
+//! - `vault` — folder-in vault open entry points (B.4a):
 //!   `open_vault_with_password`, `open_vault_with_recovery`, plus the
 //!   `OpenVaultManifest` / `OpenVaultOutput` / `BlockSummary` pyclasses.
-//! - [`record`] — block-read entry point (B.4b): `read_block`, plus the
+//! - `record` — block-read entry point (B.4b): `read_block`, plus the
 //!   `FieldHandle` / `Record` / `BlockReadOutput` pyclasses.
-//! - [`save`] — block-save entry point (B.4c): `save_block`, plus the
+//! - `save` — block-save entry point (B.4c): `save_block`, plus the
 //!   `BlockInput` / `RecordInput` / `FieldInput` / `FieldInputValue`
 //!   input pyclasses.
-//! - [`share`] — block-share entry point (B.4d): `share_block`.
+//! - `share` — block-share entry point (B.4d): `share_block`.
 //!
 //! # Rationale documents
 //!

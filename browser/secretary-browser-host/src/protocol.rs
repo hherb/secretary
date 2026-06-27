@@ -4,7 +4,7 @@
 //! extension sends a [`Inbound::Query`] and the host replies with an
 //! [`Outbound::Available`] count (or an [`Outbound::Error`] for an unrecognized
 //! message type, never a panic). The dispatch itself lives in
-//! [`crate::Context::answer`] — the host opens the casual vault per fill and
+//! `crate::Context::answer` — the host opens the casual vault per fill and
 //! reports a real count (D.4.2), gated by the page-level origin rules.
 //!
 //! Every reply carries a freshly minted `request_id` so D.4.4's `request_fill`
