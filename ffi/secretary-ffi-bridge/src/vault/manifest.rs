@@ -150,7 +150,6 @@ impl OpenVaultManifest {
     /// entry exists for `block_uuid` whose stored `ts` equals `ts` (same
     /// on-disk file version). A differing `ts` (file re-trashed) or absent
     /// uuid is a miss. Part of the #172 Trash-view decrypt memo.
-    #[allow(dead_code)] // wired into list_trashed_blocks in Task 3
     pub(crate) fn trash_name_cache_get(&self, block_uuid: &[u8; 16], ts: u64) -> Option<String> {
         lock_or_recover(&self.name_cache)
             .get(block_uuid)
@@ -162,7 +161,6 @@ impl OpenVaultManifest {
     /// the memo, then prune the memo down to `live_uuids` (the current
     /// `manifest.trash` set) so restored/stale entries do not accumulate.
     /// One lock acquisition. Part of the #172 Trash-view decrypt memo.
-    #[allow(dead_code)] // wired into list_trashed_blocks in Task 3
     pub(crate) fn trash_name_cache_put_and_prune(
         &self,
         updates: Vec<([u8; 16], u64, String)>,

@@ -122,6 +122,13 @@ fn find_trash_file(vault_dir: &Path, block_uuid: &[u8; 16]) -> PathBuf {
     matches.pop().unwrap()
 }
 
+/// Overwrite a file's contents in place with `new_bytes` (same path, so
+/// the `<ts>` suffix is unchanged). Used to corrupt a trash file's
+/// ciphertext to prove whether a list call re-decrypts it.
+fn overwrite_in_place(path: &Path, new_bytes: &[u8]) {
+    std::fs::write(path, new_bytes).expect("overwrite trash file in place");
+}
+
 /// Newest-wins: with two trash files for the same block, the listing
 /// selects the one with the higher canonical `<ts>` suffix and decrypts
 /// fine. We also drop a leading-zero (non-canonical) decimal file and a
@@ -201,5 +208,123 @@ fn list_trashed_blocks_empty_when_nothing_trashed() {
     assert!(
         !listed.iter().any(|t| t.block_name == "Bank logins"),
         "fresh golden copy must not contain a 'Bank logins' trashed block",
+    );
+}
+
+/// A second `list_trashed_blocks` with the SAME on-disk `<ts>` serves the
+/// name from the memo without re-decrypting: we corrupt the ciphertext in
+/// place after the first list, and the second list still returns the
+/// correct name (a re-decrypt would have surfaced a typed error).
+#[test]
+fn cache_hit_serves_name_without_redecrypt() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0x53u8; 16];
+    create_block(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        "Server keys".into(),
+        DEVICE_UUID,
+        1_000,
+    )
+    .expect("create_block");
+    trash_block(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        DEVICE_UUID,
+        2_000,
+    )
+    .expect("trash_block");
+
+    // First list populates the memo (uuid, ts → "Server keys").
+    let first = list_trashed_blocks(&opened.identity, &opened.manifest).expect("first list");
+    assert_eq!(
+        first
+            .iter()
+            .find(|t| t.block_uuid == block_uuid)
+            .unwrap()
+            .block_name,
+        "Server keys",
+    );
+
+    // Corrupt the trash file's bytes in place (ts suffix unchanged).
+    let vault_dir = opened._tmp.path();
+    let trash_file = find_trash_file(vault_dir, &block_uuid);
+    overwrite_in_place(&trash_file, b"this is not a valid block file envelope");
+
+    // Second list: same (uuid, ts) → memo hit → name still resolves,
+    // proving the corrupt bytes were never decrypted.
+    let second = list_trashed_blocks(&opened.identity, &opened.manifest)
+        .expect("second list must succeed from cache");
+    assert_eq!(
+        second
+            .iter()
+            .find(|t| t.block_uuid == block_uuid)
+            .unwrap()
+            .block_name,
+        "Server keys",
+    );
+}
+
+/// A newer `<ts>` is a different memo key, so the listing must re-decrypt
+/// the newest file rather than serve the stale cached name. We drop a
+/// CORRUPT higher-ts file after the first list; the second list keys on
+/// the new ts → miss → re-decrypt → typed error (not the stale name).
+#[test]
+fn newer_ts_forces_redecrypt_not_stale_cache() {
+    let opened = open_writable_golden_001();
+    let block_uuid = [0x54u8; 16];
+    create_block(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        "Recovery codes".into(),
+        DEVICE_UUID,
+        1_000,
+    )
+    .expect("create_block");
+    trash_block(
+        &opened.identity,
+        &opened.manifest,
+        block_uuid,
+        DEVICE_UUID,
+        2_000,
+    )
+    .expect("trash_block");
+
+    // First list caches (uuid, old_ts → "Recovery codes").
+    let first = list_trashed_blocks(&opened.identity, &opened.manifest).expect("first list");
+    assert_eq!(
+        first
+            .iter()
+            .find(|t| t.block_uuid == block_uuid)
+            .unwrap()
+            .block_name,
+        "Recovery codes",
+    );
+
+    // Drop a CORRUPT higher-ts file for the same uuid. newest-wins selects
+    // it; its (uuid, new_ts) is not in the memo → must decrypt → error.
+    let vault_dir = opened._tmp.path();
+    let original = find_trash_file(vault_dir, &block_uuid);
+    let corrupt_newer = original.with_file_name(format!(
+        "{}.99999",
+        original
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit_once('.')
+            .unwrap()
+            .0,
+    ));
+    std::fs::write(&corrupt_newer, b"corrupt newer-ts envelope").expect("write corrupt newer file");
+
+    let result = list_trashed_blocks(&opened.identity, &opened.manifest);
+    assert!(
+        result.is_err(),
+        "newer ts is a cache miss; decrypting the corrupt newest file must error, \
+         not silently serve the stale cached name",
     );
 }

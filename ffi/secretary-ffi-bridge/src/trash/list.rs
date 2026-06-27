@@ -12,6 +12,14 @@
 //! `decrypt_block_file_bytes` tail, then immediately let the decrypted
 //! plaintext drop (zeroize) — only the name is projected out. Record
 //! plaintext NEVER escapes this function.
+//!
+//! As of #172 the decrypted name is memoized on the
+//! [`OpenVaultManifest`] handle, keyed by
+//! `(block_uuid, <ts>)` — the on-disk file version. Repeat calls with an
+//! unchanged file hit the memo and skip the decrypt; a re-trash (higher
+//! `<ts>`) or restore self-invalidates. Names are non-secret in the
+//! bridge (already plaintext in the manifest's block summaries) and the
+//! memo is cleared on handle `wipe`.
 
 use std::path::{Path, PathBuf};
 
@@ -72,9 +80,15 @@ pub fn list_trashed_blocks(
 
     let trash_dir = vault_folder.join("trash");
     let mut out: Vec<TrashedBlock> = Vec::with_capacity(manifest_body.trash.len());
+    // Misses decrypted this call, applied to the memo after the loop.
+    let mut cache_updates: Vec<([u8; 16], u64, String)> = Vec::new();
+    // The current live-trash uuid set; the memo is pruned to this so
+    // restored/stale entries do not accumulate.
+    let live_uuids: std::collections::HashSet<[u8; 16]> =
+        manifest_body.trash.iter().map(|e| e.block_uuid).collect();
 
     for entry in &manifest_body.trash {
-        let (path, _ts) = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
+        let (path, ts) = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
             FfiVaultError::CorruptVault {
                 detail: format!(
                     "trash entry has no matching file for {}",
@@ -83,20 +97,31 @@ pub fn list_trashed_blocks(
             }
         })?;
 
-        let bytes = std::fs::read(&path).map_err(|e| FfiVaultError::FolderInvalid {
-            detail: format!("failed to read trash file: {e}"),
-        })?;
+        // Memo hit (same uuid + same on-disk ts) → skip the decrypt.
+        let block_name = if let Some(name) = manifest.trash_name_cache_get(&entry.block_uuid, ts) {
+            name
+        } else {
+            let bytes = std::fs::read(&path).map_err(|e| FfiVaultError::FolderInvalid {
+                detail: format!("failed to read trash file: {e}"),
+            })?;
+            // Decrypt only to read the name. `plaintext` drops (zeroizes)
+            // at the end of this block — record material never escapes.
+            let plaintext = decrypt_block_file_bytes(identity, &owner_card, &bytes)?;
+            let name = plaintext.block_name.clone();
+            cache_updates.push((entry.block_uuid, ts, name.clone()));
+            name
+        };
 
-        // Decrypt only to read the name. `plaintext` drops (zeroizes)
-        // at the end of this iteration — record material never escapes.
-        let plaintext = decrypt_block_file_bytes(identity, &owner_card, &bytes)?;
         out.push(TrashedBlock {
             block_uuid: entry.block_uuid,
-            block_name: plaintext.block_name.clone(),
+            block_name,
             tombstoned_at_ms: entry.tombstoned_at_ms,
             tombstoned_by: entry.tombstoned_by,
         });
     }
+
+    // Apply this call's freshly-decrypted names and prune to the live set.
+    manifest.trash_name_cache_put_and_prune(cache_updates, &live_uuids);
 
     Ok(out)
 }
