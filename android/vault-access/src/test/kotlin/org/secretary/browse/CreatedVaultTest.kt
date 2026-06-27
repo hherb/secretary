@@ -1,6 +1,7 @@
 package org.secretary.browse
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -10,6 +11,7 @@ class CreatedVaultTest {
         val phrase = "ripple ozone".toByteArray(Charsets.UTF_8)
         val created = CreatedVault(phrase)
         assertTrue(phrase.contentEquals(created.phrase))
+        assertSame(phrase, created.phrase)
     }
 
     @Test
