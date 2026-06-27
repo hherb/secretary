@@ -1,6 +1,7 @@
 //! [`OpenVaultManifest`] handle plus its accessors and the typed
 //! [`ReplaceManifestError`] for the bridge-internal write-back path.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use secretary_core::crypto::secret::Sensitive;
@@ -50,6 +51,19 @@ pub struct OpenVaultManifest {
     /// neither needed nor possible without forcing tests to use
     /// awkward `Arc<Condvar>` shapes.
     mid_call_hook: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// Memo: `block_uuid → (ts, block_name)` for the Trash view's
+    /// by-name projection. Keyed by the on-disk `<ts>` filename suffix so
+    /// it is self-invalidating — a re-trash (higher `<ts>`) is an
+    /// automatic miss, a restore is pruned out. Lets repeat
+    /// `list_trashed_blocks` calls skip the per-block AEAD decrypt (#172).
+    ///
+    /// Holds plain `String` names, not `Sensitive`: block names are
+    /// non-secret in the bridge (already plaintext in
+    /// [`BlockSummary`](super::inner::BlockSummary)). Still cleared on
+    /// [`Self::wipe`] to match the handle's secret-lifecycle. In a
+    /// separate `Mutex` from `inner` so a cache read never contends with a
+    /// manifest mutation.
+    name_cache: Mutex<HashMap<[u8; 16], (u64, String)>>,
 }
 
 /// Redacted Debug: never leak secret material through fmt.
@@ -70,6 +84,7 @@ impl OpenVaultManifest {
         Self {
             inner: Mutex::new(Some(inner)),
             mid_call_hook: Mutex::new(None),
+            name_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -131,6 +146,33 @@ impl OpenVaultManifest {
         })
     }
 
+    /// Look up a memoized trashed-block name. Returns `Some(name)` iff an
+    /// entry exists for `block_uuid` whose stored `ts` equals `ts` (same
+    /// on-disk file version). A differing `ts` (file re-trashed) or absent
+    /// uuid is a miss. Part of the #172 Trash-view decrypt memo.
+    pub(crate) fn trash_name_cache_get(&self, block_uuid: &[u8; 16], ts: u64) -> Option<String> {
+        lock_or_recover(&self.name_cache)
+            .get(block_uuid)
+            .filter(|(cached_ts, _)| *cached_ts == ts)
+            .map(|(_, name)| name.clone())
+    }
+
+    /// Apply this call's freshly-decrypted `(uuid, ts, name)` results to
+    /// the memo, then prune the memo down to `live_uuids` (the current
+    /// `manifest.trash` set) so restored/stale entries do not accumulate.
+    /// One lock acquisition. Part of the #172 Trash-view decrypt memo.
+    pub(crate) fn trash_name_cache_put_and_prune(
+        &self,
+        updates: Vec<([u8; 16], u64, String)>,
+        live_uuids: &HashSet<[u8; 16]>,
+    ) {
+        let mut cache = lock_or_recover(&self.name_cache);
+        for (uuid, ts, name) in updates {
+            cache.insert(uuid, (ts, name));
+        }
+        cache.retain(|uuid, _| live_uuids.contains(uuid));
+    }
+
     /// Drop the wrapped manifest now, zeroizing the IBK at exactly this
     /// moment. **Idempotent** — multiple calls do not panic.
     ///
@@ -145,6 +187,10 @@ impl OpenVaultManifest {
         // field-declaration order: identity_block_key (Sensitive<[u8; 32]>
         // — IBK zeroized first via ZeroizeOnDrop), then manifest,
         // manifest_file, owner_card.
+        //
+        // Drop any memoized trash names too — keeps a wiped handle free of
+        // residual (non-secret but handle-scoped) names (#172).
+        lock_or_recover(&self.name_cache).clear();
     }
 
     /// Fire the mid-call test hook if one is installed. Called by
@@ -431,5 +477,103 @@ pub(crate) fn block_entry_to_summary(b: &secretary_core::vault::BlockEntry) -> B
         created_at_ms: b.created_at_ms,
         last_modified_ms: b.last_mod_ms,
         recipient_uuids: b.recipients.clone(),
+    }
+}
+
+#[cfg(test)]
+mod name_cache_tests {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    use crate::open_vault_with_password;
+
+    const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
+
+    fn fixture_folder(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../core/tests/data")
+            .join(name)
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for entry in std::fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir_recursive(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).unwrap();
+            }
+        }
+    }
+
+    fn open_writable_golden_001() -> (tempfile::TempDir, super::OpenVaultManifest) {
+        let tmp = tempfile::tempdir().unwrap();
+        copy_dir_recursive(&fixture_folder("golden_vault_001"), tmp.path());
+        let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap();
+        (tmp, out.manifest)
+    }
+
+    #[test]
+    fn put_then_get_hits_on_matching_ts_and_misses_otherwise() {
+        let (_tmp, manifest) = open_writable_golden_001();
+        let uuid = [0xAB; 16];
+        let live: HashSet<[u8; 16]> = [uuid].into_iter().collect();
+
+        manifest.trash_name_cache_put_and_prune(vec![(uuid, 42, "Logins".into())], &live);
+
+        assert_eq!(
+            manifest.trash_name_cache_get(&uuid, 42),
+            Some("Logins".to_string())
+        );
+        // Wrong ts → miss (file version advanced).
+        assert_eq!(manifest.trash_name_cache_get(&uuid, 43), None);
+        // Unknown uuid → miss.
+        assert_eq!(manifest.trash_name_cache_get(&[0xCD; 16], 42), None);
+    }
+
+    #[test]
+    fn prune_drops_uuids_absent_from_live_set() {
+        let (_tmp, manifest) = open_writable_golden_001();
+        let kept = [0x11; 16];
+        let dropped = [0x22; 16];
+
+        // First call caches both.
+        let both: HashSet<[u8; 16]> = [kept, dropped].into_iter().collect();
+        manifest.trash_name_cache_put_and_prune(
+            vec![(kept, 1, "Keep".into()), (dropped, 1, "Drop".into())],
+            &both,
+        );
+        assert_eq!(
+            manifest.trash_name_cache_get(&dropped, 1),
+            Some("Drop".to_string())
+        );
+
+        // Second call: `dropped` is no longer live (e.g. restored) → pruned out.
+        let only_kept: HashSet<[u8; 16]> = [kept].into_iter().collect();
+        manifest.trash_name_cache_put_and_prune(vec![], &only_kept);
+        assert_eq!(
+            manifest.trash_name_cache_get(&kept, 1),
+            Some("Keep".to_string())
+        );
+        assert_eq!(manifest.trash_name_cache_get(&dropped, 1), None);
+    }
+
+    #[test]
+    fn wipe_clears_the_cache() {
+        let (_tmp, manifest) = open_writable_golden_001();
+        let uuid = [0x33; 16];
+        let live: HashSet<[u8; 16]> = [uuid].into_iter().collect();
+        manifest.trash_name_cache_put_and_prune(vec![(uuid, 7, "Secret".into())], &live);
+        assert_eq!(
+            manifest.trash_name_cache_get(&uuid, 7),
+            Some("Secret".to_string())
+        );
+
+        manifest.wipe();
+        // After wipe the cache holds no residual names.
+        assert_eq!(manifest.trash_name_cache_get(&uuid, 7), None);
     }
 }

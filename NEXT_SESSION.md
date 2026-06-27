@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-27-docs-cargo-doc-warnings-92-shipped.md
+docs/handoffs/2026-06-27-trash-list-name-memo-172-shipped.md
