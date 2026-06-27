@@ -1,9 +1,11 @@
 package org.secretary.browse
 
 /**
- * Pure, reversible encoding of a [VaultLocation] to/from a single persisted string
- * (one atomic SharedPreferences value, so a location can never half-persist with a URI
- * but no name). Free functions, no Android dependency → fully host-testable.
+ * Pure encoding of a [VaultLocation] to/from a single persisted string (one atomic
+ * SharedPreferences value, so a location can never half-persist with a URI but no name).
+ * The encoding is reversible for any location with a non-empty tree URI — the only domain
+ * that ever reaches the codec in practice, since a real location comes from the SAF picker.
+ * Free functions, no Android dependency → fully host-testable.
  *
  * Format: `"<VERSION>:<displayName.length>:<displayName><treeUri>"`. The display name is
  * length-prefixed (UTF-16 code units, matching `String.length` / `String.substring`) so
@@ -21,9 +23,9 @@ fun encodeVaultLocation(location: VaultLocation): String =
 
 /**
  * Decode a string produced by [encodeVaultLocation]. Returns null for anything malformed
- * — wrong/absent version tag, missing length delimiter, non-numeric or negative length, or
- * a payload shorter than the declared name length — a conservative under-report mirroring
- * `FileDeviceEnrollmentMetadataStore.load`. Never throws.
+ * — empty tree URI, wrong/absent version tag, missing length delimiter, non-numeric or
+ * negative length, or a payload shorter than the declared name length — a conservative
+ * under-report mirroring `FileDeviceEnrollmentMetadataStore.load`. Never throws.
  */
 fun decodeVaultLocation(encoded: String): VaultLocation? {
     val prefix = "$VAULT_LOCATION_CODEC_VERSION:"
