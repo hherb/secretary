@@ -19,6 +19,7 @@ class SafVaultLocationStoreTest {
             readPref = { pref },
             writePref = { blob -> events.add("write:$blob"); pref = blob },
             takePermission = { uri -> events.add("take:$uri"); permitted.add(uri) },
+            releasePermission = { uri -> events.add("release:$uri"); permitted.remove(uri) },
             hasPermission = { uri -> uri in permitted },
         )
     }
@@ -72,5 +73,46 @@ class SafVaultLocationStoreTest {
         assertFalse(store.isAvailable(location))
         store.persist(location)
         assertTrue(store.isAvailable(location))
+    }
+
+    @Test
+    fun `clear releases the grant before forgetting the location`() {
+        val f = Fakes()
+        val store = f.store()
+        store.persist(location)
+        store.clear()
+        // The grant is relinquished, not just the pref — else it leaks toward Android's cap.
+        assertFalse(store.isAvailable(location))
+        assertNull(f.pref)
+    }
+
+    @Test
+    fun `persist replacing a different URI releases the prior grant after securing the new one`() {
+        val f = Fakes()
+        val store = f.store()
+        val old = VaultLocation("old", "content://x/tree/old")
+        store.persist(old)
+        f.events.clear()
+        store.persist(location)
+        assertEquals(
+            listOf(
+                "take:content://x/tree/y",
+                "write:${encodeVaultLocation(location)}",
+                "release:content://x/tree/old",
+            ),
+            f.events,
+        )
+        assertFalse(store.isAvailable(old))
+        assertTrue(store.isAvailable(location))
+    }
+
+    @Test
+    fun `persist replacing the same URI keeps the grant and releases nothing`() {
+        val f = Fakes()
+        val store = f.store()
+        store.persist(location)
+        store.persist(location.copy(displayName = "renamed"))
+        assertTrue(store.isAvailable(location))
+        assertFalse(f.events.any { it.startsWith("release:") })
     }
 }

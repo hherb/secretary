@@ -23,6 +23,8 @@
 
 **Reviews.** Per-task: Task 1 ✅ (1 Minor — empty-`treeUri` accepted by decode — **fixed**, `1e51fc22`, as a conservative-under-report guard the persisted format depends on); Task 2 ✅ (3 Minors, all non-defects: test-count verbosity / const placement matches house style / replace-test asserts via `load()` — reviewer "fine"). Whole-branch review (opus): **Ready to merge: Yes**, no Critical/Important. Two Minor KDoc nits (empty-treeUri case missing from the malformed-list; "reversible" overclaim) **fixed** in `70a5ec24`.
 
+**Post-review `/review` fix (persistable-URI grant leak).** A precision PR review flagged that `SafVaultLocationStore.clear()` (and `persist()` superseding a *different* tree URI) relinquished nothing — `takePersistableUriPermission` consumes an Android per-package grant slot, and clearing the SharedPreferences blob alone does **not** release the SAF grant, so the design's "stale permission → re-pick" loop would leak a grant on every re-pick toward the system cap. **Fixed** by adding a fifth `releasePermission` seam (mirroring `takePermission`): `persist` releases the prior grant *after* securing+recording the new one (skipped when the URI is unchanged); `clear` releases before forgetting. iOS needs no analogue (a `UserDefaults` bookmark consumes no system-wide slot). Three new falsifiable host cases (clear-releases, replace-different-releases-old with an ordered event assertion, replace-same-keeps); `:kit` suite now 10/10 green.
+
 **Branch commits** (off `main` @ `4a254e4a`):
 | SHA | What |
 |---|---|
