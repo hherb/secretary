@@ -61,6 +61,9 @@ dependencies {
     // uniffi 0.31 Kotlin bindings load the cdylib through JNA (aar variant for Android).
     // 5.14.0 satisfies uniffi's >=5.12 floor; fetched from mavenCentral (network available).
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+    // SAF tree traversal for SafCloudFolderPort (slice 3). 1.0.1 is the current stable release;
+    // used only by the safCloudFolderPort factory — the seam-based class body holds no SAF types.
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core") {
         version { strictly("1.8.0") }
     }
