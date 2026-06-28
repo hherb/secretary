@@ -4,6 +4,7 @@ package org.secretary.browse
  *  buffer it returns (via [lastReturnedPhrase]) so a zeroize-on-ack assertion can inspect it. */
 class FakeVaultCreatePort(
     private val phrase: ByteArray = "alpha bravo charlie".toByteArray(Charsets.UTF_8),
+    private val vaultUuid: ByteArray = ByteArray(16),
     private val error: VaultProvisioningError? = null,
 ) : VaultCreatePort {
     data class Call(val folderPath: String, val displayName: String, val passwordSize: Int)
@@ -20,7 +21,7 @@ class FakeVaultCreatePort(
         error?.let { throw it }
         val buf = phrase.copyOf()
         lastReturnedPhrase = buf
-        return CreatedVault(buf)
+        return CreatedVault(phrase = buf, vaultUuid = vaultUuid.copyOf())
     }
 }
 

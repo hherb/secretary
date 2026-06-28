@@ -38,7 +38,7 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
                         folderPath: Data(folder.path.utf8),
                         password: pw,
                         displayName: displayName,
-                        createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000))
+                        createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000)).mnemonic
                 }
             } catch let e as VaultError {
                 throw mapProvisioningError(e)

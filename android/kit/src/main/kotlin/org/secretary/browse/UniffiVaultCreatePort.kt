@@ -15,17 +15,27 @@ import uniffi.secretary.createVaultInFolder
  * password [ByteArray] is forwarded per call; neither is retained. The returned phrase is
  * caller-owned (caller zeroizes after the user acknowledges it).
  *
- * [createFn] is the injectable FFI seam: it returns the one-shot recovery-phrase bytes (or null).
- * Its default invokes the real binding inside `.use { … }` so the native
- * [uniffi.secretary.MnemonicOutput] handle is always released.
+ * [createFn] is the injectable FFI seam: it returns a [Pair] of (recovery-phrase bytes, vault-uuid
+ * bytes), or null if the phrase is unavailable. Its default invokes the real binding, extracting
+ * both values from the [uniffi.secretary.CreatedVaultInFolder] record, and always releases the
+ * inner [uniffi.secretary.MnemonicOutput] handle via `.use { … }` before destroying the record.
  * [clockMs] supplies `created_at_ms` (injected for deterministic tests).
  */
 class UniffiVaultCreatePort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clockMs: () -> Long = System::currentTimeMillis,
-    private val createFn: (ByteArray, ByteArray, String, ULong) -> ByteArray? =
+    private val createFn: (ByteArray, ByteArray, String, ULong) -> Pair<ByteArray, ByteArray>? =
         { folderPath, password, displayName, createdAtMs ->
-            createVaultInFolder(folderPath, password, displayName, createdAtMs).use { it.takePhrase() }
+            // createVaultInFolder returns CreatedVaultInFolder (Disposable, not AutoCloseable);
+            // extract the phrase from the inner MnemonicOutput handle (AutoCloseable) first,
+            // then read vaultUuid, and destroy the outer record in finally.
+            createVaultInFolder(folderPath, password, displayName, createdAtMs).let { out ->
+                try {
+                    out.mnemonic.use { it.takePhrase() }?.let { phrase -> phrase to out.vaultUuid }
+                } finally {
+                    out.destroy()
+                }
+            }
         },
 ) : VaultCreatePort {
     override suspend fun createInFolder(
@@ -34,10 +44,10 @@ class UniffiVaultCreatePort(
         displayName: String,
     ): CreatedVault =
         withContext(ioDispatcher) {
-            val phrase = mapProvisioningErrors {
+            val result = mapProvisioningErrors {
                 createFn(folderPath.toByteArray(Charsets.UTF_8), password, displayName, clockMs().toULong())
             } ?: throw VaultProvisioningError.CreateFailed("recovery phrase unavailable")
-            CreatedVault(phrase)
+            CreatedVault(phrase = result.first, vaultUuid = result.second)
         }
 }
 

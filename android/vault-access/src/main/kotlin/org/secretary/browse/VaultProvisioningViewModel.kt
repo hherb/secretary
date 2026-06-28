@@ -60,7 +60,8 @@ class VaultProvisioningViewModel(
         isCreating = true
         try {
             val created = createPort.createInFolder(folderPath, password, creds.vaultName)
-            store.persist(VaultLocation(creds.vaultName, creds.treeUri)) // persist BEFORE mnemonic
+            val uuidHex = hexOfBytes(created.vaultUuid)
+            store.persist(VaultLocation(creds.vaultName, creds.treeUri, uuidHex)) // persist BEFORE mnemonic
             phrase = created.phrase
             mnemonicRows = groupMnemonic(created.phrase)
             step = VaultProvisioningStep.Mnemonic

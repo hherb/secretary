@@ -31,6 +31,7 @@ sealed interface BlockNameDialogState {
 class VaultBrowseModel(
     private val session: VaultSession,
     private val gate: WriteReauthGate = NoopReauthGate,
+    private val onCommit: suspend () -> Unit = {},
 ) {
     private val _blocks = MutableStateFlow<List<BlockSummaryView>>(emptyList())
     val blocks: StateFlow<List<BlockSummaryView>> = _blocks.asStateFlow()
@@ -172,6 +173,7 @@ class VaultBrowseModel(
     suspend fun onEditCommitted() {
         _editing.value = null
         _selectedBlock.value?.let { selectBlock(it) }
+        onCommit()
     }
 
     /**
@@ -206,6 +208,7 @@ class VaultBrowseModel(
                 return
             }
             reload()
+            onCommit()
         } finally {
             _writing.value = false
         }

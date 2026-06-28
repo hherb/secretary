@@ -332,4 +332,38 @@ class VaultBrowseModelTest {
         assertFalse(model.writing.value)
         assertEquals(before, model.selectedRecords.value)   // rejected write leaves the list intact
     }
+
+    @Test
+    fun `onCommit fires after a successful write not after a read`() = runTest {
+        var commits = 0
+        val s = writableSession()
+        val model = VaultBrowseModel(s, onCommit = { commits++ })
+        model.loadBlocks()
+        model.selectBlock(model.blocks.value.first())
+        assertEquals(0, commits)    // reads must not trigger a flush
+        model.delete(model.selectedRecords.value!!.first()) // a successful mutating commit
+        assertEquals(1, commits)    // one commit → one flush hook
+    }
+
+    @Test
+    fun `onCommit does not fire after a failed write`() = runTest {
+        var commits = 0
+        val s = writableSession(writeError = VaultBrowseError.RecordNotFound("ab"))
+        val model = VaultBrowseModel(s, onCommit = { commits++ })
+        model.loadBlocks(); model.selectBlock(model.blocks.value.single())
+        model.delete(model.selectedRecords.value!!.first())
+        assertEquals(0, commits)    // failed write must not trigger a flush
+    }
+
+    @Test
+    fun `onCommit fires once on onEditCommitted the add-edit commit path`() = runTest {
+        var commits = 0
+        val s = session()
+        val model = VaultBrowseModel(s, onCommit = { commits++ })
+        model.loadBlocks(); model.selectBlock(block); model.startAdd()
+        // Simulate a committed append directly on the session, then signal commit.
+        s.appendRecord(block.uuid, RecordContentInput("note", emptyList(), emptyList()))
+        model.onEditCommitted()
+        assertEquals(1, commits)    // the add/edit commit path fires the flush hook exactly once
+    }
 }

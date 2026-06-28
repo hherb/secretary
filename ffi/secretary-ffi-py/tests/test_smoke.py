@@ -1174,9 +1174,10 @@ def test_create_vault_in_folder_writes_openable_vault() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp) / "vault"
         folder.mkdir()
-        mnem = secretary_ffi_py.create_vault_in_folder(
+        vault_uuid, mnem = secretary_ffi_py.create_vault_in_folder(
             str(folder), b"hunter2", "Py-Folder-Bob", 1_700_000_000_000
         )
+        assert len(vault_uuid) == 16, "vault_uuid must be 16 bytes"
         phrase = mnem.take_phrase()
         assert phrase is not None
         assert len(bytes(phrase).split(b" ")) == 24

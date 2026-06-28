@@ -7,7 +7,9 @@
 use crate::errors::{UnlockError, VaultError};
 use crate::wrappers::block::BlockReadOutput;
 use crate::wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
-use crate::wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdentity};
+use crate::wrappers::identity::{
+    CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
+};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
@@ -152,10 +154,10 @@ pub fn create_vault_in_folder(
     mut password: Vec<u8>,
     display_name: String,
     created_at_ms: u64,
-) -> Result<std::sync::Arc<MnemonicOutput>, VaultError> {
+) -> Result<CreatedVaultInFolder, VaultError> {
     // Compute the full result chain into a single binding so the password
     // is zeroized BEFORE any `?`-propagation (mirrors open_vault_with_password).
-    let result: Result<secretary_ffi_bridge::MnemonicOutput, VaultError> =
+    let result: Result<secretary_ffi_bridge::CreatedVaultInFolder, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
@@ -173,8 +175,11 @@ pub fn create_vault_in_folder(
         };
 
     password.zeroize();
-    let bridge_mnemonic = result?;
-    Ok(std::sync::Arc::new(MnemonicOutput(bridge_mnemonic)))
+    let bridge_out = result?;
+    Ok(CreatedVaultInFolder {
+        vault_uuid: bridge_out.vault_uuid.to_vec(),
+        mnemonic: std::sync::Arc::new(MnemonicOutput(bridge_out.mnemonic)),
+    })
 }
 
 /// Open a vault folder using its master password. uniffi-projected. (B.4a)

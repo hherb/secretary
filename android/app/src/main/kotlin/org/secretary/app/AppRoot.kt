@@ -50,15 +50,29 @@ import java.io.File
 
 private const val TAG = "AppRoot"
 
-/** The app's two screens; Browse carries the live session for the unlocked vault. */
-private sealed interface Route {
+/** The app's screens; Browse carries the live session for the unlocked vault. `internal` (not
+ *  `private`) so the cloud-open orchestration in [CloudVaultOpen] can return a [Route]. */
+internal sealed interface Route {
     data object Selection : Route
     data object CreateWizard : Route
-    data object Unlock : Route
+
+    /**
+     * The unlock screen. [cloudTarget] null = the demo golden vault (the `onDemo` path, unchanged);
+     * non-null = a cloud vault whose credential, once entered here, is applied to THAT vault via the
+     * working-copy coordinator. Both cloud paths (open-remembered + just-created) route through here.
+     */
+    data class Unlock(val cloudTarget: CloudVaultTarget? = null) : Route
+
+    /**
+     * The unlocked browse session. [cloudTarget] is carried so backgrounding (ON_STOP) returns to an
+     * Unlock screen still targeting the SAME cloud vault (a demo session, [cloudTarget] null, backs
+     * to the demo unlock).
+     */
     data class Browse(
         val session: BrowseSession,
         val folder: File,
         val showSettings: Boolean = false,
+        val cloudTarget: CloudVaultTarget? = null,
     ) : Route
 }
 
@@ -159,7 +173,11 @@ fun AppRoot() {
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) route = Route.Unlock
+            if (event == Lifecycle.Event.ON_STOP) {
+                // Re-target the same cloud vault on resume; a demo Browse (cloudTarget null) backs to
+                // the demo unlock. Any non-Browse route backgrounds to the demo unlock as before.
+                route = Route.Unlock((route as? Route.Browse)?.cloudTarget)
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -176,14 +194,23 @@ fun AppRoot() {
                 route = Route.CreateWizard
             },
             onOpen = {
-                // Slice-5 seam: cloud open needs the working-copy materialize step. Surface an
-                // honest, labelled affordance rather than a dead button.
-                selectionVm.markUnavailable(CLOUD_OPEN_DEFERRED_REASON)
-                selectionState = selectionVm.state
+                // Open the remembered cloud vault: route to the SAME Unlock screen carrying a cloud
+                // target. The working-copy materialize + open runs AFTER the credential is entered
+                // (inside the Unlock handler), so the password is captured by the open closure and
+                // zeroized there. The working dir is keyed by the cloud treeUri (stable across opens
+                // even before the uuid is known; may carry un-pushed edits — NOT reset).
+                val loc = locationStore.load()
+                if (loc == null) {
+                    selectionVm.markUnavailable("No remembered vault to open.")
+                    selectionState = selectionVm.state
+                } else {
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, loc.treeUri, reset = false)
+                    route = Route.Unlock(CloudVaultTarget(loc, workingDir, isCreate = false))
+                }
             },
             onChooseDifferent = { selectionVm.chooseDifferent(); selectionState = selectionVm.state },
             onPickFolder = { pendingPick = FolderPickTarget.SelectExisting; pickFolderLauncher.launch(null) },
-            onDemo = { route = Route.Unlock },
+            onDemo = { route = Route.Unlock() },
         )
         is Route.CreateWizard -> CreateVaultWizardScreen(
             step = provStep,
@@ -207,7 +234,10 @@ fun AppRoot() {
                 if (creds != null) {
                     val pw = password.toByteArray()
                     val cf = confirm.toByteArray()
-                    val workingDir = workingVaultDir(context.filesDir, creds.vaultName)
+                    // Key the create working dir by the cloud treeUri (stable across the later reopen),
+                    // reset to honor createInFolder's empty-dir contract. The same key is used by the
+                    // create-then-open and open-remembered paths, so un-pushed edits never orphan.
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, creds.treeUri, reset = true)
                     // Reflect the in-flight create synchronously so the button disables (and shows
                     // "Creating…") while the suspending Argon2id create runs; syncProvisioning()
                     // below settles the final isCreating/error/step from the VM.
@@ -227,13 +257,17 @@ fun AppRoot() {
                 provisioningVm.acknowledgeMnemonic()
                 val done = provisioningVm.step as? VaultProvisioningStep.Done
                 if (done != null) {
-                    // This slice does NOT open the created vault (that needs its uuid + the Slice-5
-                    // sync/materialize wiring). Return to Selection with the new vault remembered +
-                    // located; opening it is the Slice-5 seam, same as a remembered cloud vault.
+                    // Created vault: the location is already persisted (in create()). Do NOT auto-open
+                    // with the wizard password (matches desktop "no auto-open"): route to the SAME
+                    // Unlock screen carrying a create cloud target. On credential submit the handler
+                    // runs createThenOpen (flush working→cloud pushes the new vault up, then open+sync).
+                    // The working dir is the SAME treeUri-keyed dir create wrote into, resolved WITHOUT
+                    // reset (a reset would wipe the freshly-created vault).
                     selectionVm.recordSelection(done.location)
                     selectionState = selectionVm.state
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, done.location.treeUri, reset = false)
                     Toast.makeText(context, "Vault created.", Toast.LENGTH_SHORT).show()
-                    route = Route.Selection
+                    route = Route.Unlock(CloudVaultTarget(done.location, workingDir, isCreate = true))
                 } else {
                     syncProvisioning() // surfaces a store-fault error on the mnemonic step
                 }
@@ -245,11 +279,20 @@ fun AppRoot() {
             },
         )
         is Route.Unlock -> UnlockScreen(
-            isEnrolled = deviceState is DeviceUnlockState.Enrolled,
+            // The biometric/enroll affordances are golden-vault (demo) keyed; the cloud path has no
+            // device enrollment yet, so hide them when a cloud target is present.
+            isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
             onUnlock = { credential ->
                 scope.launch {
-                    route = unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
+                    val target = r.cloudTarget
+                    route = if (target != null) {
+                        openCloudTarget(context, target, credential, locationStore, selectionVm).also {
+                            selectionState = selectionVm.state
+                        }
+                    } else {
+                        unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
+                    }
                 }
             },
             onEnrollChoice = { rememberDevice = it },
@@ -389,7 +432,7 @@ private suspend fun unlockAndOpen(
         return Route.Browse(session, folder)
     } catch (e: Exception) {
         Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
-        return Route.Unlock
+        return Route.Unlock()
     } finally {
         credential.secret.fill(0) // zeroize on every exit; the password background copy is independent
     }

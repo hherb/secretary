@@ -75,7 +75,9 @@ pub use namespace::{
 };
 pub use wrappers::block::{BlockReadOutput, FieldHandle, Record};
 pub use wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
-pub use wrappers::identity::{CreateVaultOutput, MnemonicOutput, UnlockedIdentity};
+pub use wrappers::identity::{
+    CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
+};
 pub use wrappers::save::{BlockInput, FieldInput, FieldInputValue, RecordContent, RecordInput};
 pub use wrappers::sync::{
     CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
