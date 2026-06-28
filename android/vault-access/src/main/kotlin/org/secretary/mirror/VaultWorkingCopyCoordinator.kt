@@ -62,6 +62,8 @@ class VaultWorkingCopyCoordinator<S>(
         try {
             mirror.flush()
         } catch (e: Exception) {
+            // Mark the un-pushed working copy so the next openExisting retries push-before-pull
+            // instead of materializing over it — the only guard against silent offline-create loss.
             marker.set()
             if (!marker.isSet()) {
                 // The marker is the load-bearing guard for the offline-create reopen path; if it could not

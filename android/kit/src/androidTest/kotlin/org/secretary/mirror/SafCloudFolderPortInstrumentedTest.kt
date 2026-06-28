@@ -26,7 +26,10 @@ class SafCloudFolderPortInstrumentedTest {
         val tree = TestCloudTree.install(context)
         val port = safCloudFolderPort(context, tree.treeUri)
         port.write("m", byteArrayOf(1, 2, 3, 4))
-        port.write("m", byteArrayOf(9)) // shorter — proves "wt" truncation, no stale tail
+        // Overwrite is delete-then-create + "wt" open: the old document is removed first, then a new
+        // one is created and opened with "wt" (truncating write), so a shorter second write leaves
+        // no stale tail bytes from the original.
+        port.write("m", byteArrayOf(9))
         assertArrayEquals(byteArrayOf(9), port.read("m"))
     }
 

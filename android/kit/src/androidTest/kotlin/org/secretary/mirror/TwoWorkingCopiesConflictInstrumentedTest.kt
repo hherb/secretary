@@ -211,6 +211,10 @@ class TwoWorkingCopiesConflictInstrumentedTest {
             .writeBytes(File(workingB, blockRel).readBytes())
 
         // Confirm the fork landed in the SAF tree (canonical + both siblings visible through SAF).
+        // MANIFEST_FILENAME is the `org.secretary.mirror.MANIFEST_FILENAME` constant from
+        // VaultMirrorPlanner (e.g. "manifest.cbor.enc"). safCloudFolderPort(...).list() returns
+        // vault-relative POSIX paths (e.g. "blocks/<uuid>.cbor.enc"), which is what these
+        // assertions rely on — the same path form used in blockRel above.
         val cloudList = safCloudFolderPort(context, tree.treeUri).list()
         assertTrue("canonical manifest present", cloudList.contains(MANIFEST_FILENAME))
         assertTrue("manifest sibling present", cloudList.contains(MANIFEST_FILENAME + siblingSuffix))

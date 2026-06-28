@@ -3,6 +3,7 @@ package org.secretary.mirror
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,13 +33,12 @@ class CloudWorkingCopyLifecycleInstrumentedTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun freshDir(p: String) = Files.createTempDirectory(p).toFile()
 
-    private fun coordinator(tree: TestCloudTree.TreeHandle, workingDir: File, markerFile: File, opened: MutableList<String>) =
+    private fun coordinator(tree: TestCloudTree.TreeHandle, workingDir: File, markerFile: File) =
         VaultWorkingCopyCoordinator(
             VaultMirrorWorkingCopy(VaultMirror(safCloudFolderPort(context, tree.treeUri)), workingDir),
             FilePendingFlushMarker(markerFile),
         ) {
             // openAndSync stand-in: assert the working copy is materialized
-            opened.add("open")
             assertTrue("materialized working copy must hold a manifest", File(workingDir, MANIFEST_FILENAME).exists())
             "S"
         }
@@ -47,15 +47,14 @@ class CloudWorkingCopyLifecycleInstrumentedTest {
         val tree = TestCloudTree.install(context)
         val workingDir = freshDir("wc-create-")
         val created = uniffiVaultCreatePort().createInFolder(workingDir.path, "pw".toByteArray(), "Lifecycle")
-        val opened = mutableListOf<String>()
         // createThenOpen pushes working→cloud, then opens
-        coordinator(tree, workingDir, File(freshDir("mk-"), "m"), opened)
+        coordinator(tree, workingDir, File(freshDir("mk-"), "m"))
             .createThenOpen(bytesToHex(created.vaultUuid)) { /* persist no-op */ }
         assertTrue("cloud must now hold the manifest", safCloudFolderPort(context, tree.treeUri).list().contains(MANIFEST_FILENAME))
 
         // A fresh device: empty working dir, reopen pulls the whole vault
         val freshWorking = freshDir("wc-reopen-")
-        coordinator(tree, freshWorking, File(freshDir("mk2-"), "m"), opened).openExisting()
+        coordinator(tree, freshWorking, File(freshDir("mk2-"), "m")).openExisting()
         assertTrue(File(freshWorking, MANIFEST_FILENAME).exists())
     }
 
@@ -68,8 +67,7 @@ class CloudWorkingCopyLifecycleInstrumentedTest {
         // Point the marker at an UNWRITABLE path (parent is a regular file) so set() cannot persist.
         val markerParent = File(freshDir("mk-bad-"), "afile").apply { writeBytes(byteArrayOf(0)) }
         val badMarker = File(markerParent, "m") // parent is a file → mkdirs/createNewFile fail
-        val opened = mutableListOf<String>()
-        val coord = coordinator(tree, workingDir, badMarker, opened)
+        val coord = coordinator(tree, workingDir, badMarker)
         assertThrows(PendingFlushNotPersisted::class.java) {
             runBlocking { coord.createThenOpen(bytesToHex(created.vaultUuid)) { } }
         }
@@ -77,7 +75,13 @@ class CloudWorkingCopyLifecycleInstrumentedTest {
         assertTrue(File(workingDir, MANIFEST_FILENAME).exists())
         // … and a reopen over the (still manifest-less) cloud must NOT clobber it.
         tree.failWritePaths = emptySet()
-        coordinator(tree, workingDir, File(freshDir("mk-ok-"), "m"), opened).openExisting()
+        // Precondition: the cloud is still manifest-less (the failed push left it empty).
+        // materialize() must detect this and skip pull rather than overwriting the working copy.
+        assertFalse(
+            "cloud must still be manifest-less before the guarded reopen",
+            safCloudFolderPort(context, tree.treeUri).list().contains(MANIFEST_FILENAME),
+        )
+        coordinator(tree, workingDir, File(freshDir("mk-ok-"), "m")).openExisting()
         assertTrue("materialize guard preserves the un-pushed vault", File(workingDir, MANIFEST_FILENAME).exists())
     }
 }
