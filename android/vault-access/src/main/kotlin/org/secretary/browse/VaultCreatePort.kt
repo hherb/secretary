@@ -1,12 +1,13 @@
 package org.secretary.browse
 
 /**
- * The product of a successful create: the one-shot 24-word recovery phrase as UTF-8 bytes.
- * The caller owns zeroizing [phrase] once it has been shown to and acknowledged by the user
- * (mirrors iOS `CreatedVault`). Plain class (not `data class`) so the secret bytes are never
- * structurally compared, copied, or logged via a generated `toString`/`equals`.
+ * The product of a successful create: the one-shot 24-word recovery phrase as UTF-8 bytes plus
+ * the vault's UUID bytes. The caller owns zeroizing [phrase] once it has been shown to and
+ * acknowledged by the user (mirrors iOS `CreatedVault`). Plain class (not `data class`) so the
+ * secret bytes are never structurally compared, copied, or logged via a generated
+ * `toString`/`equals`.
  */
-class CreatedVault(val phrase: ByteArray)
+class CreatedVault(val phrase: ByteArray, val vaultUuid: ByteArray)
 
 /**
  * Creates a brand-new v1 vault in an existing, empty real-filesystem folder, returning the

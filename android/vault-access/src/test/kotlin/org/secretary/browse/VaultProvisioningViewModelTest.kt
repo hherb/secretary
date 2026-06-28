@@ -48,8 +48,9 @@ class VaultProvisioningViewModelTest {
         val m = VaultProvisioningViewModel(port, store)
         m.chooseFolder(tree, "My Vault")
         m.create("/tmp/work", pw("pw"), pw("pw"))
-        // Persist happened with the Credentials treeUri + vaultName, BEFORE the mnemonic reveal.
-        assertEquals(listOf(VaultLocation("My Vault", tree)), store.persisted)
+        // Persist happened with the Credentials treeUri + vaultName + uuid hex, BEFORE the mnemonic reveal.
+        val expectedUuidHex = "0".repeat(32) // FakeVaultCreatePort default vaultUuid = ByteArray(16) all zeros
+        assertEquals(listOf(VaultLocation("My Vault", tree, expectedUuidHex)), store.persisted)
         assertEquals(VaultProvisioningStep.Mnemonic, m.step)
         assertEquals(3, m.mnemonicRows?.size)
         // The port was called with the resolved folder path + the vault name as displayName.
@@ -87,7 +88,8 @@ class VaultProvisioningViewModelTest {
         m.create("/tmp/work", pw("pw"), pw("pw"))
         m.acknowledgeMnemonic()
         assertNull(m.mnemonicRows)
-        assertEquals(VaultProvisioningStep.Done(VaultLocation("My Vault", tree)), m.step)
+        val expectedUuidHex = "0".repeat(32) // FakeVaultCreatePort default vaultUuid = ByteArray(16) all zeros
+        assertEquals(VaultProvisioningStep.Done(VaultLocation("My Vault", tree, expectedUuidHex)), m.step)
         // The exact buffer the VM retained is wiped.
         assertTrue(port.lastReturnedPhrase!!.all { it == 0.toByte() })
     }
@@ -107,6 +109,20 @@ class VaultProvisioningViewModelTest {
         m.acknowledgeMnemonic()
         assertTrue(m.error is VaultProvisioningError.CreateFailed)
         assertTrue(m.step is VaultProvisioningStep.Mnemonic) // did not advance to Done
+    }
+
+    @Test
+    fun done_location_carries_created_vault_uuid_hex() = runTest {
+        val uuid = ByteArray(16) { (it + 1).toByte() } // 0102..10
+        val vm = VaultProvisioningViewModel(
+            createPort = FakeVaultCreatePort(phrase = "word ".repeat(24).trim().toByteArray(), vaultUuid = uuid),
+            store = FakeVaultLocationStore(),
+        )
+        vm.chooseFolder(treeUri = "content://tree/x", vaultName = "Vault")
+        vm.create(folderPath = "/tmp/working", password = "pw".toByteArray(), confirm = "pw".toByteArray())
+        vm.acknowledgeMnemonic()
+        val done = vm.step as VaultProvisioningStep.Done
+        assertEquals("0102030405060708090a0b0c0d0e0f10", done.location.vaultUuidHex)
     }
 
     @Test

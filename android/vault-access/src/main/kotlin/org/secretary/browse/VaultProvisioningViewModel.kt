@@ -31,6 +31,10 @@ class VaultProvisioningViewModel(
     /** The one-shot recovery phrase, retained only between [create] and [acknowledgeMnemonic]/[cancel]. */
     private var phrase: ByteArray? = null
 
+    /** The vault UUID from the FFI create result, retained alongside [phrase] to thread into the
+     *  persisted location on [acknowledgeMnemonic]. Not secret — no zeroize needed. */
+    private var createdVaultUuid: ByteArray? = null
+
     /** Validate the typed name; advance to [VaultProvisioningStep.Credentials] or publish [nameError]. */
     fun chooseFolder(treeUri: String, vaultName: String) {
         error = null
@@ -60,7 +64,9 @@ class VaultProvisioningViewModel(
         isCreating = true
         try {
             val created = createPort.createInFolder(folderPath, password, creds.vaultName)
-            store.persist(VaultLocation(creds.vaultName, creds.treeUri)) // persist BEFORE mnemonic
+            val uuidHex = hexOfBytes(created.vaultUuid)
+            store.persist(VaultLocation(creds.vaultName, creds.treeUri, uuidHex)) // persist BEFORE mnemonic
+            createdVaultUuid = created.vaultUuid
             phrase = created.phrase
             mnemonicRows = groupMnemonic(created.phrase)
             step = VaultProvisioningStep.Mnemonic
@@ -102,5 +108,6 @@ class VaultProvisioningViewModel(
         phrase?.fill(0)
         phrase = null
         mnemonicRows = null
+        createdVaultUuid = null
     }
 }

@@ -8,12 +8,15 @@ import uniffi.secretary.VaultException
 
 class UniffiVaultCreatePortTest {
     @Test
-    fun `returns the phrase from a successful create`() = runTest {
+    fun `returns the phrase and uuid from a successful create`() = runTest {
+        val phrase = "abandon ability".toByteArray(Charsets.UTF_8)
+        val uuid = ByteArray(16) { it.toByte() }
         val port = UniffiVaultCreatePort(
-            createFn = { _, _, _, _ -> "abandon ability".toByteArray(Charsets.UTF_8) },
+            createFn = { _, _, _, _ -> phrase to uuid },
         )
         val created = port.createInFolder("/tmp/vault", "pw".toByteArray(Charsets.UTF_8), "Bob")
-        assertTrue("abandon ability".toByteArray(Charsets.UTF_8).contentEquals(created.phrase))
+        assertTrue(phrase.contentEquals(created.phrase))
+        assertTrue(uuid.contentEquals(created.vaultUuid))
     }
 
     @Test
@@ -26,7 +29,7 @@ class UniffiVaultCreatePortTest {
             clockMs = { 1_700_000_000_000L },
             createFn = { fp, pw, dn, ts ->
                 seenPath = fp; seenPw = pw; seenName = dn; seenClock = ts
-                "x".toByteArray(Charsets.UTF_8)
+                "x".toByteArray(Charsets.UTF_8) to ByteArray(16)
             },
         )
         port.createInFolder("/tmp/v", byteArrayOf(1, 2, 3), "Alice")

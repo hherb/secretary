@@ -9,7 +9,8 @@ class CreatedVaultTest {
     @Test
     fun `CreatedVault exposes the phrase bytes verbatim`() {
         val phrase = "ripple ozone".toByteArray(Charsets.UTF_8)
-        val created = CreatedVault(phrase)
+        val uuid = ByteArray(16)
+        val created = CreatedVault(phrase = phrase, vaultUuid = uuid)
         assertTrue(phrase.contentEquals(created.phrase))
         assertSame(phrase, created.phrase)
     }
