@@ -197,14 +197,14 @@ fun AppRoot() {
                 // Open the remembered cloud vault: route to the SAME Unlock screen carrying a cloud
                 // target. The working-copy materialize + open runs AFTER the credential is entered
                 // (inside the Unlock handler), so the password is captured by the open closure and
-                // zeroized there. The working dir is keyed by uuid (stable across opens; may carry
-                // un-pushed edits — NOT reset).
+                // zeroized there. The working dir is keyed by the cloud treeUri (stable across opens
+                // even before the uuid is known; may carry un-pushed edits — NOT reset).
                 val loc = locationStore.load()
                 if (loc == null) {
                     selectionVm.markUnavailable("No remembered vault to open.")
                     selectionState = selectionVm.state
                 } else {
-                    val workingDir = workingVaultDirForUuid(context.filesDir, loc.vaultUuidHex)
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, loc.treeUri, reset = false)
                     route = Route.Unlock(CloudVaultTarget(loc, workingDir, isCreate = false))
                 }
             },
@@ -234,7 +234,10 @@ fun AppRoot() {
                 if (creds != null) {
                     val pw = password.toByteArray()
                     val cf = confirm.toByteArray()
-                    val workingDir = workingVaultDir(context.filesDir, creds.vaultName)
+                    // Key the create working dir by the cloud treeUri (stable across the later reopen),
+                    // reset to honor createInFolder's empty-dir contract. The same key is used by the
+                    // create-then-open and open-remembered paths, so un-pushed edits never orphan.
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, creds.treeUri, reset = true)
                     // Reflect the in-flight create synchronously so the button disables (and shows
                     // "Creating…") while the suspending Argon2id create runs; syncProvisioning()
                     // below settles the final isCreating/error/step from the VM.
@@ -258,11 +261,11 @@ fun AppRoot() {
                     // with the wizard password (matches desktop "no auto-open"): route to the SAME
                     // Unlock screen carrying a create cloud target. On credential submit the handler
                     // runs createThenOpen (flush working→cloud pushes the new vault up, then open+sync).
-                    // The working dir is the one create wrote into — keyed by the vault NAME, reused
-                    // WITHOUT reset (workingVaultDir would deleteRecursively and wipe the new vault).
+                    // The working dir is the SAME treeUri-keyed dir create wrote into, resolved WITHOUT
+                    // reset (a reset would wipe the freshly-created vault).
                     selectionVm.recordSelection(done.location)
                     selectionState = selectionVm.state
-                    val workingDir = createdWorkingVaultDir(context.filesDir, done.location.displayName)
+                    val workingDir = cloudWorkingVaultDir(context.filesDir, done.location.treeUri, reset = false)
                     Toast.makeText(context, "Vault created.", Toast.LENGTH_SHORT).show()
                     route = Route.Unlock(CloudVaultTarget(done.location, workingDir, isCreate = true))
                 } else {

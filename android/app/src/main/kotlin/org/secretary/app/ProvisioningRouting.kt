@@ -1,6 +1,7 @@
 package org.secretary.app
 
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Why the shared SAF folder picker was launched — a single [pickFolderLauncher] serves both the
@@ -10,43 +11,45 @@ import java.io.File
 enum class FolderPickTarget { None, SelectExisting, WizardParent }
 
 /**
- * The empty working directory the core creates a new vault into (`createInFolder`'s contract is an
- * existing empty dir). A fresh child of `filesDir/working/` keyed by the validated [vaultName]
- * (no path separators — validated upstream). Any stale directory from a prior interrupted create is
- * reset so the create never sees a non-empty target. The cloud flush of this dir is Slice 5.
- */
-internal fun workingVaultDir(filesDir: File, vaultName: String): File {
-    val dir = File(filesDir, "working/$vaultName")
-    dir.deleteRecursively()
-    dir.mkdirs()
-    check(dir.isDirectory) { "failed to create working vault dir: ${dir.path}" }
-    return dir
-}
-
-/**
- * The EXISTING working dir a just-created vault was written into, keyed by [vaultName] — the SAME
- * path [workingVaultDir] used at create time, but WITHOUT the `deleteRecursively()` reset (that would
- * wipe the freshly-created vault). Used by the create-then-open flow to flush working→cloud then open.
- */
-internal fun createdWorkingVaultDir(filesDir: File, vaultName: String): File {
-    val dir = File(filesDir, "working/$vaultName")
-    dir.mkdirs()
-    check(dir.isDirectory) { "missing created working vault dir: ${dir.path}" }
-    return dir
-}
-
-/**
- * The working copy for a remembered cloud vault, keyed by its [vaultUuidHex] (stable across opens,
- * unlike the create-time name). Materialize populates it; it is NOT reset on open (it carries
- * un-pushed edits across an offline session). Falls back to a name-safe slug if uuid is empty.
+ * A STABLE, filesystem-safe key for one cloud vault, derived from its SAF [treeUri] — the lowercase
+ * hex SHA-256 of the tree URI string. Pure: same URI → same key; different URIs → (overwhelmingly)
+ * different keys; never empty; safe as a directory / file name (only `[0-9a-f]`).
  *
- * Unlike [workingVaultDir] this does NOT `deleteRecursively()` — an existing working dir may hold
- * un-pushed local edits; the coordinator's materialize reconciles it with the cloud.
+ * The tree URI uniquely identifies the cloud folder and is ALWAYS available (even before the vault's
+ * UUID is learned on first open), so keying the working copy + the pending-flush marker by it — NOT
+ * by the vault UUID — guarantees the same imported/created vault always maps to the same working dir
+ * and marker across opens. A UUID-derived key would change from "unknown" to the real UUID after the
+ * first open, orphaning any un-pushed edits left in the "unknown" dir (silent data loss); two distinct
+ * not-yet-known vaults would also collide on a shared "unknown" dir. The treeUri key has neither flaw.
+ *
+ * NOTE: this is ONLY the LOCAL working-dir / marker key. The Rust sync layer's per-device SyncState
+ * stays keyed by the real vault UUID (via `syncStateDir` + the manifest's `vault_uuid` passed to
+ * `makeVaultSync`) — that keying is unchanged.
  */
-internal fun workingVaultDirForUuid(filesDir: File, vaultUuidHex: String): File {
-    val key = vaultUuidHex.ifEmpty { "unknown" }
-    val dir = File(filesDir, "working/$key")
+internal fun cloudVaultKey(treeUri: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(treeUri.toByteArray(Charsets.UTF_8))
+    val sb = StringBuilder(digest.size * 2)
+    for (b in digest) {
+        val v = b.toInt() and 0xff
+        sb.append("0123456789abcdef"[v ushr 4]).append("0123456789abcdef"[v and 0x0f])
+    }
+    return sb.toString()
+}
+
+/**
+ * The working directory for a cloud vault identified by its [treeUri], under `filesDir/working/`
+ * keyed by [cloudVaultKey]. Stable across opens REGARDLESS of whether the vault UUID is known yet, so
+ * un-pushed edits in this dir survive a reopen (the coordinator's materialize reconciles them with
+ * the cloud).
+ *
+ * [reset] true ONLY for vault CREATION: `createInFolder`'s contract is an existing EMPTY dir, so any
+ * stale dir from a prior interrupted create is wiped first. For open / create-then-open it is false —
+ * an existing working dir may hold un-pushed local edits that must NOT be wiped.
+ */
+internal fun cloudWorkingVaultDir(filesDir: File, treeUri: String, reset: Boolean): File {
+    val dir = File(filesDir, "working/${cloudVaultKey(treeUri)}")
+    if (reset) dir.deleteRecursively()
     dir.mkdirs()
-    check(dir.isDirectory) { "failed to create working vault dir: ${dir.path}" }
+    check(dir.isDirectory) { "failed to resolve cloud working vault dir: ${dir.path}" }
     return dir
 }

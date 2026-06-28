@@ -41,6 +41,10 @@ data class CloudVaultTarget(
  * the app-private sync-state dir (NOT the working copy — [VaultMirror] mirrors every working file,
  * so a marker placed there would be pushed to the cloud and deleted on materialize). [openAndSync]
  * runs the existing open+sync pass against the materialized working dir.
+ *
+ * The marker filename is keyed by [cloudVaultKey] (a stable hash of the cloud treeUri), the SAME key
+ * as [workingDir], so a pending-flush set in one session is always re-checked on the next open of the
+ * same cloud vault — un-pushed edits can never orphan, even before the vault UUID is known.
  */
 internal fun cloudCoordinator(
     context: Context,
@@ -50,7 +54,8 @@ internal fun cloudCoordinator(
 ): VaultWorkingCopyCoordinator<BrowseSession> {
     val cloud = safCloudFolderPort(context, location.treeUri)
     val mirror = VaultMirrorWorkingCopy(VaultMirror(cloud), workingDir)
-    val markerFile = File(syncStateDir(context.filesDir), "${location.vaultUuidHex}.pending-flush")
+    val markerName = "${cloudVaultKey(location.treeUri)}.pending-flush"
+    val markerFile = File(syncStateDir(context.filesDir), markerName)
     return VaultWorkingCopyCoordinator(mirror, FilePendingFlushMarker(markerFile), openAndSync)
 }
 
