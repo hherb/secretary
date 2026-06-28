@@ -354,4 +354,16 @@ class VaultBrowseModelTest {
         model.delete(model.selectedRecords.value!!.first())
         assertEquals(0, commits)    // failed write must not trigger a flush
     }
+
+    @Test
+    fun `onCommit fires once on onEditCommitted the add-edit commit path`() = runTest {
+        var commits = 0
+        val s = session()
+        val model = VaultBrowseModel(s, onCommit = { commits++ })
+        model.loadBlocks(); model.selectBlock(block); model.startAdd()
+        // Simulate a committed append directly on the session, then signal commit.
+        s.appendRecord(block.uuid, RecordContentInput("note", emptyList(), emptyList()))
+        model.onEditCommitted()
+        assertEquals(1, commits)    // the add/edit commit path fires the flush hook exactly once
+    }
 }
