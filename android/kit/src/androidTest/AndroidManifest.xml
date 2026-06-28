@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Android's DocumentsProvider.attachInfo() throws SecurityException("Provider must be
+          exported") unless the provider is android:exported="true" AND guarded by the system-only
+          android.permission.MANAGE_DOCUMENTS permission. So a SAF DocumentsProvider cannot be a
+          same-UID exported="false" provider (that is the framework contract, not a choice). We
+          export it but gate it behind MANAGE_DOCUMENTS — a signature|privileged permission no test
+          app can hold — so only the platform SAF machinery can bind it. The instrumentation reaches
+          it in-process via the self-granted tree-URI permission set in TestCloudTree.install().
+        -->
+        <provider
+            android:name="org.secretary.mirror.TestCloudDocumentsProvider"
+            android:authorities="org.secretary.kit.test.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS" />
+    </application>
+</manifest>
