@@ -165,6 +165,9 @@ mod tests {
         let phrase = out.mnemonic.take_phrase();
         assert!(phrase.is_some(), "first take_phrase must return Some");
         let second = out.mnemonic.take_phrase();
-        assert!(second.is_none(), "second take_phrase must return None (one-shot)");
+        assert!(
+            second.is_none(),
+            "second take_phrase must return None (one-shot)"
+        );
     }
 }
