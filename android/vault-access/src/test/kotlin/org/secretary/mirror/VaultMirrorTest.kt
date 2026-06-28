@@ -146,4 +146,29 @@ class VaultMirrorTest {
         val e = assertThrows(VaultMirrorException::class.java) { VaultMirror(cloud).materialize(workingDir) }
         assertTrue(e.message!!.contains("materialize failed"))
     }
+
+    @Test fun materialize_refuses_to_clobber_working_copy_when_cloud_has_no_manifest(@TempDir workingDir: File) {
+        // An offline-created vault: full vault in the working copy, cloud empty (push never landed).
+        File(workingDir, MANIFEST_FILENAME).writeBytes(byteArrayOf(1, 2, 3))
+        File(workingDir, "blocks").mkdirs()
+        File(workingDir, "blocks/x.cbor.enc").writeBytes(byteArrayOf(9))
+        val cloud = FakeCloudFolderPort(emptyMap()) // manifest-less cloud
+        val report = VaultMirror(cloud).materialize(workingDir)
+        assertEquals(emptyList<String>(), report.copied)
+        assertEquals(emptyList<String>(), report.deleted) // NOTHING deleted — the vault is preserved
+        assertTrue(File(workingDir, MANIFEST_FILENAME).exists(), "un-pushed vault must survive materialize")
+        assertTrue(File(workingDir, "blocks/x.cbor.enc").exists())
+    }
+
+    @Test fun materialize_still_pulls_normally_when_cloud_has_a_manifest(@TempDir workingDir: File) {
+        // A real cloud vault → a fresh device pulls it in full (existing behavior, regression guard).
+        val cloud = FakeCloudFolderPort(mapOf(
+            MANIFEST_FILENAME to byteArrayOf(7),
+            "blocks/y.cbor.enc" to byteArrayOf(8),
+        ))
+        val report = VaultMirror(cloud).materialize(workingDir)
+        assertTrue(report.copied.contains(MANIFEST_FILENAME))
+        assertTrue(File(workingDir, MANIFEST_FILENAME).exists())
+        assertTrue(File(workingDir, "blocks/y.cbor.enc").exists())
+    }
 }
