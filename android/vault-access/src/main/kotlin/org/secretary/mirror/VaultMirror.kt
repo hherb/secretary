@@ -36,6 +36,14 @@ class VaultMirror(private val cloud: CloudFolderPort) {
     fun materialize(workingDir: File): MirrorReport = runPass("materialize") {
         val cloudFiles = readCloud()
         val workingFiles = readWorking(workingDir)
+        // Guard (#327): a cloud folder with no manifest is not a valid vault to pull from (empty /
+        // never-pushed / mid-create). Pulling it over a populated working copy would DELETE an
+        // un-pushed vault — e.g. an offline-created vault whose push failed and whose pending-flush
+        // marker could not be persisted. Decline the invalid pull: no-op, leaving the working copy
+        // intact so it reaches the cloud on the next flush. This never moves merge logic into Kotlin.
+        if (!cloudFiles.containsKey(MANIFEST_FILENAME) && workingFiles.containsKey(MANIFEST_FILENAME)) {
+            return@runPass MirrorReport(emptyList(), emptyList())
+        }
         val plan = planMirror(fingerprints(cloudFiles), fingerprints(workingFiles))
         execute(
             plan,

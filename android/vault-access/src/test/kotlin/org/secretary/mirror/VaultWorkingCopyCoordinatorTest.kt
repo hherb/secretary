@@ -22,6 +22,12 @@ private class FakeMarker(private var set: Boolean = false) : PendingFlushMarker 
     override fun clear() { set = false }
 }
 
+private class NeverPersistsMarker : PendingFlushMarker {
+    override fun isSet() = false
+    override fun set() { /* simulate a swallowed I/O failure: nothing persists */ }
+    override fun clear() {}
+}
+
 class VaultWorkingCopyCoordinatorTest {
 
     @Test fun openExisting_flushes_before_materialize_when_pending() = runTest {
@@ -92,5 +98,33 @@ class VaultWorkingCopyCoordinatorTest {
         val coord = VaultWorkingCopyCoordinator(RecordingMirror(mutableListOf()), marker) { "S" }
         coord.afterCommit()
         assertFalse(marker.isSet(), "a successful flush clears any prior pending state")
+    }
+
+    @Test fun createThenOpen_escalates_when_marker_cannot_persist() = runTest {
+        val order = mutableListOf<String>()
+        val coord = VaultWorkingCopyCoordinator(
+            RecordingMirror(order, flushFails = true), NeverPersistsMarker()
+        ) { order.add("open"); "S" }
+        var thrown: Throwable? = null
+        try {
+            coord.createThenOpen("deadbeef") { order.add("persist") }
+        } catch (e: PendingFlushNotPersisted) {
+            thrown = e
+        }
+        assertTrue(thrown is PendingFlushNotPersisted, "marker-not-persisted on the create path must escalate")
+        assertEquals("deadbeef", (thrown as PendingFlushNotPersisted).createdVaultUuidHex)
+        assertEquals(listOf("flush"), order) // never persisted / opened
+    }
+
+    @Test fun createThenOpen_failure_with_persisting_marker_throws_original_not_escalated() = runTest {
+        // Regression guard: the normal (marker persists) offline-create path keeps throwing the raw
+        // push error, NOT the escalation — :app routes it to a normal retry.
+        val order = mutableListOf<String>()
+        val marker = FakeMarker(set = false) // FakeMarker.set() DOES persist (isSet() flips true)
+        val coord = VaultWorkingCopyCoordinator(RecordingMirror(order, flushFails = true), marker) { "S" }
+        var thrown: Throwable? = null
+        try { coord.createThenOpen("deadbeef") { } } catch (e: Throwable) { thrown = e }
+        assertTrue(thrown is VaultMirrorException, "marker persisted → original push error propagates")
+        assertTrue(marker.isSet())
     }
 }

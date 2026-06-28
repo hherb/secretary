@@ -1,6 +1,16 @@
 package org.secretary.mirror
 
 /**
+ * Thrown by [VaultWorkingCopyCoordinator.createThenOpen] when an offline-create push fails AND the
+ * pending-flush marker could not be persisted (best-effort [PendingFlushMarker.set] swallowed an
+ * I/O failure). On this one path the marker is the load-bearing guard against a later
+ * materialize-clobber of the only copy of the freshly-created vault, so its loss is escalated
+ * louder than a normal (recoverable) offline-create failure. (#327)
+ */
+class PendingFlushNotPersisted(val createdVaultUuidHex: String, cause: Throwable) :
+    Exception("offline-created vault $createdVaultUuidHex could not be synced or marked for retry", cause)
+
+/**
  * Orchestrates the per-session working-copy lifecycle that lets the POSIX-only core operate on a
  * path-less SAF cloud folder, enforcing the one ordering rule the shim guarantees:
  *
@@ -52,7 +62,14 @@ class VaultWorkingCopyCoordinator<S>(
         try {
             mirror.flush()
         } catch (e: Exception) {
-            marker.set()   // next openExisting retries the push before pulling (no offline-create data loss)
+            // Mark the un-pushed working copy so the next openExisting retries push-before-pull
+            // instead of materializing over it — the only guard against silent offline-create loss.
+            marker.set()
+            if (!marker.isSet()) {
+                // The marker is the load-bearing guard for the offline-create reopen path; if it could not
+                // persist, escalate so :app can warn instead of silently leaving the vault unprotected. (#327)
+                throw PendingFlushNotPersisted(createdVaultUuidHex, e)
+            }
             throw e
         }
         persistLocation(createdVaultUuidHex)

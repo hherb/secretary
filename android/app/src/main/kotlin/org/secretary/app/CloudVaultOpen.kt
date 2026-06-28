@@ -10,6 +10,7 @@ import org.secretary.browse.VaultSelectionViewModel
 import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.mirror.FilePendingFlushMarker
+import org.secretary.mirror.PendingFlushNotPersisted
 import org.secretary.mirror.VaultMirror
 import org.secretary.mirror.VaultMirrorWorkingCopy
 import org.secretary.mirror.VaultWorkingCopyCoordinator
@@ -17,6 +18,23 @@ import org.secretary.mirror.safCloudFolderPort
 import java.io.File
 
 private const val TAG = "CloudVaultOpen"
+
+/**
+ * The decision for a failed cloud open/create, factored out of [openCloudTarget] so it is
+ * host-testable without a Context. [createdButNotSynced] is true only for [PendingFlushNotPersisted]
+ * (an offline-created vault that could neither sync nor be marked for retry). The [target] is always
+ * returned with `isCreate` unchanged so a reopen retries the push (never a materialize that could
+ * clobber the un-pushed vault — the materialize guard backs this up).
+ *
+ * Today [createdButNotSynced] only selects a louder log line in [openCloudTarget]; both failure
+ * branches return the same [Route.Unlock]. The data is preserved regardless (materialize guard +
+ * push-before-pull retry), so the user is not warned in the UI yet — wiring [createdButNotSynced]
+ * into a user-facing banner is deferred to #329.
+ */
+internal data class CloudOpenFailure(val target: CloudVaultTarget, val createdButNotSynced: Boolean)
+
+internal fun cloudOpenFailureRoute(error: Throwable, target: CloudVaultTarget): CloudOpenFailure =
+    CloudOpenFailure(target, createdButNotSynced = error is PendingFlushNotPersisted)
 
 /**
  * The cloud vault the Unlock screen is gating, carried into [Route.Unlock] so the credential the
@@ -167,8 +185,13 @@ internal suspend fun openCloudTarget(
         // device's remote edits. isCreate=false routes reopens through openExisting (materialize → open).
         Route.Browse(session, target.workingDir, cloudTarget = target.copy(location = location, isCreate = false))
     } catch (e: Exception) {
-        Log.w(TAG, "cloud open/create failed; returning to unlock with same target", e)
-        Route.Unlock(cloudTarget = target)
+        val failure = cloudOpenFailureRoute(e, target)
+        if (failure.createdButNotSynced) {
+            Log.w(TAG, "cloud vault CREATED but not synced and not marked for retry — user must not lose it", e)
+        } else {
+            Log.w(TAG, "cloud open/create failed; returning to unlock with same target", e)
+        }
+        Route.Unlock(cloudTarget = failure.target)
     } finally {
         // Backstop zeroize: openCloudBrowse zeroizes too, but the coordinator's flush/materialize
         // runs BEFORE openAndSync — if it throws, openCloudBrowse (and its finally) never runs, so the
