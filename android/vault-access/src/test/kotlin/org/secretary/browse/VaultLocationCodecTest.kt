@@ -61,4 +61,20 @@ class VaultLocationCodecTest {
         assertEquals(VaultLocation("n", "u"), VaultLocation("n", "u"))
         assertNotEquals(VaultLocation("n", "u"), VaultLocation("n", "v"))
     }
+
+    @Test fun v2_roundtrips_vault_uuid_hex() {
+        val loc = VaultLocation("My Vault", "content://tree/abc", "0102030405060708090a0b0c0d0e0f10")
+        assertEquals(loc, decodeVaultLocation(encodeVaultLocation(loc)))
+    }
+
+    @Test fun v2_roundtrips_empty_uuid() {
+        val loc = VaultLocation("My Vault", "content://tree/abc") // vaultUuidHex defaults ""
+        assertEquals(loc, decodeVaultLocation(encodeVaultLocation(loc)))
+    }
+
+    @Test fun v1_blob_decodes_with_empty_uuid() {
+        // A pre-Slice-5 v1 blob has no uuid segment; it must decode (tolerant), not return null.
+        val v1 = "v1:8:My Vaultcontent://tree/abc"
+        assertEquals(VaultLocation("My Vault", "content://tree/abc", ""), decodeVaultLocation(v1))
+    }
 }

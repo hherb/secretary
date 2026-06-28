@@ -10,5 +10,13 @@ package org.secretary.browse
  * flows through it. A plain `data class` (unlike secret-bearing `CreatedVault`)
  * because value equality / `toString` are useful and safe here. Kotlin mirror of iOS
  * `VaultLocation`.
+ *
+ * [vaultUuidHex] is the lowercase hex UUID of the vault, or `""` when not yet known
+ * (e.g. a SAF-picked existing vault learns it on first open). Defaulting to `""` keeps
+ * call sites that pass only `(displayName, treeUri)` compiling unchanged.
  */
-data class VaultLocation(val displayName: String, val treeUri: String)
+data class VaultLocation(
+    val displayName: String,
+    val treeUri: String,
+    val vaultUuidHex: String = "",
+)
