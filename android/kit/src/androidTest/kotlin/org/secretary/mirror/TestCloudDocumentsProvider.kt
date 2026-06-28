@@ -18,7 +18,7 @@ import java.io.FileNotFoundException
  *
  * Authority: `org.secretary.kit.test.documents` (see androidTest `AndroidManifest.xml`).
  *
- * Document-id scheme: a file's path relative to the temp root (see [TestCloudDocId]); root id `""`.
+ * Document-id scheme: a file's path relative to the temp root (see [TestCloudDocId]); root id `"root"`.
  *
  * Configuration + fault injection are static [companion] fields, set by [TestCloudTree.install]
  * (which resets them on every install). Faults match a document id against a relative-path set;
@@ -133,13 +133,13 @@ class TestCloudDocumentsProvider : DocumentsProvider() {
         if (isWrite && faulted(failWritePaths, documentId)) {
             throw FileNotFoundException("injected write fault for $documentId")
         }
-        // "wt" = write + truncate; ParcelFileDescriptor maps SAF modes to POSIX open flags.
-        val pfdMode = ParcelFileDescriptor.parseMode(mode)
-        if (isWrite && mode.contains('t')) {
-            // Truncate: ensure a clean overwrite even if the backing file already exists.
-            if (file.exists()) file.delete()
-        }
-        return ParcelFileDescriptor.open(file, pfdMode)
+        // "wt" = write + truncate; ParcelFileDescriptor.parseMode maps SAF modes to POSIX open
+        // flags including O_TRUNC, so the open itself truncates an existing file. A pre-delete
+        // would be redundant and a latent defect: if delete succeeds but open then fails, a
+        // previously-existing file is silently lost. Rely on the open flags alone.
+        // Parent directory must exist for open to succeed; create it if needed.
+        file.parentFile?.mkdirs()
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.parseMode(mode))
     }
 
     override fun createDocument(
