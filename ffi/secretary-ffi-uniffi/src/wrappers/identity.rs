@@ -144,4 +144,27 @@ mod tests {
         mo.wipe(); // must not panic
         assert!(mo.take_phrase().is_none());
     }
+
+    #[test]
+    fn created_vault_in_folder_wrapper_one_shot_through_mnemonic() {
+        // Fast test: synthesize a CreatedVaultInFolder with a known vault UUID
+        // and a seeded MnemonicOutput. No Argon2id; checks wrapper plumbing only.
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+        use secretary_core::unlock::mnemonic;
+        use std::sync::Arc;
+        let mut rng = ChaCha20Rng::from_seed([9u8; 32]);
+        let m = mnemonic::generate(&mut rng);
+        let bridge_mo = secretary_ffi_bridge::MnemonicOutput::new_for_test(m);
+        let known_uuid: Vec<u8> = (0u8..16).collect();
+        let out = CreatedVaultInFolder {
+            vault_uuid: known_uuid.clone(),
+            mnemonic: Arc::new(MnemonicOutput(bridge_mo)),
+        };
+        assert_eq!(out.vault_uuid.len(), 16);
+        assert_eq!(out.vault_uuid, known_uuid);
+        let phrase = out.mnemonic.take_phrase();
+        assert!(phrase.is_some(), "first take_phrase must return Some");
+        let second = out.mnemonic.take_phrase();
+        assert!(second.is_none(), "second take_phrase must return None (one-shot)");
+    }
 }
