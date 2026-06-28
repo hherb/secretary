@@ -72,8 +72,15 @@ fun safCloudFolderPort(context: Context, treeUri: String): CloudFolderPort {
                 ?: throw CloudFolderException("cannot create directory $dirName in $relativePath")
         }
         val fileName = segments.last()
-        // Overwrite means delete-then-create: SAF has no truncate-open primitive.
-        node.findFile(fileName)?.delete()
+        // Overwrite means delete-then-create: SAF has no truncate-open primitive. A delete() that
+        // returns false on a file that DOES exist must not be swallowed — SAF display names are not
+        // unique, so a failed delete + createFile would silently fork a duplicate ("name (1)") and a
+        // later findFile/resolve would match the STALE original, diverging the cloud from the working
+        // copy. Surface it exactly like the deleteFile seam below.
+        val existing = node.findFile(fileName)
+        if (existing != null && !existing.delete()) {
+            throw CloudFolderException("cannot overwrite existing file $relativePath")
+        }
         return node.createFile("application/octet-stream", fileName)
             ?: throw CloudFolderException("cannot create file $relativePath")
     }
