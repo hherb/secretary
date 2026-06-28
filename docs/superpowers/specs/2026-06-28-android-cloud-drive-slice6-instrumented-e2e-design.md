@@ -166,18 +166,23 @@ after `set()`) is necessary but **not sufficient** — `:app` must actually prev
 the route-2 materialize-clobber, not just log it. The guard (exact mechanism
 chosen in the implementation plan; all are pure/host-testable):
 
-- **Preferred — make `openExisting` refuse to materialize over an un-pushed
-  working copy.** When the working dir already holds a vault and the marker is
-  absent (so push-before-pull would be skipped), `openExisting` must not blindly
-  `materialize()`; it pushes first (treating a non-empty working copy as implicitly
-  pending) or aborts with a typed error rather than clobber. This closes the gap at
-  the one place the clobber can happen, independent of how the marker got lost, and
-  does not move merge logic into Kotlin (it only reorders push vs pull — the shim's
-  existing job).
+- **Chosen — `VaultMirror.materialize()` refuses to pull from a manifest-less
+  cloud.** A cloud folder with no `manifest.cbor.enc` is not a valid vault to pull
+  from (it is empty / never-pushed / mid-create). When the cloud lacks a manifest
+  but the working copy has one, `materialize()` is a no-op (returns an empty
+  `MirrorReport`) rather than deleting the un-pushed working copy. This closes the
+  clobber at the exact mechanism, independent of how the marker was lost, and
+  avoids the stale-overwrite hazard a blanket "flush-if-populated" guard would
+  introduce (pushing an older local manifest over a newer peer one). It does not
+  move merge logic into Kotlin — it only declines an invalid pull. The
+  freshly-created vault stays intact locally and reaches the cloud on the next
+  `afterCommit` flush.
 - Alternatives considered: defer `store.persist` until the first successful push
   (removes route 2 for un-pushed vaults, but changes the create UX — the vault no
-  longer appears in the list until synced); or hard-block on the escalation and
-  loop the push in-session.
+  longer appears in the list until synced); or have `openExisting` actively flush
+  the un-pushed working copy up on this branch (needs the mirror to expose
+  manifest-presence; the no-op guard plus the existing marker path already prevent
+  data loss without the extra interface surface).
 
 `:app` additionally surfaces a distinct "created but not yet synced" signal on
 `PendingFlushNotPersisted`. The chosen guard + the routing branch are
@@ -205,11 +210,19 @@ clobbered).
   success. Plus the marker-write-failure variant → `PendingFlushNotPersisted` and
   `openExisting` still refuses to materialize over the un-pushed working copy (the
   load-bearing-marker clobber is closed at the materialize guard, not just signaled).
-- **Two-copies conflict:** working copy A and B both materialize the same tree,
-  each commits a divergent edit while "offline", both flush → the test provider
-  ends with a `manifest (conflicted copy)…` sibling (or both flush in sequence
-  producing the fork) → each side's next `openExisting` → `sync_once` ingests +
-  CRDT-merges → **both working copies converge to identical merged content.**
+- **Two-copies conflict:** working copies A and B both materialize the same base
+  tree, then each commits a divergent edit (same vault owner, two devices). The
+  shim's `flush()` *overwrites* the cloud manifest, so it does NOT itself create a
+  fork — the **cloud provider** is the conflict-copy creator in production. The
+  test therefore **simulates the provider**: A flushes (canonical
+  `manifest.cbor.enc` + A's block), then the test writes B's manifest into the tree
+  as a sibling named `manifest.cbor.enc (conflicted copy)` (any name
+  `starts_with("manifest.cbor.enc")` is detected by `enumerate_manifest_siblings`
+  in `core/src/sync/ingest.rs`) plus B's block. Each side then `openExisting()` →
+  `materialize()` pulls the canonical + sibling + both blocks (the planner treats
+  the sibling as just another file) → `sync_once` authenticates + ingests the
+  sibling → CRDT-merges → **both working copies converge to identical merged record
+  content.**
 
 ## Error handling
 
