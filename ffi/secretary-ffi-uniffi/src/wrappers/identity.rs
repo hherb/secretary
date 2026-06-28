@@ -62,6 +62,17 @@ impl MnemonicOutput {
     }
 }
 
+/// uniffi-side dictionary (struct-by-value) for `create_vault_in_folder`'s
+/// return shape. One `Vec<u8>` (the 16-byte vault UUID, non-secret) plus one
+/// `Arc<Interface>` (uniffi marshals interface-typed dictionary fields as
+/// `Arc` handles).
+pub struct CreatedVaultInFolder {
+    /// 16-byte vault identifier from the freshly-written vault.toml.
+    pub vault_uuid: Vec<u8>,
+    /// One-shot opaque handle for the recovery phrase.
+    pub mnemonic: std::sync::Arc<MnemonicOutput>,
+}
+
 /// uniffi-side dictionary (struct-by-value) for `create_vault`'s return
 /// shape. Two `Vec<u8>` (non-secret) plus two `Arc<Interface>` (uniffi
 /// marshals interface-typed dictionary fields as `Arc` handles).

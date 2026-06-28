@@ -226,10 +226,13 @@ pub(crate) fn create_vault(
 }
 
 /// Create a fresh v1 vault on disk in an existing empty `folder` and return
-/// the one-shot recovery `MnemonicOutput`. Writes all four canonical files
-/// via the bridge's folder-writing path; the caller re-opens with
+/// a 2-tuple `(vault_uuid_bytes, MnemonicOutput)`. Writes all four canonical
+/// files via the bridge's folder-writing path; the caller re-opens with
 /// `open_vault_with_password` to browse (no auto-open). Bridge hardcodes
 /// `OsRng` + `Argon2idParams::V1_DEFAULT`.
+///
+/// Returns `(vault_uuid: bytes, mnemonic: MnemonicOutput)` where
+/// `vault_uuid` is the freshly-created vault's 16-byte identifier.
 ///
 /// Raises `VaultFolderNotEmpty` if the directory is non-empty,
 /// `VaultFolderInvalid` if it is missing / unreadable / a file (not a
@@ -240,7 +243,7 @@ pub(crate) fn create_vault_in_folder(
     mut password: Vec<u8>,
     display_name: &str,
     created_at_ms: u64,
-) -> PyResult<MnemonicOutput> {
+) -> PyResult<(Vec<u8>, MnemonicOutput)> {
     // Mirrors create_vault's wrapper-side zeroize discipline: the bridge
     // wraps password into SecretBytes; this Vec is the projection-side
     // cleartext transient. Zero it whether the call succeeds or fails.
@@ -251,6 +254,6 @@ pub(crate) fn create_vault_in_folder(
         created_at_ms,
     );
     password.zeroize();
-    let bridge_out = result.map_err(ffi_vault_error_to_pyerr)?;
-    Ok(MnemonicOutput(bridge_out.mnemonic))
+    let out = result.map_err(ffi_vault_error_to_pyerr)?;
+    Ok((out.vault_uuid.to_vec(), MnemonicOutput(out.mnemonic)))
 }
