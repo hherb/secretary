@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -31,7 +33,14 @@ import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
+import org.secretary.browse.VaultProvisioningStep
+import org.secretary.browse.VaultSelectionState
+import org.secretary.browse.VaultSelectionViewModel
+import org.secretary.browse.VaultProvisioningViewModel
+import org.secretary.browse.displayNameForTree
 import org.secretary.browse.hexOfBytes
+import org.secretary.browse.safVaultLocationStore
+import org.secretary.browse.uniffiVaultCreatePort
 import org.secretary.browse.uniffiVaultOpenPort
 import java.io.File
 
@@ -39,6 +48,8 @@ private const val TAG = "AppRoot"
 
 /** The app's two screens; Browse carries the live session for the unlocked vault. */
 private sealed interface Route {
+    data object Selection : Route
+    data object CreateWizard : Route
     data object Unlock : Route
     data class Browse(
         val session: BrowseSession,
@@ -60,8 +71,28 @@ private sealed interface Route {
 fun AppRoot() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var route by remember { mutableStateOf<Route>(Route.Unlock) }
+    var route by remember { mutableStateOf<Route>(Route.Selection) }
     var rememberDevice by remember { mutableStateOf(false) }
+
+    val locationStore = remember { safVaultLocationStore(context) }
+    val selectionVm = remember(locationStore) { VaultSelectionViewModel(locationStore) }
+    var selectionState by remember { mutableStateOf<VaultSelectionState>(VaultSelectionState.Empty) }
+    val provisioningVm = remember(locationStore) {
+        VaultProvisioningViewModel(uniffiVaultCreatePort(), locationStore)
+    }
+    // Mirror the VM's published fields into Compose state at each step transition.
+    var provStep by remember { mutableStateOf<VaultProvisioningStep>(VaultProvisioningStep.Folder) }
+    var pickedTreeUri by remember { mutableStateOf<String?>(null) }
+    var pickedFolderLabel by remember { mutableStateOf<String?>(null) }
+
+    val pickFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            pickedTreeUri = uri.toString()
+            pickedFolderLabel = displayNameForTree(context, uri)
+        }
+    }
 
     val activity = LocalContext.current as? FragmentActivity
         ?: error("AppRoot must be hosted in a FragmentActivity")
@@ -84,6 +115,10 @@ fun AppRoot() {
             deviceVm.refresh()
             deviceState = deviceVm.state
         }
+        if (route is Route.Selection) {
+            selectionVm.loadPersisted()
+            selectionState = selectionVm.state
+        }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -96,6 +131,79 @@ fun AppRoot() {
     }
 
     when (val r = route) {
+        is Route.Selection -> VaultSelectionScreen(
+            state = selectionState,
+            onCreate = {
+                provisioningVm.cancel()
+                provStep = provisioningVm.step
+                pickedTreeUri = null
+                pickedFolderLabel = null
+                route = Route.CreateWizard
+            },
+            onOpen = {
+                // Slice-5 seam: cloud open needs the working-copy materialize step. Surface an
+                // honest, labelled affordance rather than a dead button.
+                selectionVm.markUnavailable(CLOUD_OPEN_DEFERRED_REASON)
+                selectionState = selectionVm.state
+            },
+            onChooseDifferent = { selectionVm.chooseDifferent(); selectionState = selectionVm.state },
+            onPickFolder = { pickFolderLauncher.launch(null) },
+            onDemo = { route = Route.Unlock },
+        )
+        is Route.CreateWizard -> CreateVaultWizardScreen(
+            step = provStep,
+            nameError = provisioningVm.nameError,
+            error = provisioningVm.error,
+            isCreating = provisioningVm.isCreating,
+            mnemonicRows = provisioningVm.mnemonicRows,
+            onPickParent = { pickFolderLauncher.launch(null) },
+            pickedFolderLabel = pickedFolderLabel,
+            onChooseFolder = { name ->
+                val tree = pickedTreeUri
+                if (tree == null) {
+                    Toast.makeText(context, "Choose a cloud folder first.", Toast.LENGTH_SHORT).show()
+                } else {
+                    provisioningVm.chooseFolder(tree, name)
+                    provStep = provisioningVm.step
+                }
+            },
+            onCreate = { password, confirm ->
+                val creds = provisioningVm.step as? VaultProvisioningStep.Credentials
+                if (creds != null) {
+                    val pw = password.toByteArray()
+                    val cf = confirm.toByteArray()
+                    val workingDir = workingVaultDir(context.filesDir, creds.vaultName)
+                    scope.launch {
+                        try {
+                            provisioningVm.create(workingDir.path, pw, cf)
+                        } finally {
+                            pw.fill(0); cf.fill(0)
+                        }
+                        provStep = provisioningVm.step
+                    }
+                }
+            },
+            onAcknowledge = {
+                provisioningVm.acknowledgeMnemonic()
+                val done = provisioningVm.step as? VaultProvisioningStep.Done
+                if (done != null) {
+                    // This slice does NOT open the created vault (that needs its uuid + the Slice-5
+                    // sync/materialize wiring). Return to Selection with the new vault remembered +
+                    // located; opening it is the Slice-5 seam, same as a remembered cloud vault.
+                    selectionVm.recordSelection(done.location)
+                    selectionState = selectionVm.state
+                    Toast.makeText(context, "Vault created.", Toast.LENGTH_SHORT).show()
+                    route = Route.Selection
+                } else {
+                    provStep = provisioningVm.step // surfaces a store-fault error on the mnemonic step
+                }
+            },
+            onCancel = {
+                provisioningVm.cancel()
+                provStep = provisioningVm.step
+                route = Route.Selection
+            },
+        )
         is Route.Unlock -> UnlockScreen(
             isEnrolled = deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
