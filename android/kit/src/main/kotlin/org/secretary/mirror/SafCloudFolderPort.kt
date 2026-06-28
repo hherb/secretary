@@ -87,9 +87,17 @@ fun safCloudFolderPort(context: Context, treeUri: String): CloudFolderPort {
         },
         writeFile = { path, bytes ->
             val doc = findOrCreate(path)
+            // "wt" = write + truncate, a documented ContentResolver open mode; the truncate guarantees a
+            // clean overwrite even though findOrCreate already replaced any prior file at this path.
             resolver.openOutputStream(doc.uri, "wt")?.use { it.write(bytes) }
                 ?: throw CloudFolderException("cannot open $path for write")
         },
-        deleteFile = { path -> resolve(path)?.delete() },
+        deleteFile = { path ->
+            // Idempotent on an absent file (the CloudFolderPort.delete contract). But a delete that
+            // fails on a file that DOES exist must not be swallowed — surface it like readFile does,
+            // so the cloud folder can never silently diverge from the working copy.
+            val doc = resolve(path)
+            if (doc != null && !doc.delete()) throw CloudFolderException("cannot delete $path")
+        },
     )
 }
