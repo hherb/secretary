@@ -25,7 +25,15 @@ class UniffiVaultCreatePort(
     private val clockMs: () -> Long = System::currentTimeMillis,
     private val createFn: (ByteArray, ByteArray, String, ULong) -> ByteArray? =
         { folderPath, password, displayName, createdAtMs ->
-            createVaultInFolder(folderPath, password, displayName, createdAtMs).use { it.takePhrase() }
+            // createVaultInFolder returns CreatedVaultInFolder (Disposable, not AutoCloseable);
+            // extract the phrase from the inner MnemonicOutput handle (AutoCloseable) first.
+            createVaultInFolder(folderPath, password, displayName, createdAtMs).let { result ->
+                try {
+                    result.mnemonic.use { it.takePhrase() }
+                } finally {
+                    result.destroy()
+                }
+            }
         },
 ) : VaultCreatePort {
     override suspend fun createInFolder(
