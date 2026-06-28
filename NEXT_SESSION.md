@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-28-android-cloud-drive-slice5-working-copy-lifecycle-shipped.md
+docs/handoffs/2026-06-28-android-cloud-drive-slice6-instrumented-e2e-shipped.md
