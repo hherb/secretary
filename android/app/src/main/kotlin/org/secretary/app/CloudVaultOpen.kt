@@ -22,9 +22,14 @@ private const val TAG = "CloudVaultOpen"
 /**
  * The decision for a failed cloud open/create, factored out of [openCloudTarget] so it is
  * host-testable without a Context. [createdButNotSynced] is true only for [PendingFlushNotPersisted]
- * (an offline-created vault that could neither sync nor be marked for retry — warn the user). The
- * [target] is always returned with `isCreate` unchanged so a reopen retries the push (never a
- * materialize that could clobber the un-pushed vault — the materialize guard backs this up).
+ * (an offline-created vault that could neither sync nor be marked for retry). The [target] is always
+ * returned with `isCreate` unchanged so a reopen retries the push (never a materialize that could
+ * clobber the un-pushed vault — the materialize guard backs this up).
+ *
+ * Today [createdButNotSynced] only selects a louder log line in [openCloudTarget]; both failure
+ * branches return the same [Route.Unlock]. The data is preserved regardless (materialize guard +
+ * push-before-pull retry), so the user is not warned in the UI yet — wiring [createdButNotSynced]
+ * into a user-facing banner is deferred to #329.
  */
 internal data class CloudOpenFailure(val target: CloudVaultTarget, val createdButNotSynced: Boolean)
 
