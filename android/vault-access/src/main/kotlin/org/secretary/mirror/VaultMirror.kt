@@ -2,6 +2,7 @@ package org.secretary.mirror
 
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 
 /**
  * What a mirror pass did: the vault-relative paths it [copied] and [deleted] on the
@@ -108,6 +109,10 @@ class VaultMirror(private val cloud: CloudFolderPort) {
     }
 
     private fun deleteWorking(workingDir: File, relativePath: String) {
-        File(workingDir, relativePath).delete()
+        // deleteIfExists is a no-op when the file is already gone (matching the CloudFolderPort
+        // delete contract) but throws IOException on a real failure (permissions, busy) so the
+        // working copy can never silently diverge from the cloud — runPass folds it to
+        // VaultMirrorException.
+        Files.deleteIfExists(File(workingDir, relativePath).toPath())
     }
 }

@@ -117,4 +117,33 @@ class VaultMirrorTest {
         VaultMirror(cloud).materialize(missing)
         assertArrayEquals(byteArrayOf(1), File(missing, "blocks/a.cbor.enc").readBytes())
     }
+
+    @Test
+    fun `materialize writes blocks before the manifest (block-first) on the working side`() {
+        val cloud = FakeCloudFolderPort(
+            mapOf(
+                MANIFEST_FILENAME to byteArrayOf(9),
+                "blocks/a.cbor.enc" to byteArrayOf(1),
+                "blocks/b.cbor.enc" to byteArrayOf(2),
+            ),
+        )
+        val report = VaultMirror(cloud).materialize(workingDir)
+        // report.copied preserves plan/execution order, so the working-side write order is
+        // observable here: every block lands before the manifest.
+        assertEquals(
+            listOf("blocks/a.cbor.enc", "blocks/b.cbor.enc", MANIFEST_FILENAME),
+            report.copied,
+        )
+    }
+
+    @Test
+    fun `a working-copy IO failure during materialize surfaces as VaultMirrorException`() {
+        // Pre-create a regular file where a directory must go: writing "blocks/a.cbor.enc"
+        // then fails because its parent "blocks" cannot be created (it is a file). A
+        // deterministic IOException, independent of filesystem permissions / the test user.
+        File(workingDir, "blocks").writeBytes(byteArrayOf(0))
+        val cloud = FakeCloudFolderPort(mapOf("blocks/a.cbor.enc" to byteArrayOf(1)))
+        val e = assertThrows(VaultMirrorException::class.java) { VaultMirror(cloud).materialize(workingDir) }
+        assertTrue(e.message!!.contains("materialize failed"))
+    }
 }
