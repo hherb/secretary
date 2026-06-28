@@ -70,7 +70,7 @@ test — the only substitution is the SAF backend behind the `content://` URI.
 | 3 | `CloudWorkingCopyLifecycleInstrumentedTest` | `:kit` `androidTest` | create→flush→materialize→open round-trip (real `.so` + real SAF); offline-flush-then-retry; **createThenOpen offline-create→reopen** (the #327 trigger) |
 | 4 | `TwoWorkingCopiesConflictInstrumentedTest` | `:kit` `androidTest` | Two working dirs over ONE SAF tree → conflict-copy ingest + CRDT merge → **full content convergence** assertion (mirrors `cli/tests/two_instance_convergence.rs`) |
 | 5 | `PendingFlushNotPersisted` + `createThenOpen` verify-after-set (#327) | `:vault-access` (pure) | After `marker.set()` on a failed offline-create push, re-check `isSet()`; if still false, throw the distinct typed error instead of the raw push exception |
-| 6 | `:app` distinct handling of `PendingFlushNotPersisted` | `:app` | Catch it distinctly: keep `isCreate=true` (no materialize on reopen), surface a louder "created but neither synced nor marked for retry" signal |
+| 6 | Materialize-clobber guard + `:app` handling of `PendingFlushNotPersisted` | `:vault-access` + `:app` | Make `openExisting` refuse to materialize over an un-pushed working copy when the marker is absent (the reachable route-2 clobber); `:app` surfaces a distinct "created but not yet synced" signal |
 | 7 | Run-only confirmation | — | The 7 Slice-4 screen tests + the existing instrumented suite pass on the emulator |
 
 Per project convention, design each new test file as a focused unit; split toward
@@ -138,19 +138,50 @@ original push cause. This is pure ordering logic, host-tested in `:vault-access`
 with a failing-marker fake (a `PendingFlushMarker` whose `set()` is a no-op so
 `isSet()` stays false).
 
-### `:app` handling
+### Why the marker is load-bearing (corrected)
 
-`openCloudTarget`'s catch currently folds every failure into
-`Route.Unlock(cloudTarget = target)` with `isCreate` unchanged (still `true`).
-That routing is already safe for the in-memory reopen (a created-but-unpushed
-vault is never persisted as a remembered location — `persistLocation` runs only
-after a successful push — so its only reopen path is the in-memory `cloudTarget`
-with `isCreate=true`, which retries `createThenOpen` = push, no materialize). The
-fix adds a **distinct branch** for `PendingFlushNotPersisted`: log/surface a
-louder "created but neither synced nor marked for retry — do not lose your
-recovery phrase" signal, while preserving `isCreate=true` (never route this case
-through a path that could `materialize()` an empty cloud over the working copy).
-Host-tested at the `:app` routing layer.
+An offline-created vault **is** persisted as a remembered location *before* the
+push: `store.persist(...)` runs in `VaultProvisioningViewModel.create()`
+("persist BEFORE mnemonic") and again via `recordSelection` at `onAcknowledge`,
+both while the vault exists only in the working dir. So after a failed
+offline-create push there are **two** reopen routes, not one:
+
+1. **In-memory retry** — the user submits a credential on the Unlock screen they
+   are already on: `cloudTarget.isCreate=true` → `createThenOpen` retries the push,
+   never materializes. Safe regardless of the marker.
+2. **Selection-screen Open** — the user backs out / kills the app, later taps
+   "Open": `locationStore.load()` → `CloudVaultTarget(isCreate=false)` →
+   `openExisting()` → `materialize()`. This route does push-before-pull **only**
+   `if (marker.isSet())`. If the marker silently failed to persist, it skips the
+   flush and materializes the empty/peer cloud over the working copy, deleting the
+   only copy of the freshly-created vault. **Irrecoverable.**
+
+So the marker is genuinely load-bearing for route 2, and #327 is a real,
+reachable data-loss bug — not merely a missing warning.
+
+### `:app` / coordinator handling
+
+The coordinator escalation (`PendingFlushNotPersisted` when `isSet()` stays false
+after `set()`) is necessary but **not sufficient** — `:app` must actually prevent
+the route-2 materialize-clobber, not just log it. The guard (exact mechanism
+chosen in the implementation plan; all are pure/host-testable):
+
+- **Preferred — make `openExisting` refuse to materialize over an un-pushed
+  working copy.** When the working dir already holds a vault and the marker is
+  absent (so push-before-pull would be skipped), `openExisting` must not blindly
+  `materialize()`; it pushes first (treating a non-empty working copy as implicitly
+  pending) or aborts with a typed error rather than clobber. This closes the gap at
+  the one place the clobber can happen, independent of how the marker got lost, and
+  does not move merge logic into Kotlin (it only reorders push vs pull — the shim's
+  existing job).
+- Alternatives considered: defer `store.persist` until the first successful push
+  (removes route 2 for un-pushed vaults, but changes the create UX — the vault no
+  longer appears in the list until synced); or hard-block on the escalation and
+  loop the push in-session.
+
+`:app` additionally surfaces a distinct "created but not yet synced" signal on
+`PendingFlushNotPersisted`. The chosen guard + the routing branch are
+host-tested at the `:vault-access`/`:app` layers.
 
 ### Instrumented coverage of the marker-write-failure branch
 
@@ -169,8 +200,11 @@ clobbered).
   marker set → next `openExisting` flushes first (push-before-pull) → tree now
   holds the edit → second working copy materializes and sees it.
 - **Offline create→reopen (#327 trigger):** create with the first flush forced to
-  fail → marker set (happy) → reopen retries push → success; plus the
-  marker-write-failure variant → `PendingFlushNotPersisted` + no clobber.
+  fail → marker set (happy) → reopen via the **selection-screen Open route**
+  (`openExisting`) → push-before-pull pushes the un-pushed vault up, no clobber →
+  success. Plus the marker-write-failure variant → `PendingFlushNotPersisted` and
+  `openExisting` still refuses to materialize over the un-pushed working copy (the
+  load-bearing-marker clobber is closed at the materialize guard, not just signaled).
 - **Two-copies conflict:** working copy A and B both materialize the same tree,
   each commits a divergent edit while "offline", both flush → the test provider
   ends with a `manifest (conflicted copy)…` sibling (or both flush in sequence
