@@ -40,9 +40,21 @@ class VaultWorkingCopyCoordinator<S>(
      * Push the just-created working copy up to its fresh cloud folder, persist the location keyed by
      * [createdVaultUuidHex], then open it into Browse. (The create itself already wrote the working
      * dir; the caller passes the new uuid from CreatedVault.)
+     *
+     * If the push fails (offline create: the new vault lives ONLY in the working dir, cloud is still
+     * empty), set the pending marker before re-propagating so the next [openExisting] does
+     * push-before-pull instead of materialize-first. Without the marker, the next open would diff an
+     * empty cloud against the full working copy and DELETE the only copy of the freshly-created vault
+     * — silent, irrecoverable data loss. The exception still propagates (`:app` routes to
+     * unlock/retry); the marker is the only added behavior. Mirrors [afterCommit]'s discipline.
      */
     suspend fun createThenOpen(createdVaultUuidHex: String, persistLocation: (vaultUuidHex: String) -> Unit): S {
-        mirror.flush()
+        try {
+            mirror.flush()
+        } catch (e: Exception) {
+            marker.set()   // next openExisting retries the push before pulling (no offline-create data loss)
+            throw e
+        }
         persistLocation(createdVaultUuidHex)
         return openAndSync()
     }

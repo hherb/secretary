@@ -63,6 +63,23 @@ class VaultWorkingCopyCoordinatorTest {
         assertEquals("deadbeef", persistedUuid)
     }
 
+    @Test fun createThenOpen_flush_failure_sets_marker_and_propagates_without_persisting() = runTest {
+        val order = mutableListOf<String>()
+        val marker = FakeMarker(set = false)
+        val coord = VaultWorkingCopyCoordinator(RecordingMirror(order, flushFails = true), marker) { order.add("open"); "S" }
+        var persisted = false
+        var threw = false
+        try {
+            coord.createThenOpen("deadbeef") { order.add("persist"); persisted = true }
+        } catch (e: VaultMirrorException) {
+            threw = true
+        }
+        assertTrue(threw, "a failed push must propagate so :app can route to retry")
+        assertTrue(marker.isSet(), "marker set so the next openExisting pushes before pulling (no offline-create data loss)")
+        assertEquals(listOf("flush"), order) // never persisted / opened
+        assertFalse(persisted, "location must not be persisted when the push failed")
+    }
+
     @Test fun afterCommit_sets_marker_on_flush_failure_and_never_throws() = runTest {
         val order = mutableListOf<String>()
         val marker = FakeMarker(set = false)
