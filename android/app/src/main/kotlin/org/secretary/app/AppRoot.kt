@@ -31,9 +31,12 @@ import org.secretary.browse.FileDeviceEnrollmentMetadataStore
 import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
+import org.secretary.browse.MnemonicWord
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
+import org.secretary.browse.VaultNameError
+import org.secretary.browse.VaultProvisioningError
 import org.secretary.browse.VaultProvisioningStep
 import org.secretary.browse.VaultProvisioningViewModel
 import org.secretary.browse.VaultSelectionState
@@ -81,8 +84,24 @@ fun AppRoot() {
     val provisioningVm = remember(locationStore) {
         VaultProvisioningViewModel(uniffiVaultCreatePort(), locationStore)
     }
-    // Mirror the VM's published fields into Compose state at each step transition.
+    // Mirror the VM's published fields into Compose state. The VM is a pure `:vault-access` class
+    // (no Compose dep), so its `step`/`nameError`/`error`/`isCreating`/`mnemonicRows` are plain
+    // fields, not Snapshot state. Mirroring ONLY `step` would silently drop error/validation
+    // feedback: those change on paths that leave `step` unchanged (a `data object` singleton or the
+    // same `Credentials` instance), and `mutableStateOf`'s structural-equality policy then schedules
+    // no recomposition. Every field is mirrored and refreshed via [syncProvisioning] after each call.
     var provStep by remember { mutableStateOf<VaultProvisioningStep>(VaultProvisioningStep.Folder) }
+    var provNameError by remember { mutableStateOf<VaultNameError?>(null) }
+    var provError by remember { mutableStateOf<VaultProvisioningError?>(null) }
+    var provIsCreating by remember { mutableStateOf(false) }
+    var provMnemonicRows by remember { mutableStateOf<List<MnemonicWord>?>(null) }
+    fun syncProvisioning() {
+        provStep = provisioningVm.step
+        provNameError = provisioningVm.nameError
+        provError = provisioningVm.error
+        provIsCreating = provisioningVm.isCreating
+        provMnemonicRows = provisioningVm.mnemonicRows
+    }
     var pickedTreeUri by remember { mutableStateOf<String?>(null) }
     var pickedFolderLabel by remember { mutableStateOf<String?>(null) }
     // The same launcher serves both the Selection screen and the create wizard; this records WHY
@@ -151,7 +170,7 @@ fun AppRoot() {
             state = selectionState,
             onCreate = {
                 provisioningVm.cancel()
-                provStep = provisioningVm.step
+                syncProvisioning()
                 pickedTreeUri = null
                 pickedFolderLabel = null
                 route = Route.CreateWizard
@@ -168,10 +187,10 @@ fun AppRoot() {
         )
         is Route.CreateWizard -> CreateVaultWizardScreen(
             step = provStep,
-            nameError = provisioningVm.nameError,
-            error = provisioningVm.error,
-            isCreating = provisioningVm.isCreating,
-            mnemonicRows = provisioningVm.mnemonicRows,
+            nameError = provNameError,
+            error = provError,
+            isCreating = provIsCreating,
+            mnemonicRows = provMnemonicRows,
             onPickParent = { pendingPick = FolderPickTarget.WizardParent; pickFolderLauncher.launch(null) },
             pickedFolderLabel = pickedFolderLabel,
             onChooseFolder = { name ->
@@ -180,7 +199,7 @@ fun AppRoot() {
                     Toast.makeText(context, "Choose a cloud folder first.", Toast.LENGTH_SHORT).show()
                 } else {
                     provisioningVm.chooseFolder(tree, name)
-                    provStep = provisioningVm.step
+                    syncProvisioning()
                 }
             },
             onCreate = { password, confirm ->
@@ -189,13 +208,18 @@ fun AppRoot() {
                     val pw = password.toByteArray()
                     val cf = confirm.toByteArray()
                     val workingDir = workingVaultDir(context.filesDir, creds.vaultName)
+                    // Reflect the in-flight create synchronously so the button disables (and shows
+                    // "Creating…") while the suspending Argon2id create runs; syncProvisioning()
+                    // below settles the final isCreating/error/step from the VM.
+                    provIsCreating = true
+                    provError = null
                     scope.launch {
                         try {
                             provisioningVm.create(workingDir.path, pw, cf)
                         } finally {
                             pw.fill(0); cf.fill(0)
                         }
-                        provStep = provisioningVm.step
+                        syncProvisioning()
                     }
                 }
             },
@@ -211,12 +235,12 @@ fun AppRoot() {
                     Toast.makeText(context, "Vault created.", Toast.LENGTH_SHORT).show()
                     route = Route.Selection
                 } else {
-                    provStep = provisioningVm.step // surfaces a store-fault error on the mnemonic step
+                    syncProvisioning() // surfaces a store-fault error on the mnemonic step
                 }
             },
             onCancel = {
                 provisioningVm.cancel()
-                provStep = provisioningVm.step
+                syncProvisioning()
                 route = Route.Selection
             },
         )
