@@ -3,6 +3,7 @@ package org.secretary.app
 import android.os.SystemClock
 import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.UnlockCredential
+import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
 import org.secretary.browse.WriteReauthGate
@@ -36,6 +37,16 @@ data class BrowseSession(
  * AppRoot zeroizes the credential bytes unconditionally (both credentials, in its `finally` block);
  * the copy handed to launchSyncAtUnlock is password-only (a recovery open has no password to sync with).
  *
+ * [onCommit] is invoked by the browse model after every successful committed write (Task 7's seam):
+ * the cloud path wires it to `coordinator.afterCommit()` so a commit is flushed working→cloud. The
+ * default no-op keeps the demo (golden-vault) path unchanged.
+ *
+ * [vaultUuid] may be an EMPTY array for a SAF-picked existing vault whose UUID is not yet known: the
+ * real UUID is learned from the opened session and threaded into sync, and [onVaultUuidLearned] is
+ * invoked with its lowercase hex so the caller can persist it back into the remembered location.
+ * (An empty UUID would otherwise suppress sync status reads — see makeVaultSync's `vaultUuid: null`.)
+ * When [vaultUuid] is non-empty it is used as-is and [onVaultUuidLearned] still fires with its hex.
+ *
  * @throws the typed open errors from [VaultOpenPort] (e.g. WrongPasswordOrCorrupt /
  *   WrongRecoveryOrCorrupt / InvalidRecoveryPhrase) — the caller catches and returns to Unlock.
  */
@@ -46,15 +57,23 @@ suspend fun openBrowseWithSync(
     vaultUuid: ByteArray,
     credential: UnlockCredential,
     gate: WriteReauthGate = NoopReauthGate,
+    onCommit: suspend () -> Unit = {},
+    onVaultUuidLearned: (String) -> Unit = {},
 ): BrowseSession {
     val session = openWithCredential(openPort, folder.path, credential)
-    val browseModel = VaultBrowseModel(session, gate)
+    // Learn the real UUID from the opened session when the caller passed an empty one (a SAF-picked
+    // existing vault). The session snapshots its UUID at construction, so this never touches a wiped
+    // handle. Pass the resolved bytes to makeVaultSync so status reads are not suppressed.
+    val resolvedUuidHex = session.vaultUuidHex()
+    onVaultUuidLearned(resolvedUuidHex)
+    val effectiveUuid = if (vaultUuid.isNotEmpty()) vaultUuid else hexToBytesPublic(resolvedUuidHex)
+    val browseModel = VaultBrowseModel(session, gate, onCommit)
     // Monotonic clock (elapsedRealtime, not wall-clock): the grace window measures *elapsed* time
     // since the last proof, so it must not move under NTP corrections or a user-set system clock.
     // MUST share the same time base as the gate's clock in AppRoot.unlockAndOpen.
     gate.seed(SystemClock.elapsedRealtime()) // just unlocked → open the grace window
     browseModel.loadBlocks()
-    val (syncModel, monitor) = makeVaultSync(folder, stateDir, vaultUuid)
+    val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid)
     return BrowseSession(
         browse = VaultBrowseViewModel(browseModel),
         sync = VaultSyncViewModel(syncModel),
