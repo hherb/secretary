@@ -30,9 +30,11 @@ class VaultSelectionViewModelTest {
 
     @Test
     fun `unavailable is preserved across a re-load`() {
-        val vm = VaultSelectionViewModel(FakeVaultLocationStore(stored = location, available = false))
+        val store = FakeVaultLocationStore(stored = location, available = false)
+        val vm = VaultSelectionViewModel(store)
         vm.loadPersisted()
         // Even if the store would now report it available, a surfaced Unavailable survives.
+        store.available = true
         vm.loadPersisted()
         assertTrue(vm.state is VaultSelectionState.Unavailable)
     }

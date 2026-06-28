@@ -33,10 +33,11 @@ import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
+import org.secretary.browse.VaultLocation
 import org.secretary.browse.VaultProvisioningStep
+import org.secretary.browse.VaultProvisioningViewModel
 import org.secretary.browse.VaultSelectionState
 import org.secretary.browse.VaultSelectionViewModel
-import org.secretary.browse.VaultProvisioningViewModel
 import org.secretary.browse.displayNameForTree
 import org.secretary.browse.hexOfBytes
 import org.secretary.browse.safVaultLocationStore
@@ -84,14 +85,29 @@ fun AppRoot() {
     var provStep by remember { mutableStateOf<VaultProvisioningStep>(VaultProvisioningStep.Folder) }
     var pickedTreeUri by remember { mutableStateOf<String?>(null) }
     var pickedFolderLabel by remember { mutableStateOf<String?>(null) }
+    // The same launcher serves both the Selection screen and the create wizard; this records WHY
+    // it was launched so the result is routed to the right consumer (a pick from Selection becomes
+    // a recorded VaultLocation → Located; a pick from the wizard fills the parent-folder draft).
+    var pendingPick by remember { mutableStateOf(FolderPickTarget.None) }
 
     val pickFolderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
         if (uri != null) {
-            pickedTreeUri = uri.toString()
-            pickedFolderLabel = displayNameForTree(context, uri)
+            val label = displayNameForTree(context, uri)
+            when (pendingPick) {
+                FolderPickTarget.SelectExisting -> {
+                    selectionVm.recordSelection(VaultLocation(label, uri.toString()))
+                    selectionState = selectionVm.state
+                }
+                FolderPickTarget.WizardParent -> {
+                    pickedTreeUri = uri.toString()
+                    pickedFolderLabel = label
+                }
+                FolderPickTarget.None -> {}
+            }
         }
+        pendingPick = FolderPickTarget.None
     }
 
     val activity = LocalContext.current as? FragmentActivity
@@ -147,7 +163,7 @@ fun AppRoot() {
                 selectionState = selectionVm.state
             },
             onChooseDifferent = { selectionVm.chooseDifferent(); selectionState = selectionVm.state },
-            onPickFolder = { pickFolderLauncher.launch(null) },
+            onPickFolder = { pendingPick = FolderPickTarget.SelectExisting; pickFolderLauncher.launch(null) },
             onDemo = { route = Route.Unlock },
         )
         is Route.CreateWizard -> CreateVaultWizardScreen(
@@ -156,7 +172,7 @@ fun AppRoot() {
             error = provisioningVm.error,
             isCreating = provisioningVm.isCreating,
             mnemonicRows = provisioningVm.mnemonicRows,
-            onPickParent = { pickFolderLauncher.launch(null) },
+            onPickParent = { pendingPick = FolderPickTarget.WizardParent; pickFolderLauncher.launch(null) },
             pickedFolderLabel = pickedFolderLabel,
             onChooseFolder = { name ->
                 val tree = pickedTreeUri

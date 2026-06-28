@@ -17,7 +17,7 @@ sealed class VaultNameError(message: String) : Exception(message) {
     data object Blank : VaultNameError("Enter a name for the vault.")
     data object TooLong : VaultNameError("That name is too long.")
     data object IllegalCharacters :
-        VaultNameError("A vault name can't contain / or \\, or be just \".\" or \"..\".")
+        VaultNameError("A vault name can't contain / or \\, control characters, or be just \".\" or \"..\".")
 }
 
 /**

@@ -47,6 +47,28 @@ class CreateVaultWizardScreenUiTest {
     }
 
     @Test
+    fun credentials_step_collects_password_and_creates() {
+        var created: Pair<String, String>? = null
+        rule.setContent {
+            CreateVaultWizardScreen(
+                step = VaultProvisioningStep.Credentials(treeUri = "content://t", vaultName = "My Vault"),
+                nameError = null, error = null,
+                isCreating = false, mnemonicRows = null,
+                onPickParent = {}, pickedFolderLabel = null,
+                onChooseFolder = {}, onCreate = { pw, cf -> created = pw to cf },
+                onAcknowledge = {}, onCancel = {},
+            )
+        }
+        rule.onNodeWithTag("wizard-password").assertIsDisplayed()
+        rule.onNodeWithTag("wizard-confirm").assertIsDisplayed()
+        rule.onNodeWithTag("wizard-create").assertIsDisplayed()
+        rule.onNodeWithTag("wizard-password").performTextInput("hunter2")
+        rule.onNodeWithTag("wizard-confirm").performTextInput("hunter2")
+        rule.onNodeWithTag("wizard-create").performClick()
+        assertEquals("hunter2" to "hunter2", created)
+    }
+
+    @Test
     fun mnemonic_step_shows_grid_and_acknowledges() {
         var acked = false
         rule.setContent {

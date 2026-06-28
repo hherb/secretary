@@ -28,7 +28,7 @@ class FakeVaultCreatePort(
  *  tests can assert forwarding and ordering. */
 class FakeVaultLocationStore(
     private var stored: VaultLocation? = null,
-    private val available: Boolean = true,
+    var available: Boolean = true,
 ) : VaultLocationStore {
     val persisted = mutableListOf<VaultLocation>()
     var cleared = false

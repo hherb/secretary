@@ -42,5 +42,6 @@ class VaultNameTest {
     fun `control and nul chars rejected`() {
         assertTrue(invalidArm("a\u0000b") is VaultNameError.IllegalCharacters)
         assertTrue(invalidArm("a\nb") is VaultNameError.IllegalCharacters)
+        assertTrue(invalidArm("a\u007Fb") is VaultNameError.IllegalCharacters)
     }
 }
