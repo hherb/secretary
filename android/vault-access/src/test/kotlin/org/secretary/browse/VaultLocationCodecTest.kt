@@ -77,4 +77,10 @@ class VaultLocationCodecTest {
         val v1 = "v1:8:My Vaultcontent://tree/abc"
         assertEquals(VaultLocation("My Vault", "content://tree/abc", ""), decodeVaultLocation(v1))
     }
+
+    @Test fun v2_overflowing_length_sum_decodes_to_null_not_throw() {
+        // Two near-Int.MAX/2 lengths whose Int sum wraps negative must not bypass the
+        // bounds guard and throw StringIndexOutOfBoundsException — the codec never throws.
+        assertNull(decodeVaultLocation("v2:1073741824:1073741824:x"))
+    }
 }

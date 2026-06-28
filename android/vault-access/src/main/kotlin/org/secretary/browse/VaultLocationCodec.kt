@@ -50,7 +50,10 @@ private fun decodeV2(rest: String): VaultLocation? {
     if (c2 < 0) return null
     val uuidLen = afterName.substring(0, c2).toIntOrNull()?.takeIf { it >= 0 } ?: return null
     val payload = afterName.substring(c2 + 1)
-    if (payload.length < nameLen + uuidLen) return null
+    // Long sum avoids Int overflow: two near-Int.MAX lengths would wrap negative and
+    // bypass the guard, then substring(nameLen, nameLen + uuidLen) would throw —
+    // violating the "never throws" contract. Long holds the sum of two Ints exactly.
+    if (payload.length.toLong() < nameLen.toLong() + uuidLen.toLong()) return null
     val name = payload.substring(0, nameLen)
     val uuid = payload.substring(nameLen, nameLen + uuidLen)
     val treeUri = payload.substring(nameLen + uuidLen)
