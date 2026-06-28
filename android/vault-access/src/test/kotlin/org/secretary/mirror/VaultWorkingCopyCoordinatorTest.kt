@@ -17,10 +17,9 @@ private class RecordingMirror(private val order: MutableList<String>, var flushF
 }
 
 private class FakeMarker(private var set: Boolean = false) : PendingFlushMarker {
-    val events = mutableListOf<String>()
     override fun isSet() = set
-    override fun set() { set = true; events.add("set") }
-    override fun clear() { set = false; events.add("clear") }
+    override fun set() { set = true }
+    override fun clear() { set = false }
 }
 
 class VaultWorkingCopyCoordinatorTest {
