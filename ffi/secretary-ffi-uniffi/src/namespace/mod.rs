@@ -155,7 +155,7 @@ pub fn create_vault_in_folder(
 ) -> Result<std::sync::Arc<MnemonicOutput>, VaultError> {
     // Compute the full result chain into a single binding so the password
     // is zeroized BEFORE any `?`-propagation (mirrors open_vault_with_password).
-    let result: Result<secretary_ffi_bridge::MnemonicOutput, VaultError> =
+    let result: Result<secretary_ffi_bridge::CreatedVaultInFolder, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
@@ -173,8 +173,8 @@ pub fn create_vault_in_folder(
         };
 
     password.zeroize();
-    let bridge_mnemonic = result?;
-    Ok(std::sync::Arc::new(MnemonicOutput(bridge_mnemonic)))
+    let bridge_out = result?;
+    Ok(std::sync::Arc::new(MnemonicOutput(bridge_out.mnemonic)))
 }
 
 /// Open a vault folder using its master password. uniffi-projected. (B.4a)

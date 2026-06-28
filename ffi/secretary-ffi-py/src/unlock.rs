@@ -251,6 +251,6 @@ pub(crate) fn create_vault_in_folder(
         created_at_ms,
     );
     password.zeroize();
-    let mnemonic = result.map_err(ffi_vault_error_to_pyerr)?;
-    Ok(MnemonicOutput(mnemonic))
+    let bridge_out = result.map_err(ffi_vault_error_to_pyerr)?;
+    Ok(MnemonicOutput(bridge_out.mnemonic))
 }

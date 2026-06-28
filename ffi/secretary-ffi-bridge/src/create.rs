@@ -267,9 +267,35 @@ pub fn create_vault(
     })
 }
 
+/// Result of [`create_vault_in_folder`]: the new vault's `vault_uuid` plus the
+/// one-shot recovery mnemonic. `vault_uuid` is recovered by decoding the
+/// just-written `vault.toml` (the same re-parse `core::vault::create_vault`
+/// does internally for the manifest header); it lets the platform key the
+/// per-device `SyncState` and the remembered location without re-opening the
+/// vault. Additive — the iOS / Python / Kotlin call sites destructure
+/// `.mnemonic` exactly as before and may ignore `.vault_uuid`.
+pub struct CreatedVaultInFolder {
+    /// 16-byte vault identifier from the freshly-written `vault.toml`.
+    pub vault_uuid: [u8; 16],
+    /// One-shot opaque handle for the 24-word recovery phrase (unchanged semantics).
+    pub mnemonic: MnemonicOutput,
+}
+
+impl std::fmt::Debug for CreatedVaultInFolder {
+    /// Redacted Debug: vault_uuid is non-secret (it names the vault, not any
+    /// key material), but mnemonic is always redacted via `MnemonicOutput`'s
+    /// own `Debug` impl. Mirrors `MnemonicOutput`'s redacted-Debug pattern.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedVaultInFolder")
+            .field("vault_uuid", &hex::encode(self.vault_uuid))
+            .field("mnemonic", &self.mnemonic)
+            .finish()
+    }
+}
+
 /// Create a fresh v1 vault **on disk** in `folder`, writing all four
-/// canonical files via `core::vault::create_vault`, and return the one-shot
-/// recovery mnemonic.
+/// canonical files via `core::vault::create_vault`, and return the new vault's
+/// `vault_uuid` alongside the one-shot recovery mnemonic.
 ///
 /// This is the folder-writing sibling of [`create_vault`]. Where
 /// `create_vault` returns identity-level byte artifacts for the caller to
@@ -299,7 +325,7 @@ pub fn create_vault_in_folder(
     password: &[u8],
     display_name: &str,
     created_at_ms: u64,
-) -> Result<MnemonicOutput, FfiVaultError> {
+) -> Result<CreatedVaultInFolder, FfiVaultError> {
     let pw = SecretBytes::from(password);
     let mut rng = OsRng;
     let mnemonic = secretary_core::vault::create_vault(
@@ -311,7 +337,26 @@ pub fn create_vault_in_folder(
         &mut rng,
     )
     .map_err(FfiVaultError::from)?;
-    Ok(MnemonicOutput::new(mnemonic))
+
+    // Recover vault_uuid from the canonical on-disk vault.toml we just wrote.
+    // A read/decode failure here is an internal bug (we authored the file a
+    // moment ago), so it folds to the rare-crypto CorruptVault arm rather than
+    // a user-facing folder error.
+    let toml = std::fs::read_to_string(folder.join("vault.toml")).map_err(|e| {
+        FfiVaultError::CorruptVault {
+            detail: format!("vault.toml unreadable post-create: {e}"),
+        }
+    })?;
+    let vt = secretary_core::unlock::vault_toml::decode(&toml).map_err(|e| {
+        FfiVaultError::CorruptVault {
+            detail: format!("vault.toml undecodable post-create: {e}"),
+        }
+    })?;
+
+    Ok(CreatedVaultInFolder {
+        vault_uuid: vt.vault_uuid,
+        mnemonic: MnemonicOutput::new(mnemonic),
+    })
 }
 
 #[cfg(test)]
@@ -446,7 +491,10 @@ mod tests {
         assert_eq!(opened.identity.display_name(), "Folder-Bob");
 
         // The returned mnemonic opens the same vault via the recovery path.
-        let phrase = out.take_phrase().expect("phrase must be available");
+        let phrase = out
+            .mnemonic
+            .take_phrase()
+            .expect("phrase must be available");
         let opened2 = crate::open_vault_with_recovery(folder, &phrase)
             .expect("folder open with the just-taken phrase must succeed");
         assert_eq!(opened2.identity.display_name(), "Folder-Bob");
@@ -490,5 +538,32 @@ mod tests {
             matches!(err, FfiVaultError::FolderInvalid { .. }),
             "file path must surface FolderInvalid, got {err:?}",
         );
+    }
+
+    #[test]
+    fn create_vault_in_folder_returns_vault_uuid_matching_vault_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = create_vault_in_folder(
+            dir.path(),
+            b"correct horse",
+            "Test Vault",
+            1_700_000_000_000,
+        )
+        .expect("create must succeed into an empty dir");
+
+        // The returned uuid must equal vault.toml's vault_uuid (the authoritative on-disk value).
+        let toml =
+            std::fs::read_to_string(dir.path().join("vault.toml")).expect("vault.toml readable");
+        let vt = secretary_core::unlock::vault_toml::decode(&toml).expect("vault.toml decodes");
+        assert_eq!(
+            out.vault_uuid, vt.vault_uuid,
+            "returned uuid must match vault.toml"
+        );
+        assert_eq!(out.vault_uuid.len(), 16);
+        assert_ne!(out.vault_uuid, [0u8; 16], "uuid must not be all-zero");
+
+        // The mnemonic handle still yields a 24-word phrase exactly once.
+        let phrase = out.mnemonic.take_phrase().expect("phrase available once");
+        assert_eq!(phrase.split(|b| *b == b' ').count(), 24);
     }
 }
