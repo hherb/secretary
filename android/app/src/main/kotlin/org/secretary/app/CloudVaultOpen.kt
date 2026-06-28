@@ -160,7 +160,12 @@ internal suspend fun openCloudTarget(
         } else {
             coordinator.openExisting()
         }
-        Route.Browse(session, target.workingDir, cloudTarget = target.copy(location = location))
+        // Clear isCreate on the live Browse route: the vault has now been pushed up + opened, so it is
+        // no longer "to be created". Backgrounding (ON_STOP) re-targets Unlock with THIS cloudTarget,
+        // and a stuck isCreate=true would make every reopen run createThenOpen — which flushes
+        // working→cloud and opens WITHOUT materialize(), so this device would never pull another
+        // device's remote edits. isCreate=false routes reopens through openExisting (materialize → open).
+        Route.Browse(session, target.workingDir, cloudTarget = target.copy(location = location, isCreate = false))
     } catch (e: Exception) {
         Log.w(TAG, "cloud open/create failed; returning to unlock with same target", e)
         Route.Unlock(cloudTarget = target)
