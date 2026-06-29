@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-29-android-saf-eventual-consistency-hardening-shipped.md
+docs/handoffs/2026-06-29-android-unlock-ux-polish-332-shipped.md
