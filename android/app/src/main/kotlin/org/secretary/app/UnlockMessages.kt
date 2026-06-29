@@ -2,11 +2,9 @@ package org.secretary.app
 
 import org.secretary.browse.VaultBrowseError
 
-/**
- * Pure derivations for the Unlock screen's chrome — kept free of Compose/Android types so they are
- * host-testable in `:app/src/test`. [UnlockScreen] and [AppRoot] consume these; nothing here has side
- * effects.
- */
+// Pure derivations for the Unlock screen's chrome — kept free of Compose/Android types so they are
+// host-testable in `:app/src/test`. [UnlockScreen] and [AppRoot] consume these; nothing here has side
+// effects.
 
 /** Title prefix shared by every unlock target. */
 private const val TITLE_PREFIX = "Secretary — "

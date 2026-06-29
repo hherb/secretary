@@ -30,6 +30,10 @@ class UnlockScreenProgressUiTest {
         composeRule.onNodeWithTag("unlock-button").assertIsNotEnabled()
         composeRule.onNodeWithTag("password-field").assertIsNotEnabled()
         composeRule.onNodeWithTag("mode-password").assertIsNotEnabled()
+        composeRule.onNodeWithTag("mode-recovery").assertIsNotEnabled()
+        composeRule.onNodeWithTag("remember-device").assertIsNotEnabled()
+        // recovery-field and biometric-unlock render only in other states (recovery mode / enrolled)
+        // and are not asserted here.
     }
 
     @Test

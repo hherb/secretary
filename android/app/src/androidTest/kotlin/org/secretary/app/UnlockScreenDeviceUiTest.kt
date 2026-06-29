@@ -1,15 +1,12 @@
 package org.secretary.app
 
-import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import org.secretary.browse.UnlockCredential
 
 class UnlockScreenDeviceUiTest {
     @get:Rule val composeRule = createComposeRule()
@@ -63,8 +60,7 @@ class UnlockScreenDeviceUiTest {
                 onBiometricUnlock = {},
             )
         }
-        // assertDoesNotExist not available in compose-bom 2025.05.00; assertCountEquals(0) is equivalent
-        composeRule.onAllNodesWithTag("remember-device").assertCountEquals(0)
+        composeRule.onNodeWithTag("remember-device").assertDoesNotExist()
     }
 
     @Test
@@ -80,7 +76,6 @@ class UnlockScreenDeviceUiTest {
                 onBiometricUnlock = {},
             )
         }
-        // assertDoesNotExist not available in compose-bom 2025.05.00; assertCountEquals(0) is equivalent
-        composeRule.onAllNodesWithTag("biometric-unlock").assertCountEquals(0)
+        composeRule.onNodeWithTag("biometric-unlock").assertDoesNotExist()
     }
 }

@@ -11,7 +11,7 @@ class UnlockMessagesTest {
     private fun cloudTarget(displayName: String): CloudVaultTarget =
         CloudVaultTarget(
             location = VaultLocation(displayName = displayName, treeUri = "content://tree/x"),
-            workingDir = File("/tmp/working"),
+            workingDir = File("working"),
             isCreate = false,
         )
 
