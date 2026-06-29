@@ -32,3 +32,58 @@ fun backoffDelayMs(attempt: Int, policy: RetryPolicy): Long {
     val raw = policy.baseDelayMs shl shift
     return raw.coerceAtMost(policy.maxDelayMs)
 }
+
+/**
+ * A [CloudFolderPort] decorator that absorbs eventually-consistent SAF providers (e.g. Google Drive,
+ * #330) with bounded retry-with-backoff on [CloudFolderException] and, for [write], a post-write
+ * read-back byte-equality verify. Host-testable: the class body holds no Android types; [sleep] and
+ * [onRetry] are seams (default `Thread::sleep` / no-op, so there is no `android.util.Log` dependency).
+ *
+ * Only [CloudFolderException] is retried — the typed boundary the inner SAF port folds every provider
+ * error into. A permanent failure (revoked permission) also folds to it; retrying simply burns the
+ * bounded budget and rethrows, which is acceptable given the provider is eventually-consistent.
+ */
+class RetryingCloudFolderPort(
+    private val inner: CloudFolderPort,
+    private val policy: RetryPolicy = RetryPolicy.CLOUD_DEFAULT,
+    private val sleep: (Long) -> Unit = Thread::sleep,
+    private val onRetry: (String) -> Unit = {},
+) : CloudFolderPort {
+
+    // list/read/delete gain retry in Task 4; for now delegate so the class compiles.
+    override fun list(): List<String> = inner.list()
+    override fun read(relativePath: String): ByteArray = inner.read(relativePath)
+    override fun delete(relativePath: String) = inner.delete(relativePath)
+
+    /**
+     * Write then read-back-verify. One attempt = `inner.write` + `inner.read` + byte-equality. A
+     * throw, an invisible read-back, or a mismatch retries the whole attempt (re-write is an
+     * idempotent overwrite). Plain `contentEquals` — these are ciphertext blocks, not secrets that
+     * need a constant-time compare.
+     */
+    override fun write(relativePath: String, bytes: ByteArray) {
+        retrying("write $relativePath") {
+            inner.write(relativePath, bytes)
+            val readBack = inner.read(relativePath)
+            if (!readBack.contentEquals(bytes)) {
+                throw CloudFolderException("read-back mismatch: $relativePath")
+            }
+        }
+    }
+
+    private inline fun <T> retrying(op: String, block: () -> T): T {
+        var attempt = 1
+        while (true) {
+            try {
+                return block()
+            } catch (e: CloudFolderException) {
+                if (attempt >= policy.maxAttempts) {
+                    throw CloudFolderException("$op failed after ${policy.maxAttempts} attempts: ${e.message}")
+                }
+                onRetry("$op attempt $attempt/${policy.maxAttempts} failed: ${e.message}")
+                sleep(backoffDelayMs(attempt, policy))
+                attempt++
+            }
+        }
+    }
+}
