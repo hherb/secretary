@@ -50,10 +50,17 @@ class RetryingCloudFolderPort(
     private val onRetry: (String) -> Unit = {},
 ) : CloudFolderPort {
 
-    // list/read/delete gain retry in Task 4; for now delegate so the class compiles.
-    override fun list(): List<String> = inner.list()
-    override fun read(relativePath: String): ByteArray = inner.read(relativePath)
-    override fun delete(relativePath: String) = inner.delete(relativePath)
+    override fun list(): List<String> = retrying("list") { inner.list() }
+
+    override fun read(relativePath: String): ByteArray =
+        retrying("read $relativePath") { inner.read(relativePath) }
+
+    // No read-back verify: delete is idempotent, and a stale-still-present file is re-deleted on the
+    // next flush pass — it never corrupts the vault — whereas a lost write loses data. Verifying
+    // absence would mean treating a "no such file" read as the success signal, uglier than the
+    // negligible risk it removes.
+    override fun delete(relativePath: String) =
+        retrying("delete $relativePath") { inner.delete(relativePath) }
 
     /**
      * Write then read-back-verify. One attempt = `inner.write` + `inner.read` + byte-equality. A

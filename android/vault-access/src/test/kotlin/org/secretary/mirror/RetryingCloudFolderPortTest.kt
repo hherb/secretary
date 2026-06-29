@@ -64,4 +64,41 @@ class RetryingCloudFolderPortTest {
         assertTrue(rec.sleeps.isEmpty(), "no backoff sleep for a non-CloudFolderException")
         assertTrue(rec.retries.isEmpty(), "no onRetry for a non-CloudFolderException")
     }
+
+    @Test
+    fun `read retries transient failures then returns the bytes`() {
+        val fake = FakeCloudFolderPort(mapOf("manifest.cbor.enc" to byteArrayOf(5)))
+        fake.failNextN = 2
+        val rec = Recorder()
+        assertArrayEquals(byteArrayOf(5), port(fake, rec).read("manifest.cbor.enc"))
+        assertEquals(listOf(10L, 20L), rec.sleeps)
+    }
+
+    @Test
+    fun `list retries transient failures then returns the listing`() {
+        val fake = FakeCloudFolderPort(mapOf("manifest.cbor.enc" to byteArrayOf(5)))
+        fake.failNextN = 1
+        val rec = Recorder()
+        assertEquals(listOf("manifest.cbor.enc"), port(fake, rec).list())
+        assertEquals(listOf(10L), rec.sleeps)
+    }
+
+    @Test
+    fun `read rethrows after exhausting attempts on a permanent failure`() {
+        val fake = FakeCloudFolderPort()
+        fake.failWith = "revoked"
+        val rec = Recorder()
+        assertThrows(CloudFolderException::class.java) { port(fake, rec).read("x") }
+        assertEquals(listOf(10L, 20L), rec.sleeps)
+    }
+
+    @Test
+    fun `delete retries on exception but issues no read-back`() {
+        val fake = FakeCloudFolderPort(mapOf("blocks/old.cbor.enc" to byteArrayOf(7)))
+        fake.failNextN = 1
+        val rec = Recorder()
+        port(fake, rec).delete("blocks/old.cbor.enc")
+        assertEquals(listOf(10L), rec.sleeps)
+        assertEquals(0, fake.callLog.count { it.startsWith("read:") }, "delete must not read-back: ${fake.callLog}")
+    }
 }
