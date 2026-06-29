@@ -21,6 +21,7 @@ import org.secretary.mirror.VaultMirror
 import org.secretary.mirror.VaultMirrorWorkingCopy
 import org.secretary.mirror.VaultWorkingCopyCoordinator
 import org.secretary.mirror.WorkingCopyMirror
+import org.secretary.mirror.RetryingCloudFolderPort
 import org.secretary.mirror.safCloudFolderPort
 import java.io.File
 
@@ -208,7 +209,15 @@ internal suspend fun openCloudTarget(
     // coordinator (to wire afterCommit) and the coordinator needs openCloudBrowse (as openAndSync), so
     // the coordinator is `lateinit` and captured by the openAndSync closure.
     var location = target.location
-    val mirror = VaultMirrorWorkingCopy(VaultMirror(safCloudFolderPort(context, location.treeUri)), target.workingDir)
+    val mirror = VaultMirrorWorkingCopy(
+        VaultMirror(
+            RetryingCloudFolderPort(
+                safCloudFolderPort(context, location.treeUri),
+                onRetry = { Log.i(TAG, it) },
+            ),
+        ),
+        target.workingDir,
+    )
     lateinit var coordinator: VaultWorkingCopyCoordinator<BrowseSession>
     coordinator = cloudCoordinator(context, location, mirror) {
         openCloudBrowse(
