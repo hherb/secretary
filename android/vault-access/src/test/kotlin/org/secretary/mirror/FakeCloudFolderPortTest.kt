@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class FakeCloudFolderPortTest {
@@ -47,5 +48,35 @@ class FakeCloudFolderPortTest {
         port.write("blocks/a.cbor.enc", byteArrayOf(1))
         port.delete("old")
         assertEquals(listOf("write:blocks/a.cbor.enc", "delete:old"), port.writeOrder)
+    }
+
+    @Test
+    fun `failNextN throws for the next N ops then succeeds`() {
+        val fake = FakeCloudFolderPort()
+        fake.failNextN = 2
+        assertThrows(CloudFolderException::class.java) { fake.list() }
+        assertThrows(CloudFolderException::class.java) { fake.list() }
+        assertEquals(emptyList<String>(), fake.list()) // 3rd op succeeds
+    }
+
+    @Test
+    fun `readMissNextN reports a present file as missing for N reads then returns it`() {
+        val fake = FakeCloudFolderPort(mapOf("blocks/a.cbor.enc" to byteArrayOf(7)))
+        fake.readMissNextN = 1
+        assertThrows(CloudFolderException::class.java) { fake.read("blocks/a.cbor.enc") }
+        assertEquals(7, fake.read("blocks/a.cbor.enc")[0]) // 2nd read sees it
+    }
+
+    @Test
+    fun `callLog records every op in order`() {
+        val fake = FakeCloudFolderPort()
+        fake.write("blocks/a.cbor.enc", byteArrayOf(1))
+        fake.read("blocks/a.cbor.enc")
+        fake.delete("blocks/a.cbor.enc")
+        fake.list()
+        assertTrue(
+            fake.callLog == listOf("write:blocks/a.cbor.enc", "read:blocks/a.cbor.enc", "delete:blocks/a.cbor.enc", "list"),
+            "callLog was ${fake.callLog}",
+        )
     }
 }
