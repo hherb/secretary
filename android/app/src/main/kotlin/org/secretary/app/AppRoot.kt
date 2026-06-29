@@ -279,16 +279,28 @@ fun AppRoot() {
             },
         )
         is Route.Unlock -> UnlockScreen(
-            // The biometric/enroll affordances are golden-vault (demo) keyed; the cloud path has no
-            // device enrollment yet, so hide them when a cloud target is present.
+            // The biometric-OPEN button is demo-only (cloud open stays password-based this session), so hide it
+            // for a cloud target. The "Remember this device" checkbox (shown when !isEnrolled) IS live for cloud:
+            // ticking it enrolls a device secret for write-reauth after the password open (see openCloudTarget).
             isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
             onUnlock = { credential ->
                 scope.launch {
                     val target = r.cloudTarget
                     route = if (target != null) {
-                        openCloudTarget(context, target, credential, locationStore, selectionVm).also {
+                        openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also { result ->
                             selectionState = selectionVm.state
+                            // openCloudTarget returns Route.Unlock (same target) on any open/create
+                            // failure — surface it instead of silently re-showing the Unlock screen
+                            // (a SAF provider hiccup, e.g. eventually-consistent cloud, or a wrong
+                            // password otherwise looks like a dead button).
+                            if (result is Route.Unlock) {
+                                Toast.makeText(
+                                    context,
+                                    "Couldn't open the cloud vault — check the folder is reachable and the password is correct, then try again.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
                         }
                     } else {
                         unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
