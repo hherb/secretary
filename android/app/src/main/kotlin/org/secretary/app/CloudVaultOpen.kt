@@ -150,11 +150,15 @@ internal suspend fun openCloudBrowse(
         // openBrowseWithSync already seeds the gate it was handed (BrowseSession.openBrowseWithSync),
         // matching the demo path — do not seed again here.
         session.sync.refreshStatus()
-        if (enrollThisDevice && credential is UnlockCredential.Password) {
+        // learnedVaultId is populated by onVaultUuidLearned (fired inside openBrowseWithSync before it
+        // returns); the isNotEmpty() guard makes "never enrol against an empty vaultId" a LOCAL
+        // invariant rather than relying on that call ordering.
+        if (enrollThisDevice && credential is UnlockCredential.Password && learnedVaultId.isNotEmpty()) {
             try {
-                // learnedVaultId is always populated by onVaultUuidLearned (fired inside openBrowseWithSync)
                 cloudEnrollThisDevice(
                     coordinator = deviceUnlock.coordinator,
+                    // Skip-guard compares against learnedVaultId (the resolved UUID), NOT the pre-open
+                    // vaultId — a SAF-picked vault may not know its UUID until open. Do not "dedup" to vaultId.
                     alreadyEnrolledForThisVault = deviceUnlock.enclaveEnrolled && deviceUnlock.metadataVaultId == learnedVaultId,
                     workingDirPath = workingDir.path,
                     vaultId = learnedVaultId,

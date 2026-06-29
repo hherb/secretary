@@ -41,9 +41,8 @@ fun cloudDeviceKeyAlias(cloudKey: String): String = "$CLOUD_DEVICE_ALIAS_PREFIX$
 /**
  * A cloud vault's device-unlock surface: the [coordinator] (enroll/unlock/disenroll) plus cheap,
  * non-prompting reads of enrollment state used to pick the write-reauth gate. The enclave + metadata
- * are namespaced per cloud vault (by the `cloudKey` passed to [cloudDeviceUnlockCoordinator]) so demo
- * and multiple cloud vaults hold
- * independent secrets with no cross-talk.
+ * are namespaced per cloud vault (by the `cloudKey` passed to [cloudDeviceUnlockCoordinator]) so the
+ * demo vault and multiple cloud vaults hold independent secrets with no cross-talk.
  */
 class CloudDeviceUnlock(
     val coordinator: DeviceUnlockCoordinator,
