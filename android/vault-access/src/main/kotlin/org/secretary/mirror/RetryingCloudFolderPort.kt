@@ -13,7 +13,8 @@ data class RetryPolicy(val maxAttempts: Int, val baseDelayMs: Long, val maxDelay
     }
 
     companion object {
-        /** 250 / 500 / 1000 / 2000 / (2000) ms across 5 attempts — worst case ~5.75 s of waiting. */
+        /** 250 / 500 / 1000 / 2000 / (2000) ms across 5 attempts — worst case ~5.75 s of waiting per
+         *  retry loop (a [RetryingCloudFolderPort.write] runs two loops: write then read-back verify). */
         val CLOUD_DEFAULT = RetryPolicy(maxAttempts = 5, baseDelayMs = 250, maxDelayMs = 2000)
     }
 }
@@ -63,14 +64,27 @@ class RetryingCloudFolderPort(
         retrying("delete $relativePath") { inner.delete(relativePath) }
 
     /**
-     * Write then read-back-verify. One attempt = `inner.write` + `inner.read` + byte-equality. A
-     * throw, an invisible read-back, or a mismatch retries the whole attempt (re-write is an
-     * idempotent overwrite). Plain `contentEquals` — these are ciphertext blocks, not secrets that
-     * need a constant-time compare.
+     * Write, then read-back-verify in a SEPARATE retry loop that NEVER re-writes. Two phases, each
+     * with its own attempt budget:
+     *
+     *  1. `inner.write` is retried only on its own throw (the bytes did not land).
+     *  2. once `inner.write` returns, the file IS created; we then poll `inner.read` until the
+     *     just-written bytes become visible, byte-equal via plain `contentEquals` (ciphertext
+     *     blocks, not secrets needing a constant-time compare).
+     *
+     * Re-writing in phase 2 would be unsafe, not merely redundant: on an eventually-consistent SAF
+     * provider the not-yet-visible file is ALSO invisible to the overwrite's `findFile`, so a
+     * re-write forks a DUPLICATE — `SafCloudFolderPort.findOrCreate` skips its delete-then-create
+     * and a later `resolve` matches the stale original, diverging the cloud from the working copy
+     * (#330). So verification only re-reads. A genuine persistent mismatch falls out of phase 2 as
+     * a throw → the caller's next flush re-writes from the top (no duplicate fork).
+     *
+     * Cost note: phase 2 downloads the full file once per write, so a flush's read traffic scales
+     * with the bytes pushed — acceptable for a personal vault, the price of the visibility guarantee.
      */
     override fun write(relativePath: String, bytes: ByteArray) {
-        retrying("write $relativePath") {
-            inner.write(relativePath, bytes)
+        retrying("write $relativePath") { inner.write(relativePath, bytes) }
+        retrying("verify $relativePath") {
             val readBack = inner.read(relativePath)
             if (!readBack.contentEquals(bytes)) {
                 throw CloudFolderException("read-back mismatch: $relativePath")

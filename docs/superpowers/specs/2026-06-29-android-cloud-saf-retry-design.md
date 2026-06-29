@@ -96,13 +96,19 @@ independently with a table of inputs.
 | `list` | yes | n/a | absorbs stale-listing throw at start of flush/materialize |
 | `delete` | yes | **no** | idempotent; stale-present file is re-deleted next pass |
 
-**`write` attempt loop.** One *attempt* = `inner.write(path, bytes)` then `inner.read(path)` and a
-plain byte-equality check. If the write throws, the read throws (file not yet visible), or the bytes
-mismatch → call `onRetry`, `sleep(backoffDelayMs(attempt, policy))`, and retry the whole attempt
-(re-write is an idempotent overwrite, so re-doing it is safe). After `maxAttempts` exhausted, throw
-`CloudFolderException("write verify failed after N attempts: <path>")`. Byte comparison correctness
-(not timing) is what matters here — these are ciphertext blocks, not secrets compared in constant
-time.
+**`write` — two retry loops, write then verify (review-fix #335).** Phase 1 retries
+`inner.write(path, bytes)` on its own throw. Phase 2, a *separate* retry loop, polls
+`inner.read(path)` + plain byte-equality and retries **only the read** — it never re-issues the
+write. Re-writing while the prior write is not yet visible is unsafe, not merely redundant: on an
+eventually-consistent provider the not-yet-visible file is also invisible to
+`SafCloudFolderPort.findOrCreate`'s overwrite `findFile`, so the re-write skips its delete-then-create
+and forks a **duplicate** physical file (SAF display names are not unique), which a later `resolve`
+matches as a stale copy — diverging cloud from working copy. A genuine persistent mismatch falls out
+of phase 2 as a throw; the caller's next flush re-writes from the top (no duplicate). After
+`maxAttempts` in either phase, throw `CloudFolderException("write|verify ... failed after N
+attempts: <path>")`. Byte comparison correctness (not timing) is what matters — ciphertext blocks,
+not secrets compared in constant time. (Defense-in-depth: `findOrCreate` now also deletes *every*
+same-named child, so any duplicate that does get forked self-heals on the next overwrite.)
 
 **`read` / `list`.** Attempt loop = call `inner`; on `CloudFolderException`, back off and retry;
 after `maxAttempts`, rethrow the last exception. No verify step.

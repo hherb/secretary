@@ -44,14 +44,40 @@ class RetryingCloudFolderPortTest {
     }
 
     @Test
-    fun `write that never verifies throws after maxAttempts with bounded sleeps`() {
+    fun `write polls the read-back without ever re-issuing the inner write (no duplicate fork)`() {
+        val fake = FakeCloudFolderPort()
+        fake.readMissNextN = 2 // write lands, but the read-back is invisible for two verify attempts
+        val rec = Recorder()
+        port(fake, rec).write("blocks/a.cbor.enc", byteArrayOf(4, 2))
+        assertArrayEquals(byteArrayOf(4, 2), fake.snapshot().getValue("blocks/a.cbor.enc"))
+        // Re-writing while the prior write is not yet visible forks a duplicate on an eventually-
+        // consistent SAF provider (#330): the verify phase must only re-READ. Exactly one inner write.
+        assertEquals(1, fake.callLog.count { it == "write:blocks/a.cbor.enc" }, "one inner write: ${fake.callLog}")
+        assertEquals(3, fake.callLog.count { it == "read:blocks/a.cbor.enc" }, "verify polled the read: ${fake.callLog}")
+        assertEquals(listOf(10L, 20L), rec.sleeps) // two verify-phase backoffs before the visible read
+    }
+
+    @Test
+    fun `write that lands but never verifies throws after the verify budget, without re-writing`() {
+        val fake = FakeCloudFolderPort()
+        fake.readMissNextN = 99 // write lands, but the read-back is never visible within the budget
+        val rec = Recorder()
+        assertThrows(CloudFolderException::class.java) {
+            port(fake, rec).write("blocks/a.cbor.enc", byteArrayOf(1))
+        }
+        assertEquals(1, fake.callLog.count { it == "write:blocks/a.cbor.enc" }, "the write is never re-issued: ${fake.callLog}")
+        assertEquals(listOf(10L, 20L), rec.sleeps) // verify phase: 3 attempts → 2 backoffs, then rethrow
+    }
+
+    @Test
+    fun `write that never lands throws after maxAttempts with bounded sleeps`() {
         val fake = FakeCloudFolderPort()
         fake.failWith = "provider down" // every op throws, forever
         val rec = Recorder()
         assertThrows(CloudFolderException::class.java) {
             port(fake, rec).write("blocks/a.cbor.enc", byteArrayOf(1))
         }
-        assertEquals(listOf(10L, 20L), rec.sleeps) // 3 attempts → 2 backoffs, then rethrow
+        assertEquals(listOf(10L, 20L), rec.sleeps) // 3 write attempts → 2 backoffs, then rethrow
     }
 
     @Test

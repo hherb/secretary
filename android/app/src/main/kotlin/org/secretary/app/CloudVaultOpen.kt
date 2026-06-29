@@ -17,11 +17,11 @@ import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.mirror.FilePendingFlushMarker
 import org.secretary.mirror.PendingFlushNotPersisted
+import org.secretary.mirror.RetryingCloudFolderPort
 import org.secretary.mirror.VaultMirror
 import org.secretary.mirror.VaultMirrorWorkingCopy
 import org.secretary.mirror.VaultWorkingCopyCoordinator
 import org.secretary.mirror.WorkingCopyMirror
-import org.secretary.mirror.RetryingCloudFolderPort
 import org.secretary.mirror.safCloudFolderPort
 import java.io.File
 
