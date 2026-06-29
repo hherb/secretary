@@ -288,8 +288,10 @@ fun AppRoot() {
             rememberDevice = rememberDevice,
             isUnlocking = isUnlocking,
             onUnlock = { credential ->
+                // Publish the in-flight flag synchronously so the button disables before the next
+                // frame — prevents a double-tap launching two concurrent opens (mirrors onEnroll below).
+                isUnlocking = true
                 scope.launch {
-                    isUnlocking = true
                     try {
                         val target = r.cloudTarget
                         route = if (target != null) {
@@ -317,8 +319,10 @@ fun AppRoot() {
             },
             onEnrollChoice = { rememberDevice = it },
             onBiometricUnlock = {
+                // Publish the in-flight flag synchronously (see onUnlock) so a double-tap can't launch
+                // two concurrent biometric prompts before the button disables.
+                isUnlocking = true
                 scope.launch {
-                    isUnlocking = true
                     try {
                         deviceVm.unlockWithBiometrics(
                             vaultId = vaultId,
