@@ -1,12 +1,18 @@
 package org.secretary.app
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
+import androidx.fragment.app.FragmentActivity
+import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.GraceWindowReauthGate
+import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
 import org.secretary.browse.VaultLocationStore
 import org.secretary.browse.VaultSelectionViewModel
+import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.mirror.FilePendingFlushMarker
@@ -14,6 +20,7 @@ import org.secretary.mirror.PendingFlushNotPersisted
 import org.secretary.mirror.VaultMirror
 import org.secretary.mirror.VaultMirrorWorkingCopy
 import org.secretary.mirror.VaultWorkingCopyCoordinator
+import org.secretary.mirror.WorkingCopyMirror
 import org.secretary.mirror.safCloudFolderPort
 import java.io.File
 
@@ -63,15 +70,16 @@ data class CloudVaultTarget(
  * The marker filename is keyed by [cloudVaultKey] (a stable hash of the cloud treeUri), the SAME key
  * as [workingDir], so a pending-flush set in one session is always re-checked on the next open of the
  * same cloud vault — un-pushed edits can never orphan, even before the vault UUID is known.
+ *
+ * The [mirror] is built by the caller so it can also be handed to [openCloudBrowse] as the throwing
+ * flush for the atomic device enroll.
  */
 internal fun cloudCoordinator(
     context: Context,
     location: VaultLocation,
-    workingDir: File,
+    mirror: WorkingCopyMirror,
     openAndSync: suspend () -> BrowseSession,
 ): VaultWorkingCopyCoordinator<BrowseSession> {
-    val cloud = safCloudFolderPort(context, location.treeUri)
-    val mirror = VaultMirrorWorkingCopy(VaultMirror(cloud), workingDir)
     val markerName = "${cloudVaultKey(location.treeUri)}.pending-flush"
     val markerFile = File(syncStateDir(context.filesDir), markerName)
     return VaultWorkingCopyCoordinator(mirror, FilePendingFlushMarker(markerFile), openAndSync)
@@ -84,42 +92,78 @@ internal fun cloudCoordinator(
  * cloud; and threads the learned vault UUID back via [onVaultUuidLearned] (a SAF-picked existing
  * vault may not know its UUID until first open).
  *
+ * Write-reauth gate: [cloudDeviceUnlockCoordinator] reads enrollment state for this cloud vault;
+ * [cloudReauthRoute] selects [GateChoice.GRACE_WINDOW] when a device secret is enrolled for this
+ * exact vault UUID, or [GateChoice.NOOP] otherwise (un-enrolled or stale enrollment). Gate seeding
+ * happens AFTER [openBrowseWithSync] returns so the grace window starts at the real unlock instant.
+ *
+ * Device enroll: when [enrollThisDevice] is true and the credential is a password, calls
+ * [cloudEnrollThisDevice] to mint `devices/<uuid>.wrap` and flush it atomically to the cloud. This
+ * runs BEFORE the `finally` zeroize (the password is still live). On failure the enroll is non-fatal
+ * (logged + swallowed); the open already succeeded and Browse is still returned.
+ *
  * Secret hygiene mirrors `unlockAndOpen`: the credential bytes are zeroized in a `finally` wrapping
  * the whole body (success or open failure). The password background sync-at-unlock copy is
  * independent of the zeroize here.
- *
- * Sync-at-unlock is deliberately NOT fired here: Android sync is the cloud working-copy flush, which
- * the coordinator owns (materialize on open, afterCommit on each write). A status refresh keeps the
- * sync badge honest without re-entering the coordinator from the browse scope.
  *
  * @throws the typed open errors from VaultOpenPort — the caller (Unlock handler) catches and routes
  *   back to Unlock carrying the same cloud target.
  */
 internal suspend fun openCloudBrowse(
     context: Context,
+    activity: FragmentActivity,
     workingDir: File,
     credential: UnlockCredential,
     coordinator: VaultWorkingCopyCoordinator<BrowseSession>,
     location: VaultLocation,
+    enrollThisDevice: Boolean,
+    flushWorkingToCloud: suspend () -> Unit,
     onVaultUuidLearned: (String) -> Unit,
 ): BrowseSession {
     try {
         val deviceUuids = FileDeviceUuidStore(File(context.noBackupFilesDir, "devices"))
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val vaultId = location.vaultUuidHex
-        // No write-reauth gate on the cloud path yet: no device secret is enrolled against a cloud
-        // working copy (biometric write-reauth over a cloud vault is a later slice), so the default
-        // NoopReauthGate authorizes writes — exactly what an un-enrolled GraceWindowReauthGate would do.
+        val deviceUnlock = cloudDeviceUnlockCoordinator(activity, context.noBackupFilesDir, cloudVaultKey(location.treeUri))
+        val gate: WriteReauthGate = when (cloudReauthRoute(deviceUnlock.enclaveEnrolled, vaultId, deviceUnlock.metadataVaultId)) {
+            GateChoice.GRACE_WINDOW -> GraceWindowReauthGate(
+                authorizer = CoordinatorBiometricAuthorizer(deviceUnlock.coordinator, vaultId),
+                clock = { SystemClock.elapsedRealtime() },
+            )
+            GateChoice.NOOP -> NoopReauthGate
+        }
+        var learnedVaultId = vaultId // will be overwritten by onVaultUuidLearned with the real resolved uuid
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids),
             workingDir,
             stateDir,
             vaultUuid = if (vaultId.isEmpty()) ByteArray(0) else hexToBytesPublic(vaultId),
             credential = credential,
+            gate = gate,
             onCommit = { coordinator.afterCommit() },
-            onVaultUuidLearned = onVaultUuidLearned,
+            onVaultUuidLearned = { resolvedHex ->
+                learnedVaultId = resolvedHex
+                onVaultUuidLearned(resolvedHex)
+            },
         )
+        gate.seed(SystemClock.elapsedRealtime())
         session.sync.refreshStatus()
+        if (enrollThisDevice && credential is UnlockCredential.Password) {
+            try {
+                // learnedVaultId is always populated by onVaultUuidLearned (fired inside openBrowseWithSync)
+                cloudEnrollThisDevice(
+                    coordinator = deviceUnlock.coordinator,
+                    alreadyEnrolledForThisVault = deviceUnlock.enclaveEnrolled && deviceUnlock.metadataVaultId == learnedVaultId,
+                    workingDirPath = workingDir.path,
+                    vaultId = learnedVaultId,
+                    password = credential.secret,
+                    flushWorkingToCloud = flushWorkingToCloud,
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "cloud device enroll failed; password open still succeeded", e)
+                // Non-fatal: route to Browse regardless (mirrors demo unlockAndOpen).
+            }
+        }
         return session
     } finally {
         credential.secret.fill(0) // zeroize on every exit, mirroring unlockAndOpen's discipline
@@ -140,11 +184,16 @@ internal suspend fun openCloudBrowse(
  *
  * The credential bytes are zeroized inside [openCloudBrowse]'s `finally` on every exit (including the
  * coordinator/open failure caught here), preserving the `unlockAndOpen` zeroize discipline.
+ *
+ * The [mirror] is constructed once here and passed into [cloudCoordinator] and as the throwing flush
+ * into [openCloudBrowse] so the device enroll can flush the new wrap file atomically.
  */
 internal suspend fun openCloudTarget(
     context: Context,
+    activity: FragmentActivity,
     target: CloudVaultTarget,
     credential: UnlockCredential,
+    enrollThisDevice: Boolean,
     locationStore: VaultLocationStore,
     selectionVm: VaultSelectionViewModel,
 ): Route {
@@ -153,14 +202,18 @@ internal suspend fun openCloudTarget(
     // coordinator (to wire afterCommit) and the coordinator needs openCloudBrowse (as openAndSync), so
     // the coordinator is `lateinit` and captured by the openAndSync closure.
     var location = target.location
+    val mirror = VaultMirrorWorkingCopy(VaultMirror(safCloudFolderPort(context, location.treeUri)), target.workingDir)
     lateinit var coordinator: VaultWorkingCopyCoordinator<BrowseSession>
-    coordinator = cloudCoordinator(context, location, target.workingDir) {
+    coordinator = cloudCoordinator(context, location, mirror) {
         openCloudBrowse(
             context = context,
+            activity = activity,
             workingDir = target.workingDir,
             credential = credential,
             coordinator = coordinator,
             location = location,
+            enrollThisDevice = enrollThisDevice,
+            flushWorkingToCloud = { mirror.flush() }, // throwing flush for atomic enroll
             onVaultUuidLearned = { learnedHex ->
                 if (location.vaultUuidHex.isEmpty() && learnedHex.isNotEmpty()) {
                     location = location.copy(vaultUuidHex = learnedHex)

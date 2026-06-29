@@ -279,15 +279,16 @@ fun AppRoot() {
             },
         )
         is Route.Unlock -> UnlockScreen(
-            // The biometric/enroll affordances are golden-vault (demo) keyed; the cloud path has no
-            // device enrollment yet, so hide them when a cloud target is present.
+            // The biometric-OPEN button is demo-only (cloud open stays password-based this session), so hide it
+            // for a cloud target. The "Remember this device" checkbox (shown when !isEnrolled) IS live for cloud:
+            // ticking it enrolls a device secret for write-reauth after the password open (see openCloudTarget).
             isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
             onUnlock = { credential ->
                 scope.launch {
                     val target = r.cloudTarget
                     route = if (target != null) {
-                        openCloudTarget(context, target, credential, locationStore, selectionVm).also {
+                        openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also {
                             selectionState = selectionVm.state
                         }
                     } else {
