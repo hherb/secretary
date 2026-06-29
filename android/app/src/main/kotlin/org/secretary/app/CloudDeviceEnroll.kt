@@ -34,7 +34,10 @@ suspend fun cloudEnrollThisDevice(
     try {
         flushWorkingToCloud()
     } catch (e: Throwable) {
-        runCatching { coordinator.disenroll(workingDirPath) }
+        // Best-effort full rollback; if disenroll ALSO fails we are back in the half-enrolled state
+        // this function exists to prevent, so attach that failure as a suppressed exception on the
+        // rethrown flush error rather than discarding it silently (host-test-safe — no android.util.Log).
+        runCatching { coordinator.disenroll(workingDirPath) }.onFailure { e.addSuppressed(it) }
         throw e
     }
 }
