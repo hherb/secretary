@@ -288,8 +288,19 @@ fun AppRoot() {
                 scope.launch {
                     val target = r.cloudTarget
                     route = if (target != null) {
-                        openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also {
+                        openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also { result ->
                             selectionState = selectionVm.state
+                            // openCloudTarget returns Route.Unlock (same target) on any open/create
+                            // failure — surface it instead of silently re-showing the Unlock screen
+                            // (a SAF provider hiccup, e.g. eventually-consistent cloud, or a wrong
+                            // password otherwise looks like a dead button).
+                            if (result is Route.Unlock) {
+                                Toast.makeText(
+                                    context,
+                                    "Couldn't open the cloud vault — check the folder is reachable and the password is correct, then try again.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
                         }
                     } else {
                         unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
