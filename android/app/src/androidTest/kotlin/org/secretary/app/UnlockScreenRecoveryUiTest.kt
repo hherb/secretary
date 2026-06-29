@@ -19,8 +19,10 @@ class UnlockScreenRecoveryUiTest {
         var captured: UnlockCredential? = null
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = { captured = it },
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
@@ -44,8 +46,10 @@ class UnlockScreenRecoveryUiTest {
         var captured: UnlockCredential? = null
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = { captured = it },
                 onEnrollChoice = {},
                 onBiometricUnlock = {},

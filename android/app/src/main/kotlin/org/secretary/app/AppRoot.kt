@@ -91,6 +91,7 @@ fun AppRoot() {
     val scope = rememberCoroutineScope()
     var route by remember { mutableStateOf<Route>(Route.Selection) }
     var rememberDevice by remember { mutableStateOf(false) }
+    var isUnlocking by remember { mutableStateOf(false) }
 
     val locationStore = remember { safVaultLocationStore(context) }
     val selectionVm = remember(locationStore) { VaultSelectionViewModel(locationStore) }
@@ -279,47 +280,63 @@ fun AppRoot() {
             },
         )
         is Route.Unlock -> UnlockScreen(
+            title = unlockScreenTitle(r.cloudTarget),
             // The biometric-OPEN button is demo-only (cloud open stays password-based this session), so hide it
             // for a cloud target. The "Remember this device" checkbox (shown when !isEnrolled) IS live for cloud:
             // ticking it enrolls a device secret for write-reauth after the password open (see openCloudTarget).
             isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
+            isUnlocking = isUnlocking,
             onUnlock = { credential ->
+                // Publish the in-flight flag synchronously so the button disables before the next
+                // frame — prevents a double-tap launching two concurrent opens (mirrors onEnroll below).
+                isUnlocking = true
                 scope.launch {
-                    val target = r.cloudTarget
-                    route = if (target != null) {
-                        openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also { result ->
-                            selectionState = selectionVm.state
-                            // openCloudTarget returns Route.Unlock (same target) on any open/create
-                            // failure — surface it instead of silently re-showing the Unlock screen
-                            // (a SAF provider hiccup, e.g. eventually-consistent cloud, or a wrong
-                            // password otherwise looks like a dead button).
-                            if (result is Route.Unlock) {
-                                Toast.makeText(
-                                    context,
-                                    "Couldn't open the cloud vault — check the folder is reachable and the password is correct, then try again.",
-                                    Toast.LENGTH_LONG,
-                                ).show()
+                    try {
+                        val target = r.cloudTarget
+                        route = if (target != null) {
+                            openCloudTarget(context, activity, target, credential, enrollThisDevice = rememberDevice, locationStore, selectionVm).also { result ->
+                                selectionState = selectionVm.state
+                                // openCloudTarget returns Route.Unlock (same target) on any open/create
+                                // failure — surface it instead of silently re-showing the Unlock screen
+                                // (a SAF provider hiccup, e.g. eventually-consistent cloud, or a wrong
+                                // password otherwise looks like a dead button).
+                                if (result is Route.Unlock) {
+                                    Toast.makeText(
+                                        context,
+                                        "Couldn't open the cloud vault — check the folder is reachable and the password is correct, then try again.",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
                             }
+                        } else {
+                            unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
                         }
-                    } else {
-                        unlockAndOpen(context, scope, credential, enrollAfter = rememberDevice, coordinator, vaultId)
+                    } finally {
+                        isUnlocking = false
                     }
                 }
             },
             onEnrollChoice = { rememberDevice = it },
             onBiometricUnlock = {
+                // Publish the in-flight flag synchronously (see onUnlock) so a double-tap can't launch
+                // two concurrent biometric prompts before the button disables.
+                isUnlocking = true
                 scope.launch {
-                    deviceVm.unlockWithBiometrics(
-                        vaultId = vaultId,
-                        reason = "Unlock your vault",
-                    ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
-                    // On success we've already routed to Browse. On a failed/cancelled prompt the VM
-                    // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
-                    // so the "Unlock with biometrics" button persists — a cancel must not strand the
-                    // user on the password-only screen (LaunchedEffect(route) won't re-fire here).
-                    deviceVm.refresh()
-                    deviceState = deviceVm.state
+                    try {
+                        deviceVm.unlockWithBiometrics(
+                            vaultId = vaultId,
+                            reason = "Unlock your vault",
+                        ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                        // On success we've already routed to Browse. On a failed/cancelled prompt the VM
+                        // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
+                        // so the "Unlock with biometrics" button persists — a cancel must not strand the
+                        // user on the password-only screen (LaunchedEffect(route) won't re-fire here).
+                        deviceVm.refresh()
+                        deviceState = deviceVm.state
+                    } finally {
+                        isUnlocking = false
+                    }
                 }
             },
         )
@@ -444,6 +461,7 @@ private suspend fun unlockAndOpen(
         return Route.Browse(session, folder)
     } catch (e: Exception) {
         Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
+        Toast.makeText(context, unlockFailureMessage(e), Toast.LENGTH_LONG).show()
         return Route.Unlock()
     } finally {
         credential.secret.fill(0) // zeroize on every exit; the password background copy is independent

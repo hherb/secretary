@@ -1,15 +1,12 @@
 package org.secretary.app
 
-import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import org.secretary.browse.UnlockCredential
 
 class UnlockScreenDeviceUiTest {
     @get:Rule val composeRule = createComposeRule()
@@ -19,8 +16,10 @@ class UnlockScreenDeviceUiTest {
         var biometricTapped = false
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = true,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = { biometricTapped = true },
@@ -35,8 +34,10 @@ class UnlockScreenDeviceUiTest {
         var lastChoice: Boolean? = null
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = { lastChoice = it },
                 onBiometricUnlock = {},
@@ -50,29 +51,31 @@ class UnlockScreenDeviceUiTest {
     fun enrolled_hidesRememberCheckbox() {
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = true,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
             )
         }
-        // assertDoesNotExist not available in compose-bom 2025.05.00; assertCountEquals(0) is equivalent
-        composeRule.onAllNodesWithTag("remember-device").assertCountEquals(0)
+        composeRule.onNodeWithTag("remember-device").assertDoesNotExist()
     }
 
     @Test
     fun notEnrolled_hidesBiometricButton() {
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
             )
         }
-        // assertDoesNotExist not available in compose-bom 2025.05.00; assertCountEquals(0) is equivalent
-        composeRule.onAllNodesWithTag("biometric-unlock").assertCountEquals(0)
+        composeRule.onNodeWithTag("biometric-unlock").assertDoesNotExist()
     }
 }
