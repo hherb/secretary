@@ -94,8 +94,9 @@ internal fun cloudCoordinator(
  *
  * Write-reauth gate: [cloudDeviceUnlockCoordinator] reads enrollment state for this cloud vault;
  * [cloudReauthRoute] selects [GateChoice.GRACE_WINDOW] when a device secret is enrolled for this
- * exact vault UUID, or [GateChoice.NOOP] otherwise (un-enrolled or stale enrollment). Gate seeding
- * happens AFTER [openBrowseWithSync] returns so the grace window starts at the real unlock instant.
+ * exact vault UUID, or [GateChoice.NOOP] otherwise (un-enrolled or stale enrollment). The grace
+ * window is seeded inside [openBrowseWithSync] (it seeds the gate it is handed), so the window starts
+ * at the real unlock instant — this path does not seed again.
  *
  * Device enroll: when [enrollThisDevice] is true and the credential is a password, calls
  * [cloudEnrollThisDevice] to mint `devices/<uuid>.wrap` and flush it atomically to the cloud. This
@@ -146,7 +147,8 @@ internal suspend fun openCloudBrowse(
                 onVaultUuidLearned(resolvedHex)
             },
         )
-        gate.seed(SystemClock.elapsedRealtime())
+        // openBrowseWithSync already seeds the gate it was handed (BrowseSession.openBrowseWithSync),
+        // matching the demo path — do not seed again here.
         session.sync.refreshStatus()
         if (enrollThisDevice && credential is UnlockCredential.Password) {
             try {
