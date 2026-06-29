@@ -19,8 +19,10 @@ class UnlockScreenDeviceUiTest {
         var biometricTapped = false
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = true,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = { biometricTapped = true },
@@ -35,8 +37,10 @@ class UnlockScreenDeviceUiTest {
         var lastChoice: Boolean? = null
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = { lastChoice = it },
                 onBiometricUnlock = {},
@@ -50,8 +54,10 @@ class UnlockScreenDeviceUiTest {
     fun enrolled_hidesRememberCheckbox() {
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = true,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},
@@ -65,8 +71,10 @@ class UnlockScreenDeviceUiTest {
     fun notEnrolled_hidesBiometricButton() {
         composeRule.setContent {
             UnlockScreen(
+                title = "Secretary — demo vault",
                 isEnrolled = false,
                 rememberDevice = false,
+                isUnlocking = false,
                 onUnlock = {},
                 onEnrollChoice = {},
                 onBiometricUnlock = {},

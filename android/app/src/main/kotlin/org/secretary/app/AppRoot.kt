@@ -279,11 +279,13 @@ fun AppRoot() {
             },
         )
         is Route.Unlock -> UnlockScreen(
+            title = "Secretary — demo vault", // TODO(Task 3): replace with unlockScreenTitle(r)
             // The biometric-OPEN button is demo-only (cloud open stays password-based this session), so hide it
             // for a cloud target. The "Remember this device" checkbox (shown when !isEnrolled) IS live for cloud:
             // ticking it enrolls a device secret for write-reauth after the password open (see openCloudTarget).
             isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
             rememberDevice = rememberDevice,
+            isUnlocking = false, // TODO(Task 3): wire to VM unlock-in-progress state
             onUnlock = { credential ->
                 scope.launch {
                     val target = r.cloudTarget

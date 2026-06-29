@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -50,11 +51,17 @@ private enum class UnlockMode { Password, Recovery }
  * Password hygiene: Compose `TextField` is String-backed, so the typed String lingers until GC —
  * acceptable for this demo skeleton (same tradeoff as the password field). The credential's byte
  * buffer IS zeroized by [AppRoot] after the open pass.
+ *
+ * @param title Screen heading text; distinguishes demo vault from a named cloud target.
+ * @param isUnlocking When true, disables every control and swaps the unlock button label for a
+ *   [CircularProgressIndicator] during the multi-second vault open.
  */
 @Composable
 fun UnlockScreen(
+    title: String,
     isEnrolled: Boolean,
     rememberDevice: Boolean,
+    isUnlocking: Boolean,
     onUnlock: (UnlockCredential) -> Unit,
     onEnrollChoice: (Boolean) -> Unit,
     onBiometricUnlock: () -> Unit,
@@ -67,11 +74,12 @@ fun UnlockScreen(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Secretary — demo vault")
+        Text(title)
 
         if (isEnrolled) {
             Button(
                 onClick = onBiometricUnlock,
+                enabled = !isUnlocking,
                 modifier = Modifier.fillMaxWidth().testTag("biometric-unlock"),
             ) { Text("Unlock with biometrics") }
         }
@@ -80,12 +88,14 @@ fun UnlockScreen(
             SegmentedButton(
                 selected = mode == UnlockMode.Password,
                 onClick = { mode = UnlockMode.Password },
+                enabled = !isUnlocking,
                 shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                 modifier = Modifier.testTag("mode-password"),
             ) { Text("Password") }
             SegmentedButton(
                 selected = mode == UnlockMode.Recovery,
                 onClick = { mode = UnlockMode.Recovery },
+                enabled = !isUnlocking,
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                 modifier = Modifier.testTag("mode-recovery"),
             ) { Text("Recovery phrase") }
@@ -99,6 +109,7 @@ fun UnlockScreen(
                     label = { Text("Vault password") },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
+                    enabled = !isUnlocking,
                     modifier = Modifier.fillMaxWidth().testTag("password-field"),
                 )
                 if (!isEnrolled) {
@@ -106,6 +117,7 @@ fun UnlockScreen(
                         Checkbox(
                             checked = rememberDevice,
                             onCheckedChange = onEnrollChoice,
+                            enabled = !isUnlocking,
                             modifier = Modifier.testTag("remember-device"),
                         )
                         Text("Remember this device with biometrics")
@@ -118,6 +130,7 @@ fun UnlockScreen(
                 label = { Text("24-word recovery phrase") },
                 singleLine = false,
                 minLines = 3,
+                enabled = !isUnlocking,
                 modifier = Modifier.fillMaxWidth().testTag("recovery-field"),
             )
         }
@@ -133,13 +146,17 @@ fun UnlockScreen(
                 }
                 onUnlock(credential)
             },
-            enabled = when (mode) {
+            enabled = !isUnlocking && when (mode) {
                 UnlockMode.Password -> password.isNotEmpty()
                 UnlockMode.Recovery -> phrase.isNotBlank()
             },
             modifier = Modifier.fillMaxWidth().testTag("unlock-button"),
         ) {
-            Text(if (mode == UnlockMode.Password) "Unlock & Sync" else "Unlock")
+            if (isUnlocking) {
+                CircularProgressIndicator(modifier = Modifier.testTag("unlock-progress"))
+            } else {
+                Text(if (mode == UnlockMode.Password) "Unlock & Sync" else "Unlock")
+            }
         }
     }
 }
