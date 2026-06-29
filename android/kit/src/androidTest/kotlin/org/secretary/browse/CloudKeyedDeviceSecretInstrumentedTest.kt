@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,23 +124,37 @@ class CloudKeyedDeviceSecretInstrumentedTest {
         metadata.save(DeviceEnrollment(vaultId, fakeDeviceUuid))
 
         val coordinator = DeviceUnlockCoordinator(UniffiVaultDeviceSlotPort(), enclave, metadata)
-        val authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId)
+        val realAuthorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId)
+
+        // Thin counting wrapper: delegates to the real authorizer while counting calls to authorize().
+        // This lets us distinguish "gate stayed silent (within window)" from "gate triggered a release
+        // (past window)" — a plain no-throw assertion cannot tell the two cases apart.
+        var authorizeCallCount = 0
+        val countingAuthorizer = object : BiometricAuthorizer {
+            override val isEnrolled: Boolean get() = realAuthorizer.isEnrolled
+            override suspend fun authorize(reason: String) {
+                authorizeCallCount++
+                realAuthorizer.authorize(reason)
+            }
+        }
 
         // Use a mutable fake clock seeded at t=0.
         var fakeClockMs = 0L
-        val gate = GraceWindowReauthGate(authorizer, clock = { fakeClockMs })
+        val gate = GraceWindowReauthGate(countingAuthorizer, clock = { fakeClockMs })
 
         // Seed the gate as if the user just unlocked now (t=0).
         gate.seed(fakeClockMs)
 
-        // A write well within the grace window must be silent (no release, no error).
+        // A write well within the grace window must be silent — gate must NOT call authorize().
         fakeClockMs = ReauthWindow.V1_DEFAULT_MS / 2  // 15 s — still inside the window
-        gate.authorizeWrite("within-window")          // must not throw
+        gate.authorizeWrite("within-window")
+        assertEquals("within-window write must not trigger authorize()", 0, authorizeCallCount)
 
-        // Advance past the window boundary (inclusive: elapsed >= windowMs → needs reauth).
+        // Advance past the window boundary (elapsed >= windowMs → needs reauth).
         fakeClockMs = ReauthWindow.V1_DEFAULT_MS      // 30 s — exactly at the boundary
-        // Auto-approving gate passes the Cipher through → release succeeds → authorize returns normally.
-        gate.authorizeWrite("past-window")            // must not throw
+        // Auto-approving passthrough gate releases the secret → authorize() returns normally.
+        gate.authorizeWrite("past-window")
+        assertEquals("past-window write must trigger authorize() exactly once", 1, authorizeCallCount)
 
         metadata.clear()
     }
