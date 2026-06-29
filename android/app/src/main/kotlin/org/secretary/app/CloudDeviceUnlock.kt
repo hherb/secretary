@@ -1,6 +1,13 @@
 package org.secretary.app
 
+import androidx.fragment.app.FragmentActivity
 import java.io.File
+import org.secretary.browse.DeviceEnrollmentMetadataStore
+import org.secretary.browse.DeviceSecretEnclave
+import org.secretary.browse.DeviceUnlockCoordinator
+import org.secretary.browse.FileDeviceEnrollmentMetadataStore
+import org.secretary.browse.KeystoreDeviceSecretEnclave
+import org.secretary.browse.UniffiVaultDeviceSlotPort
 
 /** Which write-reauth gate the cloud open path should use, decided purely from enrollment state. */
 enum class GateChoice { GRACE_WINDOW, NOOP }
@@ -30,3 +37,42 @@ fun cloudDeviceSecretDir(noBackupBase: File, cloudKey: String): File =
 
 /** Per-cloud-vault Keystore key alias. */
 fun cloudDeviceKeyAlias(cloudKey: String): String = "$CLOUD_DEVICE_ALIAS_PREFIX$cloudKey"
+
+/**
+ * A cloud vault's device-unlock surface: the [coordinator] (enroll/unlock/disenroll) plus cheap,
+ * non-prompting reads of enrollment state used to pick the write-reauth gate. The enclave + metadata
+ * are namespaced per cloud vault (by [cloudVaultKey]) so demo and multiple cloud vaults hold
+ * independent secrets with no cross-talk.
+ */
+class CloudDeviceUnlock(
+    val coordinator: DeviceUnlockCoordinator,
+    private val enclave: DeviceSecretEnclave,
+    private val metadata: DeviceEnrollmentMetadataStore,
+) {
+    /** True iff a secret blob exists for this cloud vault (cheap; never prompts). */
+    val enclaveEnrolled: Boolean get() = enclave.isEnrolled
+
+    /** The vaultId this device is enrolled against, or null if no metadata. Never prompts. */
+    val metadataVaultId: String? get() = runCatching { metadata.load() }.getOrNull()?.vaultId
+}
+
+/**
+ * Build the per-cloud-vault [CloudDeviceUnlock] keyed by [cloudKey]. The enclave + metadata live under
+ * [cloudDeviceSecretDir]; the Keystore key uses [cloudDeviceKeyAlias]. The biometric gate is the same
+ * production [biometricPromptGate] the demo uses (titled for cloud unlock).
+ */
+fun cloudDeviceUnlockCoordinator(
+    activity: FragmentActivity,
+    noBackupBase: File,
+    cloudKey: String,
+): CloudDeviceUnlock {
+    val dir = cloudDeviceSecretDir(noBackupBase, cloudKey)
+    val enclave = KeystoreDeviceSecretEnclave(
+        dir = dir,
+        gate = biometricPromptGate(activity, title = "Unlock Secretary"),
+        keyAlias = cloudDeviceKeyAlias(cloudKey),
+    )
+    val metadata = FileDeviceEnrollmentMetadataStore(dir)
+    val coordinator = DeviceUnlockCoordinator(UniffiVaultDeviceSlotPort(), enclave, metadata)
+    return CloudDeviceUnlock(coordinator, enclave, metadata)
+}
