@@ -14,6 +14,8 @@ class FakeCloudFolderPort(initial: Map<String, ByteArray> = emptyMap()) : CloudF
     val writeOrder = mutableListOf<String>()
     val callLog = mutableListOf<String>()
     var failWith: String? = null
+    // The two counters drain INDEPENDENTLY: a failNextN throw fires in guard() before the
+    // readMissNextN check in read(), so when both are set the failNextN budget drains first.
     var failNextN: Int = 0
     var readMissNextN: Int = 0
 

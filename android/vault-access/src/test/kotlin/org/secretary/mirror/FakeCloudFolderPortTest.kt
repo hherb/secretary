@@ -57,6 +57,7 @@ class FakeCloudFolderPortTest {
         assertThrows(CloudFolderException::class.java) { fake.list() }
         assertThrows(CloudFolderException::class.java) { fake.list() }
         assertEquals(emptyList<String>(), fake.list()) // 3rd op succeeds
+        assertEquals(listOf("list", "list", "list"), fake.callLog) // failed ops are still logged
     }
 
     @Test

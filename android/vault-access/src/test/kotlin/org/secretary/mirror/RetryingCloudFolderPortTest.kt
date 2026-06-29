@@ -2,6 +2,7 @@ package org.secretary.mirror
 
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -95,6 +96,15 @@ class RetryingCloudFolderPortTest {
     }
 
     @Test
+    fun `list rethrows after exhausting attempts on a permanent failure`() {
+        val fake = FakeCloudFolderPort()
+        fake.failWith = "revoked"
+        val rec = Recorder()
+        assertThrows(CloudFolderException::class.java) { port(fake, rec).list() }
+        assertEquals(listOf(10L, 20L), rec.sleeps)
+    }
+
+    @Test
     fun `delete retries on exception but issues no read-back`() {
         val fake = FakeCloudFolderPort(mapOf("blocks/old.cbor.enc" to byteArrayOf(7)))
         fake.failNextN = 1
@@ -102,6 +112,7 @@ class RetryingCloudFolderPortTest {
         port(fake, rec).delete("blocks/old.cbor.enc")
         assertEquals(listOf(10L), rec.sleeps)
         assertEquals(0, fake.callLog.count { it.startsWith("read:") }, "delete must not read-back: ${fake.callLog}")
+        assertFalse(fake.snapshot().containsKey("blocks/old.cbor.enc"), "retried delete must deliver the delete")
     }
 
     @Test
