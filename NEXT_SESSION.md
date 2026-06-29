@@ -1,1 +1,1 @@
-docs/handoffs/2026-06-29-android-cloud-vault-biometric-reauth-shipped.md
+docs/handoffs/2026-06-29-android-saf-eventual-consistency-hardening-shipped.md
