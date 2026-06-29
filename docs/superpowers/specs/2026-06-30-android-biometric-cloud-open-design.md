@@ -38,22 +38,23 @@ Approach A reuses the entire existing cloud-open pipeline unchanged, holds the l
 
 ## Components & files touched
 
-### New pure helpers — `android/app/src/main/kotlin/org/secretary/app/CloudBiometric.kt`
-Free functions, no Compose/Android types in their bodies (per the project's pure-functions preference); keeps `AppRoot.kt` under the 500-line threshold.
+> **Correction during plan authoring (post-approval):** verifying the code showed the credential dispatch is **already generic**. `openCloudBrowse → openBrowseWithSync → openWithCredential` (`BrowseSession.kt:63`, `UnlockCredential.kt:30-34`) already routes a `DeviceSecret` credential to `openPort.openWithDeviceSecret`. And `UnlockScreen` (`UnlockScreen.kt:79-85`) already renders the biometric button for any `isEnrolled == true`, demo or cloud. So **`CloudVaultOpen.kt` and `UnlockScreen.kt` need ZERO changes** — the earlier "one behavioral fix to `openCloudBrowse`" is unnecessary. The change is strictly smaller: `AppRoot.kt` wiring + one new pure helper + tests.
 
-- `cloudBiometricButtonVisible(cloudTarget, cloudEnrollState): Boolean` — total mapping: `true` iff a cloud target is present **and** its enrollment state is `Enrolled`. (The demo-path equivalent inlines `cloudTarget == null && state is Enrolled`; this extracts and names the cloud half.)
-- An enrollment-state derivation wrapper is added **only if** the metadata-load result needs branching worth pinning; if it is a one-liner delegating to the existing coordinator query, it is skipped (YAGNI).
+### New pure helper — `android/app/src/main/kotlin/org/secretary/app/CloudBiometric.kt`
+Free function, no Compose/Android types in its body (per the project's pure-functions preference).
 
-### `CloudVaultOpen.kt` — the one real behavioral fix
-`openCloudBrowse()` already takes `credential: UnlockCredential` but hard-codes `openWithPassword`. Change that single open call to `openWithCredential(openPort, workingDir.path, credential)` (the same dispatch the demo path uses). Enroll-after-open stays gated to `credential is Password`, so the biometric path (`DeviceSecret`) correctly skips re-enroll.
+- `unlockBiometricEnrolled(isCloudTarget: Boolean, demoEnrolled: Boolean, cloudEnrolled: Boolean): Boolean` — total mapping that replaces the inline `r.cloudTarget == null && deviceState is Enrolled` at `AppRoot.kt:287`: returns `cloudEnrolled` for a cloud target, `demoEnrolled` for the demo target. This is the one genuinely new decision and is host-tested for totality.
 
-### `AppRoot.kt` — wiring (Approach A)
-- Add `cloudDeviceState` derived in `LaunchedEffect(cloudTarget)` (cheap local read).
-- Screen `isEnrolled` = demo case **OR** `cloudBiometricButtonVisible(...)`.
-- Split `onBiometricUnlock` into a demo branch (existing) and a cloud branch (rebuild cloud coordinator → `DeviceSecret` → `openCloudTarget(..., enrollThisDevice=false)`).
+### `AppRoot.kt` — wiring (Approach A), the only production change
+- Add `var cloudEnrolled by remember { mutableStateOf(false) }`.
+- In `LaunchedEffect(route)`: when `route is Route.Unlock` with a non-null `cloudTarget`, build `cloudDeviceUnlockCoordinator(activity, context.noBackupFilesDir, cloudVaultKey(cloudTarget.location.treeUri))` and set `cloudEnrolled = it.coordinator.isEnrolled` (cheap, prompt-free; `isEnrolled` = enclave blob **and** metadata present). For a demo target the existing `deviceVm.refresh()` path is unchanged.
+- Screen `isEnrolled = unlockBiometricEnrolled(isCloudTarget = r.cloudTarget != null, demoEnrolled = deviceState is DeviceUnlockState.Enrolled, cloudEnrolled = cloudEnrolled)`.
+- Split `onBiometricUnlock` into a demo branch (existing, unchanged) and a **cloud branch** (when `r.cloudTarget != null`): rebuild the cloud coordinator, wrap it in a throwaway `DeviceUnlockViewModel`, call `unlockWithBiometrics(vaultId = cdu.metadataVaultId ?: "", reason = "Unlock your vault") { credential -> route = openCloudTarget(context, activity, r.cloudTarget, credential, enrollThisDevice = false, locationStore, selectionVm) }`, surface the same "couldn't open" Toast on a returned `Route.Unlock`, then recompute `cloudEnrolled = cdu.coordinator.isEnrolled` so a cancel keeps the button. `isUnlocking` wraps it in the existing `try/finally`.
+
+**Why `vaultId = cdu.metadataVaultId`:** `DeviceUnlockCoordinator.unlock` (`DeviceUnlockCoordinator.kt:56-61`) guards `enrollment.vaultId == vaultId` (else `VaultSlotMismatch`) **before** the biometric prompt. The enrolled vault id is exactly `cdu.metadataVaultId`; the location's `vaultUuidHex` may be empty (a SAF-picked vault not yet opened) or differ, so the enrolled id is the correct guard value. The actual open uses the `deviceUuid` carried in the returned credential, independent of this id.
 
 ### Unchanged
-`CloudDeviceUnlock.kt`, `BrowseSession.kt`, `UnlockCredential.kt`, all of `:kit` / `:vault-access` / `core` / FFI. No on-disk-format / spec / conformance / conflict-KAT change.
+`CloudVaultOpen.kt`, `UnlockScreen.kt`, `CloudDeviceUnlock.kt`, `BrowseSession.kt`, `UnlockCredential.kt`, all of `:kit` / `:vault-access` / `core` / FFI. No on-disk-format / spec / conformance / conflict-KAT change.
 
 ## Error handling
 
@@ -64,8 +65,9 @@ Free functions, no Compose/Android types in their bodies (per the project's pure
 
 ## Testing (acceptance bar: host gate + emulator instrumented)
 
-- **Host unit tests** (`:app/src/test`): `cloudBiometricButtonVisible` totality — enrolled-cloud → true; unenrolled-cloud → false; null-target → false; demo-OR composition if extracted. Pure, fast.
-- **Instrumented UI test** (`:app`, emulator-5554): new `CloudBiometricUnlockUiTest` — render `UnlockScreen` for an enrolled cloud target, assert the biometric button (existing testTag) is shown + enabled and that tapping it routes through the cloud branch (existing fake/injected coordinator pattern, no real Keystore); assert the button is **absent** for an unenrolled cloud target.
+- **Host unit test** (`:app/src/test`, JUnit 5): `UnlockBiometricEnrolledTest` for `unlockBiometricEnrolled` totality — cloud-target+cloudEnrolled → true; cloud-target+!cloudEnrolled → false; demo-target follows `demoEnrolled` (true and false); and that the cloud branch ignores `demoEnrolled` and the demo branch ignores `cloudEnrolled` (no cross-talk). Pure, fast. This is the one genuinely new decision.
+- **Instrumented UI test** (`:app`, emulator-5554): new `CloudBiometricUnlockUiTest` — render `UnlockScreen` with a **cloud** title (`"Secretary — My Cloud Vault"`) and `isEnrolled = true`; assert the `biometric-unlock` button is displayed + enabled and tapping it fires `onBiometricUnlock`; and with `isEnrolled = false` assert the button is **absent**. This pins that the biometric affordance is available on the cloud-titled unlock screen (the #332 per-target title and this biometric change coexist).
+- **Already-covered, not re-tested here:** the credential-release orchestration (`DeviceUnlockViewModel.unlockWithBiometrics` over `DeviceUnlockCoordinator`) and the `VaultSlotMismatch`/`NotEnrolled` guards are host-tested in `:vault-access`; the gate-route decision in `CloudReauthRouteTest`. The cloud `onBiometricUnlock` glue in `AppRoot` (real Keystore + SAF + FFI) is covered by compile (`:app:compileDebugKotlin`) + the deferred on-device run.
 - **Host gate green:** `:app:testDebugUnitTest :kit:testDebugUnitTest :vault-access:test :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin`.
 - **On-device biometric cloud-open** on the RedMagic: deferred to a manual follow-up.
 - **No conformance/KAT impact** (no FFI/format change) — the Swift/Kotlin conformance scripts are not in this gate.
