@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.io.File
 
 class RetryingCloudFolderPortTest {
     // Fast, deterministic policy: 3 attempts, 10ms base, 40ms cap — no real waiting (sleep is faked).
@@ -100,5 +102,21 @@ class RetryingCloudFolderPortTest {
         port(fake, rec).delete("blocks/old.cbor.enc")
         assertEquals(listOf(10L), rec.sleeps)
         assertEquals(0, fake.callLog.count { it.startsWith("read:") }, "delete must not read-back: ${fake.callLog}")
+    }
+
+    @Test
+    fun `VaultMirror flush over a flaky retrying port pushes every file`(@TempDir workingDir: File) {
+        File(workingDir, "manifest.cbor.enc").writeBytes(byteArrayOf(9))
+        File(workingDir, "blocks").mkdirs()
+        File(workingDir, "blocks/a.cbor.enc").writeBytes(byteArrayOf(1, 2))
+        val fake = FakeCloudFolderPort()
+        fake.failNextN = 1 // one transient hiccup on the cloud list; retry absorbs it, both writes then succeed
+        val rec = Recorder()
+        val mirror = VaultMirror(port(fake, rec))
+        val report = mirror.flush(workingDir)
+        assertTrue(rec.sleeps.isNotEmpty(), "at least one retry backoff sleep must have fired")
+        assertEquals(2, report.copied.size, "both files pushed")
+        assertArrayEquals(byteArrayOf(9), fake.snapshot().getValue("manifest.cbor.enc"))
+        assertArrayEquals(byteArrayOf(1, 2), fake.snapshot().getValue("blocks/a.cbor.enc"))
     }
 }
