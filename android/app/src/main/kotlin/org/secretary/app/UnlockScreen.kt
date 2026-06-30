@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -55,6 +56,8 @@ private enum class UnlockMode { Password, Recovery }
  * @param title Screen heading text; distinguishes demo vault from a named cloud target.
  * @param isUnlocking When true, disables every control and swaps the unlock button label for a
  *   [CircularProgressIndicator] during the multi-second vault open.
+ * @param unsyncedCreateWarning When true, shows a persistent "created but not yet synced" banner
+ *   above the title (#329).
  */
 @Composable
 fun UnlockScreen(
@@ -65,6 +68,7 @@ fun UnlockScreen(
     onUnlock: (UnlockCredential) -> Unit,
     onEnrollChoice: (Boolean) -> Unit,
     onBiometricUnlock: () -> Unit,
+    unsyncedCreateWarning: Boolean = false,
 ) {
     var mode by remember { mutableStateOf(UnlockMode.Password) }
     var password by remember { mutableStateOf("") }
@@ -74,6 +78,15 @@ fun UnlockScreen(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (unsyncedCreateWarning) {
+            Text(
+                "Vault created but not yet synced — keep this device online and reopen to " +
+                    "finish the upload. The vault currently exists only on this device.",
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth().testTag("unsynced-create-warning"),
+            )
+        }
+
         Text(title)
 
         if (isEnrolled) {

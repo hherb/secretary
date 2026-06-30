@@ -400,6 +400,7 @@ fun AppRoot() {
                     }
                 }
             },
+            unsyncedCreateWarning = r.unsyncedCreateWarning,
         )
         is Route.Browse -> {
             // Monitor + session lifecycle keyed on the SESSION instance only — flipping showSettings
