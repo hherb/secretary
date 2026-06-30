@@ -45,6 +45,14 @@ internal fun cloudOpenFailureRoute(error: Throwable, target: CloudVaultTarget): 
     CloudOpenFailure(target, createdButNotSynced = error is PendingFlushNotPersisted)
 
 /**
+ * Project a [CloudOpenFailure] to the Unlock route, carrying [CloudOpenFailure.createdButNotSynced]
+ * through as [Route.Unlock.unsyncedCreateWarning] so the screen can show the persistent
+ * "created but not yet synced" banner (#329). Pure: host-testable without a Context.
+ */
+internal fun unsyncedCreateRoute(failure: CloudOpenFailure): Route.Unlock =
+    Route.Unlock(cloudTarget = failure.target, unsyncedCreateWarning = failure.createdButNotSynced)
+
+/**
  * The cloud vault the Unlock screen is gating, carried into [Route.Unlock] so the credential the
  * user enters there is applied to THIS cloud vault (not the demo golden vault). Both cloud paths —
  * opening a remembered vault and the just-created vault — route through the SAME Unlock screen so
@@ -259,7 +267,7 @@ internal suspend fun openCloudTarget(
         } else {
             Log.w(TAG, "cloud open/create failed; returning to unlock with same target", e)
         }
-        Route.Unlock(cloudTarget = failure.target)
+        unsyncedCreateRoute(failure)
     } finally {
         // Backstop zeroize: openCloudBrowse zeroizes too, but the coordinator's flush/materialize
         // runs BEFORE openAndSync — if it throws, openCloudBrowse (and its finally) never runs, so the

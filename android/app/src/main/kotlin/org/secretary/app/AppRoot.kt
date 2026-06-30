@@ -61,7 +61,10 @@ internal sealed interface Route {
      * non-null = a cloud vault whose credential, once entered here, is applied to THAT vault via the
      * working-copy coordinator. Both cloud paths (open-remembered + just-created) route through here.
      */
-    data class Unlock(val cloudTarget: CloudVaultTarget? = null) : Route
+    data class Unlock(
+        val cloudTarget: CloudVaultTarget? = null,
+        val unsyncedCreateWarning: Boolean = false,
+    ) : Route
 
     /**
      * The unlocked browse session. [cloudTarget] is carried so backgrounding (ON_STOP) returns to an
