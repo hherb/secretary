@@ -1,6 +1,7 @@
 package org.secretary.app
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.secretary.browse.VaultLocation
@@ -25,5 +26,21 @@ class CloudCreateErrorRoutingTest {
         val r = cloudOpenFailureRoute(VaultMirrorException("offline"), target())
         assertEquals(false, r.createdButNotSynced)
         assertTrue(r.target.isCreate)
+    }
+
+    @Test
+    fun `unsyncedCreateRoute carries the warning flag for an unsynced create`() {
+        val t = target()
+        val route = unsyncedCreateRoute(CloudOpenFailure(t, createdButNotSynced = true))
+        assertSame(t, route.cloudTarget, "must stay on the same target so reopen retries push-before-pull")
+        assertTrue(route.unsyncedCreateWarning, "the un-synced-create warning must ride the route")
+    }
+
+    @Test
+    fun `unsyncedCreateRoute does not warn for an ordinary failure`() {
+        val t = target()
+        val route = unsyncedCreateRoute(CloudOpenFailure(t, createdButNotSynced = false))
+        assertSame(t, route.cloudTarget)
+        assertEquals(false, route.unsyncedCreateWarning)
     }
 }
