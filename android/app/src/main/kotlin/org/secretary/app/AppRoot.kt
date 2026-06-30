@@ -158,14 +158,31 @@ fun AppRoot() {
     }
     val deviceVm = remember(coordinator) { DeviceUnlockViewModel(coordinator) }
     var deviceState by remember { mutableStateOf<DeviceUnlockState>(DeviceUnlockState.Unenrolled) }
+    // Per-cloud-vault biometric enrollment, computed prompt-free on entering a cloud Unlock screen
+    // (see LaunchedEffect(route)). Drives whether the biometric button shows for a cloud target.
+    var cloudEnrolled by remember { mutableStateOf(false) }
     val settingsVm = remember(coordinator) { DeviceSettingsViewModel(coordinator) }
     var settingsState by remember { mutableStateOf(DeviceSettingsState(enrolled = false)) }
     LaunchedEffect(route) {
-        if (route is Route.Unlock) {
+        val current = route
+        if (current is Route.Unlock) {
             deviceVm.refresh()
             deviceState = deviceVm.state
+            // For a cloud target, read its per-cloud-vault enrollment (enclave blob AND metadata),
+            // keyed by the cloud treeUri. Cheap and prompt-free (constructs the Keystore wrapper but
+            // never releases). Demo targets leave cloudEnrolled false (the demo path drives the button).
+            val cloudTarget = current.cloudTarget
+            cloudEnrolled = if (cloudTarget != null) {
+                cloudDeviceUnlockCoordinator(
+                    activity,
+                    context.noBackupFilesDir,
+                    cloudVaultKey(cloudTarget.location.treeUri),
+                ).coordinator.isEnrolled
+            } else {
+                false
+            }
         }
-        if (route is Route.Selection) {
+        if (current is Route.Selection) {
             selectionVm.loadPersisted()
             selectionState = selectionVm.state
         }
@@ -281,10 +298,14 @@ fun AppRoot() {
         )
         is Route.Unlock -> UnlockScreen(
             title = unlockScreenTitle(r.cloudTarget),
-            // The biometric-OPEN button is demo-only (cloud open stays password-based this session), so hide it
-            // for a cloud target. The "Remember this device" checkbox (shown when !isEnrolled) IS live for cloud:
-            // ticking it enrolls a device secret for write-reauth after the password open (see openCloudTarget).
-            isEnrolled = r.cloudTarget == null && deviceState is DeviceUnlockState.Enrolled,
+            // Biometric-OPEN is now available for a cloud target too (#337): a cloud target follows its
+            // per-cloud-vault enrollment (cloudEnrolled), the demo target follows the demo enclave. The
+            // "Remember this device" checkbox (shown when !isEnrolled) stays live for enrolling a new device.
+            isEnrolled = unlockBiometricEnrolled(
+                isCloudTarget = r.cloudTarget != null,
+                demoEnrolled = deviceState is DeviceUnlockState.Enrolled,
+                cloudEnrolled = cloudEnrolled,
+            ),
             rememberDevice = rememberDevice,
             isUnlocking = isUnlocking,
             onUnlock = { credential ->
@@ -324,16 +345,53 @@ fun AppRoot() {
                 isUnlocking = true
                 scope.launch {
                     try {
-                        deviceVm.unlockWithBiometrics(
-                            vaultId = vaultId,
-                            reason = "Unlock your vault",
-                        ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
-                        // On success we've already routed to Browse. On a failed/cancelled prompt the VM
-                        // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
-                        // so the "Unlock with biometrics" button persists — a cancel must not strand the
-                        // user on the password-only screen (LaunchedEffect(route) won't re-fire here).
-                        deviceVm.refresh()
-                        deviceState = deviceVm.state
+                        val cloudTarget = r.cloudTarget
+                        if (cloudTarget != null) {
+                            // Cloud biometric open: build the per-cloud-vault coordinator, release the
+                            // secret behind the prompt, then route the DeviceSecret credential through the
+                            // SAME openCloudTarget pipeline the password path uses (enrollThisDevice=false:
+                            // a biometric unlock means the device is already enrolled). The vaultId guard
+                            // is the ENROLLED id (metadataVaultId): the location's UUID may be empty/stale,
+                            // and DeviceUnlockCoordinator.unlock checks enrollment.vaultId == vaultId before
+                            // prompting. The open itself uses the deviceUuid carried in the credential.
+                            val cdu = cloudDeviceUnlockCoordinator(
+                                activity,
+                                context.noBackupFilesDir,
+                                cloudVaultKey(cloudTarget.location.treeUri),
+                            )
+                            DeviceUnlockViewModel(cdu.coordinator).unlockWithBiometrics(
+                                vaultId = cdu.metadataVaultId ?: "",
+                                reason = "Unlock your vault",
+                            ) { credential ->
+                                route = openCloudTarget(
+                                    context, activity, cloudTarget, credential,
+                                    enrollThisDevice = false, locationStore, selectionVm,
+                                ).also { result ->
+                                    selectionState = selectionVm.state
+                                    if (result is Route.Unlock) {
+                                        Toast.makeText(
+                                            context,
+                                            "Couldn't open the cloud vault — check the folder is reachable, then try again.",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                }
+                            }
+                            // Recompute prompt-free so a cancel/failed prompt keeps the button (the screen
+                            // stays on Unlock; LaunchedEffect(route) won't re-fire).
+                            cloudEnrolled = cdu.coordinator.isEnrolled
+                        } else {
+                            deviceVm.unlockWithBiometrics(
+                                vaultId = vaultId,
+                                reason = "Unlock your vault",
+                            ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                            // On success we've already routed to Browse. On a failed/cancelled prompt the VM
+                            // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
+                            // so the "Unlock with biometrics" button persists — a cancel must not strand the
+                            // user on the password-only screen (LaunchedEffect(route) won't re-fire here).
+                            deviceVm.refresh()
+                            deviceState = deviceVm.state
+                        }
                     } finally {
                         isUnlocking = false
                     }
