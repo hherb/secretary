@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-01-ios-device-unlock-browse-284-shipped.md
+docs/handoffs/2026-07-02-android-biometric-feedback-341-342-shipped.md
