@@ -120,29 +120,67 @@ external track.
 ## Where the project is, vs. where the original memos were written
 
 The four audit memos were written in May 2026 against
-Sub-project A (Rust core) only. Since then:
+Sub-project A (Rust core) only. Since then (state as of 2026-07-01;
+[`ROADMAP.md`](../../../ROADMAP.md) and the README "Project status"
+table carry the authoritative per-slice detail):
 
-- **Sub-project B** (FFI bindings) — complete through B.6 v2. The
-  bridge crate + PyO3 + uniffi (Swift, Kotlin) expose unlock / open /
-  read / save / share / trash / restore. Cross-language conformance
-  KAT replays Rust ↔ Swift ↔ Kotlin parity. See
+- **Sub-project B** (FFI bindings) — complete through B.6 v2 and
+  extended well past it. The bridge crate + PyO3 + uniffi (Swift,
+  Kotlin) expose unlock / open / read / save / share / trash /
+  restore, plus the per-device wrap-slot ops (B.1 format + crypto,
+  B.2 FFI projection — `add_device_slot` / `open_with_device_secret`
+  / `remove_device_slot`, [ADR 0009](../../adr/0009-per-device-wrap-slot.md)),
+  the folder-writing `create_vault_in_folder`, the record-edit
+  primitives (`append` / `edit` / `tombstone` / `resurrect`), the
+  block-CRUD tier (`create_block` / `rename_block` / `move_record`),
+  and the sync surface (`sync_status` / `sync_vault` /
+  `sync_commit_decisions`, [#187](https://github.com/hherb/secretary/issues/187)).
+  Cross-language conformance KAT (27/27: 26 vectors + a device-secret
+  enrol round-trip) replays Rust ↔ Swift ↔ Kotlin parity. See
   [`ROADMAP.md`](../../../ROADMAP.md) → Sub-project B for the per-
   phase summary.
-- **Sub-project C** (sync orchestration) — C.1 (sync detection),
-  C.1.1a (conflict-copy ingestion), C.1.1b (merge layer), C.2 (the
-  headless `secretary-sync` CLI) all ✅ complete. C.3 (mobile
-  adapters) + C.4 (cross-device convergence conformance) pending.
-- **Sub-project D** (platform UIs) — pivoted to Tauri 2 per
-  [ADR 0007](../../adr/0007-d-row-tauri.md); D.1.1 (walking-skeleton
-  desktop client) in flight.
+- **Sub-project C** (sync orchestration) — **all four phases ✅
+  complete.** C.1 (sync detection), C.1.1a (conflict-copy ingestion),
+  C.1.1b (merge layer), C.2 (the headless `secretary-sync` CLI), C.3
+  (mobile adapters — the full iOS *and* Android sync stacks), and C.4
+  (cross-device convergence conformance, ✅ 2026-06-15 —
+  `core/tests/convergence.rs`, mirrored in the stdlib-only
+  clean-room `conformance.py`).
+- **Sub-project D** (platform UIs) — **far past the walking-skeleton
+  phase; the platform surface where most current work lands.** Desktop
+  is a single Tauri 2 codebase ([ADR 0007](../../adr/0007-d-row-tauri.md))
+  shipped through D.1.15 (unlock, browse, create, edit, delete/trash,
+  share/contacts, per-block + per-contact recipient views, revoke,
+  sync UI + interactive conflict resolution) plus a block-CRUD UI and
+  password re-auth before writes. Mobile stayed native over uniffi
+  ([ADR 0008](../../adr/0008-native-mobile-via-uniffi.md)): the **iOS**
+  app does Secure-Enclave/Face-ID device unlock (on-device proof ✅ on
+  an iPhone 13 Pro Max, [#202](https://github.com/hherb/secretary/issues/202)),
+  password/recovery unlock, vault selection, browse-with-reveal, record
+  + block CRUD, vault create/import, sync UI, and biometric write
+  re-auth; the **Android** app (Jetpack Compose) does password /
+  recovery / biometric-Keystore device unlock (on-device proof ✅ on an
+  NX809J), browse-with-reveal, record + block CRUD, sync-on-browse, and
+  a full cloud-drive working-copy lifecycle over Storage Access
+  Framework (instrumented-proven end-to-end, epic
+  [#321](https://github.com/hherb/secretary/issues/321)).
 
 The Rust core's *normative* behaviour is unchanged across these
 sub-projects (the spec is frozen for v1, see
 [`CLAUDE.md`](../../../CLAUDE.md) → "Spec is normative"). The memos'
 findings remain valid for the core; the FFI memo extends the
 discipline coverage to the bridge layer; sub-project C's sync code
-follows the established patterns; sub-project D's platform-UI hygiene
-will need its own memo when D matures past the walking-skeleton phase.
+follows the established patterns. **Sub-project D has now matured well
+past the walking-skeleton phase, so its platform-UI secret-hygiene
+concerns are live rather than hypothetical** — reveal-on-demand with
+auto-hide, copy-with-auto-clear, lock-on-background session wipe, and
+re-auth-before-write are already implemented across desktop / iOS /
+Android, but a consolidated platform-UI hygiene memo (clipboard
+lifetime, reveal lifetime, IPC-plaintext handling) covering all three
+platforms is the outstanding contributor-doc gap for this layer. Until
+it exists, the per-platform discipline is documented in the shipped
+UIs and the FFI memo's "Sub-project D platform concerns (carved out)"
+section is the closest standing reference.
 
 ## When updating these memos
 

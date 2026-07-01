@@ -417,14 +417,21 @@ for the full investigation record.
 
 ### Sub-project D platform concerns (carved out)
 
-When the platform UI (Sub-project D, currently in flight as the
-Tauri 2 desktop walking skeleton — ADR 0007 + `desktop/`) copies a
+When a platform UI (Sub-project D — now shipping real reveal/copy
+surfaces across the Tauri 2 desktop app, the native iOS app, and the
+native Android app; see [ADR 0007](../../adr/0007-d-row-tauri.md) +
+[ADR 0008](../../adr/0008-native-mobile-via-uniffi.md)) copies a
 secret to the system clipboard, that's a Sub-project D concern that
 the bridge cannot reach. The bridge gives the UI the **secret bytes**
 via `expose_text` / `expose_bytes`; what the UI does with them
 between read and clipboard-clear is Sub-project D's responsibility.
+The three UIs already implement reveal-on-demand with auto-hide,
+copy-with-auto-clear, and lock-on-background session wipe, but this
+memo is bridge-scoped — the consolidated cross-platform hygiene memo
+is still an outstanding contributor-doc gap (see
+[`index.md`](index.md) → "Where the project is").
 
-The Tauri 2 desktop scaffold's IPC layer (`desktop/src-tauri/src/`)
+The Tauri 2 desktop's IPC layer (`desktop/src-tauri/src/`)
 re-bridges through `secretary-ffi-py` for the live UI; the same
 `expose_*` discipline applies at every IPC `tauri::command` boundary
 that returns secret bytes. Contributors adding such commands should
