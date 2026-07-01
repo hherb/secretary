@@ -131,15 +131,51 @@ private struct RootView: View {
                                 Task { await syncVM.refreshStatus() }
                             }
                             if rememberDevice, let password {
-                                do {
-                                    try localCoordinator().enroll(
-                                        vaultPath: scoped.pathData,
-                                        vaultId: session.vaultUuidHex,
-                                        password: password)
-                                } catch {
-                                    // Non-fatal: the password open already succeeded.
-                                    appLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
-                                    biometricUnlockError = "Couldn’t enable biometric unlock. You can try again later."
+                                // Enroll runs a second Argon2id password-open
+                                // (addDeviceSlot) — offload off the main actor so
+                                // the `.browse` route transition below is never
+                                // blocked on it. Best-effort/non-fatal: the
+                                // password open already succeeded, and by the
+                                // time this completes `UnlockScreen` has usually
+                                // already navigated away, so `appLog.error` (not
+                                // `biometricUnlockError`) is the diagnostic that
+                                // actually gets seen. Capture VALUES (not
+                                // `session`/`scoped`) into the task: coordinator
+                                // is `Sendable`, `vaultPath`/`vaultId`/`password`
+                                // are `Data`/`String`/`[UInt8]`, all `Sendable`.
+                                let coordinator = localCoordinator()
+                                let vaultPath = scoped.pathData
+                                let vaultId = session.vaultUuidHex
+                                Task {
+                                    do {
+                                        // `runOffMainActor` (SecretaryKit) is
+                                        // module-internal, so the app target
+                                        // inlines the same suspend-not-block
+                                        // pattern: hop the synchronous, CPU-bound
+                                        // enroll onto a background queue via
+                                        // `withCheckedThrowingContinuation`
+                                        // rather than calling it directly on
+                                        // this `Task`'s (still cooperative-pool)
+                                        // context.
+                                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                                            DispatchQueue.global(qos: .userInitiated).async {
+                                                do {
+                                                    try coordinator.enroll(
+                                                        vaultPath: vaultPath,
+                                                        vaultId: vaultId,
+                                                        password: password)
+                                                    continuation.resume()
+                                                } catch {
+                                                    continuation.resume(throwing: error)
+                                                }
+                                            }
+                                        }
+                                    } catch {
+                                        appLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
+                                        await MainActor.run {
+                                            biometricUnlockError = "Couldn’t enable biometric unlock. You can try again later."
+                                        }
+                                    }
                                 }
                             }
                             let gate = GraceWindowReauthGate(
