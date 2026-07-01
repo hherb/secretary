@@ -8,6 +8,7 @@ import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.NoopReauthGate
+import org.secretary.browse.RetargetableReauthGate
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
 import org.secretary.browse.VaultLocationStore
@@ -101,11 +102,12 @@ internal fun cloudCoordinator(
  * cloud; and threads the learned vault UUID back via [onVaultUuidLearned] (a SAF-picked existing
  * vault may not know its UUID until first open).
  *
- * Write-reauth gate: [cloudDeviceUnlockCoordinator] reads enrollment state for this cloud vault;
- * [cloudReauthRoute] selects [GateChoice.GRACE_WINDOW] when a device secret is enrolled for this
- * exact vault UUID, or [GateChoice.NOOP] otherwise (un-enrolled or stale enrollment). The grace
- * window is seeded inside [openBrowseWithSync] (it seeds the gate it is handed), so the window starts
- * at the real unlock instant — this path does not seed again.
+ * Write-reauth gate (#340): a remembered SAF cloud vault's UUID is "" until it is resolved during the
+ * open, so the gate is a [RetargetableReauthGate] placeholder re-targeted from `onVaultUuidLearned`
+ * via [cloudGateForResolvedVault] — [cloudReauthRoute] then selects [GateChoice.GRACE_WINDOW] when a
+ * device secret is enrolled for the RESOLVED vault UUID, or [GateChoice.NOOP] otherwise (un-enrolled
+ * or stale enrollment). The grace window is seeded inside [openBrowseWithSync] (it seeds the gate it
+ * is handed); the wrapper re-seeds the retargeted delegate so seeding is correct regardless of order.
  *
  * Device enroll: when [enrollThisDevice] is true and the credential is a password, calls
  * [cloudEnrollThisDevice] to mint `devices/<uuid>.wrap` and flush it atomically to the cloud. This
@@ -135,13 +137,12 @@ internal suspend fun openCloudBrowse(
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val vaultId = location.vaultUuidHex
         val deviceUnlock = cloudDeviceUnlockCoordinator(activity, context.noBackupFilesDir, cloudVaultKey(location.treeUri))
-        val gate: WriteReauthGate = when (cloudReauthRoute(deviceUnlock.enclaveEnrolled, vaultId, deviceUnlock.metadataVaultId)) {
-            GateChoice.GRACE_WINDOW -> GraceWindowReauthGate(
-                authorizer = CoordinatorBiometricAuthorizer(deviceUnlock.coordinator, vaultId),
-                clock = { SystemClock.elapsedRealtime() },
-            )
-            GateChoice.NOOP -> NoopReauthGate
-        }
+        // #340: a remembered SAF cloud vault's UUID is "" until it is resolved during open, so the
+        // write-reauth gate cannot be chosen up front (cloudReauthRoute("") falls to NOOP even for an
+        // enrolled vault). Hand a retargetable placeholder to the open and re-target it from the
+        // resolved UUID inside onVaultUuidLearned (which fires before openBrowseWithSync seeds it).
+        val gate = RetargetableReauthGate()
+        val clock = { SystemClock.elapsedRealtime() }
         var learnedVaultId = vaultId // will be overwritten by onVaultUuidLearned with the real resolved uuid
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids),
@@ -153,6 +154,7 @@ internal suspend fun openCloudBrowse(
             onCommit = { coordinator.afterCommit() },
             onVaultUuidLearned = { resolvedHex ->
                 learnedVaultId = resolvedHex
+                gate.retarget(cloudGateForResolvedVault(deviceUnlock, resolvedHex, clock))
                 onVaultUuidLearned(resolvedHex)
             },
         )
@@ -184,6 +186,24 @@ internal suspend fun openCloudBrowse(
         credential.secret.fill(0) // zeroize on every exit, mirroring unlockAndOpen's discipline
     }
 }
+
+/**
+ * Build the write-reauth gate for a cloud open from the RESOLVED vault UUID (#340). A remembered SAF
+ * cloud vault's UUID is unknown before the open, so the gate is chosen here — from `onVaultUuidLearned`
+ * — rather than up front. GRACE_WINDOW only when a device secret is enrolled for exactly this vault
+ * (see [cloudReauthRoute]); otherwise NOOP (un-enrolled or stale enrollment, which must not block
+ * writes). [clock] MUST be the same monotonic source the demo path uses (`SystemClock.elapsedRealtime`).
+ */
+private fun cloudGateForResolvedVault(
+    deviceUnlock: CloudDeviceUnlock,
+    resolvedVaultId: String,
+    clock: () -> Long,
+): WriteReauthGate =
+    when (cloudReauthRoute(deviceUnlock.enclaveEnrolled, resolvedVaultId, deviceUnlock.metadataVaultId)) {
+        GateChoice.GRACE_WINDOW ->
+            GraceWindowReauthGate(CoordinatorBiometricAuthorizer(deviceUnlock.coordinator, resolvedVaultId), clock)
+        GateChoice.NOOP -> NoopReauthGate
+    }
 
 /**
  * The cloud sibling of `unlockAndOpen`: applies the credential entered on the Unlock screen to the
