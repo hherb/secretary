@@ -108,7 +108,7 @@ A *block* is the unit of both encryption and sharing. A block contains 1 or more
 | [docs/threat-model.md](docs/threat-model.md) | Adversaries, attacks, defenses, explicit non-goals |
 | [docs/crypto-design.md](docs/crypto-design.md) | Cryptographic constructions in spec-level detail |
 | [docs/vault-format.md](docs/vault-format.md) | Byte-level on-disk format (v1) |
-| [docs/adr/](docs/adr/) | Architecture decision records — six in total |
+| [docs/adr/](docs/adr/) | Architecture decision records — ten in total |
 
 **User and contributor manual** — informal companions to the specs.
 

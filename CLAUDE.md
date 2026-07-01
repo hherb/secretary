@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-**Secretary** is a multi-platform, client-only secrets manager. The repository is currently in **Sub-project A** — the Rust cryptographic core and on-disk vault format. There is no usable application yet. The FFI bindings (Sub-project B), sync orchestration (Sub-project C), and platform UIs (Sub-project D) are downstream phases; their directories (`ffi/*`, `desktop/`, `ios/`, `android/`) currently hold stubs or README placeholders.
+**Secretary** is a multi-platform, client-only secrets manager. The Rust cryptographic core and on-disk vault format (**Sub-project A**) are feature-complete and frozen for v1, and all three downstream phases are substantially built on top of it: **Sub-project B** (FFI bindings — the `secretary-ffi-bridge` crate projected onto PyO3 + uniffi) is complete through B.6 v2 and beyond (device-slot ops, record-edit + block-CRUD primitives, sync surface); **Sub-project C** (sync orchestration) is complete through C.4; and **Sub-project D** (platform UIs) ships working apps — a Tauri 2 desktop client (`desktop/`), a native SwiftUI iOS app (`ios/`), and a native Jetpack Compose Android app (`android/`). See [README.md](README.md) "Project status" and [ROADMAP.md](ROADMAP.md) for the authoritative per-slice state. The Rust core remains the single source of truth for everything security-relevant; the platform code consumes it, never reimplements it.
 
 The cryptographic design and on-disk format are **frozen for v1** because vaults written today must remain readable by clients written decades from now. Treat anything in `docs/crypto-design.md`, `docs/vault-format.md`, and `docs/threat-model.md` as the source of truth — the Rust code implements those, not the other way around.
 
 ## Layout
 
 ```
-core/                Rust crate `secretary-core` — the only thing that matters today
+core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier (generic crypto primitives via
@@ -19,8 +19,12 @@ core/tests/python/conformance.py           — clean-room verifier (generic cryp
                                              the spec is implementable from `docs/` alone
 core/fuzz/           — `cargo-fuzz` harness, EXCLUDED from the workspace; nightly toolchain
 docs/                — normative specs (see "Spec is normative" below)
-docs/adr/            — architecture decision records, numbered 0001..0006
-ffi/secretary-ffi-py, ffi/secretary-ffi-uniffi  — placeholder PyO3 / uniffi binding crates
+docs/adr/            — architecture decision records, numbered 0001..0010
+ffi/secretary-ffi-bridge                        — the single source of FFI code truth (pure-safe Rust)
+ffi/secretary-ffi-py, ffi/secretary-ffi-uniffi  — PyO3 / uniffi (Swift + Kotlin) binding crates over the bridge
+desktop/             — Tauri 2 desktop client (Rust backend + Svelte/TypeScript frontend)
+ios/                 — native SwiftUI app + Swift packages (SecretaryKit / SecretaryVaultAccess / SecretaryDeviceUnlock)
+android/             — native Jetpack Compose app + Gradle modules (:app, :kit, :vault-access, :sync-ui, :browse-ui)
 ```
 
 ## Working directory discipline

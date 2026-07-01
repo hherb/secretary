@@ -80,3 +80,28 @@ docs/manual/contributors/ffi-secret-handling-internal.md::uniffi_core
 
 # reason: upstream uniffi-generated RustBuffer-free scaffolding symbol, not a project symbol
 docs/manual/contributors/ffi-secret-handling-internal.md::uniffi_rustbuffer_free
+
+# --- contributor-index "Where the project is" FFI-surface citations. The
+# --- freshness check only scans core/; these bridge/uniffi-projected fns live
+# --- under ffi/, so they register as bare-unresolved when the index names them.
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/mod.rs::create_vault_in_folder — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::create_vault_in_folder
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/block_crud.rs::create_block — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::create_block
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/block_crud.rs::rename_block — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::rename_block
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/block_crud.rs::move_record — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::move_record
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/sync.rs::sync_status — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::sync_status
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/sync.rs::sync_vault — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::sync_vault
+
+# reason: ffi/secretary-ffi-uniffi/src/namespace/sync.rs::sync_commit_decisions — uniffi-projected fn, not in core/
+docs/manual/contributors/index.md::sync_commit_decisions
