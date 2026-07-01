@@ -39,6 +39,10 @@ private struct RootView: View {
     /// Parent-owned so it resets cleanly on `.unlock` route entry rather than
     /// carrying over from a previous attempt (Android #342-safe shape).
     @State private var biometricUnlockError: String?
+    /// Parent-owned + reset on `.unlock` route entry for the same #342-safe
+    /// reason as `biometricUnlockError` — a `@State` local to `UnlockScreen`
+    /// would risk carrying a prior vault's checkbox choice forward.
+    @State private var rememberDevice = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -58,6 +62,7 @@ private struct RootView: View {
                         viewModel: selectionVM,
                         onOpen: { scoped in
                             biometricUnlockError = nil          // reset on route entry
+                            rememberDevice = false               // reset on route entry (#342-safe)
                             route = .unlock(scoped)
                         },
                         onOpenDemo: { try openDemo() },
@@ -86,6 +91,7 @@ private struct RootView: View {
                                                    vaultPath: scoped.pathData),
                         biometricEnrolled: coordinator.isEnrolled,
                         biometricError: $biometricUnlockError,
+                        rememberDevice: $rememberDevice,
                         onBiometricUnlock: {
                             biometricUnlockError = nil
                             Task {
@@ -123,6 +129,18 @@ private struct RootView: View {
                                 Task { await syncVM.syncAtUnlock(password: password) }
                             } else {
                                 Task { await syncVM.refreshStatus() }
+                            }
+                            if rememberDevice, let password {
+                                do {
+                                    try localCoordinator().enroll(
+                                        vaultPath: scoped.pathData,
+                                        vaultId: session.vaultUuidHex,
+                                        password: password)
+                                } catch {
+                                    // Non-fatal: the password open already succeeded.
+                                    appLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
+                                    biometricUnlockError = "Couldn’t enable biometric unlock. You can try again later."
+                                }
                             }
                             let gate = GraceWindowReauthGate(
                                 authorizer: EnclaveBiometricAuthorizer(
@@ -181,6 +199,7 @@ private struct RootView: View {
         let url = try AppVaultProvisioning.stageGoldenVault()
         let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
         biometricUnlockError = nil          // reset on route entry
+        rememberDevice = false               // reset on route entry (#342-safe)
         route = .unlock(scoped)
     }
 

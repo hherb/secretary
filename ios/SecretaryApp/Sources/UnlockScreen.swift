@@ -12,6 +12,10 @@ struct UnlockScreen: View {
     /// Parent-owned so it resets cleanly on route entry (avoids the Android
     /// #342 carry-over shape for the error).
     @Binding var biometricError: String?
+    /// Parent-owned so it resets cleanly on route entry — same #342-safe shape
+    /// as `biometricError` — rather than a local `@State` that could carry a
+    /// prior vault's choice across route re-entry.
+    @Binding var rememberDevice: Bool
     /// Invoked when the user taps "Unlock with Face ID".
     let onBiometricUnlock: () -> Void
     let onUnlocked: (VaultSession, _ password: [UInt8]?) -> Void
@@ -24,11 +28,13 @@ struct UnlockScreen: View {
     init(viewModel: UnlockViewModel,
          biometricEnrolled: Bool = false,
          biometricError: Binding<String?> = .constant(nil),
+         rememberDevice: Binding<Bool> = .constant(false),
          onBiometricUnlock: @escaping () -> Void = {},
          onUnlocked: @escaping (VaultSession, _ password: [UInt8]?) -> Void) {
         self._viewModel = StateObject(wrappedValue: viewModel)
         self.biometricEnrolled = biometricEnrolled
         self._biometricError = biometricError
+        self._rememberDevice = rememberDevice
         self.onBiometricUnlock = onBiometricUnlock
         self.onUnlocked = onUnlocked
     }
@@ -56,6 +62,9 @@ struct UnlockScreen: View {
                         SecureField("password", text: $password)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                    }
+                    if !biometricEnrolled {
+                        Toggle("Remember this device with Face ID", isOn: $rememberDevice)
                     }
                 case .recovery:
                     Section("24-word recovery phrase") {
