@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-01-android-unsynced-create-banner-329-shipped.md
+docs/handoffs/2026-07-01-android-cloud-reauth-gate-retarget-340-shipped.md
