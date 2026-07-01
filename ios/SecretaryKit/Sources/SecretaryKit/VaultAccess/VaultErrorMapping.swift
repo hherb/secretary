@@ -23,6 +23,17 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     case .RecordNotFound(let uuidHex):      return .recordNotFound(uuidHex)
     case .InvalidArgument(let detail):      return .invalidArgument(detail)
     case .FolderInvalid(let detail):        return .folderInvalid(detail)
+    // Device-secret open failures. `WrongDeviceSecretOrCorrupt` and
+    // `DeviceSlotNotFound` both fold into the SAME anti-oracle case: on this
+    // path the user-facing action is identical ("the device key couldn't
+    // open this vault, use your password"), so distinguishing them would
+    // reintroduce an oracle. `DeviceUuidMismatch` is a header/filename-uuid
+    // tamper/relabel signal, orthogonal to credentials, so it is surfaced
+    // honestly and distinctly as `.corruptVault` (matches the coordinator's
+    // `mapSlotErrors`, which treats it as a non-folded `.vault(...)`).
+    case .WrongDeviceSecretOrCorrupt:       return .wrongDeviceSecretOrCorrupt
+    case .DeviceSlotNotFound:               return .wrongDeviceSecretOrCorrupt
+    case .DeviceUuidMismatch(let detail):   return .corruptVault(detail)
     default:                                return .other(String(describing: e))
     }
 }

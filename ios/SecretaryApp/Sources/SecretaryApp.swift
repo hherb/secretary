@@ -263,9 +263,19 @@ private struct RootView: View {
         case .opened(let session, let gate):
             let folder = URL(fileURLWithPath:
                 String(decoding: scoped.pathData, as: UTF8.self))
-            let stateDir = (try? defaultSyncStateDir()) ?? FileManager.default.temporaryDirectory
+            let stateDir: URL
+            do {
+                stateDir = try defaultSyncStateDir()
+            } catch {
+                stateDir = FileManager.default.temporaryDirectory
+                appLog.error("sync state dir unavailable, using temp: \(error.localizedDescription, privacy: .public)")
+            }
             let (syncVM, monitor) = makeVaultSync(session: session, folder: folder, stateDir: stateDir)
-            try? monitor.start()
+            do {
+                try monitor.start()
+            } catch {
+                appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
+            }
             Task { await syncVM.refreshStatus() }    // no sync password on the device path
             route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                             syncVM, monitor, scoped)
