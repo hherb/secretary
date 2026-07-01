@@ -433,8 +433,21 @@ impl IdentityBundle {
         // Reject non-canonical input. Cheapest reliable check: re-encode
         // and compare; passes iff the input was already canonical. Same
         // pattern as `card.rs::from_canonical_cbor`.
-        let canonical = bundle.to_canonical_cbor()?;
-        if canonical.as_slice() != bytes {
+        let mut canonical = bundle.to_canonical_cbor()?;
+        let is_canonical = canonical.as_slice() == bytes;
+        {
+            use zeroize::Zeroize as _;
+            // `canonical` is a full cleartext CBOR copy of every secret key;
+            // wipe it before returning on either branch. The two Copy-typed
+            // sk stack copies (`Option<[u8; N]>` is `Copy`, so the struct
+            // construction above copied rather than moved them out — the
+            // Vec-typed sk locals were moved and leave no residue) are wiped
+            // here too. See #357.
+            canonical.zeroize();
+            x25519_sk_bytes.zeroize();
+            ed25519_sk_bytes.zeroize();
+        }
+        if !is_canonical {
             // `bundle` drops here at scope exit, zeroizing its sensitive
             // fields; the caller never sees the partially-decoded value.
             return Err(BundleError::NonCanonicalCbor);

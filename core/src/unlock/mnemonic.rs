@@ -136,12 +136,14 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     // BIP-39 §3.1: phrases are compared in Unicode NFKD form. We also
     // lowercase and collapse internal whitespace so that the canonicalized
     // string matches exactly what the bip39 crate expects.
-    let nfkd: String = words.nfkd().collect();
-    let normalized = nfkd
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ");
+    let mut nfkd: String = words.nfkd().collect();
+    let mut parts: Vec<String> = nfkd.split_whitespace().map(str::to_lowercase).collect();
+    let mut normalized = parts.join(" ");
+    // `nfkd` and the per-word lowercase `parts` hold recovery-phrase material;
+    // wipe them now. `normalized` is wiped after parsing below (it must live
+    // until `parse_in_normalized` and `tokens` are done with it). See #357.
+    nfkd.zeroize();
+    parts.iter_mut().for_each(Zeroize::zeroize);
 
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
     if tokens.len() != 24 {
@@ -163,6 +165,10 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
                 other => map_bip39_error(other),
             },
         )?;
+    // `tokens` (borrowing `normalized`) is done; wipe the normalized phrase
+    // buffer now that parsing has consumed it. See #357.
+    drop(tokens);
+    normalized.zeroize();
 
     // Same 33-byte stack residue as `generate`: zeroize the full buffer
     // after the trimmed 32-byte entropy has been copied out, since the
@@ -173,9 +179,13 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     entropy.copy_from_slice(&full[..32]);
     full.zeroize();
 
+    let secret = Sensitive::new(entropy);
+    // `Sensitive::new` copied `entropy` (`[u8; 32]: Copy`); wipe the source
+    // stack slot so the entropy only lives inside `secret`. See #357.
+    entropy.zeroize();
     Ok(Mnemonic {
         phrase: bip.to_string(),
-        entropy: Sensitive::new(entropy),
+        entropy: secret,
     })
 }
 
