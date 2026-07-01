@@ -1,6 +1,7 @@
 import SwiftUI
 import os
 import SecretaryKit
+import SecretaryDeviceUnlock
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
@@ -35,6 +36,9 @@ private struct RootView: View {
     private let store: BookmarkVaultLocationStore
     @StateObject private var selectionVM: VaultSelectionViewModel
     @State private var route: Route = .select
+    /// Parent-owned so it resets cleanly on `.unlock` route entry rather than
+    /// carrying over from a previous attempt (Android #342-safe shape).
+    @State private var biometricUnlockError: String?
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -52,7 +56,10 @@ private struct RootView: View {
                 case .select:
                     VaultSelectionScreen(
                         viewModel: selectionVM,
-                        onOpen: { scoped in route = .unlock(scoped) },
+                        onOpen: { scoped in
+                            biometricUnlockError = nil          // reset on route entry
+                            route = .unlock(scoped)
+                        },
                         onOpenDemo: { try openDemo() },
                         onCreateNew: { route = .create })
                 case .create:
@@ -73,9 +80,23 @@ private struct RootView: View {
                         },
                         onCancel: { route = .select })
                 case .unlock(let scoped):
+                    let coordinator = localCoordinator()
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
                                                    vaultPath: scoped.pathData),
+                        biometricEnrolled: coordinator.isEnrolled,
+                        biometricError: $biometricUnlockError,
+                        onBiometricUnlock: {
+                            biometricUnlockError = nil
+                            Task {
+                                let result = await DeviceUnlockOpen.open(
+                                    coordinator: coordinator,
+                                    openPort: UniffiVaultOpenPort(),
+                                    vaultPath: scoped.pathData,
+                                    reason: "Unlock your Secretary vault")
+                                await handleBiometricResult(result, scoped: scoped)
+                            }
+                        },
                         onUnlocked: { session, password in
                             let folder = URL(fileURLWithPath:
                                 String(decoding: scoped.pathData, as: UTF8.self))
@@ -106,7 +127,7 @@ private struct RootView: View {
                             let gate = GraceWindowReauthGate(
                                 authorizer: EnclaveBiometricAuthorizer(
                                     enclave: SecureEnclaveDeviceSecretStore()),
-                                clock: MonotonicInstant.now)
+                                clock: MonotonicInstant.now)   // initialAuthAt stays nil (#284)
                             route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                                             syncVM, monitor, scoped)
                         })
@@ -159,7 +180,41 @@ private struct RootView: View {
     private func openDemo() throws {
         let url = try AppVaultProvisioning.stageGoldenVault()
         let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
+        biometricUnlockError = nil          // reset on route entry
         route = .unlock(scoped)
+    }
+
+    /// Demo/local `DeviceUnlockCoordinator` over the real adapters — same
+    /// composition the Android app uses for its equivalent biometric-unlock path.
+    private func localCoordinator() -> DeviceUnlockCoordinator {
+        DeviceUnlockCoordinator(
+            slotPort: UniffiVaultDeviceSlotPort(),
+            enclave: SecureEnclaveDeviceSecretStore(),
+            metadata: KeychainEnrollmentMetadataStore())
+    }
+
+    /// Builds sync + monitor exactly like the password path (`onUnlocked` above),
+    /// then routes to `.browse` with the gate `DeviceUnlockOpen` already seeded
+    /// at the unlock instant (#284). No sync password on the device path (there
+    /// is no user-entered secret to derive one from).
+    @MainActor
+    private func handleBiometricResult(_ result: DeviceUnlockOpenResult,
+                                       scoped: ScopedVaultPath) async {
+        switch result {
+        case .cancelled:
+            return                                   // stay on Unlock, quietly (#341)
+        case .failed(let message):
+            biometricUnlockError = message           // surface typed message (#341)
+        case .opened(let session, let gate):
+            let folder = URL(fileURLWithPath:
+                String(decoding: scoped.pathData, as: UTF8.self))
+            let stateDir = (try? defaultSyncStateDir()) ?? FileManager.default.temporaryDirectory
+            let (syncVM, monitor) = makeVaultSync(session: session, folder: folder, stateDir: stateDir)
+            try? monitor.start()
+            Task { await syncVM.refreshStatus() }    // no sync password on the device path
+            route = .browse(VaultBrowseViewModel(session: session, gate: gate),
+                            syncVM, monitor, scoped)
+        }
     }
 }
 

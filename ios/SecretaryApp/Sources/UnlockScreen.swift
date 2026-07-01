@@ -7,6 +7,13 @@ import SecretaryVaultAccessUI
 /// where `password` is non-nil only for `.password` mode (recovery has no usable sync password).
 struct UnlockScreen: View {
     @StateObject private var viewModel: UnlockViewModel
+    /// Shown only when this device is enrolled for biometric unlock of a vault.
+    let biometricEnrolled: Bool
+    /// Parent-owned so it resets cleanly on route entry (avoids the Android
+    /// #342 carry-over shape for the error).
+    @Binding var biometricError: String?
+    /// Invoked when the user taps "Unlock with Face ID".
+    let onBiometricUnlock: () -> Void
     let onUnlocked: (VaultSession, _ password: [UInt8]?) -> Void
 
     @State private var mode: UnlockViewModel.Mode = .password
@@ -15,8 +22,14 @@ struct UnlockScreen: View {
     @State private var lastPasswordSecret: [UInt8]?
 
     init(viewModel: UnlockViewModel,
+         biometricEnrolled: Bool = false,
+         biometricError: Binding<String?> = .constant(nil),
+         onBiometricUnlock: @escaping () -> Void = {},
          onUnlocked: @escaping (VaultSession, _ password: [UInt8]?) -> Void) {
         self._viewModel = StateObject(wrappedValue: viewModel)
+        self.biometricEnrolled = biometricEnrolled
+        self._biometricError = biometricError
+        self.onBiometricUnlock = onBiometricUnlock
         self.onUnlocked = onUnlocked
     }
 
@@ -30,6 +43,12 @@ struct UnlockScreen: View {
                     Text("Recovery phrase").tag(UnlockViewModel.Mode.recovery)
                 }
                 .pickerStyle(.segmented)
+
+                if biometricEnrolled {
+                    Section {
+                        Button("Unlock with Face ID") { onBiometricUnlock() }
+                    }
+                }
 
                 switch mode {
                 case .password:
@@ -62,6 +81,12 @@ struct UnlockScreen: View {
                 if case .failed(let err) = viewModel.state {
                     Section("Error") {
                         Text(String(describing: err)).font(.footnote.monospaced()).foregroundStyle(.red)
+                    }
+                }
+
+                if let biometricError {
+                    Section("Couldn’t unlock") {
+                        Text(biometricError).foregroundStyle(.red)
                     }
                 }
             }
