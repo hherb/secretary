@@ -1,6 +1,7 @@
 import SwiftUI
 import os
 import SecretaryKit
+import SecretaryDeviceUnlock
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
@@ -35,6 +36,20 @@ private struct RootView: View {
     private let store: BookmarkVaultLocationStore
     @StateObject private var selectionVM: VaultSelectionViewModel
     @State private var route: Route = .select
+    /// Parent-owned so it resets cleanly on `.unlock` route entry rather than
+    /// carrying over from a previous attempt (Android #342-safe shape).
+    @State private var biometricUnlockError: String?
+    /// Parent-owned + reset on `.unlock` route entry for the same #342-safe
+    /// reason as `biometricUnlockError` — a `@State` local to `UnlockScreen`
+    /// would risk carrying a prior vault's checkbox choice forward.
+    @State private var rememberDevice = false
+    /// Whether this device is enrolled for biometric unlock, computed ONCE at
+    /// `.unlock` route entry rather than in `body`. `isEnrolled` does a Keychain
+    /// `metadata.load()` + a Secure-Enclave query, so evaluating it on every
+    /// SwiftUI re-render would block the main actor on two device reads per frame.
+    /// Enrollment can only change via "Remember this device" (which arms on the
+    /// NEXT unlock anyway), so a route-entry snapshot is exact.
+    @State private var biometricEnrolled = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -52,7 +67,12 @@ private struct RootView: View {
                 case .select:
                     VaultSelectionScreen(
                         viewModel: selectionVM,
-                        onOpen: { scoped in route = .unlock(scoped) },
+                        onOpen: { scoped in
+                            biometricUnlockError = nil          // reset on route entry
+                            rememberDevice = false               // reset on route entry (#342-safe)
+                            biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
+                            route = .unlock(scoped)
+                        },
                         onOpenDemo: { try openDemo() },
                         onCreateNew: { route = .create })
                 case .create:
@@ -73,9 +93,24 @@ private struct RootView: View {
                         },
                         onCancel: { route = .select })
                 case .unlock(let scoped):
+                    let coordinator = localCoordinator()
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
                                                    vaultPath: scoped.pathData),
+                        biometricEnrolled: biometricEnrolled,   // route-entry snapshot (no per-render Keychain read)
+                        biometricError: $biometricUnlockError,
+                        rememberDevice: $rememberDevice,
+                        onBiometricUnlock: {
+                            biometricUnlockError = nil
+                            Task {
+                                let result = await DeviceUnlockOpen.open(
+                                    coordinator: coordinator,
+                                    openPort: UniffiVaultOpenPort(),
+                                    vaultPath: scoped.pathData,
+                                    reason: "Unlock your Secretary vault")
+                                await handleBiometricResult(result, scoped: scoped)
+                            }
+                        },
                         onUnlocked: { session, password in
                             let folder = URL(fileURLWithPath:
                                 String(decoding: scoped.pathData, as: UTF8.self))
@@ -103,10 +138,58 @@ private struct RootView: View {
                             } else {
                                 Task { await syncVM.refreshStatus() }
                             }
+                            if rememberDevice, let password {
+                                // Enroll runs a second Argon2id password-open
+                                // (addDeviceSlot) — offload off the main actor so
+                                // the `.browse` route transition below is never
+                                // blocked on it. Best-effort/non-fatal: the
+                                // password open already succeeded, and by the
+                                // time this completes `UnlockScreen` has usually
+                                // already navigated away, so `appLog.error` (not
+                                // `biometricUnlockError`) is the diagnostic that
+                                // actually gets seen. Capture VALUES (not
+                                // `session`/`scoped`) into the task: coordinator
+                                // is `Sendable`, `vaultPath`/`vaultId`/`password`
+                                // are `Data`/`String`/`[UInt8]`, all `Sendable`.
+                                let coordinator = localCoordinator()
+                                let vaultPath = scoped.pathData
+                                let vaultId = session.vaultUuidHex
+                                Task {
+                                    do {
+                                        // `runOffMainActor` (SecretaryKit) is
+                                        // module-internal, so the app target
+                                        // inlines the same suspend-not-block
+                                        // pattern: hop the synchronous, CPU-bound
+                                        // enroll onto a background queue via
+                                        // `withCheckedThrowingContinuation`
+                                        // rather than calling it directly on
+                                        // this `Task`'s (still cooperative-pool)
+                                        // context.
+                                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                                            DispatchQueue.global(qos: .userInitiated).async {
+                                                do {
+                                                    try coordinator.enroll(
+                                                        vaultPath: vaultPath,
+                                                        vaultId: vaultId,
+                                                        password: password)
+                                                    continuation.resume()
+                                                } catch {
+                                                    continuation.resume(throwing: error)
+                                                }
+                                            }
+                                        }
+                                    } catch {
+                                        appLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
+                                        await MainActor.run {
+                                            biometricUnlockError = "Couldn’t enable biometric unlock. You can try again later."
+                                        }
+                                    }
+                                }
+                            }
                             let gate = GraceWindowReauthGate(
                                 authorizer: EnclaveBiometricAuthorizer(
                                     enclave: SecureEnclaveDeviceSecretStore()),
-                                clock: MonotonicInstant.now)
+                                clock: MonotonicInstant.now)   // initialAuthAt stays nil (#284)
                             route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                                             syncVM, monitor, scoped)
                         })
@@ -159,7 +242,53 @@ private struct RootView: View {
     private func openDemo() throws {
         let url = try AppVaultProvisioning.stageGoldenVault()
         let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
+        biometricUnlockError = nil          // reset on route entry
+        rememberDevice = false               // reset on route entry (#342-safe)
+        biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
         route = .unlock(scoped)
+    }
+
+    /// Demo/local `DeviceUnlockCoordinator` over the real adapters — same
+    /// composition the Android app uses for its equivalent biometric-unlock path.
+    private func localCoordinator() -> DeviceUnlockCoordinator {
+        DeviceUnlockCoordinator(
+            slotPort: UniffiVaultDeviceSlotPort(),
+            enclave: SecureEnclaveDeviceSecretStore(),
+            metadata: KeychainEnrollmentMetadataStore())
+    }
+
+    /// Builds sync + monitor exactly like the password path (`onUnlocked` above),
+    /// then routes to `.browse` with the gate `DeviceUnlockOpen` already seeded
+    /// at the unlock instant (#284). No sync password on the device path (there
+    /// is no user-entered secret to derive one from).
+    @MainActor
+    private func handleBiometricResult(_ result: DeviceUnlockOpenResult,
+                                       scoped: ScopedVaultPath) async {
+        switch result {
+        case .cancelled:
+            return                                   // stay on Unlock, quietly (#341)
+        case .failed(let message):
+            biometricUnlockError = message           // surface typed message (#341)
+        case .opened(let session, let gate):
+            let folder = URL(fileURLWithPath:
+                String(decoding: scoped.pathData, as: UTF8.self))
+            let stateDir: URL
+            do {
+                stateDir = try defaultSyncStateDir()
+            } catch {
+                stateDir = FileManager.default.temporaryDirectory
+                appLog.error("sync state dir unavailable, using temp: \(error.localizedDescription, privacy: .public)")
+            }
+            let (syncVM, monitor) = makeVaultSync(session: session, folder: folder, stateDir: stateDir)
+            do {
+                try monitor.start()
+            } catch {
+                appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
+            }
+            Task { await syncVM.refreshStatus() }    // no sync password on the device path
+            route = .browse(VaultBrowseViewModel(session: session, gate: gate),
+                            syncVM, monitor, scoped)
+        }
     }
 }
 

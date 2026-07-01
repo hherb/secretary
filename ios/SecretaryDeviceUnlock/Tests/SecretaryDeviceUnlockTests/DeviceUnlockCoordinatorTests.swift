@@ -250,4 +250,33 @@ final class DeviceUnlockCoordinatorTests: XCTestCase {
         try metadata.save(DeviceEnrollment(vaultId: "v1", deviceUuid: uuid))
         XCTAssertTrue(coord.isEnrolled)
     }
+
+    // MARK: releaseCredential
+
+    func testReleaseCredentialNotEnrolledWhenNoMetadata() async {
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort())
+        await assertThrowsDeviceUnlock(.notEnrolled) {
+            _ = try await coord.releaseCredential(reason: "x")
+        }
+    }
+
+    func testReleaseCredentialHappyPathReturnsSlotAndVaultId() async throws {
+        let enclave = InMemoryDeviceSecretEnclave(); try enclave.store(secret: secret)
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
+                                    metadata: enrolledMetadata(vaultId: "v1"))
+        let cred = try await coord.releaseCredential(reason: "Unlock")
+        XCTAssertEqual(cred.deviceUuid, uuid)
+        XCTAssertEqual(cred.secret, secret)
+        XCTAssertEqual(cred.enrolledVaultId, "v1")
+    }
+
+    func testReleaseCredentialPropagatesBiometricError() async {
+        let enclave = InMemoryDeviceSecretEnclave(); try! enclave.store(secret: secret)
+        enclave.releaseError = .userCancelled
+        let coord = makeCoordinator(port: FakeVaultDeviceSlotPort(), enclave: enclave,
+                                    metadata: enrolledMetadata())
+        await assertThrowsDeviceUnlock(.userCancelled) {
+            _ = try await coord.releaseCredential(reason: "x")
+        }
+    }
 }

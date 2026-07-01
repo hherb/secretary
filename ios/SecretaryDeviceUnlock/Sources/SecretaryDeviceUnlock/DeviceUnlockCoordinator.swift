@@ -74,18 +74,31 @@ public struct DeviceUnlockCoordinator: Sendable {
         try metadata.clear()
     }
 
-    /// Unlock: biometric-release the secret, then open the vault with it.
+    /// Biometric-release the device secret for the enrolled vault WITHOUT opening
+    /// the vault. Metadata guard runs BEFORE the enclave prompt (no prompt when
+    /// not enrolled). The caller zeroizes `credential.secret` after the open.
+    public func releaseCredential(reason: String) async throws -> DeviceSecretCredential {
+        guard let enrollment = try metadata.load() else { throw DeviceUnlockError.notEnrolled }
+        let secret = try await enclave.release(reason: reason) // throws DeviceUnlockError
+        return DeviceSecretCredential(deviceUuid: enrollment.deviceUuid,
+                                      secret: secret,
+                                      enrolledVaultId: enrollment.vaultId)
+    }
+
+    /// Unlock: biometric-release the secret (via `releaseCredential`), then open
+    /// the vault with it. Retains the `vaultId` guard so a stale enrollment for a
+    /// different vault fails BEFORE the biometric prompt.
     public func unlock(vaultPath: Data, vaultId: String, reason: String) async throws -> OpenedVault {
         guard let enrollment = try metadata.load() else { throw DeviceUnlockError.notEnrolled }
         guard enrollment.vaultId == vaultId else { throw DeviceUnlockError.vaultSlotMismatch }
 
-        var secret = try await enclave.release(reason: reason) // throws DeviceUnlockError
-        defer { zeroize(&secret) }
+        var cred = try await releaseCredential(reason: reason)
+        defer { zeroize(&cred.secret) }
 
         return try mapSlotErrors {
             try slotPort.openWithDeviceSecret(vaultPath: vaultPath,
-                                              deviceUuid: enrollment.deviceUuid,
-                                              deviceSecret: secret)
+                                              deviceUuid: cred.deviceUuid,
+                                              deviceSecret: cred.secret)
         }
     }
 }

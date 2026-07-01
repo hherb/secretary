@@ -34,4 +34,21 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
             }
         }
     }
+
+    public func openWithDeviceSecret(vaultPath: Data, deviceUuid: [UInt8],
+                                     deviceSecret: [UInt8]) async throws -> VaultSession {
+        try await runOffMainActor {
+            do {
+                let out = try withZeroizingData(deviceSecret) { secretData in
+                    try SecretaryKit.openWithDeviceSecret(
+                        folderPath: vaultPath,
+                        deviceUuid: Data(deviceUuid),
+                        deviceSecret: secretData)
+                }
+                return UniffiVaultSession(output: out)
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
+            }
+        }
+    }
 }

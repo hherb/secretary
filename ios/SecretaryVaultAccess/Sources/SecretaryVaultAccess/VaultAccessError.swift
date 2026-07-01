@@ -14,6 +14,10 @@ public enum VaultAccessError: Error, Equatable {
     /// Recovery phrase was malformed (bad word/length/UTF-8) — a format error,
     /// not a credential check, so it is safe to surface distinctly.
     case invalidMnemonic(String)
+    /// Device-secret open failed: wrong device secret OR vault corruption
+    /// (indistinguishable), OR the slot/uuid is inconsistent. Folded like the
+    /// password/recovery "…OrCorrupt" cases — do NOT split.
+    case wrongDeviceSecretOrCorrupt
     /// The opened vault's UUID did not match the expected one.
     case vaultMismatch
     /// A block file was present but undecryptable/undecodable.
