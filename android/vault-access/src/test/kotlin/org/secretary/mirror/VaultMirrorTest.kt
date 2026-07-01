@@ -160,6 +160,36 @@ class VaultMirrorTest {
         assertTrue(File(workingDir, "blocks/x.cbor.enc").exists())
     }
 
+    @Test fun materialize_rejects_a_cloud_path_that_escapes_the_working_copy_via_dotdot(@TempDir workingDir: File) {
+        // #349: a hostile/compromised cloud provider reports a file name containing ".." to escape
+        // the sandboxed working copy. materialize must fail closed and write NOTHING outside it.
+        val escapeTarget = File(workingDir.parentFile, "pwned")
+        val cloud = FakeCloudFolderPort(mapOf(
+            MANIFEST_FILENAME to byteArrayOf(9),
+            "../pwned" to byteArrayOf(6, 6, 6),
+        ))
+        val e = assertThrows(VaultMirrorException::class.java) { VaultMirror(cloud).materialize(workingDir) }
+        assertTrue(e.message!!.contains("unsafe cloud-supplied vault path"), e.message)
+        assertFalse(escapeTarget.exists(), "traversal must not write outside the working copy")
+    }
+
+    @Test fun materialize_rejects_an_absolute_cloud_path(@TempDir workingDir: File) {
+        val cloud = FakeCloudFolderPort(mapOf("/etc/pwned" to byteArrayOf(1)))
+        val e = assertThrows(VaultMirrorException::class.java) { VaultMirror(cloud).materialize(workingDir) }
+        assertTrue(e.message!!.contains("unsafe cloud-supplied vault path"), e.message)
+    }
+
+    @Test fun materialize_rejects_a_nested_dotdot_cloud_path(@TempDir workingDir: File) {
+        // The traversal segment need not be leading: "blocks/../../pwned" must be rejected too.
+        val escapeTarget = File(workingDir.parentFile, "pwned")
+        val cloud = FakeCloudFolderPort(mapOf(
+            MANIFEST_FILENAME to byteArrayOf(9),
+            "blocks/../../pwned" to byteArrayOf(6),
+        ))
+        assertThrows(VaultMirrorException::class.java) { VaultMirror(cloud).materialize(workingDir) }
+        assertFalse(escapeTarget.exists())
+    }
+
     @Test fun materialize_still_pulls_normally_when_cloud_has_a_manifest(@TempDir workingDir: File) {
         // A real cloud vault → a fresh device pulls it in full (existing behavior, regression guard).
         val cloud = FakeCloudFolderPort(mapOf(
