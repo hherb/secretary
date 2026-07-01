@@ -169,6 +169,9 @@ fun AppRoot() {
     LaunchedEffect(route) {
         val current = route
         if (current is Route.Unlock) {
+            // #342: clear the "Remember this device" tick on every Unlock-screen entry so it never
+            // carries across vaults (tick on vault A → back out → open vault B must start unticked).
+            rememberDevice = false
             deviceVm.refresh()
             deviceState = deviceVm.state
             // For a cloud target, read its per-cloud-vault enrollment (enclave blob AND metadata),
@@ -362,7 +365,8 @@ fun AppRoot() {
                                 context.noBackupFilesDir,
                                 cloudVaultKey(cloudTarget.location.treeUri),
                             )
-                            DeviceUnlockViewModel(cdu.coordinator).unlockWithBiometrics(
+                            val cloudVm = DeviceUnlockViewModel(cdu.coordinator)
+                            cloudVm.unlockWithBiometrics(
                                 vaultId = cdu.metadataVaultId ?: "",
                                 reason = "Unlock your vault",
                             ) { credential ->
@@ -380,6 +384,10 @@ fun AppRoot() {
                                     }
                                 }
                             }
+                            // #341: surface a non-cancel biometric failure, symmetric with the demo path
+                            // (UserCancelled stays silent). The open-stage failure Toast (openCloudTarget →
+                            // Route.Unlock) is complementary — it covers the post-credential open failure.
+                            toastBiometricFailure(context, cloudVm.state)
                             // Recompute prompt-free so a cancel/failed prompt keeps the button (the screen
                             // stays on Unlock; LaunchedEffect(route) won't re-fire).
                             cloudEnrolled = cdu.coordinator.isEnrolled
@@ -388,6 +396,9 @@ fun AppRoot() {
                                 vaultId = vaultId,
                                 reason = "Unlock your vault",
                             ) { credential -> route = unlockAndOpen(context, scope, credential, enrollAfter = false, coordinator, vaultId) }
+                            // #341: a non-cancel DeviceUnlockError leaves state=Failed and never opened —
+                            // surface it (UserCancelled stays silent) BEFORE refresh() overwrites the state.
+                            toastBiometricFailure(context, deviceVm.state)
                             // On success we've already routed to Browse. On a failed/cancelled prompt the VM
                             // leaves state=Failed; recompute enrolled-vs-unenrolled from the blob (prompt-free)
                             // so the "Unlock with biometrics" button persists — a cancel must not strand the
@@ -456,6 +467,21 @@ fun AppRoot() {
                 )
             }
         }
+    }
+}
+
+/**
+ * #341: Toast a non-cancel biometric [DeviceUnlockState.Failed] via the pure [deviceUnlockFailureDisplay]
+ * classifier. [DeviceUnlockError.UserCancelled] (→ `Silent`) and any non-`Failed` terminal state show
+ * nothing — a deliberate cancel or a success must not nag. Shared by the demo and cloud biometric
+ * branches so the surfaced set is symmetric.
+ */
+private fun toastBiometricFailure(context: Context, state: DeviceUnlockState) {
+    val failed = state as? DeviceUnlockState.Failed ?: return
+    when (val display = deviceUnlockFailureDisplay(failed.error)) {
+        DeviceUnlockFailureDisplay.Silent -> {}
+        is DeviceUnlockFailureDisplay.Message ->
+            Toast.makeText(context, display.text, Toast.LENGTH_LONG).show()
     }
 }
 
