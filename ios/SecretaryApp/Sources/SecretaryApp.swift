@@ -43,6 +43,13 @@ private struct RootView: View {
     /// reason as `biometricUnlockError` — a `@State` local to `UnlockScreen`
     /// would risk carrying a prior vault's checkbox choice forward.
     @State private var rememberDevice = false
+    /// Whether this device is enrolled for biometric unlock, computed ONCE at
+    /// `.unlock` route entry rather than in `body`. `isEnrolled` does a Keychain
+    /// `metadata.load()` + a Secure-Enclave query, so evaluating it on every
+    /// SwiftUI re-render would block the main actor on two device reads per frame.
+    /// Enrollment can only change via "Remember this device" (which arms on the
+    /// NEXT unlock anyway), so a route-entry snapshot is exact.
+    @State private var biometricEnrolled = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -63,6 +70,7 @@ private struct RootView: View {
                         onOpen: { scoped in
                             biometricUnlockError = nil          // reset on route entry
                             rememberDevice = false               // reset on route entry (#342-safe)
+                            biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
                             route = .unlock(scoped)
                         },
                         onOpenDemo: { try openDemo() },
@@ -89,7 +97,7 @@ private struct RootView: View {
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
                                                    vaultPath: scoped.pathData),
-                        biometricEnrolled: coordinator.isEnrolled,
+                        biometricEnrolled: biometricEnrolled,   // route-entry snapshot (no per-render Keychain read)
                         biometricError: $biometricUnlockError,
                         rememberDevice: $rememberDevice,
                         onBiometricUnlock: {
@@ -236,6 +244,7 @@ private struct RootView: View {
         let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
         biometricUnlockError = nil          // reset on route entry
         rememberDevice = false               // reset on route entry (#342-safe)
+        biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
         route = .unlock(scoped)
     }
 
