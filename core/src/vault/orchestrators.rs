@@ -466,6 +466,56 @@ impl std::fmt::Debug for OpenVault {
     }
 }
 
+/// Read `vault.toml` + `identity.bundle.enc` and unlock via the given
+/// [`Unlocker`] arm. Shared by [`open_vault`] and
+/// [`crate::vault::repair_vault`] so the repair path is never a weaker
+/// open (same credential surface, same typed errors).
+pub(crate) fn unlock_vault_identity(
+    folder: &Path,
+    unlocker: Unlocker<'_>,
+) -> Result<(Vec<u8>, UnlockedIdentity), VaultError> {
+    // Step 1: read vault.toml + identity.bundle.enc
+    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
+    let identity_bundle_path = folder.join(IDENTITY_BUNDLE_FILENAME);
+    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
+        context: "failed to read vault.toml",
+        source: e,
+    })?;
+    let identity_bundle_bytes =
+        std::fs::read(&identity_bundle_path).map_err(|e| VaultError::Io {
+            context: "failed to read identity.bundle.enc",
+            source: e,
+        })?;
+
+    // Step 2: unlock the identity bundle. Either path produces an
+    // UnlockedIdentity carrying the IBK (Sensitive<[u8;32]>) and the
+    // owner-side IdentityBundle. Errors propagate via VaultError::Unlock.
+    let unlocked = match unlocker {
+        Unlocker::Password(p) => {
+            unlock::open_with_password(&vault_toml_bytes, &identity_bundle_bytes, p)?
+        }
+        Unlocker::Recovery(words) => {
+            unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
+        }
+        Unlocker::DeviceSecret {
+            device_uuid,
+            secret,
+        } => {
+            let wrap_bytes =
+                crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
+            unlock::device::open_with_device_secret(
+                &vault_toml_bytes,
+                &wrap_bytes,
+                &identity_bundle_bytes,
+                device_uuid,
+                secret,
+            )?
+        }
+    };
+
+    Ok((vault_toml_bytes, unlocked))
+}
+
 /// Open an existing vault at `folder`.
 ///
 /// Sequence (mirrors `docs/vault-format.md` §1 read order):
@@ -513,44 +563,8 @@ pub fn open_vault(
     unlocker: Unlocker<'_>,
     local_highest_clock: Option<&[VectorClockEntry]>,
 ) -> Result<OpenVault, VaultError> {
-    // Step 1: read vault.toml + identity.bundle.enc
-    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
-    let identity_bundle_path = folder.join(IDENTITY_BUNDLE_FILENAME);
-    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
-        context: "failed to read vault.toml",
-        source: e,
-    })?;
-    let identity_bundle_bytes =
-        std::fs::read(&identity_bundle_path).map_err(|e| VaultError::Io {
-            context: "failed to read identity.bundle.enc",
-            source: e,
-        })?;
-
-    // Step 2: unlock the identity bundle. Either path produces an
-    // UnlockedIdentity carrying the IBK (Sensitive<[u8;32]>) and the
-    // owner-side IdentityBundle. Errors propagate via VaultError::Unlock.
-    let unlocked = match unlocker {
-        Unlocker::Password(p) => {
-            unlock::open_with_password(&vault_toml_bytes, &identity_bundle_bytes, p)?
-        }
-        Unlocker::Recovery(words) => {
-            unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
-        }
-        Unlocker::DeviceSecret {
-            device_uuid,
-            secret,
-        } => {
-            let wrap_bytes =
-                crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
-            unlock::device::open_with_device_secret(
-                &vault_toml_bytes,
-                &wrap_bytes,
-                &identity_bundle_bytes,
-                device_uuid,
-                secret,
-            )?
-        }
-    };
+    // Steps 1-2: read vault.toml + identity.bundle.enc and unlock.
+    let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
 
     // Steps 3-8: read manifest envelope, load + verify owner card,
     // verify + decrypt manifest, sanity-check body↔envelope and
@@ -577,6 +591,12 @@ pub fn open_vault(
     // commit_with_decisions`, which is convergent under CRDT
     // idempotence.
     verify_block_fingerprints(folder, &manifest_body)?;
+
+    // #350: best-effort completion of trash renames interrupted between
+    // trash_block's manifest commit and its physical move. Rename-only
+    // and gated on the signed TrashEntry.fingerprint — see
+    // repair::complete_pending_trash_renames.
+    super::repair::complete_pending_trash_renames(folder, &manifest_body);
 
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
@@ -671,13 +691,11 @@ pub(crate) fn read_vault_manifest_full(
 /// already be authenticated (envelope signature verified) — this
 /// helper does not re-verify it.
 ///
-/// On the I/O failure path (e.g. a `blocks/<uuid>.cbor.enc` file is
-/// missing or unreadable) this surfaces a generic [`VaultError::Io`]
-/// with a static context string that does not carry the failing
-/// block's UUID. See [Issue #88] for the planned debuggability
-/// improvement.
-///
-/// [Issue #88]: https://github.com/hherb/secretary/issues/88
+/// On the I/O failure path, a listed-but-absent `blocks/<uuid>.cbor.enc`
+/// file surfaces the UUID-tagged [`VaultError::BlockFileMissing`]
+/// (#350/#88). Other I/O failures (permissions, etc.) still surface a
+/// generic [`VaultError::Io`] with a static context string that does
+/// not carry the failing block's UUID.
 ///
 /// `pub(crate)` because it is only invoked from [`open_vault`];
 /// external callers go via `open_vault`'s typed error surface.
@@ -689,9 +707,20 @@ pub(crate) fn verify_block_fingerprints(
     for entry in &manifest.blocks {
         let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
         let block_path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
-        let bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
-            context: "failed to read block file for fingerprint check",
-            source: e,
+        let bytes = std::fs::read(&block_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // #350/#88: a listed-but-absent block gets a typed,
+                // uuid-carrying error. Not repairable — see the
+                // variant's doc; recovery is a completed sync.
+                VaultError::BlockFileMissing {
+                    block_uuid: entry.block_uuid,
+                }
+            } else {
+                VaultError::Io {
+                    context: "failed to read block file for fingerprint check",
+                    source: e,
+                }
+            }
         })?;
         let got = *blake3_hash(&bytes).as_bytes();
         if got != entry.fingerprint {
@@ -735,7 +764,11 @@ pub(crate) fn verify_block_fingerprints(
 /// could rewrite the manifest between the verify-decrypt read and a
 /// follow-up hash read (issue #80). [`open_vault`] and
 /// [`read_vault_manifest`] discard the bytes.
-fn read_and_verify_manifest(
+///
+/// `pub(crate)` (rather than private) so [`crate::vault::repair_vault`]
+/// can perform the same §1 read-order verify-before-decrypt as
+/// `open_vault` — the repair path is never a weaker open.
+pub(crate) fn read_and_verify_manifest(
     folder: &Path,
     vault_toml_bytes: &[u8],
     unlocked: &UnlockedIdentity,
@@ -864,7 +897,13 @@ fn read_and_verify_manifest(
 /// (a non-incrementing tick makes two writes look like one and `is_rollback`
 /// would declare them "Equal"). Practical reachability is essentially zero
 /// (~10¹¹ years at one write/ns) but a typed surface beats a silent freeze.
-fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) -> Result<(), VaultError> {
+///
+/// `pub(crate)` so [`crate::vault::repair_vault`] can tick the manifest
+/// clock after a gated adoption, mirroring every other write path.
+pub(crate) fn tick_clock(
+    clock: &mut Vec<VectorClockEntry>,
+    device_uuid: &[u8; 16],
+) -> Result<(), VaultError> {
     if let Some(entry) = clock.iter_mut().find(|e| &e.device_uuid == device_uuid) {
         entry.counter = entry
             .counter
@@ -1160,6 +1199,15 @@ struct BlockRekey<'a> {
 /// Callers perform steps 1–6 (locate entry, read+decode block, author check,
 /// single-owner check, wire-table resolution) and pass the results in via
 /// [`BlockRekey`].
+///
+/// INVARIANT (#350, load-bearing for [`crate::vault::repair_vault`]):
+/// this function re-encrypts the decrypted plaintext **unchanged** and
+/// preserves the block-level vector clock — so within an equal-clock
+/// class, only the recipient set can differ between generations. The
+/// repair orchestrator's Equal-clock adoption gate (subset-only) depends
+/// on exactly that "equal clock ⇒ identical plaintext" property. If a
+/// future change mutates the plaintext here, it MUST tick the block
+/// clock (see the guard comment at step 9/10).
 fn rewrite_block_with_recipients(
     folder: &Path,
     open: &mut OpenVault,
@@ -1282,6 +1330,13 @@ fn rewrite_block_with_recipients(
     // *content* didn't change, so neither does its clock. `last_mod_ms`
     // advances to `now_ms` (the block's wire-level state moved even
     // if the plaintext didn't).
+    //
+    // GUARD (#350): if this function ever mutates the plaintext between
+    // step 7's decrypt and step 10's re-encrypt, it MUST tick the block
+    // clock here instead of preserving it. repair_vault's Equal-clock
+    // adoption gate is sound only because equal-clock ⇒ identical
+    // plaintext (adoption can then only narrow the recipient set) —
+    // see repair.rs Gate 3b.
     let new_header = BlockHeader {
         magic: crate::version::MAGIC,
         format_version: crate::version::FORMAT_VERSION,
@@ -1891,44 +1946,60 @@ pub fn revoke_block_recipient(
 // ---------------------------------------------------------------------------
 
 /// Subdirectory holding tombstoned block files (vault-format.md §7).
-/// Created lazily on first `trash_block` call.
-const TRASH_SUBDIR: &str = "trash";
+/// Created lazily on first `trash_block` call. `pub(crate)` so sibling
+/// folder ops (the open-time orphan sweep, #350 Task 4) share the single
+/// source rather than re-declaring the literal.
+pub(crate) const TRASH_SUBDIR: &str = "trash";
 
 /// Move a live block into trash. `docs/vault-format.md` §7 deletion sequence.
 ///
-/// Sequence:
+/// Sequence (#350: manifest-first — the signed manifest write is the
+/// commit point, and the physical rename is best-effort completion below
+/// it, not an earlier precondition):
 ///
 /// 1. Find the block in `open.manifest.blocks`; surfaces
 ///    [`VaultError::BlockNotFound`] if absent. Lookup is by `block_uuid`.
-/// 2. Ensure `folder/trash/` exists (lazy mkdir, mirroring `save_block`'s
-///    `blocks/` create).
-/// 3. `std::fs::rename(blocks/<uuid>.cbor.enc, trash/<uuid>.cbor.enc.<now_ms>)`
-///    — atomic per POSIX `rename(2)` within a single filesystem. Cross-
-///    filesystem (`EXDEV`) surfaces as [`VaultError::Io`].
-/// 4. Remove the matching [`BlockEntry`] from `open.manifest.blocks`.
-/// 5. Append a [`TrashEntry`] `{ block_uuid, tombstoned_at_ms: now_ms,
-///    tombstoned_by: device_uuid }` to `open.manifest.trash`.
-/// 6. Tick `open.manifest.vector_clock` for `device_uuid`. The per-block
-///    clock is NOT ticked — the block's *content* did not change.
-/// 7. Re-sign the manifest with a fresh AEAD nonce; atomic-write per §9.
-///    Mirrors `save_block` steps 11–14.
-/// 8. Refresh `open.manifest_file` in place.
+/// 2. Capture the live `BlockEntry.fingerprint` (#293 content commitment)
+///    before anything else is touched.
+/// 3. Stage the post-trash manifest on a **clone** of `open.manifest`:
+///    remove the `BlockEntry`, append a [`TrashEntry`] `{ block_uuid,
+///    tombstoned_at_ms: now_ms, tombstoned_by: device_uuid,
+///    fingerprint: Some(content_fingerprint) }`, and tick the staged
+///    vector clock for `device_uuid`. Nothing observable — in-memory or
+///    on-disk — has changed yet.
+/// 4. Re-sign the staged manifest with a fresh AEAD nonce; atomic-write
+///    per §9. **This write is the commit point.**
+/// 5. Only once the write succeeds: swap `open.manifest` /
+///    `open.manifest_file` to the staged/new values. From here the trash
+///    has happened; nothing below may fail the call.
+/// 6. Best-effort: lazily mkdir `trash/`, then
+///    `std::fs::rename(blocks/<uuid>.cbor.enc, trash/<uuid>.cbor.enc.<now_ms>)`.
+///    The result is discarded — see "Crash consistency" below.
 ///
-/// On `Err`: `open.manifest` and `open.manifest_file` are NOT modified.
+/// On `Err`: `open.manifest` and `open.manifest_file` are genuinely NOT
+/// modified — every mutation up to and including the manifest write
+/// happens on a clone, swapped into `open` only after the write succeeds.
 ///
-/// # Crash-consistency gap (#350)
+/// # Crash consistency (#350)
 ///
-/// The block-file rename (step 3) happens BEFORE the manifest write (step 7).
-/// A crash between them leaves the on-disk manifest still listing the block's
-/// `BlockEntry` (pointing at `blocks/<uuid>.cbor.enc`) while the file has
-/// already moved to `trash/`. This is NOT harmless: the next `open_vault` runs
-/// `verify_block_fingerprints`, which reads the now-missing `blocks/` file and
-/// fails with `VaultError::Io` (`NotFound`) — the whole vault appears
-/// unopenable. The §6.5 repair-on-open path the spec describes is not yet
-/// implemented; a fix (making trash manifest-first so a crash leaves only a
-/// harmless `blocks/` orphan that `open_vault` ignores and `restore_block`
-/// resumes — see the #351 resume path) is tracked in #350. Do not rely on the
-/// previous "detectable as an orphan / retryable" claim; it was incorrect.
+/// The signed manifest write (step 4) is the commit point. A crash
+/// between the manifest write and the rename, an `EXDEV` cross-filesystem
+/// rename, or a plain permissions failure on step 6 all leave the same
+/// harmless residue: the manifest already lists the block as trashed
+/// (signed `TrashEntry` present, `BlockEntry` gone), but
+/// `blocks/<uuid>.cbor.enc` is still on disk — never removed, since
+/// rename is atomic-or-noop. This is not a crash-consistency gap:
+/// `open_vault`'s `verify_block_fingerprints` only walks
+/// `manifest.blocks`, so the un-listed orphan file is silently ignored
+/// and the vault opens cleanly. `restore_block` recognizes the same
+/// shape — a signed `TrashEntry` with no matching `trash/` file — and
+/// resumes from the orphaned `blocks/` file once its bytes hash to the
+/// committed `TrashEntry.fingerprint` (the #351 resume path). A later
+/// open-time sweep (#350 Task 4) opportunistically relocates the orphan
+/// into `trash/` so it doesn't linger indefinitely, but correctness does
+/// not depend on that sweep running. `EXDEV` is therefore no longer a
+/// `trash_block` abort condition — it degrades to the same best-effort
+/// residue as any other rename failure.
 pub fn trash_block(
     folder: &Path,
     open: &mut OpenVault,
@@ -1950,54 +2021,34 @@ pub fn trash_block(
     // the trashed bytes restore will recompute and check.
     let content_fingerprint = open.manifest.blocks[entry_idx].fingerprint;
 
-    // Step 2: lazy mkdir for trash/.
-    let trash_dir = folder.join(TRASH_SUBDIR);
-    std::fs::create_dir_all(&trash_dir).map_err(|e| VaultError::Io {
-        context: "trash_block: failed to create trash/ subdirectory",
-        source: e,
-    })?;
-
-    // Step 3: rename blocks/<uuid>.cbor.enc → trash/<uuid>.cbor.enc.<now_ms>.
-    // POSIX rename(2) is atomic within a single filesystem; EXDEV (cross-FS)
-    // surfaces here as a typed Io error so the caller knows the vault is
-    // mis-configured rather than the block being half-trashed.
-    let uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let src = folder
-        .join(BLOCKS_SUBDIR)
-        .join(format!("{uuid_hex}.cbor.enc"));
-    let dst = trash_dir.join(format!("{uuid_hex}.cbor.enc.{now_ms}"));
-    std::fs::rename(&src, &dst).map_err(|e| VaultError::Io {
-        context: "trash_block: rename blocks/ → trash/",
-        source: e,
-    })?;
-
-    // Step 4: drop the BlockEntry. The manifest encoder re-sorts on emit,
-    // so order-preserving `remove` and order-shuffling `swap_remove` are
-    // both correct; pick `remove` for clearer intent.
-    open.manifest.blocks.remove(entry_idx);
-
-    // Step 5: append the TrashEntry. The spec's §7.1 "Restoring" path
-    // matches on (block_uuid, tombstoned_at_ms) so older tombstones —
-    // surviving as files but not in the manifest — never collide with
-    // a fresh trash event for the same UUID.
-    open.manifest.trash.push(TrashEntry {
+    // Step 3 (#350 manifest-first): STAGE the post-trash manifest on a
+    // clone; nothing observable (in-memory or on-disk) changes until the
+    // manifest write below succeeds. The write is the commit point — the
+    // physical rename further below is best-effort completion.
+    let mut staged = open.manifest.clone();
+    staged.blocks.remove(entry_idx);
+    // The spec's §7.1 "Restoring" path matches on (block_uuid,
+    // tombstoned_at_ms) so older tombstones — surviving as files but not
+    // in the manifest — never collide with a fresh trash event for the
+    // same UUID.
+    staged.trash.push(TrashEntry {
         block_uuid,
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
         fingerprint: Some(content_fingerprint),
         unknown: std::collections::BTreeMap::new(),
     });
+    // Tick the manifest-level (vault-level) vector clock on the staged
+    // copy. The per-block clock is NOT touched — the block's *content*
+    // did not change, only its life-cycle state.
+    tick_clock(&mut staged.vector_clock, &device_uuid)?;
 
-    // Step 6: tick the manifest-level (vault-level) vector clock. The
-    // per-block clock is NOT touched — the block's *content* did not
-    // change, only its life-cycle state.
-    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
-
-    // Step 7: refresh manifest header → fresh AEAD nonce → re-sign →
-    // atomic-write. Mirrors `save_block` steps 11-13. Owner secret keys
-    // are re-wrapped from the bundle's raw seeds into the typed
-    // Ed25519Secret / MlDsa65Secret holders that `sign_manifest`
-    // expects; the intermediate stack copy is zeroized before sign.
+    // Step 4: refresh manifest header → fresh AEAD nonce → re-sign (over
+    // `&staged`, not `&open.manifest`) → atomic-write. **Commit point.**
+    // Mirrors `save_block` steps 11-13. Owner secret keys are re-wrapped
+    // from the bundle's raw seeds into the typed Ed25519Secret /
+    // MlDsa65Secret holders that `sign_manifest` expects; the
+    // intermediate stack copy is zeroized before sign.
     let new_header = ManifestHeader {
         vault_uuid: open.manifest_file.header.vault_uuid,
         created_at_ms: open.manifest_file.header.created_at_ms,
@@ -2010,7 +2061,7 @@ pub fn trash_block(
     let aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_header,
-        &open.manifest,
+        &staged,
         &open.identity_block_key,
         &aead_nonce,
         open.manifest_file.author_fingerprint,
@@ -2024,11 +2075,114 @@ pub fn trash_block(
         source: e,
     })?;
 
-    // Step 8: refresh the in-memory envelope so subsequent operations
-    // chain off the new clock + new signature.
+    // Step 5: swap the staged state into `open`. From here the trash has
+    // happened; nothing below may fail the call.
+    open.manifest = staged;
     open.manifest_file = new_manifest_file;
 
+    // Step 6: best-effort physical move blocks/<uuid>.cbor.enc →
+    // trash/<uuid>.cbor.enc.<now_ms>. Failure (crash before this line,
+    // EXDEV cross-filesystem config, permissions) is swallowed: the
+    // signed manifest already says trashed; the leftover blocks/ file is
+    // a benign orphan open_vault ignores, restore_block resumes from
+    // (#351), and the open-time sweep relocates it (#350 Task 4).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let src = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+    let dst = folder
+        .join(TRASH_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
+    let _ = std::fs::create_dir_all(folder.join(TRASH_SUBDIR))
+        .and_then(|()| std::fs::rename(&src, &dst));
+
     Ok(())
+}
+
+/// Resolve every `recipient_fingerprint` in a block file's §6.2 wrap
+/// table to a `contact_uuid`: the owner card matches in memory; any
+/// other fingerprint requires a `contacts/*.card` scan where each card
+/// must pass its embedded Ed25519 ∧ ML-DSA-65 self-verification before
+/// its `contact_uuid` is trusted (see the security note inside — cards
+/// failing self-verify are skipped, not fatal). Unresolved →
+/// [`VaultError::MissingRecipientCard`].
+///
+/// Shared by [`restore_block`] (§7.1 step 4) and
+/// [`crate::vault::repair_vault`] (#350) — both rebuild a manifest
+/// `BlockEntry.recipients` from an on-disk block file.
+pub(crate) fn resolve_recipient_uuids(
+    folder: &Path,
+    owner_card: &ContactCard,
+    wraps: &[block::RecipientWrap],
+) -> Result<Vec<[u8; 16]>, VaultError> {
+    use std::collections::HashMap;
+    let owner_fp = fingerprint(&owner_card.to_canonical_cbor()?);
+    let mut fp_to_uuid: HashMap<[u8; 16], [u8; 16]> = HashMap::new();
+    fp_to_uuid.insert(owner_fp, owner_card.contact_uuid);
+    let needs_scan = wraps.iter().any(|w| w.recipient_fingerprint != owner_fp);
+    if needs_scan {
+        let contacts_dir = folder.join(CONTACTS_SUBDIR);
+        if contacts_dir.exists() {
+            for entry in std::fs::read_dir(&contacts_dir).map_err(|e| VaultError::Io {
+                context: "failed to read_dir contacts/",
+                source: e,
+            })? {
+                let entry = entry.map_err(|e| VaultError::Io {
+                    context: "failed to iterate contacts/ entry",
+                    source: e,
+                })?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("card") {
+                    continue;
+                }
+                let card_bytes = std::fs::read(&path).map_err(|e| VaultError::Io {
+                    context: "failed to read contact card",
+                    source: e,
+                })?;
+                let Ok(card) = ContactCard::from_canonical_cbor(&card_bytes) else {
+                    continue;
+                };
+                // Self-signature verification is REQUIRED before we trust
+                // the card's `contact_uuid` for the manifest's recipient
+                // table. `from_canonical_cbor` only parses; it does not
+                // verify the embedded Ed25519 ∧ ML-DSA-65 self-signature
+                // (see card.rs::verify_self). Without this check, an
+                // attacker with write access to `contacts/` could plant a
+                // forged card matching a wrap's fingerprint and mint a
+                // `contact_uuid` of their choice into the manifest. The
+                // block plaintext is still gated by the §6.1 hybrid
+                // verify on the trashed file itself, but the manifest's
+                // `BlockEntry.recipients` is load-bearing for share /
+                // sync logic and must not carry un-attested UUIDs.
+                //
+                // We `continue` past an unverifiable card rather than
+                // hard-failing so a single corrupt or malicious card in
+                // `contacts/` cannot wedge restore for every block — the
+                // legitimate cards alongside it still resolve. If no
+                // verified card matches a given fingerprint, the loop
+                // at step 5's wrap-resolution surfaces
+                // `MissingRecipientCard` and the manifest stays
+                // untouched.
+                if card.verify_self().is_err() {
+                    continue;
+                }
+                let fp = fingerprint(&card.to_canonical_cbor()?);
+                fp_to_uuid.insert(fp, card.contact_uuid);
+            }
+        }
+    }
+    let mut recipients_uuids: Vec<[u8; 16]> = Vec::with_capacity(wraps.len());
+    for wrap in wraps {
+        match fp_to_uuid.get(&wrap.recipient_fingerprint) {
+            Some(uuid) => recipients_uuids.push(*uuid),
+            None => {
+                return Err(VaultError::MissingRecipientCard {
+                    fingerprint: wrap.recipient_fingerprint,
+                });
+            }
+        }
+    }
+    Ok(recipients_uuids)
 }
 
 // ---------------------------------------------------------------------------
@@ -2082,8 +2236,6 @@ pub fn restore_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
-    use std::collections::HashMap;
-
     // Step 1: live-collision check. Restore on a UUID that is currently
     // live in manifest.blocks would produce a duplicate entry; the
     // caller MUST trash the live copy first.
@@ -2296,79 +2448,10 @@ pub fn restore_block(
         });
     }
 
-    // Step 5: resolve recipient_fingerprint → contact_uuid for every
-    // entry in the block file's §6.2 recipient table.
-    //   - Owner fingerprint resolves to open.owner_card.contact_uuid.
-    //   - Non-owner fingerprints require a contacts/*.card scan;
-    //     we hash each card and look up its fingerprint.
-    let mut fp_to_uuid: HashMap<[u8; 16], [u8; 16]> = HashMap::new();
-    fp_to_uuid.insert(owner_fp, open.owner_card.contact_uuid);
-    let needs_scan = block_file
-        .recipients
-        .iter()
-        .any(|w| w.recipient_fingerprint != owner_fp);
-    if needs_scan {
-        let contacts_dir = folder.join(CONTACTS_SUBDIR);
-        if contacts_dir.exists() {
-            for entry in std::fs::read_dir(&contacts_dir).map_err(|e| VaultError::Io {
-                context: "restore_block: failed to read_dir contacts/",
-                source: e,
-            })? {
-                let entry = entry.map_err(|e| VaultError::Io {
-                    context: "restore_block: failed to iterate contacts/ entry",
-                    source: e,
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("card") {
-                    continue;
-                }
-                let card_bytes = std::fs::read(&path).map_err(|e| VaultError::Io {
-                    context: "restore_block: failed to read contact card",
-                    source: e,
-                })?;
-                let Ok(card) = ContactCard::from_canonical_cbor(&card_bytes) else {
-                    continue;
-                };
-                // Self-signature verification is REQUIRED before we trust
-                // the card's `contact_uuid` for the manifest's recipient
-                // table. `from_canonical_cbor` only parses; it does not
-                // verify the embedded Ed25519 ∧ ML-DSA-65 self-signature
-                // (see card.rs::verify_self). Without this check, an
-                // attacker with write access to `contacts/` could plant a
-                // forged card matching a wrap's fingerprint and mint a
-                // `contact_uuid` of their choice into the manifest. The
-                // block plaintext is still gated by the §6.1 hybrid
-                // verify on the trashed file itself, but the manifest's
-                // `BlockEntry.recipients` is load-bearing for share /
-                // sync logic and must not carry un-attested UUIDs.
-                //
-                // We `continue` past an unverifiable card rather than
-                // hard-failing so a single corrupt or malicious card in
-                // `contacts/` cannot wedge restore for every block — the
-                // legitimate cards alongside it still resolve. If no
-                // verified card matches a given fingerprint, the loop
-                // at step 5's wrap-resolution surfaces
-                // `MissingRecipientCard` and the manifest stays
-                // untouched.
-                if card.verify_self().is_err() {
-                    continue;
-                }
-                let fp = fingerprint(&card.to_canonical_cbor()?);
-                fp_to_uuid.insert(fp, card.contact_uuid);
-            }
-        }
-    }
-    let mut recipients_uuids: Vec<[u8; 16]> = Vec::with_capacity(block_file.recipients.len());
-    for wrap in &block_file.recipients {
-        match fp_to_uuid.get(&wrap.recipient_fingerprint) {
-            Some(uuid) => recipients_uuids.push(*uuid),
-            None => {
-                return Err(VaultError::MissingRecipientCard {
-                    fingerprint: wrap.recipient_fingerprint,
-                });
-            }
-        }
-    }
+    // Step 5: resolve recipient_fingerprint → contact_uuid (shared with
+    // repair_vault — see resolve_recipient_uuids).
+    let recipients_uuids =
+        resolve_recipient_uuids(folder, &open.owner_card, &block_file.recipients)?;
 
     // Step 6: rename trash/<uuid>.cbor.enc.<ts> → blocks/<uuid>.cbor.enc.
     // Point of no easy return — from here on, all errors are best-effort
@@ -2657,14 +2740,11 @@ mod orchestrator_tests {
         }
     }
 
-    /// Pins current behaviour: a missing block file surfaces as a
-    /// generic [`VaultError::Io`] rather than a UUID-tagged
-    /// `BlockFingerprintMismatch`. The static `context` string today
-    /// does not carry the failing block's UUID; that gap is tracked in
-    /// Issue #88. When #88 lands this test should flip to assert the
-    /// new typed variant.
+    /// #350/#88: a missing block file surfaces as the UUID-tagged
+    /// `BlockFileMissing`, not an anonymous `Io(NotFound)`. Other I/O
+    /// failures (permissions, etc.) still surface as `VaultError::Io`.
     #[test]
-    fn verify_block_fingerprints_io_error_on_missing_block() {
+    fn verify_block_fingerprints_missing_block_is_typed() {
         let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
         let block_uuid = manifest.blocks[0].block_uuid;
         let block_path = folder.join(BLOCKS_SUBDIR).join(format!(
@@ -2677,16 +2757,8 @@ mod orchestrator_tests {
         let err = verify_block_fingerprints(&folder, &manifest)
             .expect_err("missing block file must surface an error");
         match err {
-            VaultError::Io { context, source } => {
-                assert_eq!(
-                    context, "failed to read block file for fingerprint check",
-                    "context must identify the helper that produced the error"
-                );
-                assert_eq!(
-                    source.kind(),
-                    std::io::ErrorKind::NotFound,
-                    "underlying io::Error must be NotFound for a deleted file"
-                );
+            VaultError::BlockFileMissing { block_uuid: got } => {
+                assert_eq!(got, block_uuid, "error must carry the failing uuid");
             }
             other => panic!("unexpected error: {other:?}"),
         }

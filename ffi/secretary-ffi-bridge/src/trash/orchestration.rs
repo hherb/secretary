@@ -5,11 +5,11 @@
 //! manifest + manifest_file into the bridge handle.
 //!
 //! Failure invariant: bridge in-memory state is byte-identical to
-//! pre-call on Err. On-disk state may have a partial rename (block
-//! file in `trash/`, manifest still pointing at `blocks/`) — harmless
-//! because `open_vault` reads only entries listed in the manifest
-//! (the trashed file is then detectable as an orphan and the
-//! operation can be retried).
+//! pre-call on Err. On-disk state may have a partial rename (manifest
+//! updated to list the block as trashed, but the file still in `blocks/`)
+//! due to the manifest-write-first semantics introduced in #350 — harmless
+//! because `open_vault` ignores unlisted files and an open-time sweep
+//! relocates orphans.
 
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
@@ -142,6 +142,11 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
         // per issue #40. The generic `From<VaultError>` impl routes this
         // to `CorruptVault` on the read path.
         | VaultError::BlockFingerprintMismatch { .. }
+        // #350: unreachable from trash_block (repair is a separate
+        // orchestrator entry point); listed for exhaustiveness per
+        // issue #40.
+        | VaultError::BlockFileMissing { .. }
+        | VaultError::RepairRejected { .. }
         // ADR 0009 (B.1): unreachable from trash_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {

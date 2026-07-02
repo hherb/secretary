@@ -160,6 +160,7 @@ Repository initialized April 2026. Sub-project A — the cryptographic foundatio
 | Coverage-guided fuzz harness (`cargo-fuzz` over six wire-format decoders, NiceGUI dashboard, cross-language differential-replay protocol) | ✅ Complete (PR #8); first artifacts triaged + `display_name` DoS-bound (PR #11); live monitor telemetry (PR #12) |
 | Cryptography primer for users / contributors (13 chapters) | ✅ Complete (PR #10) |
 | Hardening: side-channel review, memory hygiene audit, threat-model & format-spec doc pass | 🚧 Phase A.7, in progress |
+| 2026-07-02 pre-release security audit remediation (findings [#349](https://github.com/hherb/secretary/issues/349)–[#370](https://github.com/hherb/secretary/issues/370)) | ✅ 20/22 findings fixed (PR #371); crash-recovery-on-open ([#350](https://github.com/hherb/secretary/issues/350)) shipped separately — manifest-first `trash_block`, open-time trash-completion sweep, and a gated `repair_vault` orchestrator (typed errors; spec §6.5/§7/§9); desktop dialog path binding ([#353](https://github.com/hherb/secretary/issues/353)) remains the last open deferral. FFI/app projection of repair: [#374](https://github.com/hherb/secretary/issues/374) |
 | External cryptographic audit | 🚧 Phase A.7 |
 | FFI bindings (PyO3 boilerplate) | ✅ Sub-project B.1 (Python; round-trip pipeline proven, no vault crypto exposed yet) |
 | FFI bindings (uniffi for Swift + Kotlin) | ✅ Sub-project B.1.1 (macOS-host Swift smoke runner) and B.1.1.1 (JVM-host Kotlin smoke runner with pinned + SHA-256-verified JNA fetch) |

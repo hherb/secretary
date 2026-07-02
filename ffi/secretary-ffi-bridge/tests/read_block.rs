@@ -197,23 +197,27 @@ fn open_vault_corrupt_block_file_returns_corrupt_vault() {
 }
 
 #[test]
-fn open_vault_missing_block_file_returns_folder_invalid() {
-    // C.1.1b D6: a deleted block file surfaces during `open_vault`'s
-    // per-block fingerprint check as a `VaultError::Io` with kind
-    // `NotFound`, which the bridge's guarded `Io` arm routes to
-    // `FfiVaultError::FolderInvalid` (the same NotFound bucket that
-    // pre-unlock missing-folder errors fold into). Issue #88 tracks
-    // promoting this to a UUID-tagged variant; until then this test
-    // pins the current routing.
+fn open_vault_missing_block_file_returns_corrupt_vault() {
+    // #350/#88: a deleted block file surfaces during `open_vault`'s
+    // per-block fingerprint check as the UUID-tagged
+    // `VaultError::BlockFileMissing`, which the bridge folds to
+    // `FfiVaultError::CorruptVault` alongside `BlockFingerprintMismatch`.
+    // Previously this routed to the generic NotFound `FolderInvalid`
+    // bucket with no UUID in the message; this test now pins the typed
+    // routing.
     let tmp = copy_golden_to_tempdir();
     fs::remove_file(tmp.path().join("blocks").join(VAULT_001_BLOCK_FILENAME)).unwrap();
     let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
-    let FfiVaultError::FolderInvalid { detail } = err else {
-        panic!("expected FolderInvalid, got {err:?}");
+    let FfiVaultError::CorruptVault { detail } = err else {
+        panic!("expected CorruptVault, got {err:?}");
     };
     assert!(
-        detail.contains("failed to read block file for fingerprint check"),
+        detail.contains("file missing from blocks/"),
         "detail: {detail}"
+    );
+    assert!(
+        detail.contains(&format!("{VAULT_001_BLOCK_UUID:02x?}")),
+        "detail must carry the failing block uuid: {detail}"
     );
 }
 

@@ -14,10 +14,10 @@ use crate::vault::OpenVaultManifest;
 /// and `read_block`).
 ///
 /// On failure, the bridge handle is byte-identical to its pre-call
-/// state; the on-disk state may have a partial rename (block file
-/// already moved into `trash/` but manifest still pointing at
-/// `blocks/`), which is harmless because `open_vault` reads only
-/// entries listed in the manifest.
+/// state; the on-disk state may have a partial rename (manifest
+/// updated to list the block as trashed, but file still in `blocks/`)
+/// due to the manifest-write-first semantics of #350 — harmless because
+/// `open_vault` reads only listed entries and ignores orphans.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)] // owned Vec<u8> for bytes ∪ bytearray accept
 pub(crate) fn trash_block(
