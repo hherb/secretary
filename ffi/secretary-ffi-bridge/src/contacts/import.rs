@@ -34,14 +34,26 @@ pub fn import_contact_card(
         "{}.card",
         format_uuid_hyphenated(&card.contact_uuid)
     ));
+    // Fast-path friendly rejection. This is advisory only: the authoritative
+    // no-overwrite guarantee is `persist_noclobber` in `write_card_atomic`,
+    // which closes the check-then-write TOCTOU (#361) — two concurrent imports
+    // of different cards claiming the same contact_uuid could both pass this
+    // `exists()` check, and a plain rename would let the loser silently replace
+    // the winner's trusted card.
     if path.exists() {
         return Err(FfiVaultError::ContactAlreadyExists {
             uuid_hex: hex::encode(card.contact_uuid),
         });
     }
     write_card_atomic(&contacts_dir, &path, card_bytes).map_err(|e| {
-        FfiVaultError::FolderInvalid {
-            detail: format!("write contact card: {e}"),
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            FfiVaultError::ContactAlreadyExists {
+                uuid_hex: hex::encode(card.contact_uuid),
+            }
+        } else {
+            FfiVaultError::FolderInvalid {
+                detail: format!("write contact card: {e}"),
+            }
         }
     })?;
     Ok(ContactSummary {
@@ -52,12 +64,18 @@ pub fn import_contact_card(
     })
 }
 
-/// Atomic write via temp-file-in-same-dir + fsync + rename + dir-fsync.
-/// Mirrors `core::vault::io::write_atomic` (which is `pub(crate)` and out of
-/// reach here), step for step: the temp file is created in `contacts_dir` so
-/// `persist` is a same-filesystem `rename(2)`; on `persist` failure `tempfile`
-/// cleans up the temp file automatically; the final directory fsync makes the
-/// rename itself durable across power loss (no-op on non-Unix, matching core).
+/// Atomic write via temp-file-in-same-dir + fsync + no-clobber rename +
+/// dir-fsync. Mirrors `core::vault::io::write_atomic` (which is `pub(crate)`
+/// and out of reach here), step for step: the temp file is created in
+/// `contacts_dir` so the rename is a same-filesystem `rename(2)`; on failure
+/// `tempfile` cleans up the temp file automatically; the final directory fsync
+/// makes the rename itself durable across power loss (no-op on non-Unix,
+/// matching core).
+///
+/// Uses `persist_noclobber` rather than `persist` (#361): TOFU import must
+/// never replace an existing trusted card, so the rename fails with
+/// `ErrorKind::AlreadyExists` (which the caller maps to `ContactAlreadyExists`)
+/// if the destination appeared after the caller's advisory `exists()` check.
 fn write_card_atomic(
     contacts_dir: &std::path::Path,
     path: &std::path::Path,
@@ -66,7 +84,7 @@ fn write_card_atomic(
     let mut tmp = tempfile::NamedTempFile::new_in(contacts_dir)?;
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
     fsync_dir(contacts_dir)?;
     Ok(())
 }
