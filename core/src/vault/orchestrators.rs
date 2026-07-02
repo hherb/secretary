@@ -671,13 +671,11 @@ pub(crate) fn read_vault_manifest_full(
 /// already be authenticated (envelope signature verified) — this
 /// helper does not re-verify it.
 ///
-/// On the I/O failure path (e.g. a `blocks/<uuid>.cbor.enc` file is
-/// missing or unreadable) this surfaces a generic [`VaultError::Io`]
-/// with a static context string that does not carry the failing
-/// block's UUID. See [Issue #88] for the planned debuggability
-/// improvement.
-///
-/// [Issue #88]: https://github.com/hherb/secretary/issues/88
+/// On the I/O failure path, a listed-but-absent `blocks/<uuid>.cbor.enc`
+/// file surfaces the UUID-tagged [`VaultError::BlockFileMissing`]
+/// (#350/#88). Other I/O failures (permissions, etc.) still surface a
+/// generic [`VaultError::Io`] with a static context string that does
+/// not carry the failing block's UUID.
 ///
 /// `pub(crate)` because it is only invoked from [`open_vault`];
 /// external callers go via `open_vault`'s typed error surface.
@@ -689,9 +687,20 @@ pub(crate) fn verify_block_fingerprints(
     for entry in &manifest.blocks {
         let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
         let block_path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
-        let bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
-            context: "failed to read block file for fingerprint check",
-            source: e,
+        let bytes = std::fs::read(&block_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // #350/#88: a listed-but-absent block gets a typed,
+                // uuid-carrying error. Not repairable — see the
+                // variant's doc; recovery is a completed sync.
+                VaultError::BlockFileMissing {
+                    block_uuid: entry.block_uuid,
+                }
+            } else {
+                VaultError::Io {
+                    context: "failed to read block file for fingerprint check",
+                    source: e,
+                }
+            }
         })?;
         let got = *blake3_hash(&bytes).as_bytes();
         if got != entry.fingerprint {
@@ -2657,14 +2666,11 @@ mod orchestrator_tests {
         }
     }
 
-    /// Pins current behaviour: a missing block file surfaces as a
-    /// generic [`VaultError::Io`] rather than a UUID-tagged
-    /// `BlockFingerprintMismatch`. The static `context` string today
-    /// does not carry the failing block's UUID; that gap is tracked in
-    /// Issue #88. When #88 lands this test should flip to assert the
-    /// new typed variant.
+    /// #350/#88: a missing block file surfaces as the UUID-tagged
+    /// `BlockFileMissing`, not an anonymous `Io(NotFound)`. Other I/O
+    /// failures (permissions, etc.) still surface as `VaultError::Io`.
     #[test]
-    fn verify_block_fingerprints_io_error_on_missing_block() {
+    fn verify_block_fingerprints_missing_block_is_typed() {
         let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
         let block_uuid = manifest.blocks[0].block_uuid;
         let block_path = folder.join(BLOCKS_SUBDIR).join(format!(
@@ -2677,16 +2683,8 @@ mod orchestrator_tests {
         let err = verify_block_fingerprints(&folder, &manifest)
             .expect_err("missing block file must surface an error");
         match err {
-            VaultError::Io { context, source } => {
-                assert_eq!(
-                    context, "failed to read block file for fingerprint check",
-                    "context must identify the helper that produced the error"
-                );
-                assert_eq!(
-                    source.kind(),
-                    std::io::ErrorKind::NotFound,
-                    "underlying io::Error must be NotFound for a deleted file"
-                );
+            VaultError::BlockFileMissing { block_uuid: got } => {
+                assert_eq!(got, block_uuid, "error must carry the failing uuid");
             }
             other => panic!("unexpected error: {other:?}"),
         }
