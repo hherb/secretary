@@ -247,6 +247,9 @@ pub fn open_with_device_secret(
         },
         None,
     )?;
+    // §10 rollback resistance: same OS-local baseline check as the password /
+    // recovery opens (#352). The device path is not a weaker open.
+    crate::vault::orchestration::enforce_rollback_resistance(&core_out)?;
     // secret drops here → SecretBytes ZeroizeOnDrop wipes our local copy.
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
 }
