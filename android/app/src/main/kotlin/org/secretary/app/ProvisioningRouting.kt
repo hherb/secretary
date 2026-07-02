@@ -53,3 +53,22 @@ internal fun cloudWorkingVaultDir(filesDir: File, treeUri: String, reset: Boolea
     check(dir.isDirectory) { "failed to resolve cloud working vault dir: ${dir.path}" }
     return dir
 }
+
+/**
+ * Delete every local artifact of the cloud vault at [treeUri] when the user forgets / switches away
+ * from it (#366). Removes the ciphertext working copy, the per-cloud device-secret metadata + wrapped
+ * blob, and the pending-flush marker — none of which `SafVaultLocationStore.clear()` (it only drops
+ * the SAF grant + pref) touches, so they would otherwise persist in app-private storage indefinitely
+ * (accumulating stale, if encrypted, vault material across forget/re-add and app updates).
+ *
+ * Best-effort and idempotent (`deleteRecursively` / `delete` tolerate an already-absent path). Does
+ * NOT remove the Rust `SyncState` (keyed by vault UUID — unknown here — and non-secret CRDT metadata)
+ * nor the orphaned Keystore key (aliased by cloudKey; a re-add of the same folder overwrites it and
+ * its wrapped blob is already gone, so the bare key is inert).
+ */
+internal fun forgetCloudVaultArtifacts(filesDir: File, noBackupFilesDir: File, treeUri: String) {
+    val key = cloudVaultKey(treeUri)
+    File(filesDir, "working/$key").deleteRecursively()
+    cloudDeviceSecretDir(noBackupFilesDir, key).deleteRecursively()
+    File(syncStateDir(filesDir), "$key.pending-flush").delete()
+}
