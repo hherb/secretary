@@ -15,6 +15,13 @@ pub struct UnlockedIdentity(pub(crate) secretary_ffi_bridge::UnlockedIdentity);
 
 #[pymethods]
 impl UnlockedIdentity {
+    /// Whether this handle has been closed/wiped. Call before acting on
+    /// `user_uuid()` / `display_name()`, which return safe defaults on a
+    /// wiped handle (#362).
+    fn is_wiped(&self) -> bool {
+        self.0.is_wiped()
+    }
+
     /// User-facing display name from the IdentityBundle. Returns `""` if
     /// the handle has been explicitly closed.
     fn display_name(&self) -> String {

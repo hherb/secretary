@@ -67,6 +67,15 @@ impl UnlockedIdentity {
         }
     }
 
+    /// Whether this handle has been wiped. `display_name()`/`user_uuid()`
+    /// return safe defaults (`""` / all-zero UUID) on a wiped handle rather
+    /// than throwing, so a read-only consumer keying state by `user_uuid()`
+    /// after a concurrent wipe would act on a default (the #252 class of
+    /// bug). Call this first to distinguish "wiped" from a genuine value.
+    pub fn is_wiped(&self) -> bool {
+        lock_or_recover(&self.inner).is_none()
+    }
+
     /// User-facing display name from the IdentityBundle. UTF-8.
     ///
     /// Returns `""` if the handle has been explicitly wiped.
@@ -260,6 +269,18 @@ mod tests {
         let id = fresh_unlocked_identity();
         id.wipe();
         assert_eq!(id.user_uuid(), vec![0u8; 16]);
+    }
+
+    #[test]
+    fn is_wiped_transitions_false_to_true_on_wipe() {
+        // #362: is_wiped lets a read-only consumer distinguish a wiped handle
+        // from a genuine value before acting on user_uuid()'s safe default.
+        let id = fresh_unlocked_identity();
+        assert!(!id.is_wiped());
+        id.wipe();
+        assert!(id.is_wiped());
+        id.wipe(); // idempotent
+        assert!(id.is_wiped());
     }
 
     #[test]
