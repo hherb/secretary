@@ -37,8 +37,7 @@ pub struct Mnemonic {
 ///
 /// The variants describe what was wrong with the input phrase. They are
 /// `PartialEq`/`Eq` so call sites can match on a specific failure mode in
-/// tests; the string payload of [`MnemonicError::UnknownWord`] participates in
-/// equality.
+/// tests.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MnemonicError {
     /// The phrase did not contain exactly 24 whitespace-separated words.
@@ -47,9 +46,13 @@ pub enum MnemonicError {
     #[error("expected 24 words, got {got}")]
     WrongLength { got: usize },
 
-    /// One of the words was not in the BIP-39 English wordlist.
-    #[error("word not in BIP-39 English list: {0}")]
-    UnknownWord(String),
+    /// One of the words was not in the BIP-39 English wordlist. Carries the
+    /// 0-based `index` of the offending word, NOT its content: the word is
+    /// recovery-phrase material and must never reach logs, crash reporters, or
+    /// analytics via an error message (a typo is typically ~1 edit from the
+    /// real word, leaking one of the 24 phrase words). See #358.
+    #[error("recovery-phrase word #{} is not in the BIP-39 English list", .index + 1)]
+    UnknownWord { index: usize },
 
     /// Word count and wordlist were valid but the BIP-39 checksum did not
     /// match. Indicates a typo or a tampered phrase.
@@ -150,18 +153,13 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
         return Err(MnemonicError::WrongLength { got: tokens.len() });
     }
 
-    // The bip39 crate reports `UnknownWord` by index into the phrase, not by
-    // content. We resolve the index against our local token list here so the
-    // caller-facing error variant carries the actual offending word.
+    // The bip39 crate reports `UnknownWord` by index into the phrase. We carry
+    // that index through verbatim — NOT the word content, which is
+    // recovery-phrase material that must not leak into an error message (#358).
     let bip =
         Bip39Mnemonic::parse_in_normalized(Language::English, &normalized).map_err(
             |e| match e {
-                bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord(
-                    tokens
-                        .get(idx)
-                        .map(|s| (*s).to_string())
-                        .unwrap_or_else(|| "(unknown)".to_string()),
-                ),
+                bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord { index: idx },
                 other => map_bip39_error(other),
             },
         )?;
@@ -193,11 +191,11 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
 ///
 /// The `UnknownWord` arm IS listed in the match below for exhaustiveness,
 /// but it is intercepted at the call site in [`parse`] before reaching
-/// this function (the call site needs the local token list to resolve the
-/// crate's word *index* back to the offending word *content*). The match
-/// arm here is therefore unreachable in normal operation — see the
-/// comment on that arm for why mapping to `BadChecksum` is the right
-/// fallback if the bip39 crate's behaviour ever changes.
+/// this function (the call site maps the crate's word *index* straight onto
+/// `MnemonicError::UnknownWord { index }`). The match arm here is therefore
+/// unreachable in normal operation — see the comment on that arm for why
+/// mapping to `BadChecksum` is the right fallback if the bip39 crate's
+/// behaviour ever changes.
 fn map_bip39_error(e: bip39::Error) -> MnemonicError {
     use bip39::Error::{
         AmbiguousLanguages, BadEntropyBitCount, BadWordCount, InvalidChecksum, UnknownWord,
@@ -210,10 +208,11 @@ fn map_bip39_error(e: bip39::Error) -> MnemonicError {
         // `parse_in_normalized` in [`parse`]'s call pattern but must be
         // listed for exhaustiveness:
         //
-        // - `UnknownWord`: caught and converted to `MnemonicError::UnknownWord`
-        //   (carrying the actual offending word, not the crate's index)
-        //   at the [`parse`] call site BEFORE the result reaches this
-        //   function. If the bip39 crate's contract ever changes such that
+        // - `UnknownWord`: caught and converted to
+        //   `MnemonicError::UnknownWord { index }` (carrying only the word
+        //   *index*, never the content, #358) at the [`parse`] call site
+        //   BEFORE the result reaches this function. If the bip39 crate's
+        //   contract ever changes such that
         //   `UnknownWord` slips past the call site, mapping to
         //   `BadChecksum` is a safe fallback — bad input is bad input.
         // - `BadEntropyBitCount`: only constructable by from-entropy
@@ -323,11 +322,16 @@ mod tests {
         words[5] = "notarealbip39word";
         let bad = words.join(" ");
         let err = parse(&bad).unwrap_err();
-        // The payload must carry the actual offending word, not a placeholder.
-        assert_eq!(
-            err,
-            MnemonicError::UnknownWord("notarealbip39word".to_string())
+        // The payload carries the 0-based index (word #6), NOT the content.
+        assert_eq!(err, MnemonicError::UnknownWord { index: 5 });
+        // #358: the offending word must never appear in the error message
+        // (it would leak recovery-phrase material into logs / crash reporters).
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("notarealbip39word"),
+            "error message leaked the phrase word: {rendered}",
         );
+        assert!(rendered.contains("#6"), "expected 1-based position, got {rendered}");
     }
 
     #[test]
@@ -357,7 +361,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                MnemonicError::BadChecksum | MnemonicError::UnknownWord(_)
+                MnemonicError::BadChecksum | MnemonicError::UnknownWord { .. }
             ),
             "expected BadChecksum or UnknownWord, got {err:?}",
         );
