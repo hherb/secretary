@@ -996,3 +996,244 @@ fn repair_rejects_equal_set_different_bytes() {
         "rejected repair must not touch the manifest"
     );
 }
+
+// ---------------------------------------------------------------------------
+// repair_vault — #350 review-followup gates: rollback, concurrent, missing,
+// idempotence
+// ---------------------------------------------------------------------------
+
+/// Minimal recursive dir copy for vault-state forking (see #186 for the
+/// planned shared helper; kept local per test-crate convention).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+/// #350 gate: a genuinely owner-signed but OLDER block copy planted
+/// over the live file is a rollback, not crash residue — clock
+/// dominated → RepairRejected, and the manifest is untouched.
+#[test]
+fn repair_vault_rejects_rollback_plant() {
+    let (dir, _mnemonic, pw) = make_fast_vault(71, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdc; 16], [0xbc; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let v1_bytes = fs::read(&block_path).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(&block_path, &v1_bytes).unwrap(); // the rollback plant
+    let manifest_before = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect_err("rollback must be refused");
+    assert!(
+        matches!(err, VaultError::RepairRejected { block_uuid: b, ref detail }
+                 if b == block_uuid && detail.contains("clock relation")),
+        "got {err:?}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before,
+        "all-or-nothing: rejected repair must not write the manifest"
+    );
+}
+
+/// #350 gate: fork the vault pre-save, save independently in the fork
+/// under a DIFFERENT device, transplant the fork's block file — the
+/// concurrent clock ({A:1} committed vs {B:1} on disk) must be refused.
+/// (The same-device fork — Equal clock, same recipient set, different
+/// bytes — is already pinned by `repair_rejects_equal_set_different_bytes`
+/// from the Task 6 review fix; do not duplicate it.)
+#[test]
+fn repair_vault_rejects_concurrent_clock_transplant() {
+    let (dir, _mnemonic, pw) = make_fast_vault(72, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x72; 32]);
+    let (device_a, device_b, block_uuid) = ([0xaa; 16], [0xbb; 16], [0xbd; 16]);
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+
+    // Fork BEFORE the block exists.
+    let fork = tempfile::tempdir().unwrap();
+    copy_dir_recursive(folder, fork.path());
+
+    // Main: save under device A → manifest summary {A:1}.
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "main"),
+        &recipients,
+        device_a,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+
+    // Fork: save the same uuid under device B → block clock {B:1}.
+    let mut rng_f = ChaCha20Rng::from_seed([0x73; 32]);
+    let mut open_f = open_vault(fork.path(), Unlocker::Password(&pw), None).unwrap();
+    let recip_f = vec![open_f.owner_card.clone()];
+    save_block(
+        fork.path(),
+        &mut open_f,
+        make_simple_plaintext(block_uuid, "fork"),
+        &recip_f,
+        device_b,
+        1_500,
+        &mut rng_f,
+    )
+    .unwrap();
+    drop(open_f);
+    // Transplant: same owner, same vault_uuid, different bytes.
+    fs::copy(
+        fork.path()
+            .join("blocks")
+            .join(format!("{uuid_hex}.cbor.enc")),
+        &block_path,
+    )
+    .unwrap();
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_a,
+        3_000,
+        &mut rng,
+    )
+    .expect_err("concurrent clock must be refused");
+    assert!(
+        matches!(err, VaultError::RepairRejected { ref detail, .. } if detail.contains("Concurrent")),
+        "expected Concurrent rejection, got {err:?}"
+    );
+}
+
+/// #350: a listed block whose file is simply GONE is not repairable —
+/// typed BlockFileMissing from open_vault AND repair_vault.
+#[test]
+fn missing_block_file_is_typed_and_unrepairable() {
+    let (dir, _mnemonic, pw) = make_fast_vault(73, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x74; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xde; 16], [0xbe; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "gone"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    fs::remove_file(folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"))).unwrap();
+
+    let e1 = open_vault(folder, Unlocker::Password(&pw), None).expect_err("open");
+    assert!(
+        matches!(e1, VaultError::BlockFileMissing { block_uuid: b } if b == block_uuid),
+        "got {e1:?}"
+    );
+    let e2 = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .expect_err("repair cannot invent bytes");
+    assert!(
+        matches!(e2, VaultError::BlockFileMissing { block_uuid: b } if b == block_uuid),
+        "got {e2:?}"
+    );
+}
+
+/// #350: repair_vault on a healthy vault is a plain open — nothing
+/// written (manifest bytes byte-identical).
+#[test]
+fn repair_vault_is_idempotent_on_healthy_vault() {
+    let (dir, _mnemonic, pw) = make_fast_vault(74, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x75; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdf; 16], [0xbf; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "healthy"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    let before = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let repaired = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .expect("healthy vault must open through repair");
+    assert!(repaired
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+    drop(repaired);
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "healthy repair must not rewrite the manifest"
+    );
+}
