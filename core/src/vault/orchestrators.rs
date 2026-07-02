@@ -466,6 +466,56 @@ impl std::fmt::Debug for OpenVault {
     }
 }
 
+/// Read `vault.toml` + `identity.bundle.enc` and unlock via the given
+/// [`Unlocker`] arm. Shared by [`open_vault`] and
+/// [`crate::vault::repair_vault`] so the repair path is never a weaker
+/// open (same credential surface, same typed errors).
+pub(crate) fn unlock_vault_identity(
+    folder: &Path,
+    unlocker: Unlocker<'_>,
+) -> Result<(Vec<u8>, UnlockedIdentity), VaultError> {
+    // Step 1: read vault.toml + identity.bundle.enc
+    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
+    let identity_bundle_path = folder.join(IDENTITY_BUNDLE_FILENAME);
+    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
+        context: "failed to read vault.toml",
+        source: e,
+    })?;
+    let identity_bundle_bytes =
+        std::fs::read(&identity_bundle_path).map_err(|e| VaultError::Io {
+            context: "failed to read identity.bundle.enc",
+            source: e,
+        })?;
+
+    // Step 2: unlock the identity bundle. Either path produces an
+    // UnlockedIdentity carrying the IBK (Sensitive<[u8;32]>) and the
+    // owner-side IdentityBundle. Errors propagate via VaultError::Unlock.
+    let unlocked = match unlocker {
+        Unlocker::Password(p) => {
+            unlock::open_with_password(&vault_toml_bytes, &identity_bundle_bytes, p)?
+        }
+        Unlocker::Recovery(words) => {
+            unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
+        }
+        Unlocker::DeviceSecret {
+            device_uuid,
+            secret,
+        } => {
+            let wrap_bytes =
+                crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
+            unlock::device::open_with_device_secret(
+                &vault_toml_bytes,
+                &wrap_bytes,
+                &identity_bundle_bytes,
+                device_uuid,
+                secret,
+            )?
+        }
+    };
+
+    Ok((vault_toml_bytes, unlocked))
+}
+
 /// Open an existing vault at `folder`.
 ///
 /// Sequence (mirrors `docs/vault-format.md` §1 read order):
@@ -513,44 +563,8 @@ pub fn open_vault(
     unlocker: Unlocker<'_>,
     local_highest_clock: Option<&[VectorClockEntry]>,
 ) -> Result<OpenVault, VaultError> {
-    // Step 1: read vault.toml + identity.bundle.enc
-    let vault_toml_path = folder.join(VAULT_TOML_FILENAME);
-    let identity_bundle_path = folder.join(IDENTITY_BUNDLE_FILENAME);
-    let vault_toml_bytes = std::fs::read(&vault_toml_path).map_err(|e| VaultError::Io {
-        context: "failed to read vault.toml",
-        source: e,
-    })?;
-    let identity_bundle_bytes =
-        std::fs::read(&identity_bundle_path).map_err(|e| VaultError::Io {
-            context: "failed to read identity.bundle.enc",
-            source: e,
-        })?;
-
-    // Step 2: unlock the identity bundle. Either path produces an
-    // UnlockedIdentity carrying the IBK (Sensitive<[u8;32]>) and the
-    // owner-side IdentityBundle. Errors propagate via VaultError::Unlock.
-    let unlocked = match unlocker {
-        Unlocker::Password(p) => {
-            unlock::open_with_password(&vault_toml_bytes, &identity_bundle_bytes, p)?
-        }
-        Unlocker::Recovery(words) => {
-            unlock::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, words)?
-        }
-        Unlocker::DeviceSecret {
-            device_uuid,
-            secret,
-        } => {
-            let wrap_bytes =
-                crate::vault::device_slot::read_device_wrap_bytes(folder, device_uuid)?;
-            unlock::device::open_with_device_secret(
-                &vault_toml_bytes,
-                &wrap_bytes,
-                &identity_bundle_bytes,
-                device_uuid,
-                secret,
-            )?
-        }
-    };
+    // Steps 1-2: read vault.toml + identity.bundle.enc and unlock.
+    let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
 
     // Steps 3-8: read manifest envelope, load + verify owner card,
     // verify + decrypt manifest, sanity-check body↔envelope and
@@ -750,7 +764,11 @@ pub(crate) fn verify_block_fingerprints(
 /// could rewrite the manifest between the verify-decrypt read and a
 /// follow-up hash read (issue #80). [`open_vault`] and
 /// [`read_vault_manifest`] discard the bytes.
-fn read_and_verify_manifest(
+///
+/// `pub(crate)` (rather than private) so [`crate::vault::repair_vault`]
+/// can perform the same §1 read-order verify-before-decrypt as
+/// `open_vault` — the repair path is never a weaker open.
+pub(crate) fn read_and_verify_manifest(
     folder: &Path,
     vault_toml_bytes: &[u8],
     unlocked: &UnlockedIdentity,
@@ -879,7 +897,13 @@ fn read_and_verify_manifest(
 /// (a non-incrementing tick makes two writes look like one and `is_rollback`
 /// would declare them "Equal"). Practical reachability is essentially zero
 /// (~10¹¹ years at one write/ns) but a typed surface beats a silent freeze.
-fn tick_clock(clock: &mut Vec<VectorClockEntry>, device_uuid: &[u8; 16]) -> Result<(), VaultError> {
+///
+/// `pub(crate)` so [`crate::vault::repair_vault`] can tick the manifest
+/// clock after a gated adoption, mirroring every other write path.
+pub(crate) fn tick_clock(
+    clock: &mut Vec<VectorClockEntry>,
+    device_uuid: &[u8; 16],
+) -> Result<(), VaultError> {
     if let Some(entry) = clock.iter_mut().find(|e| &e.device_uuid == device_uuid) {
         entry.counter = entry
             .counter
@@ -2067,9 +2091,9 @@ pub fn trash_block(
 /// failing self-verify are skipped, not fatal). Unresolved →
 /// [`VaultError::MissingRecipientCard`].
 ///
-/// Shared by `restore_block` (§7.1 step 4) and `repair_vault` (#350) —
-/// both rebuild a manifest `BlockEntry.recipients` from an on-disk
-/// block file.
+/// Shared by [`restore_block`] (§7.1 step 4) and
+/// [`crate::vault::repair_vault`] (#350) — both rebuild a manifest
+/// `BlockEntry.recipients` from an on-disk block file.
 pub(crate) fn resolve_recipient_uuids(
     folder: &Path,
     owner_card: &ContactCard,

@@ -25,10 +25,12 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
-use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
+use secretary_core::unlock::{
+    bundle::IdentityBundle, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
+};
 use secretary_core::vault::{
     encode_manifest_file, open_vault, restore_block, save_block, sign_manifest, trash_block,
-    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker,
+    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -141,6 +143,27 @@ fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
         s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
+}
+
+/// Build a co-recipient contact card from a freshly-generated identity
+/// bundle. Copied verbatim from `trash_restore.rs::make_signed_card` per
+/// this repo's no-shared-test-crate convention.
+fn make_signed_card(id: &IdentityBundle) -> ContactCard {
+    let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: id.user_uuid,
+        display_name: id.display_name.clone(),
+        x25519_pk: id.x25519_pk,
+        ml_kem_768_pk: id.ml_kem_768_pk.clone(),
+        ed25519_pk: id.ed25519_pk,
+        ml_dsa_65_pk: id.ml_dsa_65_pk.clone(),
+        created_at_ms: id.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&id.ed25519_sk, &pq_sk).unwrap();
+    card
 }
 
 fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlaintext {
@@ -364,4 +387,277 @@ fn sweep_skips_legacy_entry_without_fingerprint() {
         "legacy entry: orphan must not be moved"
     );
     assert!(!trash_path.exists());
+}
+
+// ---------------------------------------------------------------------------
+// repair_vault — #350 save_block / re-key crash residue
+// ---------------------------------------------------------------------------
+
+/// #350 happy path: a save_block update whose manifest write was lost
+/// (crash simulated by restoring the pre-save manifest bytes) makes
+/// open_vault fail BlockFingerprintMismatch; repair_vault adopts the
+/// newer owner-signed block, rebuilds the entry, and returns a live
+/// OpenVault; a subsequent open_vault is green.
+#[test]
+fn repair_vault_adopts_interrupted_save() {
+    let (dir, _mnemonic, pw) = make_fast_vault(61, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x61; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    let err =
+        open_vault(folder, Unlocker::Password(&pw), None).expect_err("residue must fail open");
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    let repaired = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect("gated adoption must succeed on genuine crash residue");
+
+    let entry = repaired
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("entry present");
+    assert_eq!(
+        entry.block_name, "v2",
+        "adopted entry carries the on-disk content"
+    );
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let disk = fs::read(folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"))).unwrap();
+    assert_eq!(
+        entry.fingerprint,
+        *secretary_core::crypto::hash::hash(&disk).as_bytes()
+    );
+    // Block clock adopted verbatim: device ticked twice (v1 + v2).
+    assert_eq!(entry.vector_clock_summary.len(), 1);
+    assert_eq!(entry.vector_clock_summary[0].counter, 2);
+    drop(repaired);
+
+    open_vault(folder, Unlocker::Password(&pw), None).expect("vault must be healthy after repair");
+}
+
+/// #350: a crashed revocation re-key repairs to the REDUCED recipient
+/// set (the on-disk §6.2 table), not the stale manifest one.
+#[test]
+fn repair_vault_adopts_interrupted_revocation() {
+    let (dir, _mnemonic, pw) = make_fast_vault(62, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x62; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdb; 16], [0xbb; 16]);
+
+    // Co-recipient B: mint an identity bundle, write its card to
+    // contacts/ (pattern from core/tests/revoke_block.rs).
+    let mut rng_b = ChaCha20Rng::from_seed([0x63; 32]);
+    let id_b = secretary_core::unlock::bundle::generate("Bee", 1_714_060_800_000, &mut rng_b);
+    let card_b = make_signed_card(&id_b);
+    let card_b_bytes = card_b.to_canonical_cbor().unwrap();
+    fs::write(
+        folder.join("contacts").join(format!(
+            "{}.card",
+            format_uuid_hyphenated(&card_b.contact_uuid)
+        )),
+        &card_b_bytes,
+    )
+    .unwrap();
+
+    let recipients = vec![open.owner_card.clone(), card_b.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "shared"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_pre = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        secretary_core::vault::RecipientUuid::new(card_b.contact_uuid),
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_pre).unwrap();
+
+    let repaired = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+    let entry = repaired
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap();
+    assert_eq!(entry.recipients.len(), 1, "revoked recipient must be gone");
+    assert_eq!(entry.recipients[0], repaired.owner_card.contact_uuid);
+}
+
+/// #350 security: Gate 3's `ClockRelation::Equal` branch (needed because
+/// `rewrite_block_with_recipients` deliberately preserves the block-level
+/// vector clock across a content-preserving re-key) must NOT let an
+/// attacker with `blocks/` write access (but no keys) resurrect a
+/// revoked recipient's access by replaying the pre-revocation,
+/// genuinely-owner-signed block bytes over the post-revocation live
+/// file. Same vector clock either way (revoke never ticks it) — the
+/// discriminator is `last_mod_ms`, which the replayed bytes carry
+/// *older*, not newer, than the manifest's currently-committed entry.
+/// `repair_vault` must reject, and — all-or-nothing — leave the
+/// attacker-planted disk state and the manifest untouched.
+#[test]
+fn repair_rejects_stale_equal_clock_replay() {
+    let (dir, _mnemonic, pw) = make_fast_vault(64, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x64; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdc; 16], [0xbc; 16]);
+
+    let mut rng_b = ChaCha20Rng::from_seed([0x65; 32]);
+    let id_b = secretary_core::unlock::bundle::generate("Bee", 1_714_060_800_000, &mut rng_b);
+    let card_b = make_signed_card(&id_b);
+    let card_b_bytes = card_b.to_canonical_cbor().unwrap();
+    fs::write(
+        folder.join("contacts").join(format!(
+            "{}.card",
+            format_uuid_hyphenated(&card_b.contact_uuid)
+        )),
+        &card_b_bytes,
+    )
+    .unwrap();
+
+    let recipients = vec![open.owner_card.clone(), card_b.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "shared"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    // Genuinely owner-signed pre-revocation bytes (recipients = [owner, B]).
+    let pre_revoke_block_bytes = fs::read(&block_path).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        secretary_core::vault::RecipientUuid::new(card_b.contact_uuid),
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+
+    // Attack: revoke_block_recipient completed cleanly (manifest + block
+    // file both reflect the post-revocation state). Now replay the
+    // pre-revocation block bytes over the live file — same block-level
+    // vector clock (revoke never ticks it), older last_mod_ms.
+    let manifest_post = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    fs::write(&block_path, &pre_revoke_block_bytes).unwrap();
+
+    let err = open_vault(folder, Unlocker::Password(&pw), None)
+        .expect_err("planted stale block must fail open");
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect_err("stale equal-clock replay must NOT be adopted");
+    assert!(
+        matches!(err, VaultError::RepairRejected { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    // All-or-nothing: the manifest must be byte-identical to the
+    // post-revocation state (repair wrote nothing), and the
+    // attacker-planted block bytes must still be on disk (repair adopts
+    // nothing, purges nothing).
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_post,
+        "rejected repair must not touch the manifest"
+    );
+    assert_eq!(
+        fs::read(&block_path).unwrap(),
+        pre_revoke_block_bytes,
+        "rejected repair must not touch blocks/"
+    );
 }

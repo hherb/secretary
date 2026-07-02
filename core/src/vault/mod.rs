@@ -54,6 +54,7 @@ pub use orchestrators::{
     create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
     save_block, share_block, trash_block, OpenVault, Unlocker,
 };
+pub use repair::repair_vault;
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
 // canonical UUID-to-filename formatter and the blocks-subdir / block
@@ -365,14 +366,14 @@ pub enum VaultError {
     /// Typed replacement for the anonymous `Io(NotFound)` the
     /// fingerprint check used to produce — carries the failing block's
     /// UUID (closes the missing-file half of the #88 debuggability
-    /// gap). NOT repairable by `repair_vault`: repair cannot invent
+    /// gap). NOT repairable by [`repair_vault`]: repair cannot invent
     /// bytes. The likely cause is a torn cloud sync that delivered the
     /// manifest before the block file; recovery is to retry after the
     /// sync completes.
     #[error("block {block_uuid:02x?} file missing from blocks/")]
     BlockFileMissing { block_uuid: [u8; 16] },
 
-    /// `repair_vault` refused to adopt an on-disk block whose
+    /// [`repair_vault`] refused to adopt an on-disk block whose
     /// fingerprint mismatches the manifest (#350).
     ///
     /// Adoption is gated on hybrid verify (Ed25519 ∧ ML-DSA-65) ∧
