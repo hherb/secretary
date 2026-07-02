@@ -1120,22 +1120,23 @@ fn repair_vault_rejects_rollback_plant() {
     );
 }
 
-/// #350 gate: fork the vault pre-save, save independently in the fork,
-/// transplant the fork's block file — equal clock (same device) and
-/// concurrent clock (different device) must BOTH be refused.
+/// #350 gate: fork the vault pre-save, save independently in the fork
+/// under a DIFFERENT device, transplant the fork's block file — the
+/// concurrent clock ({A:1} committed vs {B:1} on disk) must be refused.
+/// (The same-device fork — Equal clock, same recipient set, different
+/// bytes — is already pinned by `repair_rejects_equal_set_different_bytes`
+/// from the Task 6 review fix; do not duplicate it.)
 #[test]
-fn repair_vault_rejects_equal_and_concurrent_clocks() {
+fn repair_vault_rejects_concurrent_clock_transplant() {
     let (dir, _mnemonic, pw) = make_fast_vault(72, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x72; 32]);
     let (device_a, device_b, block_uuid) = ([0xaa; 16], [0xbb; 16], [0xbd; 16]);
     let uuid_hex = format_uuid_hyphenated(&block_uuid);
 
-    // Fork BEFORE the block exists, twice.
-    let fork_equal = tempfile::tempdir().unwrap();
-    let fork_conc = tempfile::tempdir().unwrap();
-    copy_dir_recursive(folder, fork_equal.path());
-    copy_dir_recursive(folder, fork_conc.path());
+    // Fork BEFORE the block exists.
+    let fork = tempfile::tempdir().unwrap();
+    copy_dir_recursive(folder, fork.path());
 
     // Main: save under device A → manifest summary {A:1}.
     let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
@@ -1145,27 +1146,23 @@ fn repair_vault_rejects_equal_and_concurrent_clocks() {
     drop(open);
     let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
 
-    for (fork, device, expect) in [
-        (fork_equal.path(), device_a, "Equal"),
-        (fork_conc.path(), device_b, "Concurrent"),
-    ] {
-        let mut rng_f = ChaCha20Rng::from_seed([0x73; 32]);
-        let mut open_f = open_vault(fork, Unlocker::Password(&pw), None).unwrap();
-        let recip_f = vec![open_f.owner_card.clone()];
-        save_block(fork, &mut open_f, make_simple_plaintext(block_uuid, "fork"),
-                   &recip_f, device, 1_500, &mut rng_f).unwrap();
-        drop(open_f);
-        // Transplant: same owner, same vault_uuid, different bytes.
-        fs::copy(fork.join("blocks").join(format!("{uuid_hex}.cbor.enc")), &block_path).unwrap();
+    // Fork: save the same uuid under device B → block clock {B:1}.
+    let mut rng_f = ChaCha20Rng::from_seed([0x73; 32]);
+    let mut open_f = open_vault(fork.path(), Unlocker::Password(&pw), None).unwrap();
+    let recip_f = vec![open_f.owner_card.clone()];
+    save_block(fork.path(), &mut open_f, make_simple_plaintext(block_uuid, "fork"),
+               &recip_f, device_b, 1_500, &mut rng_f).unwrap();
+    drop(open_f);
+    // Transplant: same owner, same vault_uuid, different bytes.
+    fs::copy(fork.path().join("blocks").join(format!("{uuid_hex}.cbor.enc")), &block_path).unwrap();
 
-        let err = secretary_core::vault::repair_vault(
-            folder, Unlocker::Password(&pw), None, device_a, 3_000, &mut rng,
-        ).expect_err("non-dominating clock must be refused");
-        assert!(
-            matches!(err, VaultError::RepairRejected { ref detail, .. } if detail.contains(expect)),
-            "expected {expect} rejection, got {err:?}"
-        );
-    }
+    let err = secretary_core::vault::repair_vault(
+        folder, Unlocker::Password(&pw), None, device_a, 3_000, &mut rng,
+    ).expect_err("concurrent clock must be refused");
+    assert!(
+        matches!(err, VaultError::RepairRejected { ref detail, .. } if detail.contains("Concurrent")),
+        "expected Concurrent rejection, got {err:?}"
+    );
 }
 
 /// #350: a listed block whose file is simply GONE is not repairable —
@@ -1246,7 +1243,7 @@ git commit -m "test(core): pin repair_vault security gates — rollback, equal/c
 - [ ] **Step 1: §6.5** — replace the sentence "The recovery path is: detect the inconsistency on next read, re-load the block, re-fingerprint, and offer to update the manifest." (line ~436) with:
 
 ```markdown
-Steps 9 and 10 must be atomic-as-a-pair from the user's perspective: a crash between writing the block and updating the manifest leaves the manifest pointing at an old block fingerprint, which surfaces on the next read as a typed fingerprint-mismatch error naming the block (a manifest-listed block whose file is *absent* surfaces as a typed missing-file error instead). Recovery is an explicit repair operation (`repair_vault` in the reference implementation) that the client offers to the user: it re-runs the §1 open sequence (same credentials, same verify-before-decrypt, same §10 rollback check), then — per mismatched block, all-or-nothing — re-loads the on-disk block and adopts it into a re-signed manifest **only if** (a) the block file passes the full §6.4 read flow under the owner's card (Ed25519 ∧ ML-DSA-65, both halves), (b) its header `vault_uuid`/`block_uuid` match, and (c) a **two-tier clock-freshness rule** holds. Tier 1: the file's header vector clock **strictly dominates** the manifest entry's `vector_clock_summary` — the exact shape an interrupted §6.5 content write leaves (the write ticked the block clock). Tier 2: the clocks are **equal** AND the file's recipient set is a **strict subset** of the committed entry's — the shape an interrupted §6.5.1 revocation leaves, since re-keys re-encrypt the same plaintext without ticking the block clock, meaning the only possible equal-clock delta is the recipient set and a subset can only narrow access (fail-closed: a planted retained owner-signed copy can at worst un-share a recipient, never re-grant one). Everything else is refused: a dominated clock (rollback plant), an equal-clock non-subset — which includes the residue of an interrupted §8 share (recipient-set *widening*); that residue is a documented limitation, not auto-repairable, until an explicit informed-consent adoption path exists — an equal-clock equal-set byte difference (forgery shape), and concurrent clocks (torn multi-device state repair must not guess about). Wall-clock `last_mod_ms` values MUST NOT be used as a freshness discriminator (they carry no monotonicity guarantee). The adopted entry's `recipients` are rebuilt from the file's §6.2 table (so an interrupted §6.5.1 revocation repairs to the *reduced* recipient set), and its `vector_clock_summary` is taken verbatim from the file header. The missing-file case is **not** repairable — repair cannot invent block bytes; the probable cause is a torn cloud sync and the recovery is a completed sync. Conformance: `core/tests/crash_recovery.rs::repair_vault_adopts_interrupted_save` / `repair_vault_adopts_interrupted_revocation` / `repair_vault_rejects_rollback_plant` / `repair_vault_rejects_equal_and_concurrent_clocks` pin this contract.
+Steps 9 and 10 must be atomic-as-a-pair from the user's perspective: a crash between writing the block and updating the manifest leaves the manifest pointing at an old block fingerprint, which surfaces on the next read as a typed fingerprint-mismatch error naming the block (a manifest-listed block whose file is *absent* surfaces as a typed missing-file error instead). Recovery is an explicit repair operation (`repair_vault` in the reference implementation) that the client offers to the user: it re-runs the §1 open sequence (same credentials, same verify-before-decrypt, same §10 rollback check), then — per mismatched block, all-or-nothing — re-loads the on-disk block and adopts it into a re-signed manifest **only if** (a) the block file passes the full §6.4 read flow under the owner's card (Ed25519 ∧ ML-DSA-65, both halves), (b) its header `vault_uuid`/`block_uuid` match, and (c) a **two-tier clock-freshness rule** holds. Tier 1: the file's header vector clock **strictly dominates** the manifest entry's `vector_clock_summary` — the exact shape an interrupted §6.5 content write leaves (the write ticked the block clock). Tier 2: the clocks are **equal** AND the file's recipient set is a **strict subset** of the committed entry's — the shape an interrupted §6.5.1 revocation leaves, since re-keys re-encrypt the same plaintext without ticking the block clock, meaning the only possible equal-clock delta is the recipient set and a subset can only narrow access (fail-closed: a planted retained owner-signed copy can at worst un-share a recipient, never re-grant one). Everything else is refused: a dominated clock (rollback plant), an equal-clock non-subset — which includes the residue of an interrupted §8 share (recipient-set *widening*); that residue is a documented limitation, not auto-repairable, until an explicit informed-consent adoption path exists — an equal-clock equal-set byte difference (forgery shape), and concurrent clocks (torn multi-device state repair must not guess about). Wall-clock `last_mod_ms` values MUST NOT be used as a freshness discriminator (they carry no monotonicity guarantee). The adopted entry's `recipients` are rebuilt from the file's §6.2 table (so an interrupted §6.5.1 revocation repairs to the *reduced* recipient set), and its `vector_clock_summary` is taken verbatim from the file header. The missing-file case is **not** repairable — repair cannot invent block bytes; the probable cause is a torn cloud sync and the recovery is a completed sync. Conformance: `core/tests/crash_recovery.rs::repair_vault_adopts_interrupted_save` / `repair_vault_adopts_interrupted_revocation` / `repair_vault_rejects_rollback_plant` / `repair_vault_rejects_concurrent_clock_transplant` / `repair_rejects_backward_clock_share_replay` / `repair_rejects_crashed_share_superset` / `repair_rejects_equal_set_different_bytes` pin this contract.
 ```
 
 - [ ] **Step 2: §7** — rewrite the deletion sequence (keep the retention/grammar paragraphs):
