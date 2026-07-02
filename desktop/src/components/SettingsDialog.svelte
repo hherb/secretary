@@ -132,18 +132,24 @@
     submitting = true;
     formError = null;
 
-    // Gate security-REDUCING changes to the re-auth policy behind the same
-    // write re-auth as any other mutating write. Without this, an attacker at
-    // an unlocked-but-unattended session could simply disable the gate (or
-    // widen its grace window) here to bypass write re-auth entirely. Only
-    // matters when the gate is currently effective; enabling it or tightening
-    // the window strengthens protection and needs no prompt. `authorizeWrite`
-    // reads the CURRENT (pre-save) policy, so within the live grace window it
-    // resolves silently — consistent with every other write.
-    const reducesProtection =
+    // Gate security-REDUCING settings changes behind the same write re-auth as
+    // any other mutating write. Without this, an attacker at an unlocked-but-
+    // unattended session could weaken protection here to buy a longer window.
+    // `authorizeWrite` reads the CURRENT (pre-save) policy, so within the live
+    // grace window it resolves silently — consistent with every other write.
+    //
+    // Two independent reductions:
+    //  - Weakening the write-reauth gate: disabling it or widening its grace
+    //    window. Only matters when the gate is currently effective.
+    //  - Widening the auto-lock timeout (#363): keeps the vault unlocked longer,
+    //    a reduction regardless of the write-reauth policy — so it is NOT gated
+    //    on `currentRequirePassword`.
+    const widensAutoLock = newSettings.autoLockTimeoutMs > currentMs;
+    const weakensWriteGate =
       currentRequirePassword &&
       (!newSettings.requirePasswordBeforeEdits ||
         newSettings.reauthGraceWindowMs > currentWindowMs);
+    const reducesProtection = widensAutoLock || weakensWriteGate;
     if (reducesProtection) {
       try {
         await authorizeWrite('Confirm changing the write re-auth setting');
