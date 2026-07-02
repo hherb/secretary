@@ -5,8 +5,9 @@ import XCTest
 /// of the FFI integration paths that also use it.
 final class RunOffMainActorTests: XCTestCase {
     /// A non-`Sendable` reference type — proves the helper transfers such a return
-    /// back across the suspension (the reason it uses `CheckedContinuation`
-    /// instead of `Task.detached`, whose `Success` must be `Sendable`).
+    /// back across the suspension (the reason it returns `sending T` from a
+    /// `nonisolated` async function instead of using `Task.detached`, whose
+    /// `Success` must be `Sendable`).
     private final class Box {
         let value: Int
         init(_ value: Int) { self.value = value }
