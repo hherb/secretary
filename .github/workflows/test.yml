@@ -110,9 +110,11 @@ jobs:
           java-version: 17
       # kotlinc via the JetBrains-published snap (avoids unpinned third-party
       # actions). The script also fetches JNA + org.json jars, pinned and
-      # SHA-256 verified inside the script.
+      # SHA-256 verified inside the script. The snap is pinned to a specific
+      # revision (#367) so the compiler is reproducible — an unpinned channel
+      # would silently track latest. Bump deliberately: `snap info kotlin`.
       - name: Install Kotlin compiler
-        run: sudo snap install --classic kotlin
+        run: sudo snap install --classic --revision=98 kotlin # kotlin 2.4.0 (stable)
       # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps).
       - name: Kotlin uniffi conformance KAT replay
         run: bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh
