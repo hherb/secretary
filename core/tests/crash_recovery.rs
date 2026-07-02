@@ -29,8 +29,8 @@ use secretary_core::unlock::{
     bundle::IdentityBundle, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
 };
 use secretary_core::vault::{
-    encode_manifest_file, open_vault, restore_block, save_block, sign_manifest, trash_block,
-    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
+    encode_manifest_file, open_vault, restore_block, save_block, share_block, sign_manifest,
+    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -556,11 +556,11 @@ fn repair_vault_adopts_interrupted_revocation() {
 /// attacker with `blocks/` write access (but no keys) resurrect a
 /// revoked recipient's access by replaying the pre-revocation,
 /// genuinely-owner-signed block bytes over the post-revocation live
-/// file. Same vector clock either way (revoke never ticks it) — the
-/// discriminator is `last_mod_ms`, which the replayed bytes carry
-/// *older*, not newer, than the manifest's currently-committed entry.
-/// `repair_vault` must reject, and — all-or-nothing — leave the
-/// attacker-planted disk state and the manifest untouched.
+/// file. Same vector clock either way (revoke never ticks it) — under
+/// the subset-only rule the replayed set {owner, B} would ADD B relative
+/// to the committed {owner}, so adoption is refused (re-granting access
+/// is never automatic). `repair_vault` must reject, and — all-or-nothing
+/// — leave the attacker-planted disk state and the manifest untouched.
 #[test]
 fn repair_rejects_stale_equal_clock_replay() {
     let (dir, _mnemonic, pw) = make_fast_vault(64, "Owner");
@@ -642,8 +642,16 @@ fn repair_rejects_stale_equal_clock_replay() {
     )
     .expect_err("stale equal-clock replay must NOT be adopted");
     assert!(
-        matches!(err, VaultError::RepairRejected { block_uuid: b, .. } if b == block_uuid),
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
         "got {err:?}"
+    );
+    // The reject must ride the subset-only rule's ADD branch: the replay
+    // would re-grant B relative to the committed post-revocation set.
+    let msg = err.to_string();
+    assert!(msg.contains("would ADD recipients"), "got: {msg}");
+    assert!(
+        msg.contains(&format_uuid_hyphenated(&card_b.contact_uuid)),
+        "added-recipient uuid must be named: {msg}"
     );
 
     // All-or-nothing: the manifest must be byte-identical to the
@@ -659,5 +667,332 @@ fn repair_rejects_stale_equal_clock_replay() {
         fs::read(&block_path).unwrap(),
         pre_revoke_block_bytes,
         "rejected repair must not touch blocks/"
+    );
+}
+
+/// #350 security — the 2026-07 review exploit against the retired
+/// `last_mod_ms` discriminator. `last_mod_ms` is caller wall-clock with
+/// no monotonicity guard, so a later legitimate operation can commit
+/// with an EARLIER stamp (backward clock step): save {owner, B} → share
+/// C at now=3000 (attacker retains the owner-signed bytes) → revoke B
+/// at now=2000. The retained share-C bytes then carry the same block
+/// clock as the committed entry (re-keys never tick it) AND a larger
+/// `last_mod_ms` (3000 > 2000) — a timestamp gate would adopt them and
+/// re-grant the revoked B. The subset-only rule must reject instead:
+/// {owner, B, C} is not a subset of the committed {owner, C}.
+#[test]
+fn repair_rejects_backward_clock_share_replay() {
+    let (dir, _mnemonic, pw) = make_fast_vault(65, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdd; 16], [0xbd; 16]);
+
+    let mut rng_b = ChaCha20Rng::from_seed([0x72; 32]);
+    let id_b = secretary_core::unlock::bundle::generate("Bee", 1_714_060_800_000, &mut rng_b);
+    let card_b = make_signed_card(&id_b);
+    fs::write(
+        folder.join("contacts").join(format!(
+            "{}.card",
+            format_uuid_hyphenated(&card_b.contact_uuid)
+        )),
+        card_b.to_canonical_cbor().unwrap(),
+    )
+    .unwrap();
+    let mut rng_c = ChaCha20Rng::from_seed([0x73; 32]);
+    let id_c = secretary_core::unlock::bundle::generate("Cee", 1_714_060_800_000, &mut rng_c);
+    let card_c = make_signed_card(&id_c);
+
+    let recipients = vec![open.owner_card.clone(), card_b.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "shared"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    // Share C at now=3000 (share_block persists C's card to contacts/).
+    share_block(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        &card_c,
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    // Attacker retains the owner-signed share-C generation ({owner,B,C},
+    // last_mod_ms = 3000).
+    let share_c_bytes = fs::read(&block_path).unwrap();
+
+    // Revoke B at now=2000 — a backward wall-clock step relative to the
+    // share. Committed set becomes {owner, C}.
+    let all_cards = vec![open.owner_card.clone(), card_b.clone(), card_c.clone()];
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &all_cards,
+        secretary_core::vault::RecipientUuid::new(card_b.contact_uuid),
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+
+    let manifest_post = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    fs::write(&block_path, &share_c_bytes).unwrap();
+
+    let err = open_vault(folder, Unlocker::Password(&pw), None)
+        .expect_err("planted share-generation bytes must fail open");
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        4_000,
+        &mut rng,
+    )
+    .expect_err("equal-clock superset replay must NOT be adopted, whatever its last_mod_ms");
+    assert!(
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("would ADD recipients"), "got: {msg}");
+    assert!(
+        msg.contains(&format_uuid_hyphenated(&card_b.contact_uuid)),
+        "the re-granted recipient must be named: {msg}"
+    );
+
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_post,
+        "rejected repair must not touch the manifest"
+    );
+    assert_eq!(
+        fs::read(&block_path).unwrap(),
+        share_c_bytes,
+        "rejected repair must not touch blocks/"
+    );
+}
+
+/// #350 documented limitation: the residue of a genuinely crashed
+/// `share_block` (block written with the superset, manifest write lost)
+/// is NOT auto-adopted — access widening requires the informed-consent
+/// path that ships with the FFI projection. The rejection `detail` must
+/// name the recipients the adoption would add.
+#[test]
+fn repair_rejects_crashed_share_superset() {
+    let (dir, _mnemonic, pw) = make_fast_vault(66, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x74; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xde; 16], [0xbe; 16]);
+
+    let mut rng_c = ChaCha20Rng::from_seed([0x75; 32]);
+    let id_c = secretary_core::unlock::bundle::generate("Cee", 1_714_060_800_000, &mut rng_c);
+    let card_c = make_signed_card(&id_c);
+
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "mine"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_pre_share = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    share_block(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        &card_c,
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    // Crash simulation: the {owner, C} block hit disk, the manifest
+    // write was lost.
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_pre_share).unwrap();
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect_err("crashed-share superset must be refused (documented limitation)");
+    assert!(
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("would ADD recipients"), "got: {msg}");
+    assert!(
+        msg.contains(&format_uuid_hyphenated(&card_c.contact_uuid)),
+        "the would-be-added recipient must be named: {msg}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_pre_share,
+        "rejected repair must not touch the manifest"
+    );
+}
+
+/// #350 security: an equal-clock plant whose recipient set EQUALS the
+/// committed one (but with different bytes) matches no legitimate
+/// crashed operation — a real crashed re-key always changes the set.
+/// Strict subset means subset AND not equal, so this forgery/stale-
+/// replay shape is refused. Construction: save {owner, B} (retain the
+/// bytes) → share C → revoke C. Both the retained generation and the
+/// committed one carry {owner, B} at the same block clock, but the
+/// bytes differ (each re-key rotates the BCK, nonce, and signature).
+#[test]
+fn repair_rejects_equal_set_different_bytes() {
+    let (dir, _mnemonic, pw) = make_fast_vault(67, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x76; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdf; 16], [0xbf; 16]);
+
+    let mut rng_b = ChaCha20Rng::from_seed([0x77; 32]);
+    let id_b = secretary_core::unlock::bundle::generate("Bee", 1_714_060_800_000, &mut rng_b);
+    let card_b = make_signed_card(&id_b);
+    fs::write(
+        folder.join("contacts").join(format!(
+            "{}.card",
+            format_uuid_hyphenated(&card_b.contact_uuid)
+        )),
+        card_b.to_canonical_cbor().unwrap(),
+    )
+    .unwrap();
+    let mut rng_c = ChaCha20Rng::from_seed([0x78; 32]);
+    let id_c = secretary_core::unlock::bundle::generate("Cee", 1_714_060_800_000, &mut rng_c);
+    let card_c = make_signed_card(&id_c);
+
+    let recipients = vec![open.owner_card.clone(), card_b.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "shared"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    // Retained generation: {owner, B} — same set the manifest will end
+    // up committing again after share C → revoke C.
+    let save_gen_bytes = fs::read(&block_path).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    share_block(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        &card_c,
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    let all_cards = vec![open.owner_card.clone(), card_b.clone(), card_c.clone()];
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &all_cards,
+        secretary_core::vault::RecipientUuid::new(card_c.contact_uuid),
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+
+    let manifest_post = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let committed_bytes = fs::read(&block_path).unwrap();
+    assert_ne!(
+        save_gen_bytes, committed_bytes,
+        "re-keys must have rotated the bytes for this test to be meaningful"
+    );
+    fs::write(&block_path, &save_gen_bytes).unwrap();
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_uuid,
+        4_000,
+        &mut rng,
+    )
+    .expect_err("equal-set different-bytes plant must NOT be adopted");
+    assert!(
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("recipient set unchanged"),
+        "must ride the equal-set reject branch: {msg}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_post,
+        "rejected repair must not touch the manifest"
     );
 }

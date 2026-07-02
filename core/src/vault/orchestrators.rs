@@ -1199,6 +1199,15 @@ struct BlockRekey<'a> {
 /// Callers perform steps 1–6 (locate entry, read+decode block, author check,
 /// single-owner check, wire-table resolution) and pass the results in via
 /// [`BlockRekey`].
+///
+/// INVARIANT (#350, load-bearing for [`crate::vault::repair_vault`]):
+/// this function re-encrypts the decrypted plaintext **unchanged** and
+/// preserves the block-level vector clock — so within an equal-clock
+/// class, only the recipient set can differ between generations. The
+/// repair orchestrator's Equal-clock adoption gate (subset-only) depends
+/// on exactly that "equal clock ⇒ identical plaintext" property. If a
+/// future change mutates the plaintext here, it MUST tick the block
+/// clock (see the guard comment at step 9/10).
 fn rewrite_block_with_recipients(
     folder: &Path,
     open: &mut OpenVault,
@@ -1321,6 +1330,13 @@ fn rewrite_block_with_recipients(
     // *content* didn't change, so neither does its clock. `last_mod_ms`
     // advances to `now_ms` (the block's wire-level state moved even
     // if the plaintext didn't).
+    //
+    // GUARD (#350): if this function ever mutates the plaintext between
+    // step 7's decrypt and step 10's re-encrypt, it MUST tick the block
+    // clock here instead of preserving it. repair_vault's Equal-clock
+    // adoption gate is sound only because equal-clock ⇒ identical
+    // plaintext (adoption can then only narrow the recipient set) —
+    // see repair.rs Gate 3b.
     let new_header = BlockHeader {
         magic: crate::version::MAGIC,
         format_version: crate::version::FORMAT_VERSION,
