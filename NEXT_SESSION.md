@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-02-android-biometric-feedback-341-342-shipped.md
+docs/handoffs/2026-07-02-ios-per-vault-biometric-enrollment-347-shipped.md

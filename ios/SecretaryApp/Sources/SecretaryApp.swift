@@ -70,7 +70,9 @@ private struct RootView: View {
                         onOpen: { scoped in
                             biometricUnlockError = nil          // reset on route entry
                             rememberDevice = false               // reset on route entry (#342-safe)
-                            biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
+                            // Per-vault snapshot: only true when THIS vault is enrolled (#347).
+                            biometricEnrolled = makePerVaultDeviceUnlock(vaultPath: scoped.pathData)
+                                .coordinator.isEnrolled
                             route = .unlock(scoped)
                         },
                         onOpenDemo: { try openDemo() },
@@ -93,7 +95,7 @@ private struct RootView: View {
                         },
                         onCancel: { route = .select })
                 case .unlock(let scoped):
-                    let coordinator = localCoordinator()
+                    let coordinator = makePerVaultDeviceUnlock(vaultPath: scoped.pathData).coordinator
                     UnlockScreen(
                         viewModel: UnlockViewModel(port: UniffiVaultOpenPort(),
                                                    vaultPath: scoped.pathData),
@@ -151,7 +153,7 @@ private struct RootView: View {
                                 // `session`/`scoped`) into the task: coordinator
                                 // is `Sendable`, `vaultPath`/`vaultId`/`password`
                                 // are `Data`/`String`/`[UInt8]`, all `Sendable`.
-                                let coordinator = localCoordinator()
+                                let coordinator = makePerVaultDeviceUnlock(vaultPath: scoped.pathData).coordinator
                                 let vaultPath = scoped.pathData
                                 let vaultId = session.vaultUuidHex
                                 Task {
@@ -188,7 +190,7 @@ private struct RootView: View {
                             }
                             let gate = GraceWindowReauthGate(
                                 authorizer: EnclaveBiometricAuthorizer(
-                                    enclave: SecureEnclaveDeviceSecretStore()),
+                                    enclave: makePerVaultDeviceUnlock(vaultPath: scoped.pathData).enclave),
                                 clock: MonotonicInstant.now)   // initialAuthAt stays nil (#284)
                             route = .browse(VaultBrowseViewModel(session: session, gate: gate),
                                             syncVM, monitor, scoped)
@@ -244,17 +246,9 @@ private struct RootView: View {
         let scoped = ScopedVaultPath(pathData: Data(url.path.utf8), onEnd: {})
         biometricUnlockError = nil          // reset on route entry
         rememberDevice = false               // reset on route entry (#342-safe)
-        biometricEnrolled = localCoordinator().isEnrolled  // snapshot once (not per render)
+        biometricEnrolled = makePerVaultDeviceUnlock(vaultPath: scoped.pathData)
+            .coordinator.isEnrolled  // per-vault snapshot (#347)
         route = .unlock(scoped)
-    }
-
-    /// Demo/local `DeviceUnlockCoordinator` over the real adapters — same
-    /// composition the Android app uses for its equivalent biometric-unlock path.
-    private func localCoordinator() -> DeviceUnlockCoordinator {
-        DeviceUnlockCoordinator(
-            slotPort: UniffiVaultDeviceSlotPort(),
-            enclave: SecureEnclaveDeviceSecretStore(),
-            metadata: KeychainEnrollmentMetadataStore())
     }
 
     /// Builds sync + monitor exactly like the password path (`onUnlocked` above),
