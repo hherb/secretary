@@ -119,7 +119,7 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 
 ### Spec is normative; code implements the spec
 
-`docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is **enforced every CI run** by `core/tests/python/conformance.py`, which uses only the Python standard library to:
+`docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is **enforced every CI run** by `core/tests/python/conformance.py`, which depends on no `secretary` code — only generic crypto primitives declared via its PEP 723 header (`cryptography`, `pynacl`, `pqcrypto`, `argon2-cffi`, `blake3`, `cbor2`; top-level imports stay stdlib-only, these are lazy-imported) — to:
 
 1. Decap + AEAD-decrypt + hybrid-verify the `core/tests/data/golden_vault_001/` reference vault.
 2. Replay 11 CRDT merge KATs from `core/tests/data/conflict_kat.json` cross-language.

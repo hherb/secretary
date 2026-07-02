@@ -243,6 +243,18 @@ Decryption: derive `device_kek` from the supplied `device_secret`, then AEAD-dec
 corruption — indistinguishable to the cryptography; see §5 and vault-format §3), surfaced to the UI as
 wrong-secret. The on-disk container is [vault-format.md](vault-format.md) §3a.
 
+**Revocation boundary.** All device slots wrap the *same* IBK, and v1 has no IBK
+rotation. Deleting `devices/<uuid>.wrap` therefore removes only that one wrap copy — it is
+effective against a device that no longer holds its wrap bytes, but **not** against a
+compromised device that retained its own `devices/<uuid>.wrap` + `device_secret` (that
+pair decrypts the IBK indefinitely) or against a cloud provider's version history. This is
+the deliberate opposite of the block-content-key path (§7.3), which rotates `K` on every
+share/revoke and so is forward-secret. Because the IBK decrypts the entire identity bundle,
+a genuinely compromised device implies whole-vault-identity compromise; recovery is a new
+vault, not a slot deletion. (Note also that the §3a wrap header binds only `vault_uuid` in
+its AAD, not `device_uuid`; the `device_uuid` structural check is what prevents cross-slot
+confusion, and it does not weaken the tag.) See ADR 0009 for the rationale.
+
 ---
 
 ## 6. Contact Cards and fingerprints
@@ -396,6 +408,17 @@ To verify:
 2. Verify both Ed25519-Verify(pk_ed, message, sig_ed) AND ML-DSA-65-Verify(pk_pq, message, sig_pq).
 3. Both must return success. If either fails, the signature is invalid.
 ```
+
+**Ed25519 verification criteria.** Step 2 uses the RFC 8032-compatible ("permissive")
+Ed25519 verification equation `[8][S]B = [8]R + [8][k]A`, i.e. cofactored and *not*
+`verify_strict`. This is a deliberate, pinned choice so that a clean-room implementation
+accepts exactly the same signature set (mixed-order `A`/`R` and non-canonical encodings are
+accepted, per RFC 8032). It is safe here because the Ed25519 half is AND-ed with ML-DSA-65
+(malleating one half cannot produce a second valid *hybrid* signature that also passes
+ML-DSA), signatures live inside the signed envelope and are never used as identifiers or
+map keys (fingerprints and UUIDs are), and no protocol decision depends on signature-bit
+uniqueness. A future suite revision MAY tighten this to strict verification, but doing so is
+a suite-version change (it would reject some currently-valid signatures), not a silent one.
 
 ML-DSA-65 signatures are variable-length (the ML-DSA spec allows rejection sampling, producing different signature lengths per attempt). The disk format records the actual length in a `sig_len_pq` field.
 
