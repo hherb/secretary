@@ -1915,10 +1915,20 @@ const TRASH_SUBDIR: &str = "trash";
 /// 8. Refresh `open.manifest_file` in place.
 ///
 /// On `Err`: `open.manifest` and `open.manifest_file` are NOT modified.
-/// The filesystem MAY have a partial move (block file in `trash/`, manifest
-/// still pointing at `blocks/`) which is harmless because `open_vault`
-/// reads only entries listed in the manifest — the trashed file is then
-/// detectable as an orphan and the operation can be retried.
+///
+/// # Crash-consistency gap (#350)
+///
+/// The block-file rename (step 3) happens BEFORE the manifest write (step 7).
+/// A crash between them leaves the on-disk manifest still listing the block's
+/// `BlockEntry` (pointing at `blocks/<uuid>.cbor.enc`) while the file has
+/// already moved to `trash/`. This is NOT harmless: the next `open_vault` runs
+/// `verify_block_fingerprints`, which reads the now-missing `blocks/` file and
+/// fails with `VaultError::Io` (`NotFound`) — the whole vault appears
+/// unopenable. The §6.5 repair-on-open path the spec describes is not yet
+/// implemented; a fix (making trash manifest-first so a crash leaves only a
+/// harmless `blocks/` orphan that `open_vault` ignores and `restore_block`
+/// resumes — see the #351 resume path) is tracked in #350. Do not rely on the
+/// previous "detectable as an orphan / retryable" claim; it was incorrect.
 pub fn trash_block(
     folder: &Path,
     open: &mut OpenVault,
@@ -2163,33 +2173,51 @@ pub fn restore_block(
         Some(entry) => (entry.tombstoned_at_ms, entry.fingerprint),
         None => return Err(VaultError::BlockNotInTrash { block_uuid }),
     };
-    if matches.is_empty() {
-        return Err(VaultError::BlockNotInTrash { block_uuid });
-    }
-    // At most one file can match — suffix ↔ filename is 1:1.
-    let Some(restore_path) = matches
-        .iter()
-        .find(|(ts, _)| *ts == expected_ts)
-        .map(|(_, p)| p.clone())
-    else {
-        return Err(VaultError::RestoreTargetMissing {
-            block_uuid,
-            expected_tombstoned_at_ms: expected_ts,
-        });
-    };
-    // Purge targets = every other match (older stale copies AND larger-
-    // suffix attacker plants).
-    let purge_targets: Vec<PathBuf> = matches
-        .iter()
-        .filter(|(ts, _)| *ts != expected_ts)
-        .map(|(_, p)| p.clone())
-        .collect();
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    let target = blocks_dir.join(format!("{uuid_hex}.cbor.enc"));
+
+    // Determine the restore SOURCE. Normally the authentic file lives in trash/
+    // (suffix == the signed tombstoned_at_ms). But a prior restore_block that
+    // renamed the file into blocks/ (step 6) then crashed before the manifest
+    // write (step 11) leaves the manifest still listing the signed TrashEntry
+    // while trash/ has no matching file — a state that used to fail
+    // `BlockNotInTrash` on retry (#351). Detect that and RESUME from the live
+    // blocks/ file, but ONLY when the signed content commitment
+    // (`TrashEntry.fingerprint`, #293) is present and the on-disk bytes hash to
+    // it — so an attacker who plants an arbitrary blocks/ file cannot force a
+    // bogus resume. The §6.1 hybrid-verify below still runs on the bytes either
+    // way.
+    let (source_path, resume_from_blocks, purge_targets): (PathBuf, bool, Vec<PathBuf>) =
+        if let Some(restore_path) = matches
+            .iter()
+            .find(|(ts, _)| *ts == expected_ts)
+            .map(|(_, p)| p.clone())
+        {
+            // Purge = every other match (older stale copies AND larger-suffix
+            // attacker plants).
+            let purge = matches
+                .iter()
+                .filter(|(ts, _)| *ts != expected_ts)
+                .map(|(_, p)| p.clone())
+                .collect();
+            (restore_path, false, purge)
+        } else if matches.is_empty() && committed_fp.is_some() && target.is_file() {
+            (target.clone(), true, Vec::new())
+        } else if matches.is_empty() {
+            return Err(VaultError::BlockNotInTrash { block_uuid });
+        } else {
+            return Err(VaultError::RestoreTargetMissing {
+                block_uuid,
+                expected_tombstoned_at_ms: expected_ts,
+            });
+        };
 
     // Step 4: read + decode + AEAD-decrypt + hybrid-verify. Defense in
-    // depth: if an attacker with write access to trash/ planted a
-    // tampered file, we want to reject before any manifest mutation.
-    let bytes = std::fs::read(&restore_path).map_err(|e| VaultError::Io {
-        context: "restore_block: failed to read trash file",
+    // depth: if an attacker with write access to trash/ (or, on the resume
+    // path, blocks/) planted a tampered file, we want to reject before any
+    // manifest mutation.
+    let bytes = std::fs::read(&source_path).map_err(|e| VaultError::Io {
+        context: "restore_block: failed to read restore-source file",
         source: e,
     })?;
 
@@ -2345,17 +2373,19 @@ pub fn restore_block(
     // Step 6: rename trash/<uuid>.cbor.enc.<ts> → blocks/<uuid>.cbor.enc.
     // Point of no easy return — from here on, all errors are best-effort
     // recovery: the block is on disk live, and the manifest update is the
-    // last step.
-    let blocks_dir = folder.join(BLOCKS_SUBDIR);
-    std::fs::create_dir_all(&blocks_dir).map_err(|e| VaultError::Io {
-        context: "restore_block: failed to create blocks/ subdirectory",
-        source: e,
-    })?;
-    let target = blocks_dir.join(format!("{uuid_hex}.cbor.enc"));
-    std::fs::rename(&restore_path, &target).map_err(|e| VaultError::Io {
-        context: "restore_block: rename trash/ → blocks/",
-        source: e,
-    })?;
+    // last step. On the #351 resume path the file is already in blocks/
+    // (a prior run did this rename), so we skip it and go straight to the
+    // manifest update the earlier run never reached.
+    if !resume_from_blocks {
+        std::fs::create_dir_all(&blocks_dir).map_err(|e| VaultError::Io {
+            context: "restore_block: failed to create blocks/ subdirectory",
+            source: e,
+        })?;
+        std::fs::rename(&source_path, &target).map_err(|e| VaultError::Io {
+            context: "restore_block: rename trash/ → blocks/",
+            source: e,
+        })?;
+    }
 
     // Step 7: best-effort purge of older trashed copies. Individual
     // failures are swallowed — the restore already succeeded; a left-
