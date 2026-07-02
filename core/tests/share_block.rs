@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-use rand_core::RngCore;
+use rand_core::{OsRng, RngCore};
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::kem::{self, MlKem768Public, MlKem768Secret};
@@ -910,12 +910,14 @@ fn share_block_rejects_recipient_card_that_fails_self_verify() {
     // self-signature does not verify must be rejected BEFORE any destructive
     // re-write, and must never be persisted to contacts/ — even if a caller
     // bypasses the FFI bridge's verify guard.
-    // Password generated at runtime (not a literal) so the test never carries a
-    // hard-coded cryptographic value; the vault is opened via the returned `pw`.
-    let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
+    // Password drawn from OS entropy (never a hard-coded value, and NOT derived
+    // from the seeded RNG — a literal seed flowing into the KDF trips CodeQL's
+    // hard-coded-cryptographic-value). The vault is opened via the returned `pw`.
+    // The seeded ChaCha RNG is used only for save_block's nonces (as elsewhere).
     let mut pw_bytes = [0u8; 24];
-    rng.fill_bytes(&mut pw_bytes);
+    OsRng.fill_bytes(&mut pw_bytes);
     let (dir, _mnemonic, pw) = make_fast_vault(2, &pw_bytes, "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
     let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
     let owner_card = open.owner_card.clone();
 
