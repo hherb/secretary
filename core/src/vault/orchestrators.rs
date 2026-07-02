@@ -1182,6 +1182,27 @@ fn rewrite_block_with_recipients(
         sk_ed: author_sk_ed,
         sk_pq: author_sk_pq,
     } = signer;
+
+    // Core-level defense-in-depth (#359): if a contact card will be persisted,
+    // validate it BEFORE any destructive re-write — it must parse, its hybrid
+    // self-signature (Ed25519 ∧ ML-DSA-65) must verify, and its self-verified
+    // `contact_uuid` must equal the path key. A substituted card that slipped
+    // past a buggy in-repo caller (the FFI bridge's `share::share_block`
+    // enforces the same verify + TOFU non-overwrite for all production callers)
+    // would otherwise let a later re-key wrap the block content key to the
+    // attacker's keys. Checked up-front so a bad card cannot leave a
+    // half-rotated block on disk.
+    if let Some((card_bytes, card_uuid)) = card_to_persist {
+        let parsed = ContactCard::from_canonical_cbor(card_bytes)?;
+        parsed.verify_self()?;
+        if &parsed.contact_uuid != card_uuid.as_bytes() {
+            return Err(VaultError::ContactCardUuidMismatch {
+                path_uuid: *card_uuid.as_bytes(),
+                card_uuid: parsed.contact_uuid,
+            });
+        }
+    }
+
     // Recompute the block path from the block UUID (callers read the block
     // from this same location in step 2).
     let blocks_dir = folder.join(BLOCKS_SUBDIR);
@@ -1309,13 +1330,11 @@ fn rewrite_block_with_recipients(
     // bytes — no semantic difference. `revoke_block_recipient` passes
     // `None` (no new card is granted access).
     //
-    // Trust contract (#206): callers MUST supply already-verified,
-    // non-substituting card bytes. This orchestrator writes `card_bytes`
-    // verbatim and does NOT itself guard against overwriting a trusted
-    // card with attacker-controlled keys. The FFI projection enforces this
-    // in `secretary-ffi-bridge`'s `share::share_block` (verify_self every
-    // card + a TOFU non-overwrite guard); in-repo Rust callers must uphold
-    // the same contract or route through the bridge / `share_block_to`.
+    // Persist the (already verified up-front, #359) recipient card so future
+    // readers can decrypt without the caller threading it. Idempotent: an
+    // existing file is overwritten with the same canonical bytes. The byte-level
+    // TOFU non-overwrite guard remains in the FFI bridge; all production callers
+    // route through it. `revoke_block_recipient` passes `None`.
     if let Some((card_bytes, card_uuid)) = card_to_persist {
         let contacts_dir = folder.join(CONTACTS_SUBDIR);
         std::fs::create_dir_all(&contacts_dir).map_err(|e| VaultError::Io {

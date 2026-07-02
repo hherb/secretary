@@ -203,6 +203,18 @@ pub enum VaultError {
     #[error("vector-clock overflow on device {device_uuid:?}")]
     ClockOverflow { device_uuid: [u8; 16] },
 
+    /// A contact card to be persisted during a re-key does not match the
+    /// recipient UUID it is being written under: its self-verified
+    /// `contact_uuid` differs from the path key. Rejecting this is core-level
+    /// defense-in-depth (#359) against a caller that bypasses the FFI bridge's
+    /// TOFU/verify guard and supplies a substituted card — persisting it would
+    /// let a later re-key wrap the block content key to the attacker's keys.
+    #[error("contact card contact_uuid {card_uuid:?} does not match path key {path_uuid:?}")]
+    ContactCardUuidMismatch {
+        path_uuid: [u8; 16],
+        card_uuid: [u8; 16],
+    },
+
     /// [`share_block`] precondition: the caller is not the block's
     /// original author. PR-B's share_block is "author-only re-sign" —
     /// adding a recipient extends the §6.2 recipient table, which is

@@ -125,6 +125,7 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
         | VaultError::NotAuthor { .. }
         | VaultError::RecipientAlreadyPresent
         | VaultError::RecipientNotPresent

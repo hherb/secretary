@@ -152,6 +152,7 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
         | VaultError::NotAuthor { .. }
         | VaultError::BlockNotFound { .. }
         | VaultError::RecipientAlreadyPresent

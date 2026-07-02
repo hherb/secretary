@@ -904,6 +904,69 @@ fn share_block_missing_recipient_card_rejected() {
     let _ = bob_id;
 }
 
+#[test]
+fn share_block_rejects_recipient_card_that_fails_self_verify() {
+    // #359: core-level defense-in-depth. A recipient card whose hybrid
+    // self-signature does not verify must be rejected BEFORE any destructive
+    // re-write, and must never be persisted to contacts/ — even if a caller
+    // bypasses the FFI bridge's verify guard.
+    let (dir, _mnemonic, pw) = make_fast_vault(2, b"hunter2", "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb2; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let mut alice_card = make_signed_card(&alice_id);
+    // Invalidate the self-signature by mutating a signed field after signing:
+    // verify_self() recomputes the signed bytes from current fields and will
+    // no longer match the stored signatures.
+    alice_card.display_name = "Mallory".to_string();
+
+    let block_uuid = [0x43u8; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "shared-secret");
+    let device_uuid = [0xd2u8; 16];
+    save_block(
+        dir.path(),
+        &mut open,
+        plaintext,
+        std::slice::from_ref(&owner_card),
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    let err = share_block(
+        dir.path(),
+        &mut open,
+        BlockUuid::new(block_uuid),
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        std::slice::from_ref(&owner_card),
+        &alice_card,
+        DeviceUuid::new(device_uuid),
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("a recipient card failing self-verify must be rejected");
+    assert!(
+        matches!(err, VaultError::Card(_)),
+        "expected VaultError::Card from verify_self, got {err:?}",
+    );
+
+    // The unverified card must NOT have been written to contacts/.
+    let alice_path = dir.path().join("contacts").join(format!(
+        "{}.card",
+        format_uuid_hyphenated(&alice_card.contact_uuid)
+    ));
+    assert!(!alice_path.exists(), "unverified card must not be persisted");
+}
+
 // Suppress unused-import warnings for items only consumed by some tests.
 #[allow(dead_code)]
 fn _unused() {
