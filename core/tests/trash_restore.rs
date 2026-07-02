@@ -1584,3 +1584,145 @@ fn restore_block_legacy_entry_without_fingerprint_falls_back() {
         "TrashEntry must be gone after legacy restore",
     );
 }
+
+// ---------------------------------------------------------------------------
+// trash_block — #350 manifest-first ordering
+// ---------------------------------------------------------------------------
+
+/// #350: the manifest write is the commit point; the physical rename is
+/// best-effort. With `trash/` unwritable the rename must fail, yet
+/// trash_block returns Ok, the on-disk manifest carries the TrashEntry,
+/// the block file is still in `blocks/`, the vault re-opens, and
+/// restore_block resumes from the un-moved `blocks/` file (#351 path).
+#[cfg(unix)]
+#[test]
+fn trash_block_rename_failure_still_commits_manifest() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, _mnemonic, pw) = make_fast_vault(41, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x41; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd4; 16];
+    let block_uuid = [0xb4; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "sticky");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    // Pre-create trash/ read-only so the rename (NOT the manifest write) fails.
+    let trash_dir = folder.join("trash");
+    fs::create_dir_all(&trash_dir).unwrap();
+    fs::set_permissions(&trash_dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng)
+        .expect("manifest committed => trash succeeds despite rename failure");
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    assert!(
+        folder
+            .join("blocks")
+            .join(format!("{uuid_hex}.cbor.enc"))
+            .is_file(),
+        "physical move failed, file must still be in blocks/"
+    );
+    assert!(open
+        .manifest
+        .trash
+        .iter()
+        .any(|t| t.block_uuid == block_uuid));
+    assert!(!open
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+
+    // The vault re-opens (orphan blocks/ file is not manifest-listed)…
+    drop(open);
+    let mut reopened = open_vault(folder, Unlocker::Password(&pw), None)
+        .expect("residue must not wedge open (#350)");
+    // …and restore resumes from the un-moved blocks/ file.
+    restore_block(
+        folder,
+        &mut reopened,
+        block_uuid,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect("restore must resume from blocks/ (#351 shape)");
+    assert!(reopened
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+
+    fs::set_permissions(&trash_dir, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// #350: on a manifest-write failure trash_block returns Err and the
+/// in-memory `open.manifest` / `open.manifest_file` are UNTOUCHED (the
+/// previously-documented-but-false contract), and the block file was
+/// not renamed (proving manifest-first ordering).
+#[cfg(unix)]
+#[test]
+fn trash_block_manifest_write_failure_leaves_state_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, _mnemonic, pw) = make_fast_vault(42, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x42; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd5; 16];
+    let block_uuid = [0xb5; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "untouched");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let blocks_before = open.manifest.blocks.clone();
+    let trash_before = open.manifest.trash.clone();
+    let clock_before = open.manifest.vector_clock.clone();
+
+    // Read-only vault folder: write_atomic cannot create its tempfile.
+    fs::set_permissions(folder, fs::Permissions::from_mode(0o555)).unwrap();
+    let err = trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng)
+        .expect_err("manifest write must fail in a read-only folder");
+    fs::set_permissions(folder, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(matches!(err, VaultError::Io { .. }), "got {err:?}");
+    assert_eq!(
+        open.manifest.blocks, blocks_before,
+        "in-memory blocks mutated on Err"
+    );
+    assert_eq!(
+        open.manifest.trash, trash_before,
+        "in-memory trash mutated on Err"
+    );
+    assert_eq!(
+        open.manifest.vector_clock, clock_before,
+        "in-memory clock mutated on Err"
+    );
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    assert!(
+        folder
+            .join("blocks")
+            .join(format!("{uuid_hex}.cbor.enc"))
+            .is_file(),
+        "manifest-first: no rename may happen before the manifest write"
+    );
+}

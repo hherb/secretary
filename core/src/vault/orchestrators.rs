@@ -1900,44 +1900,60 @@ pub fn revoke_block_recipient(
 // ---------------------------------------------------------------------------
 
 /// Subdirectory holding tombstoned block files (vault-format.md §7).
-/// Created lazily on first `trash_block` call.
-const TRASH_SUBDIR: &str = "trash";
+/// Created lazily on first `trash_block` call. `pub(crate)` so sibling
+/// folder ops (the open-time orphan sweep, #350 Task 4) share the single
+/// source rather than re-declaring the literal.
+pub(crate) const TRASH_SUBDIR: &str = "trash";
 
 /// Move a live block into trash. `docs/vault-format.md` §7 deletion sequence.
 ///
-/// Sequence:
+/// Sequence (#350: manifest-first — the signed manifest write is the
+/// commit point, and the physical rename is best-effort completion below
+/// it, not an earlier precondition):
 ///
 /// 1. Find the block in `open.manifest.blocks`; surfaces
 ///    [`VaultError::BlockNotFound`] if absent. Lookup is by `block_uuid`.
-/// 2. Ensure `folder/trash/` exists (lazy mkdir, mirroring `save_block`'s
-///    `blocks/` create).
-/// 3. `std::fs::rename(blocks/<uuid>.cbor.enc, trash/<uuid>.cbor.enc.<now_ms>)`
-///    — atomic per POSIX `rename(2)` within a single filesystem. Cross-
-///    filesystem (`EXDEV`) surfaces as [`VaultError::Io`].
-/// 4. Remove the matching [`BlockEntry`] from `open.manifest.blocks`.
-/// 5. Append a [`TrashEntry`] `{ block_uuid, tombstoned_at_ms: now_ms,
-///    tombstoned_by: device_uuid }` to `open.manifest.trash`.
-/// 6. Tick `open.manifest.vector_clock` for `device_uuid`. The per-block
-///    clock is NOT ticked — the block's *content* did not change.
-/// 7. Re-sign the manifest with a fresh AEAD nonce; atomic-write per §9.
-///    Mirrors `save_block` steps 11–14.
-/// 8. Refresh `open.manifest_file` in place.
+/// 2. Capture the live `BlockEntry.fingerprint` (#293 content commitment)
+///    before anything else is touched.
+/// 3. Stage the post-trash manifest on a **clone** of `open.manifest`:
+///    remove the `BlockEntry`, append a [`TrashEntry`] `{ block_uuid,
+///    tombstoned_at_ms: now_ms, tombstoned_by: device_uuid,
+///    fingerprint: Some(content_fingerprint) }`, and tick the staged
+///    vector clock for `device_uuid`. Nothing observable — in-memory or
+///    on-disk — has changed yet.
+/// 4. Re-sign the staged manifest with a fresh AEAD nonce; atomic-write
+///    per §9. **This write is the commit point.**
+/// 5. Only once the write succeeds: swap `open.manifest` /
+///    `open.manifest_file` to the staged/new values. From here the trash
+///    has happened; nothing below may fail the call.
+/// 6. Best-effort: lazily mkdir `trash/`, then
+///    `std::fs::rename(blocks/<uuid>.cbor.enc, trash/<uuid>.cbor.enc.<now_ms>)`.
+///    The result is discarded — see "Crash consistency" below.
 ///
-/// On `Err`: `open.manifest` and `open.manifest_file` are NOT modified.
+/// On `Err`: `open.manifest` and `open.manifest_file` are genuinely NOT
+/// modified — every mutation up to and including the manifest write
+/// happens on a clone, swapped into `open` only after the write succeeds.
 ///
-/// # Crash-consistency gap (#350)
+/// # Crash consistency (#350)
 ///
-/// The block-file rename (step 3) happens BEFORE the manifest write (step 7).
-/// A crash between them leaves the on-disk manifest still listing the block's
-/// `BlockEntry` (pointing at `blocks/<uuid>.cbor.enc`) while the file has
-/// already moved to `trash/`. This is NOT harmless: the next `open_vault` runs
-/// `verify_block_fingerprints`, which reads the now-missing `blocks/` file and
-/// fails with `VaultError::Io` (`NotFound`) — the whole vault appears
-/// unopenable. The §6.5 repair-on-open path the spec describes is not yet
-/// implemented; a fix (making trash manifest-first so a crash leaves only a
-/// harmless `blocks/` orphan that `open_vault` ignores and `restore_block`
-/// resumes — see the #351 resume path) is tracked in #350. Do not rely on the
-/// previous "detectable as an orphan / retryable" claim; it was incorrect.
+/// The signed manifest write (step 4) is the commit point. A crash
+/// between the manifest write and the rename, an `EXDEV` cross-filesystem
+/// rename, or a plain permissions failure on step 6 all leave the same
+/// harmless residue: the manifest already lists the block as trashed
+/// (signed `TrashEntry` present, `BlockEntry` gone), but
+/// `blocks/<uuid>.cbor.enc` is still on disk — never removed, since
+/// rename is atomic-or-noop. This is not a crash-consistency gap:
+/// `open_vault`'s `verify_block_fingerprints` only walks
+/// `manifest.blocks`, so the un-listed orphan file is silently ignored
+/// and the vault opens cleanly. `restore_block` recognizes the same
+/// shape — a signed `TrashEntry` with no matching `trash/` file — and
+/// resumes from the orphaned `blocks/` file once its bytes hash to the
+/// committed `TrashEntry.fingerprint` (the #351 resume path). A later
+/// open-time sweep (#350 Task 4) opportunistically relocates the orphan
+/// into `trash/` so it doesn't linger indefinitely, but correctness does
+/// not depend on that sweep running. `EXDEV` is therefore no longer a
+/// `trash_block` abort condition — it degrades to the same best-effort
+/// residue as any other rename failure.
 pub fn trash_block(
     folder: &Path,
     open: &mut OpenVault,
@@ -1959,54 +1975,34 @@ pub fn trash_block(
     // the trashed bytes restore will recompute and check.
     let content_fingerprint = open.manifest.blocks[entry_idx].fingerprint;
 
-    // Step 2: lazy mkdir for trash/.
-    let trash_dir = folder.join(TRASH_SUBDIR);
-    std::fs::create_dir_all(&trash_dir).map_err(|e| VaultError::Io {
-        context: "trash_block: failed to create trash/ subdirectory",
-        source: e,
-    })?;
-
-    // Step 3: rename blocks/<uuid>.cbor.enc → trash/<uuid>.cbor.enc.<now_ms>.
-    // POSIX rename(2) is atomic within a single filesystem; EXDEV (cross-FS)
-    // surfaces here as a typed Io error so the caller knows the vault is
-    // mis-configured rather than the block being half-trashed.
-    let uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let src = folder
-        .join(BLOCKS_SUBDIR)
-        .join(format!("{uuid_hex}.cbor.enc"));
-    let dst = trash_dir.join(format!("{uuid_hex}.cbor.enc.{now_ms}"));
-    std::fs::rename(&src, &dst).map_err(|e| VaultError::Io {
-        context: "trash_block: rename blocks/ → trash/",
-        source: e,
-    })?;
-
-    // Step 4: drop the BlockEntry. The manifest encoder re-sorts on emit,
-    // so order-preserving `remove` and order-shuffling `swap_remove` are
-    // both correct; pick `remove` for clearer intent.
-    open.manifest.blocks.remove(entry_idx);
-
-    // Step 5: append the TrashEntry. The spec's §7.1 "Restoring" path
-    // matches on (block_uuid, tombstoned_at_ms) so older tombstones —
-    // surviving as files but not in the manifest — never collide with
-    // a fresh trash event for the same UUID.
-    open.manifest.trash.push(TrashEntry {
+    // Step 3 (#350 manifest-first): STAGE the post-trash manifest on a
+    // clone; nothing observable (in-memory or on-disk) changes until the
+    // manifest write below succeeds. The write is the commit point — the
+    // physical rename further below is best-effort completion.
+    let mut staged = open.manifest.clone();
+    staged.blocks.remove(entry_idx);
+    // The spec's §7.1 "Restoring" path matches on (block_uuid,
+    // tombstoned_at_ms) so older tombstones — surviving as files but not
+    // in the manifest — never collide with a fresh trash event for the
+    // same UUID.
+    staged.trash.push(TrashEntry {
         block_uuid,
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
         fingerprint: Some(content_fingerprint),
         unknown: std::collections::BTreeMap::new(),
     });
+    // Tick the manifest-level (vault-level) vector clock on the staged
+    // copy. The per-block clock is NOT touched — the block's *content*
+    // did not change, only its life-cycle state.
+    tick_clock(&mut staged.vector_clock, &device_uuid)?;
 
-    // Step 6: tick the manifest-level (vault-level) vector clock. The
-    // per-block clock is NOT touched — the block's *content* did not
-    // change, only its life-cycle state.
-    tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
-
-    // Step 7: refresh manifest header → fresh AEAD nonce → re-sign →
-    // atomic-write. Mirrors `save_block` steps 11-13. Owner secret keys
-    // are re-wrapped from the bundle's raw seeds into the typed
-    // Ed25519Secret / MlDsa65Secret holders that `sign_manifest`
-    // expects; the intermediate stack copy is zeroized before sign.
+    // Step 4: refresh manifest header → fresh AEAD nonce → re-sign (over
+    // `&staged`, not `&open.manifest`) → atomic-write. **Commit point.**
+    // Mirrors `save_block` steps 11-13. Owner secret keys are re-wrapped
+    // from the bundle's raw seeds into the typed Ed25519Secret /
+    // MlDsa65Secret holders that `sign_manifest` expects; the
+    // intermediate stack copy is zeroized before sign.
     let new_header = ManifestHeader {
         vault_uuid: open.manifest_file.header.vault_uuid,
         created_at_ms: open.manifest_file.header.created_at_ms,
@@ -2019,7 +2015,7 @@ pub fn trash_block(
     let aead_nonce = aead::random_nonce(rng);
     let new_manifest_file = manifest::sign_manifest(
         new_header,
-        &open.manifest,
+        &staged,
         &open.identity_block_key,
         &aead_nonce,
         open.manifest_file.author_fingerprint,
@@ -2033,9 +2029,26 @@ pub fn trash_block(
         source: e,
     })?;
 
-    // Step 8: refresh the in-memory envelope so subsequent operations
-    // chain off the new clock + new signature.
+    // Step 5: swap the staged state into `open`. From here the trash has
+    // happened; nothing below may fail the call.
+    open.manifest = staged;
     open.manifest_file = new_manifest_file;
+
+    // Step 6: best-effort physical move blocks/<uuid>.cbor.enc →
+    // trash/<uuid>.cbor.enc.<now_ms>. Failure (crash before this line,
+    // EXDEV cross-filesystem config, permissions) is swallowed: the
+    // signed manifest already says trashed; the leftover blocks/ file is
+    // a benign orphan open_vault ignores, restore_block resumes from
+    // (#351), and the open-time sweep relocates it (#350 Task 4).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let src = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+    let dst = folder
+        .join(TRASH_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
+    let _ = std::fs::create_dir_all(folder.join(TRASH_SUBDIR))
+        .and_then(|()| std::fs::rename(&src, &dst));
 
     Ok(())
 }
