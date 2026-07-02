@@ -54,7 +54,8 @@ enum DeviceUnlockOpen {
             }
 
             let gate = GraceWindowReauthGate(
-                authorizer: EnclaveBiometricAuthorizer(enclave: SecureEnclaveDeviceSecretStore()),
+                authorizer: EnclaveBiometricAuthorizer(
+                    enclave: makePerVaultDeviceUnlock(vaultPath: vaultPath).enclave),
                 clock: MonotonicInstant.now,
                 initialAuthAt: reauthInitialAuthAt(biometricUnlock: true, now: MonotonicInstant.now()))
             return .opened(session, gate: gate)
