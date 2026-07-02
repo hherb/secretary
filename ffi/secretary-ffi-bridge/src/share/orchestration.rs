@@ -260,6 +260,7 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }
         | VaultError::RestoreVerificationFailed { .. }

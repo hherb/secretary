@@ -58,6 +58,11 @@ fun safCloudFolderPort(context: Context, treeUri: String): CloudFolderPort {
     fun walk(dir: DocumentFile, prefix: String, out: MutableList<String>) {
         for (child in dir.listFiles()) {
             val name = child.name ?: continue
+            // A DocumentsProvider display name is attacker-controlled (#349): skip any name that is
+            // not a single safe path segment so a hostile "..", "a/b", or "" can never enter a vault
+            // path here. VaultMirror.resolveInside is the authoritative fail-closed guard at the
+            // working-copy write; this keeps a malformed name out of the mirror plan entirely.
+            if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')) continue
             val path = if (prefix.isEmpty()) name else "$prefix/$name"
             if (child.isDirectory) walk(child, path, out) else out.add(path)
         }

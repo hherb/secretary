@@ -212,6 +212,7 @@ fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
         | VaultError::BlockUuidAlreadyLive { .. }
         | VaultError::BlockNotInTrash { .. }
         | VaultError::RestoreVerificationFailed { .. }

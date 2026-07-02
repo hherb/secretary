@@ -1,0 +1,41 @@
+# cargo-audit configuration — see .github/workflows/audit.yml (#354).
+#
+# The audit job runs `cargo audit --deny warnings`, so ANY advisory (RustSec
+# vulnerability, unmaintained, or unsound) fails CI. The entries below are the
+# advisories we have consciously ACCEPTED; each must have a rationale and,
+# ideally, a tracking issue. Adding an id here is a deliberate risk decision —
+# not a way to silence noise. Re-review this list whenever Tauri's GTK stack or
+# the uniffi/anyhow chain is upgraded, since most of these clear on that bump.
+#
+# None of these are exploitable vulnerabilities (cargo audit reports 0 of
+# those); they are "unmaintained"/"unsound" warnings on desktop-shell or
+# bindgen-tooling transitives that never touch the cryptographic core.
+[advisories]
+ignore = [
+  # --- gtk-rs GTK3 stack: unmaintained + one unsound, Linux-only via Tauri ---
+  # Blocked until Tauri adopts gtk-rs 0.20. Tracked in #218.
+  "RUSTSEC-2024-0429", # glib <0.20 VariantStrIter unsoundness (GHSA-wrw7-89jp-8q8g)
+  "RUSTSEC-2024-0411", # gdkwayland-sys unmaintained
+  "RUSTSEC-2024-0412", # gdk unmaintained
+  "RUSTSEC-2024-0413", # atk unmaintained
+  "RUSTSEC-2024-0414", # gdkx11-sys unmaintained
+  "RUSTSEC-2024-0415", # gtk unmaintained
+  "RUSTSEC-2024-0416", # atk-sys unmaintained
+  "RUSTSEC-2024-0417", # gdkx11 unmaintained
+  "RUSTSEC-2024-0418", # gdk-sys unmaintained
+  "RUSTSEC-2024-0419", # gtk3-macros unmaintained
+  "RUSTSEC-2024-0420", # gtk-sys unmaintained
+  "RUSTSEC-2024-0370", # proc-macro-error unmaintained (via glib-macros)
+
+  # --- unic-* unmaintained, via urlpattern -> tauri-utils -> tauri (desktop) ---
+  "RUSTSEC-2025-0075", # unic-char-range unmaintained
+  "RUSTSEC-2025-0080", # unic-common unmaintained
+  "RUSTSEC-2025-0081", # unic-char-property unmaintained
+  "RUSTSEC-2025-0098", # unic-ucd-ident unmaintained
+  "RUSTSEC-2025-0100", # unic-ucd-version unmaintained
+
+  # --- anyhow unsound Error::downcast_mut, transitive via uniffi 0.31 + Tauri ---
+  # No secretary crate uses anyhow directly. Drop this once a patched anyhow
+  # (>1.0.102) resolves through `cargo update -p anyhow`.
+  "RUSTSEC-2026-0190",
+]

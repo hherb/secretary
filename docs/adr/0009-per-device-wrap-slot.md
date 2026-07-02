@@ -40,6 +40,19 @@ recognise `file_kind 0x0004` opens v1 vaults unchanged.
   vault-scoped device secret, never the top-level (possibly reused) password.
 - **Per-device revocation.** Delete `devices/<uuid>.wrap`; master password and other
   devices are untouched. Multi-device = multiple files.
+
+  **Revocation boundary (v1 has no IBK rotation).** Deleting a wrap file removes only
+  *that copy* of the IBK wrap. It does **not** re-key the vault, so it protects only
+  against a device that no longer possesses its 128-byte wrap bytes. It is **not**
+  effective against a *compromised* device that retained a copy of its own
+  `devices/<uuid>.wrap` plus its `device_secret` (that pair decrypts the IBK forever), nor
+  against a cloud provider's version history serving the deleted file back. This is the
+  opposite of the block-content-key path, which rotates `K` on every share/revoke and so
+  is forward-secret (crypto-design §7.3, vault-format §6.5.1). A genuinely compromised
+  device therefore means the whole vault identity is compromised (the IBK decrypts the
+  entire bundle); recovering from that requires creating a new vault, not a slot deletion.
+  Effective device-level revocation-under-compromise would need IBK rotation + re-wrap of
+  every remaining slot — deferred beyond v1.
 - **Frozen format preserved.** No change to `identity.bundle.enc`; `golden_vault_001`
   stays byte-identical. The new format is enforced from `docs/` alone by `conformance.py`.
 

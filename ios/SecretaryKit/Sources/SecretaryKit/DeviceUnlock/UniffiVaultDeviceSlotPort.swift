@@ -8,7 +8,13 @@ public struct UniffiVaultDeviceSlotPort: VaultDeviceSlotPort {
 
     public func addDeviceSlot(vaultPath: Data, password: [UInt8]) throws -> EnrolledSlot {
         do {
-            let out = try SecretaryKit.addDeviceSlot(folderPath: vaultPath, password: Data(password))
+            // Scrub the adapter-owned password Data copy on the way out (#364);
+            // this runs on the production "Remember this device" enroll path, so
+            // a master-password copy must not linger in the heap. Parity with
+            // UniffiVaultOpenPort.
+            let out = try withZeroizingData(password) { pw in
+                try SecretaryKit.addDeviceSlot(folderPath: vaultPath, password: pw)
+            }
             // Wipe the one-shot handle on EVERY exit (success, throw, or any
             // future fallible code inserted below), so the secret is never left
             // recoverable in the bridge handle.
@@ -28,10 +34,14 @@ public struct UniffiVaultDeviceSlotPort: VaultDeviceSlotPort {
 
     public func openWithDeviceSecret(vaultPath: Data, deviceUuid: [UInt8], deviceSecret: [UInt8]) throws -> OpenedVault {
         do {
-            return try SecretaryKit.openWithDeviceSecret(
-                folderPath: vaultPath,
-                deviceUuid: Data(deviceUuid),
-                deviceSecret: Data(deviceSecret))
+            // Scrub the adapter-owned device-secret Data copy on the way out
+            // (#364). deviceUuid is not secret. Parity with UniffiVaultOpenPort.
+            return try withZeroizingData(deviceSecret) { secretData in
+                try SecretaryKit.openWithDeviceSecret(
+                    folderPath: vaultPath,
+                    deviceUuid: Data(deviceUuid),
+                    deviceSecret: secretData)
+            }
         } catch let e as VaultError {
             throw mapVaultError(e)
         }

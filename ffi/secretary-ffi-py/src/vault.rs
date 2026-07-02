@@ -62,6 +62,13 @@ pub struct OpenVaultManifest(pub(crate) BridgeOpenVaultManifest);
 
 #[pymethods]
 impl OpenVaultManifest {
+    /// Whether this handle has been wiped. Call before acting on
+    /// `vault_uuid()` / `block_count()`, which return safe defaults (all-zero
+    /// UUID / 0) on a wiped handle (#362).
+    pub fn is_wiped(&self) -> bool {
+        self.0.is_wiped()
+    }
+
     /// 16-byte vault UUID. Returns 16 zero bytes if wiped.
     pub fn vault_uuid(&self) -> Vec<u8> {
         self.0.vault_uuid()

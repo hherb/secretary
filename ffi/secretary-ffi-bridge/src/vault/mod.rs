@@ -30,8 +30,13 @@
 //! Returns [`crate::error::FfiVaultError`] (NEW; see [`crate::error`]
 //! module docs). Six flat variants — 5 mirrored byte-identically from
 //! [`crate::error::FfiUnlockError`] and 1 new `FolderInvalid` for IO
-//! problems. `local_highest_clock` is always `None`; rollback detection
-//! deferred to Sub-project C.
+//! problems. The core `open_vault` is still called with
+//! `local_highest_clock = None` (the vault_uuid needed to locate the state
+//! file is inside the encrypted manifest body), but §10 rollback resistance
+//! IS enforced for app-facing opens — see
+//! `orchestration::enforce_rollback_resistance` (#352), which loads this
+//! device's persisted `highest_vector_clock_seen` after decode and fails
+//! closed on a dominated (replayed) manifest.
 //!
 //! # Submodule layout
 //!

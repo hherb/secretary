@@ -31,7 +31,13 @@ impl MnemonicOutput {
     /// converting to `bytearray` and overwriting in place; PyO3 cannot
     /// hand back a mutable buffer typed as a foreign Sensitive analog).
     fn take_phrase<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.take_phrase().map(|v| PyBytes::new(py, &v))
+        self.0.take_phrase().map(|mut v| {
+            // PyBytes::new copies into Python-owned memory; zeroize our transient
+            // Rust copy so the recovery phrase does not linger in freed heap (#360).
+            let b = PyBytes::new(py, &v);
+            v.zeroize();
+            b
+        })
     }
 
     /// Drop any still-resident inner mnemonic now, zeroizing its

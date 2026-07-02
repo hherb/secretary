@@ -25,7 +25,13 @@ thiserror = "2"
 # review of the relevant `Zeroize` impls. Same discipline as `tempfile`
 # below; same reason — the failure mode is silent.
 zeroize = { version = "=1.8.2", features = ["zeroize_derive"] }
-subtle = "2"
+# Constant-time-sensitive crates are EXACT-pinned (#370), same discipline as
+# `zeroize`/`tempfile`: a `cargo update` must not silently move a crate whose
+# security property is a *timing* invariant (constant-time comparison / field
+# arithmetic). KATs catch functional divergence but NOT a side-channel
+# regression, so each bump requires a deliberate edit + review. The #354
+# cargo-audit gate then flags any advisory against the pinned version.
+subtle = "=2.6.1"
 blake3 = "1"
 sha3 = "0.10"
 sha2 = "0.10"
@@ -33,9 +39,16 @@ chacha20poly1305 = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
 serde = { version = "1", features = ["derive"] }
-x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
-ml-kem = { version = "0.2", features = ["deterministic"] }
-ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "rand_core", "zeroize"] }
+# Exact-pinned (#370): x25519/ed25519-dalek pull curve25519-dalek, whose field
+# arithmetic is the constant-time boundary (cf. RUSTSEC-2024-0344). See the
+# subtle comment above for the rationale.
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+# `zeroize` wipes the ML-KEM DecapsulationKey's expanded internal state
+# (dk_pke + z) on drop; without it the long-term PQ secret key lingers in freed
+# heap after every decap. Parity with the other secret-bearing crypto deps
+# (x25519-dalek / ed25519-dalek / ml-dsa / bip39 all enable zeroize). See #357.
+ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "rand_core", "zeroize"] }
 ml-dsa = { version = "0.1.0-rc.8", default-features = false, features = ["alloc", "zeroize"] }
 ciborium = "0.2"
 rand_core = "0.6"

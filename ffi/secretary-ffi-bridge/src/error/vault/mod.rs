@@ -518,6 +518,10 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             | VE::ManifestVaultUuidMismatch { .. }
             | VE::KdfParamsMismatch
             | VE::ClockOverflow { .. }
+            // #359: a substituted contact card whose contact_uuid doesn't
+            // match the path key it's being persisted under — "data doesn't
+            // match what we'd sign/trust" → fold to CorruptVault.
+            | VE::ContactCardUuidMismatch { .. }
             // C.1.1b: open_vault surfaces this when an on-disk block's
             // bytes do not BLAKE3-hash to the manifest's committed
             // fingerprint. Same "data on disk doesn't match what we

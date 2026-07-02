@@ -204,7 +204,10 @@ pub fn create_vault_unchecked(
 
     // Step 5: generate identity + canonical CBOR
     let identity = bundle::generate(display_name, created_at_ms, rng);
-    let bundle_plaintext = identity.to_canonical_cbor()?;
+    // `bundle_plaintext` is a cleartext CBOR copy of the entire secret-key set
+    // (all four sk's). It is AEAD-encrypted under the IBK below, then zeroized
+    // so the cleartext key material does not linger in freed heap. See #357.
+    let mut bundle_plaintext = identity.to_canonical_cbor()?;
 
     // Step 6: three independent 24-byte AEAD nonces — one per AEAD call below.
     // Each key (IBK, master_kek, recovery_kek) is used exactly once, but
@@ -226,6 +229,7 @@ pub fn create_vault_unchecked(
         &bundle_plaintext,
     )
     .expect("AEAD encrypt of §5 bundle plaintext is structurally infallible");
+    bundle_plaintext.zeroize();
 
     // Step 8: wrap_pw — AEAD-encrypt the IBK bytes under master_kek.
     // identity_block_key.expose() -> &[u8; 32] coerces to &[u8] (plaintext).

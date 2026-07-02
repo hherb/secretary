@@ -117,6 +117,15 @@ pub enum KdfError {
     /// threat-model §2.1, so we surface the failure rather than panic.
     #[error("Argon2id parameters rejected by primitive (out of accepted range)")]
     Argon2ParamsRejected,
+
+    /// Argon2id parameters exceeded the sane upper bounds enforced when
+    /// deriving from an attacker-writable `vault.toml`. NOT a spec limit — a
+    /// DoS guard: without it a tampered `vault.toml` could demand ~terabytes of
+    /// memory (allocation abort) or billions of iterations (multi-year hang)
+    /// before the AEAD wrong-password check ever runs. See #368 / threat-model
+    /// §2.1.
+    #[error("Argon2id parameters exceed sane maximum (possible tampered vault.toml)")]
+    ParamsAboveSaneMax,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +160,18 @@ impl Argon2idParams {
     /// v1 floor on memory cost: 64 MiB. Memory may be reduced to this floor
     /// on memory-constrained devices but never lower (§1.2).
     pub const V1_MIN_MEMORY_KIB: u32 = 65536;
+
+    /// Sane upper bounds enforced at derive time against attacker-writable
+    /// `vault.toml` params (#368). These are DoS guards, NOT spec limits: they
+    /// sit far above any legitimate configuration (default is 256 MiB / 3 / 1),
+    /// so a real vault never trips them, but a tampered file demanding absurd
+    /// cost is rejected as [`KdfError::ParamsAboveSaneMax`] instead of aborting
+    /// on allocation or hanging for years.
+    pub const V1_MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024; // 4 GiB
+    /// See [`Argon2idParams::V1_MAX_MEMORY_KIB`].
+    pub const V1_MAX_ITERATIONS: u32 = 100;
+    /// See [`Argon2idParams::V1_MAX_MEMORY_KIB`].
+    pub const V1_MAX_PARALLELISM: u32 = 64;
 
     /// Construct without v1-floor validation. Use this when reading
     /// parameters from an existing vault (which may have been written by an
@@ -197,6 +218,16 @@ pub fn derive_master_kek(
     salt: &[u8; 32],
     params: &Argon2idParams,
 ) -> Result<Sensitive<[u8; 32]>, KdfError> {
+    // DoS guard against a tampered `vault.toml` (#368): reject absurd cost
+    // BEFORE `hash_password_into` allocates the memory block. Checked here (not
+    // only at creation via `try_new_v1`) because open re-derives the KEK from
+    // the on-disk, attacker-writable params.
+    if params.memory_kib > Argon2idParams::V1_MAX_MEMORY_KIB
+        || params.iterations > Argon2idParams::V1_MAX_ITERATIONS
+        || params.parallelism > Argon2idParams::V1_MAX_PARALLELISM
+    {
+        return Err(KdfError::ParamsAboveSaneMax);
+    }
     let argon_params = Params::new(
         params.memory_kib,
         params.iterations,
@@ -365,5 +396,38 @@ mod tests {
     fn device_kek_tag_value_matches_spec() {
         assert_eq!(TAG_DEVICE_KEK, b"secretary-v1-device-kek");
         assert_eq!(TAG_ID_WRAP_DEV, b"secretary-v1-id-wrap-dev");
+    }
+
+    #[test]
+    fn derive_master_kek_rejects_absurd_params_before_allocating() {
+        // #368: a tampered vault.toml demanding terabytes / billions of
+        // iterations must be rejected as a typed error, NOT abort/hang. The
+        // check runs before hash_password_into allocates, so this is instant.
+        let password = SecretBytes::new(b"correct horse".to_vec());
+        let salt = [7u8; 32];
+        for bad in [
+            Argon2idParams::new(Argon2idParams::V1_MAX_MEMORY_KIB + 1, 3, 1),
+            Argon2idParams::new(262144, Argon2idParams::V1_MAX_ITERATIONS + 1, 1),
+            Argon2idParams::new(262144, 3, Argon2idParams::V1_MAX_PARALLELISM + 1),
+            Argon2idParams::new(u32::MAX, u32::MAX, 1),
+        ] {
+            assert!(
+                matches!(
+                    derive_master_kek(&password, &salt, &bad),
+                    Err(KdfError::ParamsAboveSaneMax)
+                ),
+                "expected ParamsAboveSaneMax for {bad:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn derive_master_kek_accepts_v1_default_and_floor() {
+        // The sane cap must never reject a legitimate configuration.
+        let password = SecretBytes::new(b"correct horse".to_vec());
+        let salt = [7u8; 32];
+        assert!(derive_master_kek(&password, &salt, &Argon2idParams::V1_DEFAULT).is_ok());
+        let floor = Argon2idParams::new(Argon2idParams::V1_MIN_MEMORY_KIB, 1, 1);
+        assert!(derive_master_kek(&password, &salt, &floor).is_ok());
     }
 }

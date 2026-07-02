@@ -304,12 +304,15 @@ pub fn generate_ml_kem_768<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> (MlKem768Secret, MlKem768Public) {
     let (dk, ek) = MlKem768::generate(rng);
-    let sk_bytes = dk.as_bytes();
+    let mut sk_bytes = dk.as_bytes();
     let pk_bytes = ek.as_bytes();
-    (
-        MlKem768Secret(SecretBytes::new(sk_bytes.as_slice().to_vec())),
-        MlKem768Public(pk_bytes.as_slice().to_vec()),
-    )
+    let secret = MlKem768Secret(SecretBytes::new(sk_bytes.as_slice().to_vec()));
+    // `dk.as_bytes()` returned an owned 2400-byte encoded copy of the secret
+    // key; zeroize that stack copy so the sk only lives inside `secret`
+    // (mirrors `generate_x25519`'s `sk_bytes.zeroize()`). `dk` itself is now
+    // ZeroizeOnDrop (ml-kem `zeroize` feature, #357). See #357.
+    sk_bytes[..].zeroize();
+    (secret, MlKem768Public(pk_bytes.as_slice().to_vec()))
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +372,7 @@ pub fn encap<R: RngCore + CryptoRng>(
     let ek_arr: Encoded<Ek> =
         Array::try_from(recipient_pq_pk.as_bytes()).map_err(|_| KemError::InvalidKeyLength)?;
     let ek = Ek::from_bytes(&ek_arr);
-    let (ct_pq_arr, ss_pq_arr) = ek
+    let (ct_pq_arr, mut ss_pq_arr) = ek
         .encapsulate(rng)
         .map_err(|_| KemError::MlKemEncapsFailed)?;
     let ct_pq: Vec<u8> = ct_pq_arr.as_slice().to_vec();
@@ -377,6 +380,8 @@ pub fn encap<R: RngCore + CryptoRng>(
     ss_pq_bytes.copy_from_slice(ss_pq_arr.as_slice());
     let ss_pq = Sensitive::new(ss_pq_bytes);
     ss_pq_bytes.zeroize();
+    // `ss_pq_arr` is a second copy of the KEM shared secret; wipe it too. #357.
+    ss_pq_arr[..].zeroize();
 
     // --- Combiner: transcript + HKDF wrap key (§7 steps 3–5). ---
     let t = transcript(
@@ -441,20 +446,27 @@ pub fn decap(
 
     // --- ML-KEM-768 half: rehydrate the typed dk and decapsulate. ---
     type Dk = ml_kem::kem::DecapsulationKey<MlKem768Params>;
-    let dk_arr: Encoded<Dk> =
+    let mut dk_arr: Encoded<Dk> =
         Array::try_from(recipient_pq_sk.expose()).map_err(|_| KemError::InvalidKeyLength)?;
     let dk = Dk::from_bytes(&dk_arr);
+    // `dk_arr` is a 2400-byte stack copy of the long-term PQ secret key that
+    // `from_bytes` read by reference; zeroize it now that `dk` owns its typed
+    // form (`dk` is ZeroizeOnDrop via the ml-kem `zeroize` feature). See #357.
+    dk_arr[..].zeroize();
 
     type CtPq = ml_kem::Ciphertext<MlKem768>;
     let ct_pq_arr: CtPq =
         Array::try_from(wrap.ct_pq.as_slice()).map_err(|_| KemError::InvalidKeyLength)?;
-    let ss_pq_arr = dk
+    let mut ss_pq_arr = dk
         .decapsulate(&ct_pq_arr)
         .map_err(|_| KemError::MlKemDecapsFailed)?;
     let mut ss_pq_bytes = [0u8; ML_KEM_768_SS_LEN];
     ss_pq_bytes.copy_from_slice(ss_pq_arr.as_slice());
     let ss_pq = Sensitive::new(ss_pq_bytes);
     ss_pq_bytes.zeroize();
+    // The shared-secret array returned by `decapsulate` is a second copy of the
+    // KEM shared secret; wipe it alongside `ss_pq_bytes`. See #357.
+    ss_pq_arr[..].zeroize();
 
     // --- Recompute transcript and wrap key, then unwrap. ---
     let t = transcript(

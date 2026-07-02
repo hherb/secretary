@@ -100,4 +100,40 @@ class WorkingDirResolverTest {
         val reopened = cloudWorkingVaultDir(files, uri, reset = false)
         assertTrue(File(reopened, "vault.toml").exists())
     }
+
+    // --- forgetCloudVaultArtifacts (#366): wipe all local artifacts on forget ------------------
+
+    @Test
+    fun `forget deletes working copy, cloud device-secret dir, and pending-flush marker`() {
+        val files = tempFiles()
+        val noBackup = tempFiles()
+        val uri = "content://provider/tree/folderA"
+        val key = cloudVaultKey(uri)
+
+        // Seed all three artifacts plus, crucially, an UNRELATED vault's artifacts + the shared
+        // sync-state dir, none of which must be touched.
+        val working = cloudWorkingVaultDir(files, uri, reset = false).also { File(it, "vault.toml").writeText("ct") }
+        val deviceDir = cloudDeviceSecretDir(noBackup, key).apply { mkdirs(); File(this, "blob").writeText("wrapped") }
+        val marker = File(syncStateDir(files).apply { mkdirs() }, "$key.pending-flush").apply { createNewFile() }
+        val otherWorking = cloudWorkingVaultDir(files, "content://provider/tree/other", reset = false)
+            .also { File(it, "keep").writeText("x") }
+        val syncState = File(syncStateDir(files), "some-uuid.state").apply { writeText("crdt") }
+
+        forgetCloudVaultArtifacts(files, noBackup, uri)
+
+        assertTrue(!working.exists(), "working copy must be gone")
+        assertTrue(!deviceDir.exists(), "cloud device-secret dir must be gone")
+        assertTrue(!marker.exists(), "pending-flush marker must be gone")
+        // Untouched: the other vault and the UUID-keyed Rust SyncState.
+        assertTrue(File(otherWorking, "keep").exists(), "another vault's working copy must survive")
+        assertTrue(syncState.exists(), "UUID-keyed SyncState must survive")
+    }
+
+    @Test
+    fun `forget is idempotent when nothing was persisted`() {
+        val files = tempFiles()
+        val noBackup = tempFiles()
+        // No artifacts seeded — must not throw.
+        forgetCloudVaultArtifacts(files, noBackup, "content://provider/tree/never-opened")
+    }
 }

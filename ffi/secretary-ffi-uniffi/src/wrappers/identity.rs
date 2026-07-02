@@ -13,6 +13,12 @@
 pub struct UnlockedIdentity(pub(crate) secretary_ffi_bridge::UnlockedIdentity);
 
 impl UnlockedIdentity {
+    /// Whether this handle has been wiped. Call before acting on `user_uuid()`
+    /// / `display_name()`, which return safe defaults on a wiped handle (#362).
+    pub fn is_wiped(&self) -> bool {
+        self.0.is_wiped()
+    }
+
     /// User-facing display name. Returns `""` if the handle has been wiped.
     pub fn display_name(&self) -> String {
         self.0.display_name()

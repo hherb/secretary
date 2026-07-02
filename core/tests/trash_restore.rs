@@ -503,6 +503,87 @@ fn restore_block_round_trip_after_single_trash() {
 }
 
 // ---------------------------------------------------------------------------
+// restore_block — crash resume: file already in blocks/, manifest not updated
+// ---------------------------------------------------------------------------
+
+/// #351: a prior `restore_block` renamed the trash file into `blocks/` (step 6)
+/// then crashed before the manifest write (step 11), leaving the manifest still
+/// listing the signed `TrashEntry` while `trash/` has no matching file. Retrying
+/// must RESUME from the live `blocks/` file (whose bytes hash to the signed
+/// `TrashEntry.fingerprint`) and complete the manifest update — not fail
+/// `BlockNotInTrash` — and the vault must reopen cleanly afterwards.
+#[test]
+fn restore_block_resumes_when_file_already_in_blocks_after_crash() {
+    let (dir, _mnemonic, pw) = make_fast_vault(9, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xc9; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xd9; 16];
+    let block_uuid = [0xb9; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "resume-after-crash");
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    // Simulate the crash: move trash/<uuid>.cbor.enc.2000 → blocks/<uuid>.cbor.enc,
+    // leaving `open.manifest` still holding the TrashEntry (manifest not written).
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_file = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
+    let live = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    std::fs::rename(&trash_file, &live).unwrap();
+    assert!(!trash_file.exists() && live.exists(), "crash state staged");
+    assert!(
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "manifest still lists the TrashEntry (crash before step 11)",
+    );
+
+    // Retry restore — must resume rather than fail BlockNotInTrash.
+    restore_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng)
+        .expect("restore must resume from the already-restored blocks/ file");
+
+    assert!(
+        open.manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "BlockEntry restored to manifest",
+    );
+    assert!(
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
+        "TrashEntry cleared from manifest",
+    );
+    assert!(live.exists(), "block remains live in blocks/");
+
+    // The vault must reopen cleanly (block fingerprint matches the manifest).
+    drop(open);
+    let reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(reopened
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+}
+
+// ---------------------------------------------------------------------------
 // restore_block — multi-copy purge: newest restored, older copies removed
 // ---------------------------------------------------------------------------
 

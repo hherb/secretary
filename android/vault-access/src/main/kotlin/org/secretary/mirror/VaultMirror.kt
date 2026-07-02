@@ -111,7 +111,7 @@ class VaultMirror(private val cloud: CloudFolderPort) {
     }
 
     private fun writeWorking(workingDir: File, relativePath: String, bytes: ByteArray) {
-        val target = File(workingDir, relativePath)
+        val target = resolveInside(workingDir, relativePath)
         target.parentFile?.mkdirs()
         target.writeBytes(bytes)
     }
@@ -121,6 +121,34 @@ class VaultMirror(private val cloud: CloudFolderPort) {
         // delete contract) but throws IOException on a real failure (permissions, busy) so the
         // working copy can never silently diverge from the cloud — runPass folds it to
         // VaultMirrorException.
-        Files.deleteIfExists(File(workingDir, relativePath).toPath())
+        Files.deleteIfExists(resolveInside(workingDir, relativePath).toPath())
+    }
+
+    /**
+     * Resolves [relativePath] under [workingDir], failing the pass closed for any cloud-supplied
+     * path that would escape the working copy (#349). File names in a SAF cloud folder are reported
+     * by the DocumentsProvider (the [CloudFolderPort.list] seam) and are therefore attacker-controlled
+     * under the threat model: a hostile or compromised provider can report a name containing `..`, an
+     * absolute prefix, or an embedded separator so that `File(workingDir, relativePath)` lands OUTSIDE
+     * the sandboxed working copy — an arbitrary write/delete over the device-secret blob, shared_prefs,
+     * enrollment metadata, etc. A real vault path is always a POSIX relative path of plain segments
+     * (`"blocks/<uuid>.cbor.enc"`); anything else is malformed. Two independent checks: a pure
+     * segment-wise reject (no I/O, deterministic) plus a canonical-containment assertion as
+     * belt-and-braces against separator/symlink tricks the segment scan might miss.
+     */
+    private fun resolveInside(workingDir: File, relativePath: String): File {
+        val unsafeSegments = relativePath.isEmpty() ||
+            relativePath.startsWith('/') || relativePath.startsWith('\\') ||
+            relativePath.split('/', '\\').any { it.isEmpty() || it == "." || it == ".." }
+        if (unsafeSegments) {
+            throw VaultMirrorException("unsafe cloud-supplied vault path rejected: '$relativePath'")
+        }
+        val target = File(workingDir, relativePath)
+        val base = workingDir.canonicalFile
+        val canonical = target.canonicalFile
+        if (canonical != base && !canonical.path.startsWith(base.path + File.separator)) {
+            throw VaultMirrorException("cloud-supplied vault path escapes the working copy: '$relativePath'")
+        }
+        return target
     }
 }

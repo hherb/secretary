@@ -307,15 +307,18 @@ pub fn generate_ed25519<R: RngCore + CryptoRng>(rng: &mut R) -> (Ed25519Secret, 
 pub fn generate_ml_dsa_65<R: RngCore + CryptoRng>(rng: &mut R) -> (MlDsa65Secret, MlDsa65Public) {
     let mut seed_bytes = [0u8; ML_DSA_65_SEED_LEN];
     rng.fill_bytes(&mut seed_bytes);
-    let seed: B32 = B32::from(seed_bytes);
+    let mut seed: B32 = B32::from(seed_bytes);
     let kp = MlDsa65::from_seed(&seed);
     let pk_bytes = kp.verifying_key().encode();
     let secret = MlDsa65Secret(SecretBytes::new(seed_bytes.to_vec()));
-    // Original stack copy of the seed is no longer needed; zeroize before
-    // dropping to limit lifetime of the cleartext seed in this stack frame.
+    // Both cleartext copies of the seed are no longer needed once `kp` owns its
+    // expanded form; zeroize `seed_bytes` (the raw array) AND `seed` (the `B32`
+    // copy `from_seed` read by reference — it is NOT moved into `kp`) to limit
+    // the seed's lifetime in this stack frame. See #357.
     {
         use zeroize::Zeroize as _;
         seed_bytes.zeroize();
+        seed[..].zeroize();
     }
     (secret, MlDsa65Public(pk_bytes.as_slice().to_vec()))
 }
@@ -345,15 +348,17 @@ pub fn sign(
     }
     let mut seed_arr = [0u8; ML_DSA_65_SEED_LEN];
     seed_arr.copy_from_slice(pq_sk.expose());
-    let seed: B32 = B32::from(seed_arr);
-    // The stack copy is no longer needed once `seed` owns it; zeroize it to
-    // keep the cleartext seed off the stack. `seed` itself ends up inside
-    // `pq_kp`, whose `ExpandedSigningKey` zeroizes on drop.
+    let mut seed: B32 = B32::from(seed_arr);
+    let pq_kp = MlDsa65::from_seed(&seed);
+    // Zeroize both cleartext copies of the seed: `seed_arr` (the raw array) and
+    // `seed` (the `B32` that `from_seed` read by reference — a copy of the seed
+    // that is NOT moved into `pq_kp`). `pq_kp`'s `ExpandedSigningKey` zeroizes
+    // its own expanded form on drop. See #357.
     {
         use zeroize::Zeroize as _;
         seed_arr.zeroize();
+        seed[..].zeroize();
     }
-    let pq_kp = MlDsa65::from_seed(&seed);
     let pq_signing = pq_kp.signing_key();
     let sig_pq_obj = pq_signing.sign(&m);
     let sig_pq_bytes = sig_pq_obj.encode();

@@ -8,6 +8,12 @@ use super::identity::UnlockedIdentity;
 pub struct OpenVaultManifest(pub(crate) secretary_ffi_bridge::OpenVaultManifest);
 
 impl OpenVaultManifest {
+    /// Whether this handle has been wiped. Call before acting on `vault_uuid()`
+    /// / `block_count()`, which return safe defaults on a wiped handle (#362).
+    pub fn is_wiped(&self) -> bool {
+        self.0.is_wiped()
+    }
+
     pub fn vault_uuid(&self) -> Vec<u8> {
         self.0.vault_uuid()
     }

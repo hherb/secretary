@@ -88,6 +88,16 @@ impl OpenVaultManifest {
         }
     }
 
+    /// Whether this handle has been wiped. Every other accessor returns a
+    /// safe default (all-zero UUID, `0`, empty, `false`) on a wiped handle
+    /// rather than throwing, so a read-only consumer that keys per-vault
+    /// state by `vault_uuid()` / treats `block_count() == 0` as "empty"
+    /// after a concurrent wipe would act on a default value (the #252 class
+    /// of bug). Call this first to distinguish "wiped" from a genuine value.
+    pub fn is_wiped(&self) -> bool {
+        lock_or_recover(&self.inner).is_none()
+    }
+
     /// 16-byte vault UUID from the manifest body. Returns `vec![0u8; 16]`
     /// if the handle has been wiped.
     pub fn vault_uuid(&self) -> Vec<u8> {

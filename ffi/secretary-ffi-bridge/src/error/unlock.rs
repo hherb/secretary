@@ -241,17 +241,19 @@ mod tests {
     }
 
     #[test]
-    fn invalid_mnemonic_unknown_word_carries_detail() {
+    fn invalid_mnemonic_unknown_word_carries_position_not_content() {
         use secretary_core::unlock::mnemonic::MnemonicError;
-        let core_err =
-            UnlockError::InvalidMnemonic(MnemonicError::UnknownWord("xyzzy".to_string()));
+        // #358: the bridge detail must carry the word POSITION only, never the
+        // content — the word is recovery-phrase material and must not reach a
+        // foreign-runtime exception message / mobile log / crash reporter.
+        let core_err = UnlockError::InvalidMnemonic(MnemonicError::UnknownWord { index: 5 });
         let ffi: FfiUnlockError = core_err.into();
         let FfiUnlockError::InvalidMnemonic { detail } = ffi else {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
         assert!(
-            detail.contains("xyzzy"),
-            "detail did not carry the offending word: {detail}"
+            detail.contains("#6"),
+            "detail did not carry the 1-based word position: {detail}"
         );
     }
 

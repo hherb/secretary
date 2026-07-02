@@ -29,7 +29,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # Formatting is platform-independent, so one runner suffices.
       - name: Check formatting
         run: cargo fmt --all --check
@@ -44,7 +44,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # The workspace includes the Tauri desktop crate (`secretary-desktop`),
       # which needs GTK3/WebKitGTK system libs to compile. ubuntu-latest does
       # not ship them; macOS runners already have what they need.
@@ -58,7 +58,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Clippy (lib + tests, deny warnings)
         run: cargo clippy --release --workspace --tests -- -D warnings
 
@@ -79,7 +79,7 @@ jobs:
       # crates; dependency docs are not our gate.
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # The Tauri desktop crate (`secretary-desktop`) needs GTK3/WebKitGTK to
       # build before rustdoc can document it; ubuntu-latest lacks them.
       - name: Install Tauri Linux system dependencies
@@ -92,7 +92,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: cargo doc --no-deps --workspace
         run: cargo doc --no-deps --workspace
 
@@ -104,7 +104,7 @@ jobs:
     # needs no GTK/WebKit/Tauri system libs and runs ubuntu-only and fast.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # Prove the matcher actually fires (positive control) before trusting a
       # green guard — a vacuous check is the failure mode #231 surfaced.
       - name: Self-test the guard matcher

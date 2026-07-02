@@ -1,0 +1,46 @@
+name: Dependency audit
+
+# RustSec advisory gate for a project that holds real user secrets (#354).
+# CodeQL's default setup covers static analysis only — it does NOT scan the
+# Rust dependency graph for advisories, and the committed exact `Cargo.lock`
+# means transitives never move without a human. This job closes that gap.
+#
+# `cargo audit --deny warnings` fails on ANY advisory (vulnerability,
+# unmaintained, or unsound). The advisories we have consciously accepted are
+# listed — with rationale — in `.cargo/audit.toml`; adding to that list is a
+# deliberate risk decision. `cargo audit` only reads `Cargo.lock`, so this job
+# needs no Tauri/GTK system libs and runs ubuntu-only and fast.
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/Cargo.toml', 'Cargo.lock', '.cargo/audit.toml', '.github/workflows/audit.yml']
+  pull_request:
+    paths: ['**/Cargo.toml', 'Cargo.lock', '.cargo/audit.toml', '.github/workflows/audit.yml']
+  schedule:
+    # Weekly — catches newly-published advisories against unchanged pinned deps.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-audit
+        # --locked pins cargo-audit's own transitives; the compile is cached
+        # across runs by rust-cache. Kept in the caret range so patch/minor
+        # advisory-format fixes land without a manual bump.
+        run: cargo install --locked cargo-audit
+      - name: Audit dependencies (deny all advisories not in .cargo/audit.toml)
+        run: cargo audit --deny warnings

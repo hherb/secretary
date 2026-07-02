@@ -232,7 +232,15 @@ fun AppRoot() {
                     route = Route.Unlock(CloudVaultTarget(loc, workingDir, isCreate = false))
                 }
             },
-            onChooseDifferent = { selectionVm.chooseDifferent(); selectionState = selectionVm.state },
+            onChooseDifferent = {
+                // Delete the forgotten vault's local artifacts (#366) BEFORE chooseDifferent()
+                // clears the pref — read the treeUri while it is still known.
+                locationStore.load()?.let {
+                    forgetCloudVaultArtifacts(context.filesDir, context.noBackupFilesDir, it.treeUri)
+                }
+                selectionVm.chooseDifferent()
+                selectionState = selectionVm.state
+            },
             onPickFolder = { pendingPick = FolderPickTarget.SelectExisting; pickFolderLauncher.launch(null) },
             onDemo = { route = Route.Unlock() },
         )
