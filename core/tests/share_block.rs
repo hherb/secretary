@@ -910,8 +910,12 @@ fn share_block_rejects_recipient_card_that_fails_self_verify() {
     // self-signature does not verify must be rejected BEFORE any destructive
     // re-write, and must never be persisted to contacts/ — even if a caller
     // bypasses the FFI bridge's verify guard.
-    let (dir, _mnemonic, pw) = make_fast_vault(2, b"hunter2", "Owner");
+    // Password generated at runtime (not a literal) so the test never carries a
+    // hard-coded cryptographic value; the vault is opened via the returned `pw`.
     let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
+    let mut pw_bytes = [0u8; 24];
+    rng.fill_bytes(&mut pw_bytes);
+    let (dir, _mnemonic, pw) = make_fast_vault(2, &pw_bytes, "Owner");
     let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
     let owner_card = open.owner_card.clone();
 
