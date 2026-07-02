@@ -191,8 +191,15 @@ mod tests {
     fn create_and_open(dir: &Path) -> OpenVault {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let pw = SecretBytes::new(b"correct horse battery".to_vec());
-        create_vault(dir, &pw, "Tester", Argon2idParams::new(65536, 1, 1), 0, &mut rng)
-            .expect("create_vault");
+        create_vault(
+            dir,
+            &pw,
+            "Tester",
+            Argon2idParams::new(65536, 1, 1),
+            0,
+            &mut rng,
+        )
+        .expect("create_vault");
         open_vault(dir, Unlocker::Password(&pw), None).expect("open_vault")
     }
 

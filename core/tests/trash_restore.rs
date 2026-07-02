@@ -523,18 +523,32 @@ fn restore_block_resumes_when_file_already_in_blocks_after_crash() {
     let block_uuid = [0xb9; 16];
     let plaintext = make_simple_plaintext(block_uuid, "resume-after-crash");
     let recipients = vec![open.owner_card.clone()];
-    save_block(folder, &mut open, plaintext, &recipients, device_uuid, 1_000, &mut rng).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
     trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
 
     // Simulate the crash: move trash/<uuid>.cbor.enc.2000 → blocks/<uuid>.cbor.enc,
     // leaving `open.manifest` still holding the TrashEntry (manifest not written).
     let uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let trash_file = folder.join("trash").join(format!("{uuid_hex}.cbor.enc.2000"));
+    let trash_file = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
     let live = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
     std::fs::rename(&trash_file, &live).unwrap();
     assert!(!trash_file.exists() && live.exists(), "crash state staged");
     assert!(
-        open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        open.manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
         "manifest still lists the TrashEntry (crash before step 11)",
     );
 
@@ -543,11 +557,18 @@ fn restore_block_resumes_when_file_already_in_blocks_after_crash() {
         .expect("restore must resume from the already-restored blocks/ file");
 
     assert!(
-        open.manifest.blocks.iter().any(|b| b.block_uuid == block_uuid),
+        open.manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
         "BlockEntry restored to manifest",
     );
     assert!(
-        !open.manifest.trash.iter().any(|t| t.block_uuid == block_uuid),
+        !open
+            .manifest
+            .trash
+            .iter()
+            .any(|t| t.block_uuid == block_uuid),
         "TrashEntry cleared from manifest",
     );
     assert!(live.exists(), "block remains live in blocks/");

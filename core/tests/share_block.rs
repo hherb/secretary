@@ -964,7 +964,10 @@ fn share_block_rejects_recipient_card_that_fails_self_verify() {
         "{}.card",
         format_uuid_hyphenated(&alice_card.contact_uuid)
     ));
-    assert!(!alice_path.exists(), "unverified card must not be persisted");
+    assert!(
+        !alice_path.exists(),
+        "unverified card must not be persisted"
+    );
 }
 
 // Suppress unused-import warnings for items only consumed by some tests.

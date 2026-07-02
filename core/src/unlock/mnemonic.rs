@@ -331,7 +331,10 @@ mod tests {
             !rendered.contains("notarealbip39word"),
             "error message leaked the phrase word: {rendered}",
         );
-        assert!(rendered.contains("#6"), "expected 1-based position, got {rendered}");
+        assert!(
+            rendered.contains("#6"),
+            "expected 1-based position, got {rendered}"
+        );
     }
 
     #[test]
