@@ -578,6 +578,12 @@ pub fn open_vault(
     // idempotence.
     verify_block_fingerprints(folder, &manifest_body)?;
 
+    // #350: best-effort completion of trash renames interrupted between
+    // trash_block's manifest commit and its physical move. Rename-only
+    // and gated on the signed TrashEntry.fingerprint — see
+    // repair::complete_pending_trash_renames.
+    super::repair::complete_pending_trash_renames(folder, &manifest_body);
+
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
