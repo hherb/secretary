@@ -997,6 +997,141 @@ fn repair_rejects_equal_set_different_bytes() {
     );
 }
 
+/// #350 security (regression for the review finding on PR #375): the
+/// recipient-widening refusal is CROSS-CUTTING — it must fire even when
+/// the on-disk block's clock strictly DOMINATES the committed entry, not
+/// only in the equal-clock tier. A revoke is invisible to the block
+/// clock (re-keys preserve it), so a planted owner-signed content-save
+/// carrying a pre-revocation recipient set can dominate a committed
+/// post-revoke entry. If the widening guard were Equal-only, that plant
+/// would re-grant the revoked recipient. Construction (single replica,
+/// two device ids): save {owner, B} on D1 (clock {D1:1}); revoke B on D1
+/// (committed → {owner}, clock preserved {D1:1}); then a fresh content
+/// save on D2 re-encrypts to {owner, B} and ticks the block clock to
+/// {D1:1, D2:1} — this owner-signed generation both DOMINATES the
+/// committed {D1:1} AND widens {owner} back to {owner, B}. Planting it
+/// must be refused with "would ADD recipients".
+#[test]
+fn repair_rejects_dominating_clock_recipient_widening() {
+    let (dir, _mnemonic, pw) = make_fast_vault(68, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x79; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_1, device_2, block_uuid) = ([0xd1; 16], [0xd2; 16], [0xba; 16]);
+
+    let mut rng_b = ChaCha20Rng::from_seed([0x7a; 32]);
+    let id_b = secretary_core::unlock::bundle::generate("Bee", 1_714_060_800_000, &mut rng_b);
+    let card_b = make_signed_card(&id_b);
+    fs::write(
+        folder.join("contacts").join(format!(
+            "{}.card",
+            format_uuid_hyphenated(&card_b.contact_uuid)
+        )),
+        card_b.to_canonical_cbor().unwrap(),
+    )
+    .unwrap();
+
+    // save {owner, B} on device D1 → block clock {D1:1}.
+    let recipients = vec![open.owner_card.clone(), card_b.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "shared"),
+        &recipients,
+        device_1,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    // Revoke B on D1 → committed {owner}, block clock preserved {D1:1}.
+    let all_cards = vec![open.owner_card.clone(), card_b.clone()];
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &all_cards,
+        secretary_core::vault::RecipientUuid::new(card_b.contact_uuid),
+        secretary_core::vault::DeviceUuid::new(device_1),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    // Snapshot the committed post-revoke state: {owner} at block clock
+    // {D1:1}. This is what the plant must be judged against.
+    let manifest_committed = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    // Mint the DOMINATING wide generation: a content save on a second
+    // device D2 re-encrypting to {owner, B} ticks the block clock to
+    // {D1:1, D2:1} (dominates the committed {D1:1}).
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "edited-elsewhere"),
+        &recipients,
+        device_2,
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let dominating_wide_bytes = fs::read(&block_path).unwrap();
+    drop(open);
+
+    // Roll the manifest back to the committed post-revoke state and plant
+    // the dominating {owner, B} generation over the block file.
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_committed).unwrap();
+    fs::write(&block_path, &dominating_wide_bytes).unwrap();
+
+    // open_vault refuses (fingerprint mismatch), as for any residue.
+    let err = open_vault(folder, Unlocker::Password(&pw), None)
+        .expect_err("planted dominating widening bytes must fail open");
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    // repair_vault must REFUSE — dominance does not license widening.
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        None,
+        device_1,
+        4_000,
+        &mut rng,
+    )
+    .expect_err("a dominating clock must NOT license a recipient widening");
+    assert!(
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("would ADD recipients"), "got: {msg}");
+    assert!(
+        msg.contains(&format_uuid_hyphenated(&card_b.contact_uuid)),
+        "the re-granted recipient must be named: {msg}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_committed,
+        "rejected repair must not touch the manifest"
+    );
+    assert_eq!(
+        fs::read(&block_path).unwrap(),
+        dominating_wide_bytes,
+        "rejected repair must not touch blocks/"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // repair_vault — #350 review-followup gates: rollback, concurrent, missing,
 // idempotence

@@ -103,10 +103,19 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 ///    unforgeable structure (authenticity is not currency: an
 ///    owner-signed *older* copy verifies fine, and `last_mod_ms` is
 ///    caller wall-clock with no monotonicity guarantee, so timestamps
-///    are deliberately NOT part of this gate). Two-tier rule:
+///    are deliberately NOT part of this gate). Two-tier rule, with a
+///    **cross-cutting recipient-widening refusal** layered on top — no
+///    clock relation ever licenses ADDING a recipient (re-granting
+///    access is never automatic):
 ///    - [`ClockRelation::IncomingDominates`] against
 ///      `vector_clock_summary` — an interrupted `save_block` (content
-///      changed, so the block's own clock ticked). Adopted.
+///      changed, so the block's own clock ticked). Adopted, but only if
+///      it does not widen the recipient set: `save_block` re-encrypts to
+///      the *existing* recipients, so a legitimate residue's recipient
+///      set equals the committed one. A dominating file that widens is a
+///      planted owner-signed copy carrying a pre-revocation recipient set
+///      (a revoke is clock-invisible, so it can dominate a committed
+///      post-revoke entry) and is refused.
 ///    - [`ClockRelation::Equal`] — the residue of a content-preserving
 ///      re-key (`share_block` / `revoke_block_recipient` via
 ///      `rewrite_block_with_recipients`, which deliberately preserves
@@ -121,13 +130,13 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 ///      an attacker replaying retained owner-signed re-key bytes can
 ///      force is an un-share, recoverable by re-sharing; re-GRANTING
 ///      access (the superset direction, e.g. resurrecting a revoked
-///      recipient) is always refused. Equal sets with different bytes
-///      are also refused — no legitimate crashed operation has that
-///      shape (stale-replay / forgery). Consequence: the residue of a
-///      crashed `share_block` (a genuine superset) is NOT auto-adopted
-///      — a documented limitation until an informed-consent adoption
-///      path ships with the FFI projection; the rejection `detail`
-///      names the recipients that would be added.
+///      recipient) is always refused — on either tier. Equal sets with
+///      different bytes are also refused — no legitimate crashed
+///      operation has that shape (stale-replay / forgery). Consequence:
+///      the residue of a crashed `share_block` (a genuine superset) is
+///      NOT auto-adopted — a documented limitation until an
+///      informed-consent adoption path ships with the FFI projection;
+///      the rejection `detail` names the recipients that would be added.
 ///    - Everything else (`IncomingDominated` = rollback plant,
 ///      `Concurrent` = torn multi-device state this function must not
 ///      guess about) is refused.
@@ -235,12 +244,15 @@ pub fn repair_vault(
         // decide NOTHING here. Only two relations can be legitimate
         // crash residue:
         //   - IncomingDominates: an interrupted save_block ticked the
-        //     block's own vector clock (content changed). Adopt.
+        //     block's own vector clock (content changed). Still subject
+        //     to the recipient-widening refusal at Gate 3b — a crashed
+        //     save re-encrypts to the *existing* recipient set, so a
+        //     legitimate residue never adds a recipient here.
         //   - Equal: a content-preserving re-key (share/revoke via
         //     rewrite_block_with_recipients, which deliberately
         //     preserves the block clock). Conditionally adoptable —
-        //     the subset-only rule at Gate 3b below decides, after the
-        //     recipient set has been decrypt-verified and resolved.
+        //     Gate 3b below decides, after the recipient set has been
+        //     decrypt-verified and resolved.
         // Dominated (rollback plant) or concurrent (torn multi-device
         // state we must not guess about) are always refused.
         let relation = clock_relation(&entry.vector_clock_summary, &block_file.header.vector_clock);
@@ -273,48 +285,74 @@ pub fn repair_vault(
             detail: format!("decrypt/verify: {e}"),
         })?;
         // The rebuilt entry's recipients come from the on-disk §6.2
-        // table (so a crashed revocation adopts the REDUCED set).
-        let recipients = resolve_recipient_uuids(folder, &owner_card, &block_file.recipients)?;
-        // Gate 3b — Equal-clock subset-only rule. Within an equal-clock
-        // class every legitimate writer re-encrypted the IDENTICAL
-        // plaintext (invariant guarded at rewrite_block_with_recipients
-        // step 9/10), so adoption can only change the recipient set —
-        // and only a strict NARROWING is fail-closed: the worst outcome
-        // an attacker replaying retained owner-signed re-key bytes can
-        // force is an un-share (recoverable by re-sharing). A superset
-        // would re-GRANT access (e.g. resurrect a revoked recipient —
-        // the 2026-07 review exploit: retained share-bytes stamped with
-        // a later wall-clock than a backward-clock revoke), and an
-        // equal set with different bytes matches no legitimate crashed
-        // operation (stale-replay / forgery shape). Both are refused.
-        if matches!(relation, ClockRelation::Equal) {
-            let on_disk: BTreeSet<[u8; 16]> = recipients.iter().copied().collect();
-            let committed: BTreeSet<[u8; 16]> = entry.recipients.iter().copied().collect();
-            let added: Vec<String> = on_disk
-                .difference(&committed)
-                .map(format_uuid_hyphenated)
-                .collect();
-            if !added.is_empty() {
-                return Err(VaultError::RepairRejected {
+        // table (so a crashed revocation adopts the REDUCED set). A
+        // missing/unverifiable recipient card is a *gate* failure (the
+        // repair contract promises RepairRejected), not the bare
+        // MissingRecipientCard the shared resolver returns; remap it so
+        // the outcome set stays {RepairRejected, BlockFileMissing}.
+        // Environmental Io (contacts/ unreadable) stays Io — it is not a
+        // gate rejection.
+        let recipients = resolve_recipient_uuids(folder, &owner_card, &block_file.recipients)
+            .map_err(|e| match e {
+                VaultError::MissingRecipientCard { .. } => VaultError::RepairRejected {
                     block_uuid: entry.block_uuid,
-                    detail: format!(
-                        "equal-clock re-key residue would ADD recipients {{{}}}: refusing \
-                         automatic adoption; explicit consent path not yet implemented",
-                        added.join(", ")
-                    ),
-                });
-            }
-            if on_disk == committed {
-                return Err(VaultError::RepairRejected {
-                    block_uuid: entry.block_uuid,
-                    detail: "equal-clock residue leaves the recipient set unchanged while \
-                             the bytes differ: no legitimate crashed re-key has this shape \
-                             (stale-replay or forgery)"
-                        .to_string(),
-                });
-            }
-            // Strict subset: a crashed revocation's narrowed set. Adopt.
+                    detail: format!("recipient resolution: {e}"),
+                },
+                other => other,
+            })?;
+        // Gate 3b — recipient-widening is refused REGARDLESS of clock
+        // relation. No legitimate crashed operation can ADD a recipient
+        // here: save_block ticks the block clock but re-encrypts to the
+        // *existing* recipient set (so a genuine IncomingDominates
+        // residue has on-disk recipients == committed), and re-keys
+        // preserve the clock (Equal) so their residue can only NARROW
+        // (revoke). The one widening operation, share_block, also
+        // preserves the clock — its crashed superset residue is landed
+        // here too but is deliberately NOT auto-adopted (informed-consent
+        // path, #374). So any added recipient is either that crashed
+        // share or an attacker replaying retained owner-signed bytes to
+        // re-GRANT access (e.g. resurrect a revoked recipient — the
+        // 2026-07 review exploit). Fail closed: the worst an attacker can
+        // force through the adopted direction is an un-share, recoverable
+        // by re-sharing; re-granting is NEVER automatic on any clock
+        // relation. (Earlier this guard was Equal-only, which left the
+        // IncomingDominates arm able to adopt a widened set — a planted
+        // owner-signed content-save whose block clock dominated a
+        // clock-invisible revoke could re-grant the revoked recipient.)
+        let on_disk: BTreeSet<[u8; 16]> = recipients.iter().copied().collect();
+        let committed: BTreeSet<[u8; 16]> = entry.recipients.iter().copied().collect();
+        let added: Vec<String> = on_disk
+            .difference(&committed)
+            .map(format_uuid_hyphenated)
+            .collect();
+        if !added.is_empty() {
+            return Err(VaultError::RepairRejected {
+                block_uuid: entry.block_uuid,
+                detail: format!(
+                    "re-key residue would ADD recipients {{{}}}: refusing automatic \
+                     adoption; explicit consent path not yet implemented",
+                    added.join(", ")
+                ),
+            });
         }
+        // Equal-clock only: an *unchanged* recipient set with differing
+        // bytes is not a legitimate crashed re-key (a re-key changes the
+        // set; a content save ticks the clock into IncomingDominates), so
+        // it is a stale-replay / forgery shape and is refused. Under
+        // IncomingDominates an unchanged recipient set with differing
+        // bytes IS the legitimate crashed-save shape and is adopted.
+        if matches!(relation, ClockRelation::Equal) && on_disk == committed {
+            return Err(VaultError::RepairRejected {
+                block_uuid: entry.block_uuid,
+                detail: "equal-clock residue leaves the recipient set unchanged while \
+                         the bytes differ: no legitimate crashed re-key has this shape \
+                         (stale-replay or forgery)"
+                    .to_string(),
+            });
+        }
+        // Reaching here: recipients are a subset of committed (narrowing
+        // — crashed revocation under Equal, or an owner-signed
+        // content-save under IncomingDominates). Adopt.
         adoptions.push((
             idx,
             BlockEntry {
@@ -328,8 +366,16 @@ pub fn repair_vault(
                 // The original write's own stamp — repair is not a
                 // content change (mirrors clock-verbatim above).
                 last_mod_ms: block_file.header.last_mod_ms,
-                // Preserve the committed entry's unknown map: repair
-                // replaces the *content commitment*, not v2 metadata.
+                // Preserve the committed entry's unknown map. Repair
+                // replaces the content commitment (fingerprint + clock)
+                // from the on-disk block, but BlockEntry-level v2 metadata
+                // lives in the manifest, not the block file — so any v2
+                // fields the interrupted (and now lost) manifest write
+                // would have carried are unrecoverable here regardless.
+                // Carrying the committed map forward is the only option
+                // that preserves the v2 fields we still have; a future
+                // v2-aware repair path cannot do better without a second
+                // manifest copy on disk.
                 unknown: entry.unknown.clone(),
             },
         ));
