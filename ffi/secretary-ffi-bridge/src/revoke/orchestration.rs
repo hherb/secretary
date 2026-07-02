@@ -224,6 +224,11 @@ fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
         // exhaustiveness per issue #40. The generic `From<VaultError>`
         // impl routes this to `CorruptVault` on the read path.
         | VaultError::BlockFingerprintMismatch { .. }
+        // #350: unreachable from revoke_block (repair is a separate
+        // orchestrator entry point); listed for exhaustiveness per
+        // issue #40.
+        | VaultError::BlockFileMissing { .. }
+        | VaultError::RepairRejected { .. }
         // ADR 0009 (B.1): unreachable from revoke_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {

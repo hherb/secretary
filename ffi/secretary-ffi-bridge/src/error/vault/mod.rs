@@ -527,7 +527,13 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // fingerprint. Same "data on disk doesn't match what we
             // signed" semantic as RestoreVerificationFailed → fold to
             // CorruptVault.
-            | VE::BlockFingerprintMismatch { .. }) => FfiVaultError::CorruptVault {
+            | VE::BlockFingerprintMismatch { .. }
+            // #350: block file absent from blocks/, or repair_vault
+            // refused to adopt an on-disk block — both are "data on
+            // disk doesn't match what we signed/expect" semantics like
+            // BlockFingerprintMismatch above → fold to CorruptVault.
+            | VE::BlockFileMissing { .. }
+            | VE::RepairRejected { .. }) => FfiVaultError::CorruptVault {
                 detail: format!("{e}"),
             },
         }

@@ -358,6 +358,32 @@ pub enum VaultError {
         expected: [u8; 32],
         got: [u8; 32],
     },
+
+    /// A manifest-listed block file is absent from `blocks/` (#350).
+    ///
+    /// Typed replacement for the anonymous `Io(NotFound)` the
+    /// fingerprint check used to produce — carries the failing block's
+    /// UUID (closes the missing-file half of the #88 debuggability
+    /// gap). NOT repairable by `repair_vault`: repair cannot invent
+    /// bytes. The likely cause is a torn cloud sync that delivered the
+    /// manifest before the block file; recovery is to retry after the
+    /// sync completes.
+    #[error("block {block_uuid:02x?} file missing from blocks/")]
+    BlockFileMissing { block_uuid: [u8; 16] },
+
+    /// `repair_vault` refused to adopt an on-disk block whose
+    /// fingerprint mismatches the manifest (#350).
+    ///
+    /// Adoption is gated on hybrid verify (Ed25519 ∧ ML-DSA-65) ∧
+    /// strict clock dominance ∧ header cross-checks ∧ recipient
+    /// resolution; `detail` names the failed gate. Repair is
+    /// all-or-nothing — when any block is rejected the manifest is not
+    /// written.
+    #[error("repair rejected for block {block_uuid:02x?}: {detail}")]
+    RepairRejected {
+        block_uuid: [u8; 16],
+        detail: String,
+    },
 }
 
 #[cfg(test)]
@@ -380,5 +406,32 @@ mod tests {
         assert!(s.contains("01"));
         assert!(s.contains("02"));
         assert!(s.contains("03"));
+    }
+
+    /// Pins the Display shape of `BlockFileMissing` (#350): the message
+    /// must carry the failing block's UUID so operators can identify
+    /// the missing file from a log line alone (#88).
+    #[test]
+    fn block_file_missing_display_is_stable() {
+        let err = VaultError::BlockFileMissing {
+            block_uuid: [0xAB; 16],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("file missing"), "got: {msg}");
+        assert!(msg.contains("ab"), "uuid hex must appear: {msg}");
+    }
+
+    /// Pins the Display shape of `RepairRejected` (#350): uuid + the
+    /// gate-failure detail must both surface.
+    #[test]
+    fn repair_rejected_display_is_stable() {
+        let err = VaultError::RepairRejected {
+            block_uuid: [0xCD; 16],
+            detail: "clock relation Concurrent".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("repair rejected"), "got: {msg}");
+        assert!(msg.contains("cd"), "uuid hex must appear: {msg}");
+        assert!(msg.contains("Concurrent"), "detail must appear: {msg}");
     }
 }
