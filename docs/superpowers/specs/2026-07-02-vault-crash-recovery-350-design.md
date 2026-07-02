@@ -129,13 +129,26 @@ Sibling of `open_vault`, same module. Flow:
         plaintext.
      2. Header `vault_uuid` / `block_uuid` cross-checks against the manifest and
         the filename UUID.
-     3. **Strict clock dominance**: the file header's `vector_clock` must
-        strictly dominate the entry's `vector_clock_summary`. Crash residue
-        dominates by construction (the interrupted save ticked the block clock).
-        Dominated (planted older-but-genuinely-signed copy — rollback), equal
-        (same clock, different bytes — forgery shape), or concurrent
-        (incomparable — torn multi-device state repair must not guess about) →
-        `RepairRejected`.
+     3. **Clock freshness (two-tier; amended 2026-07-02 after Task-6 review).**
+        `IncomingDominates` (file header `vector_clock` strictly dominates the
+        entry's `vector_clock_summary`) → adopt: this is the `save_block`
+        crash-residue shape (the interrupted save ticked the block clock).
+        `Equal` → adopt ONLY when the file's resolved recipient set is a
+        **strict subset** of the committed `entry.recipients`: re-keys
+        (share/revoke) deliberately do NOT tick the block clock, so crashed
+        re-keys land in the Equal class, where — because `rewrite_block_with_recipients`
+        re-encrypts the same plaintext — the only possible delta is the
+        recipient set, and a subset can only NARROW access (fail-closed; a
+        keyless attacker replaying retained owner-signed bytes can at worst
+        un-share, never re-grant). Everything else → `RepairRejected`:
+        dominated (rollback plant), Equal non-subset (includes the
+        crashed-**share** superset residue — a documented limitation until an
+        informed-consent adoption path ships with the FFI projection; the
+        rejection detail names the recipient delta), Equal same-set-different-bytes
+        (forgery shape), and concurrent. A `last_mod_ms`-based discriminator
+        was considered and REJECTED as unsound: it is caller wall-clock with
+        no monotonicity guard, and the Task-6 review demonstrated a concrete
+        revoked-recipient re-grant replay through it.
      4. Recipient-fingerprint → `contact_uuid` resolution: owner card first, then
         `contacts/*.card` with self-signature verification (extract
         `restore_block`'s inline resolution into a shared helper). Unresolved →
