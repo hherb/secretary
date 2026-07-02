@@ -55,7 +55,13 @@ impl DeviceSecretOutput {
     /// is responsible for zeroizing it after delivering it to the Secure
     /// Enclave / biometric release layer.
     fn take_secret<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.take_secret().map(|v| PyBytes::new(py, &v))
+        self.0.take_secret().map(|mut v| {
+            // PyBytes::new copies into Python-owned memory; zeroize our transient
+            // Rust copy so the device secret does not linger in freed heap (#360).
+            let b = PyBytes::new(py, &v);
+            v.zeroize();
+            b
+        })
     }
 
     /// Drop any still-resident inner secret now, zeroizing its

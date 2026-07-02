@@ -1,11 +1,12 @@
 //! Block-read entry point (B.4b) and the per-record / per-field handles.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyType};
+use pyo3::types::{PyBytes, PyString, PyType};
 use secretary_ffi_bridge::{
     BlockReadOutput as BridgeBlockReadOutput, FieldHandle as BridgeFieldHandle,
     Record as BridgeRecord,
 };
+use zeroize::Zeroize;
 
 use crate::errors::ffi_vault_error_to_pyerr;
 use crate::identity::UnlockedIdentity;
@@ -47,8 +48,14 @@ impl FieldHandle {
     /// underlying `SecretString` is zeroized on drop, but the `str`
     /// handed back to Python is a fresh caller-owned heap copy that
     /// outlives the bridge wipe.
-    fn expose_text(&self) -> Option<String> {
-        self.0.expose_text()
+    fn expose_text<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyString>> {
+        self.0.expose_text().map(|mut s| {
+            // PyString::new copies into Python-owned memory; zeroize our transient
+            // Rust String so the field secret does not linger in freed heap (#360).
+            let py_s = PyString::new(py, &s);
+            s.zeroize();
+            py_s
+        })
     }
     /// Pull the secret payload as `bytes`. Returns `None` if the field
     /// is text or has been wiped. Caller is responsible for clearing
@@ -57,7 +64,13 @@ impl FieldHandle {
     /// handed back to Python is a fresh caller-owned heap copy that
     /// outlives the bridge wipe.
     fn expose_bytes<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.expose_bytes().map(|v| PyBytes::new(py, &v))
+        self.0.expose_bytes().map(|mut v| {
+            // PyBytes::new copies into Python-owned memory; zeroize our transient
+            // Rust copy so the field secret does not linger in freed heap (#360).
+            let b = PyBytes::new(py, &v);
+            v.zeroize();
+            b
+        })
     }
     /// Drop the underlying secret now. Idempotent.
     fn wipe(&self) {
