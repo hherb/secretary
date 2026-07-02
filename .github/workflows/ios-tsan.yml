@@ -36,9 +36,9 @@ jobs:
     # known.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       # Builds the uniffi xcframework (compiles the Rust core for the iOS-sim
       # target) then runs the whole SecretaryKit suite under -enableThreadSanitizer.
       # run-ios-tsan.sh defaults to "iPhone 17" and falls back to any available
