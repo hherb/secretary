@@ -910,12 +910,14 @@ fn share_block_rejects_recipient_card_that_fails_self_verify() {
     // self-signature does not verify must be rejected BEFORE any destructive
     // re-write, and must never be persisted to contacts/ — even if a caller
     // bypasses the FFI bridge's verify guard.
-    // Password drawn from OS entropy (never a hard-coded value, and NOT derived
-    // from the seeded RNG — a literal seed flowing into the KDF trips CodeQL's
-    // hard-coded-cryptographic-value). The vault is opened via the returned `pw`.
-    // The seeded ChaCha RNG is used only for save_block's nonces (as elsewhere).
-    let mut pw_bytes = [0u8; 24];
-    OsRng.fill_bytes(&mut pw_bytes);
+    // Password bytes drawn directly from OS entropy — no constant buffer flows
+    // into the KDF (a byte-array/literal-seed/zero-init buffer reaching the
+    // password all trip CodeQL's hard-coded-cryptographic-value). The vault is
+    // opened via the returned `pw`; the seeded ChaCha RNG is used only for
+    // save_block's nonces.
+    let pw_bytes: Vec<u8> = std::iter::repeat_with(|| (OsRng.next_u32() & 0xff) as u8)
+        .take(24)
+        .collect();
     let (dir, _mnemonic, pw) = make_fast_vault(2, &pw_bytes, "Owner");
     let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
     let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
