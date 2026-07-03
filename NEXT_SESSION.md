@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-03-desktop-path-binding-353-shipped.md
+docs/handoffs/2026-07-04-repair-vault-ffi-374-shipped.md
