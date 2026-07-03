@@ -199,28 +199,32 @@ mod tests {
 
     #[test]
     fn create_allows_approved_subfolder_then_reaches_empty_check() {
-        // Approve the PARENT; the create target is a subfolder (containment).
-        // The parent temp dir is non-empty here (holds the subfolder path's
-        // ancestor is the parent itself), so we assert the gate passes by
-        // reaching a non-PathNotApproved outcome.
-        let temp = tempdir().unwrap();
-        // Make the approved parent non-empty so create hits VaultFolderNotEmpty
-        // (proving the gate passed) rather than doing slow crypto.
-        std::fs::write(temp.path().join("marker"), b"x").unwrap();
+        // Approve the PARENT; the create target is a SUBFOLDER (Containment).
+        // Only Containment (not Exact) will authorize the subfolder.
+        // The subfolder is non-empty so create hits VaultFolderNotEmpty
+        // (proving the gate passed without crypto) rather than PathNotApproved.
+        let parent = tempdir().unwrap();
+        let subfolder = parent.path().join("sub");
+        std::fs::create_dir(&subfolder).unwrap();
+        // Make the subfolder non-empty so the impl fails at the empty-check
+        // (proving the Containment gate passed without doing crypto).
+        std::fs::write(subfolder.join("marker"), b"x").unwrap();
+
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
         state
             .lock()
             .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(temp.path()).unwrap());
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(parent.path()).unwrap());
+
         let err = create_vault_impl(
             &state,
-            temp.path().to_str().unwrap(),
+            subfolder.to_str().unwrap(),
             "My Vault",
             &secretary_core::crypto::secret::SecretBytes::from(b"pw".to_vec()),
             0,
             &mut rand_core::OsRng,
         )
-        .expect_err("parent not empty");
+        .expect_err("subfolder not empty");
         assert!(matches!(err, AppError::VaultFolderNotEmpty { .. }), "got {err:?}");
     }
 }
