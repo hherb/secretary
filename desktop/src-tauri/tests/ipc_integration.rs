@@ -247,6 +247,13 @@ fn unlock_with_password_empty_folder_yields_vault_path_not_a_vault() {
 fn unlock_with_password_already_unlocked_returns_already_unlocked() {
     let (state, _device_dir) = unlocked_state();
     let golden_vault = golden_vault_path();
+    // The first (baseline) unlock consumed its VaultFolder approval (#353), so
+    // re-approve — as a fresh pick would — to reach the AlreadyUnlocked check
+    // rather than being turned away by the path gate first.
+    state.lock().unwrap().approve_path(
+        PathPurpose::VaultFolder,
+        canonicalize_for_auth(&golden_vault).unwrap(),
+    );
     let err = unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
@@ -257,6 +264,45 @@ fn unlock_with_password_already_unlocked_returns_already_unlocked() {
     assert!(matches!(err, AppError::AlreadyUnlocked), "got {err:?}");
     let v = to_json(&err);
     assert_eq!(v["code"], "already_unlocked");
+}
+
+/// #353: a successful unlock consumes the pre-unlock `VaultFolder` approval so
+/// a post-unlock compromised webview can't reuse the last-picked folder for
+/// `create_vault`/`probe_create_target` without a fresh pick. The gate that
+/// authorized the unlock passes first; the slot is cleared only afterwards.
+#[test]
+fn successful_unlock_clears_the_vault_folder_approval() {
+    use secretary_desktop::path_auth::MatchMode;
+
+    let (state, _device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state.lock().unwrap().approve_path(
+        PathPurpose::VaultFolder,
+        canonicalize_for_auth(&golden_vault).unwrap(),
+    );
+    // Pre-unlock: the pick is approved (this is what lets the unlock through).
+    assert!(state.lock().unwrap().is_path_approved(
+        PathPurpose::VaultFolder,
+        &golden_vault,
+        MatchMode::Exact
+    ));
+
+    unlock::unlock_with_password_impl(
+        &state,
+        golden_vault.to_str().expect("utf8 path"),
+        GOLDEN_VAULT_PASSWORD.as_bytes(),
+    )
+    .expect("unlock golden vault");
+
+    // Post-unlock: the spent approval is gone — a webview must re-pick.
+    assert!(
+        !state.lock().unwrap().is_path_approved(
+            PathPurpose::VaultFolder,
+            &golden_vault,
+            MatchMode::Exact
+        ),
+        "the VaultFolder approval must be cleared by a successful unlock"
+    );
 }
 
 // ============================================================================
@@ -775,6 +821,43 @@ mod create_path {
 
         let manifest = unlock::unlock_with_password_impl(&state, path, &pw)
             .expect("freshly-created vault must open with the same password");
+        assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
+    }
+
+    /// #353: creating into a typed SUBFOLDER of the picked folder (the wizard's
+    /// non-empty-folder offer) must still let the auto-navigated unlock through.
+    /// The picker only ever approves the PARENT (Containment authorizes the
+    /// subfolder create); `create_vault_impl` then re-approves the created
+    /// subfolder so the follow-on `Exact` unlock of that exact path succeeds.
+    /// Without that re-approval the unlock would fail `PathNotApproved`.
+    #[test]
+    fn created_subfolder_vault_reopens_via_exact_unlock() {
+        let parent = tempfile::tempdir().expect("parent tempdir");
+        let subfolder = parent.path().join("my-vault");
+        let sub_path = subfolder.to_str().expect("utf8 path");
+        let pw = random_password();
+
+        let (state, _device_dir) = fresh_state();
+        // Only the PARENT is approved (mirrors `pick_vault_folder`); the
+        // subfolder is never picked — the wizard constructs it.
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(parent.path()).unwrap(),
+        );
+        create::create_vault_impl(
+            &state,
+            sub_path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create into subfolder (Containment gate)");
+
+        // Exact-match unlock of the SUBFOLDER path — only passes because
+        // create_vault_impl re-approved the created folder.
+        let manifest = unlock::unlock_with_password_impl(&state, sub_path, &pw)
+            .expect("subfolder vault must open via the Exact unlock gate");
         assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
     }
 

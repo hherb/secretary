@@ -25,7 +25,7 @@ use crate::auto_lock::now_ms;
 use crate::commands::shared::lock_session;
 use crate::dtos::{CreateTargetProbeDto, CreateVaultDto};
 use crate::errors::AppError;
-use crate::path_auth::{MatchMode, PathPurpose};
+use crate::path_auth::{canonicalize_for_auth, MatchMode, PathPurpose};
 use crate::secret_arg::Password;
 use crate::session::VaultSession;
 
@@ -108,6 +108,19 @@ pub fn create_vault_impl(
             detail: format!("{e}"),
         }
     })?;
+
+    // #353: bind the just-created folder as the approved VaultFolder so the
+    // follow-on unlock passes its `Exact`-match gate. The create wizard
+    // auto-navigates to Unlock pre-filled with THIS path; when the user created
+    // inside a typed *subfolder* of the picked folder, the slot still held the
+    // parent, so an `Exact` unlock of the subfolder would fail `PathNotApproved`.
+    // Re-approving the created folder also NARROWS the slot from the picked
+    // parent to the actual vault (least-privilege) until the session locks.
+    // `folder` now exists (create succeeded) and the top-of-fn Containment gate
+    // already proved it canonicalizes, so `Some` is guaranteed here.
+    if let Some(canonical) = canonicalize_for_auth(folder) {
+        lock_session(state)?.approve_path(PathPurpose::VaultFolder, canonical);
+    }
 
     Ok(CreateVaultDto {
         mnemonic: mnemonic.phrase().to_string(),

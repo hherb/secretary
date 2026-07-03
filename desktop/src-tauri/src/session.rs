@@ -217,6 +217,15 @@ impl VaultSession {
         // Reset the idle tracker to "now" so an old (pre-unlock) timestamp
         // doesn't trigger an immediate auto-lock on the first timer tick.
         self.idle = IdleTracker::new(now_ms());
+        // #353: a successful unlock consumes the pre-unlock dialog approvals.
+        // The `VaultFolder` slot that authorized this unlock is spent — no
+        // legitimate unlocked-session flow needs it (create/probe run from the
+        // locked wizard with a fresh pick; import/export pick their own slots
+        // post-unlock). Clearing here (not just on `lock()`) prevents a webview
+        // compromised *after* unlock from reusing the last-picked folder to
+        // create in, or enumerate subfolders of, that subtree without a fresh
+        // user pick. Runs after the caller's approval gate has already passed.
+        self.approvals.clear();
         Ok(())
     }
 
