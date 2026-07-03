@@ -74,11 +74,11 @@ use errors::{
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
     VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
-    VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
-    VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
-    VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultNeedsRepair, VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent,
+    VaultRecordNotFound, VaultRepairRejected, VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete,
+    VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt,
+    VaultSyncStateVaultMismatch, VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt,
+    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
@@ -342,6 +342,13 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync_status, m)?)?;
     m.add_function(wrap_pyfunction!(sync_vault, m)?)?;
     m.add_function(wrap_pyfunction!(sync_commit_decisions, m)?)?;
+
+    // #374 repair_vault error surface — 2 typed exception classes mirroring
+    // the bridge's new FfiVaultError variants (crash-residue "offer Repair"
+    // signal and the repair-refused outcome). No pyfunction yet; registered
+    // ahead of the repair_vault projection landing in a later #374 slice.
+    m.add("VaultNeedsRepair", py.get_type::<VaultNeedsRepair>())?;
+    m.add("VaultRepairRejected", py.get_type::<VaultRepairRejected>())?;
 
     Ok(())
 }

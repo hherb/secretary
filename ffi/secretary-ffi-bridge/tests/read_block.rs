@@ -176,23 +176,28 @@ fn copy_golden_to_tempdir() -> tempfile::TempDir {
 }
 
 #[test]
-fn open_vault_corrupt_block_file_returns_corrupt_vault() {
-    // C.1.1b D6: `open_vault` re-hashes every on-disk block file at
-    // open time and surfaces a typed `BlockFingerprintMismatch` (folded
-    // to `FfiVaultError::CorruptVault` by the bridge mapper) when the
-    // bytes don't match the manifest's `BlockEntry.fingerprint`. Prior
-    // to D6 the bridge tolerated the mismatch at open time and only
-    // caught it on `read_block`; flipping the first byte of the block
-    // envelope is now visible to `open_vault` itself.
+fn open_vault_corrupt_block_file_returns_vault_needs_repair() {
+    // C.1.1b D6 / #374: `open_vault` re-hashes every on-disk block file at
+    // open time and surfaces a typed `BlockFingerprintMismatch`. As of
+    // #374 the bridge promotes this OUT of the `CorruptVault` fold into
+    // the dedicated, actionable `FfiVaultError::VaultNeedsRepair` variant
+    // — this is crash residue `repair_vault` may be able to adopt, not
+    // unconditional data corruption. Prior to D6 the bridge tolerated the
+    // mismatch at open time and only caught it on `read_block`; flipping
+    // the first byte of the block envelope is now visible to `open_vault`
+    // itself.
     let tmp = copy_golden_to_tempdir();
     let block_path = tmp.path().join("blocks").join(VAULT_001_BLOCK_FILENAME);
     let mut bytes = fs::read(&block_path).unwrap();
     bytes[0] ^= 0xff;
     fs::write(&block_path, &bytes).unwrap();
     let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
-    assert!(
-        matches!(err, FfiVaultError::CorruptVault { .. }),
-        "got {err:?}",
+    let FfiVaultError::VaultNeedsRepair { block_uuid_hex } = err else {
+        panic!("expected VaultNeedsRepair, got {err:?}");
+    };
+    assert_eq!(
+        block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00",
+        "block_uuid_hex must be the lowercase-hyphenated block UUID",
     );
 }
 

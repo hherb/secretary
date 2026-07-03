@@ -210,6 +210,22 @@ pub enum AppError {
     /// conflated anti-oracle (parallel to `WrongPassword`).
     #[error("Wrong device secret")]
     WrongDeviceSecret,
+
+    /// The opened vault has crash residue repair may adopt. Frontend offers "Repair now?".
+    #[error("This vault has crash residue that may be repairable")]
+    VaultNeedsRepair { block_uuid_hex: String },
+
+    /// repair_vault refused; `detail` names the reason (recipient delta for
+    /// equal-clock). Unlike most `detail` fields in this enum, this one is
+    /// user-facing (not developer-only): the bridge's `RepairRejected` doc
+    /// contract is "the app should surface `detail`; there is no automatic
+    /// fix" — so it crosses the IPC seam rather than being
+    /// `#[serde(skip_serializing)]`.
+    #[error("Repair was refused for a block")]
+    RepairRejected {
+        block_uuid_hex: String,
+        detail: String,
+    },
 }
 
 // All three variants are part of the IPC wire-format schema; renaming to
@@ -390,6 +406,24 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // descriptive detail, mirroring the `FolderInvalid` → `Io` precedent.
         FfiVaultError::VaultFolderNotEmpty => AppError::Io {
             detail: "vault folder is not empty".to_string(),
+        },
+
+        // #374: crash residue `repair_vault` may be able to adopt. Typed
+        // variant so the frontend can offer "Repair now?" instead of a
+        // generic corruption message.
+        FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
+            AppError::VaultNeedsRepair { block_uuid_hex }
+        }
+
+        // #374: repair_vault was attempted and refused to adopt a block
+        // (fail-closed). `detail` names the reason and is user-facing —
+        // there is no automatic fix.
+        FfiVaultError::RepairRejected {
+            block_uuid_hex,
+            detail,
+        } => AppError::RepairRejected {
+            block_uuid_hex,
+            detail,
         },
     }
 }
@@ -722,5 +756,56 @@ mod tests {
         assert!(v.get("expected_fingerprint_hex").is_none());
         assert!(v.get("got_fingerprint_hex").is_none());
         assert_eq!(v.as_object().expect("object").len(), 1, "code only");
+    }
+
+    #[test]
+    fn vault_needs_repair_carries_block_uuid_hex() {
+        let v = round_trip(&AppError::VaultNeedsRepair {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        });
+        assert_eq!(v["code"], "vault_needs_repair");
+        assert_eq!(v["block_uuid_hex"], "11223344-5566-7788-99aa-bbccddeeff00");
+    }
+
+    #[test]
+    fn repair_rejected_carries_block_uuid_hex_and_detail() {
+        // Unlike most `detail` fields in this enum, RepairRejected's detail
+        // is user-facing (not skip_serializing) — the bridge contract is
+        // "the app should surface detail". Pin that it crosses the seam.
+        let v = round_trip(&AppError::RepairRejected {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+            detail: "clock relation Concurrent".to_string(),
+        });
+        assert_eq!(v["code"], "repair_rejected");
+        assert_eq!(v["block_uuid_hex"], "11223344-5566-7788-99aa-bbccddeeff00");
+        assert_eq!(v["detail"], "clock relation Concurrent");
+    }
+
+    #[test]
+    fn map_ffi_error_routes_vault_needs_repair() {
+        let mapped = map_ffi_error(FfiVaultError::VaultNeedsRepair {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        });
+        let AppError::VaultNeedsRepair { block_uuid_hex } = mapped else {
+            panic!("expected VaultNeedsRepair");
+        };
+        assert_eq!(block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00");
+    }
+
+    #[test]
+    fn map_ffi_error_routes_repair_rejected() {
+        let mapped = map_ffi_error(FfiVaultError::RepairRejected {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+            detail: "clock relation Concurrent".to_string(),
+        });
+        let AppError::RepairRejected {
+            block_uuid_hex,
+            detail,
+        } = mapped
+        else {
+            panic!("expected RepairRejected");
+        };
+        assert_eq!(block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00");
+        assert_eq!(detail, "clock relation Concurrent");
     }
 }
