@@ -1,70 +1,39 @@
 <script lang="ts">
-  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { invoke } from '@tauri-apps/api/core';
 
-  // A single file filter (name + allowed extensions) as accepted by the
-  // Tauri dialog plugin. Mirrors `DialogFilter` without importing the
-  // plugin's type so this stays a thin, stable contract.
-  type PickerFilter = { name: string; extensions: string[] };
-
-  // `directory`, `filters`, `title`, and `label` are optional so existing
-  // folder-mode call sites (vault create / unlock) keep their behaviour:
-  // `directory` defaults to true (folder selection), `filters` is unused in
-  // folder mode, the dialog title falls back to the folder prompt, and the
-  // button keeps its "Choose…" label. File-mode callers (contact-card import)
-  // pass `directory={false}` plus `filters`/`title`/`label`.
+  // #353: the picker no longer opens a dialog in the webview. It invokes a
+  // backend `pick_*` command, which opens the native dialog, records the
+  // chosen path in Rust state, and returns it for display. `command` selects
+  // which purpose to pick for.
   type Props = {
     value: string;
     onSelect: (path: string) => void;
+    command: 'pick_vault_folder' | 'pick_contact_card' | 'pick_export_dir';
     disabled?: boolean;
-    directory?: boolean;
-    filters?: PickerFilter[];
-    title?: string;
     label?: string;
+    placeholder?: string;
   };
-
-  const DEFAULT_FOLDER_TITLE = 'Choose vault folder';
 
   let {
     value,
     onSelect,
+    command,
     disabled = false,
-    directory = true,
-    filters,
-    title,
-    label = 'Choose…'
+    label = 'Choose…',
+    placeholder = 'No path selected'
   }: Props = $props();
 
   async function pick(): Promise<void> {
-    // Disabled buttons can't be clicked via the UI, but a stray
-    // programmatic dispatch shouldn't leak a stray dialog.
     if (disabled) return;
-    const selected = await openDialog({
-      directory,
-      multiple: false,
-      title: title ?? (directory ? DEFAULT_FOLDER_TITLE : undefined),
-      // `filters` only applies to file selection; passing it in folder mode
-      // is harmless (the plugin ignores it) but we keep it undefined there.
-      filters: directory ? undefined : filters
-    });
-    // `multiple: false` constrains the return to `string | null`, but
-    // we defend against a future refactor that flips `multiple: true`
-    // by ignoring array returns rather than passing them through.
+    const selected = await invoke<string | null>(command);
     if (typeof selected === 'string') {
       onSelect(selected);
     }
   }
 </script>
 
-<!-- Styles live in `src/theme.css` as `.path-picker { … }`; see the note
-     at the bottom of theme.css for why component-scoped `<style>` blocks
-     are avoided in this project. -->
+<!-- Styles live in `src/theme.css` as `.path-picker { … }`. -->
 <div class="path-picker">
-  <input
-    type="text"
-    readonly
-    value={value || ''}
-    placeholder={directory ? 'No folder selected' : 'No file selected'}
-    {disabled}
-  />
+  <input type="text" readonly value={value || ''} {placeholder} {disabled} />
   <button type="button" onclick={pick} {disabled}>{label}</button>
 </div>

@@ -61,7 +61,7 @@
   <h2 class="wizard-step__title">Choose a folder</h2>
   <p class="wizard-step__hint">Pick an empty folder, or a folder to create your vault inside.</p>
 
-  <PathPicker value={picked} onSelect={onPick} disabled={probing} />
+  <PathPicker value={picked} command="pick_vault_folder" onSelect={onPick} disabled={probing} />
 
   {#if needsSubfolder}
     <p class="wizard-step__warn">{picked} already contains files.</p>

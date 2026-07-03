@@ -155,12 +155,11 @@
   <div class="share-dialog__import">
     <PathPicker
       value=""
+      command="pick_contact_card"
       onSelect={onImport}
       disabled={busy}
-      directory={false}
-      filters={[{ name: 'Contact card', extensions: ['card'] }]}
-      title="Import a contact card"
       label="Import a contact…"
+      placeholder="No file selected"
     />
   </div>
 

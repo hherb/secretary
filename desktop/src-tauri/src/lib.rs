@@ -16,6 +16,7 @@ pub mod commands;
 pub mod constants;
 pub mod dtos;
 pub mod errors;
+pub mod path_auth;
 pub mod reveal;
 pub mod secret_arg;
 pub mod session;

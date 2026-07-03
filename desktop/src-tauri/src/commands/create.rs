@@ -12,27 +12,34 @@
 //! WebView raw filesystem-read capability.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use rand_core::{CryptoRng, OsRng, RngCore};
+use tauri::State;
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::vault;
 
 use crate::auto_lock::now_ms;
+use crate::commands::shared::lock_session;
 use crate::dtos::{CreateTargetProbeDto, CreateVaultDto};
 use crate::errors::AppError;
+use crate::path_auth::{canonicalize_for_auth, MatchMode, PathPurpose};
 use crate::secret_arg::Password;
+use crate::session::VaultSession;
 
 /// Tauri-side entry point for vault creation. Thin shell; logic in
 /// [`create_vault_impl`]. Uses `OsRng` + the wall-clock `now_ms()`.
 #[tauri::command]
 pub async fn create_vault(
+    state: State<'_, Mutex<VaultSession>>,
     folder_path: String,
     display_name: String,
     password: Password,
 ) -> Result<CreateVaultDto, AppError> {
     create_vault_impl(
+        state.inner(),
         &folder_path,
         &display_name,
         password.as_secret_bytes(),
@@ -53,6 +60,7 @@ pub async fn create_vault(
 ///    at the seam).
 /// 4. Copy the phrase into the DTO; the `Mnemonic` zeroizes on drop.
 pub fn create_vault_impl(
+    state: &Mutex<VaultSession>,
     folder_path: &str,
     display_name: &str,
     password: &SecretBytes,
@@ -60,6 +68,15 @@ pub fn create_vault_impl(
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<CreateVaultDto, AppError> {
     let folder = Path::new(folder_path);
+    // #353: the target must be the approved vault folder or a subfolder of it.
+    {
+        let session = lock_session(state)?;
+        if !session.is_path_approved(PathPurpose::VaultFolder, folder, MatchMode::Containment) {
+            return Err(AppError::PathNotApproved {
+                path: folder_path.to_string(),
+            });
+        }
+    }
 
     std::fs::create_dir_all(folder).map_err(|e| AppError::Io {
         detail: format!("failed to create vault folder {folder_path}: {e}"),
@@ -92,6 +109,19 @@ pub fn create_vault_impl(
         }
     })?;
 
+    // #353: bind the just-created folder as the approved VaultFolder so the
+    // follow-on unlock passes its `Exact`-match gate. The create wizard
+    // auto-navigates to Unlock pre-filled with THIS path; when the user created
+    // inside a typed *subfolder* of the picked folder, the slot still held the
+    // parent, so an `Exact` unlock of the subfolder would fail `PathNotApproved`.
+    // Re-approving the created folder also NARROWS the slot from the picked
+    // parent to the actual vault (least-privilege) until the session locks.
+    // `folder` now exists (create succeeded) and the top-of-fn Containment gate
+    // already proved it canonicalizes, so `Some` is guaranteed here.
+    if let Some(canonical) = canonicalize_for_auth(folder) {
+        lock_session(state)?.approve_path(PathPurpose::VaultFolder, canonical);
+    }
+
     Ok(CreateVaultDto {
         mnemonic: mnemonic.phrase().to_string(),
     })
@@ -100,20 +130,126 @@ pub fn create_vault_impl(
 
 /// Tauri-side entry point for the read-only create-target probe.
 #[tauri::command]
-pub async fn probe_create_target(folder_path: String) -> Result<CreateTargetProbeDto, AppError> {
-    Ok(probe_create_target_impl(&folder_path))
+pub async fn probe_create_target(
+    state: State<'_, Mutex<VaultSession>>,
+    folder_path: String,
+) -> Result<CreateTargetProbeDto, AppError> {
+    probe_create_target_impl(state.inner(), &folder_path)
 }
 
 /// Pure probe: does the path exist, and (if a directory) is it empty? A
 /// non-existent path reports `exists:false, is_empty:false`; the wizard treats
 /// "will be created fresh" separately. Read-only; no secrets.
-pub fn probe_create_target_impl(folder_path: &str) -> CreateTargetProbeDto {
+pub fn probe_create_target_impl(
+    state: &Mutex<VaultSession>,
+    folder_path: &str,
+) -> Result<CreateTargetProbeDto, AppError> {
     let folder = Path::new(folder_path);
+    // #353: only probe a path the user picked (or a subfolder of it).
+    {
+        let session = lock_session(state)?;
+        if !session.is_path_approved(PathPurpose::VaultFolder, folder, MatchMode::Containment) {
+            return Err(AppError::PathNotApproved {
+                path: folder_path.to_string(),
+            });
+        }
+    }
     let exists = folder.exists();
     let is_empty = exists
         && folder.is_dir()
         && std::fs::read_dir(folder)
             .map(|mut it| it.next().is_none())
             .unwrap_or(false);
-    CreateTargetProbeDto { exists, is_empty }
+    Ok(CreateTargetProbeDto { exists, is_empty })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::path_auth::{canonicalize_for_auth, PathPurpose};
+    use crate::session::VaultSession;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    #[test]
+    fn probe_rejects_unapproved_path() {
+        let temp = tempdir().unwrap();
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        let err = probe_create_target_impl(&state, temp.path().to_str().unwrap())
+            .expect_err("unapproved");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn probe_allows_approved_path() {
+        let temp = tempdir().unwrap();
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(temp.path()).unwrap(),
+        );
+        let dto = probe_create_target_impl(&state, temp.path().to_str().unwrap()).unwrap();
+        assert!(dto.exists && dto.is_empty);
+    }
+
+    #[test]
+    fn create_rejects_unapproved_path_and_creates_nothing() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("new-vault");
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        let err = create_vault_impl(
+            &state,
+            target.to_str().unwrap(),
+            "My Vault",
+            &secretary_core::crypto::secret::SecretBytes::from(b"pw".to_vec()),
+            0,
+            &mut rand_core::OsRng,
+        )
+        .expect_err("unapproved");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "must not create the folder for an unapproved path"
+        );
+    }
+
+    #[test]
+    fn create_allows_approved_subfolder_then_reaches_empty_check() {
+        // Approve the PARENT; the create target is a SUBFOLDER (Containment).
+        // Only Containment (not Exact) will authorize the subfolder.
+        // The subfolder is non-empty so create hits VaultFolderNotEmpty
+        // (proving the gate passed without crypto) rather than PathNotApproved.
+        let parent = tempdir().unwrap();
+        let subfolder = parent.path().join("sub");
+        std::fs::create_dir(&subfolder).unwrap();
+        // Make the subfolder non-empty so the impl fails at the empty-check
+        // (proving the Containment gate passed without doing crypto).
+        std::fs::write(subfolder.join("marker"), b"x").unwrap();
+
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(parent.path()).unwrap(),
+        );
+
+        let err = create_vault_impl(
+            &state,
+            subfolder.to_str().unwrap(),
+            "My Vault",
+            &secretary_core::crypto::secret::SecretBytes::from(b"pw".to_vec()),
+            0,
+            &mut rand_core::OsRng,
+        )
+        .expect_err("subfolder not empty");
+        assert!(
+            matches!(err, AppError::VaultFolderNotEmpty { .. }),
+            "got {err:?}"
+        );
+    }
 }

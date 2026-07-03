@@ -19,6 +19,7 @@ describe('userMessageFor', () => {
   const variants: AppError[] = [
     { code: 'vault_path_not_found', path: '/x' },
     { code: 'vault_path_not_a_vault', path: '/x' },
+    { code: 'path_not_approved', path: '/x' },
     { code: 'vault_path_locked', path: '/x' },
     { code: 'wrong_password' },
     { code: 'kdf_too_weak', current_memory_kib: 32_768, min_memory_kib: 65_536 },
@@ -239,6 +240,7 @@ describe('error code allowlists', () => {
     const sweepCodes: AppError['code'][] = [
       'vault_path_not_found',
       'vault_path_not_a_vault',
+      'path_not_approved',
       'vault_path_locked',
       'wrong_password',
       'kdf_too_weak',

@@ -8,6 +8,7 @@
 //! state + args and delegates to a testable `*_impl` that locks the session and
 //! runs the bridge call inside [`VaultSession::with_unlocked`].
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use tauri::State;
@@ -25,6 +26,7 @@ use crate::dtos::{
     BlockSummaryDto, ContactSummaryDto, ExportedCardDto, ListContactsDto, RecipientDto,
 };
 use crate::errors::{map_ffi_error, AppError};
+use crate::path_auth::{MatchMode, PathPurpose};
 use crate::session::VaultSession;
 
 #[tauri::command]
@@ -57,6 +59,19 @@ pub fn import_contact_impl(
     state: &Mutex<VaultSession>,
     card_path: &str,
 ) -> Result<ContactSummaryDto, AppError> {
+    // #353: the file must be one the user picked via pick_contact_card.
+    {
+        let session = lock_session(state)?;
+        if !session.is_path_approved(
+            PathPurpose::ContactCard,
+            Path::new(card_path),
+            MatchMode::Exact,
+        ) {
+            return Err(AppError::PathNotApproved {
+                path: card_path.to_string(),
+            });
+        }
+    }
     let bytes = std::fs::read(card_path).map_err(|e| AppError::Io {
         detail: format!("read contact card file {card_path:?}: {e}"),
     })?;
@@ -146,6 +161,19 @@ pub fn export_contact_card_impl(
     state: &Mutex<VaultSession>,
     dest_dir: &str,
 ) -> Result<ExportedCardDto, AppError> {
+    // #353: the destination must be one the user picked via pick_export_dir.
+    {
+        let session = lock_session(state)?;
+        if !session.is_path_approved(
+            PathPurpose::ExportDir,
+            Path::new(dest_dir),
+            MatchMode::Exact,
+        ) {
+            return Err(AppError::PathNotApproved {
+                path: dest_dir.to_string(),
+            });
+        }
+    }
     // Collect the (public) card bytes under the lock, then release it before
     // the external write — mirroring import_contact_impl, which keeps host
     // filesystem I/O outside the session lock so a slow destination can't
@@ -262,5 +290,45 @@ mod tests {
         let uuid_hex = "00112233445566778899aabbccddeeff";
         let err = list_contact_blocks_impl(&state, uuid_hex).expect_err("locked");
         assert!(matches!(err, AppError::NotUnlocked));
+    }
+
+    #[test]
+    fn import_rejects_unapproved_path_before_read() {
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        // A path that does not exist: if the gate were absent, the fs::read
+        // would fail with Io; with the gate it fails with PathNotApproved.
+        let err = import_contact_impl(&state, "/no/such/card.card").expect_err("unapproved");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn import_approved_path_passes_gate_then_hits_locked_session() {
+        use crate::path_auth::{canonicalize_for_auth, PathPurpose};
+        let dir = tempfile::tempdir().unwrap();
+        let card = dir.path().join("c.card");
+        std::fs::write(&card, b"bytes").unwrap();
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        state.lock().unwrap().approve_path(
+            PathPurpose::ContactCard,
+            canonicalize_for_auth(&card).unwrap(),
+        );
+        // Gate passes, read succeeds, then the locked session rejects.
+        let err = import_contact_impl(&state, card.to_str().unwrap()).expect_err("locked");
+        assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+    }
+
+    #[test]
+    fn export_rejects_unapproved_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        let err =
+            export_contact_card_impl(&state, dir.path().to_str().unwrap()).expect_err("unapproved");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
     }
 }

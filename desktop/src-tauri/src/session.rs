@@ -22,6 +22,7 @@ use secretary_ffi_bridge::{OpenVaultManifest, UnlockedIdentity};
 
 use crate::auto_lock::{now_ms, IdleTracker};
 use crate::errors::{AppError, AppWarning};
+use crate::path_auth::{MatchMode, PathApprovals, PathPurpose};
 use crate::settings::{self, Settings};
 
 /// The complete unlocked-state bundle. `Drop` wipes both bridge handles in
@@ -79,6 +80,10 @@ pub struct VaultSession {
     /// than polluting `~/Library/Application Support/`. Production callers
     /// pass `dirs::data_dir().expect("platform data_dir")` at app startup.
     device_data_dir: PathBuf,
+    /// Paths approved via a backend `pick_*` dialog (#353). Independent of
+    /// `inner` so it is reachable while locked (create/probe/unlock and their
+    /// pickers all run locked). Cleared on `lock()`.
+    approvals: PathApprovals,
 }
 
 impl VaultSession {
@@ -91,6 +96,7 @@ impl VaultSession {
             inner: None,
             idle: IdleTracker::new(now_ms()),
             device_data_dir,
+            approvals: PathApprovals::default(),
         }
     }
 
@@ -145,6 +151,22 @@ impl VaultSession {
         }
     }
 
+    /// Record a dialog-approved path for `purpose` (#353). `canonical` must be
+    /// `path_auth::canonicalize_for_auth` output.
+    pub fn approve_path(&mut self, purpose: PathPurpose, canonical: std::path::PathBuf) {
+        self.approvals.approve(purpose, canonical);
+    }
+
+    /// True iff `requested` is authorized for `purpose` under `mode` (#353).
+    pub fn is_path_approved(
+        &self,
+        purpose: PathPurpose,
+        requested: &std::path::Path,
+        mode: MatchMode,
+    ) -> bool {
+        self.approvals.is_authorized(purpose, requested, mode)
+    }
+
     /// Attempt to unlock with a password. On success, populates `inner` with
     /// the bridge handles + the per-vault device UUID + the loaded settings.
     /// On failure, leaves the session locked and returns the typed error.
@@ -195,6 +217,15 @@ impl VaultSession {
         // Reset the idle tracker to "now" so an old (pre-unlock) timestamp
         // doesn't trigger an immediate auto-lock on the first timer tick.
         self.idle = IdleTracker::new(now_ms());
+        // #353: a successful unlock consumes the pre-unlock dialog approvals.
+        // The `VaultFolder` slot that authorized this unlock is spent — no
+        // legitimate unlocked-session flow needs it (create/probe run from the
+        // locked wizard with a fresh pick; import/export pick their own slots
+        // post-unlock). Clearing here (not just on `lock()`) prevents a webview
+        // compromised *after* unlock from reusing the last-picked folder to
+        // create in, or enumerate subfolders of, that subtree without a fresh
+        // user pick. Runs after the caller's approval gate has already passed.
+        self.approvals.clear();
         Ok(())
     }
 
@@ -203,6 +234,7 @@ impl VaultSession {
     /// already-locked session is a no-op.
     pub fn lock(&mut self) {
         self.inner = None;
+        self.approvals.clear();
     }
 
     /// Persist new settings to the vault. Validates bounds via
@@ -258,5 +290,25 @@ impl VaultSession {
     #[doc(hidden)]
     pub fn force_expire_idle_tracker_for_test(&mut self) {
         self.idle.last_activity_ms = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::path_auth::{canonicalize_for_auth, MatchMode, PathPurpose};
+    use tempfile::tempdir;
+
+    #[test]
+    fn approved_path_authorizes_then_lock_clears_it() {
+        let dir = tempdir().unwrap();
+        let mut session = VaultSession::new(std::env::temp_dir());
+        session.approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(dir.path()).unwrap(),
+        );
+        assert!(session.is_path_approved(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
+        session.lock();
+        assert!(!session.is_path_approved(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
     }
 }

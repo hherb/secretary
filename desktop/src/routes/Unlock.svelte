@@ -119,6 +119,7 @@
         <span class="unlock__label">Vault folder</span>
         <PathPicker
           value={folderPath}
+          command="pick_vault_folder"
           onSelect={(p) => (folderPath = p)}
           disabled={submitting}
         />

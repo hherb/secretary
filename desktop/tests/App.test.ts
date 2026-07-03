@@ -52,7 +52,7 @@ const {
   listenMock,
   capturedHandlers,
   unlistenMock,
-  openDialogMock,
+  invokeMock,
   startActivityTrackingMock,
   stopActivityTrackingMock
 } = vi.hoisted(() => {
@@ -61,7 +61,7 @@ const {
     listenMock: vi.fn(),
     capturedHandlers: handlers,
     unlistenMock: vi.fn(),
-    openDialogMock: vi.fn(),
+    invokeMock: vi.fn(),
     // `startActivityTracking()` returns a cleanup fn — capture both so
     // tests can assert lifecycle (call counts on each).
     startActivityTrackingMock: vi.fn(),
@@ -75,7 +75,9 @@ vi.mock('@tauri-apps/api/event', () => ({
     return Promise.resolve(unlistenMock);
   }
 }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openDialogMock }));
+// App.svelte's Unlock route renders PathPicker, which invokes backend
+// pick_* commands directly via `@tauri-apps/api/core` (#353).
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 // Mock `lib/auto_lock` so App's $effect-driven start/stop lifecycle can
 // be asserted without installing real document-level listeners. The
 // returned cleanup fn is the spy the test inspects to confirm App

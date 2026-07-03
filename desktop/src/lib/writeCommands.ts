@@ -68,6 +68,27 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     wrapper: 'syncCommitDecisions',
     reason: 'takes the vault password directly — re-auth is intrinsic',
   },
+  pick_vault_folder: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'pickVaultFolder',
+    reason:
+      'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); performs no vault mutation',
+  },
+  pick_contact_card: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'pickContactCard',
+    reason:
+      'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); the gated import_contact call consumes it, not the picker',
+  },
+  pick_export_dir: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'pickExportDir',
+    reason:
+      'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); performs no vault mutation',
+  },
 
   // --- session / auth ---
   unlock_with_password: { kind: 'session' },

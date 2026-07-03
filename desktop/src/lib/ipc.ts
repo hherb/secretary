@@ -172,6 +172,18 @@ export async function probeCreateTarget(folderPath: string): Promise<CreateTarge
   return call<CreateTargetProbeDto>('probe_create_target', { folderPath });
 }
 
+export async function pickVaultFolder(): Promise<string | null> {
+  return call<string | null>('pick_vault_folder', {});
+}
+
+export async function pickContactCard(): Promise<string | null> {
+  return call<string | null>('pick_contact_card', {});
+}
+
+export async function pickExportDir(): Promise<string | null> {
+  return call<string | null>('pick_export_dir', {});
+}
+
 export async function unlockWithPassword(
   folderPath: string,
   password: string

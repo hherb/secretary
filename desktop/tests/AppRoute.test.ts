@@ -10,8 +10,9 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {})
 }));
 
-// App.svelte uses PathPicker which uses the dialog plugin.
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+// App.svelte uses PathPicker, which invokes backend pick_* commands
+// directly via `@tauri-apps/api/core` (#353).
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 // App.svelte uses auto_lock for activity tracking.
 vi.mock('../src/lib/auto_lock', () => ({

@@ -12,19 +12,20 @@ import {
   resetReauthGuard
 } from '../src/lib/writeGuard';
 
-const { invokeMock, openMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  openMock: vi.fn()
+// PathPicker now invokes `pick_export_dir` directly via `@tauri-apps/api/core`
+// (#353) instead of the retired `@tauri-apps/plugin-dialog`, so the same
+// `invokeMock` used for `list_contacts` / `export_contact_card` etc. also
+// answers the picker call — ordering is FIFO across all invoke() calls.
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn()
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openMock }));
 
 import ContactsPane from '../src/components/contacts/ContactsPane.svelte';
 
 describe('ContactsPane', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    openMock.mockReset();
   });
 
   it('lists contacts with their shared-block counts', async () => {
@@ -155,8 +156,8 @@ describe('ContactsPane', () => {
     const { getByRole } = render(ContactsPane);
     await waitFor(() => invokeMock.mock.calls.length >= 1);
 
-    // Simulate the PathPicker folder dialog returning a path
-    openMock.mockResolvedValueOnce('/tmp/exports');
+    // Simulate the backend pick_export_dir command returning a path
+    invokeMock.mockResolvedValueOnce('/tmp/exports');
     // Real exports are always `<uuid>.card` (owner_card_export); keep the
     // fixture in that shape so it doesn't imply a vCard/.vcf path.
     invokeMock.mockResolvedValueOnce({
@@ -176,7 +177,6 @@ describe('ContactsPane', () => {
 describe('ContactsPane — delete write-reauth gate', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    openMock.mockReset();
   });
   afterEach(() => resetReauthGuard());
 

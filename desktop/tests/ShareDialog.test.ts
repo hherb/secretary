@@ -11,9 +11,13 @@ import {
   resetReauthGuard
 } from '../src/lib/writeGuard';
 
-const { invokeMock, openMock } = vi.hoisted(() => ({ invokeMock: vi.fn(), openMock: vi.fn() }));
+// PathPicker now invokes `pick_contact_card` directly via
+// `@tauri-apps/api/core` (#353) instead of the retired
+// `@tauri-apps/plugin-dialog`, so the same `invokeMock` used for
+// `list_contacts` / `share_block` / `import_contact` also answers the
+// picker call — ordering is FIFO across all invoke() calls.
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openMock }));
 
 import ShareDialog from '../src/components/share/ShareDialog.svelte';
 import type { BlockSummaryDto } from '../src/lib/ipc';
@@ -28,7 +32,6 @@ const BLOCK: BlockSummaryDto = {
 describe('ShareDialog.svelte', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    openMock.mockReset();
   });
 
   it('shows the empty state with an import affordance when no contacts', async () => {
@@ -71,7 +74,7 @@ describe('ShareDialog.svelte', () => {
     });
     await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
 
-    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
+    invokeMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
     invokeMock.mockResolvedValueOnce({ contactUuidHex: 'rcp', displayName: 'Carol' }); // import_contact
     invokeMock.mockResolvedValueOnce({
       contacts: [{ contactUuidHex: 'rcp', displayName: 'Carol' }],
@@ -107,7 +110,6 @@ describe('ShareDialog.svelte', () => {
 describe('ShareDialog — write-reauth gate', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    openMock.mockReset();
   });
   afterEach(() => resetReauthGuard());
 
@@ -175,7 +177,7 @@ describe('ShareDialog — write-reauth gate', () => {
     });
 
     invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
-    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker resolves before the gate
+    invokeMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker resolves before the gate
 
     const { getByText, getByRole } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
     await waitFor(() => expect(getByText(/Import a contact/i)).toBeTruthy());
@@ -194,7 +196,7 @@ describe('ShareDialog — write-reauth gate', () => {
     });
 
     invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // mount list_contacts
-    openMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
+    invokeMock.mockResolvedValueOnce('/tmp/carol.card'); // file picker
     invokeMock.mockResolvedValueOnce({ contactUuidHex: 'rcp', displayName: 'Carol' }); // import_contact
     invokeMock.mockResolvedValueOnce({
       contacts: [{ contactUuidHex: 'rcp', displayName: 'Carol' }],

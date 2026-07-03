@@ -17,6 +17,7 @@ use tauri::State;
 use crate::commands::shared::lock_session;
 use crate::dtos::ManifestDto;
 use crate::errors::AppError;
+use crate::path_auth::{MatchMode, PathPurpose};
 use crate::secret_arg::Password;
 use crate::session::VaultSession;
 
@@ -64,6 +65,15 @@ pub fn unlock_with_password_impl(
     password: &[u8],
 ) -> Result<ManifestDto, AppError> {
     let folder = PathBuf::from(folder_path);
+    // #353: the folder must be one the user picked via pick_vault_folder.
+    {
+        let session = lock_session(state)?;
+        if !session.is_path_approved(PathPurpose::VaultFolder, &folder, MatchMode::Exact) {
+            return Err(AppError::PathNotApproved {
+                path: folder_path.to_string(),
+            });
+        }
+    }
     validate_vault_path(&folder, folder_path)?;
 
     let mut session = lock_session(state)?;
@@ -182,5 +192,36 @@ mod tests {
         std::fs::write(temp.path().join(IDENTITY_BUNDLE_FILENAME), b"sealed").expect("write");
         validate_vault_path(temp.path(), temp.path().to_str().expect("utf8"))
             .expect("validation passes when both canonical files exist");
+    }
+
+    #[test]
+    fn unapproved_folder_is_rejected_before_validation() {
+        let temp = tempdir().expect("tempdir");
+        let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
+        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
+            .expect_err("unapproved");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn approved_folder_passes_the_gate_and_reaches_validation() {
+        use crate::path_auth::{canonicalize_for_auth, PathPurpose};
+        // An empty temp dir is approved but is not a vault: passing the gate
+        // means we reach validate_vault_path, which returns VaultPathNotAVault.
+        let temp = tempdir().expect("tempdir");
+        let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(temp.path()).unwrap(),
+        );
+        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
+            .expect_err("not a vault");
+        assert!(
+            matches!(err, AppError::VaultPathNotAVault { .. }),
+            "got {err:?}"
+        );
     }
 }
