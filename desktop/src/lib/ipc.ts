@@ -191,6 +191,18 @@ export async function unlockWithPassword(
   return call<ManifestDto>('unlock_with_password', { folderPath, password });
 }
 
+/**
+ * Adopt crash residue in a vault whose most recent open failed with
+ * `vault_needs_repair` (#374). Same shape as `unlockWithPassword` — on
+ * success the returned `ManifestDto` populates the session exactly like a
+ * normal unlock. Rejects with `repair_rejected` (carrying a human-readable
+ * `detail`) when the residue isn't safely adoptable — see
+ * `repair_vault.rs`'s equal-clock invariant.
+ */
+export async function repairVault(folderPath: string, password: string): Promise<ManifestDto> {
+  return call<ManifestDto>('repair_vault', { folderPath, password });
+}
+
 export async function listBlocks(): Promise<BlockSummaryDto[]> {
   return call<BlockSummaryDto[]>('list_blocks');
 }

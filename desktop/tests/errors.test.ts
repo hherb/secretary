@@ -44,6 +44,8 @@ describe('userMessageFor', () => {
     { code: 'cannot_delete_owner_contact' },
     { code: 'recipient_not_present' },
     { code: 'cannot_revoke_owner' },
+    { code: 'vault_needs_repair', block_uuid_hex: 'ab' },
+    { code: 'repair_rejected', block_uuid_hex: 'ab', detail: 'recipient set widened' },
     { code: 'internal' }
   ];
 
@@ -55,6 +57,15 @@ describe('userMessageFor', () => {
   it('vault_path_not_found surfaces the path in detail', () => {
     const msg = userMessageFor({ code: 'vault_path_not_found', path: '/tmp/missing' });
     expect(msg.detail).toBe('/tmp/missing');
+  });
+
+  it('repair_rejected surfaces the backend detail verbatim (bridge contract)', () => {
+    const msg = userMessageFor({
+      code: 'repair_rejected',
+      block_uuid_hex: 'ab',
+      detail: 'block ab: recipient set widened from 2 to 3'
+    });
+    expect(msg.detail).toBe('block ab: recipient set widened from 2 to 3');
   });
 
   it('wrong_password actionHint mentions Caps Lock', () => {
@@ -275,6 +286,8 @@ describe('error code allowlists', () => {
       'sync_failed',
       'sync_decisions_incomplete',
       'invalid_argument',
+      'vault_needs_repair',
+      'repair_rejected',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

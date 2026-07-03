@@ -2,7 +2,7 @@
   import LockKeyhole from '../components/icons/LockKeyhole.svelte';
   import PathPicker from '../components/PathPicker.svelte';
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
-  import { unlockWithPassword, getSettings } from '../lib/ipc';
+  import { unlockWithPassword, repairVault, getSettings, isAppError } from '../lib/ipc';
   import { userMessageFor } from '../lib/errors';
   import { seedReauthClock } from '../lib/writeGuard';
   import { openCreateWizard, createdVaultPath } from '../lib/route';
@@ -32,6 +32,13 @@
       $sessionState.lastError?.code === 'vault_path_not_a_vault'
   );
 
+  // #374: the open failed because the vault has adoptable crash residue.
+  // Render a "Repair now?" affordance instead of a hard error.
+  const needsRepair = $derived(
+    $sessionState.status === 'locked' &&
+      $sessionState.lastError?.code === 'vault_needs_repair'
+  );
+
   let password = $state('');
   let submitting = $state(false);
 
@@ -42,6 +49,11 @@
     if (!formValid || submitting) return;
     submitting = true;
     beginUnlock();
+    // #374: on `vault_needs_repair`, the "Repair now?" affordance reuses this
+    // same password to call repairVault — keep the binding alive for that one
+    // case. Every other outcome (success or any other error) clears it below,
+    // same as before.
+    let keepPassword = false;
     try {
       const manifest = await unlockWithPassword(folderPath, password);
       // Manifest only carries `warnings`; the full settings DTO comes
@@ -56,12 +68,41 @@
       // `unlockFailed` accepts `unknown` and narrows internally; no cast
       // required at the call site.
       unlockFailed(err);
+      keepPassword = isAppError(err) && err.code === 'vault_needs_repair';
     } finally {
-      // Password lifetime ends here regardless of outcome — strip the
-      // binding immediately so a failed attempt doesn't leave the string
-      // sitting in DOM state across the user's next keystroke. JS strings
-      // are immutable so we can't truly zeroize, but unbinding minimises
-      // the live-reference window the GC has to chase.
+      // Password lifetime ends here regardless of outcome (unless the
+      // repair affordance needs it) — strip the binding immediately so a
+      // failed attempt doesn't leave the string sitting in DOM state across
+      // the user's next keystroke. JS strings are immutable so we can't
+      // truly zeroize, but unbinding minimises the live-reference window
+      // the GC has to chase.
+      if (!keepPassword) password = '';
+      submitting = false;
+    }
+  }
+
+  // #374: confirm the "Repair now?" affordance. Reuses `folderPath` +
+  // `password` still bound to the form (see `keepPassword` above — the
+  // failed unlock's `finally` deliberately did not clear it). Whatever the
+  // outcome, the password is no longer needed afterwards, so it is always
+  // cleared here: success proceeds into the unlocked session, and
+  // `repair_rejected` has no auto-fix retry that would need it again.
+  async function confirmRepair(): Promise<void> {
+    if (submitting) return;
+    submitting = true;
+    // Repair funnels through the same locked→unlocking→{unlocked,locked}
+    // session-state machine as a normal unlock (see stores.ts) — both
+    // `unlockSucceeded` and `unlockFailed` below require the `unlocking`
+    // state as their `from`.
+    beginUnlock();
+    try {
+      const manifest = await repairVault(folderPath, password);
+      const settings = await getSettings();
+      unlockSucceeded(manifest, settings);
+      seedReauthClock(Date.now());
+    } catch (err) {
+      unlockFailed(err);
+    } finally {
       password = '';
       submitting = false;
     }
@@ -93,7 +134,22 @@
         </div>
       {/if}
 
-      {#if errMsg}
+      {#if needsRepair}
+        <!-- #374: an interrupted write left adoptable crash residue — offer
+             an in-place fix instead of a hard error. `confirmRepair` reuses
+             the password still bound to the form field below. -->
+        <div class="unlock__error unlock__repair" role="alert">
+          <div class="unlock__error-title">This vault has an interrupted write. Repair now?</div>
+          <button
+            type="button"
+            class="unlock__error-action"
+            disabled={submitting}
+            onclick={confirmRepair}
+          >
+            {submitting ? 'Repairing…' : 'Repair now'}
+          </button>
+        </div>
+      {:else if errMsg}
         <div class="unlock__error" role="alert">
           <div class="unlock__error-title">{errMsg.title}</div>
           {#if errMsg.detail}
