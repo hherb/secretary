@@ -247,12 +247,6 @@ fn unlock_with_password_empty_folder_yields_vault_path_not_a_vault() {
 fn unlock_with_password_already_unlocked_returns_already_unlocked() {
     let (state, _device_dir) = unlocked_state();
     let golden_vault = golden_vault_path();
-    // Path is already approved by unlocked_state, but we need to approve it again
-    // for the second unlock attempt.
-    state
-        .lock()
-        .unwrap()
-        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&golden_vault).unwrap());
     let err = unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
