@@ -725,7 +725,13 @@ mod create_path {
         let path = dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         let dto = create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -752,7 +758,13 @@ mod create_path {
         let path = dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -761,11 +773,6 @@ mod create_path {
         )
         .expect("create");
 
-        let (state, _device_dir) = fresh_state();
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         let manifest = unlock::unlock_with_password_impl(&state, path, &pw)
             .expect("freshly-created vault must open with the same password");
         assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
@@ -778,7 +785,13 @@ mod create_path {
         let path = dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         let err = create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -799,7 +812,13 @@ mod create_path {
         let path = target.to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -814,18 +833,26 @@ mod create_path {
     fn probe_reports_empty_existing_and_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let empty = dir.path().to_str().expect("utf8");
-        let probe = create::probe_create_target_impl(empty);
+
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
+
+        let probe = create::probe_create_target_impl(&state, empty).expect("approved probe");
         assert!(
             probe.exists && probe.is_empty,
             "empty dir: exists + is_empty"
         );
 
         std::fs::write(dir.path().join("x"), b"x").expect("write");
-        let probe = create::probe_create_target_impl(empty);
+        let probe = create::probe_create_target_impl(&state, empty).expect("approved probe");
         assert!(probe.exists && !probe.is_empty, "non-empty dir");
 
         let missing = dir.path().join("nope");
-        let probe = create::probe_create_target_impl(missing.to_str().expect("utf8"));
+        let probe = create::probe_create_target_impl(&state, missing.to_str().expect("utf8"))
+            .expect("approved probe (containment: missing subfolder of approved dir)");
         assert!(!probe.exists && !probe.is_empty, "missing path");
     }
 }
@@ -862,7 +889,13 @@ mod edit_path {
         let path = vault_dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -871,11 +904,6 @@ mod edit_path {
         )
         .expect("create_vault_impl for edit test");
 
-        let (state, _device_dir) = fresh_state();
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
         // _device_dir must stay alive; embed it in the vault_dir's lifetime
         // by leaking the device dir into the heap and keeping vault_dir alive.
@@ -1181,7 +1209,13 @@ mod delete_path {
         let path = vault_dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         create::create_vault_impl(
+            &state,
             path,
             CREATE_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -1190,11 +1224,6 @@ mod delete_path {
         )
         .expect("create_vault_impl for delete test");
 
-        let (state, _device_dir) = fresh_state();
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
         (state, vault_dir, pw)
     }
@@ -1370,7 +1399,13 @@ mod contacts_path {
         let path = dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
+        let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         create::create_vault_impl(
+            &state,
             path,
             PEER_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
