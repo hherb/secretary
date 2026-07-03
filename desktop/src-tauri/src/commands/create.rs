@@ -164,17 +164,20 @@ mod tests {
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
         let err = probe_create_target_impl(&state, temp.path().to_str().unwrap())
             .expect_err("unapproved");
-        assert!(matches!(err, AppError::PathNotApproved { .. }), "got {err:?}");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn probe_allows_approved_path() {
         let temp = tempdir().unwrap();
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(temp.path()).unwrap());
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(temp.path()).unwrap(),
+        );
         let dto = probe_create_target_impl(&state, temp.path().to_str().unwrap()).unwrap();
         assert!(dto.exists && dto.is_empty);
     }
@@ -193,8 +196,14 @@ mod tests {
             &mut rand_core::OsRng,
         )
         .expect_err("unapproved");
-        assert!(matches!(err, AppError::PathNotApproved { .. }), "got {err:?}");
-        assert!(!target.exists(), "must not create the folder for an unapproved path");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "must not create the folder for an unapproved path"
+        );
     }
 
     #[test]
@@ -211,10 +220,10 @@ mod tests {
         std::fs::write(subfolder.join("marker"), b"x").unwrap();
 
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(parent.path()).unwrap());
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(parent.path()).unwrap(),
+        );
 
         let err = create_vault_impl(
             &state,
@@ -225,6 +234,9 @@ mod tests {
             &mut rand_core::OsRng,
         )
         .expect_err("subfolder not empty");
-        assert!(matches!(err, AppError::VaultFolderNotEmpty { .. }), "got {err:?}");
+        assert!(
+            matches!(err, AppError::VaultFolderNotEmpty { .. }),
+            "got {err:?}"
+        );
     }
 }

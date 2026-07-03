@@ -135,10 +135,16 @@ mod tests {
 
     #[test]
     fn is_contained_requires_component_boundary() {
-        assert!(is_contained(Path::new("/a/vaults"), Path::new("/a/vaults/x")));
+        assert!(is_contained(
+            Path::new("/a/vaults"),
+            Path::new("/a/vaults/x")
+        ));
         assert!(is_contained(Path::new("/a/vaults"), Path::new("/a/vaults")));
         // Sibling that merely shares a string prefix must NOT match.
-        assert!(!is_contained(Path::new("/a/vaults"), Path::new("/a/vaults-evil")));
+        assert!(!is_contained(
+            Path::new("/a/vaults"),
+            Path::new("/a/vaults-evil")
+        ));
     }
 
     #[test]
@@ -179,8 +185,14 @@ mod tests {
         let a = tempdir().unwrap();
         let b = tempdir().unwrap();
         let mut approvals = PathApprovals::default();
-        approvals.approve(PathPurpose::VaultFolder, canonicalize_for_auth(a.path()).unwrap());
-        approvals.approve(PathPurpose::VaultFolder, canonicalize_for_auth(b.path()).unwrap());
+        approvals.approve(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(a.path()).unwrap(),
+        );
+        approvals.approve(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(b.path()).unwrap(),
+        );
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, a.path(), MatchMode::Exact));
         assert!(approvals.is_authorized(PathPurpose::VaultFolder, b.path(), MatchMode::Exact));
     }
@@ -189,7 +201,10 @@ mod tests {
     fn clear_drops_all_slots() {
         let dir = tempdir().unwrap();
         let mut approvals = PathApprovals::default();
-        approvals.approve(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
+        approvals.approve(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(dir.path()).unwrap(),
+        );
         approvals.clear();
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
     }
@@ -218,7 +233,11 @@ mod tests {
         // Does not exist: canonicalize_for_auth must still resolve `link` (which does
         // exist) and land the result outside `base`.
         let escaped = link.join("secret");
-        assert!(!approvals.is_authorized(PathPurpose::VaultFolder, &escaped, MatchMode::Containment));
+        assert!(!approvals.is_authorized(
+            PathPurpose::VaultFolder,
+            &escaped,
+            MatchMode::Containment
+        ));
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, &escaped, MatchMode::Exact));
     }
 }

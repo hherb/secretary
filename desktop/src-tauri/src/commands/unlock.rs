@@ -200,7 +200,10 @@ mod tests {
         let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
         let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
             .expect_err("unapproved");
-        assert!(matches!(err, AppError::PathNotApproved { .. }), "got {err:?}");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -210,12 +213,15 @@ mod tests {
         // means we reach validate_vault_path, which returns VaultPathNotAVault.
         let temp = tempdir().expect("tempdir");
         let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
-        state
-            .lock()
-            .unwrap()
-            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(temp.path()).unwrap());
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(temp.path()).unwrap(),
+        );
         let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
             .expect_err("not a vault");
-        assert!(matches!(err, AppError::VaultPathNotAVault { .. }), "got {err:?}");
+        assert!(
+            matches!(err, AppError::VaultPathNotAVault { .. }),
+            "got {err:?}"
+        );
     }
 }
