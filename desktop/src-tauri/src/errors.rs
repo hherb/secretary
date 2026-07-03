@@ -57,6 +57,12 @@ pub enum AppError {
     #[error("Folder exists but doesn't contain a vault")]
     VaultPathNotAVault { path: String },
 
+    /// #353: a path argument was not chosen from a backend-invoked dialog.
+    /// Produced only at the desktop IPC boundary; carries the offending path
+    /// so the UI can prompt the user to re-pick.
+    #[error("That path wasn't chosen from a dialog")]
+    PathNotApproved { path: String },
+
     #[error("Vault is currently locked by another process")]
     VaultPathLocked { path: String },
 
@@ -518,6 +524,15 @@ mod tests {
         });
         assert_eq!(v["code"], "vault_folder_not_empty");
         assert_eq!(v["path"], "/Users/h/Documents");
+    }
+
+    #[test]
+    fn path_not_approved_round_trips_with_path() {
+        let v = round_trip(&AppError::PathNotApproved {
+            path: "/some/where".to_string(),
+        });
+        assert_eq!(v["code"], "path_not_approved");
+        assert_eq!(v["path"], "/some/where");
     }
 
     #[test]
