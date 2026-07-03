@@ -98,6 +98,13 @@ mod tests {
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
         let out = pick_into_slot_impl(&state, PathPurpose::VaultFolder, None).unwrap();
         assert!(out.is_none());
+        // "stores nothing": the cancel path must not have mutated any slot.
+        let session = state.lock().unwrap();
+        assert!(!session.is_path_approved(
+            PathPurpose::VaultFolder,
+            std::path::Path::new("/tmp"),
+            MatchMode::Exact,
+        ));
     }
 
     #[test]
