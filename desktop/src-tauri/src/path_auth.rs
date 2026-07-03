@@ -73,6 +73,10 @@ impl PathApprovals {
 ///
 /// Returns `None` on a `..` component, an empty path, or a prefix that fails
 /// to canonicalize. Deterministic and idempotent on its own output.
+///
+/// Intended for absolute paths as produced by native file/folder dialogs; a
+/// relative path with no existing on-disk ancestor also returns `None`
+/// (fail-closed).
 pub fn canonicalize_for_auth(path: &Path) -> Option<PathBuf> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return None;
@@ -188,5 +192,33 @@ mod tests {
         approvals.approve(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         approvals.clear();
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
+    }
+
+    /// A symlink inside the approved base that points outside it must not
+    /// authorize a path traversing through that symlink: `canonicalize_for_auth`
+    /// resolves symlinks in the existing prefix, so `base/link/secret` canonicalizes
+    /// to somewhere under the *outside* dir, which is neither equal to nor contained
+    /// in the approved `base` slot.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_from_approved_base_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempdir().unwrap();
+        let base = tempdir().unwrap();
+        let link = base.path().join("link");
+        symlink(outside.path(), &link).unwrap();
+
+        let mut approvals = PathApprovals::default();
+        approvals.approve(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(base.path()).unwrap(),
+        );
+
+        // Does not exist: canonicalize_for_auth must still resolve `link` (which does
+        // exist) and land the result outside `base`.
+        let escaped = link.join("secret");
+        assert!(!approvals.is_authorized(PathPurpose::VaultFolder, &escaped, MatchMode::Containment));
+        assert!(!approvals.is_authorized(PathPurpose::VaultFolder, &escaped, MatchMode::Exact));
     }
 }
