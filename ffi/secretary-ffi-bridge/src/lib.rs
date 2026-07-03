@@ -112,6 +112,7 @@ pub mod edit;
 pub mod error;
 pub mod identity;
 pub mod record;
+pub mod repair;
 pub mod restore;
 pub mod revoke;
 pub mod save;
@@ -141,6 +142,9 @@ pub use edit::{
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
+pub use repair::{
+    repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
+};
 pub use restore::restore_block;
 pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
