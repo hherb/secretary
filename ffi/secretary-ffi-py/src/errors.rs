@@ -184,6 +184,12 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
             VaultNeedsRepair::new_err(block_uuid_hex)
         }
+        // Message contract: `VaultRepairRejected`'s single string argument is
+        // `"<block_uuid_hex>: <detail>"` — the bridge's two structured fields
+        // collapsed into one message per this module's `create_exception!`
+        // convention (uniffi/desktop keep them separate). Python callers that
+        // need the block UUID split on the first `": "`; `block_uuid_hex` is a
+        // hyphenated UUID (no embedded `": "`), so the first split is exact.
         FfiVaultError::RepairRejected {
             block_uuid_hex,
             detail,
