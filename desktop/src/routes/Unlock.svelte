@@ -42,6 +42,14 @@
   let password = $state('');
   let submitting = $state(false);
 
+  // #374: true only while `confirmRepair` is in flight. `needsRepair` is
+  // derived from session state and goes false the moment `beginUnlock()`
+  // transitions `locked → unlocking`, which would otherwise unmount the
+  // repair affordance the instant repair starts — hiding the `Repairing…`
+  // progress state during the (Argon2id-slow) repair. Keeping the block
+  // mounted on `needsRepair || repairing` lets the in-flight state render.
+  let repairing = $state(false);
+
   const formValid = $derived(folderPath.length > 0 && password.length > 0);
 
   async function submit(e: SubmitEvent): Promise<void> {
@@ -90,6 +98,8 @@
   async function confirmRepair(): Promise<void> {
     if (submitting) return;
     submitting = true;
+    // Keep the repair affordance mounted while repair runs — see `repairing`.
+    repairing = true;
     // Repair funnels through the same locked→unlocking→{unlocked,locked}
     // session-state machine as a normal unlock (see stores.ts) — both
     // `unlockSucceeded` and `unlockFailed` below require the `unlocking`
@@ -105,6 +115,7 @@
     } finally {
       password = '';
       submitting = false;
+      repairing = false;
     }
   }
 
@@ -134,10 +145,13 @@
         </div>
       {/if}
 
-      {#if needsRepair}
+      {#if needsRepair || repairing}
         <!-- #374: an interrupted write left adoptable crash residue — offer
              an in-place fix instead of a hard error. `confirmRepair` reuses
-             the password still bound to the form field below. -->
+             the password still bound to the form field below. `|| repairing`
+             keeps this block mounted while repair is in flight (session state
+             is `unlocking` then, so `needsRepair` alone would drop it and hide
+             the `Repairing…` progress state). -->
         <div class="unlock__error unlock__repair" role="alert">
           <div class="unlock__error-title">This vault has an interrupted write. Repair now?</div>
           <button

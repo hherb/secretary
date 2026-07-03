@@ -239,6 +239,41 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
   });
 
+  it('shows the in-flight "Repairing…" progress state while repair runs', async () => {
+    // Regression: `confirmRepair` calls `beginUnlock()` (session → `unlocking`),
+    // which flips the `needsRepair` derived false; without `|| repairing`
+    // keeping the block mounted, the `Repairing…` progress state never renders
+    // during the (Argon2id-slow) repair. Drive it with a manually-resolved
+    // promise so we can observe the intermediate render before repair settles.
+    unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    let resolveRepair!: (m: typeof MANIFEST) => void;
+    repairMock.mockReturnValueOnce(
+      new Promise<typeof MANIFEST>((resolve) => {
+        resolveRepair = resolve;
+      })
+    );
+    settingsMock.mockResolvedValueOnce(SETTINGS);
+    invokeMock.mockResolvedValueOnce('/v');
+
+    const { getByRole, getByLabelText, findByRole } = render(Unlock);
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
+
+    await fireEvent.click(getByRole('button', { name: /repair now/i }));
+
+    // Repair is in flight (promise not yet resolved): the affordance is still
+    // mounted, now showing the disabled "Repairing…" state.
+    const repairing = await findByRole('button', { name: /repairing/i });
+    expect((repairing as HTMLButtonElement).disabled).toBe(true);
+    expect(get(sessionState).status).toBe('unlocking');
+
+    resolveRepair(MANIFEST);
+    await waitFor(() => expect(get(sessionState).status).toBe('unlocked'));
+  });
+
   it('repair success proceeds exactly as a normal unlock', async () => {
     unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
     repairMock.mockResolvedValueOnce(MANIFEST);
