@@ -27,6 +27,7 @@ pub mod edit;
 pub mod lock;
 pub mod pick;
 pub mod reauth;
+pub mod repair;
 pub mod settings;
 pub(crate) mod shared;
 pub mod sync;

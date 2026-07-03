@@ -100,7 +100,7 @@ pub fn unlock_with_password_impl(
 /// the canonical filenames — maps to `VaultPathNotAVault`. Otherwise the
 /// frontend renders a misleading "doesn't exist" message for a path the
 /// user just clicked in their file picker.
-fn validate_vault_path(folder: &Path, folder_path_str: &str) -> Result<(), AppError> {
+pub(crate) fn validate_vault_path(folder: &Path, folder_path_str: &str) -> Result<(), AppError> {
     if !folder.exists() {
         return Err(AppError::VaultPathNotFound {
             path: folder_path_str.to_string(),
