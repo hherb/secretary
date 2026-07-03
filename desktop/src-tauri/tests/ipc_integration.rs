@@ -29,6 +29,7 @@ use secretary_desktop::commands::{
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
+use secretary_desktop::path_auth::{canonicalize_for_auth, PathPurpose};
 use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
 use secretary_desktop::settings::{load_from_vault, save_to_vault, Settings};
@@ -78,9 +79,14 @@ fn fresh_state() -> (Mutex<VaultSession>, TempDir) {
 /// starts from here.
 fn unlocked_state() -> (Mutex<VaultSession>, TempDir) {
     let (state, device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&golden_vault).unwrap());
     let dto = unlock::unlock_with_password_impl(
         &state,
-        golden_vault_path().to_str().expect("utf8 path"),
+        golden_vault.to_str().expect("utf8 path"),
         GOLDEN_VAULT_PASSWORD.as_bytes(),
     )
     .expect("baseline unlock against golden vault");
@@ -128,9 +134,14 @@ fn to_json<T: serde::Serialize>(value: &T) -> serde_json::Value {
 #[test]
 fn unlock_with_password_happy_path_returns_manifest_dto_with_warnings_field() {
     let (state, _device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&golden_vault).unwrap());
     let dto = unlock::unlock_with_password_impl(
         &state,
-        golden_vault_path().to_str().expect("utf8 path"),
+        golden_vault.to_str().expect("utf8 path"),
         GOLDEN_VAULT_PASSWORD.as_bytes(),
     )
     .expect("unlock golden vault");
@@ -164,9 +175,14 @@ fn unlock_with_password_happy_path_returns_manifest_dto_with_warnings_field() {
 #[test]
 fn unlock_with_password_wrong_password_collapses_to_wrong_password() {
     let (state, _device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&golden_vault).unwrap());
     let err = unlock::unlock_with_password_impl(
         &state,
-        golden_vault_path().to_str().expect("utf8 path"),
+        golden_vault.to_str().expect("utf8 path"),
         b"definitely not the password",
     )
     .expect_err("wrong password must error");
@@ -183,6 +199,10 @@ fn unlock_with_password_nonexistent_folder_yields_vault_path_not_found() {
     let (state, device_dir) = fresh_state();
     // Inside the tempdir but a path that doesn't exist.
     let missing = device_dir.path().join("no-such-vault");
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&missing).unwrap());
     let err = unlock::unlock_with_password_impl(
         &state,
         missing.to_str().expect("utf8 path"),
@@ -205,7 +225,12 @@ fn unlock_with_password_nonexistent_folder_yields_vault_path_not_found() {
 fn unlock_with_password_empty_folder_yields_vault_path_not_a_vault() {
     let (state, _device_dir) = fresh_state();
     let empty_folder = tempfile::tempdir().expect("empty tempdir");
-    let path_str = empty_folder.path().to_str().expect("utf8 path");
+    let path = empty_folder.path();
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(path).unwrap());
+    let path_str = path.to_str().expect("utf8 path");
     let err = unlock::unlock_with_password_impl(&state, path_str, GOLDEN_VAULT_PASSWORD.as_bytes())
         .expect_err("empty folder must error");
 
@@ -221,9 +246,16 @@ fn unlock_with_password_empty_folder_yields_vault_path_not_a_vault() {
 #[test]
 fn unlock_with_password_already_unlocked_returns_already_unlocked() {
     let (state, _device_dir) = unlocked_state();
+    let golden_vault = golden_vault_path();
+    // Path is already approved by unlocked_state, but we need to approve it again
+    // for the second unlock attempt.
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&golden_vault).unwrap());
     let err = unlock::unlock_with_password_impl(
         &state,
-        golden_vault_path().to_str().expect("utf8 path"),
+        golden_vault.to_str().expect("utf8 path"),
         GOLDEN_VAULT_PASSWORD.as_bytes(),
     )
     .expect_err("second unlock must reject");
@@ -326,6 +358,10 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
     let device_dir = tempfile::tempdir().expect("device tempdir");
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
 
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&vault_path).unwrap());
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
@@ -353,6 +389,10 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
     let device_dir = tempfile::tempdir().expect("device tempdir");
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
 
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&vault_path).unwrap());
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
@@ -418,6 +458,10 @@ fn settings_round_trip_persists_all_three_fields() {
     let device_dir = tempfile::tempdir().expect("device tempdir");
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
 
+    state
+        .lock()
+        .unwrap()
+        .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&vault_path).unwrap());
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
@@ -724,6 +768,10 @@ mod create_path {
         .expect("create");
 
         let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         let manifest = unlock::unlock_with_password_impl(&state, path, &pw)
             .expect("freshly-created vault must open with the same password");
         assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
@@ -830,6 +878,10 @@ mod edit_path {
         .expect("create_vault_impl for edit test");
 
         let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
         // _device_dir must stay alive; embed it in the vault_dir's lifetime
         // by leaking the device dir into the heap and keeping vault_dir alive.
@@ -1145,6 +1197,10 @@ mod delete_path {
         .expect("create_vault_impl for delete test");
 
         let (state, _device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(vault_dir.path()).unwrap());
         unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
         (state, vault_dir, pw)
     }
@@ -1352,6 +1408,10 @@ mod contacts_path {
     fn unlocked_ephemeral() -> (Mutex<VaultSession>, tempfile::TempDir, tempfile::TempDir) {
         let (vault_dir, vault_path) = ephemeral_golden_copy();
         let (state, device_dir) = fresh_state();
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(&vault_path).unwrap());
         unlock::unlock_with_password_impl(
             &state,
             vault_path.to_str().expect("utf8 path"),
