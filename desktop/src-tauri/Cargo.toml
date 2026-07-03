@@ -99,13 +99,12 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 #   `env-filter` lets `RUST_LOG` tune verbosity at runtime.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Task 7 frontend addition:
-# - `tauri-plugin-dialog` exposes the native folder/file-picker dialog
-#   used by `desktop/src/components/PathPicker.svelte` for choosing a
-#   vault folder. The JS-side companion (`@tauri-apps/plugin-dialog`)
-#   is already in `desktop/package.json`. Capability is granted via
-#   `desktop/src-tauri/capabilities/default.json` (`dialog:allow-open`);
-#   no other dialog permissions are needed by D.1.1.
+# PR #353: Dialog plugin refactoring
+# - `tauri-plugin-dialog` is now driven by the Rust BACKEND `pick_*` commands
+#   in `src/commands/pick.rs` to open native file/folder dialogs server-side.
+#   The webview no longer opens dialogs directly. The JS-side companion
+#   (`@tauri-apps/plugin-dialog`) and the `dialog:allow-open` capability have
+#   been removed; no dialog permissions are exposed to the frontend.
 #
 # Caret range (not the exact-pin convention used by `tempfile`): the
 # dialog plugin is UI-only and no key material or vault bytes cross

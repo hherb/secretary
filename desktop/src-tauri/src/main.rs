@@ -57,10 +57,9 @@ fn main() {
     );
 
     tauri::Builder::default()
-        // The dialog plugin powers `PathPicker.svelte`'s native folder-
-        // selection dialog (frontend opens it via
-        // `@tauri-apps/plugin-dialog`). Permissions for the JS side are
-        // granted by `capabilities/default.json` (`dialog:allow-open`).
+        // The dialog plugin is now driven by the Rust backend `pick_*` commands
+        // (`commands::pick`, #353) via `DialogExt`. The webview no longer opens
+        // dialogs directly; the `dialog:allow-open` capability has been removed.
         .plugin(tauri_plugin_dialog::init())
         // The clipboard-manager plugin exposes the WRITE side of the OS
         // clipboard to the frontend's "copy secret" affordance. The JS
