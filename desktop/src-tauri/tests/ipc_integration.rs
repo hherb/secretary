@@ -1394,18 +1394,23 @@ mod contacts_path {
     /// card is always importable into / shareable to the golden copy without a
     /// duplicate or already-recipient clash. Mirrors the `create_vault_impl`
     /// call sites in `create_path` for the `SecretBytes` / `OsRng` imports.
-    fn peer_card_file() -> (tempfile::TempDir, PathBuf) {
+    ///
+    /// #353: also pre-approves the returned card path as `PathPurpose::ContactCard`
+    /// on the CALLER's `state` (not the throwaway peer vault's own state used to
+    /// mint the card) — every call site immediately feeds the path into
+    /// `import_contact_impl`, which now gates on that approval.
+    fn peer_card_file(state: &Mutex<VaultSession>) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("peer vault tempdir");
         let path = dir.path().to_str().expect("utf8 path");
         let pw = random_password();
 
-        let (state, _device_dir) = fresh_state();
-        state
+        let (peer_state, _device_dir) = fresh_state();
+        peer_state
             .lock()
             .unwrap()
             .approve_path(PathPurpose::VaultFolder, canonicalize_for_auth(dir.path()).unwrap());
         create::create_vault_impl(
-            &state,
+            &peer_state,
             path,
             PEER_DISPLAY_NAME,
             &SecretBytes::from(pw.as_slice()),
@@ -1428,6 +1433,10 @@ mod contacts_path {
             "a freshly-created vault has exactly one (owner) card in contacts/"
         );
         let card = cards.pop().expect("the single owner card");
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::ContactCard, canonicalize_for_auth(&card).unwrap());
         (dir, card)
     }
 
@@ -1460,7 +1469,7 @@ mod contacts_path {
         let before = contacts::list_contacts_impl(&state).expect("baseline list_contacts");
 
         // Import a brand-new random peer.
-        let (_peer_dir, card) = peer_card_file();
+        let (_peer_dir, card) = peer_card_file(&state);
         let imported = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
             .expect("import the peer card");
 
@@ -1491,7 +1500,7 @@ mod contacts_path {
     #[test]
     fn import_contact_duplicate_is_typed_error() {
         let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
-        let (_peer_dir, card) = peer_card_file();
+        let (_peer_dir, card) = peer_card_file(&state);
         let card_path = card.to_str().expect("utf8 path");
 
         contacts::import_contact_impl(&state, card_path).expect("first import succeeds");
@@ -1509,7 +1518,7 @@ mod contacts_path {
         let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
 
         // Import a fresh peer to share with.
-        let (_peer_dir, card) = peer_card_file();
+        let (_peer_dir, card) = peer_card_file(&state);
         let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
             .expect("import peer for share test");
 
@@ -1540,7 +1549,7 @@ mod contacts_path {
         let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
 
         // Import a fresh peer and share an owner-authored golden block to it.
-        let (_peer_dir, card) = peer_card_file();
+        let (_peer_dir, card) = peer_card_file(&state);
         let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
             .expect("import peer for revoke test");
         contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
@@ -1575,7 +1584,7 @@ mod contacts_path {
         let (state, _vault_dir, _device_dir) = unlocked_ephemeral();
 
         // Import a fresh peer and share an owner-authored golden block to it.
-        let (_peer_dir, card) = peer_card_file();
+        let (_peer_dir, card) = peer_card_file(&state);
         let peer = contacts::import_contact_impl(&state, card.to_str().expect("utf8 path"))
             .expect("import peer");
         contacts::share_block_impl(&state, GOLDEN_BLOCK_UUID_HEX, &peer.contact_uuid_hex)
@@ -1613,6 +1622,11 @@ mod contacts_path {
         // Use a fresh tempdir as the export destination (user-chosen folder).
         let dest_dir = tempfile::tempdir().expect("export destination tempdir");
         let dest_path = dest_dir.path().to_str().expect("utf8 dest path");
+        // #353: export_contact_card_impl now gates on an approved ExportDir.
+        state
+            .lock()
+            .unwrap()
+            .approve_path(PathPurpose::ExportDir, canonicalize_for_auth(dest_dir.path()).unwrap());
 
         let dto = contacts::export_contact_card_impl(&state, dest_path)
             .expect("export_contact_card_impl should succeed");
