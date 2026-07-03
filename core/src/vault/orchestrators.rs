@@ -920,6 +920,81 @@ pub(crate) fn tick_clock(
     Ok(())
 }
 
+/// Re-sign the manifest with the owner's hybrid signing keys and
+/// atomically write it — the single source of truth for the
+/// security-sensitive re-sign tail shared by [`save_block`],
+/// [`trash_block`], [`restore_block`], and
+/// [`crate::vault::repair_vault`] (#377).
+///
+/// The sequence, in order:
+/// 1. Rebuild the manifest [`ManifestHeader`] preserving `vault_uuid` and
+///    `created_at_ms` from `prev_header`; only `last_mod_ms` advances.
+/// 2. Re-wrap the owner Ed25519 secret into a fresh [`Sensitive`] holder
+///    and **zeroize the intermediate stack copy** (the move over `[u8; 32]`
+///    copies — see CLAUDE.md "Memory hygiene: zeroize discipline").
+/// 3. Rebuild the ML-DSA-65 secret, draw a **fresh** AEAD nonce, and
+///    hybrid-sign (`sign_manifest` emits both halves of the §8 signature).
+/// 4. Encode and [`io::write_atomic`] the manifest under `io_context`.
+///
+/// Returns the freshly-signed [`ManifestFile`]; the caller swaps it into
+/// its in-memory `OpenVault.manifest_file` envelope.
+///
+/// # Security invariant
+///
+/// A change to nonce generation, the Ed25519 stack-copy zeroize, the §8
+/// hybrid-signature construction, or the atomic-write must land **here**
+/// so every mutating orchestrator inherits it in lockstep. A fix applied
+/// at only one former call site would silently leave the others weaker —
+/// that divergence risk is exactly why this was extracted (#377).
+// The manifest re-sign inputs (folder, body, owner identity, IBK, prior
+// header, timestamp, author fingerprint, rng, error context) are inherent
+// to the operation; bundling them into a struct would only relocate the
+// argument list without reducing it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resign_and_write_manifest(
+    folder: &Path,
+    manifest: &Manifest,
+    identity: &IdentityBundle,
+    ibk: &aead::AeadKey,
+    prev_header: &ManifestHeader,
+    last_mod_ms: u64,
+    author_fingerprint: Fingerprint,
+    rng: &mut (impl RngCore + CryptoRng),
+    io_context: &'static str,
+) -> Result<ManifestFile, VaultError> {
+    // Preserve the on-disk envelope's vault_uuid + created_at_ms; only
+    // last_mod_ms moves forward.
+    let new_header = ManifestHeader {
+        vault_uuid: prev_header.vault_uuid,
+        created_at_ms: prev_header.created_at_ms,
+        last_mod_ms,
+    };
+
+    // Re-wrap the owner Ed25519 secret and zeroize the stack copy.
+    let mut ed_sk_bytes = *identity.ed25519_sk.expose();
+    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
+    ed_sk_bytes.zeroize();
+    let owner_pq_sk = MlDsa65Secret::from_bytes(identity.ml_dsa_65_sk.expose())?;
+
+    let aead_nonce = aead::random_nonce(rng);
+    let new_manifest_file = manifest::sign_manifest(
+        new_header,
+        manifest,
+        ibk,
+        &aead_nonce,
+        author_fingerprint,
+        &owner_ed_sk,
+        &owner_pq_sk,
+    )?;
+    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
+    let manifest_path = folder.join(MANIFEST_FILENAME);
+    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
+        context: io_context,
+        source: e,
+    })?;
+    Ok(new_manifest_file)
+}
+
 /// Encrypt and persist a new (or updated) block in the vault.
 ///
 /// Updates the in-memory `OpenVault.manifest` and `OpenVault.manifest_file`,
@@ -1102,37 +1177,24 @@ pub fn save_block(
     // Step 10: tick the manifest-level (vault-level) vector clock.
     tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
 
-    // Step 11: refresh the manifest header — vault_uuid and created_at_ms
-    // are preserved from the existing on-disk envelope; only last_mod_ms
-    // moves forward.
-    let new_header = ManifestHeader {
-        vault_uuid: open.manifest_file.header.vault_uuid,
-        created_at_ms: open.manifest_file.header.created_at_ms,
-        last_mod_ms: now_ms,
-    };
-
-    // Step 12: fresh AEAD nonce + re-sign the manifest. `sign_manifest`
-    // canonical-encodes the body, AEAD-encrypts with the IBK (header AAD),
-    // and produces both halves of the §8 hybrid signature.
-    let aead_nonce = aead::random_nonce(rng);
-    let new_manifest_file = manifest::sign_manifest(
-        new_header,
+    // Steps 11-13: refresh the manifest header (vault_uuid + created_at_ms
+    // preserved; last_mod_ms advances), draw a fresh AEAD nonce, hybrid-sign
+    // over the updated body, and atomic-write — the shared re-sign tail
+    // (#377). Block-first-then-manifest ordering is preserved by step 7 →
+    // this write. The owner keys are re-wrapped from `open.identity` inside
+    // the helper; the `owner_ed_sk` bound above for `encrypt_block` is not
+    // reused here.
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
         &open.manifest,
+        &open.identity,
         &open.identity_block_key,
-        &aead_nonce,
+        &open.manifest_file.header,
+        now_ms,
         owner_fp,
-        &owner_ed_sk,
-        &owner_pq_sk,
+        rng,
+        "failed to write manifest.cbor.enc",
     )?;
-    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
-
-    // Step 13: atomic-write the manifest. Block-first-then-manifest
-    // ordering is preserved by step 7 → step 13.
-    let manifest_path = folder.join(MANIFEST_FILENAME);
-    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
-        context: "failed to write manifest.cbor.enc",
-        source: e,
-    })?;
 
     // Step 14: refresh the in-memory manifest envelope so subsequent
     // saves chain off the new clock and the new author signature.
@@ -2045,35 +2107,19 @@ pub fn trash_block(
 
     // Step 4: refresh manifest header → fresh AEAD nonce → re-sign (over
     // `&staged`, not `&open.manifest`) → atomic-write. **Commit point.**
-    // Mirrors `save_block` steps 11-13. Owner secret keys are re-wrapped
-    // from the bundle's raw seeds into the typed Ed25519Secret /
-    // MlDsa65Secret holders that `sign_manifest` expects; the
-    // intermediate stack copy is zeroized before sign.
-    let new_header = ManifestHeader {
-        vault_uuid: open.manifest_file.header.vault_uuid,
-        created_at_ms: open.manifest_file.header.created_at_ms,
-        last_mod_ms: now_ms,
-    };
-    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
-    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
-    ed_sk_bytes.zeroize();
-    let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
-    let aead_nonce = aead::random_nonce(rng);
-    let new_manifest_file = manifest::sign_manifest(
-        new_header,
+    // Shared re-sign tail (#377): the helper re-wraps the owner secret keys
+    // from `open.identity` and zeroizes the intermediate stack copy.
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
         &staged,
+        &open.identity,
         &open.identity_block_key,
-        &aead_nonce,
+        &open.manifest_file.header,
+        now_ms,
         open.manifest_file.author_fingerprint,
-        &owner_ed_sk,
-        &owner_pq_sk,
+        rng,
+        "trash_block: failed to write manifest.cbor.enc",
     )?;
-    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
-    let manifest_path = folder.join(MANIFEST_FILENAME);
-    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
-        context: "trash_block: failed to write manifest.cbor.enc",
-        source: e,
-    })?;
 
     // Step 5: swap the staged state into `open`. From here the trash has
     // happened; nothing below may fail the call.
@@ -2523,32 +2569,18 @@ pub fn restore_block(
     tick_clock(&mut open.manifest.vector_clock, &device_uuid)?;
 
     // Step 11: re-sign manifest with fresh AEAD nonce + atomic-write.
-    // Mirrors trash_block / save_block.
-    let new_header = ManifestHeader {
-        vault_uuid: open.manifest_file.header.vault_uuid,
-        created_at_ms: open.manifest_file.header.created_at_ms,
-        last_mod_ms: now_ms,
-    };
-    let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
-    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
-    ed_sk_bytes.zeroize();
-    let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())?;
-    let aead_nonce = aead::random_nonce(rng);
-    let new_manifest_file = manifest::sign_manifest(
-        new_header,
+    // Shared re-sign tail (#377); mirrors trash_block / save_block.
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
         &open.manifest,
+        &open.identity,
         &open.identity_block_key,
-        &aead_nonce,
+        &open.manifest_file.header,
+        now_ms,
         open.manifest_file.author_fingerprint,
-        &owner_ed_sk,
-        &owner_pq_sk,
+        rng,
+        "restore_block: failed to write manifest.cbor.enc",
     )?;
-    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
-    let manifest_path = folder.join(MANIFEST_FILENAME);
-    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
-        context: "restore_block: failed to write manifest.cbor.enc",
-        source: e,
-    })?;
 
     // Step 12: refresh in-memory envelope.
     open.manifest_file = new_manifest_file;

@@ -13,21 +13,20 @@ use rand_core::{CryptoRng, RngCore};
 
 use zeroize::Zeroize as _;
 
-use crate::crypto::aead;
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::{self, MlKem768Secret};
 use crate::crypto::secret::Sensitive;
-use crate::crypto::sig::{Ed25519Secret, MlDsa65Public, MlDsa65Secret};
+use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
 
+use super::block;
 use super::conflict::{clock_relation, ClockRelation};
-use super::manifest::{self, BlockEntry, Manifest, ManifestHeader};
+use super::manifest::{BlockEntry, Manifest};
 use super::orchestrators::{
-    format_uuid_hyphenated, read_and_verify_manifest, resolve_recipient_uuids, tick_clock,
-    unlock_vault_identity, OpenVault, Unlocker, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION,
-    MANIFEST_FILENAME, TRASH_SUBDIR,
+    format_uuid_hyphenated, read_and_verify_manifest, resign_and_write_manifest,
+    resolve_recipient_uuids, tick_clock, unlock_vault_identity, OpenVault, Unlocker, BLOCKS_SUBDIR,
+    BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
 };
-use super::{block, io};
 use super::{VaultError, VectorClockEntry};
 
 /// Best-effort completion of trash renames interrupted between
@@ -397,33 +396,21 @@ pub fn repair_vault(
     }
     tick_clock(&mut manifest.vector_clock, &device_uuid)?;
 
-    // Re-sign + atomic-write — same key-rewrap shape as trash_block
-    // step 7 (zeroize the ed25519 stack copy).
-    let new_header = ManifestHeader {
-        vault_uuid: manifest_file.header.vault_uuid,
-        created_at_ms: manifest_file.header.created_at_ms,
-        last_mod_ms: now_ms,
-    };
-    let mut ed_sk_bytes = *unlocked.identity.ed25519_sk.expose();
-    let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
-    ed_sk_bytes.zeroize();
-    let owner_pq_sk = MlDsa65Secret::from_bytes(unlocked.identity.ml_dsa_65_sk.expose())?;
-    let aead_nonce = aead::random_nonce(rng);
-    let new_manifest_file = manifest::sign_manifest(
-        new_header,
+    // Re-sign + atomic-write — the shared re-sign tail (#377): re-wrap the
+    // owner Ed25519 secret + zeroize the stack copy, fresh AEAD nonce,
+    // hybrid-sign, atomic-write. Same manifest verify-before-decrypt open
+    // guarantees the rewritten envelope.
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
         &manifest,
+        &unlocked.identity,
         &unlocked.identity_block_key,
-        &aead_nonce,
+        &manifest_file.header,
+        now_ms,
         manifest_file.author_fingerprint,
-        &owner_ed_sk,
-        &owner_pq_sk,
+        rng,
+        "repair_vault: failed to write manifest.cbor.enc",
     )?;
-    let manifest_bytes = manifest::encode_manifest_file(&new_manifest_file)?;
-    let manifest_path = folder.join(MANIFEST_FILENAME);
-    io::write_atomic(&manifest_path, &manifest_bytes).map_err(|e| VaultError::Io {
-        context: "repair_vault: failed to write manifest.cbor.enc",
-        source: e,
-    })?;
 
     complete_pending_trash_renames(folder, &manifest);
     Ok(OpenVault {
