@@ -5,8 +5,13 @@
 //! discipline — but calls `secretary_ffi_bridge::repair_vault_with_*`
 //! instead of the plain open path. See `docs/vault-format.md` §10 and
 //! `core/src/vault/repair.rs` for the crash-recovery semantics; repair is
-//! never a weaker open (`enforce_rollback_resistance` runs inside the
-//! bridge fn on every arm).
+//! never a weaker open. Each bridge repair fn loads the local §10 rollback
+//! baseline and passes it to core `repair_vault`, which runs the §10
+//! rollback check on the COMMITTED manifest clock BEFORE adopting, ticking,
+//! or writing anything — so a rollback is refused fail-closed without
+//! mutating the vault (see `ffi/secretary-ffi-bridge/src/repair/orchestration.rs`
+//! module docs for why this must happen pre-write rather than via a
+//! post-write `enforce_rollback_resistance` call).
 
 use zeroize::Zeroize;
 

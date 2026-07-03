@@ -21,11 +21,11 @@ use secretary_core::vault::{
     DeviceUuid, Unlocker, VectorClockEntry,
 };
 
-use crate::device::add_device_slot;
+use crate::device::{add_device_slot, open_with_device_secret};
 use crate::error::FfiVaultError;
 use crate::vault::orchestration::open_vault_with_password;
 
-use super::orchestration::repair_vault_with_password_in;
+use super::orchestration::{repair_vault_with_device_secret_in, repair_vault_with_password_in};
 use super::{repair_vault_with_device_secret, repair_vault_with_password};
 
 // ── fixture helpers (mirrors `device.rs`'s `tmp_golden_vault`) ─────────────
@@ -413,6 +413,127 @@ fn repair_gates_rollback_before_write_and_leaves_manifest_untouched() {
     let err =
         repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
             .expect_err("a strictly-dominated committed clock must refuse repair PRE-write");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "core VaultError::Rollback must fold to CorruptVault, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "refused repair must not mutate the manifest (pre-write gate — the crux)",
+    );
+}
+
+/// Case 6 (#374 follow-up): the same pre-write §10 rollback gate, proven
+/// end-to-end for the DEVICE-SECRET arm. Mirrors
+/// `repair_gates_rollback_before_write_and_leaves_manifest_untouched` (Case
+/// 5, password arm) exactly, but enrolls a device slot and stages/repairs
+/// through the device-secret unlock path — closing the coverage gap where
+/// the pre-write gate was previously proven end-to-end only for password.
+#[test]
+fn repair_device_secret_gates_rollback_before_write_and_leaves_manifest_untouched() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let mut rng = ChaCha20Rng::from_seed([0x97; 32]);
+
+    // Enroll a fresh device slot via the bridge projection.
+    let enrolled = add_device_slot(&folder, &pw).expect("add_device_slot must succeed");
+    let device_uuid: [u8; 16] = enrolled
+        .device_uuid
+        .as_slice()
+        .try_into()
+        .expect("device_uuid must be 16 bytes");
+    let device_secret_bytes = enrolled
+        .device_secret
+        .take_secret()
+        .expect("first take_secret must return Some");
+    let device_secret: [u8; 32] = device_secret_bytes
+        .as_slice()
+        .try_into()
+        .expect("device secret must be 32 bytes");
+
+    // Stage crash residue under this device's own unlock path.
+    let device_secret_sb = SecretBytes::new(device_secret.to_vec());
+    let dev_unlocker = || Unlocker::DeviceSecret {
+        device_uuid: &device_uuid,
+        secret: &device_secret_sb,
+    };
+    let mut open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let block_uuid = [0xf6; 16];
+    let recipients = vec![open.owner_card.clone()];
+
+    // v1: committed. Snapshot the committed manifest's clock + vault_uuid.
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let committed_clock = open.manifest.vector_clock.clone();
+    let vault_uuid = open.manifest.vault_uuid;
+
+    // v2: block hits disk; the manifest write is "lost" (restored below).
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    // Sanity: this residue is GENUINELY adoptable — without a rollback
+    // baseline the plain device-secret open flags the actionable
+    // VaultNeedsRepair (i.e. the refusal below is caused by the §10 gate,
+    // not by unrelated corruption).
+    assert!(
+        matches!(
+            open_with_device_secret(&folder, &device_uuid, &device_secret),
+            Err(FfiVaultError::VaultNeedsRepair { .. })
+        ),
+        "residue must be adoptable crash residue, not pre-existing corruption",
+    );
+
+    // Seed a §10 baseline that strictly DOMINATES the committed clock: every
+    // committed entry verbatim (so the committed clock is never strictly
+    // greater anywhere) plus a FOREIGN device ahead (so it is strictly less
+    // there) → is_rollback(committed) == true. The foreign device is NOT the
+    // one repair ticks — proving the gate fires on the pre-tick committed
+    // clock, independent of the adopt-and-tick that would otherwise mask it.
+    let foreign = [0x1f; 16];
+    assert!(
+        !committed_clock.iter().any(|e| e.device_uuid == foreign),
+        "foreign device_uuid must be disjoint from the committed clock",
+    );
+    let mut baseline = committed_clock.clone();
+    baseline.push(VectorClockEntry {
+        device_uuid: foreign,
+        counter: 1,
+    });
+    baseline.sort_by_key(|e| e.device_uuid);
+    let synced = secretary_core::sync::SyncState::new(vault_uuid, baseline).unwrap();
+    secretary_cli::state::save(state_dir.path(), &synced).unwrap();
+
+    // Snapshot the on-disk manifest immediately before the repair attempt.
+    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let err = repair_vault_with_device_secret_in(
+        Some(state_dir.path()),
+        &folder,
+        &device_uuid,
+        &device_secret,
+        3_000,
+    )
+    .expect_err("a strictly-dominated committed clock must refuse repair PRE-write");
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "core VaultError::Rollback must fold to CorruptVault, got {err:?}",
