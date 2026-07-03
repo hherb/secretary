@@ -8,7 +8,9 @@ vi.mock('../src/lib/ipc', () => ({
   probeCreateTarget: vi.fn().mockResolvedValue({ exists: true, isEmpty: true })
 }));
 import { createVault, probeCreateTarget } from '../src/lib/ipc';
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+// FolderStep uses PathPicker, which invokes backend pick_* commands
+// directly via `@tauri-apps/api/core` (#353).
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
   writeText: vi.fn().mockResolvedValue(undefined)
 }));

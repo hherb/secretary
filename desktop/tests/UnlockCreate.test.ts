@@ -5,7 +5,9 @@ import { get } from 'svelte/store';
 import { appRoute, createSeedPath, createdVaultPath, _resetRouteForTest } from '../src/lib/route';
 import { _resetSessionStateForTest, unlockFailed, beginUnlock } from '../src/lib/stores';
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+// PathPicker invokes backend pick_* commands directly via `@tauri-apps/api/core`
+// (#353) — mock it so mounting Unlock doesn't hit a real Tauri runtime.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 describe('Unlock <-> create wiring', () => {
   beforeEach(() => {

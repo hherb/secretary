@@ -13,6 +13,7 @@
 export const APP_ERROR_CODES = [
   'vault_path_not_found',
   'vault_path_not_a_vault',
+  'path_not_approved',
   'vault_path_locked',
   'wrong_password',
   'kdf_too_weak',
@@ -61,6 +62,7 @@ export type AppWarningCode = (typeof APP_WARNING_CODES)[number];
 export type AppError =
   | { code: 'vault_path_not_found'; path: string }
   | { code: 'vault_path_not_a_vault'; path: string }
+  | { code: 'path_not_approved'; path: string }
   | { code: 'vault_path_locked'; path: string }
   | { code: 'wrong_password' }
   | { code: 'kdf_too_weak'; current_memory_kib: number; min_memory_kib: number }
@@ -123,6 +125,12 @@ export function userMessageFor(err: AppError): UserMessage {
         title: 'Not a vault',
         detail: `${err.path} doesn't contain a vault manifest.`,
         actionHint: 'Did you mean to create a new vault here?'
+      };
+    case 'path_not_approved':
+      return {
+        title: 'Path not chosen from a dialog',
+        detail: err.path,
+        actionHint: 'Use the Choose… button to pick the folder or file again.'
       };
     case 'vault_path_locked':
       return {

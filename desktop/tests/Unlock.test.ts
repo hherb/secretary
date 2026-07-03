@@ -26,12 +26,13 @@ const MANIFEST: ManifestDto = {
 };
 const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
 
-// Mock the IPC layer + dialog plugin (both used by the form). `vi.hoisted`
-// returns the mocks before the `vi.mock` factories run.
-const { unlockMock, settingsMock, openDialogMock } = vi.hoisted(() => ({
+// Mock the IPC layer + the backend invoke() PathPicker uses directly (both
+// used by the form). `vi.hoisted` returns the mocks before the `vi.mock`
+// factories run.
+const { unlockMock, settingsMock, invokeMock } = vi.hoisted(() => ({
   unlockMock: vi.fn(),
   settingsMock: vi.fn(),
-  openDialogMock: vi.fn()
+  invokeMock: vi.fn()
 }));
 vi.mock('../src/lib/ipc', async (importActual) => {
   // Keep the real types + APP_ERROR_CODES export shape; override the
@@ -43,13 +44,15 @@ vi.mock('../src/lib/ipc', async (importActual) => {
     getSettings: settingsMock
   };
 });
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openDialogMock }));
+// PathPicker invokes `pick_vault_folder` directly via `@tauri-apps/api/core`
+// (#353) — it does not go through the mocked `ipc.ts` module above.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
 beforeEach(() => {
   _resetSessionStateForTest();
   unlockMock.mockReset();
   settingsMock.mockReset();
-  openDialogMock.mockReset();
+  invokeMock.mockReset();
 });
 
 describe('Unlock — initial render', () => {
@@ -72,12 +75,12 @@ describe('Unlock — initial render', () => {
   });
 
   it('enables submit when both folder + password are present (via PathPicker)', async () => {
-    openDialogMock.mockResolvedValueOnce('/home/alice/vault');
+    invokeMock.mockResolvedValueOnce('/home/alice/vault');
     const { getByRole, getByLabelText } = render(Unlock);
 
     // Pick folder.
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     // Fill password.
     const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
     await fireEvent.input(passwordInput, { target: { value: 'hunter2' } });
@@ -91,11 +94,11 @@ describe('Unlock — happy path', () => {
   it('submitting calls unlockWithPassword(folder, password) then getSettings, transitions to unlocked', async () => {
     unlockMock.mockResolvedValueOnce(MANIFEST);
     settingsMock.mockResolvedValueOnce(SETTINGS);
-    openDialogMock.mockResolvedValueOnce('/home/alice/vault');
+    invokeMock.mockResolvedValueOnce('/home/alice/vault');
 
     const { getByRole, getByLabelText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
 
@@ -119,11 +122,11 @@ describe('Unlock — happy path', () => {
   it('clears the password field after successful unlock (do not retain in DOM)', async () => {
     unlockMock.mockResolvedValueOnce(MANIFEST);
     settingsMock.mockResolvedValueOnce(SETTINGS);
-    openDialogMock.mockResolvedValueOnce('/v');
+    invokeMock.mockResolvedValueOnce('/v');
 
     const { getByRole, getByLabelText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
     await fireEvent.input(passwordInput, { target: { value: 'hunter2' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
@@ -134,11 +137,11 @@ describe('Unlock — happy path', () => {
 describe('Unlock — error path', () => {
   it('wrong_password transitions to locked, sets lastError, surfaces userMessageFor.title', async () => {
     unlockMock.mockRejectedValueOnce({ code: 'wrong_password' });
-    openDialogMock.mockResolvedValueOnce('/v');
+    invokeMock.mockResolvedValueOnce('/v');
 
     const { getByRole, getByLabelText, findByText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'bad' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
     await waitFor(() => expect(get(sessionState).status).toBe('locked'));
@@ -159,11 +162,11 @@ describe('Unlock — error path', () => {
     // can't truly zeroize, but unbinding minimises the live-reference
     // window the GC has to chase.
     unlockMock.mockRejectedValueOnce({ code: 'wrong_password' });
-    openDialogMock.mockResolvedValueOnce('/v');
+    invokeMock.mockResolvedValueOnce('/v');
 
     const { getByRole, getByLabelText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
     await fireEvent.input(passwordInput, { target: { value: 'bad' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
@@ -173,11 +176,11 @@ describe('Unlock — error path', () => {
   it('vault_path_not_found surfaces the path in the inline detail', async () => {
     const path = '/no/such/vault';
     unlockMock.mockRejectedValueOnce({ code: 'vault_path_not_found', path });
-    openDialogMock.mockResolvedValueOnce(path);
+    invokeMock.mockResolvedValueOnce(path);
 
     const { getByRole, getByLabelText, findByText } = render(Unlock);
     await fireEvent.click(getByRole('button', { name: /choose/i }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
     await fireEvent.input(getByLabelText(/password/i), { target: { value: 'x' } });
     await fireEvent.click(getByRole('button', { name: /unlock/i }));
     await waitFor(() => expect(get(sessionState).status).toBe('locked'));

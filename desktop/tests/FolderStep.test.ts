@@ -7,8 +7,11 @@ vi.mock('../src/lib/ipc', () => ({
 }));
 import { probeCreateTarget } from '../src/lib/ipc';
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: vi.fn().mockResolvedValue('/Users/h/Docs')
+// PathPicker invokes `pick_vault_folder` directly via `@tauri-apps/api/core`
+// (#353); these tests seed the picker via `seedPath` and never click the
+// Choose… button, so the mock only needs to exist to satisfy the import.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue('/Users/h/Docs')
 }));
 
 describe('FolderStep', () => {

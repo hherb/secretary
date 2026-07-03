@@ -105,9 +105,9 @@
     <span class="contacts-pane__export-label">Export my card</span>
     <PathPicker
       value=""
-      directory={true}
-      title="Choose a folder to export your card to"
+      command="pick_export_dir"
       label="Export…"
+      placeholder="No folder selected"
       onSelect={onExportSelect}
     />
   </div>
