@@ -148,21 +148,26 @@ mod tests {
 
     #[test]
     fn reads_vault_uuid_from_toml() {
+        use rand_core::{OsRng, RngCore};
+
         let temp = tempfile::tempdir().unwrap();
-        // A minimal vault.toml carrying a known vault_uuid.
+        // Generate the vault_uuid at runtime rather than hardcoding a 16-byte
+        // literal: CodeQL flags fixed byte arrays as "hardcoded cryptographic
+        // value" even though a vault_uuid is a plain identifier, not key
+        // material. Formatting the random bytes with core's canonical
+        // formatter and asserting the local `parse_hyphenated_uuid` round-trips
+        // back to the same bytes also cross-checks the two independent
+        // implementations against any UUID, not just one fixture.
+        let mut uuid = [0u8; 16];
+        OsRng.fill_bytes(&mut uuid);
+        let hyphenated = secretary_core::vault::format_uuid_hyphenated(&uuid);
         std::fs::write(
             temp.path().join("vault.toml"),
-            b"vault_uuid = \"1f3a4b2c-9d8e-4f7a-b6c5-1a2b3c4d5e6f\"\n",
+            format!("vault_uuid = \"{hyphenated}\"\n"),
         )
         .unwrap();
         let got = read_vault_uuid_from_toml(temp.path()).unwrap();
-        assert_eq!(
-            got,
-            [
-                0x1f, 0x3a, 0x4b, 0x2c, 0x9d, 0x8e, 0x4f, 0x7a, 0xb6, 0xc5, 0x1a, 0x2b, 0x3c, 0x4d,
-                0x5e, 0x6f
-            ]
-        );
+        assert_eq!(got, uuid);
     }
 
     #[test]
