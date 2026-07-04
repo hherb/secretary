@@ -1451,20 +1451,56 @@ fn repair_vault_is_idempotent_on_healthy_vault() {
 }
 
 /// #384: the §10 baseline provider must be invoked with the VERIFIED
-/// manifest `vault_uuid` (available only after hybrid-verify + AEAD
-/// decrypt) — never a plaintext-derived value. Pins the keying half of
-/// the #384 hardening at the core seam.
+/// manifest `vault_uuid` — the value recovered after hybrid-verify +
+/// AEAD decrypt — never a plaintext `vault.toml`-derived one. Proven on
+/// a fixture where the two values actually DIVERGE: the owner re-signs
+/// the manifest under a different `vault_uuid` (header + body changed
+/// consistently, so the §4.3 step-5 cross-check passes, and no open-path
+/// check compares the manifest uuid to `vault.toml`'s). The provider
+/// must see the manifest's value — a regression to plaintext-derived
+/// keying reports the `vault.toml` uuid instead and goes RED.
 #[test]
 fn repair_passes_verified_manifest_uuid_to_baseline_provider() {
     let (dir, _mnemonic, pw) = make_fast_vault(71, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
     let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
-    let (device_uuid, block_uuid) = ([0xd1; 16], [0xb1; 16]);
-    // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
-    let (_manifest_v1, expected_uuid) =
-        stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
+    let toml_uuid = open.manifest.vault_uuid; // == vault.toml's value at creation
 
+    // Owner-re-sign the manifest under a DIVERGENT vault_uuid: same body
+    // otherwise, same IBK + signing keys, fresh nonce.
+    let divergent_uuid = [0x5b; 16];
+    assert_ne!(divergent_uuid, toml_uuid);
+    let mut body = open.manifest.clone();
+    body.vault_uuid = divergent_uuid;
+    let header = secretary_core::vault::manifest::ManifestHeader {
+        vault_uuid: divergent_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: open.manifest_file.header.last_mod_ms,
+    };
+    let mut nonce = [0u8; 24];
+    rng.fill_bytes(&mut nonce);
+    let author_fp = fingerprint(&open.owner_card.to_canonical_cbor().unwrap());
+    let pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    let file = secretary_core::vault::manifest::sign_manifest(
+        header,
+        &body,
+        &open.identity_block_key,
+        &nonce,
+        author_fp,
+        &open.identity.ed25519_sk,
+        &pq_sk,
+    )
+    .unwrap();
+    fs::write(
+        folder.join("manifest.cbor.enc"),
+        secretary_core::vault::manifest::encode_manifest_file(&file).unwrap(),
+    )
+    .unwrap();
+    drop(open);
+
+    // The §10 gate runs before Pass 1, so the provider is invoked even on
+    // this residue-free vault; capture what it is keyed with.
     let mut seen: Option<[u8; 16]> = None;
     let repaired = secretary_core::vault::repair_vault(
         folder,
@@ -1473,16 +1509,16 @@ fn repair_passes_verified_manifest_uuid_to_baseline_provider() {
             seen = Some(*uuid);
             Ok(None)
         },
-        device_uuid,
+        [0xd1; 16],
         3_000,
         &mut rng,
     )
-    .expect("adoptable residue with an empty baseline must repair");
+    .expect("divergent-uuid manifest must still open (nothing compares it to vault.toml)");
     drop(repaired);
     assert_eq!(
         seen,
-        Some(expected_uuid),
-        "provider must be keyed by the verified manifest vault_uuid"
+        Some(divergent_uuid),
+        "provider must be keyed by the verified manifest vault_uuid, not the vault.toml value"
     );
 }
 
