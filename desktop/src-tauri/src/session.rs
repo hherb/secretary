@@ -263,6 +263,23 @@ impl VaultSession {
                 }
             };
 
+        // #376 operator signal: flag ciphertext lingering in blocks/ that the
+        // signed manifest no longer lists — a trashed block whose best-effort
+        // rename (and every subsequent open-time sweep) failed, a legacy
+        // pre-#293 trash entry the sweep can never touch, or crash residue of
+        // an uncommitted save. Log-only: `open_vault` ignores unlisted files,
+        // so this is not a consistency fault, but the bytes remain
+        // decryptable on disk and were previously invisible.
+        for orphan in unlisted_block_files(folder, &output.manifest) {
+            tracing::warn!(
+                path = %orphan.display(),
+                "block ciphertext on disk is not listed in the verified \
+                 manifest: likely a trashed block whose physical move to \
+                 trash/ failed, or crash residue of an uncommitted save; it \
+                 remains decryptable until relocated (#376)"
+            );
+        }
+
         self.inner = Some(UnlockedSession {
             identity: output.identity,
             manifest: output.manifest,
@@ -347,6 +364,50 @@ impl VaultSession {
     pub fn force_expire_idle_tracker_for_test(&mut self) {
         self.idle.last_activity_ms = 0;
     }
+}
+
+/// #376: block-ciphertext files sitting in `blocks/` that the freshly-opened
+/// (verified) manifest does not list as live blocks. Each is logically
+/// deleted (or never committed) but physically present — still wrapped to
+/// its recipients, i.e. decryptable — because the best-effort
+/// `blocks/ → trash/` rename in core `trash_block` / the open-time sweep
+/// failed (EXDEV cross-filesystem trash dir, permissions), because it is a
+/// legacy pre-#293 trash entry the sweep never attempts, or because a
+/// crashed save never reached its manifest commit. Pure scan (no logging) so
+/// it is unit-testable; `populate_unlocked` logs each returned path.
+///
+/// Filenames are reconstructed from core's canonical formatting helpers, so
+/// the comparison stays pinned to the on-disk layout's single source of
+/// truth. Non-block files (e.g. atomic-write temp files) are ignored. A
+/// missing/unreadable `blocks/` dir yields an empty list — a fresh vault has
+/// no blocks dir and nothing to report.
+pub fn unlisted_block_files(vault_folder: &Path, manifest: &OpenVaultManifest) -> Vec<PathBuf> {
+    use secretary_core::vault::{format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION};
+    let blocks_dir = vault_folder.join(BLOCKS_SUBDIR);
+    let Ok(entries) = std::fs::read_dir(&blocks_dir) else {
+        return Vec::new();
+    };
+    let live: std::collections::HashSet<String> = manifest
+        .block_summaries()
+        .iter()
+        .map(|b| {
+            format!(
+                "{}{}",
+                format_uuid_hyphenated(&b.block_uuid),
+                BLOCK_FILE_EXTENSION
+            )
+        })
+        .collect();
+    let mut orphans: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            (name.ends_with(BLOCK_FILE_EXTENSION) && !live.contains(&name))
+                .then(|| blocks_dir.join(name))
+        })
+        .collect();
+    orphans.sort();
+    orphans
 }
 
 #[cfg(test)]

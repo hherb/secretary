@@ -14,6 +14,7 @@
 //!   routes the trash-precondition variants (`BlockUuidAlreadyLive` →
 //!   `BlockRestoreConflict`, `BlockNotInTrash` → `TrashEntryNotFound`).
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::State;
@@ -142,8 +143,44 @@ pub fn trash_block_impl(state: &Mutex<VaultSession>, block_uuid_hex: &str) -> Re
             now_ms(),
         )
         .map_err(map_ffi_error)?;
+        // #376 operator signal: core `trash_block` is manifest-first — the
+        // physical `blocks/ → trash/` rename is best-effort and ALL its
+        // failures (EXDEV cross-filesystem trash dir, permissions) are
+        // swallowed inside core, so a "deleted" secret's ciphertext can
+        // linger in `blocks/`, still wrapped to its recipients, with no
+        // indication anywhere. Surface that state here, where a logging
+        // runtime exists.
+        if let Some(residue) = lingering_trash_residue(&u.vault_folder, &block_uuid) {
+            tracing::warn!(
+                path = %residue.display(),
+                "trashed block ciphertext is still resident in blocks/: the \
+                 best-effort rename to trash/ failed (cross-filesystem trash \
+                 dir or permissions); the secret remains decryptable on disk \
+                 until an open-time sweep, a restore, or manual relocation \
+                 moves it"
+            );
+        }
         Ok(())
     })
+}
+
+/// #376: path of a trashed block's ciphertext if it is still resident in
+/// `blocks/` — i.e. the best-effort physical rename inside core
+/// `trash_block` (or the open-time sweep) failed. The manifest-first commit
+/// already lists the block as trashed, so this is NOT a consistency fault;
+/// but the logically-deleted ciphertext remains decryptable on disk until
+/// something relocates it. The filename is reconstructed from core's
+/// canonical formatting helpers, so this stays pinned to the on-disk layout's
+/// single source of truth.
+pub fn lingering_trash_residue(vault_folder: &Path, block_uuid: &[u8; 16]) -> Option<PathBuf> {
+    use secretary_core::vault::{format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION};
+    let file = format!(
+        "{}{}",
+        format_uuid_hyphenated(block_uuid),
+        BLOCK_FILE_EXTENSION
+    );
+    let path = vault_folder.join(BLOCKS_SUBDIR).join(file);
+    path.exists().then_some(path)
 }
 
 #[tauri::command]
