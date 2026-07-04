@@ -27,7 +27,9 @@
 //! and relied on the unlock-time AEAD AAD binding as an out-of-band
 //! guard; #384 removed that reliance.) A provider error propagates
 //! fail-closed before anything is staged or written. This replaces the
-//! original (buggy) post-write `enforce_rollback_resistance` call.
+//! original post-write `enforce_rollback_resistance` call — that fn
+//! remains correct on the read-only open path; the bug was running it
+//! post-write on this mutating path.
 //!
 //! ## Fail-closed on an existing-but-unreadable baseline (#384)
 //!

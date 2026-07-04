@@ -160,10 +160,14 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 /// `open_vault`, then evaluates the §10 rollback check itself — keyed by
 /// the **verified** `manifest.vault_uuid` handed to `load_baseline`, on
 /// the committed (pre-tick) clock, strictly before any write; a
-/// `load_baseline` error refuses the repair fail-closed (#384). The
-/// repair path is never a weaker open than a normal
-/// one; it only widens what happens *after* the manifest is
-/// authenticated.
+/// `load_baseline` error refuses the repair fail-closed (#384). Caution
+/// for new callers: the fail-closed posture required by crypto-design
+/// §10 lives in the *provider* — passing `|_| Ok(None)` silently opts
+/// out of rollback resistance (acceptable only in tests). Production
+/// callers must use (or mirror) the bridge's `baseline_provider`, which
+/// fails closed on an existing-but-unreadable baseline store. The repair
+/// path is never a weaker open than a normal one; it only widens what
+/// happens *after* the manifest is authenticated.
 ///
 /// The same open-time sweep this module runs for `open_vault`
 /// (`complete_pending_trash_renames`) also runs here. That sweep
