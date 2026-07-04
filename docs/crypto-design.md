@@ -465,6 +465,8 @@ Rollback resistance is achieved at two levels:
 
 The "highest seen" state is stored per-vault in the OS keystore (so it shares the device's tamper resistance) and persists across application restarts. Destroying it (e.g., re-installing Secretary on the same device) returns the device to a "no history" state — the next manifest is accepted regardless of its clock, and rollback resistance is reset on that device.
 
+A read-only load MAY evaluate this check after decoding the manifest — nothing has been written, and a skipped or late check self-heals on the next load against the persisted baseline. Any operation that **rewrites the manifest as part of loading it** (e.g. crash repair, vault-format.md §9) MUST evaluate the check on the committed (pre-tick) clock *before* its first write, keyed by the verified manifest `vault_uuid`, and MUST fail closed if an existing "highest seen" baseline cannot be read: after the operation's own clock tick, a strictly-dominated clock becomes concurrent and the rollback is laundered permanently. A genuinely absent baseline (never-synced device, deliberate reset) skips the check as above.
+
 ---
 
 ## 11. Per-record CRDT merge
