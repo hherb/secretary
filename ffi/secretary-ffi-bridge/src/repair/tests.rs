@@ -25,10 +25,17 @@ use crate::device::{add_device_slot, open_with_device_secret};
 use crate::error::FfiVaultError;
 use crate::vault::orchestration::open_vault_with_password;
 
-use super::orchestration::{repair_vault_with_device_secret_in, repair_vault_with_password_in};
+use super::orchestration::{
+    repair_vault_with_device_secret_in, repair_vault_with_password_in,
+    repair_vault_with_recovery_in,
+};
 use super::{repair_vault_with_device_secret, repair_vault_with_password};
 
 // ── fixture helpers (mirrors `device.rs`'s `tmp_golden_vault`) ─────────────
+
+/// The golden vault's recovery mnemonic (same pin as `vault/tests.rs`;
+/// sourced from `golden_vault_001_inputs.json`'s `recovery_mnemonic_phrase`).
+const VAULT_001_PHRASE: &[u8] = b"wall annual clay zebra cost cricket choose light small neck mimic season fix situate love asset dismiss online island disease turkey grab dish that";
 
 fn golden_vault_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core/tests/data/golden_vault_001")
@@ -655,6 +662,48 @@ fn repair_device_secret_refuses_unreadable_rollback_baseline() {
         &folder,
         &device_uuid,
         &device_secret,
+        3_000,
+    )
+    .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "expected CorruptVault, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        staged.manifest_v1,
+        "refused repair must not mutate the manifest (fail-closed pre-write)",
+    );
+}
+
+/// #384 posture (recovery arm): same fail-closed contract as the
+/// password-arm test above, proven end-to-end through the mnemonic
+/// unlock path — completing arm parity across all three repair arms so
+/// a future edit cannot swap this arm's provider for a fail-open one
+/// and ship green (the other two arms' tests would stay green).
+#[test]
+fn repair_recovery_refuses_unreadable_rollback_baseline() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0x9b; 32]);
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xea; 16], [0xfa; 16]);
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
+
+    // A PRESENT but garbage state file at the exact path load() reads.
+    std::fs::write(
+        secretary_cli::state::state_file_path(state_dir.path(), staged.vault_uuid),
+        b"not a canonical SyncState",
+    )
+    .unwrap();
+
+    let err = repair_vault_with_recovery_in(
+        Some(state_dir.path()),
+        &folder,
+        VAULT_001_PHRASE,
+        &device_uuid,
         3_000,
     )
     .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
