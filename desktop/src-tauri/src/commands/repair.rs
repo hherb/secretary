@@ -104,13 +104,16 @@ mod tests {
     use super::*;
 
     /// Random throwaway password bytes for gate-rejection tests where the
-    /// password is never reached (the approval gate rejects first). A literal
-    /// here trips CodeQL's hardcoded-credential heuristic.
+    /// password is never reached (the approval gate rejects first). Every byte
+    /// is drawn from `OsRng` via `array::from_fn` so there is no hard-coded
+    /// array literal in the function at all: the `let mut pw = [0u8; 16];`
+    /// buffer form leaves a `[0u8; 16]` literal that CodeQL's "hard-coded
+    /// cryptographic value" query taints as a password source (its dataflow
+    /// does not model that `fill_bytes` overwrites the buffer).
     fn any_password() -> [u8; 16] {
         use rand_core::{OsRng, RngCore};
-        let mut pw = [0u8; 16];
-        OsRng.fill_bytes(&mut pw);
-        pw
+        let mut rng = OsRng;
+        std::array::from_fn(|_| rng.next_u32() as u8)
     }
 
     /// A full, `decode`-valid `vault.toml` carrying the given `vault_uuid`.
