@@ -18,70 +18,53 @@
 //! rollback permanently and defeating the #352 invariant on the exact path the
 //! design claims preserves it.
 //!
-//! So we hand core `repair_vault` the local baseline as `local_highest_clock`
-//! (`Some`) instead of `None`. Core runs the §10 `is_rollback` check inside
-//! `read_and_verify_manifest`, at the TOP, on the COMMITTED clock, BEFORE the
-//! tick/write — a rollback surfaces as `VaultError::Rollback` → fail-closed,
-//! nothing is mutated. The baseline is keyed by the `vault_uuid` from the
-//! plaintext `vault.toml`; that is sound because that same `vault_uuid` is
-//! bound into the unlock-time AEAD as associated data
-//! (`compose_aad(TAG_ID_WRAP_PW, &vt.vault_uuid)` in `unlock/mod.rs`, and the
-//! bundle-decrypt AAD on the device path), so a tampered `vault.toml`
-//! `vault_uuid` makes the unlock's AEAD auth tag fail
-//! (`UnlockError::WrongPasswordOrCorrupt` / `VaultMismatch`) *before* repair
-//! reaches any manifest read or write — it can never point the baseline at a
-//! weaker `vault_uuid` to sneak a rollback through. (Note: this is NOT
-//! `ManifestVaultUuidMismatch`, which only cross-checks manifest body vs
-//! header — both manifest-internal — and never compares `vault.toml`.) This
-//! replaces the previous (buggy) post-write `enforce_rollback_resistance`
-//! call, which is no longer made here.
+//! So we hand core `repair_vault` a baseline *provider* instead of a
+//! pre-loaded clock. Core invokes it with the **verified**
+//! `manifest.vault_uuid` — available only after hybrid-verify + AEAD
+//! decrypt — inside the pre-write window, so the baseline lookup can
+//! never be keyed by an attacker-controlled plaintext value. (The
+//! previous design keyed it off the plaintext `vault.toml` `vault_uuid`
+//! and relied on the unlock-time AEAD AAD binding as an out-of-band
+//! guard; #384 removed that reliance.) A provider error propagates
+//! fail-closed before anything is staged or written. This replaces the
+//! original (buggy) post-write `enforce_rollback_resistance` call.
 
 use std::path::Path;
 
 use rand_core::OsRng;
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::vault::{repair_vault, Unlocker, VectorClockEntry};
+use secretary_core::vault::{repair_vault, Unlocker, VaultError, VectorClockEntry};
 
 use crate::error::FfiVaultError;
 use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 
-/// Best-effort load of this device's §10 rollback baseline for `folder`, keyed
-/// by the plaintext `vault.toml` `vault_uuid`.
-///
-/// Mirrors
-/// [`enforce_rollback_resistance`](crate::vault::orchestration::enforce_rollback_resistance)'s
-/// availability posture: the state
-/// directory is OS-local and outside the cloud-replay threat surface, so any
-/// failure to obtain a usable baseline — no resolvable state dir, an
-/// unreadable / undecodable `vault.toml`, an unreadable / missing state file,
-/// or an empty (never-synced) baseline — returns `None` and SKIPs the check
-/// rather than bricking a legitimate repair. A never-synced device therefore
-/// has no false positive.
-///
-/// Keying by the *plaintext* `vault.toml` `vault_uuid` is sound: that same
-/// `vault_uuid` is bound into the unlock-time AEAD as associated data (the
-/// `wrap_pw` AAD on the password/recovery paths, the bundle-decrypt AAD on the
-/// device path). A tampered `vault.toml` `vault_uuid` therefore fails the
-/// unlock's AEAD auth tag (`WrongPasswordOrCorrupt` / `VaultMismatch`) *before*
-/// `repair_vault` reaches any manifest read or write, so it can never point the
-/// check at a weaker baseline to sneak a rollback through. This is NOT enforced
-/// by `ManifestVaultUuidMismatch` (a manifest body-vs-header check that never
-/// looks at `vault.toml`).
-fn load_rollback_baseline(
+/// Build the §10 rollback-baseline provider shared by the three repair
+/// arms. Core `repair_vault` invokes the returned closure with the
+/// **verified** `manifest.vault_uuid` (post hybrid-verify + AEAD
+/// decrypt), so the state lookup can never be keyed by an
+/// attacker-controlled plaintext value (#384). A `None` state dir (no
+/// resolvable OS state dir) and an empty baseline (missing state file /
+/// never-synced device) both yield `Ok(None)` — §10 is skipped with no
+/// false positive on a fresh device.
+fn baseline_provider(
     state_dir: Option<&Path>,
-    folder: &Path,
-) -> Option<Vec<VectorClockEntry>> {
-    let state_dir = state_dir?;
-    let vault_toml = std::fs::read_to_string(folder.join("vault.toml")).ok()?;
-    let vault_uuid = secretary_core::unlock::vault_toml::decode(&vault_toml)
-        .ok()?
-        .vault_uuid;
-    let clock = secretary_cli::state::load(state_dir, vault_uuid)
-        .ok()?
-        .highest_vector_clock_seen;
-    // Empty baseline (never-synced) is indistinguishable from no baseline for
-    // §10 purposes; pass `None` so core skips the check (no false positive).
-    (!clock.is_empty()).then_some(clock)
+) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
+    move |vault_uuid: &[u8; 16]| {
+        let Some(state_dir) = state_dir else {
+            return Ok(None);
+        };
+        match secretary_cli::state::load(state_dir, *vault_uuid) {
+            Ok(state) => {
+                let clock = state.highest_vector_clock_seen;
+                // Empty baseline (never-synced) is indistinguishable from
+                // no baseline for §10 purposes; skip (no false positive).
+                Ok((!clock.is_empty()).then_some(clock))
+            }
+            // Interim fail-open posture — flipped to fail-closed in the
+            // next commit (#384 posture half, RED-proven there).
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 /// Repair a crash-residue vault opened by master password. See
@@ -112,8 +95,8 @@ pub fn repair_vault_with_password(
 /// Explicit-`state_dir` seam for [`repair_vault_with_password`]
 /// (host-testable — a test injects a temp state dir carrying a seeded §10
 /// baseline). `state_dir == None` (no resolvable OS state dir) or an
-/// absent/empty baseline both yield a `None` `local_highest_clock`, i.e.
-/// the pre-#374 behavior with no false positive.
+/// absent/empty baseline both yield a provider that resolves to `Ok(None)`,
+/// i.e. the pre-#374 behavior with no false positive.
 pub(crate) fn repair_vault_with_password_in(
     state_dir: Option<&Path>,
     folder: &Path,
@@ -121,15 +104,14 @@ pub(crate) fn repair_vault_with_password_in(
     device_uuid: &[u8; 16],
     now_ms: u64,
 ) -> Result<OpenVaultOutput, FfiVaultError> {
-    let baseline = load_rollback_baseline(state_dir, folder);
     let pw = SecretBytes::new(password.to_vec());
-    // Pass the baseline as `local_highest_clock`: core runs the §10 check on
-    // the COMMITTED clock before it ticks/rewrites the manifest — the
-    // pre-write gate is the §10 guard for this mutating path (see module docs).
+    // Core invokes the provider with the VERIFIED manifest vault_uuid and
+    // runs the §10 check on the COMMITTED clock before it ticks/rewrites
+    // the manifest — the pre-write gate for this mutating path (module docs).
     let core_out = repair_vault(
         folder,
         Unlocker::Password(&pw),
-        baseline.as_deref(),
+        baseline_provider(state_dir),
         *device_uuid,
         now_ms,
         &mut OsRng,
@@ -173,11 +155,13 @@ pub(crate) fn repair_vault_with_recovery_in(
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiVaultError::InvalidMnemonic {
             detail: "phrase contained invalid UTF-8".to_string(),
         })?;
-    let baseline = load_rollback_baseline(state_dir, folder);
+    // Core invokes the provider with the VERIFIED manifest vault_uuid and
+    // runs the §10 check on the COMMITTED clock before it ticks/rewrites
+    // the manifest — the pre-write gate for this mutating path (module docs).
     let core_out = repair_vault(
         folder,
         Unlocker::Recovery(phrase),
-        baseline.as_deref(),
+        baseline_provider(state_dir),
         *device_uuid,
         now_ms,
         &mut OsRng,
@@ -218,15 +202,17 @@ pub(crate) fn repair_vault_with_device_secret_in(
     device_secret: &[u8; 32],
     now_ms: u64,
 ) -> Result<OpenVaultOutput, FfiVaultError> {
-    let baseline = load_rollback_baseline(state_dir, folder);
     let secret = SecretBytes::new(device_secret.to_vec());
+    // Core invokes the provider with the VERIFIED manifest vault_uuid and
+    // runs the §10 check on the COMMITTED clock before it ticks/rewrites
+    // the manifest — the pre-write gate for this mutating path (module docs).
     let core_out = repair_vault(
         folder,
         Unlocker::DeviceSecret {
             device_uuid,
             secret: &secret,
         },
-        baseline.as_deref(),
+        baseline_provider(state_dir),
         *device_uuid,
         now_ms,
         &mut OsRng,

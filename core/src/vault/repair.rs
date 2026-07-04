@@ -21,7 +21,7 @@ use crate::identity::fingerprint::fingerprint;
 
 use super::block;
 use super::conflict::{clock_relation, ClockRelation};
-use super::manifest::{BlockEntry, Manifest};
+use super::manifest::{is_rollback, BlockEntry, Manifest};
 use super::orchestrators::{
     format_uuid_hyphenated, read_and_verify_manifest, resign_and_write_manifest,
     resolve_recipient_uuids, tick_clock, unlock_vault_identity, OpenVault, Unlocker, BLOCKS_SUBDIR,
@@ -157,7 +157,11 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 ///
 /// Goes through the same `unlock_vault_identity` +
 /// `read_and_verify_manifest` §1 verify-before-decrypt sequence as
-/// `open_vault` — the repair path is never a weaker open than a normal
+/// `open_vault`, then evaluates the §10 rollback check itself — keyed by
+/// the **verified** `manifest.vault_uuid` handed to `load_baseline`, on
+/// the committed (pre-tick) clock, strictly before any write; a
+/// `load_baseline` error refuses the repair fail-closed (#384). The
+/// repair path is never a weaker open than a normal
 /// one; it only widens what happens *after* the manifest is
 /// authenticated.
 ///
@@ -173,15 +177,35 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 pub fn repair_vault(
     folder: &Path,
     unlocker: Unlocker<'_>,
-    local_highest_clock: Option<&[VectorClockEntry]>,
+    load_baseline: impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError>,
     device_uuid: [u8; 16],
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<OpenVault, VaultError> {
-    // Same unlock + §10-checked manifest verify as open_vault.
+    // Same unlock + §1 verify-before-decrypt manifest sequence as
+    // open_vault. §10 runs explicitly below (not inside
+    // read_and_verify_manifest) — see the gate comment.
     let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
     let (owner_card, mut manifest, manifest_file, _envelope_bytes) =
-        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
+        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, None)?;
+
+    // §10 pre-write gate (#384): keyed by the VERIFIED manifest
+    // `vault_uuid` — available only now, after hybrid-verify + AEAD
+    // decrypt — never by the plaintext `vault.toml` value. It must run
+    // HERE, before Pass 1 stages anything and before the adopt/tick/
+    // manifest rewrite below: a post-write check would evaluate the
+    // post-tick clock, where the local tick flips a strictly-dominated
+    // (rollback) committed clock into an unflagged "concurrent" one,
+    // masking the rollback permanently. A provider error propagates
+    // fail-closed — nothing has been staged or written yet.
+    if let Some(local) = load_baseline(&manifest.vault_uuid)? {
+        if is_rollback(&local, &manifest.vector_clock) {
+            return Err(VaultError::Rollback {
+                local_clock: local,
+                incoming_clock: manifest.vector_clock.clone(),
+            });
+        }
+    }
 
     // Owner verify/decrypt keys — mirrors restore_block's key prep,
     // hoisted once outside the per-block loop. Zeroize the stack copy.
