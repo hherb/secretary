@@ -129,6 +129,17 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Random throwaway password bytes for gate-rejection tests where the
+    /// password is never reached (the approval gate / not-a-vault check
+    /// rejects first). A literal here trips CodeQL's hardcoded-credential
+    /// heuristic.
+    fn any_password() -> [u8; 16] {
+        use rand_core::{OsRng, RngCore};
+        let mut pw = [0u8; 16];
+        OsRng.fill_bytes(&mut pw);
+        pw
+    }
+
     #[test]
     fn nonexistent_folder_yields_vault_path_not_found() {
         let temp = tempdir().expect("tempdir");
@@ -198,7 +209,7 @@ mod tests {
     fn unapproved_folder_is_rejected_before_validation() {
         let temp = tempdir().expect("tempdir");
         let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
-        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
+        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), &any_password())
             .expect_err("unapproved");
         assert!(
             matches!(err, AppError::PathNotApproved { .. }),
@@ -217,7 +228,7 @@ mod tests {
             PathPurpose::VaultFolder,
             canonicalize_for_auth(temp.path()).unwrap(),
         );
-        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), b"pw")
+        let err = unlock_with_password_impl(&state, temp.path().to_str().unwrap(), &any_password())
             .expect_err("not a vault");
         assert!(
             matches!(err, AppError::VaultPathNotAVault { .. }),

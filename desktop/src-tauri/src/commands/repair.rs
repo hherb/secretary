@@ -146,6 +146,16 @@ pub fn repair_vault_impl(
 mod tests {
     use super::*;
 
+    /// Random throwaway password bytes for gate-rejection tests where the
+    /// password is never reached (the approval gate rejects first). A literal
+    /// here trips CodeQL's hardcoded-credential heuristic.
+    fn any_password() -> [u8; 16] {
+        use rand_core::{OsRng, RngCore};
+        let mut pw = [0u8; 16];
+        OsRng.fill_bytes(&mut pw);
+        pw
+    }
+
     #[test]
     fn reads_vault_uuid_from_toml() {
         use rand_core::{OsRng, RngCore};
@@ -184,7 +194,7 @@ mod tests {
         // therefore before any bridge/session call) ever runs.
         let temp = tempfile::tempdir().expect("tempdir");
         let state = std::sync::Mutex::new(VaultSession::new(std::env::temp_dir()));
-        let err = repair_vault_impl(&state, temp.path().to_str().unwrap(), b"pw")
+        let err = repair_vault_impl(&state, temp.path().to_str().unwrap(), &any_password())
             .expect_err("unapproved");
         assert!(
             matches!(err, AppError::PathNotApproved { .. }),
