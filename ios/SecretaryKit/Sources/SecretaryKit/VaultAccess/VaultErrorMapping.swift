@@ -34,6 +34,15 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     case .WrongDeviceSecretOrCorrupt:       return .wrongDeviceSecretOrCorrupt
     case .DeviceSlotNotFound:               return .wrongDeviceSecretOrCorrupt
     case .DeviceUuidMismatch(let detail):   return .corruptVault(detail)
+    // #374: the open path now promotes crash-residue (`BlockFingerprintMismatch`)
+    // out of `CorruptVault` into these two dedicated arms. iOS ships no repair
+    // UI yet, so both map back to `.corruptVault` — the same classification the
+    // pre-#374 `CorruptVault` fold produced — rather than silently degrading
+    // into the generic `default -> .other` bucket.
+    case .VaultNeedsRepair(let blockUuidHex):
+        return .corruptVault("crash residue in block \(blockUuidHex)")
+    case .RepairRejected(let blockUuidHex, let detail):
+        return .corruptVault("repair refused for block \(blockUuidHex): \(detail)")
     default:                                return .other(String(describing: e))
     }
 }

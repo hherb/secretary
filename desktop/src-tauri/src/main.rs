@@ -21,7 +21,8 @@ use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
 use secretary_desktop::commands::{
-    browse, contacts, create, delete, edit, lock, pick, reauth, settings, sync, unlock, vault,
+    browse, contacts, create, delete, edit, lock, pick, reauth, repair, settings, sync, unlock,
+    vault,
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
@@ -73,6 +74,7 @@ fn main() {
         .manage(Mutex::new(VaultSession::new(device_data_dir)))
         .invoke_handler(tauri::generate_handler![
             unlock::unlock_with_password,
+            repair::repair_vault,
             vault::list_blocks,
             vault::get_manifest,
             settings::get_settings,

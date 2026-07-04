@@ -22,6 +22,9 @@ pub use contacts::{import_contact_card, share_block_to};
 mod record_edit;
 pub use record_edit::{append_record, edit_record, resurrect_record, tombstone_record};
 
+mod repair;
+pub use repair::{repair_with_device_secret, repair_with_password, repair_with_recovery};
+
 mod sync;
 pub use sync::{sync_commit_decisions, sync_status, sync_vault};
 

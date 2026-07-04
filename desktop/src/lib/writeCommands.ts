@@ -89,6 +89,13 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     reason:
       'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); performs no vault mutation',
   },
+  repair_vault: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'repairVault',
+    reason:
+      'pre-unlock crash-recovery path invoked from the locked Unlock screen (mirrors unlock_with_password) — takes the vault password directly and there is no unlocked session yet to protect',
+  },
 
   // --- session / auth ---
   unlock_with_password: { kind: 'session' },

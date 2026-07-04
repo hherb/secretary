@@ -343,11 +343,35 @@ pub enum FfiVaultError {
     /// folder is the caller's own input.
     #[error("vault folder is not empty")]
     VaultFolderNotEmpty,
+
+    /// The vault has crash residue that `repair_vault` may be able to adopt:
+    /// an on-disk block whose bytes do not match the committed manifest
+    /// fingerprint (core `BlockFingerprintMismatch`, from an interrupted write).
+    /// Distinct from `CorruptVault` — this is the actionable "offer Repair"
+    /// signal.
+    #[error("vault needs repair: block {block_uuid_hex} has crash residue")]
+    VaultNeedsRepair {
+        /// Lowercase-hyphenated UUID of the block with crash residue.
+        block_uuid_hex: String,
+    },
+
+    /// `repair_vault` was attempted and refused to adopt a block (core
+    /// `RepairRejected`). Fail-closed: no change was written.
+    #[error("repair rejected for block {block_uuid_hex}: {detail}")]
+    RepairRejected {
+        /// Lowercase-hyphenated UUID of the block repair refused to adopt.
+        block_uuid_hex: String,
+        /// Diagnostic explaining why repair refused — for equal-clock
+        /// rejections it names the recipient delta. The app should surface
+        /// this to the user; there is no automatic fix.
+        detail: String,
+    },
 }
 
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
     fn from(e: secretary_core::vault::VaultError) -> Self {
         use secretary_core::unlock::UnlockError as UE;
+        use secretary_core::vault::format_uuid_hyphenated;
         use secretary_core::vault::VaultError as VE;
 
         match e {
@@ -493,6 +517,27 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // fold in B.1 before the device-slot FFI surface existed).
             VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,
 
+            // #350/#374: open_vault detected crash residue — an on-disk
+            // block whose bytes do not BLAKE3-hash to the manifest's
+            // committed fingerprint. Promoted OUT of the CorruptVault fold
+            // into a dedicated, actionable variant: `repair_vault` may be
+            // able to adopt this block, so the foreign side needs a typed
+            // signal to offer "Repair now?" rather than a generic
+            // corruption message.
+            VE::BlockFingerprintMismatch { block_uuid, .. } => FfiVaultError::VaultNeedsRepair {
+                block_uuid_hex: format_uuid_hyphenated(&block_uuid),
+            },
+
+            // #350/#374: repair_vault was attempted and refused to adopt a
+            // block (fail-closed gate failure — hybrid verify, header
+            // binding, clock freshness, or recipient-widening guard).
+            // Promoted OUT of the CorruptVault fold so the foreign side can
+            // surface `detail` instead of a generic corruption message.
+            VE::RepairRejected { block_uuid, detail } => FfiVaultError::RepairRejected {
+                block_uuid_hex: format_uuid_hyphenated(&block_uuid),
+                detail,
+            },
+
             // Post-unlock integrity / structural failures and IO kinds the
             // guarded `Io` arm above did not catch: fold to `CorruptVault`.
             // These cannot leak unlock-secret information (the IBK was
@@ -522,18 +567,12 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // match the path key it's being persisted under — "data doesn't
             // match what we'd sign/trust" → fold to CorruptVault.
             | VE::ContactCardUuidMismatch { .. }
-            // C.1.1b: open_vault surfaces this when an on-disk block's
-            // bytes do not BLAKE3-hash to the manifest's committed
-            // fingerprint. Same "data on disk doesn't match what we
-            // signed" semantic as RestoreVerificationFailed → fold to
-            // CorruptVault.
-            | VE::BlockFingerprintMismatch { .. }
-            // #350: block file absent from blocks/, or repair_vault
-            // refused to adopt an on-disk block — both are "data on
-            // disk doesn't match what we signed/expect" semantics like
-            // BlockFingerprintMismatch above → fold to CorruptVault.
-            | VE::BlockFileMissing { .. }
-            | VE::RepairRejected { .. }) => FfiVaultError::CorruptVault {
+            // #350: block file absent from blocks/ — "data on disk doesn't
+            // match what we signed/expect" semantics like
+            // RestoreVerificationFailed → fold to CorruptVault. NOT
+            // repairable by repair_vault (it cannot invent bytes), so unlike
+            // BlockFingerprintMismatch this stays folded.
+            | VE::BlockFileMissing { .. }) => FfiVaultError::CorruptVault {
                 detail: format!("{e}"),
             },
         }

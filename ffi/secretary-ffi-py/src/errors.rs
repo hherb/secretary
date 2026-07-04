@@ -77,6 +77,13 @@ create_exception!(secretary_ffi_py, VaultDeviceUuidMismatch, PyException);
 // Folder-create precondition — target directory not empty. Mirrors the
 // bridge's FfiVaultError::VaultFolderNotEmpty.
 create_exception!(secretary_ffi_py, VaultFolderNotEmpty, PyException);
+// #374 repair_vault FFI projection — crash-residue "offer Repair" signal
+// and the repair-refused outcome. Mirror the bridge's FfiVaultError
+// variants; VaultNeedsRepair keeps its bare name (it already reads as
+// vault-scoped) while RepairRejected gets the `Vault` prefix like its
+// siblings above.
+create_exception!(secretary_ffi_py, VaultNeedsRepair, PyException);
+create_exception!(secretary_ffi_py, VaultRepairRejected, PyException);
 
 /// Map a bridge-crate `FfiUnlockError` to the matching Python exception
 /// class. Used at the `open_with_password` boundary via `.map_err`. A
@@ -174,6 +181,19 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         }
         FfiVaultError::DeviceUuidMismatch { detail } => VaultDeviceUuidMismatch::new_err(detail),
         FfiVaultError::VaultFolderNotEmpty => VaultFolderNotEmpty::new_err(e.to_string()),
+        FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
+            VaultNeedsRepair::new_err(block_uuid_hex)
+        }
+        // Message contract: `VaultRepairRejected`'s single string argument is
+        // `"<block_uuid_hex>: <detail>"` — the bridge's two structured fields
+        // collapsed into one message per this module's `create_exception!`
+        // convention (uniffi/desktop keep them separate). Python callers that
+        // need the block UUID split on the first `": "`; `block_uuid_hex` is a
+        // hyphenated UUID (no embedded `": "`), so the first split is exact.
+        FfiVaultError::RepairRejected {
+            block_uuid_hex,
+            detail,
+        } => VaultRepairRejected::new_err(format!("{block_uuid_hex}: {detail}")),
     }
 }
 

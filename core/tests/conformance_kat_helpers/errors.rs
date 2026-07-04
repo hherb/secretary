@@ -35,6 +35,8 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::WrongDeviceSecretOrCorrupt => "WrongDeviceSecretOrCorrupt",
         E::DeviceUuidMismatch { .. } => "DeviceUuidMismatch",
         E::VaultFolderNotEmpty => "VaultFolderNotEmpty",
+        E::VaultNeedsRepair { .. } => "VaultNeedsRepair",
+        E::RepairRejected { .. } => "RepairRejected",
     }
 }
 
@@ -49,6 +51,7 @@ pub fn vault_error_detail(e: &secretary_ffi_bridge::error::FfiVaultError) -> Opt
         E::BlockUuidAlreadyLive { detail } => Some(detail.as_str()),
         E::BlockNotInTrash { detail } => Some(detail.as_str()),
         E::DeviceUuidMismatch { detail } => Some(detail.as_str()),
+        E::RepairRejected { detail, .. } => Some(detail.as_str()),
         _ => None,
     }
 }

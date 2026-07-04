@@ -171,6 +171,16 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
+    /// Random throwaway password bytes for gate-rejection tests where the
+    /// password is never reached (the approval / empty-folder check rejects
+    /// before any crypto). A literal here trips CodeQL's hardcoded-credential
+    /// heuristic.
+    fn any_password() -> [u8; 16] {
+        let mut pw = [0u8; 16];
+        OsRng.fill_bytes(&mut pw);
+        pw
+    }
+
     #[test]
     fn probe_rejects_unapproved_path() {
         let temp = tempdir().unwrap();
@@ -204,7 +214,7 @@ mod tests {
             &state,
             target.to_str().unwrap(),
             "My Vault",
-            &secretary_core::crypto::secret::SecretBytes::from(b"pw".to_vec()),
+            &secretary_core::crypto::secret::SecretBytes::from(any_password().to_vec()),
             0,
             &mut rand_core::OsRng,
         )
@@ -242,7 +252,7 @@ mod tests {
             &state,
             subfolder.to_str().unwrap(),
             "My Vault",
-            &secretary_core::crypto::secret::SecretBytes::from(b"pw".to_vec()),
+            &secretary_core::crypto::secret::SecretBytes::from(any_password().to_vec()),
             0,
             &mut rand_core::OsRng,
         )

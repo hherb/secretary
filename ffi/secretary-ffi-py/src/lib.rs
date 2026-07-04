@@ -54,6 +54,7 @@ mod errors;
 mod identity;
 mod record;
 mod record_edit;
+mod repair;
 mod restore;
 mod save;
 mod share;
@@ -74,15 +75,16 @@ use errors::{
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
     VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent, VaultRecordNotFound,
-    VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
-    VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
-    VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultNeedsRepair, VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent,
+    VaultRecordNotFound, VaultRepairRejected, VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete,
+    VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt,
+    VaultSyncStateVaultMismatch, VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt,
+    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
 use record_edit::{append_record, edit_record, resurrect_record, tombstone_record, RecordContent};
+use repair::{repair_with_device_secret, repair_with_password, repair_with_recovery};
 use restore::restore_block;
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
@@ -342,6 +344,19 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync_status, m)?)?;
     m.add_function(wrap_pyfunction!(sync_vault, m)?)?;
     m.add_function(wrap_pyfunction!(sync_commit_decisions, m)?)?;
+
+    // #374 repair_vault error surface — 2 typed exception classes mirroring
+    // the bridge's new FfiVaultError variants (crash-residue "offer Repair"
+    // signal and the repair-refused outcome).
+    m.add("VaultNeedsRepair", py.get_type::<VaultNeedsRepair>())?;
+    m.add("VaultRepairRejected", py.get_type::<VaultRepairRejected>())?;
+
+    // #374 repair_vault projection — 3 pyfunctions mirroring the bridge's
+    // repair_vault_with_* trio. Error surface reuses the classes registered
+    // above plus the open-path classes already registered elsewhere.
+    m.add_function(wrap_pyfunction!(repair_with_password, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_with_recovery, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_with_device_secret, m)?)?;
 
     Ok(())
 }

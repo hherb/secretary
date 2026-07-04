@@ -468,3 +468,96 @@ fn from_core_vault_error_restore_target_missing_maps_to_corrupt_vault() {
     let ffi: FfiVaultError = core_err.into();
     assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
 }
+
+// =============================================================================
+// FfiVaultError::{VaultNeedsRepair, RepairRejected} — new in #374 (repair_vault
+// FFI projection). Promoted OUT of the CorruptVault fold: #350's
+// BlockFingerprintMismatch / RepairRejected are actionable "offer Repair"
+// signals, not unconditional data corruption. BlockFileMissing stays folded
+// to CorruptVault (repair cannot invent missing bytes) — see
+// `from_core_vault_error_block_file_missing_still_maps_to_corrupt_vault` below.
+// =============================================================================
+
+#[test]
+fn from_core_block_fingerprint_mismatch_routes_to_vault_needs_repair() {
+    let core_err = VaultError::BlockFingerprintMismatch {
+        block_uuid: [0xAB; 16],
+        expected: [0x02; 32],
+        got: [0x03; 32],
+    };
+    let ffi: FfiVaultError = core_err.into();
+    let FfiVaultError::VaultNeedsRepair { block_uuid_hex } = ffi else {
+        panic!("expected VaultNeedsRepair, got {ffi:?}");
+    };
+    assert_eq!(
+        block_uuid_hex,
+        secretary_core::vault::format_uuid_hyphenated(&[0xAB; 16])
+    );
+}
+
+#[test]
+fn vault_needs_repair_display_pins_block_uuid_hex() {
+    let e = FfiVaultError::VaultNeedsRepair {
+        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+    };
+    let rendered = e.to_string();
+    assert!(rendered.contains("vault needs repair"), "got: {rendered}");
+    assert!(
+        rendered.contains("11223344-5566-7788-99aa-bbccddeeff00"),
+        "got: {rendered}"
+    );
+}
+
+#[test]
+fn from_core_repair_rejected_routes_to_repair_rejected() {
+    let core_err = VaultError::RepairRejected {
+        block_uuid: [0xCD; 16],
+        detail: "clock relation Concurrent".to_string(),
+    };
+    let ffi: FfiVaultError = core_err.into();
+    let FfiVaultError::RepairRejected {
+        block_uuid_hex,
+        detail,
+    } = ffi
+    else {
+        panic!("expected RepairRejected, got {ffi:?}");
+    };
+    assert_eq!(
+        block_uuid_hex,
+        secretary_core::vault::format_uuid_hyphenated(&[0xCD; 16])
+    );
+    assert_eq!(detail, "clock relation Concurrent");
+}
+
+#[test]
+fn repair_rejected_display_pins_block_uuid_hex_and_detail() {
+    let e = FfiVaultError::RepairRejected {
+        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        detail: "clock relation Concurrent".to_string(),
+    };
+    let rendered = e.to_string();
+    assert!(rendered.contains("repair rejected"), "got: {rendered}");
+    assert!(
+        rendered.contains("11223344-5566-7788-99aa-bbccddeeff00"),
+        "got: {rendered}"
+    );
+    assert!(
+        rendered.contains("clock relation Concurrent"),
+        "got: {rendered}"
+    );
+}
+
+#[test]
+fn from_core_vault_error_block_file_missing_still_maps_to_corrupt_vault() {
+    // #350: NOT repairable (repair_vault cannot invent missing bytes), so
+    // this stays folded to CorruptVault — the inverse routing decision
+    // from BlockFingerprintMismatch / RepairRejected above.
+    let core_err = VaultError::BlockFileMissing {
+        block_uuid: [0xEE; 16],
+    };
+    let ffi: FfiVaultError = core_err.into();
+    assert!(
+        matches!(ffi, FfiVaultError::CorruptVault { .. }),
+        "got {ffi:?}"
+    );
+}

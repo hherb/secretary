@@ -136,6 +136,19 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::VaultFolderNotEmpty`.
     #[error("vault folder is not empty")]
     VaultFolderNotEmpty,
+
+    /// The vault has crash residue that `repair_vault` may be able to
+    /// adopt. Mirrors `FfiVaultError::VaultNeedsRepair`.
+    #[error("vault needs repair: block {block_uuid_hex} has crash residue")]
+    VaultNeedsRepair { block_uuid_hex: String },
+
+    /// `repair_vault` was attempted and refused to adopt a block.
+    /// Mirrors `FfiVaultError::RepairRejected`.
+    #[error("repair rejected for block {block_uuid_hex}: {detail}")]
+    RepairRejected {
+        block_uuid_hex: String,
+        detail: String,
+    },
 }
 
 impl From<FfiVaultError> for VaultError {
@@ -187,6 +200,16 @@ impl From<FfiVaultError> for VaultError {
                 VaultError::DeviceUuidMismatch { detail }
             }
             FfiVaultError::VaultFolderNotEmpty => VaultError::VaultFolderNotEmpty,
+            FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
+                VaultError::VaultNeedsRepair { block_uuid_hex }
+            }
+            FfiVaultError::RepairRejected {
+                block_uuid_hex,
+                detail,
+            } => VaultError::RepairRejected {
+                block_uuid_hex,
+                detail,
+            },
         }
     }
 }
@@ -591,5 +614,76 @@ mod tests {
             "Display did not contain expected prefix: {rendered}",
         );
         assert!(rendered.contains("fnord"), "Display did not include detail");
+    }
+
+    // -------------------------------------------------------------------
+    // #374: pin the VaultNeedsRepair / RepairRejected variant translations.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ffi_to_uniffi_vault_needs_repair_preserves_block_uuid_hex() {
+        let ffi = FfiVaultError::VaultNeedsRepair {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::VaultNeedsRepair { block_uuid_hex } = uniffi else {
+            panic!("expected VaultNeedsRepair");
+        };
+        assert_eq!(block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00");
+    }
+
+    #[test]
+    fn ffi_to_uniffi_repair_rejected_preserves_fields() {
+        let ffi = FfiVaultError::RepairRejected {
+            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+            detail: "clock relation Concurrent".to_string(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::RepairRejected {
+            block_uuid_hex,
+            detail,
+        } = uniffi
+        else {
+            panic!("expected RepairRejected");
+        };
+        assert_eq!(block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00");
+        assert_eq!(detail, "clock relation Concurrent");
+    }
+
+    #[test]
+    fn vault_needs_repair_display_pins_block_uuid_hex() {
+        let err = VaultError::VaultNeedsRepair {
+            block_uuid_hex: "fnord".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("vault needs repair"),
+            "Display did not contain expected prefix: {rendered}",
+        );
+        assert!(
+            rendered.contains("fnord"),
+            "Display did not include block_uuid_hex"
+        );
+    }
+
+    #[test]
+    fn repair_rejected_display_pins_block_uuid_hex_and_detail() {
+        let err = VaultError::RepairRejected {
+            block_uuid_hex: "fnord".to_string(),
+            detail: "clock relation Concurrent".to_string(),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("repair rejected"),
+            "Display did not contain expected prefix: {rendered}",
+        );
+        assert!(
+            rendered.contains("fnord"),
+            "Display did not include block_uuid_hex"
+        );
+        assert!(
+            rendered.contains("clock relation Concurrent"),
+            "Display did not include detail"
+        );
     }
 }

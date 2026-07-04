@@ -39,6 +39,8 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.WrongDeviceSecretOrCorrupt -> "WrongDeviceSecretOrCorrupt"
     is VaultException.DeviceUuidMismatch -> "DeviceUuidMismatch"
     is VaultException.VaultFolderNotEmpty -> "VaultFolderNotEmpty"
+    is VaultException.VaultNeedsRepair -> "VaultNeedsRepair"
+    is VaultException.RepairRejected -> "RepairRejected"
 }
 
 // Extract the detail string from VaultException variants that carry one.
@@ -55,6 +57,7 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.SyncStateCorrupt -> e.detail
     is VaultException.SyncFailed -> e.detail
     is VaultException.DeviceUuidMismatch -> e.detail
+    is VaultException.RepairRejected -> e.detail
     // The remaining variants carry no detail string.
     is VaultException.WrongPasswordOrCorrupt,
     is VaultException.WrongMnemonicOrCorrupt,
@@ -76,5 +79,7 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.SyncDecisionsIncomplete,
     is VaultException.DeviceSlotNotFound,
     is VaultException.WrongDeviceSecretOrCorrupt,
-    is VaultException.VaultFolderNotEmpty -> null
+    is VaultException.VaultFolderNotEmpty,
+    // VaultNeedsRepair carries block_uuid_hex, not detail.
+    is VaultException.VaultNeedsRepair -> null
 }

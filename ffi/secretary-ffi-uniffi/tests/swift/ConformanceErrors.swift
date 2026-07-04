@@ -40,6 +40,8 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .WrongDeviceSecretOrCorrupt: return "WrongDeviceSecretOrCorrupt"
     case .DeviceUuidMismatch: return "DeviceUuidMismatch"
     case .VaultFolderNotEmpty: return "VaultFolderNotEmpty"
+    case .VaultNeedsRepair: return "VaultNeedsRepair"
+    case .RepairRejected: return "RepairRejected"
     }
 }
 
@@ -56,6 +58,7 @@ func vaultErrorDetail(_ e: VaultError) -> String? {
     case .SyncStateCorrupt(let d): return d
     case .SyncFailed(let d): return d
     case .DeviceUuidMismatch(let d): return d
+    case .RepairRejected(_, let d): return d
     default: return nil
     }
 }

@@ -48,6 +48,8 @@ export const APP_ERROR_CODES = [
   'sync_failed',
   'sync_decisions_incomplete',
   'invalid_argument',
+  'vault_needs_repair',
+  'repair_rejected',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -97,6 +99,8 @@ export type AppError =
   | { code: 'sync_state_corrupt' }
   | { code: 'sync_failed' }
   | { code: 'sync_decisions_incomplete' }
+  | { code: 'vault_needs_repair'; block_uuid_hex: string }
+  | { code: 'repair_rejected'; block_uuid_hex: string; detail: string }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -277,6 +281,21 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "Couldn't apply your choices",
         actionHint: 'Some conflicts weren’t resolved — please try syncing again.'
+      };
+    case 'vault_needs_repair':
+      // Handled as an affordance ("Repair now?") in Unlock.svelte, not a hard
+      // error — this arm only covers a caller that renders the generic
+      // userMessageFor() path without branching on the code first.
+      return {
+        title: 'This vault has an interrupted write',
+        detail: `Block ${err.block_uuid_hex} was not fully written.`,
+        actionHint: 'Repair now to finish the interrupted write.'
+      };
+    case 'repair_rejected':
+      return {
+        title: 'Repair was refused',
+        detail: err.detail,
+        actionHint: 'This needs manual review — there is no automatic fix.'
       };
     case 'internal':
       return {

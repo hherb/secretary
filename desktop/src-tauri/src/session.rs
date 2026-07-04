@@ -186,6 +186,63 @@ impl VaultSession {
         let device_uuid =
             settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid_bytes)?;
 
+        self.populate_unlocked(output, device_uuid, folder);
+        Ok(())
+    }
+
+    /// Attempt to repair a vault with crash residue (#350/#374), authenticating
+    /// with a password. Unlike `unlock`, the bridge's
+    /// `repair_vault_with_password` takes `device_uuid` as an *input* (it needs
+    /// it to know which device's crash residue to adopt) rather than handing
+    /// one back — so this resolves the per-vault device UUID from the
+    /// plaintext `vault.toml` (via `crate::commands::repair::read_vault_uuid_from_toml`)
+    /// BEFORE the bridge call, instead of from the post-open manifest like
+    /// `unlock` does. The post-open tail (settings load, `inner` population,
+    /// idle reset, approval clear) is identical and shared via
+    /// `Self::populate_unlocked`.
+    pub fn repair(&mut self, folder: &Path, password: &[u8]) -> Result<(), AppError> {
+        if self.inner.is_some() {
+            return Err(AppError::AlreadyUnlocked);
+        }
+
+        // The `vault_uuid` read here comes from the UNVERIFIED plaintext
+        // `vault.toml` (repair genuinely needs `device_uuid` as an *input*
+        // before the open, so we cannot source it from the post-open verified
+        // manifest like `unlock` does). This is fail-closed: that same
+        // `vault_uuid` is bound into the unlock-time AEAD as associated data
+        // (the `wrap_pw` AAD), so a tampered `vault.toml` `vault_uuid` fails
+        // the AEAD auth tag and makes repair fail before any manifest write.
+        // (The guard is the unlock AAD binding, NOT `ManifestVaultUuidMismatch`,
+        // which only cross-checks manifest body vs header.) The only cost on a
+        // tampered toml is a cosmetic spurious device-uuid file.
+        let vault_uuid = crate::commands::repair::read_vault_uuid_from_toml(folder)?;
+        let device_uuid =
+            settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid)?;
+        let output = secretary_ffi_bridge::repair_vault_with_password(
+            folder,
+            password,
+            &device_uuid,
+            now_ms(),
+        )?;
+
+        self.populate_unlocked(output, device_uuid, folder);
+        Ok(())
+    }
+
+    /// Shared post-open tail for `unlock` and `repair`: loads settings
+    /// (falling back to defaults on a corrupt/unreadable settings record,
+    /// logging via `tracing::warn!` rather than blocking vault access),
+    /// populates `inner`, resets the idle tracker, and clears the spent
+    /// dialog approvals (#353). Both callers have already produced an
+    /// `OpenVaultOutput` and resolved `device_uuid` by the time they call
+    /// this — the only difference between them is *how* `device_uuid` was
+    /// obtained (post-open manifest vs. pre-open `vault.toml` read).
+    fn populate_unlocked(
+        &mut self,
+        output: secretary_ffi_bridge::OpenVaultOutput,
+        device_uuid: [u8; 16],
+        folder: &Path,
+    ) {
         let (settings_val, pending_warnings) =
             match settings::load_from_vault(&output.identity, &output.manifest) {
                 Ok((s, warnings)) => {
@@ -226,7 +283,6 @@ impl VaultSession {
         // create in, or enumerate subfolders of, that subtree without a fresh
         // user pick. Runs after the caller's approval gate has already passed.
         self.approvals.clear();
-        Ok(())
     }
 
     /// Explicit lock — drops `inner`, triggering the `UnlockedSession` Drop

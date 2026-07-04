@@ -28,6 +28,7 @@ use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{
     bundle::IdentityBundle, create_vault_unchecked, mnemonic::Mnemonic, vault_toml,
 };
+use secretary_core::vault::device_slot::add_device_slot;
 use secretary_core::vault::{
     encode_manifest_file, open_vault, restore_block, save_block, share_block, sign_manifest,
     trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
@@ -470,6 +471,86 @@ fn repair_vault_adopts_interrupted_save() {
     drop(repaired);
 
     open_vault(folder, Unlocker::Password(&pw), None).expect("vault must be healthy after repair");
+}
+
+/// #374 part 4: the crash-recovery adopt path must go through the SAME gated
+/// adoption when the vault is unlocked via `Unlocker::DeviceSecret` (ADR 0009),
+/// not only via password. Previously the device arm was covered only
+/// transitively through the shared `unlock_vault_identity`; this pins it
+/// end-to-end (device unlock is not a weaker open, per B.2 orchestrators).
+#[test]
+fn repair_vault_adopts_interrupted_save_via_device_secret() {
+    let (dir, _mnemonic, pw) = make_fast_vault(0x37, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x37; 32]);
+
+    // Enroll a device slot so the vault can be opened without the password.
+    let enrolled = add_device_slot(folder, &pw, &mut rng).expect("enroll device slot");
+    let dev_unlocker = || Unlocker::DeviceSecret {
+        device_uuid: &enrolled.device_uuid,
+        secret: &enrolled.device_secret,
+    };
+
+    // Stage a crashed save: v2 block on disk, v1 manifest committed.
+    let mut open = open_vault(folder, dev_unlocker(), None).unwrap();
+    let (writer_device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        writer_device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        writer_device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    // Open via the device secret must fail typed on the residue.
+    let err = open_vault(folder, dev_unlocker(), None).expect_err("residue must fail open");
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { block_uuid: b, .. } if b == block_uuid),
+        "got {err:?}"
+    );
+
+    // Repair via the device secret must adopt the on-disk v2 (same gate).
+    let repaired = secretary_core::vault::repair_vault(
+        folder,
+        dev_unlocker(),
+        None,
+        enrolled.device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect("gated adoption must succeed via device secret");
+
+    let entry = repaired
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("entry present");
+    assert_eq!(
+        entry.block_name, "v2",
+        "adopted entry carries on-disk content"
+    );
+    assert_eq!(entry.vector_clock_summary[0].counter, 2);
+    drop(repaired);
+
+    open_vault(folder, dev_unlocker(), None).expect("healthy after device-secret repair");
 }
 
 /// #350: a crashed revocation re-key repairs to the REDUCED recipient

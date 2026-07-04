@@ -2,7 +2,7 @@
   import LockKeyhole from '../components/icons/LockKeyhole.svelte';
   import PathPicker from '../components/PathPicker.svelte';
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
-  import { unlockWithPassword, getSettings } from '../lib/ipc';
+  import { unlockWithPassword, repairVault, getSettings, isAppError } from '../lib/ipc';
   import { userMessageFor } from '../lib/errors';
   import { seedReauthClock } from '../lib/writeGuard';
   import { openCreateWizard, createdVaultPath } from '../lib/route';
@@ -32,8 +32,23 @@
       $sessionState.lastError?.code === 'vault_path_not_a_vault'
   );
 
+  // #374: the open failed because the vault has adoptable crash residue.
+  // Render a "Repair now?" affordance instead of a hard error.
+  const needsRepair = $derived(
+    $sessionState.status === 'locked' &&
+      $sessionState.lastError?.code === 'vault_needs_repair'
+  );
+
   let password = $state('');
   let submitting = $state(false);
+
+  // #374: true only while `confirmRepair` is in flight. `needsRepair` is
+  // derived from session state and goes false the moment `beginUnlock()`
+  // transitions `locked → unlocking`, which would otherwise unmount the
+  // repair affordance the instant repair starts — hiding the `Repairing…`
+  // progress state during the (Argon2id-slow) repair. Keeping the block
+  // mounted on `needsRepair || repairing` lets the in-flight state render.
+  let repairing = $state(false);
 
   const formValid = $derived(folderPath.length > 0 && password.length > 0);
 
@@ -42,6 +57,11 @@
     if (!formValid || submitting) return;
     submitting = true;
     beginUnlock();
+    // #374: on `vault_needs_repair`, the "Repair now?" affordance reuses this
+    // same password to call repairVault — keep the binding alive for that one
+    // case. Every other outcome (success or any other error) clears it below,
+    // same as before.
+    let keepPassword = false;
     try {
       const manifest = await unlockWithPassword(folderPath, password);
       // Manifest only carries `warnings`; the full settings DTO comes
@@ -56,14 +76,52 @@
       // `unlockFailed` accepts `unknown` and narrows internally; no cast
       // required at the call site.
       unlockFailed(err);
+      keepPassword = isAppError(err) && err.code === 'vault_needs_repair';
     } finally {
-      // Password lifetime ends here regardless of outcome — strip the
-      // binding immediately so a failed attempt doesn't leave the string
-      // sitting in DOM state across the user's next keystroke. JS strings
-      // are immutable so we can't truly zeroize, but unbinding minimises
-      // the live-reference window the GC has to chase.
+      // Password lifetime ends here regardless of outcome (unless the
+      // repair affordance needs it) — strip the binding immediately so a
+      // failed attempt doesn't leave the string sitting in DOM state across
+      // the user's next keystroke. JS strings are immutable so we can't
+      // truly zeroize, but unbinding minimises the live-reference window
+      // the GC has to chase.
+      if (!keepPassword) password = '';
+      submitting = false;
+    }
+  }
+
+  // #374: confirm the "Repair now?" affordance. Reuses `folderPath` +
+  // `password` still bound to the form (see `keepPassword` above — the
+  // failed unlock's `finally` deliberately did not clear it). Whatever the
+  // outcome, the password is no longer needed afterwards, so it is always
+  // cleared here: success proceeds into the unlocked session, and
+  // `repair_rejected` has no auto-fix retry that would need it again.
+  async function confirmRepair(): Promise<void> {
+    // #374: guard on `formValid` like `submit` does, not just `submitting`.
+    // `needsRepair` is derived from persistent session state, but `password`
+    // is component-local $state that resets to '' on remount (e.g. routing to
+    // the create wizard and back). Without this guard the still-visible
+    // "Repair now" button could fire `repairVault(folderPath, '')` with an
+    // empty password, producing a spurious wrong-password/corrupt error.
+    if (!formValid || submitting) return;
+    submitting = true;
+    // Keep the repair affordance mounted while repair runs — see `repairing`.
+    repairing = true;
+    // Repair funnels through the same locked→unlocking→{unlocked,locked}
+    // session-state machine as a normal unlock (see stores.ts) — both
+    // `unlockSucceeded` and `unlockFailed` below require the `unlocking`
+    // state as their `from`.
+    beginUnlock();
+    try {
+      const manifest = await repairVault(folderPath, password);
+      const settings = await getSettings();
+      unlockSucceeded(manifest, settings);
+      seedReauthClock(Date.now());
+    } catch (err) {
+      unlockFailed(err);
+    } finally {
       password = '';
       submitting = false;
+      repairing = false;
     }
   }
 
@@ -93,7 +151,25 @@
         </div>
       {/if}
 
-      {#if errMsg}
+      {#if needsRepair || repairing}
+        <!-- #374: an interrupted write left adoptable crash residue — offer
+             an in-place fix instead of a hard error. `confirmRepair` reuses
+             the password still bound to the form field below. `|| repairing`
+             keeps this block mounted while repair is in flight (session state
+             is `unlocking` then, so `needsRepair` alone would drop it and hide
+             the `Repairing…` progress state). -->
+        <div class="unlock__error unlock__repair" role="alert">
+          <div class="unlock__error-title">This vault has an interrupted write. Repair now?</div>
+          <button
+            type="button"
+            class="unlock__error-action"
+            disabled={submitting || !formValid}
+            onclick={confirmRepair}
+          >
+            {submitting ? 'Repairing…' : 'Repair now'}
+          </button>
+        </div>
+      {:else if errMsg}
         <div class="unlock__error" role="alert">
           <div class="unlock__error-title">{errMsg.title}</div>
           {#if errMsg.detail}
