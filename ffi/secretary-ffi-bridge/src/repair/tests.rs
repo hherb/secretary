@@ -18,7 +18,7 @@ use secretary_core::crypto::sig::{
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::vault::{
     format_uuid_hyphenated, open_vault, save_block, share_block, BlockPlaintext, BlockUuid,
-    DeviceUuid, Unlocker, VectorClockEntry,
+    DeviceUuid, OpenVault, Unlocker, VectorClockEntry,
 };
 
 use crate::device::{add_device_slot, open_with_device_secret};
@@ -83,6 +83,62 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
     }
 }
 
+/// What later assertions need from the canonical crashed-save staging:
+/// the rolled-back v1 manifest bytes (for byte-untouched refusal
+/// asserts) plus the committed clock / vault uuid snapshotted after the
+/// v1 commit (for §10 baseline seeding).
+struct StagedCrashedSave {
+    manifest_v1: Vec<u8>,
+    committed_clock: Vec<VectorClockEntry>,
+    vault_uuid: [u8; 16],
+}
+
+/// Stage the canonical crashed-`save_block` residue shared by the adopt
+/// and §10-gate tests: commit "v1" (ts 1_000), snapshot the committed
+/// manifest, write "v2" (ts 2_000 — the block file hits disk), then roll
+/// the manifest back to the v1 snapshot, as if the crash hit between
+/// `save_block`'s block write and its manifest write. Consumes `open` —
+/// the "crashed" session must not keep writing after the rollback.
+fn stage_crashed_save(
+    folder: &Path,
+    mut open: OpenVault,
+    block_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    rng: &mut ChaCha20Rng,
+) -> StagedCrashedSave {
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        rng,
+    )
+    .unwrap();
+    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let committed_clock = open.manifest.vector_clock.clone();
+    let vault_uuid = open.manifest.vault_uuid;
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        rng,
+    )
+    .unwrap();
+    drop(open);
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    StagedCrashedSave {
+        manifest_v1,
+        committed_clock,
+        vault_uuid,
+    }
+}
+
 /// Mint a fresh, self-signed co-recipient contact card from a brand-new
 /// identity bundle generated with a distinct RNG seed. Mirrors
 /// `crash_recovery.rs::make_signed_card`. Uses a seed disjoint from the
@@ -125,33 +181,10 @@ fn repair_vault_with_password_adopts_interrupted_save_then_reopens() {
     let pw = golden_password();
     let pw_secret = SecretBytes::new(pw.clone());
     let mut rng = ChaCha20Rng::from_seed([0x91; 32]);
-    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
     let (device_uuid, block_uuid) = ([0xe0; 16], [0xf0; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
     // Crash simulation: v2 block hit disk, v2 manifest write was lost.
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
     // The plain bridge open must surface the actionable typed signal.
     let err =
@@ -204,32 +237,9 @@ fn repair_vault_with_device_secret_adopts_interrupted_save() {
         device_uuid: &device_uuid,
         secret: &device_secret_sb,
     };
-    let mut open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let open = open_vault(&folder, dev_unlocker(), None).unwrap();
     let block_uuid = [0xf1; 16];
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
     let repaired = repair_vault_with_device_secret(&folder, &device_uuid, &device_secret, 3_000)
         .expect("gated adoption via device secret must succeed");
@@ -344,38 +354,15 @@ fn repair_gates_rollback_before_write_and_leaves_manifest_untouched() {
     let pw = golden_password();
     let pw_secret = SecretBytes::new(pw.clone());
     let mut rng = ChaCha20Rng::from_seed([0x96; 32]);
-    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
     let (device_uuid, block_uuid) = ([0xe5; 16], [0xf5; 16]);
-    let recipients = vec![open.owner_card.clone()];
 
-    // v1: committed. Snapshot the committed manifest's clock + vault_uuid.
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    let committed_clock = open.manifest.vector_clock.clone();
-    let vault_uuid = open.manifest.vault_uuid;
-
-    // v2: block hits disk; the manifest write is "lost" (restored below).
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    // v1 committed, v2 block on disk, manifest rolled back to v1; the
+    // staging snapshots the committed clock + vault_uuid for the §10
+    // baseline seed below.
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
+    let committed_clock = staged.committed_clock;
+    let vault_uuid = staged.vault_uuid;
 
     // Sanity: this residue is GENUINELY adoptable — without a rollback
     // baseline the plain open flags the actionable VaultNeedsRepair (i.e. the
@@ -459,38 +446,15 @@ fn repair_device_secret_gates_rollback_before_write_and_leaves_manifest_untouche
         device_uuid: &device_uuid,
         secret: &device_secret_sb,
     };
-    let mut open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let open = open_vault(&folder, dev_unlocker(), None).unwrap();
     let block_uuid = [0xf6; 16];
-    let recipients = vec![open.owner_card.clone()];
 
-    // v1: committed. Snapshot the committed manifest's clock + vault_uuid.
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    let committed_clock = open.manifest.vector_clock.clone();
-    let vault_uuid = open.manifest.vault_uuid;
-
-    // v2: block hits disk; the manifest write is "lost" (restored below).
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    // v1 committed, v2 block on disk, manifest rolled back to v1; the
+    // staging snapshots the committed clock + vault_uuid for the §10
+    // baseline seed below.
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
+    let committed_clock = staged.committed_clock;
+    let vault_uuid = staged.vault_uuid;
 
     // Sanity: this residue is GENUINELY adoptable — without a rollback
     // baseline the plain device-secret open flags the actionable
@@ -601,35 +565,11 @@ fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
     let pw = golden_password();
     let pw_secret = SecretBytes::new(pw.clone());
     let mut rng = ChaCha20Rng::from_seed([0x98; 32]);
-    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
     let (device_uuid, block_uuid) = ([0xe7; 16], [0xf7; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    let vault_uuid = open.manifest.vault_uuid;
 
     // Stage genuine adoptable crash residue (crashed save, v2 on disk).
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
     // Sanity: adoptable residue, not pre-existing corruption.
     assert!(
@@ -642,12 +582,11 @@ fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
 
     // A PRESENT but garbage state file at the exact path load() reads.
     std::fs::write(
-        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+        secretary_cli::state::state_file_path(state_dir.path(), staged.vault_uuid),
         b"not a canonical SyncState",
     )
     .unwrap();
 
-    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
     let err =
         repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
             .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
@@ -666,7 +605,7 @@ fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
     }
     assert_eq!(
         std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
-        before,
+        staged.manifest_v1,
         "refused repair must not mutate the manifest (fail-closed pre-write)",
     );
 }
@@ -701,41 +640,16 @@ fn repair_device_secret_refuses_unreadable_rollback_baseline() {
         device_uuid: &device_uuid,
         secret: &device_secret_sb,
     };
-    let mut open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let open = open_vault(&folder, dev_unlocker(), None).unwrap();
     let block_uuid = [0xf8; 16];
-    let recipients = vec![open.owner_card.clone()];
-    let vault_uuid = open.manifest.vault_uuid;
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
     std::fs::write(
-        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+        secretary_cli::state::state_file_path(state_dir.path(), staged.vault_uuid),
         b"not a canonical SyncState",
     )
     .unwrap();
 
-    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
     let err = repair_vault_with_device_secret_in(
         Some(state_dir.path()),
         &folder,
@@ -750,7 +664,7 @@ fn repair_device_secret_refuses_unreadable_rollback_baseline() {
     );
     assert_eq!(
         std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
-        before,
+        staged.manifest_v1,
         "refused repair must not mutate the manifest (fail-closed pre-write)",
     );
 }
@@ -767,38 +681,14 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
     let pw = golden_password();
     let pw_secret = SecretBytes::new(pw.clone());
     let mut rng = ChaCha20Rng::from_seed([0x9a; 32]);
-    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
     let (device_uuid, block_uuid) = ([0xe9; 16], [0xf9; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    let vault_uuid = open.manifest.vault_uuid;
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        &folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    let staged = stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
     // A validly-encoded SyncState under a DIFFERENT internal uuid, planted
     // at the path keyed by the real vault uuid.
     let other_uuid = [0x5a; 16];
-    assert_ne!(other_uuid, vault_uuid);
+    assert_ne!(other_uuid, staged.vault_uuid);
     let clock = vec![VectorClockEntry {
         device_uuid: [0x0e; 16],
         counter: 1,
@@ -807,11 +697,10 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
     secretary_cli::state::save(state_dir.path(), &mismatched).unwrap();
     std::fs::rename(
         secretary_cli::state::state_file_path(state_dir.path(), other_uuid),
-        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+        secretary_cli::state::state_file_path(state_dir.path(), staged.vault_uuid),
     )
     .unwrap();
 
-    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
     let err =
         repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
             .expect_err("uuid-mismatched baseline must refuse the mutating repair");
@@ -821,7 +710,7 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
     );
     assert_eq!(
         std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
-        before,
+        staged.manifest_v1,
         "refused repair must not mutate the manifest (fail-closed pre-write)",
     );
 }

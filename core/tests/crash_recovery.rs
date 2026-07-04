@@ -178,6 +178,48 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
     }
 }
 
+/// Stage the canonical crashed-`save_block` residue: commit "v1"
+/// (ts 1_000), snapshot the committed manifest, write "v2" (ts 2_000 —
+/// the block file hits disk), then roll the manifest back to the v1
+/// snapshot, as if the crash hit between `save_block`'s block write and
+/// its manifest write. Consumes `open` — the "crashed" session must not
+/// keep writing after the rollback. Returns the restored v1 manifest
+/// bytes and the vault uuid for later assertions.
+fn stage_crashed_save(
+    folder: &std::path::Path,
+    mut open: secretary_core::vault::OpenVault,
+    block_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    rng: &mut ChaCha20Rng,
+) -> (Vec<u8>, [u8; 16]) {
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        rng,
+    )
+    .unwrap();
+    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let vault_uuid = open.manifest.vault_uuid;
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    (manifest_v1, vault_uuid)
+}
+
 // ---------------------------------------------------------------------------
 // #350 crash-recovery residue builder
 // ---------------------------------------------------------------------------
@@ -404,33 +446,10 @@ fn repair_vault_adopts_interrupted_save() {
     let (dir, _mnemonic, pw) = make_fast_vault(61, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x61; 32]);
-    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
     let (device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
     // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
 
     let err =
         open_vault(folder, Unlocker::Password(&pw), None).expect_err("residue must fail open");
@@ -492,32 +511,9 @@ fn repair_vault_adopts_interrupted_save_via_device_secret() {
     };
 
     // Stage a crashed save: v2 block on disk, v1 manifest committed.
-    let mut open = open_vault(folder, dev_unlocker(), None).unwrap();
+    let open = open_vault(folder, dev_unlocker(), None).unwrap();
     let (writer_device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        writer_device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        writer_device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(folder, open, block_uuid, writer_device_uuid, &mut rng);
 
     // Open via the device secret must fail typed on the residue.
     let err = open_vault(folder, dev_unlocker(), None).expect_err("residue must fail open");
@@ -1463,34 +1459,11 @@ fn repair_passes_verified_manifest_uuid_to_baseline_provider() {
     let (dir, _mnemonic, pw) = make_fast_vault(71, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
-    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
-    let expected_uuid = open.manifest.vault_uuid;
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
     let (device_uuid, block_uuid) = ([0xd1; 16], [0xb1; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
     // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    let (_manifest_v1, expected_uuid) =
+        stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
 
     let mut seen: Option<[u8; 16]> = None;
     let repaired = secretary_core::vault::repair_vault(
@@ -1522,34 +1495,10 @@ fn repair_aborts_when_baseline_provider_errors() {
     let (dir, _mnemonic, pw) = make_fast_vault(72, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x72; 32]);
-    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
     let (device_uuid, block_uuid) = ([0xd2; 16], [0xb2; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    let (before, _vault_uuid) = stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
 
-    let before = fs::read(folder.join("manifest.cbor.enc")).unwrap();
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
