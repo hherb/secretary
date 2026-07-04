@@ -267,16 +267,22 @@ impl VaultSession {
         // signed manifest no longer lists — a trashed block whose best-effort
         // rename (and every subsequent open-time sweep) failed, a legacy
         // pre-#293 trash entry the sweep can never touch, or crash residue of
-        // an uncommitted save. Log-only: `open_vault` ignores unlisted files,
-        // so this is not a consistency fault, but the bytes remain
-        // decryptable on disk and were previously invisible.
+        // an uncommitted save. NOTE: with a file-sync backend
+        // (Dropbox/iCloud/Syncthing) an incoming block can also propagate
+        // ahead of the updated manifest, so an unlisted file is not always
+        // deletion/crash residue — the wording is deliberately non-committal.
+        // Log-only: `open_vault` ignores unlisted files, so this is not a
+        // consistency fault, but the bytes are on disk and were previously
+        // invisible.
         for orphan in unlisted_block_files(folder, &output.manifest) {
             tracing::warn!(
                 path = %orphan.display(),
                 "block ciphertext on disk is not listed in the verified \
-                 manifest: likely a trashed block whose physical move to \
-                 trash/ failed, or crash residue of an uncommitted save; it \
-                 remains decryptable until relocated (#376)"
+                 manifest: a trashed block whose physical move to trash/ \
+                 failed, crash residue of an uncommitted save, or an incoming \
+                 block from a file-sync backend not yet reflected in this \
+                 manifest; if it is a deleted block it remains decryptable \
+                 until relocated (#376)"
             );
         }
 
@@ -367,14 +373,18 @@ impl VaultSession {
 }
 
 /// #376: block-ciphertext files sitting in `blocks/` that the freshly-opened
-/// (verified) manifest does not list as live blocks. Each is logically
-/// deleted (or never committed) but physically present — still wrapped to
-/// its recipients, i.e. decryptable — because the best-effort
+/// (verified) manifest does not list as live blocks. Typically each is
+/// logically deleted (or never committed) but physically present — still
+/// wrapped to its recipients, i.e. decryptable — because the best-effort
 /// `blocks/ → trash/` rename in core `trash_block` / the open-time sweep
 /// failed (EXDEV cross-filesystem trash dir, permissions), because it is a
 /// legacy pre-#293 trash entry the sweep never attempts, or because a
-/// crashed save never reached its manifest commit. Pure scan (no logging) so
-/// it is unit-testable; `populate_unlocked` logs each returned path.
+/// crashed save never reached its manifest commit. It can ALSO be a benign
+/// incoming block that a file-sync backend (Dropbox/iCloud/Syncthing)
+/// propagated ahead of the updated manifest — the scan cannot distinguish
+/// the two, so callers must treat a hit as "worth a look", not proof of
+/// residue. Pure scan (no logging) so it is unit-testable;
+/// `populate_unlocked` logs each returned path.
 ///
 /// Filenames are reconstructed from core's canonical formatting helpers, so
 /// the comparison stays pinned to the on-disk layout's single source of

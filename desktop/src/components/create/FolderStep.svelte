@@ -2,7 +2,7 @@
   import PathPicker from '../PathPicker.svelte';
   import { probeCreateTarget } from '../../lib/ipc';
   import { joinSubfolder } from '../../lib/create';
-  import type { AppError } from '../../lib/errors';
+  import { userMessageFor, type AppError } from '../../lib/errors';
 
   let {
     seedPath = '',
@@ -23,27 +23,40 @@
   // screen is NOT approved for creation, so probing it rejects with
   // path_not_approved — the user must confirm the folder via the picker.
   let needsPick = $state(false);
+  // A non-approval probe failure (io, internal, …). Surfaced inline so the
+  // step never dead-ends silently with Continue disabled and no explanation.
+  let probeError = $state<string | null>(null);
 
   let probeGeneration = 0;
 
   async function probe(path: string): Promise<void> {
+    const gen = ++probeGeneration;
+    // Clear the previous verdict up front so a slow probe never leaves the
+    // prior folder's "Ready to create"/subfolder guidance on screen while the
+    // new path is still being checked.
+    probed = null;
+    needsPick = false;
+    probeError = null;
     if (path.length === 0) {
-      probed = null;
-      needsPick = false;
+      probing = false;
       return;
     }
-    const gen = ++probeGeneration;
     probing = true;
     try {
       const result = await probeCreateTarget(path);
       if (gen === probeGeneration) {
         probed = result;
-        needsPick = false;
       }
     } catch (err) {
       if (gen === probeGeneration) {
-        probed = null;
-        needsPick = (err as AppError).code === 'path_not_approved';
+        const code = (err as Partial<AppError>).code;
+        if (code === 'path_not_approved') {
+          needsPick = true;
+        } else {
+          // io/internal/etc: show a concrete reason instead of a silent
+          // greyed-out Continue with no explanation.
+          probeError = userMessageFor(err as AppError).title;
+        }
       }
     } finally {
       if (gen === probeGeneration) {
@@ -52,8 +65,16 @@
     }
   }
 
+  // Probe the seed once on mount (a carried-over Unlock path is not approved
+  // for creation, so this surfaces `needsPick`). Every subsequent pick
+  // re-probes explicitly in `onPick` rather than through a `picked`-tracking
+  // effect: re-picking the SAME folder as the rejected seed yields an
+  // identical string, and Svelte skips the reactive update on an unchanged
+  // primitive, so an effect would never re-fire — stranding the step with
+  // Continue disabled even though `pick_create_folder` just approved the
+  // path (#378).
   $effect(() => {
-    void probe(picked);
+    void probe(seedPath);
   });
 
   const needsSubfolder = $derived(probed !== null && probed.exists && !probed.isEmpty);
@@ -70,6 +91,11 @@
   function onPick(p: string): void {
     picked = p;
     subfolderName = '';
+    // Re-probe explicitly. We can't rely on `picked` changing to drive this:
+    // re-picking the same folder as the rejected seed is a no-op for Svelte
+    // reactivity, but it must still re-probe now that `pick_create_folder`
+    // has approved the path (see the mount effect's note).
+    void probe(p);
   }
 </script>
 
@@ -81,6 +107,8 @@
 
   {#if needsPick}
     <p class="wizard-step__warn">Confirm the folder with the Choose… button to continue.</p>
+  {:else if probeError}
+    <p class="wizard-step__warn">{probeError}</p>
   {:else if needsSubfolder}
     <p class="wizard-step__warn">{picked} already contains files.</p>
     <label class="wizard-step__field" for="subfolder-name">

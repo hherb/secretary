@@ -75,6 +75,43 @@ describe('FolderStep', () => {
     expect(cont.disabled).toBe(true);
   });
 
+  // #378 regression: re-picking the SAME folder as the rejected seed must
+  // re-probe. The pick returns a string identical to the seed, so `picked`
+  // never changes — a `picked`-tracking effect would not re-fire and the step
+  // would strand with Continue disabled even though `pick_create_folder` just
+  // approved the path. The explicit re-probe in `onPick` fixes it.
+  it('re-picking the same folder as the rejected seed re-probes and enables Continue', async () => {
+    (probeCreateTarget as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce({ code: 'path_not_approved', path: '/Users/h/Docs' })
+      .mockResolvedValueOnce({ exists: true, isEmpty: true });
+    const onNext = vi.fn();
+    const { findByText, findByRole, getByRole } = render(FolderStep, {
+      props: { seedPath: '/Users/h/Docs', onNext, onCancel: vi.fn() }
+    });
+    // Seed probe rejected → the "confirm the folder" prompt is shown.
+    expect(await findByText(/confirm the folder/i)).toBeTruthy();
+    // The picker (mocked invoke) returns '/Users/h/Docs' — the SAME string.
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    // The explicit re-probe resolves empty → Continue enables and works.
+    expect(await findByText(/ready to create/i)).toBeTruthy();
+    const cont = (await findByRole('button', { name: /continue/i })) as HTMLButtonElement;
+    expect(cont.disabled).toBe(false);
+    await fireEvent.click(cont);
+    expect(onNext).toHaveBeenCalledWith('/Users/h/Docs');
+  });
+
+  // A non-approval probe failure (e.g. io) must surface a concrete message
+  // rather than silently greying out Continue with no explanation.
+  it('a non-approval probe error is shown inline and keeps Continue disabled', async () => {
+    (probeCreateTarget as ReturnType<typeof vi.fn>).mockRejectedValueOnce({ code: 'io' });
+    const { findByText, findByRole } = render(FolderStep, {
+      props: { seedPath: '/Users/h/Docs', onNext: vi.fn(), onCancel: vi.fn() }
+    });
+    expect(await findByText(/filesystem error/i)).toBeTruthy();
+    const cont = (await findByRole('button', { name: /continue/i })) as HTMLButtonElement;
+    expect(cont.disabled).toBe(true);
+  });
+
   it('subfolder path: typing a name yields the joined path on Continue', async () => {
     (probeCreateTarget as ReturnType<typeof vi.fn>).mockResolvedValue({
       exists: true,
