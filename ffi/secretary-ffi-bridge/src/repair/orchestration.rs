@@ -28,6 +28,17 @@
 //! guard; #384 removed that reliance.) A provider error propagates
 //! fail-closed before anything is staged or written. This replaces the
 //! original (buggy) post-write `enforce_rollback_resistance` call.
+//!
+//! ## Fail-closed on an existing-but-unreadable baseline (#384)
+//!
+//! The read-only open path skips §10 when the local baseline cannot be
+//! read (availability posture: a rolled-back READ leaks once and
+//! self-heals on the next open, which re-checks the persisted baseline).
+//! Repair is NOT symmetric: it rewrites the manifest, so a skipped check
+//! is permanent laundering. Hence: missing/never-synced baseline → skip
+//! (no false positive); EXISTING but unusable state file → refuse, with
+//! the deletion remedy in the error detail. Deleting the state file is
+//! the crypto-design §10 documented reset to a "no history" device.
 
 use std::path::Path;
 
@@ -45,7 +56,11 @@ use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 /// attacker-controlled plaintext value (#384). A `None` state dir (no
 /// resolvable OS state dir) and an empty baseline (missing state file /
 /// never-synced device) both yield `Ok(None)` — §10 is skipped with no
-/// false positive on a fresh device.
+/// false positive on a fresh device. A state file that EXISTS but cannot
+/// be used (unreadable, undecodable, internal-uuid mismatch) fails the
+/// repair CLOSED — on this mutating path a skipped check would launder a
+/// rollback permanently, whereas the read-only open path's skip posture
+/// self-heals on the next open (#384; deliberate asymmetry).
 fn baseline_provider(
     state_dir: Option<&Path>,
 ) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
@@ -60,9 +75,31 @@ fn baseline_provider(
                 // no baseline for §10 purposes; skip (no false positive).
                 Ok((!clock.is_empty()).then_some(clock))
             }
-            // Interim fail-open posture — flipped to fail-closed in the
-            // next commit (#384 posture half, RED-proven there).
-            Err(_) => Ok(None),
+            // #384 fail-closed: an EXISTING but unreadable/undecodable/
+            // uuid-mismatched baseline refuses the MUTATING repair — a
+            // skipped check here would let adoption tick + re-sign the
+            // manifest, permanently laundering a rolled-back clock (unlike
+            // the read-only open path, which self-heals on the next open).
+            // Deleting the named state file is the documented §10 reset
+            // (crypto-design §10) and unblocks the repair.
+            // ErrorKind::InvalidData is deliberate: the FfiVaultError
+            // conversion routes it to the `CorruptVault { detail }` fold
+            // (which carries this full message), never to `FolderInvalid`
+            // ("vault path wrong" — a misdiagnosis here), even when the
+            // underlying cause was e.g. PermissionDenied on the state file.
+            Err(e) => {
+                let path = secretary_cli::state::state_file_path(state_dir, *vault_uuid);
+                Err(VaultError::Io {
+                    context: "§10 rollback baseline state file exists but could not be read",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "{e}; state file: {}; deleting it resets this device's rollback history (crypto-design §10) — then retry the repair",
+                            path.display()
+                        ),
+                    ),
+                })
+            }
         }
     }
 }

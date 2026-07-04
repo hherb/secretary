@@ -585,3 +585,243 @@ fn repair_vault_with_password_is_idempotent_on_healthy_vault() {
         "healthy repair must not rewrite the manifest"
     );
 }
+
+/// #384 posture (password arm): an EXISTING but unreadable/undecodable
+/// §10 baseline state file must refuse the MUTATING repair fail-closed —
+/// a skipped check here would let adoption tick + re-sign the manifest,
+/// permanently laundering a rolled-back clock. The refusal surfaces as
+/// `CorruptVault` whose detail names the state file and the documented
+/// remedy (delete it = the crypto-design §10 reset); the manifest must be
+/// byte-for-byte untouched. Missing-file/never-synced keeps adopting
+/// (Cases 1/2 pin that branch).
+#[test]
+fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0x98; 32]);
+    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe7; 16], [0xf7; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    let vault_uuid = open.manifest.vault_uuid;
+
+    // Stage genuine adoptable crash residue (crashed save, v2 on disk).
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    // Sanity: adoptable residue, not pre-existing corruption.
+    assert!(
+        matches!(
+            open_vault_with_password(&folder, &pw),
+            Err(FfiVaultError::VaultNeedsRepair { .. })
+        ),
+        "residue must be adoptable crash residue",
+    );
+
+    // A PRESENT but garbage state file at the exact path load() reads.
+    std::fs::write(
+        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+        b"not a canonical SyncState",
+    )
+    .unwrap();
+
+    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let err =
+        repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
+            .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
+    match err {
+        FfiVaultError::CorruptVault { detail } => {
+            assert!(
+                detail.contains("rollback baseline"),
+                "detail must name the failing store: {detail}"
+            );
+            assert!(
+                detail.contains("resets this device's rollback history"),
+                "detail must carry the documented remedy: {detail}"
+            );
+        }
+        other => panic!("expected CorruptVault, got {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "refused repair must not mutate the manifest (fail-closed pre-write)",
+    );
+}
+
+/// #384 posture (device-secret arm): same contract as the password-arm
+/// test above, proven end-to-end through the device-secret unlock path
+/// (arm parity — mirrors how Case 5/6 pin the rollback gate on both arms).
+#[test]
+fn repair_device_secret_refuses_unreadable_rollback_baseline() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let mut rng = ChaCha20Rng::from_seed([0x99; 32]);
+
+    let enrolled = add_device_slot(&folder, &pw).expect("add_device_slot must succeed");
+    let device_uuid: [u8; 16] = enrolled
+        .device_uuid
+        .as_slice()
+        .try_into()
+        .expect("device_uuid must be 16 bytes");
+    let device_secret_bytes = enrolled
+        .device_secret
+        .take_secret()
+        .expect("first take_secret must return Some");
+    let device_secret: [u8; 32] = device_secret_bytes
+        .as_slice()
+        .try_into()
+        .expect("device secret must be 32 bytes");
+
+    let device_secret_sb = SecretBytes::new(device_secret.to_vec());
+    let dev_unlocker = || Unlocker::DeviceSecret {
+        device_uuid: &device_uuid,
+        secret: &device_secret_sb,
+    };
+    let mut open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let block_uuid = [0xf8; 16];
+    let recipients = vec![open.owner_card.clone()];
+    let vault_uuid = open.manifest.vault_uuid;
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    std::fs::write(
+        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+        b"not a canonical SyncState",
+    )
+    .unwrap();
+
+    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let err = repair_vault_with_device_secret_in(
+        Some(state_dir.path()),
+        &folder,
+        &device_uuid,
+        &device_secret,
+        3_000,
+    )
+    .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "expected CorruptVault, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "refused repair must not mutate the manifest (fail-closed pre-write)",
+    );
+}
+
+/// #384 posture: a validly-encoded SyncState whose INTERNAL vault_uuid
+/// differs from the file's path key (`StateError::VaultUuidMismatch`) is
+/// "present but not usable" — same fail-closed refusal as garbage bytes,
+/// NOT a silent skip (a skip would let a planted/mislabelled state file
+/// neutralize §10 on the mutating path).
+#[test]
+fn repair_refuses_uuid_mismatched_rollback_baseline() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0x9a; 32]);
+    let mut open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe9; 16], [0xf9; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    let vault_uuid = open.manifest.vault_uuid;
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_v1 = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+
+    // A validly-encoded SyncState under a DIFFERENT internal uuid, planted
+    // at the path keyed by the real vault uuid.
+    let other_uuid = [0x5a; 16];
+    assert_ne!(other_uuid, vault_uuid);
+    let clock = vec![VectorClockEntry {
+        device_uuid: [0x0e; 16],
+        counter: 1,
+    }];
+    let mismatched = secretary_core::sync::SyncState::new(other_uuid, clock).unwrap();
+    secretary_cli::state::save(state_dir.path(), &mismatched).unwrap();
+    std::fs::rename(
+        secretary_cli::state::state_file_path(state_dir.path(), other_uuid),
+        secretary_cli::state::state_file_path(state_dir.path(), vault_uuid),
+    )
+    .unwrap();
+
+    let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let err =
+        repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
+            .expect_err("uuid-mismatched baseline must refuse the mutating repair");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "expected CorruptVault, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "refused repair must not mutate the manifest (fail-closed pre-write)",
+    );
+}
