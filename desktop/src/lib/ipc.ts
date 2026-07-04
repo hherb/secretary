@@ -176,6 +176,10 @@ export async function pickVaultFolder(): Promise<string | null> {
   return call<string | null>('pick_vault_folder', {});
 }
 
+export async function pickCreateFolder(): Promise<string | null> {
+  return call<string | null>('pick_create_folder', {});
+}
+
 export async function pickContactCard(): Promise<string | null> {
   return call<string | null>('pick_contact_card', {});
 }

@@ -773,7 +773,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         let dto = create::create_vault_impl(
@@ -806,7 +806,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -824,12 +824,14 @@ mod create_path {
         assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
     }
 
-    /// #353: creating into a typed SUBFOLDER of the picked folder (the wizard's
-    /// non-empty-folder offer) must still let the auto-navigated unlock through.
-    /// The picker only ever approves the PARENT (Containment authorizes the
-    /// subfolder create); `create_vault_impl` then re-approves the created
-    /// subfolder so the follow-on `Exact` unlock of that exact path succeeds.
-    /// Without that re-approval the unlock would fail `PathNotApproved`.
+    /// #353/#378: creating into a typed SUBFOLDER of the picked folder (the
+    /// wizard's non-empty-folder offer) must still let the auto-navigated
+    /// unlock through. The create picker (`pick_create_folder`) only ever
+    /// approves the PARENT in the `CreateParent` slot (Containment authorizes
+    /// the subfolder create); `create_vault_impl` then approves the created
+    /// subfolder in the `VaultFolder` slot so the follow-on `Exact` unlock of
+    /// that exact path succeeds. Without that approval the unlock would fail
+    /// `PathNotApproved`.
     #[test]
     fn created_subfolder_vault_reopens_via_exact_unlock() {
         let parent = tempfile::tempdir().expect("parent tempdir");
@@ -838,10 +840,10 @@ mod create_path {
         let pw = random_password();
 
         let (state, _device_dir) = fresh_state();
-        // Only the PARENT is approved (mirrors `pick_vault_folder`); the
+        // Only the PARENT is approved (mirrors `pick_create_folder`); the
         // subfolder is never picked — the wizard constructs it.
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(parent.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -870,7 +872,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         let err = create::create_vault_impl(
@@ -897,7 +899,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -919,7 +921,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
 
@@ -974,7 +976,7 @@ mod edit_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(vault_dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -1294,7 +1296,7 @@ mod delete_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(vault_dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -1406,6 +1408,79 @@ mod delete_path {
         );
     }
 
+    /// #376: a failed physical `blocks/ → trash/` rename must not fail the
+    /// trash (the manifest write is the commit point) but must be detectable
+    /// as lingering residue afterwards. The rename failure is forced
+    /// deterministically by planting a regular FILE named `trash` at the
+    /// vault root: core's `create_dir_all("trash")` fails on it, so the
+    /// rename is never attempted and the ciphertext stays in `blocks/`.
+    #[test]
+    fn trash_rename_failure_leaves_detectable_residue_without_failing() {
+        let (state, dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Bank logins").expect("create_block");
+        let block_hex = block.block_uuid_hex.clone();
+        add_one_record(&state, &block_hex);
+
+        std::fs::write(dir.path().join("trash"), b"obstruction").expect("plant trash file");
+
+        delete::trash_block_impl(&state, &block_hex)
+            .expect("manifest-first trash must succeed despite the physical rename failing");
+
+        let uuid: [u8; 16] = hex::decode(&block_hex)
+            .expect("hex")
+            .try_into()
+            .expect("16 bytes");
+        let residue = delete::lingering_trash_residue(dir.path(), &uuid)
+            .expect("ciphertext must be detected as still resident in blocks/");
+        assert!(residue.exists(), "residue path exists on disk");
+
+        // The manifest no longer lists the block, so the unlock-time orphan
+        // scan reports exactly this file.
+        let session = state.lock().unwrap();
+        session
+            .with_unlocked(|u| {
+                let orphans =
+                    secretary_desktop::session::unlisted_block_files(dir.path(), &u.manifest);
+                assert_eq!(
+                    orphans,
+                    vec![residue.clone()],
+                    "orphan scan finds the residue"
+                );
+                Ok(())
+            })
+            .expect("session unlocked");
+    }
+
+    /// #376 counterpart: on the happy path the physical rename succeeds, so
+    /// neither the per-event residue check nor the orphan scan fires.
+    #[test]
+    fn trash_happy_path_leaves_no_residue_and_no_orphans() {
+        let (state, dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Bank logins").expect("create_block");
+        let block_hex = block.block_uuid_hex.clone();
+        add_one_record(&state, &block_hex);
+
+        delete::trash_block_impl(&state, &block_hex).expect("trash_block");
+
+        let uuid: [u8; 16] = hex::decode(&block_hex)
+            .expect("hex")
+            .try_into()
+            .expect("16 bytes");
+        assert!(
+            delete::lingering_trash_residue(dir.path(), &uuid).is_none(),
+            "no residue after a successful physical move"
+        );
+        let session = state.lock().unwrap();
+        session
+            .with_unlocked(|u| {
+                let orphans =
+                    secretary_desktop::session::unlisted_block_files(dir.path(), &u.manifest);
+                assert!(orphans.is_empty(), "no orphans, got {orphans:?}");
+                Ok(())
+            })
+            .expect("session unlocked");
+    }
+
     #[test]
     fn restore_never_trashed_block_is_trash_entry_not_found() {
         // A UUID that is neither live nor in trash. Core checks the live
@@ -1489,7 +1564,7 @@ mod contacts_path {
 
         let (peer_state, _device_dir) = fresh_state();
         peer_state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(

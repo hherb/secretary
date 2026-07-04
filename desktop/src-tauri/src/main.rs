@@ -86,6 +86,7 @@ fn main() {
             create::create_vault,
             create::probe_create_target,
             pick::pick_vault_folder,
+            pick::pick_create_folder,
             pick::pick_contact_card,
             pick::pick_export_dir,
             edit::create_block,
