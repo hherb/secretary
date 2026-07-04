@@ -153,7 +153,11 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 /// block has cleared all three gates does this function re-sign and
 /// atomically write a single updated manifest. A healthy vault (no
 /// mismatches) degrades to a plain open — **idempotent**, safe to call
-/// speculatively.
+/// speculatively *given a usable §10 baseline store*: the pre-write §10
+/// gate below runs unconditionally (before mismatch classification), so
+/// a `load_baseline` error or a rollback-flagged committed clock refuses
+/// even a would-be no-op repair where `open_vault` (read-only skip
+/// posture) still succeeds.
 ///
 /// Goes through the same `unlock_vault_identity` +
 /// `read_and_verify_manifest` §1 verify-before-decrypt sequence as
