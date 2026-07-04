@@ -21,11 +21,11 @@ use crate::identity::fingerprint::fingerprint;
 
 use super::block;
 use super::conflict::{clock_relation, ClockRelation};
-use super::manifest::{is_rollback, BlockEntry, Manifest};
+use super::manifest::{BlockEntry, Manifest};
 use super::orchestrators::{
-    format_uuid_hyphenated, read_and_verify_manifest, resign_and_write_manifest,
-    resolve_recipient_uuids, tick_clock, unlock_vault_identity, OpenVault, Unlocker, BLOCKS_SUBDIR,
-    BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
+    ensure_not_rollback, format_uuid_hyphenated, read_and_verify_manifest,
+    resign_and_write_manifest, resolve_recipient_uuids, tick_clock, unlock_vault_identity,
+    OpenVault, Unlocker, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
 };
 use super::{VaultError, VectorClockEntry};
 
@@ -206,14 +206,8 @@ pub fn repair_vault(
     // (rollback) committed clock into an unflagged "concurrent" one,
     // masking the rollback permanently. A provider error propagates
     // fail-closed — nothing has been staged or written yet.
-    if let Some(local) = load_baseline(&manifest.vault_uuid)? {
-        if is_rollback(&local, &manifest.vector_clock) {
-            return Err(VaultError::Rollback {
-                local_clock: local,
-                incoming_clock: manifest.vector_clock.clone(),
-            });
-        }
-    }
+    let baseline = load_baseline(&manifest.vault_uuid)?;
+    ensure_not_rollback(baseline.as_deref(), &manifest.vector_clock)?;
 
     // Owner verify/decrypt keys — mirrors restore_block's key prep,
     // hoisted once outside the per-block loop. Zeroize the stack copy.
