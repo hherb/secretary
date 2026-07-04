@@ -178,6 +178,48 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
     }
 }
 
+/// Stage the canonical crashed-`save_block` residue: commit "v1"
+/// (ts 1_000), snapshot the committed manifest, write "v2" (ts 2_000 —
+/// the block file hits disk), then roll the manifest back to the v1
+/// snapshot, as if the crash hit between `save_block`'s block write and
+/// its manifest write. Consumes `open` — the "crashed" session must not
+/// keep writing after the rollback. Returns the restored v1 manifest
+/// bytes and the vault uuid for later assertions.
+fn stage_crashed_save(
+    folder: &std::path::Path,
+    mut open: secretary_core::vault::OpenVault,
+    block_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    rng: &mut ChaCha20Rng,
+) -> (Vec<u8>, [u8; 16]) {
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        rng,
+    )
+    .unwrap();
+    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let vault_uuid = open.manifest.vault_uuid;
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    (manifest_v1, vault_uuid)
+}
+
 // ---------------------------------------------------------------------------
 // #350 crash-recovery residue builder
 // ---------------------------------------------------------------------------
@@ -404,33 +446,10 @@ fn repair_vault_adopts_interrupted_save() {
     let (dir, _mnemonic, pw) = make_fast_vault(61, "Owner");
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x61; 32]);
-    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
     let (device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
     // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
 
     let err =
         open_vault(folder, Unlocker::Password(&pw), None).expect_err("residue must fail open");
@@ -442,7 +461,7 @@ fn repair_vault_adopts_interrupted_save() {
     let repaired = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         3_000,
         &mut rng,
@@ -492,32 +511,9 @@ fn repair_vault_adopts_interrupted_save_via_device_secret() {
     };
 
     // Stage a crashed save: v2 block on disk, v1 manifest committed.
-    let mut open = open_vault(folder, dev_unlocker(), None).unwrap();
+    let open = open_vault(folder, dev_unlocker(), None).unwrap();
     let (writer_device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
-    let recipients = vec![open.owner_card.clone()];
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v1"),
-        &recipients,
-        writer_device_uuid,
-        1_000,
-        &mut rng,
-    )
-    .unwrap();
-    let manifest_v1 = fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    save_block(
-        folder,
-        &mut open,
-        make_simple_plaintext(block_uuid, "v2"),
-        &recipients,
-        writer_device_uuid,
-        2_000,
-        &mut rng,
-    )
-    .unwrap();
-    drop(open);
-    fs::write(folder.join("manifest.cbor.enc"), &manifest_v1).unwrap();
+    stage_crashed_save(folder, open, block_uuid, writer_device_uuid, &mut rng);
 
     // Open via the device secret must fail typed on the residue.
     let err = open_vault(folder, dev_unlocker(), None).expect_err("residue must fail open");
@@ -530,7 +526,7 @@ fn repair_vault_adopts_interrupted_save_via_device_secret() {
     let repaired = secretary_core::vault::repair_vault(
         folder,
         dev_unlocker(),
-        None,
+        |_| Ok(None),
         enrolled.device_uuid,
         3_000,
         &mut rng,
@@ -615,7 +611,7 @@ fn repair_vault_adopts_interrupted_revocation() {
     let repaired = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         3_000,
         &mut rng,
@@ -716,7 +712,7 @@ fn repair_rejects_stale_equal_clock_replay() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         3_000,
         &mut rng,
@@ -854,7 +850,7 @@ fn repair_rejects_backward_clock_share_replay() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         4_000,
         &mut rng,
@@ -939,7 +935,7 @@ fn repair_rejects_crashed_share_superset() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         3_000,
         &mut rng,
@@ -1056,7 +1052,7 @@ fn repair_rejects_equal_set_different_bytes() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         4_000,
         &mut rng,
@@ -1185,7 +1181,7 @@ fn repair_rejects_dominating_clock_recipient_widening() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_1,
         4_000,
         &mut rng,
@@ -1274,7 +1270,7 @@ fn repair_vault_rejects_rollback_plant() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         3_000,
         &mut rng,
@@ -1353,7 +1349,7 @@ fn repair_vault_rejects_concurrent_clock_transplant() {
     let err = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_a,
         3_000,
         &mut rng,
@@ -1397,7 +1393,7 @@ fn missing_block_file_is_typed_and_unrepairable() {
     let e2 = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         2_000,
         &mut rng,
@@ -1435,7 +1431,7 @@ fn repair_vault_is_idempotent_on_healthy_vault() {
     let repaired = secretary_core::vault::repair_vault(
         folder,
         Unlocker::Password(&pw),
-        None,
+        |_| Ok(None),
         device_uuid,
         2_000,
         &mut rng,
@@ -1451,5 +1447,115 @@ fn repair_vault_is_idempotent_on_healthy_vault() {
         fs::read(folder.join("manifest.cbor.enc")).unwrap(),
         before,
         "healthy repair must not rewrite the manifest"
+    );
+}
+
+/// #384: the §10 baseline provider must be invoked with the VERIFIED
+/// manifest `vault_uuid` — the value recovered after hybrid-verify +
+/// AEAD decrypt — never a plaintext `vault.toml`-derived one. Proven on
+/// a fixture where the two values actually DIVERGE: the owner re-signs
+/// the manifest under a different `vault_uuid` (header + body changed
+/// consistently, so the §4.3 step-5 cross-check passes, and no open-path
+/// check compares the manifest uuid to `vault.toml`'s). The provider
+/// must see the manifest's value — a regression to plaintext-derived
+/// keying reports the `vault.toml` uuid instead and goes RED.
+#[test]
+fn repair_passes_verified_manifest_uuid_to_baseline_provider() {
+    let (dir, _mnemonic, pw) = make_fast_vault(71, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let toml_uuid = open.manifest.vault_uuid; // == vault.toml's value at creation
+
+    // Owner-re-sign the manifest under a DIVERGENT vault_uuid: same body
+    // otherwise, same IBK + signing keys, fresh nonce.
+    let divergent_uuid = [0x5b; 16];
+    assert_ne!(divergent_uuid, toml_uuid);
+    let mut body = open.manifest.clone();
+    body.vault_uuid = divergent_uuid;
+    let header = secretary_core::vault::manifest::ManifestHeader {
+        vault_uuid: divergent_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: open.manifest_file.header.last_mod_ms,
+    };
+    let mut nonce = [0u8; 24];
+    rng.fill_bytes(&mut nonce);
+    let author_fp = fingerprint(&open.owner_card.to_canonical_cbor().unwrap());
+    let pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    let file = secretary_core::vault::manifest::sign_manifest(
+        header,
+        &body,
+        &open.identity_block_key,
+        &nonce,
+        author_fp,
+        &open.identity.ed25519_sk,
+        &pq_sk,
+    )
+    .unwrap();
+    fs::write(
+        folder.join("manifest.cbor.enc"),
+        secretary_core::vault::manifest::encode_manifest_file(&file).unwrap(),
+    )
+    .unwrap();
+    drop(open);
+
+    // The §10 gate runs before Pass 1, so the provider is invoked even on
+    // this residue-free vault; capture what it is keyed with.
+    let mut seen: Option<[u8; 16]> = None;
+    let repaired = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |uuid: &[u8; 16]| {
+            seen = Some(*uuid);
+            Ok(None)
+        },
+        [0xd1; 16],
+        3_000,
+        &mut rng,
+    )
+    .expect("divergent-uuid manifest must still open (nothing compares it to vault.toml)");
+    drop(repaired);
+    assert_eq!(
+        seen,
+        Some(divergent_uuid),
+        "provider must be keyed by the verified manifest vault_uuid, not the vault.toml value"
+    );
+}
+
+/// #384: a baseline-provider error must abort the repair FAIL-CLOSED —
+/// propagated before anything is staged or written. Pins the posture
+/// half of the #384 hardening at the core seam (the bridge maps its
+/// state-store failures onto exactly this contract).
+#[test]
+fn repair_aborts_when_baseline_provider_errors() {
+    let (dir, _mnemonic, pw) = make_fast_vault(72, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x72; 32]);
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xd2; 16], [0xb2; 16]);
+    let (before, _vault_uuid) = stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
+
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |_: &[u8; 16]| {
+            Err(VaultError::Io {
+                context: "test: baseline store unreadable",
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, "seeded failure"),
+            })
+        },
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .expect_err("a provider error must refuse the repair");
+    assert!(
+        matches!(err, VaultError::Io { context, .. } if context == "test: baseline store unreadable"),
+        "the provider's own error must propagate, got {err:?}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        before,
+        "refused repair must not mutate the manifest"
     );
 }

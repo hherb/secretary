@@ -865,14 +865,7 @@ pub(crate) fn read_and_verify_manifest(
     }
 
     // Step 8: §10 rollback resistance.
-    if let Some(local) = local_highest_clock {
-        if manifest::is_rollback(local, &manifest_body.vector_clock) {
-            return Err(VaultError::Rollback {
-                local_clock: local.to_vec(),
-                incoming_clock: manifest_body.vector_clock.clone(),
-            });
-        }
-    }
+    ensure_not_rollback(local_highest_clock, &manifest_body.vector_clock)?;
 
     Ok((
         owner_card,
@@ -880,6 +873,27 @@ pub(crate) fn read_and_verify_manifest(
         manifest_file,
         manifest_file_bytes,
     ))
+}
+
+/// §10 rollback refusal shared by the read-only open path (step 8 above)
+/// and the mutating repair path (`repair::repair_vault`'s pre-write
+/// gate): a manifest clock strictly dominated by this device's persisted
+/// baseline is a rollback. Single constructor for [`VaultError::Rollback`]
+/// so the two security-enforcement sites cannot drift; `None` baseline
+/// (no history on this device) skips the check per crypto-design §10.
+pub(crate) fn ensure_not_rollback(
+    local: Option<&[VectorClockEntry]>,
+    incoming: &[VectorClockEntry],
+) -> Result<(), VaultError> {
+    if let Some(local) = local {
+        if manifest::is_rollback(local, incoming) {
+            return Err(VaultError::Rollback {
+                local_clock: local.to_vec(),
+                incoming_clock: incoming.to_vec(),
+            });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -25,8 +25,12 @@ use crate::session::VaultSession;
 /// Read the `vault_uuid` field out of `<folder>/vault.toml` and decode its
 /// canonical hyphenated form to 16 bytes, by delegating to the same
 /// `secretary_core::unlock::vault_toml::decode` the open/orchestrator path
-/// uses (which is also what the bridge's `load_rollback_baseline` calls to
-/// key the §10 rollback baseline). Reusing `decode` keeps a single
+/// uses. (The §10 rollback baseline is no longer keyed off this plaintext
+/// value: since #384, core `repair_vault` invokes a bridge-supplied
+/// baseline provider with the **verified** manifest `vault_uuid` — see
+/// `baseline_provider` in
+/// `ffi/secretary-ffi-bridge/src/repair/orchestration.rs`.) Reusing
+/// `decode` keeps a single
 /// canonical-UUID parser — core's private `parse_uuid_canonical` — as the one
 /// source of truth for the hyphenated-form rules (length, hyphen positions,
 /// lowercase-only hex) instead of maintaining a second desktop-local mirror

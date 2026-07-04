@@ -23,9 +23,9 @@ use super::block;
 use super::conflict::{clock_relation, ClockRelation};
 use super::manifest::{BlockEntry, Manifest};
 use super::orchestrators::{
-    format_uuid_hyphenated, read_and_verify_manifest, resign_and_write_manifest,
-    resolve_recipient_uuids, tick_clock, unlock_vault_identity, OpenVault, Unlocker, BLOCKS_SUBDIR,
-    BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
+    ensure_not_rollback, format_uuid_hyphenated, read_and_verify_manifest,
+    resign_and_write_manifest, resolve_recipient_uuids, tick_clock, unlock_vault_identity,
+    OpenVault, Unlocker, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
 };
 use super::{VaultError, VectorClockEntry};
 
@@ -153,13 +153,25 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 /// block has cleared all three gates does this function re-sign and
 /// atomically write a single updated manifest. A healthy vault (no
 /// mismatches) degrades to a plain open — **idempotent**, safe to call
-/// speculatively.
+/// speculatively *given a usable §10 baseline store*: the pre-write §10
+/// gate below runs unconditionally (before mismatch classification), so
+/// a `load_baseline` error or a rollback-flagged committed clock refuses
+/// even a would-be no-op repair where `open_vault` (read-only skip
+/// posture) still succeeds.
 ///
 /// Goes through the same `unlock_vault_identity` +
 /// `read_and_verify_manifest` §1 verify-before-decrypt sequence as
-/// `open_vault` — the repair path is never a weaker open than a normal
-/// one; it only widens what happens *after* the manifest is
-/// authenticated.
+/// `open_vault`, then evaluates the §10 rollback check itself — keyed by
+/// the **verified** `manifest.vault_uuid` handed to `load_baseline`, on
+/// the committed (pre-tick) clock, strictly before any write; a
+/// `load_baseline` error refuses the repair fail-closed (#384). Caution
+/// for new callers: the fail-closed posture required by crypto-design
+/// §10 lives in the *provider* — passing `|_| Ok(None)` silently opts
+/// out of rollback resistance (acceptable only in tests). Production
+/// callers must use (or mirror) the bridge's `baseline_provider`, which
+/// fails closed on an existing-but-unreadable baseline store. The repair
+/// path is never a weaker open than a normal one; it only widens what
+/// happens *after* the manifest is authenticated.
 ///
 /// The same open-time sweep this module runs for `open_vault`
 /// (`complete_pending_trash_renames`) also runs here. That sweep
@@ -173,15 +185,29 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 pub fn repair_vault(
     folder: &Path,
     unlocker: Unlocker<'_>,
-    local_highest_clock: Option<&[VectorClockEntry]>,
+    load_baseline: impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError>,
     device_uuid: [u8; 16],
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<OpenVault, VaultError> {
-    // Same unlock + §10-checked manifest verify as open_vault.
+    // Same unlock + §1 verify-before-decrypt manifest sequence as
+    // open_vault. §10 runs explicitly below (not inside
+    // read_and_verify_manifest) — see the gate comment.
     let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
     let (owner_card, mut manifest, manifest_file, _envelope_bytes) =
-        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
+        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, None)?;
+
+    // §10 pre-write gate (#384): keyed by the VERIFIED manifest
+    // `vault_uuid` — available only now, after hybrid-verify + AEAD
+    // decrypt — never by the plaintext `vault.toml` value. It must run
+    // HERE, before Pass 1 stages anything and before the adopt/tick/
+    // manifest rewrite below: a post-write check would evaluate the
+    // post-tick clock, where the local tick flips a strictly-dominated
+    // (rollback) committed clock into an unflagged "concurrent" one,
+    // masking the rollback permanently. A provider error propagates
+    // fail-closed — nothing has been staged or written yet.
+    let baseline = load_baseline(&manifest.vault_uuid)?;
+    ensure_not_rollback(baseline.as_deref(), &manifest.vector_clock)?;
 
     // Owner verify/decrypt keys — mirrors restore_block's key prep,
     // hoisted once outside the per-block loop. Zeroize the stack copy.
