@@ -17,6 +17,11 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathPurpose {
     VaultFolder,
+    /// Parent folder for vault creation (#378). Kept separate from
+    /// `VaultFolder` so an unlock pick (matched `Exact`) can never authorize
+    /// a `Containment`-matched `create_vault` / `probe_create_target` in a
+    /// subfolder of the unlocked vault's folder.
+    CreateParent,
     ContactCard,
     ExportDir,
 }
@@ -167,6 +172,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let approvals = PathApprovals::default();
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
+    }
+
+    /// #378 regression: an unlock pick (`VaultFolder`) must never authorize a
+    /// create in a subfolder — create/probe consult the `CreateParent` slot,
+    /// which only `pick_create_folder` populates.
+    #[test]
+    fn vault_folder_approval_never_authorizes_create_parent() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        let mut approvals = PathApprovals::default();
+        approvals.approve(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(dir.path()).unwrap(),
+        );
+        assert!(!approvals.is_authorized(PathPurpose::CreateParent, &sub, MatchMode::Containment));
+        assert!(!approvals.is_authorized(
+            PathPurpose::CreateParent,
+            dir.path(),
+            MatchMode::Containment
+        ));
     }
 
     #[test]

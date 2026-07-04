@@ -773,7 +773,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         let dto = create::create_vault_impl(
@@ -806,7 +806,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -824,12 +824,14 @@ mod create_path {
         assert_eq!(manifest.block_count, 0, "a new vault has no blocks");
     }
 
-    /// #353: creating into a typed SUBFOLDER of the picked folder (the wizard's
-    /// non-empty-folder offer) must still let the auto-navigated unlock through.
-    /// The picker only ever approves the PARENT (Containment authorizes the
-    /// subfolder create); `create_vault_impl` then re-approves the created
-    /// subfolder so the follow-on `Exact` unlock of that exact path succeeds.
-    /// Without that re-approval the unlock would fail `PathNotApproved`.
+    /// #353/#378: creating into a typed SUBFOLDER of the picked folder (the
+    /// wizard's non-empty-folder offer) must still let the auto-navigated
+    /// unlock through. The create picker (`pick_create_folder`) only ever
+    /// approves the PARENT in the `CreateParent` slot (Containment authorizes
+    /// the subfolder create); `create_vault_impl` then approves the created
+    /// subfolder in the `VaultFolder` slot so the follow-on `Exact` unlock of
+    /// that exact path succeeds. Without that approval the unlock would fail
+    /// `PathNotApproved`.
     #[test]
     fn created_subfolder_vault_reopens_via_exact_unlock() {
         let parent = tempfile::tempdir().expect("parent tempdir");
@@ -838,10 +840,10 @@ mod create_path {
         let pw = random_password();
 
         let (state, _device_dir) = fresh_state();
-        // Only the PARENT is approved (mirrors `pick_vault_folder`); the
+        // Only the PARENT is approved (mirrors `pick_create_folder`); the
         // subfolder is never picked — the wizard constructs it.
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(parent.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -870,7 +872,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         let err = create::create_vault_impl(
@@ -897,7 +899,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -919,7 +921,7 @@ mod create_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
 
@@ -974,7 +976,7 @@ mod edit_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(vault_dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -1294,7 +1296,7 @@ mod delete_path {
 
         let (state, _device_dir) = fresh_state();
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(vault_dir.path()).unwrap(),
         );
         create::create_vault_impl(
@@ -1489,7 +1491,7 @@ mod contacts_path {
 
         let (peer_state, _device_dir) = fresh_state();
         peer_state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(dir.path()).unwrap(),
         );
         create::create_vault_impl(

@@ -75,6 +75,13 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     reason:
       'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); performs no vault mutation',
   },
+  pick_create_folder: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'pickCreateFolder',
+    reason:
+      'opens a native dialog and records the chosen path in the backend CreateParent slot (#378); performs no vault mutation — kept separate from pick_vault_folder so an unlock pick never authorizes a create',
+  },
   pick_contact_card: {
     kind: 'write',
     gate: 'exempt',

@@ -68,10 +68,13 @@ pub fn create_vault_impl(
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<CreateVaultDto, AppError> {
     let folder = Path::new(folder_path);
-    // #353: the target must be the approved vault folder or a subfolder of it.
+    // #353/#378: the target must be the folder the user picked FOR CREATION
+    // (via `pick_create_folder` → the `CreateParent` slot) or a subfolder of
+    // it. Deliberately not the `VaultFolder` slot: an unlock pick must never
+    // authorize a create.
     {
         let session = lock_session(state)?;
-        if !session.is_path_approved(PathPurpose::VaultFolder, folder, MatchMode::Containment) {
+        if !session.is_path_approved(PathPurpose::CreateParent, folder, MatchMode::Containment) {
             return Err(AppError::PathNotApproved {
                 path: folder_path.to_string(),
             });
@@ -109,15 +112,16 @@ pub fn create_vault_impl(
         }
     })?;
 
-    // #353: bind the just-created folder as the approved VaultFolder so the
-    // follow-on unlock passes its `Exact`-match gate. The create wizard
-    // auto-navigates to Unlock pre-filled with THIS path; when the user created
-    // inside a typed *subfolder* of the picked folder, the slot still held the
-    // parent, so an `Exact` unlock of the subfolder would fail `PathNotApproved`.
-    // Re-approving the created folder also NARROWS the slot from the picked
-    // parent to the actual vault (least-privilege) until the session locks.
-    // `folder` now exists (create succeeded) and the top-of-fn Containment gate
-    // already proved it canonicalizes, so `Some` is guaranteed here.
+    // #353/#378: bind the just-created folder as the approved VaultFolder so
+    // the follow-on unlock passes its `Exact`-match gate. The create wizard
+    // auto-navigates to Unlock pre-filled with THIS path; since #378 the
+    // create pick lives in the separate `CreateParent` slot, so without this
+    // backend-initiated approval the `Exact` unlock of the created folder
+    // would fail `PathNotApproved`. Approving exactly the created vault (not
+    // the picked parent) keeps the unlock slot least-privilege until the
+    // session locks. `folder` now exists (create succeeded) and the
+    // top-of-fn Containment gate already proved it canonicalizes, so `Some`
+    // is guaranteed here.
     if let Some(canonical) = canonicalize_for_auth(folder) {
         lock_session(state)?.approve_path(PathPurpose::VaultFolder, canonical);
     }
@@ -145,10 +149,11 @@ pub fn probe_create_target_impl(
     folder_path: &str,
 ) -> Result<CreateTargetProbeDto, AppError> {
     let folder = Path::new(folder_path);
-    // #353: only probe a path the user picked (or a subfolder of it).
+    // #353/#378: only probe a path the user picked for creation (or a
+    // subfolder of it). Same `CreateParent` gate as `create_vault_impl`.
     {
         let session = lock_session(state)?;
-        if !session.is_path_approved(PathPurpose::VaultFolder, folder, MatchMode::Containment) {
+        if !session.is_path_approved(PathPurpose::CreateParent, folder, MatchMode::Containment) {
             return Err(AppError::PathNotApproved {
                 path: folder_path.to_string(),
             });
@@ -198,11 +203,49 @@ mod tests {
         let temp = tempdir().unwrap();
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(temp.path()).unwrap(),
         );
         let dto = probe_create_target_impl(&state, temp.path().to_str().unwrap()).unwrap();
         assert!(dto.exists && dto.is_empty);
+    }
+
+    /// #378 regression: an *unlock* pick (`VaultFolder` slot) must not
+    /// authorize create/probe — they consult the `CreateParent` slot only.
+    #[test]
+    fn unlock_approval_does_not_authorize_create_or_probe() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("sub-vault");
+        let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(temp.path()).unwrap(),
+        );
+
+        let err = probe_create_target_impl(&state, target.to_str().unwrap())
+            .expect_err("probe must not ride an unlock approval");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+
+        let err = create_vault_impl(
+            &state,
+            target.to_str().unwrap(),
+            "My Vault",
+            &secretary_core::crypto::secret::SecretBytes::from(any_password().to_vec()),
+            0,
+            &mut rand_core::OsRng,
+        )
+        .expect_err("create must not ride an unlock approval");
+        assert!(
+            matches!(err, AppError::PathNotApproved { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "must not create the folder for an unapproved path"
+        );
     }
 
     #[test]
@@ -244,7 +287,7 @@ mod tests {
 
         let state = Mutex::new(VaultSession::new(std::env::temp_dir()));
         state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
+            PathPurpose::CreateParent,
             canonicalize_for_auth(parent.path()).unwrap(),
         );
 

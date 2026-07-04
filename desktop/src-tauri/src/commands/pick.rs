@@ -38,8 +38,9 @@ pub fn pick_into_slot_impl(
     Ok(Some(display))
 }
 
-/// Native folder picker for the vault folder (unlock + create). Stores the
-/// choice in the `VaultFolder` slot.
+/// Native folder picker for the vault folder (unlock). Stores the choice in
+/// the `VaultFolder` slot. Vault creation uses [`pick_create_folder`] — a
+/// distinct purpose, so an unlock pick never authorizes a create (#378).
 #[tauri::command]
 pub async fn pick_vault_folder(
     app: tauri::AppHandle,
@@ -52,6 +53,25 @@ pub async fn pick_vault_folder(
         .blocking_pick_folder()
         .and_then(|fp| fp.into_path().ok());
     pick_into_slot_impl(state.inner(), PathPurpose::VaultFolder, picked)
+}
+
+/// Native folder picker for the create wizard (#378). Stores the choice in
+/// the `CreateParent` slot, which `create_vault` / `probe_create_target`
+/// consult with `Containment` (the wizard may create a subfolder inside it).
+/// Deliberately NOT the `VaultFolder` slot: sharing it would let a pick made
+/// to *unlock* a vault authorize a *create* in one of its subfolders.
+#[tauri::command]
+pub async fn pick_create_folder(
+    app: tauri::AppHandle,
+    state: State<'_, Mutex<VaultSession>>,
+) -> Result<Option<String>, AppError> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose a folder to create your vault in")
+        .blocking_pick_folder()
+        .and_then(|fp| fp.into_path().ok());
+    pick_into_slot_impl(state.inner(), PathPurpose::CreateParent, picked)
 }
 
 /// Native file picker (`.card` filter) for contact-card import. Stores the

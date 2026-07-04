@@ -8,7 +8,7 @@
   type Props = {
     value: string;
     onSelect: (path: string) => void;
-    command: 'pick_vault_folder' | 'pick_contact_card' | 'pick_export_dir';
+    command: 'pick_vault_folder' | 'pick_create_folder' | 'pick_contact_card' | 'pick_export_dir';
     disabled?: boolean;
     label?: string;
     placeholder?: string;

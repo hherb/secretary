@@ -2,6 +2,7 @@
   import PathPicker from '../PathPicker.svelte';
   import { probeCreateTarget } from '../../lib/ipc';
   import { joinSubfolder } from '../../lib/create';
+  import type { AppError } from '../../lib/errors';
 
   let {
     seedPath = '',
@@ -17,12 +18,18 @@
   let probed = $state<{ exists: boolean; isEmpty: boolean } | null>(null);
   let subfolderName = $state('');
   let probing = $state(false);
+  // #378: create has its own approval slot (CreateParent), populated only by
+  // the pick_create_folder dialog. A seed path carried over from the Unlock
+  // screen is NOT approved for creation, so probing it rejects with
+  // path_not_approved — the user must confirm the folder via the picker.
+  let needsPick = $state(false);
 
   let probeGeneration = 0;
 
   async function probe(path: string): Promise<void> {
     if (path.length === 0) {
       probed = null;
+      needsPick = false;
       return;
     }
     const gen = ++probeGeneration;
@@ -31,6 +38,12 @@
       const result = await probeCreateTarget(path);
       if (gen === probeGeneration) {
         probed = result;
+        needsPick = false;
+      }
+    } catch (err) {
+      if (gen === probeGeneration) {
+        probed = null;
+        needsPick = (err as AppError).code === 'path_not_approved';
       }
     } finally {
       if (gen === probeGeneration) {
@@ -49,7 +62,10 @@
     needsSubfolder ? joinSubfolder(picked, subfolderName) : picked.length > 0 ? picked : null
   );
 
-  const canContinue = $derived(!probing && finalPath !== null);
+  // A successful probe (probed !== null) is required: it proves the backend
+  // holds a CreateParent approval covering `picked`, so create_vault won't
+  // bounce with path_not_approved after the credentials step.
+  const canContinue = $derived(!probing && probed !== null && finalPath !== null);
 
   function onPick(p: string): void {
     picked = p;
@@ -61,9 +77,11 @@
   <h2 class="wizard-step__title">Choose a folder</h2>
   <p class="wizard-step__hint">Pick an empty folder, or a folder to create your vault inside.</p>
 
-  <PathPicker value={picked} command="pick_vault_folder" onSelect={onPick} disabled={probing} />
+  <PathPicker value={picked} command="pick_create_folder" onSelect={onPick} disabled={probing} />
 
-  {#if needsSubfolder}
+  {#if needsPick}
+    <p class="wizard-step__warn">Confirm the folder with the Choose… button to continue.</p>
+  {:else if needsSubfolder}
     <p class="wizard-step__warn">{picked} already contains files.</p>
     <label class="wizard-step__field" for="subfolder-name">
       <span>Subfolder name</span>

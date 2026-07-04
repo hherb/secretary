@@ -7,8 +7,8 @@ vi.mock('../src/lib/ipc', () => ({
 }));
 import { probeCreateTarget } from '../src/lib/ipc';
 
-// PathPicker invokes `pick_vault_folder` directly via `@tauri-apps/api/core`
-// (#353); these tests seed the picker via `seedPath` and never click the
+// PathPicker invokes `pick_create_folder` directly via `@tauri-apps/api/core`
+// (#353/#378); these tests seed the picker via `seedPath` and never click the
 // Choose… button, so the mock only needs to exist to satisfy the import.
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue('/Users/h/Docs')
@@ -56,6 +56,23 @@ describe('FolderStep', () => {
     });
     await fireEvent.click(getByRole('button', { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  // #378: a seed path carried over from the Unlock screen has no CreateParent
+  // approval — the probe rejects with path_not_approved. The step must keep
+  // Continue disabled and ask the user to confirm the folder via the picker.
+  it('unapproved seed path disables Continue and asks for a fresh pick', async () => {
+    (probeCreateTarget as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
+      code: 'path_not_approved',
+      path: '/Users/h/Docs'
+    });
+    const onNext = vi.fn();
+    const { findByText, findByRole } = render(FolderStep, {
+      props: { seedPath: '/Users/h/Docs', onNext, onCancel: vi.fn() }
+    });
+    expect(await findByText(/confirm the folder/i)).toBeTruthy();
+    const cont = (await findByRole('button', { name: /continue/i })) as HTMLButtonElement;
+    expect(cont.disabled).toBe(true);
   });
 
   it('subfolder path: typing a name yields the joined path on Continue', async () => {
