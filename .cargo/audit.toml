@@ -7,11 +7,25 @@
 # not a way to silence noise. Re-review this list whenever Tauri's GTK stack or
 # the uniffi/anyhow chain is upgraded, since most of these clear on that bump.
 #
-# None of these are exploitable vulnerabilities (cargo audit reports 0 of
-# those); they are "unmaintained"/"unsound" warnings on desktop-shell or
-# bindgen-tooling transitives that never touch the cryptographic core.
+# Most of these are "unmaintained"/"unsound" warnings on desktop-shell or
+# bindgen-tooling transitives that never touch the cryptographic core. The
+# quick-xml pair (RUSTSEC-2026-0194/0195) is the exception: those ARE
+# vulnerability-class advisories, accepted only because they are not reachable
+# with attacker-controlled input in this app (see the rationale on those two
+# entries below). Everything here is desktop-only and outside the crypto core,
+# FFI bridge, and mobile clients.
 [advisories]
 ignore = [
+  # --- quick-xml DoS via malicious XML, transitive via tauri -> plist (desktop) ---
+  # HIGH (7.5) but NOT reachable here: `plist` only parses the app's own
+  # trusted macOS Info.plist bundle metadata; no secretary crate uses
+  # plist/quick-xml, and vault data is CBOR/TOML, never XML. Not fixable yet —
+  # the latest plist (1.9.0) still pins quick-xml ^0.39.2, so 0.41 cannot
+  # resolve in. Drop both once plist adopts quick-xml >=0.41 and Tauri adopts
+  # that plist. Tracked in #383.
+  "RUSTSEC-2026-0194", # quick-xml quadratic duplicate-attribute-name check
+  "RUSTSEC-2026-0195", # quick-xml unbounded NsReader namespace allocation
+
   # --- gtk-rs GTK3 stack: unmaintained + one unsound, Linux-only via Tauri ---
   # Blocked until Tauri adopts gtk-rs 0.20. Tracked in #218.
   "RUSTSEC-2024-0429", # glib <0.20 VariantStrIter unsoundness (GHSA-wrw7-89jp-8q8g)
