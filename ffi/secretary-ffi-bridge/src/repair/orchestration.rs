@@ -38,9 +38,13 @@
 //! self-heals on the next open, which re-checks the persisted baseline).
 //! Repair is NOT symmetric: it rewrites the manifest, so a skipped check
 //! is permanent laundering. Hence: missing/never-synced baseline → skip
-//! (no false positive); EXISTING but unusable state file → refuse, with
-//! the deletion remedy in the error detail. Deleting the state file is
-//! the crypto-design §10 documented reset to a "no history" device.
+//! (no false positive); any OTHER state-load failure → refuse, with the
+//! remedy in the error detail. That covers both an existing-but-unusable
+//! state file (deleting it is the crypto-design §10 documented reset to a
+//! "no history" device) and a path-level failure (PermissionDenied /
+//! NotADirectory on the state dir), where the baseline's absence cannot
+//! be proven and skipping would risk laundering a real-but-unreadable
+//! baseline.
 
 use std::path::Path;
 
@@ -58,11 +62,14 @@ use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 /// attacker-controlled plaintext value (#384). A `None` state dir (no
 /// resolvable OS state dir) and an empty baseline (missing state file /
 /// never-synced device) both yield `Ok(None)` — §10 is skipped with no
-/// false positive on a fresh device. A state file that EXISTS but cannot
-/// be used (unreadable, undecodable, internal-uuid mismatch) fails the
-/// repair CLOSED — on this mutating path a skipped check would launder a
-/// rollback permanently, whereas the read-only open path's skip posture
-/// self-heals on the next open (#384; deliberate asymmetry).
+/// false positive on a fresh device. Every other state-load failure fails
+/// the repair CLOSED: an existing state file that cannot be used
+/// (unreadable, undecodable, internal-uuid mismatch), and equally a
+/// path-level failure (PermissionDenied / NotADirectory on the state
+/// dir), where a baseline may exist but cannot be proven absent — on this
+/// mutating path a skipped check would launder a rollback permanently,
+/// whereas the read-only open path's skip posture self-heals on the next
+/// open (#384; deliberate asymmetry).
 fn baseline_provider(
     state_dir: Option<&Path>,
 ) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
@@ -77,13 +84,18 @@ fn baseline_provider(
                 // no baseline for §10 purposes; skip (no false positive).
                 Ok((!clock.is_empty()).then_some(clock))
             }
-            // #384 fail-closed: an EXISTING but unreadable/undecodable/
-            // uuid-mismatched baseline refuses the MUTATING repair — a
+            // #384 fail-closed: any state-load failure other than a
+            // provably-missing file refuses the MUTATING repair — a
             // skipped check here would let adoption tick + re-sign the
             // manifest, permanently laundering a rolled-back clock (unlike
             // the read-only open path, which self-heals on the next open).
-            // Deleting the named state file is the documented §10 reset
-            // (crypto-design §10) and unblocks the repair.
+            // `state::load` maps only ErrorKind::NotFound to "no
+            // baseline"; this arm therefore sees both an existing-but-
+            // unusable state file (garbage bytes, internal-uuid mismatch)
+            // AND a path-level failure (PermissionDenied / NotADirectory
+            // on the state dir) where no file may exist at all — the two
+            // are indistinguishable here, so the detail must not assert
+            // that the file exists, and must name both remedies.
             // ErrorKind::InvalidData is deliberate: the FfiVaultError
             // conversion routes it to the `CorruptVault { detail }` fold
             // (which carries this full message), never to `FolderInvalid`
@@ -92,11 +104,11 @@ fn baseline_provider(
             Err(e) => {
                 let path = secretary_cli::state::state_file_path(state_dir, *vault_uuid);
                 Err(VaultError::Io {
-                    context: "§10 rollback baseline state file exists but could not be read",
+                    context: "§10 rollback baseline state could not be read",
                     source: std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!(
-                            "{e}; state file: {}; deleting it resets this device's rollback history (crypto-design §10) — then retry the repair",
+                            "{e}; state file path: {}; if that file exists, deleting it resets this device's rollback history (crypto-design §10's documented reset) — then retry the repair; if it does not exist, the state directory itself is inaccessible (permissions, or a path component that is not a directory) and must be fixed instead",
                             path.display()
                         ),
                     ),
