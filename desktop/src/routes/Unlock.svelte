@@ -96,7 +96,13 @@
   // cleared here: success proceeds into the unlocked session, and
   // `repair_rejected` has no auto-fix retry that would need it again.
   async function confirmRepair(): Promise<void> {
-    if (submitting) return;
+    // #374: guard on `formValid` like `submit` does, not just `submitting`.
+    // `needsRepair` is derived from persistent session state, but `password`
+    // is component-local $state that resets to '' on remount (e.g. routing to
+    // the create wizard and back). Without this guard the still-visible
+    // "Repair now" button could fire `repairVault(folderPath, '')` with an
+    // empty password, producing a spurious wrong-password/corrupt error.
+    if (!formValid || submitting) return;
     submitting = true;
     // Keep the repair affordance mounted while repair runs — see `repairing`.
     repairing = true;
@@ -157,7 +163,7 @@
           <button
             type="button"
             class="unlock__error-action"
-            disabled={submitting}
+            disabled={submitting || !formValid}
             onclick={confirmRepair}
           >
             {submitting ? 'Repairing…' : 'Repair now'}

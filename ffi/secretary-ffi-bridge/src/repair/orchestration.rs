@@ -23,11 +23,18 @@
 //! `read_and_verify_manifest`, at the TOP, on the COMMITTED clock, BEFORE the
 //! tick/write — a rollback surfaces as `VaultError::Rollback` → fail-closed,
 //! nothing is mutated. The baseline is keyed by the `vault_uuid` from the
-//! plaintext `vault.toml`; that is sound because core cross-checks the same
-//! `vault_uuid` against the signed manifest (`ManifestVaultUuidMismatch`), so a
-//! tampered `vault.toml` either names the correct baseline or makes repair fail
-//! closed anyway. This replaces the previous (buggy) post-write
-//! `enforce_rollback_resistance` call, which is no longer made here.
+//! plaintext `vault.toml`; that is sound because that same `vault_uuid` is
+//! bound into the unlock-time AEAD as associated data
+//! (`compose_aad(TAG_ID_WRAP_PW, &vt.vault_uuid)` in `unlock/mod.rs`, and the
+//! bundle-decrypt AAD on the device path), so a tampered `vault.toml`
+//! `vault_uuid` makes the unlock's AEAD auth tag fail
+//! (`UnlockError::WrongPasswordOrCorrupt` / `VaultMismatch`) *before* repair
+//! reaches any manifest read or write — it can never point the baseline at a
+//! weaker `vault_uuid` to sneak a rollback through. (Note: this is NOT
+//! `ManifestVaultUuidMismatch`, which only cross-checks manifest body vs
+//! header — both manifest-internal — and never compares `vault.toml`.) This
+//! replaces the previous (buggy) post-write `enforce_rollback_resistance`
+//! call, which is no longer made here.
 
 use std::path::Path;
 
@@ -51,12 +58,15 @@ use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 /// rather than bricking a legitimate repair. A never-synced device therefore
 /// has no false positive.
 ///
-/// Keying by the *plaintext* `vault.toml` `vault_uuid` is sound: core
-/// `read_and_verify_manifest` cross-checks that same `vault_uuid` against the
-/// signed manifest (`ManifestVaultUuidMismatch`), so a tampered `vault.toml`
-/// either names the correct baseline (matches the manifest) or makes repair
-/// fail closed before any write (mismatch) — it can never point the check at a
-/// weaker baseline to sneak a rollback through.
+/// Keying by the *plaintext* `vault.toml` `vault_uuid` is sound: that same
+/// `vault_uuid` is bound into the unlock-time AEAD as associated data (the
+/// `wrap_pw` AAD on the password/recovery paths, the bundle-decrypt AAD on the
+/// device path). A tampered `vault.toml` `vault_uuid` therefore fails the
+/// unlock's AEAD auth tag (`WrongPasswordOrCorrupt` / `VaultMismatch`) *before*
+/// `repair_vault` reaches any manifest read or write, so it can never point the
+/// check at a weaker baseline to sneak a rollback through. This is NOT enforced
+/// by `ManifestVaultUuidMismatch` (a manifest body-vs-header check that never
+/// looks at `vault.toml`).
 fn load_rollback_baseline(
     state_dir: Option<&Path>,
     folder: &Path,

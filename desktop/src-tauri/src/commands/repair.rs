@@ -22,78 +22,35 @@ use crate::path_auth::{MatchMode, PathPurpose};
 use crate::secret_arg::Password;
 use crate::session::VaultSession;
 
-/// Read the plaintext `vault_uuid` field out of `<folder>/vault.toml` and
-/// decode its canonical hyphenated form to 16 bytes.
+/// Read the `vault_uuid` field out of `<folder>/vault.toml` and decode its
+/// canonical hyphenated form to 16 bytes, by delegating to the same
+/// `secretary_core::unlock::vault_toml::decode` the open/orchestrator path
+/// uses (which is also what the bridge's `load_rollback_baseline` calls to
+/// key the §10 rollback baseline). Reusing `decode` keeps a single
+/// canonical-UUID parser — core's private `parse_uuid_canonical` — as the one
+/// source of truth for the hyphenated-form rules (length, hyphen positions,
+/// lowercase-only hex) instead of maintaining a second desktop-local mirror
+/// that could silently drift.
 ///
-/// Deliberately does NOT reuse `secretary_core::unlock::vault_toml::decode`:
-/// that decoder requires the *full* `vault.toml` shape (`format_version`,
-/// `suite_id`, `[kdf]` with a valid salt, ...) and errors on anything
-/// missing — appropriate for the orchestrator's open path, but this call
-/// site only needs the one field, before any bridge call has had a chance
-/// to validate the rest of the file. Its internal hyphenated-UUID parser
-/// (`parse_uuid_canonical`) is also private to that module, so it isn't
-/// reachable from here without widening core's public surface — out of
-/// scope for a desktop-only command. `parse_hyphenated_uuid` below is a
-/// small local mirror of that same canonical-form check (36 bytes, hyphens
-/// at 8/13/18/23, lowercase hex elsewhere).
+/// `decode` validates the *full* `vault.toml` shape (`format_version`,
+/// `suite_id`, `[kdf]` with a valid salt, ...), not just `vault_uuid`. That is
+/// not a stricter precondition in practice: this fn is only reached from
+/// `VaultSession::repair`, and repair is only offered after a normal
+/// `open_vault` already surfaced `vault_needs_repair` — an open that itself
+/// ran `decode` successfully. A `vault.toml` that would fail `decode` here
+/// would already have failed the open, so this never rejects a file the old
+/// single-field parse would have accepted at a real call site; if anything it
+/// fails a tampered file marginally earlier.
 pub(crate) fn read_vault_uuid_from_toml(folder: &Path) -> Result<[u8; 16], AppError> {
     let toml_path = folder.join("vault.toml");
     let text = std::fs::read_to_string(&toml_path).map_err(|e| AppError::Io {
         detail: format!("read vault.toml: {e}"),
     })?;
-    let doc: toml::Value = text.parse().map_err(|e| AppError::VaultCorrupt {
-        detail: format!("parse vault.toml: {e}"),
-    })?;
-    let uuid_str = doc
-        .get("vault_uuid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::VaultCorrupt {
-            detail: "vault.toml missing vault_uuid".into(),
+    let decoded =
+        secretary_core::unlock::vault_toml::decode(&text).map_err(|e| AppError::VaultCorrupt {
+            detail: format!("parse vault.toml: {e}"),
         })?;
-    parse_hyphenated_uuid(uuid_str).ok_or_else(|| AppError::VaultCorrupt {
-        detail: "vault.toml vault_uuid malformed".into(),
-    })
-}
-
-/// Decode the canonical RFC 4122 hyphenated textual UUID form
-/// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex) to 16 bytes.
-/// Rejects any other length, grouping, or casing rather than guessing —
-/// mirrors the strictness of core's (private) `vault_toml::parse_uuid_canonical`.
-fn parse_hyphenated_uuid(s: &str) -> Option<[u8; 16]> {
-    let b = s.as_bytes();
-    if b.len() != 36 {
-        return None;
-    }
-    for i in [8usize, 13, 18, 23] {
-        if b[i] != b'-' {
-            return None;
-        }
-    }
-    let mut out = [0u8; 16];
-    let mut byte_idx = 0;
-    let mut i = 0;
-    while i < b.len() {
-        if matches!(i, 8 | 13 | 18 | 23) {
-            i += 1;
-            continue;
-        }
-        let hi = hex_nibble(b[i])?;
-        let lo = hex_nibble(b[i + 1])?;
-        out[byte_idx] = (hi << 4) | lo;
-        byte_idx += 1;
-        i += 2;
-    }
-    Some(out)
-}
-
-/// Convert a lowercase hex ASCII byte to its nibble value; `None` for
-/// anything else (uppercase included — the canonical form is lowercase).
-fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
+    Ok(decoded.vault_uuid)
 }
 
 /// Tauri-side entry point. Thin delegating shell; logic lives in
@@ -156,6 +113,29 @@ mod tests {
         pw
     }
 
+    /// A full, `decode`-valid `vault.toml` carrying the given `vault_uuid`.
+    /// `read_vault_uuid_from_toml` now delegates to
+    /// `secretary_core::unlock::vault_toml::decode`, which validates the whole
+    /// file, so a single-field fixture is no longer sufficient. The non-uuid
+    /// fields mirror the golden reference vault (`core/tests/data`).
+    fn valid_vault_toml(vault_uuid: &[u8; 16]) -> String {
+        let hyphenated = secretary_core::vault::format_uuid_hyphenated(vault_uuid);
+        format!(
+            "format_version = 1\n\
+             suite_id = 1\n\
+             vault_uuid = \"{hyphenated}\"\n\
+             created_at_ms = 2000000000000\n\
+             \n\
+             [kdf]\n\
+             algorithm = \"argon2id\"\n\
+             version = \"1.3\"\n\
+             memory_kib = 8192\n\
+             iterations = 1\n\
+             parallelism = 1\n\
+             salt_b64 = \"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=\"\n"
+        )
+    }
+
     #[test]
     fn reads_vault_uuid_from_toml() {
         use rand_core::{OsRng, RngCore};
@@ -164,18 +144,13 @@ mod tests {
         // Generate the vault_uuid at runtime rather than hardcoding a 16-byte
         // literal: CodeQL flags fixed byte arrays as "hardcoded cryptographic
         // value" even though a vault_uuid is a plain identifier, not key
-        // material. Formatting the random bytes with core's canonical
-        // formatter and asserting the local `parse_hyphenated_uuid` round-trips
-        // back to the same bytes also cross-checks the two independent
-        // implementations against any UUID, not just one fixture.
+        // material. Formatting the random bytes with core's canonical formatter
+        // and asserting `read_vault_uuid_from_toml` (via core's `decode`)
+        // round-trips back to the same bytes exercises the parser against any
+        // UUID, not just one fixture.
         let mut uuid = [0u8; 16];
         OsRng.fill_bytes(&mut uuid);
-        let hyphenated = secretary_core::vault::format_uuid_hyphenated(&uuid);
-        std::fs::write(
-            temp.path().join("vault.toml"),
-            format!("vault_uuid = \"{hyphenated}\"\n"),
-        )
-        .unwrap();
+        std::fs::write(temp.path().join("vault.toml"), valid_vault_toml(&uuid)).unwrap();
         let got = read_vault_uuid_from_toml(temp.path()).unwrap();
         assert_eq!(got, uuid);
     }

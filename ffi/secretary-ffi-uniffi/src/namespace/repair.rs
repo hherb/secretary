@@ -174,7 +174,11 @@ pub fn repair_with_device_secret(
         .as_slice()
         .try_into()
         .expect("len checked above");
-    let secret_arr: [u8; 32] = device_secret
+    // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below. Binding it
+    // immutably and later doing `let mut secret_arr = secret_arr;` would COPY
+    // the array (`[u8; 32]: Copy`) into a fresh slot and wipe only the copy,
+    // leaving this original slot's 32 plaintext bytes as stack residue.
+    let mut secret_arr: [u8; 32] = device_secret
         .as_slice()
         .try_into()
         .expect("len checked above");
@@ -200,7 +204,6 @@ pub fn repair_with_device_secret(
     // secret_arr is [u8; 32] (Copy), so both the array and the source Vec
     // must be zeroized to prevent stack residue — same discipline as
     // open_with_device_secret / the bridge's derive_wrap_key pattern.
-    let mut secret_arr = secret_arr;
     secret_arr.zeroize();
     device_secret.zeroize();
 

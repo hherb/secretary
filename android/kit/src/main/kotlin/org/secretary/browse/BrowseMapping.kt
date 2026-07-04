@@ -29,6 +29,16 @@ internal fun mapVaultBrowseError(e: VaultException): VaultBrowseError = when (e)
     is VaultException.WrongDeviceSecretOrCorrupt -> VaultBrowseError.WrongDeviceSecretOrCorrupt
     is VaultException.DeviceSlotNotFound -> VaultBrowseError.DeviceSlotNotFound
     is VaultException.DeviceUuidMismatch -> VaultBrowseError.DeviceUuidMismatch(e.detail)
+    // #374: the open path now promotes crash-residue (`BlockFingerprintMismatch`)
+    // out of `CorruptVault` into these two dedicated arms. Android ships no
+    // repair UI yet, so both map back to `CorruptVault` — the same domain
+    // classification the pre-#374 `CorruptVault` fold produced — rather than
+    // silently degrading into the generic `else -> Failed` bucket (per this
+    // file's MAINTAINER WARNING: a new open-relevant arm gets an explicit branch).
+    is VaultException.VaultNeedsRepair ->
+        VaultBrowseError.CorruptVault("crash residue in block ${e.blockUuidHex}")
+    is VaultException.RepairRejected ->
+        VaultBrowseError.CorruptVault("repair refused for block ${e.blockUuidHex}: ${e.detail}")
     else -> VaultBrowseError.Failed(e.toString())
 }
 

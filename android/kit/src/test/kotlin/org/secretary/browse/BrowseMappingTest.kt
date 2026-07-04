@@ -45,6 +45,22 @@ class BrowseMappingTest {
     }
 
     @Test
+    fun `maps the #374 repair-signal arms back to CorruptVault, not the generic Failed fold`() {
+        // The open path promotes crash residue out of CorruptVault into these
+        // two dedicated arms; with no repair UI on Android they must map back
+        // to CorruptVault (pre-#374 classification), NOT slide into `Failed`.
+        val needsRepair =
+            mapVaultBrowseError(VaultException.VaultNeedsRepair("11223344-5566-7788-99aa-bbccddeeff00"))
+        assertTrue(needsRepair is VaultBrowseError.CorruptVault)
+        assertTrue((needsRepair as VaultBrowseError.CorruptVault).detail.contains("11223344"))
+
+        val rejected =
+            mapVaultBrowseError(VaultException.RepairRejected("11223344-5566-7788-99aa-bbccddeeff00", "clock Concurrent"))
+        assertTrue(rejected is VaultBrowseError.CorruptVault)
+        assertTrue((rejected as VaultBrowseError.CorruptVault).detail.contains("clock Concurrent"))
+    }
+
+    @Test
     fun `block summary maps every metadata field`() {
         val uuid = ByteArray(16) { it.toByte() }
         val view = mapBlockSummary(

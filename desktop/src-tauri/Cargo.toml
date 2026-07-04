@@ -47,16 +47,6 @@ secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
 # `ffi/secretary-ffi-py` import them directly from core via the same
 # `secretary_core::crypto::secret::{SecretString, SecretBytes}` path.
 secretary-core = { path = "../../core" }
-# #374 repair_vault: `read_vault_uuid_from_toml` needs to pull the single
-# plaintext `vault_uuid` field out of `vault.toml` before the bridge's
-# `repair_vault_with_password` can run (it takes `device_uuid` as an input,
-# derived from `vault_uuid`, rather than as an output like `unlock` gets it).
-# Version matches `core/Cargo.toml`'s `toml = "0.8"` so both crates resolve
-# the same major. Not a security-critical pin (unlike `tempfile`): this
-# parse only extracts one non-secret field and never derives key material —
-# `secretary_core::unlock::vault_toml::decode` remains the sole KDF-param
-# parser used on the crypto path.
-toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

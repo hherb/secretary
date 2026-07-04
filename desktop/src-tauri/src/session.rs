@@ -208,11 +208,13 @@ impl VaultSession {
         // The `vault_uuid` read here comes from the UNVERIFIED plaintext
         // `vault.toml` (repair genuinely needs `device_uuid` as an *input*
         // before the open, so we cannot source it from the post-open verified
-        // manifest like `unlock` does). This is fail-closed: repair's
-        // `read_and_verify_manifest` cross-checks this same `vault_uuid`
-        // against the signed manifest (`ManifestVaultUuidMismatch`), so a
-        // tampered `vault.toml` makes repair fail before any write. The only
-        // cost on a tampered toml is a cosmetic spurious device-uuid file.
+        // manifest like `unlock` does). This is fail-closed: that same
+        // `vault_uuid` is bound into the unlock-time AEAD as associated data
+        // (the `wrap_pw` AAD), so a tampered `vault.toml` `vault_uuid` fails
+        // the AEAD auth tag and makes repair fail before any manifest write.
+        // (The guard is the unlock AAD binding, NOT `ManifestVaultUuidMismatch`,
+        // which only cross-checks manifest body vs header.) The only cost on a
+        // tampered toml is a cosmetic spurious device-uuid file.
         let vault_uuid = crate::commands::repair::read_vault_uuid_from_toml(folder)?;
         let device_uuid =
             settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid)?;
