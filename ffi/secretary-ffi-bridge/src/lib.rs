@@ -143,8 +143,9 @@ pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use repair::{
+    preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
     repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
-    FfiApprovedWidening,
+    FfiAddedRecipient, FfiApprovedWidening, FfiRepairPreview, FfiWideningReport,
 };
 pub use restore::restore_block;
 pub use revoke::revoke_block;

@@ -84,7 +84,10 @@ fn build_repair_policy(approvals: &[FfiApprovedWidening]) -> RepairPolicy {
 }
 
 /// Build the §10 rollback-baseline provider shared by the three repair
-/// arms. Core `repair_vault` invokes the returned closure with the
+/// arms AND the three `preview_repair_with_*` arms in
+/// [`super::preview`] (the fail-closed posture applies identically to a
+/// read-only preview — see that module's docs). Core `repair_vault` /
+/// `preview_repair` invokes the returned closure with the
 /// **verified** `manifest.vault_uuid` (post hybrid-verify + AEAD
 /// decrypt), so the state lookup can never be keyed by an
 /// attacker-controlled plaintext value (#384). A `None` state dir (no
@@ -98,7 +101,7 @@ fn build_repair_policy(approvals: &[FfiApprovedWidening]) -> RepairPolicy {
 /// mutating path a skipped check would launder a rollback permanently,
 /// whereas the read-only open path's skip posture self-heals on the next
 /// open (#384; deliberate asymmetry).
-fn baseline_provider(
+pub(super) fn baseline_provider(
     state_dir: Option<&Path>,
 ) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
     move |vault_uuid: &[u8; 16]| {
