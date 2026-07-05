@@ -323,7 +323,7 @@ pub fn repair_vault(
 /// Goes through the SAME unlock + §1 verify-before-decrypt manifest
 /// sequence, and the SAME §10 pre-gate (#384) as `repair_vault` — see
 /// that function's doc comment for the full rationale. It must run here
-/// too, before classification: crypto-design §3.4's fail-closed rollback
+/// too, before classification: crypto-design §10's fail-closed rollback
 /// posture applies to any code path that reads a vault's crash residue
 /// and reports on it, not only to the path that writes a repaired
 /// manifest — a caller must not be shown a "safe to adopt" preview for
