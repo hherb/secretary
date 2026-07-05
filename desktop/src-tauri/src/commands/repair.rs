@@ -361,10 +361,12 @@ mod tests {
 
     #[test]
     fn parse_hyphenated_uuid_rejects_missing_hyphens() {
-        // 32 plain hex chars (no hyphens) is exactly what a plain `hex::encode`
-        // would produce — must NOT be accepted here, since the bridge's own
-        // hyphenated form is the only shape `preview_repair` ever emits.
-        let err = parse_hyphenated_uuid(&"ab".repeat(16)).expect_err("no hyphens");
+        // 36 plain hex-like chars (no hyphens) — the SAME length as a valid
+        // hyphenated uuid, so this exercises the hyphen-position check
+        // specifically (a 32-char input instead would fail the length
+        // check first via `||` short-circuit and never reach the
+        // hyphen-position disjuncts at all).
+        let err = parse_hyphenated_uuid(&"ab".repeat(18)).expect_err("no hyphens");
         assert!(
             matches!(err, AppError::InvalidArgument { .. }),
             "got {err:?}"
