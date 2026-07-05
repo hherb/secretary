@@ -93,7 +93,8 @@ pub struct WideningReport {
 pub struct AddedRecipient {
     pub uuid: [u8; 16],
     pub display_name: String,           // from the resolved contact card
-    pub card_fingerprint: [u8; 32],     // fingerprint(card canonical CBOR)
+    pub card_fingerprint: [u8; 16],     // identity `fingerprint()` output — the same
+                                        // 16-byte value §6.2 wraps use as `recipient_fingerprint`
 }
 ```
 
@@ -118,7 +119,7 @@ pub struct AddedRecipient {
 - The three arms `repair_vault_with_{password,recovery,device_secret}` gain `approvals: Vec<FfiApprovedWidening>`. Mapping: **empty → `RepairPolicy::FailClosed`**, non-empty → `AdoptApproved`. The zero value is the safe direction — forgetting approvals can only fail closed. All three keep the #384 `baseline_provider` unchanged.
 - Three new arms `preview_repair_with_{password,recovery,device_secret}` return `FfiRepairPreview` (`block_uuid_hex`, `block_name`, `file_fingerprint_hex`, per-recipient `{uuid_hex, display_name, card_fingerprint_hex}`). Preview arms pass the same fail-closed `baseline_provider` as the mutating arms (§3.4).
 - **Zero new `FfiVaultError` variants.** Consent-missing/stale surfaces through the existing `RepairRejected { block_uuid_hex, detail }`; preview returns data, not errors. (Avoids the workspace-wide exhaustive-match + Swift/Kotlin `ConformanceErrors` obligation.)
-- Bridge fns take fixed-size byte arrays (`[u8; 16]` / `[u8; 32]`) inside `FfiApprovedWidening`; hex parsing/length validation lives at the binding wrappers per the established rule (bridge trusts its caller).
+- Bridge fns take fixed-size byte arrays (`[u8; 16]` / `[u8; 32]`) inside `FfiApprovedWidening`; hex parsing/length validation lives at the binding wrappers per the established rule (bridge trusts its caller). Note the preview types' `card_fingerprint_hex` is 32 hex chars (the 16-byte identity `fingerprint()` output), not 64 like `file_fingerprint_hex` (the 32-byte BLAKE3 file fingerprint) — wrapper length validation must not conflate the two.
 
 ## 6. Bindings (uniffi + pyo3)
 
