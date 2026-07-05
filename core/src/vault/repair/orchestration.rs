@@ -1,28 +1,42 @@
-use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::Path;
 
 use rand_core::{CryptoRng, RngCore};
 
 use zeroize::Zeroize as _;
 
-use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::{self, MlKem768Secret};
 use crate::crypto::secret::Sensitive;
 use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
 
 use crate::vault::block;
-use crate::vault::conflict::{clock_relation, ClockRelation};
 use crate::vault::manifest::BlockEntry;
 use crate::vault::orchestrators::{
     ensure_not_rollback, format_uuid_hyphenated, read_and_verify_manifest,
-    resign_and_write_manifest, resolve_recipient_uuids, tick_clock, unlock_vault_identity,
-    OpenVault, Unlocker, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION,
+    resign_and_write_manifest, scan_verified_contact_cards, tick_clock, unlock_vault_identity,
+    OpenVault, Unlocker, BLOCKS_SUBDIR,
 };
 use crate::vault::{VaultError, VectorClockEntry};
 
+use super::classify::{
+    classify_block, AddedRecipient, BlockClassification, OwnerVerifyCtx, RepairPreview,
+    WideningReport,
+};
 use super::policy::RepairPolicy;
 use super::sweep::complete_pending_trash_renames;
+
+/// One `ConsentEligibleWidening` collected during `preview_repair`'s
+/// classification pass, before the added-recipient uuids have been
+/// resolved to display names / card fingerprints. Kept as a named
+/// struct (rather than a tuple) purely to stay under clippy's
+/// `type_complexity` threshold.
+struct RawWidening {
+    block_uuid: [u8; 16],
+    block_name: String,
+    file_fingerprint: [u8; 32],
+    added: std::collections::BTreeSet<[u8; 16]>,
+}
 
 /// Explicit crash-recovery orchestrator (#350): adopt on-disk block
 /// residue that `open_vault` refuses to open.
@@ -50,7 +64,7 @@ use super::sweep::complete_pending_trash_renames;
 ///    **cross-cutting recipient-widening refusal** layered on top — no
 ///    clock relation ever licenses ADDING a recipient (re-granting
 ///    access is never automatic):
-///    - [`ClockRelation::IncomingDominates`] against
+///    - [`crate::vault::conflict::ClockRelation::IncomingDominates`] against
 ///      `vector_clock_summary` — an interrupted `save_block` (content
 ///      changed, so the block's own clock ticked). Adopted, but only if
 ///      it does not widen the recipient set: `save_block` re-encrypts to
@@ -59,7 +73,7 @@ use super::sweep::complete_pending_trash_renames;
 ///      planted owner-signed copy carrying a pre-revocation recipient set
 ///      (a revoke is clock-invisible, so it can dominate a committed
 ///      post-revoke entry) and is refused.
-///    - [`ClockRelation::Equal`] — the residue of a content-preserving
+///    - [`crate::vault::conflict::ClockRelation::Equal`] — the residue of a content-preserving
 ///      re-key (`share_block` / `revoke_block_recipient` via
 ///      `rewrite_block_with_recipients`, which deliberately preserves
 ///      the block clock). Adopted ONLY IF the file's resolved recipient
@@ -166,231 +180,83 @@ pub fn repair_vault(
     x_sk_bytes.zeroize();
     let owner_pq_sk_reader = MlKem768Secret::from_bytes(unlocked.identity.ml_kem_768_sk.expose())
         .map_err(block::BlockError::from)?;
+    let ctx = OwnerVerifyCtx {
+        owner_card: &owner_card,
+        owner_fp,
+        owner_pk_bundle,
+        owner_pq_pk,
+        owner_x_sk,
+        owner_pq_sk_reader,
+    };
 
-    // Pass 1 — read-only classification. All-or-nothing: any gate
-    // failure returns before anything is staged or written.
+    // Pass 1 — read-only classification via the single-source
+    // classifier (#374 Task 4). All-or-nothing: any gate failure
+    // returns before anything is staged or written. The classifier
+    // decides HOW a block's on-disk residue relates to the committed
+    // entry; only the policy decision for a consent-eligible widening
+    // (does an approval match?) is decided here.
     let blocks_dir = folder.join(BLOCKS_SUBDIR);
     let mut adoptions: Vec<(usize, BlockEntry)> = Vec::new();
     for (idx, entry) in manifest.blocks.iter().enumerate() {
-        let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
-        let path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
-        let bytes = std::fs::read(&path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                VaultError::BlockFileMissing {
-                    block_uuid: entry.block_uuid,
-                }
-            } else {
-                VaultError::Io {
-                    context: "repair_vault: failed to read block file",
-                    source: e,
-                }
-            }
-        })?;
-        let got = *blake3_hash(&bytes).as_bytes();
-        if got == entry.fingerprint {
-            continue; // healthy
-        }
-        // Gate 1 — authenticity: decode + AEAD-decrypt + hybrid verify
-        // (Ed25519 ∧ ML-DSA-65, both halves) under the owner card.
-        let block_file =
-            block::decode_block_file(&bytes).map_err(|e| VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: format!("decode: {e}"),
-            })?;
-        // Gate 2 — binding: the file must BE this block of this vault.
-        if block_file.header.block_uuid != entry.block_uuid {
-            return Err(VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: "file header block_uuid does not match the manifest entry".to_string(),
-            });
-        }
-        if block_file.header.vault_uuid != manifest.vault_uuid {
-            return Err(VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: "file header vault_uuid does not match this vault".to_string(),
-            });
-        }
-        // Gate 3a — clock sanity. Authenticity is not currency (an
-        // owner-signed OLDER copy verifies fine), and last_mod_ms is
-        // caller wall-clock with no monotonicity guard, so timestamps
-        // decide NOTHING here. Only two relations can be legitimate
-        // crash residue:
-        //   - IncomingDominates: an interrupted save_block ticked the
-        //     block's own vector clock (content changed). Still subject
-        //     to the recipient-widening refusal at Gate 3b — a crashed
-        //     save re-encrypts to the *existing* recipient set, so a
-        //     legitimate residue never adds a recipient here.
-        //   - Equal: a content-preserving re-key (share/revoke via
-        //     rewrite_block_with_recipients, which deliberately
-        //     preserves the block clock). Conditionally adoptable —
-        //     Gate 3b below decides, after the recipient set has been
-        //     decrypt-verified and resolved.
-        // Dominated (rollback plant) or concurrent (torn multi-device
-        // state we must not guess about) are always refused.
-        let relation = clock_relation(&entry.vector_clock_summary, &block_file.header.vector_clock);
-        if !matches!(
-            relation,
-            ClockRelation::IncomingDominates | ClockRelation::Equal
-        ) {
-            return Err(VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: format!(
-                    "clock relation {relation:?}: on-disk block is not a legitimate \
-                     crash-residue shape (dominated = rollback plant, concurrent = \
-                     torn multi-device state)"
-                ),
-            });
-        }
-        let plaintext = block::decrypt_block(
-            &block_file,
-            &owner_fp,
-            &owner_pk_bundle,
-            &owner_card.ed25519_pk,
-            &owner_pq_pk,
-            &owner_fp,
-            &owner_pk_bundle,
-            &owner_x_sk,
-            &owner_pq_sk_reader,
-        )
-        .map_err(|e| VaultError::RepairRejected {
-            block_uuid: entry.block_uuid,
-            detail: format!("decrypt/verify: {e}"),
-        })?;
-        // The rebuilt entry's recipients come from the on-disk §6.2
-        // table (so a crashed revocation adopts the REDUCED set). A
-        // missing/unverifiable recipient card is a *gate* failure (the
-        // repair contract promises RepairRejected), not the bare
-        // MissingRecipientCard the shared resolver returns; remap it so
-        // the outcome set stays {RepairRejected, BlockFileMissing}.
-        // Environmental Io (contacts/ unreadable) stays Io — it is not a
-        // gate rejection.
-        let recipients = resolve_recipient_uuids(folder, &owner_card, &block_file.recipients)
-            .map_err(|e| match e {
-                VaultError::MissingRecipientCard { .. } => VaultError::RepairRejected {
-                    block_uuid: entry.block_uuid,
-                    detail: format!("recipient resolution: {e}"),
-                },
-                other => other,
-            })?;
-        // Gate 3b — recipient-widening is refused REGARDLESS of clock
-        // relation. No legitimate crashed operation can ADD a recipient
-        // here: save_block ticks the block clock but re-encrypts to the
-        // *existing* recipient set (so a genuine IncomingDominates
-        // residue has on-disk recipients == committed), and re-keys
-        // preserve the clock (Equal) so their residue can only NARROW
-        // (revoke). The one widening operation, share_block, also
-        // preserves the clock — its crashed superset residue is landed
-        // here too but is deliberately NOT auto-adopted — adoptable only
-        // via the `RepairPolicy::AdoptApproved` consent arm below (#374).
-        // So any added recipient is either that crashed
-        // share or an attacker replaying retained owner-signed bytes to
-        // re-GRANT access (e.g. resurrect a revoked recipient — the
-        // 2026-07 review exploit). Fail closed: the worst an attacker can
-        // force through the adopted direction is an un-share, recoverable
-        // by re-sharing; re-granting is NEVER automatic on any clock
-        // relation. (Earlier this guard was Equal-only, which left the
-        // IncomingDominates arm able to adopt a widened set — a planted
-        // owner-signed content-save whose block clock dominated a
-        // clock-invisible revoke could re-grant the revoked recipient.)
-        let on_disk: BTreeSet<[u8; 16]> = recipients.iter().copied().collect();
-        let committed: BTreeSet<[u8; 16]> = entry.recipients.iter().copied().collect();
-        let added: BTreeSet<[u8; 16]> = on_disk.difference(&committed).copied().collect();
-        if !added.is_empty() {
-            let added_hex: Vec<String> = added.iter().map(format_uuid_hyphenated).collect();
-            // Consent-eligible = the crashed-share residue shape and ONLY
-            // that shape: Equal clock ∧ pure adds (strict superset). A
-            // dominating widening is the planted-content-save re-grant
-            // exploit; a mixed add+remove delta is no single crashed op.
-            // Neither is EVER licensed by an approval — the shape check
-            // deliberately precedes the approval lookup (spec §3.3).
-            let removed_any = committed.difference(&on_disk).next().is_some();
-            let consent_eligible = matches!(relation, ClockRelation::Equal) && !removed_any;
-            let approval = match (&policy, consent_eligible) {
-                (RepairPolicy::AdoptApproved(approvals), true) => {
-                    approvals.iter().find(|a| a.block_uuid == entry.block_uuid)
-                }
-                _ => None,
-            };
-            match approval {
-                // Exact bind: the previewed bytes AND the previewed delta.
-                Some(a) if a.file_fingerprint == got && a.added_recipients == added => {
-                    // consented crashed-share adoption — fall through
-                }
-                Some(_) => {
-                    return Err(VaultError::RepairRejected {
-                        block_uuid: entry.block_uuid,
-                        detail: format!(
-                            "approval does not match the on-disk residue (stale \
-                             consent — the block file or recipient delta changed \
-                             after preview; re-run the preview): residue would ADD \
-                             recipients {{{}}}",
-                            added_hex.join(", ")
-                        ),
-                    });
-                }
-                None => {
-                    return Err(VaultError::RepairRejected {
-                        block_uuid: entry.block_uuid,
-                        detail: format!(
-                            "re-key residue would ADD recipients {{{}}}: refusing \
-                             automatic adoption; adopting requires explicit consent \
-                             (preview_repair + RepairPolicy::AdoptApproved){}",
-                            added_hex.join(", "),
-                            if consent_eligible {
-                                ""
-                            } else {
-                                " — and this residue is not the crashed-share shape, \
-                                 so it is never adoptable"
-                            }
-                        ),
-                    });
+        match classify_block(folder, &blocks_dir, manifest.vault_uuid, entry, &ctx)? {
+            BlockClassification::Healthy => continue,
+            BlockClassification::Adopt(new_entry) => adoptions.push((idx, new_entry)),
+            BlockClassification::ConsentEligibleWidening {
+                staged,
+                added,
+                file_fingerprint,
+                block_name: _,
+            } => {
+                // Consent-eligible = the crashed-share residue shape and
+                // ONLY that shape (classify_block already refused every
+                // non-eligible widening). The approval lookup happens
+                // here, not in the classifier, because a preview has no
+                // policy to consult — only `repair_vault` compares
+                // against `RepairPolicy`.
+                let approval = match &policy {
+                    RepairPolicy::AdoptApproved(approvals) => {
+                        approvals.iter().find(|a| a.block_uuid == entry.block_uuid)
+                    }
+                    RepairPolicy::FailClosed => None,
+                };
+                match approval {
+                    // Exact bind: the previewed bytes AND the previewed delta.
+                    Some(a)
+                        if a.file_fingerprint == file_fingerprint
+                            && a.added_recipients == added =>
+                    {
+                        adoptions.push((idx, staged));
+                    }
+                    Some(_) => {
+                        let added_hex: Vec<String> =
+                            added.iter().map(format_uuid_hyphenated).collect();
+                        return Err(VaultError::RepairRejected {
+                            block_uuid: entry.block_uuid,
+                            detail: format!(
+                                "approval does not match the on-disk residue (stale \
+                                 consent — the block file or recipient delta changed \
+                                 after preview; re-run the preview): residue would ADD \
+                                 recipients {{{}}}",
+                                added_hex.join(", ")
+                            ),
+                        });
+                    }
+                    None => {
+                        let added_hex: Vec<String> =
+                            added.iter().map(format_uuid_hyphenated).collect();
+                        return Err(VaultError::RepairRejected {
+                            block_uuid: entry.block_uuid,
+                            detail: format!(
+                                "re-key residue would ADD recipients {{{}}}: refusing \
+                                 automatic adoption; adopting requires explicit consent \
+                                 (preview_repair + RepairPolicy::AdoptApproved)",
+                                added_hex.join(", ")
+                            ),
+                        });
+                    }
                 }
             }
         }
-        // Equal-clock only: an *unchanged* recipient set with differing
-        // bytes is not a legitimate crashed re-key (a re-key changes the
-        // set; a content save ticks the clock into IncomingDominates), so
-        // it is a stale-replay / forgery shape and is refused. Under
-        // IncomingDominates an unchanged recipient set with differing
-        // bytes IS the legitimate crashed-save shape and is adopted.
-        if matches!(relation, ClockRelation::Equal) && on_disk == committed {
-            return Err(VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: "equal-clock residue leaves the recipient set unchanged while \
-                         the bytes differ: no legitimate crashed re-key has this shape \
-                         (stale-replay or forgery)"
-                    .to_string(),
-            });
-        }
-        // Reaching here: recipients are a subset of committed (narrowing
-        // — crashed revocation under Equal, or an owner-signed
-        // content-save under IncomingDominates). Adopt.
-        adoptions.push((
-            idx,
-            BlockEntry {
-                block_uuid: entry.block_uuid,
-                block_name: plaintext.block_name.clone(),
-                fingerprint: got,
-                recipients,
-                vector_clock_summary: block_file.header.vector_clock.clone(),
-                suite_id: block_file.header.suite_id,
-                created_at_ms: block_file.header.created_at_ms,
-                // The original write's own stamp — repair is not a
-                // content change (mirrors clock-verbatim above).
-                last_mod_ms: block_file.header.last_mod_ms,
-                // Preserve the committed entry's unknown map. Repair
-                // replaces the content commitment (fingerprint + clock)
-                // from the on-disk block, but BlockEntry-level v2 metadata
-                // lives in the manifest, not the block file — so any v2
-                // fields the interrupted (and now lost) manifest write
-                // would have carried are unrecoverable here regardless.
-                // Carrying the committed map forward is the only option
-                // that preserves the v2 fields we still have; a future
-                // v2-aware repair path cannot do better without a second
-                // manifest copy on disk.
-                unknown: entry.unknown.clone(),
-            },
-        ));
     }
 
     if adoptions.is_empty() {
@@ -433,4 +299,137 @@ pub fn repair_vault(
         manifest,
         manifest_file: new_manifest_file,
     })
+}
+
+/// Read-only preview of what [`repair_vault`] would find (#374 Task 4):
+/// every consent-eligible recipient widening in the vault's crash
+/// residue, with the recipients' verified display names and identity
+/// fingerprints so a caller can present an informed consent prompt
+/// before choosing a [`RepairPolicy::AdoptApproved`]. Writes nothing —
+/// no manifest rewrite, no re-sign, no clock tick.
+///
+/// Goes through the SAME unlock + §1 verify-before-decrypt manifest
+/// sequence, and the SAME §10 pre-gate (#384) as `repair_vault` — see
+/// that function's doc comment for the full rationale. It must run here
+/// too, before classification: crypto-design §3.4's fail-closed rollback
+/// posture applies to any code path that reads a vault's crash residue
+/// and reports on it, not only to the path that writes a repaired
+/// manifest — a caller must not be shown a "safe to adopt" preview for
+/// a vault whose committed clock is itself a rollback. A `load_baseline`
+/// error therefore propagates fail-closed here exactly as it does in
+/// `repair_vault`.
+///
+/// Every block is classified with the same `classify_block` this
+/// module's `repair_vault` uses — a hard rejection (e.g. a rollback
+/// plant, or a non-eligible widening shape) propagates as the same
+/// [`VaultError::RepairRejected`] `repair_vault` would return: there is
+/// nothing to consent to on a vault `repair_vault` cannot repair at all.
+/// Only `ConsentEligibleWidening` outcomes are collected into the
+/// returned [`RepairPreview`]; `Healthy` and `Adopt` outcomes need no
+/// consent and are silently skipped (an interrupted save or a
+/// narrowing re-key is exactly what `repair_vault` already adopts
+/// unconditionally).
+pub fn preview_repair(
+    folder: &Path,
+    unlocker: Unlocker<'_>,
+    load_baseline: impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError>,
+) -> Result<RepairPreview, VaultError> {
+    let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
+    let (owner_card, manifest, _manifest_file, _envelope_bytes) =
+        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, None)?;
+
+    // §10 pre-gate (#384) — see repair_vault's doc comment for the full
+    // rationale; the same posture applies to a read-only preview.
+    let baseline = load_baseline(&manifest.vault_uuid)?;
+    ensure_not_rollback(baseline.as_deref(), &manifest.vector_clock)?;
+
+    let owner_pk_bundle = owner_card.pk_bundle_bytes()?;
+    let owner_fp = fingerprint(&owner_card.to_canonical_cbor()?);
+    let owner_pq_pk = MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk)?;
+    let mut x_sk_bytes = *unlocked.identity.x25519_sk.expose();
+    let owner_x_sk: kem::X25519Secret = Sensitive::new(x_sk_bytes);
+    x_sk_bytes.zeroize();
+    let owner_pq_sk_reader = MlKem768Secret::from_bytes(unlocked.identity.ml_kem_768_sk.expose())
+        .map_err(block::BlockError::from)?;
+    let ctx = OwnerVerifyCtx {
+        owner_card: &owner_card,
+        owner_fp,
+        owner_pk_bundle,
+        owner_pq_pk,
+        owner_x_sk,
+        owner_pq_sk_reader,
+    };
+
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    let mut raw_widenings: Vec<RawWidening> = Vec::new();
+    for entry in &manifest.blocks {
+        if let BlockClassification::ConsentEligibleWidening {
+            added,
+            file_fingerprint,
+            block_name,
+            staged: _,
+        } = classify_block(folder, &blocks_dir, manifest.vault_uuid, entry, &ctx)?
+        {
+            raw_widenings.push(RawWidening {
+                block_uuid: entry.block_uuid,
+                block_name,
+                file_fingerprint,
+                added,
+            });
+        }
+    }
+
+    if raw_widenings.is_empty() {
+        return Ok(RepairPreview {
+            widenings: Vec::new(),
+        });
+    }
+
+    // Name/fingerprint lookup for the added recipients: scan contacts/
+    // once (shared scanner, #374 Task 4) rather than once per widening.
+    let mut lookup: HashMap<[u8; 16], (String, [u8; 16])> = HashMap::new();
+    for card in scan_verified_contact_cards(folder)? {
+        let card_fp = fingerprint(&card.to_canonical_cbor()?);
+        lookup.insert(card.contact_uuid, (card.display_name.clone(), card_fp));
+    }
+
+    let mut widenings = Vec::with_capacity(raw_widenings.len());
+    for raw in raw_widenings {
+        let (block_uuid, block_name, file_fingerprint, added) = (
+            raw.block_uuid,
+            raw.block_name,
+            raw.file_fingerprint,
+            raw.added,
+        );
+        let mut added_recipients = Vec::with_capacity(added.len());
+        for uuid in added {
+            // Defensive: Gate 3 resolution in classify_block already
+            // proved every wrap resolves to a verified contact_uuid, so
+            // a lookup miss here should not happen in practice. Refuse
+            // rather than silently drop the recipient from the preview.
+            let (display_name, card_fingerprint) =
+                lookup
+                    .get(&uuid)
+                    .cloned()
+                    .ok_or_else(|| VaultError::RepairRejected {
+                        block_uuid,
+                        detail: "preview: an added recipient uuid did not resolve to a verified \
+                             contact card"
+                            .to_string(),
+                    })?;
+            added_recipients.push(AddedRecipient {
+                uuid,
+                display_name,
+                card_fingerprint,
+            });
+        }
+        widenings.push(WideningReport {
+            block_uuid,
+            block_name,
+            file_fingerprint,
+            added: added_recipients,
+        });
+    }
+
+    Ok(RepairPreview { widenings })
 }

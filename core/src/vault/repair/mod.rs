@@ -6,10 +6,12 @@
 //! vault back to the §6.5/§7 on-disk shape without weakening the
 //! manifest-as-integrity-commitment.
 
+mod classify;
 mod orchestration;
 mod policy;
 mod sweep;
 
-pub use orchestration::repair_vault;
+pub use classify::{AddedRecipient, RepairPreview, WideningReport};
+pub use orchestration::{preview_repair, repair_vault};
 pub use policy::{ApprovedWidening, RepairPolicy};
 pub(crate) use sweep::complete_pending_trash_renames;

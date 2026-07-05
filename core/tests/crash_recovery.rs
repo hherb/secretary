@@ -1591,6 +1591,7 @@ fn stage_crashed_share(
     [u8; 16],    // device_uuid
     [u8; 16],    // block_uuid
     [u8; 16],    // C's contact_uuid (the added recipient)
+    ContactCard, // C's card (so callers can recompute its identity fingerprint)
     [u8; 32],    // on-disk file fingerprint (blake3 of block bytes)
     Vec<u8>,     // pre-repair manifest bytes
 ) {
@@ -1648,6 +1649,7 @@ fn stage_crashed_share(
         device_uuid,
         block_uuid,
         c_uuid,
+        card_c,
         file_fp,
         manifest_pre_share,
     )
@@ -1655,7 +1657,7 @@ fn stage_crashed_share(
 
 #[test]
 fn repair_adopts_crashed_share_with_matching_approval() {
-    let (dir, pw, device_uuid, block_uuid, c_uuid, file_fp, _) = stage_crashed_share(0x90);
+    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, _) = stage_crashed_share(0x90);
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x91; 32]);
     let approval = secretary_core::vault::ApprovedWidening {
@@ -1688,7 +1690,7 @@ fn repair_adopts_crashed_share_with_matching_approval() {
 
 #[test]
 fn repair_rejects_approval_with_stale_fingerprint() {
-    let (dir, pw, device_uuid, block_uuid, c_uuid, mut file_fp, manifest_before) =
+    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, mut file_fp, manifest_before) =
         stage_crashed_share(0x92);
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x93; 32]);
@@ -1726,7 +1728,7 @@ fn repair_rejects_approval_with_stale_fingerprint() {
 fn repair_rejects_approval_with_wrong_added_set() {
     // Three wrong shapes: empty set, superset-of-actual, disjoint. Exact
     // equality is required — subset/superset of the real delta all refuse.
-    let (dir, pw, device_uuid, block_uuid, c_uuid, file_fp, manifest_before) =
+    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, manifest_before) =
         stage_crashed_share(0x94);
     let folder = dir.path();
     for wrong in [
@@ -2192,4 +2194,123 @@ fn repair_all_or_nothing_with_partial_approvals() {
         );
         assert!(entry.recipients.contains(&c_uuid));
     }
+}
+
+// ---------------------------------------------------------------------------
+// preview_repair — Task 4: read-only consent-eligible-widening preview
+// ---------------------------------------------------------------------------
+
+/// `preview_repair` reports the crashed-share consent-eligible widening
+/// with the block name, on-disk file fingerprint, and the added
+/// recipient's display name + 16-byte identity fingerprint — without
+/// writing anything. Staging: `stage_crashed_share`, the canonical
+/// Equal-clock pure-superset residue (share_block crashed between its
+/// block write and its manifest write).
+#[test]
+fn preview_reports_widening_with_names_and_fingerprints() {
+    let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, manifest_before) =
+        stage_crashed_share(0x96);
+    let folder = dir.path();
+    let expected_card_fp = fingerprint(&card_c.to_canonical_cbor().unwrap());
+    let preview =
+        secretary_core::vault::preview_repair(folder, Unlocker::Password(&pw), |_| Ok(None))
+            .expect("preview of a consent-eligible residue succeeds");
+    assert_eq!(preview.widenings.len(), 1);
+    let w = &preview.widenings[0];
+    assert_eq!(w.block_uuid, block_uuid);
+    assert_eq!(w.block_name, "mine");
+    assert_eq!(w.file_fingerprint, file_fp);
+    assert_eq!(w.added.len(), 1);
+    assert_eq!(w.added[0].uuid, c_uuid);
+    assert_eq!(w.added[0].display_name, "Cee");
+    // card_fingerprint = identity fingerprint of C's card (16 bytes),
+    // the same value §6.2 wraps use as recipient_fingerprint.
+    assert_eq!(w.added[0].card_fingerprint, expected_card_fp);
+    // Read-only: manifest bytes untouched.
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before
+    );
+}
+
+/// A plainly-adoptable residue (interrupted `save_block`, no recipient
+/// widening at all) reports zero widenings — there is nothing to consent
+/// to; `repair_vault` adopts it unconditionally regardless of policy.
+#[test]
+fn preview_is_empty_for_plainly_adoptable_residue() {
+    let (dir, _mnemonic, pw) = make_fast_vault(0x97, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x97; 32]);
+    let open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xda; 16], [0xba; 16]);
+    // Crash simulation: the v2 block hit disk, the v2 manifest didn't.
+    let (manifest_before, _vault_uuid) =
+        stage_crashed_save(folder, open, block_uuid, device_uuid, &mut rng);
+
+    let preview =
+        secretary_core::vault::preview_repair(folder, Unlocker::Password(&pw), |_| Ok(None))
+            .expect("preview of a plainly-adoptable residue succeeds");
+    assert!(
+        preview.widenings.is_empty(),
+        "an interrupted save adopts without consent — nothing to preview"
+    );
+    // Read-only: manifest bytes untouched.
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before
+    );
+}
+
+/// A hard-rejection residue (a rollback plant: a genuinely owner-signed
+/// but OLDER block copy) is not previewable — there is nothing to
+/// consent to on an unrepairable vault, so `preview_repair` propagates
+/// the same `RepairRejected` error `repair_vault` would return, and
+/// writes nothing.
+#[test]
+fn preview_propagates_hard_rejections() {
+    let (dir, _mnemonic, pw) = make_fast_vault(0x98, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x98; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xdc; 16], [0xbc; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let v1_bytes = fs::read(&block_path).unwrap();
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2"),
+        &recipients,
+        device_uuid,
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(&block_path, &v1_bytes).unwrap(); // the rollback plant
+    let manifest_before = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let err = secretary_core::vault::preview_repair(folder, Unlocker::Password(&pw), |_| Ok(None))
+        .expect_err("rollback residue must not be previewable — nothing to consent to");
+    assert!(
+        matches!(err, VaultError::RepairRejected { block_uuid: b, ref detail }
+                 if b == block_uuid && detail.contains("clock relation")),
+        "got {err:?}"
+    );
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before,
+        "preview must not write the manifest"
+    );
 }
