@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-04-repair-rollback-baseline-384-shipped.md
+docs/handoffs/2026-07-06-repair-consent-widening-374-shipped.md
