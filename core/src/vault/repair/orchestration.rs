@@ -21,6 +21,7 @@ use crate::vault::orchestrators::{
 };
 use crate::vault::{VaultError, VectorClockEntry};
 
+use super::policy::RepairPolicy;
 use super::sweep::complete_pending_trash_renames;
 
 /// Explicit crash-recovery orchestrator (#350): adopt on-disk block
@@ -76,9 +77,11 @@ use super::sweep::complete_pending_trash_renames;
 ///      different bytes are also refused — no legitimate crashed
 ///      operation has that shape (stale-replay / forgery). Consequence:
 ///      the residue of a crashed `share_block` (a genuine superset) is
-///      NOT auto-adopted — a documented limitation until an
-///      informed-consent adoption path ships with the FFI projection;
-///      the rejection `detail` names the recipients that would be added.
+///      NOT auto-adopted by default; it is adoptable ONLY via
+///      [`RepairPolicy::AdoptApproved`] with a preview-bound
+///      [`super::ApprovedWidening`] (exact on-disk fingerprint AND exact
+///      added-recipient set — never subset/superset) — the rejection
+///      `detail` names the recipients that would be added.
 ///    - Everything else (`IncomingDominated` = rollback plant,
 ///      `Concurrent` = torn multi-device state this function must not
 ///      guess about) is refused.
@@ -132,6 +135,7 @@ pub fn repair_vault(
     device_uuid: [u8; 16],
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
+    policy: RepairPolicy,
 ) -> Result<OpenVault, VaultError> {
     // Same unlock + §1 verify-before-decrypt manifest sequence as
     // open_vault. §10 runs explicitly below (not inside
@@ -289,19 +293,58 @@ pub fn repair_vault(
         // clock-invisible revoke could re-grant the revoked recipient.)
         let on_disk: BTreeSet<[u8; 16]> = recipients.iter().copied().collect();
         let committed: BTreeSet<[u8; 16]> = entry.recipients.iter().copied().collect();
-        let added: Vec<String> = on_disk
-            .difference(&committed)
-            .map(format_uuid_hyphenated)
-            .collect();
+        let added: BTreeSet<[u8; 16]> = on_disk.difference(&committed).copied().collect();
         if !added.is_empty() {
-            return Err(VaultError::RepairRejected {
-                block_uuid: entry.block_uuid,
-                detail: format!(
-                    "re-key residue would ADD recipients {{{}}}: refusing automatic \
-                     adoption; explicit consent path not yet implemented",
-                    added.join(", ")
-                ),
-            });
+            let added_hex: Vec<String> = added.iter().map(format_uuid_hyphenated).collect();
+            // Consent-eligible = the crashed-share residue shape and ONLY
+            // that shape: Equal clock ∧ pure adds (strict superset). A
+            // dominating widening is the planted-content-save re-grant
+            // exploit; a mixed add+remove delta is no single crashed op.
+            // Neither is EVER licensed by an approval — the shape check
+            // deliberately precedes the approval lookup (spec §3.3).
+            let removed_any = committed.difference(&on_disk).next().is_some();
+            let consent_eligible = matches!(relation, ClockRelation::Equal) && !removed_any;
+            let approval = match (&policy, consent_eligible) {
+                (RepairPolicy::AdoptApproved(approvals), true) => {
+                    approvals.iter().find(|a| a.block_uuid == entry.block_uuid)
+                }
+                _ => None,
+            };
+            match approval {
+                // Exact bind: the previewed bytes AND the previewed delta.
+                Some(a) if a.file_fingerprint == got && a.added_recipients == added => {
+                    // consented crashed-share adoption — fall through
+                }
+                Some(_) => {
+                    return Err(VaultError::RepairRejected {
+                        block_uuid: entry.block_uuid,
+                        detail: format!(
+                            "approval does not match the on-disk residue (stale \
+                             consent — the block file or recipient delta changed \
+                             after preview; re-run the preview): residue would ADD \
+                             recipients {{{}}}",
+                            added_hex.join(", ")
+                        ),
+                    });
+                }
+                None => {
+                    return Err(VaultError::RepairRejected {
+                        block_uuid: entry.block_uuid,
+                        detail: format!(
+                            "re-key residue would ADD recipients {{{}}}: refusing \
+                             automatic adoption; adopting requires explicit consent \
+                             (preview_repair + RepairPolicy::AdoptApproved){}",
+                            added_hex.join(", "),
+                            if consent_eligible {
+                                ""
+                            } else {
+                                " — and this residue is not the crashed-share shape, \
+                                 so it is never adoptable"
+                            }
+                        ),
+                    });
+                }
+            }
         }
         // Equal-clock only: an *unchanged* recipient set with differing
         // bytes is not a legitimate crashed re-key (a re-key changes the

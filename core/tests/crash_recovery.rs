@@ -31,7 +31,8 @@ use secretary_core::unlock::{
 use secretary_core::vault::device_slot::add_device_slot;
 use secretary_core::vault::{
     encode_manifest_file, open_vault, restore_block, save_block, share_block, sign_manifest,
-    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, Unlocker, VaultError,
+    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, RepairPolicy, Unlocker,
+    VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -465,6 +466,7 @@ fn repair_vault_adopts_interrupted_save() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect("gated adoption must succeed on genuine crash residue");
 
@@ -530,6 +532,7 @@ fn repair_vault_adopts_interrupted_save_via_device_secret() {
         enrolled.device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect("gated adoption must succeed via device secret");
 
@@ -615,6 +618,7 @@ fn repair_vault_adopts_interrupted_revocation() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .unwrap();
     let entry = repaired
@@ -716,6 +720,7 @@ fn repair_rejects_stale_equal_clock_replay() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("stale equal-clock replay must NOT be adopted");
     assert!(
@@ -854,6 +859,7 @@ fn repair_rejects_backward_clock_share_replay() {
         device_uuid,
         4_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("equal-clock superset replay must NOT be adopted, whatever its last_mod_ms");
     assert!(
@@ -939,6 +945,7 @@ fn repair_rejects_crashed_share_superset() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("crashed-share superset must be refused (documented limitation)");
     assert!(
@@ -1056,6 +1063,7 @@ fn repair_rejects_equal_set_different_bytes() {
         device_uuid,
         4_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("equal-set different-bytes plant must NOT be adopted");
     assert!(
@@ -1185,6 +1193,7 @@ fn repair_rejects_dominating_clock_recipient_widening() {
         device_1,
         4_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("a dominating clock must NOT license a recipient widening");
     assert!(
@@ -1274,6 +1283,7 @@ fn repair_vault_rejects_rollback_plant() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("rollback must be refused");
     assert!(
@@ -1353,6 +1363,7 @@ fn repair_vault_rejects_concurrent_clock_transplant() {
         device_a,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("concurrent clock must be refused");
     assert!(
@@ -1397,6 +1408,7 @@ fn missing_block_file_is_typed_and_unrepairable() {
         device_uuid,
         2_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("repair cannot invent bytes");
     assert!(
@@ -1435,6 +1447,7 @@ fn repair_vault_is_idempotent_on_healthy_vault() {
         device_uuid,
         2_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect("healthy vault must open through repair");
     assert!(repaired
@@ -1512,6 +1525,7 @@ fn repair_passes_verified_manifest_uuid_to_baseline_provider() {
         [0xd1; 16],
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect("divergent-uuid manifest must still open (nothing compares it to vault.toml)");
     drop(repaired);
@@ -1547,6 +1561,7 @@ fn repair_aborts_when_baseline_provider_errors() {
         device_uuid,
         3_000,
         &mut rng,
+        RepairPolicy::FailClosed,
     )
     .expect_err("a provider error must refuse the repair");
     assert!(
@@ -1558,4 +1573,190 @@ fn repair_aborts_when_baseline_provider_errors() {
         before,
         "refused repair must not mutate the manifest"
     );
+}
+
+// ---------------------------------------------------------------------------
+// repair_vault — #374 part 3: RepairPolicy::AdoptApproved consent adoption
+// ---------------------------------------------------------------------------
+
+/// Shared stager: a crashed-share superset residue (block on disk is
+/// {owner, C}, committed manifest says {owner}). Returns everything a
+/// consent test needs. Mirrors repair_rejects_crashed_share_superset.
+#[allow(clippy::type_complexity)]
+fn stage_crashed_share(
+    seed: u8,
+) -> (
+    tempfile::TempDir,
+    SecretBytes, // password
+    [u8; 16],    // device_uuid
+    [u8; 16],    // block_uuid
+    [u8; 16],    // C's contact_uuid (the added recipient)
+    [u8; 32],    // on-disk file fingerprint (blake3 of block bytes)
+    Vec<u8>,     // pre-repair manifest bytes
+) {
+    let (dir, _mnemonic, pw) = make_fast_vault(seed, "Owner");
+    let folder = dir.path().to_path_buf();
+    let mut rng = ChaCha20Rng::from_seed([seed; 32]);
+    let mut open = open_vault(&folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xde; 16], [0xbe; 16]);
+
+    let mut rng_c = ChaCha20Rng::from_seed([seed.wrapping_add(1); 32]);
+    let id_c = secretary_core::unlock::bundle::generate("Cee", 1_714_060_800_000, &mut rng_c);
+    let card_c = make_signed_card(&id_c);
+    let c_uuid = card_c.contact_uuid;
+
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        &folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "mine"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    let manifest_pre_share = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    share_block(
+        &folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        &card_c,
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        2_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    fs::write(folder.join("manifest.cbor.enc"), &manifest_pre_share).unwrap();
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_bytes = fs::read(folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"))).unwrap();
+    let file_fp = *blake3::hash(&block_bytes).as_bytes();
+    (
+        dir,
+        pw,
+        device_uuid,
+        block_uuid,
+        c_uuid,
+        file_fp,
+        manifest_pre_share,
+    )
+}
+
+#[test]
+fn repair_adopts_crashed_share_with_matching_approval() {
+    let (dir, pw, device_uuid, block_uuid, c_uuid, file_fp, _) = stage_crashed_share(0x90);
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x91; 32]);
+    let approval = secretary_core::vault::ApprovedWidening {
+        block_uuid,
+        file_fingerprint: file_fp,
+        added_recipients: [c_uuid].into_iter().collect(),
+    };
+    let open = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |_| Ok(None),
+        device_uuid,
+        3_000,
+        &mut rng,
+        secretary_core::vault::RepairPolicy::AdoptApproved(vec![approval]),
+    )
+    .expect("exact approval must adopt the crashed-share superset");
+    let entry = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap();
+    assert_eq!(entry.recipients.len(), 2, "widened set committed");
+    assert!(entry.recipients.contains(&c_uuid));
+    drop(open);
+    // Vault opens clean afterwards (residue fully adopted).
+    open_vault(folder, Unlocker::Password(&pw), None).expect("post-repair open must succeed");
+}
+
+#[test]
+fn repair_rejects_approval_with_stale_fingerprint() {
+    let (dir, pw, device_uuid, block_uuid, c_uuid, mut file_fp, manifest_before) =
+        stage_crashed_share(0x92);
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x93; 32]);
+    file_fp[0] ^= 0x01; // consent bound to different bytes than on disk
+    let approval = secretary_core::vault::ApprovedWidening {
+        block_uuid,
+        file_fingerprint: file_fp,
+        added_recipients: [c_uuid].into_iter().collect(),
+    };
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |_| Ok(None),
+        device_uuid,
+        3_000,
+        &mut rng,
+        secretary_core::vault::RepairPolicy::AdoptApproved(vec![approval]),
+    )
+    .expect_err("stale consent must refuse");
+    assert!(matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid));
+    assert!(
+        err.to_string().contains("consent"),
+        "detail names the consent mismatch: {err}"
+    );
+    // Nothing written.
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before
+    );
+}
+
+#[test]
+fn repair_rejects_approval_with_wrong_added_set() {
+    // Three wrong shapes: empty set, superset-of-actual, disjoint. Exact
+    // equality is required — subset/superset of the real delta all refuse.
+    let (dir, pw, device_uuid, block_uuid, c_uuid, file_fp, manifest_before) =
+        stage_crashed_share(0x94);
+    let folder = dir.path();
+    for wrong in [
+        std::collections::BTreeSet::new(),
+        [c_uuid, [0x11; 16]].into_iter().collect(),
+        [[0x22; 16]]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+    ] {
+        let mut rng = ChaCha20Rng::from_seed([0x95; 32]);
+        let approval = secretary_core::vault::ApprovedWidening {
+            block_uuid,
+            file_fingerprint: file_fp,
+            added_recipients: wrong,
+        };
+        let err = secretary_core::vault::repair_vault(
+            folder,
+            Unlocker::Password(&pw),
+            |_| Ok(None),
+            device_uuid,
+            3_000,
+            &mut rng,
+            secretary_core::vault::RepairPolicy::AdoptApproved(vec![approval]),
+        )
+        .expect_err("non-exact added set must refuse");
+        assert!(
+            matches!(&err, VaultError::RepairRejected { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(
+            fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+            manifest_before
+        );
+    }
 }

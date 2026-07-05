@@ -54,7 +54,7 @@ pub use orchestrators::{
     create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
     save_block, share_block, trash_block, OpenVault, Unlocker,
 };
-pub use repair::repair_vault;
+pub use repair::{repair_vault, ApprovedWidening, RepairPolicy};
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
 // canonical UUID-to-filename formatter and the blocks-subdir / block

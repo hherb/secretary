@@ -50,7 +50,7 @@ use std::path::Path;
 
 use rand_core::OsRng;
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::vault::{repair_vault, Unlocker, VaultError, VectorClockEntry};
+use secretary_core::vault::{repair_vault, RepairPolicy, Unlocker, VaultError, VectorClockEntry};
 
 use crate::error::FfiVaultError;
 use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
@@ -166,6 +166,7 @@ pub(crate) fn repair_vault_with_password_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        RepairPolicy::FailClosed,
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
     // pw drops here → ZeroizeOnDrop wipes the local copy.
@@ -216,6 +217,7 @@ pub(crate) fn repair_vault_with_recovery_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        RepairPolicy::FailClosed,
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
 }
@@ -267,6 +269,7 @@ pub(crate) fn repair_vault_with_device_secret_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        RepairPolicy::FailClosed,
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
     // secret drops here → SecretBytes ZeroizeOnDrop wipes our local copy.

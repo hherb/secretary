@@ -7,7 +7,9 @@
 //! manifest-as-integrity-commitment.
 
 mod orchestration;
+mod policy;
 mod sweep;
 
 pub use orchestration::repair_vault;
+pub use policy::{ApprovedWidening, RepairPolicy};
 pub(crate) use sweep::complete_pending_trash_renames;
