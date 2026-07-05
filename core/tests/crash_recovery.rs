@@ -2233,6 +2233,81 @@ fn preview_reports_widening_with_names_and_fingerprints() {
     );
 }
 
+/// Security regression (2026-07 final review of #374): `verify_self` only
+/// proves a card is internally self-consistent — it does NOT prove
+/// uniqueness of `contact_uuid` across `contacts/`. An attacker with
+/// vault-folder write access can plant a SELF-SIGNED decoy card carrying
+/// C's real `contact_uuid` but a DIFFERENT key and an innocuous
+/// `display_name`. Wrap/grant resolution stays honest (it is fingerprint-
+/// keyed, so the actually-granted key is always correct) — but a preview
+/// lookup keyed by `contact_uuid` (last-write-wins on collision) could
+/// render the DECOY's identity for a grant that in reality goes to C's
+/// real key, defeating informed consent. The preview MUST content-address
+/// by the wrap's recipient fingerprint — the fingerprint of the card whose
+/// key actually gains access — not by the attacker-controlled
+/// `contact_uuid`.
+///
+/// The decoy's filename (`{c_uuid_hex}-zzz-decoy.card`) sorts after C's
+/// real card's filename (`{c_uuid_hex}.card`) so a naive last-write-wins
+/// bug is caught deterministically by this test, not by directory-scan
+/// order luck.
+#[test]
+fn preview_renders_identity_of_the_key_that_gains_access() {
+    let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, manifest_before) =
+        stage_crashed_share(0x99);
+    let folder = dir.path();
+
+    // Mint a second identity for the decoy, build its self-signed card,
+    // then overwrite `contact_uuid` with C's REAL uuid and re-sign —
+    // mirrors `make_signed_card`'s construction so `verify_self` still
+    // passes for the decoy.
+    let mut rng_decoy = ChaCha20Rng::from_seed([0x9Bu8; 32]);
+    let id_decoy =
+        secretary_core::unlock::bundle::generate("Mom", 1_714_060_800_000, &mut rng_decoy);
+    let mut decoy_card = make_signed_card(&id_decoy);
+    decoy_card.contact_uuid = c_uuid;
+    let decoy_pq_sk = MlDsa65Secret::from_bytes(id_decoy.ml_dsa_65_sk.expose()).unwrap();
+    decoy_card.sign(&id_decoy.ed25519_sk, &decoy_pq_sk).unwrap();
+    decoy_card
+        .verify_self()
+        .expect("decoy must be internally self-consistent (verify_self) despite the forged uuid");
+
+    let c_uuid_hex = format_uuid_hyphenated(&c_uuid);
+    fs::write(
+        folder
+            .join("contacts")
+            .join(format!("{c_uuid_hex}-zzz-decoy.card")),
+        decoy_card.to_canonical_cbor().unwrap(),
+    )
+    .unwrap();
+
+    let expected_card_fp = fingerprint(&card_c.to_canonical_cbor().unwrap());
+    let preview =
+        secretary_core::vault::preview_repair(folder, Unlocker::Password(&pw), |_| Ok(None))
+            .expect("preview succeeds even with a same-uuid decoy card present");
+    assert_eq!(preview.widenings.len(), 1);
+    let w = &preview.widenings[0];
+    assert_eq!(w.block_uuid, block_uuid);
+    assert_eq!(w.file_fingerprint, file_fp);
+    assert_eq!(w.added.len(), 1);
+    assert_eq!(w.added[0].uuid, c_uuid);
+    assert_eq!(
+        w.added[0].display_name, "Cee",
+        "preview must render the identity of the key that ACTUALLY gains access \
+         (C's real card 'Cee'), never a same-uuid decoy ('Mom') — vault-format.md \
+         requires rendering the verified contact card belonging to the granted key"
+    );
+    assert_eq!(
+        w.added[0].card_fingerprint, expected_card_fp,
+        "card_fingerprint must be C's real card fingerprint, not the decoy's"
+    );
+    // Read-only regardless of the decoy: manifest bytes untouched.
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_before
+    );
+}
+
 /// A plainly-adoptable residue (interrupted `save_block`, no recipient
 /// widening at all) reports zero widenings — there is nothing to consent
 /// to; `repair_vault` adopts it unconditionally regardless of policy.

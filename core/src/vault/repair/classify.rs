@@ -14,7 +14,7 @@
 //! module doc on `repair_vault` for the full gate rationale; this module
 //! is a pure code-motion of that logic, not a redesign of it).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::crypto::hash::hash as blake3_hash;
@@ -59,8 +59,20 @@ pub(crate) enum BlockClassification {
         /// The fully-built adopted-shape entry (recipients = on-disk
         /// set) a caller stages once consent is confirmed.
         staged: BlockEntry,
-        /// The recipient UUIDs the widening would add.
-        added: BTreeSet<[u8; 16]>,
+        /// The recipient UUIDs the widening would add, each paired with
+        /// the §6.2 wrap `recipient_fingerprint` that actually resolved
+        /// to it. A preview MUST render identity by this fingerprint,
+        /// not by the uuid alone (2026-07 final review): `verify_self`
+        /// proves a `contacts/*.card` is internally self-consistent, NOT
+        /// that its `contact_uuid` is unique — an attacker with
+        /// vault-folder write access could otherwise plant a decoy card
+        /// sharing a legitimate recipient's uuid to steer a uuid-keyed
+        /// preview lookup onto the wrong display name / fingerprint.
+        /// Callers that only need the uuid *set* (e.g. `repair_vault`'s
+        /// exact-match against `RepairPolicy::AdoptApproved`) derive it
+        /// from this map's keys — that comparison's semantics are
+        /// unchanged by this type.
+        added: BTreeMap<[u8; 16], [u8; 16]>,
         /// BLAKE3-256 of the on-disk block file bytes classified here —
         /// the fingerprint a consent approval / preview binds to.
         file_fingerprint: [u8; 32],
@@ -207,6 +219,17 @@ pub(crate) fn classify_block(
     let on_disk: BTreeSet<[u8; 16]> = recipients.iter().copied().collect();
     let committed: BTreeSet<[u8; 16]> = entry.recipients.iter().copied().collect();
     let added: BTreeSet<[u8; 16]> = on_disk.difference(&committed).copied().collect();
+    // `recipients[i]` is the uuid `resolve_recipient_uuids` resolved from
+    // `block_file.recipients[i]`'s wrap — same index, same order (the
+    // resolver preserves wrap order). Zip them into a uuid -> wrap
+    // fingerprint map so a consent-eligible widening's preview can
+    // content-address each added recipient's identity by the fingerprint
+    // that ACTUALLY resolved it, not by the (attacker-plantable) uuid.
+    let uuid_to_wrap_fp: BTreeMap<[u8; 16], [u8; 16]> = recipients
+        .iter()
+        .zip(block_file.recipients.iter())
+        .map(|(uuid, wrap)| (*uuid, wrap.recipient_fingerprint))
+        .collect();
     if !added.is_empty() {
         // Consent-eligible = the crashed-share residue shape and ONLY
         // that shape: Equal clock ∧ pure adds (strict superset). A
@@ -256,9 +279,13 @@ pub(crate) fn classify_block(
             // manifest copy on disk.
             unknown: entry.unknown.clone(),
         };
+        let added_with_fp: BTreeMap<[u8; 16], [u8; 16]> = added
+            .iter()
+            .map(|uuid| (*uuid, uuid_to_wrap_fp[uuid]))
+            .collect();
         return Ok(BlockClassification::ConsentEligibleWidening {
             staged,
-            added,
+            added: added_with_fp,
             file_fingerprint: got,
             block_name: plaintext.block_name.clone(),
         });
@@ -301,7 +328,14 @@ pub(crate) fn classify_block(
 /// `card_fingerprint` is 16 bytes — the identity
 /// [`crate::identity::fingerprint::fingerprint`] output, the same value
 /// §6.2 wraps use as `recipient_fingerprint` — NOT the 32-byte block
-/// content fingerprint.
+/// content fingerprint. It is the fingerprint of the card whose key
+/// ACTUALLY gains access (the §6.2 wrap's `recipient_fingerprint`), not
+/// merely a card that happens to carry `uuid` — `contact_uuid` is a
+/// self-declared field a `contacts/*.card` file does not prove unique
+/// (2026-07 final review of #374): `display_name` and `card_fingerprint`
+/// are always looked up by this fingerprint, never by `uuid` alone. In
+/// the honest, non-attacked case this is the same value it always was —
+/// no behavior change for legitimate data.
 #[derive(Debug, Clone)]
 pub struct AddedRecipient {
     pub uuid: [u8; 16],

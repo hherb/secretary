@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use rand_core::{CryptoRng, RngCore};
@@ -35,7 +35,10 @@ struct RawWidening {
     block_uuid: [u8; 16],
     block_name: String,
     file_fingerprint: [u8; 32],
-    added: std::collections::BTreeSet<[u8; 16]>,
+    /// uuid -> the §6.2 wrap `recipient_fingerprint` that resolved to it
+    /// (see [`AddedRecipient::card_fingerprint`] doc comment for why the
+    /// fingerprint, not the uuid, must drive the identity lookup below).
+    added: std::collections::BTreeMap<[u8; 16], [u8; 16]>,
 }
 
 /// Explicit crash-recovery orchestrator (#350): adopt on-disk block
@@ -219,17 +222,26 @@ pub fn repair_vault(
                     }
                     RepairPolicy::FailClosed => None,
                 };
+                // `ApprovedWidening.added_recipients` is a uuid set (what
+                // the user approved from the preview); `added` is now a
+                // uuid -> wrap-fingerprint map (classify.rs, #374 final
+                // review — the fingerprint is what lets `preview_repair`
+                // content-address identity rendering). The exact-set
+                // comparison below is derived from this map's KEYS, so
+                // it is byte-for-byte the same uuid-set comparison as
+                // before this change.
+                let added_uuids: BTreeSet<[u8; 16]> = added.keys().copied().collect();
                 match approval {
                     // Exact bind: the previewed bytes AND the previewed delta.
                     Some(a)
                         if a.file_fingerprint == file_fingerprint
-                            && a.added_recipients == added =>
+                            && a.added_recipients == added_uuids =>
                     {
                         adoptions.push((idx, staged));
                     }
                     Some(_) => {
                         let added_hex: Vec<String> =
-                            added.iter().map(format_uuid_hyphenated).collect();
+                            added_uuids.iter().map(format_uuid_hyphenated).collect();
                         return Err(VaultError::RepairRejected {
                             block_uuid: entry.block_uuid,
                             detail: format!(
@@ -243,7 +255,7 @@ pub fn repair_vault(
                     }
                     None => {
                         let added_hex: Vec<String> =
-                            added.iter().map(format_uuid_hyphenated).collect();
+                            added_uuids.iter().map(format_uuid_hyphenated).collect();
                         return Err(VaultError::RepairRejected {
                             block_uuid: entry.block_uuid,
                             detail: format!(
@@ -385,12 +397,25 @@ pub fn preview_repair(
         });
     }
 
-    // Name/fingerprint lookup for the added recipients: scan contacts/
-    // once (shared scanner, #374 Task 4) rather than once per widening.
-    let mut lookup: HashMap<[u8; 16], (String, [u8; 16])> = HashMap::new();
+    // Name lookup for the added recipients: scan contacts/ once (shared
+    // scanner, #374 Task 4) rather than once per widening. Keyed by the
+    // CARD's own identity fingerprint (§6.1: BLAKE3 over the card's
+    // canonical CBOR, which covers its embedded public keys) — never by
+    // `contact_uuid`. `verify_self` only proves a card is internally
+    // self-consistent; it does NOT prove `contact_uuid` is unique across
+    // `contacts/`. An attacker with vault-folder write access could plant
+    // a second self-signed card carrying a legitimate recipient's uuid
+    // but a different key, and a uuid-keyed lookup would render THAT
+    // decoy's display name for a grant that in reality goes to the real
+    // key (2026-07 final review of #374). Keying by card fingerprint
+    // instead means each added recipient's identity is looked up by the
+    // EXACT fingerprint the §6.2 wrap resolved to — the same content-
+    // addressing the wrap/grant resolution itself already relies on — so
+    // a same-uuid decoy simply never matches.
+    let mut lookup: HashMap<[u8; 16], String> = HashMap::new();
     for card in scan_verified_contact_cards(folder)? {
         let card_fp = fingerprint(&card.to_canonical_cbor()?);
-        lookup.insert(card.contact_uuid, (card.display_name.clone(), card_fp));
+        lookup.insert(card_fp, card.display_name.clone());
     }
 
     let mut widenings = Vec::with_capacity(raw_widenings.len());
@@ -402,25 +427,25 @@ pub fn preview_repair(
             raw.added,
         );
         let mut added_recipients = Vec::with_capacity(added.len());
-        for uuid in added {
+        for (uuid, wrap_fingerprint) in added {
             // Defensive: Gate 3 resolution in classify_block already
-            // proved every wrap resolves to a verified contact_uuid, so
-            // a lookup miss here should not happen in practice. Refuse
-            // rather than silently drop the recipient from the preview.
-            let (display_name, card_fingerprint) =
-                lookup
-                    .get(&uuid)
-                    .cloned()
-                    .ok_or_else(|| VaultError::RepairRejected {
-                        block_uuid,
-                        detail: "preview: an added recipient uuid did not resolve to a verified \
-                             contact card"
-                            .to_string(),
-                    })?;
+            // proved every wrap resolves to a verified contact card at
+            // exactly this fingerprint, so a lookup miss here should not
+            // happen in practice. Refuse rather than silently drop the
+            // recipient from the preview or fall back to a uuid-keyed
+            // lookup (which would reopen the decoy-card issue above).
+            let display_name = lookup.get(&wrap_fingerprint).cloned().ok_or_else(|| {
+                VaultError::RepairRejected {
+                    block_uuid,
+                    detail: "preview: an added recipient's wrap fingerprint did not \
+                             resolve to a verified contact card"
+                        .to_string(),
+                }
+            })?;
             added_recipients.push(AddedRecipient {
                 uuid,
                 display_name,
-                card_fingerprint,
+                card_fingerprint: wrap_fingerprint,
             });
         }
         widenings.push(WideningReport {
