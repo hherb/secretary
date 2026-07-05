@@ -112,7 +112,10 @@
     // state as their `from`.
     beginUnlock();
     try {
-      const manifest = await repairVault(folderPath, password);
+      // #374 Task 9 plumbing: Task 10 wires up the real informed-consent
+      // approval flow via `previewRepair`; until then, always pass `[]`
+      // (fail-closed — identical to pre-Task-9 behavior).
+      const manifest = await repairVault(folderPath, password, []);
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
       seedReauthClock(Date.now());

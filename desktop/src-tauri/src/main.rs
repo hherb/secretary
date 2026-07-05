@@ -75,6 +75,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             unlock::unlock_with_password,
             repair::repair_vault,
+            repair::preview_repair,
             vault::list_blocks,
             vault::get_manifest,
             settings::get_settings,

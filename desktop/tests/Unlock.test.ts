@@ -236,7 +236,10 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     await fireEvent.click(getByRole('button', { name: /repair now/i }));
 
     expect(repairMock).toHaveBeenCalledTimes(1);
-    expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
+    // #374 Task 9: repairVault now takes a third `approvals` arg; the
+    // Unlock.svelte call site mechanically passes `[]` until Task 10 wires
+    // up the real informed-consent approval flow.
+    expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2', []);
   });
 
   it('shows the in-flight "Repairing…" progress state while repair runs', async () => {
