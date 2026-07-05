@@ -280,8 +280,9 @@ pub fn repair_vault(
         // preserve the clock (Equal) so their residue can only NARROW
         // (revoke). The one widening operation, share_block, also
         // preserves the clock — its crashed superset residue is landed
-        // here too but is deliberately NOT auto-adopted (informed-consent
-        // path, #374). So any added recipient is either that crashed
+        // here too but is deliberately NOT auto-adopted — adoptable only
+        // via the `RepairPolicy::AdoptApproved` consent arm below (#374).
+        // So any added recipient is either that crashed
         // share or an attacker replaying retained owner-signed bytes to
         // re-GRANT access (e.g. resurrect a revoked recipient — the
         // 2026-07 review exploit). Fail closed: the worst an attacker can
