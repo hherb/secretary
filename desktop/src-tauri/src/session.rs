@@ -218,11 +218,14 @@ impl VaultSession {
         let vault_uuid = crate::commands::repair::read_vault_uuid_from_toml(folder)?;
         let device_uuid =
             settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid)?;
+        // Approvals plumb through in Task 9 (#374); this entry point
+        // always fails closed on any recipient widening for now.
         let output = secretary_ffi_bridge::repair_vault_with_password(
             folder,
             password,
             &device_uuid,
             now_ms(),
+            &[],
         )?;
 
         self.populate_unlocked(output, device_uuid, folder);

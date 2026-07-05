@@ -56,8 +56,15 @@ pub fn repair_with_password(
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
+                // Approvals project upward in a later task (#374); this
+                // entry point always fails closed on any recipient
+                // widening for now.
                 secretary_ffi_bridge::repair_vault_with_password(
-                    &path, &password, &uuid_arr, now_ms,
+                    &path,
+                    &password,
+                    &uuid_arr,
+                    now_ms,
+                    &[],
                 )
                 .map_err(VaultError::from)
             }
@@ -110,8 +117,15 @@ pub fn repair_with_recovery(
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
+                // Approvals project upward in a later task (#374); this
+                // entry point always fails closed on any recipient
+                // widening for now.
                 secretary_ffi_bridge::repair_vault_with_recovery(
-                    &path, &mnemonic, &uuid_arr, now_ms,
+                    &path,
+                    &mnemonic,
+                    &uuid_arr,
+                    now_ms,
+                    &[],
                 )
                 .map_err(VaultError::from)
             }
@@ -187,11 +201,15 @@ pub fn repair_with_device_secret(
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
+                // Approvals project upward in a later task (#374); this
+                // entry point always fails closed on any recipient
+                // widening for now.
                 secretary_ffi_bridge::repair_vault_with_device_secret(
                     &path,
                     &uuid_arr,
                     &secret_arr,
                     now_ms,
+                    &[],
                 )
                 .map_err(VaultError::from)
             }

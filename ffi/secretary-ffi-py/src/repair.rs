@@ -73,8 +73,10 @@ pub(crate) fn repair_with_password(
     // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
 
+    // Approvals project upward in a later task (#374); this entry point
+    // always fails closed on any recipient widening for now.
     let result =
-        secretary_ffi_bridge::repair_vault_with_password(folder, &password, &uuid_arr, now_ms)
+        secretary_ffi_bridge::repair_vault_with_password(folder, &password, &uuid_arr, now_ms, &[])
             .map_err(ffi_vault_error_to_pyerr);
     password.zeroize();
 
@@ -131,8 +133,10 @@ pub(crate) fn repair_with_recovery(
     // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
 
+    // Approvals project upward in a later task (#374); this entry point
+    // always fails closed on any recipient widening for now.
     let result =
-        secretary_ffi_bridge::repair_vault_with_recovery(folder, &mnemonic, &uuid_arr, now_ms)
+        secretary_ffi_bridge::repair_vault_with_recovery(folder, &mnemonic, &uuid_arr, now_ms, &[])
             .map_err(ffi_vault_error_to_pyerr);
     mnemonic.zeroize();
 
@@ -202,11 +206,14 @@ pub(crate) fn repair_with_device_secret(
         .try_into()
         .expect("length checked above");
 
+    // Approvals project upward in a later task (#374); this entry point
+    // always fails closed on any recipient widening for now.
     let result = secretary_ffi_bridge::repair_vault_with_device_secret(
         folder,
         &uuid_arr,
         &secret_arr,
         now_ms,
+        &[],
     )
     .map_err(ffi_vault_error_to_pyerr);
 

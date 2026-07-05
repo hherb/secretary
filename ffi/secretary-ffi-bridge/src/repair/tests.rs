@@ -23,13 +23,16 @@ use secretary_core::vault::{
 
 use crate::device::{add_device_slot, open_with_device_secret};
 use crate::error::FfiVaultError;
+use crate::repair::types::FfiApprovedWidening;
 use crate::vault::orchestration::open_vault_with_password;
 
 use super::orchestration::{
     repair_vault_with_device_secret_in, repair_vault_with_password_in,
     repair_vault_with_recovery_in,
 };
-use super::{repair_vault_with_device_secret, repair_vault_with_password};
+use super::{
+    repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
+};
 
 // ── fixture helpers (mirrors `device.rs`'s `tmp_golden_vault`) ─────────────
 
@@ -146,6 +149,86 @@ fn stage_crashed_save(
     }
 }
 
+/// What the approval-adoption tests need from the canonical crashed-
+/// `share_block` staging: the rolled-back pre-share manifest bytes (for
+/// byte-untouched refusal asserts and the §10 valid-approval regression),
+/// the BLAKE3-256 fingerprint of the on-disk (post-share) block file (to
+/// bind an exact [`FfiApprovedWidening`]), the added recipient's contact
+/// UUID, and the vault UUID (for seeding a §10 baseline at the right
+/// state-file path).
+struct StagedCrashedShare {
+    manifest_pre_share: Vec<u8>,
+    file_fingerprint: [u8; 32],
+    added_contact_uuid: [u8; 16],
+    vault_uuid: [u8; 16],
+}
+
+/// Stage the canonical crashed-`share_block` residue (recipient-widening
+/// shape): commit a block visible only to the owner, share it to add
+/// `card_c` (bumping the on-disk block file to `{owner, C}`), then roll
+/// the manifest back to the pre-share snapshot — as if the crash hit
+/// between `share_block`'s block write and its manifest write. Mirrors
+/// `repair_vault_with_password_rejects_recipient_widening_residue`'s
+/// inline staging above and core's
+/// `crash_recovery.rs::stage_crashed_share`. Consumes `open` — the
+/// "crashed" session must not keep writing after the rollback.
+fn stage_crashed_share(
+    folder: &Path,
+    mut open: OpenVault,
+    block_uuid: [u8; 16],
+    device_uuid: [u8; 16],
+    card_c: &ContactCard,
+    rng: &mut ChaCha20Rng,
+) -> StagedCrashedShare {
+    let vault_uuid = open.manifest.vault_uuid;
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "mine"),
+        &recipients,
+        device_uuid,
+        1_000,
+        rng,
+    )
+    .unwrap();
+    let manifest_pre_share = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    share_block(
+        folder,
+        &mut open,
+        BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &recipients,
+        card_c,
+        DeviceUuid::new(device_uuid),
+        2_000,
+        rng,
+    )
+    .unwrap();
+    drop(open);
+    // Crash simulation: the {owner, C} block hit disk, the manifest write
+    // that would have committed the widened recipient set was lost.
+    std::fs::write(folder.join("manifest.cbor.enc"), &manifest_pre_share).unwrap();
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_bytes =
+        std::fs::read(folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"))).unwrap();
+    let file_fingerprint = *secretary_core::crypto::hash::hash(&block_bytes).as_bytes();
+
+    StagedCrashedShare {
+        manifest_pre_share,
+        file_fingerprint,
+        added_contact_uuid: card_c.contact_uuid,
+        vault_uuid,
+    }
+}
+
 /// Mint a fresh, self-signed co-recipient contact card from a brand-new
 /// identity bundle generated with a distinct RNG seed. Mirrors
 /// `crash_recovery.rs::make_signed_card`. Uses a seed disjoint from the
@@ -203,8 +286,11 @@ fn repair_vault_with_password_adopts_interrupted_save_then_reopens() {
         other => panic!("expected VaultNeedsRepair, got {other:?}"),
     }
 
-    // repair_vault_with_password adopts the on-disk v2 generation.
-    let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000)
+    // repair_vault_with_password adopts the on-disk v2 generation. Empty
+    // approvals is the documented safe zero-value (maps to FailClosed);
+    // this residue shape (a crashed content save, not a widening) adopts
+    // regardless.
+    let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[])
         .expect("gated adoption must succeed on genuine crash residue");
     drop(repaired);
 
@@ -248,8 +334,9 @@ fn repair_vault_with_device_secret_adopts_interrupted_save() {
     let block_uuid = [0xf1; 16];
     stage_crashed_save(&folder, open, block_uuid, device_uuid, &mut rng);
 
-    let repaired = repair_vault_with_device_secret(&folder, &device_uuid, &device_secret, 3_000)
-        .expect("gated adoption via device secret must succeed");
+    let repaired =
+        repair_vault_with_device_secret(&folder, &device_uuid, &device_secret, 3_000, &[])
+            .expect("gated adoption via device secret must succeed");
     let entry = repaired
         .manifest
         .block_summaries()
@@ -314,7 +401,9 @@ fn repair_vault_with_password_rejects_recipient_widening_residue() {
     // that would have committed the widened recipient set was lost.
     std::fs::write(folder.join("manifest.cbor.enc"), &manifest_pre_share).unwrap();
 
-    let err = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000)
+    // No approvals: this is the FailClosed baseline test — the widening
+    // must be refused with no consent offered at all.
+    let err = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[])
         .expect_err("crashed-share superset must be refused (documented limitation)");
     match err {
         FfiVaultError::RepairRejected {
@@ -404,9 +493,15 @@ fn repair_gates_rollback_before_write_and_leaves_manifest_untouched() {
 
     // Snapshot the on-disk manifest immediately before the repair attempt.
     let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
-    let err =
-        repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
-            .expect_err("a strictly-dominated committed clock must refuse repair PRE-write");
+    let err = repair_vault_with_password_in(
+        Some(state_dir.path()),
+        &folder,
+        &pw,
+        &device_uuid,
+        3_000,
+        &[],
+    )
+    .expect_err("a strictly-dominated committed clock must refuse repair PRE-write");
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "core VaultError::Rollback must fold to CorruptVault, got {err:?}",
@@ -503,6 +598,7 @@ fn repair_device_secret_gates_rollback_before_write_and_leaves_manifest_untouche
         &device_uuid,
         &device_secret,
         3_000,
+        &[],
     )
     .expect_err("a strictly-dominated committed clock must refuse repair PRE-write");
     assert!(
@@ -540,7 +636,7 @@ fn repair_vault_with_password_is_idempotent_on_healthy_vault() {
     drop(open);
     let before = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
 
-    let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 2_000)
+    let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 2_000, &[])
         .expect("healthy vault must open through repair");
     let has_block = repaired
         .manifest
@@ -594,9 +690,15 @@ fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
     )
     .unwrap();
 
-    let err =
-        repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
-            .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
+    let err = repair_vault_with_password_in(
+        Some(state_dir.path()),
+        &folder,
+        &pw,
+        &device_uuid,
+        3_000,
+        &[],
+    )
+    .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
@@ -663,6 +765,7 @@ fn repair_device_secret_refuses_unreadable_rollback_baseline() {
         &device_uuid,
         &device_secret,
         3_000,
+        &[],
     )
     .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
     assert!(
@@ -705,6 +808,7 @@ fn repair_recovery_refuses_unreadable_rollback_baseline() {
         VAULT_001_PHRASE,
         &device_uuid,
         3_000,
+        &[],
     )
     .expect_err("existing-but-unreadable baseline must refuse the mutating repair");
     assert!(
@@ -750,9 +854,15 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
     )
     .unwrap();
 
-    let err =
-        repair_vault_with_password_in(Some(state_dir.path()), &folder, &pw, &device_uuid, 3_000)
-            .expect_err("uuid-mismatched baseline must refuse the mutating repair");
+    let err = repair_vault_with_password_in(
+        Some(state_dir.path()),
+        &folder,
+        &pw,
+        &device_uuid,
+        3_000,
+        &[],
+    )
+    .expect_err("uuid-mismatched baseline must refuse the mutating repair");
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "expected CorruptVault, got {err:?}",
@@ -761,5 +871,234 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
         std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
         staged.manifest_v1,
         "refused repair must not mutate the manifest (fail-closed pre-write)",
+    );
+}
+
+// ── #374 part 5: approvals on the three repair arms ────────────────────────
+
+/// Happy-adopt (password arm): an exact approval — bound to the on-disk
+/// block file's own BLAKE3 fingerprint and the exact added-recipient set —
+/// must adopt the crashed-`share_block` widening residue, and the vault
+/// must reopen clean afterwards. Mirrors core's
+/// `crash_recovery.rs::repair_adopts_crashed_share_with_matching_approval`.
+#[test]
+fn repair_with_password_adopts_with_exact_approval() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0x9c; 32]);
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xeb; 16], [0xfb; 16]);
+    let card_c = mint_external_card(0x9d, "Cee");
+    let staged = stage_crashed_share(&folder, open, block_uuid, device_uuid, &card_c, &mut rng);
+
+    let approval = FfiApprovedWidening {
+        block_uuid,
+        file_fingerprint: staged.file_fingerprint,
+        added_recipients: vec![staged.added_contact_uuid],
+    };
+    let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[approval])
+        .expect("exact approval must adopt the crashed-share superset");
+    let entry = repaired
+        .manifest
+        .block_summaries()
+        .into_iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("adopted entry present");
+    assert_eq!(entry.recipient_uuids.len(), 2, "widened set committed");
+    assert!(entry.recipient_uuids.contains(&staged.added_contact_uuid));
+    drop(repaired);
+
+    // Vault opens clean afterwards (residue fully adopted).
+    open_vault_with_password(&folder, &pw).expect("post-repair open must succeed");
+}
+
+/// Happy-adopt (recovery arm): same contract as the password-arm test
+/// above, proven end-to-end through the 24-word mnemonic unlock path —
+/// arm parity for the consent-adoption path.
+#[test]
+fn repair_with_recovery_adopts_with_exact_approval() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0x9e; 32]);
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xec; 16], [0xfc; 16]);
+    let card_c = mint_external_card(0x9f, "Cee");
+    let staged = stage_crashed_share(&folder, open, block_uuid, device_uuid, &card_c, &mut rng);
+
+    let approval = FfiApprovedWidening {
+        block_uuid,
+        file_fingerprint: staged.file_fingerprint,
+        added_recipients: vec![staged.added_contact_uuid],
+    };
+    let repaired =
+        repair_vault_with_recovery(&folder, VAULT_001_PHRASE, &device_uuid, 3_000, &[approval])
+            .expect("exact approval must adopt the crashed-share superset via the recovery arm");
+    let entry = repaired
+        .manifest
+        .block_summaries()
+        .into_iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("adopted entry present");
+    assert_eq!(entry.recipient_uuids.len(), 2, "widened set committed");
+    assert!(entry.recipient_uuids.contains(&staged.added_contact_uuid));
+    drop(repaired);
+
+    open_vault_with_password(&folder, &pw).expect("post-repair open must succeed");
+}
+
+/// Happy-adopt (device-secret arm): same contract, proven end-to-end
+/// through a freshly-enrolled device slot — arm parity across all three
+/// repair entry points.
+#[test]
+fn repair_with_device_secret_adopts_with_exact_approval() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let pw = golden_password();
+    let mut rng = ChaCha20Rng::from_seed([0xa0; 32]);
+
+    let enrolled = add_device_slot(&folder, &pw).expect("add_device_slot must succeed");
+    let device_uuid: [u8; 16] = enrolled
+        .device_uuid
+        .as_slice()
+        .try_into()
+        .expect("device_uuid must be 16 bytes");
+    let device_secret_bytes = enrolled
+        .device_secret
+        .take_secret()
+        .expect("first take_secret must return Some");
+    let device_secret: [u8; 32] = device_secret_bytes
+        .as_slice()
+        .try_into()
+        .expect("device secret must be 32 bytes");
+
+    let device_secret_sb = SecretBytes::new(device_secret.to_vec());
+    let dev_unlocker = || Unlocker::DeviceSecret {
+        device_uuid: &device_uuid,
+        secret: &device_secret_sb,
+    };
+    let open = open_vault(&folder, dev_unlocker(), None).unwrap();
+    let block_uuid = [0xfd; 16];
+    let card_c = mint_external_card(0xa1, "Cee");
+    let staged = stage_crashed_share(&folder, open, block_uuid, device_uuid, &card_c, &mut rng);
+
+    let approval = FfiApprovedWidening {
+        block_uuid,
+        file_fingerprint: staged.file_fingerprint,
+        added_recipients: vec![staged.added_contact_uuid],
+    };
+    let repaired =
+        repair_vault_with_device_secret(&folder, &device_uuid, &device_secret, 3_000, &[approval])
+            .expect(
+                "exact approval must adopt the crashed-share superset via the device-secret arm",
+            );
+    let entry = repaired
+        .manifest
+        .block_summaries()
+        .into_iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("adopted entry present");
+    assert_eq!(entry.recipient_uuids.len(), 2, "widened set committed");
+    assert!(entry.recipient_uuids.contains(&staged.added_contact_uuid));
+}
+
+/// Stale consent: an approval whose `file_fingerprint` no longer matches
+/// the on-disk block bytes (the residue changed, or the approval was built
+/// against a different preview) must be refused as
+/// `FfiVaultError::RepairRejected`, and the manifest must be untouched.
+/// Mirrors core's
+/// `crash_recovery.rs::repair_rejects_approval_with_stale_fingerprint`.
+#[test]
+fn repair_refuses_stale_approval_as_repair_rejected() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0xa4; 32]);
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xee; 16], [0xfe; 16]);
+    let card_c = mint_external_card(0xa5, "Cee");
+    let staged = stage_crashed_share(&folder, open, block_uuid, device_uuid, &card_c, &mut rng);
+
+    let mut stale_fingerprint = staged.file_fingerprint;
+    stale_fingerprint[0] ^= 0x01; // consent bound to different bytes than on disk
+    let approval = FfiApprovedWidening {
+        block_uuid,
+        file_fingerprint: stale_fingerprint,
+        added_recipients: vec![staged.added_contact_uuid],
+    };
+    let err = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[approval])
+        .expect_err("stale consent must refuse");
+    match err {
+        FfiVaultError::RepairRejected {
+            block_uuid_hex,
+            detail,
+        } => {
+            assert_eq!(block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+            assert!(
+                detail.contains("does not match the on-disk residue"),
+                "must be the stale-consent rejection arm specifically: {detail}"
+            );
+        }
+        other => panic!("expected RepairRejected, got {other:?}"),
+    }
+    // All-or-nothing: the manifest must be untouched by the rejected repair.
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        staged.manifest_pre_share,
+        "rejected repair must not touch the manifest"
+    );
+}
+
+/// #374 part 5 / §10 regression: even with a VALID (exact-matching)
+/// approval present, an existing-but-unreadable §10 rollback baseline
+/// state file must still refuse the repair as `CorruptVault` — the
+/// rollback gate runs strictly BEFORE any per-block classification/consent
+/// decision (module docs: "§10 rollback resistance is gated PRE-write"),
+/// so a valid approval must never let a laundered rollback baseline slip
+/// through. Mirrors
+/// `repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched`
+/// but adds a matching approval to prove fail-closed §10 still wins.
+#[test]
+fn repair_refuses_unreadable_rollback_baseline_even_with_valid_approval() {
+    let (_tmp, folder) = tmp_golden_vault();
+    let state_dir = tempfile::tempdir().unwrap();
+    let pw = golden_password();
+    let pw_secret = SecretBytes::new(pw.clone());
+    let mut rng = ChaCha20Rng::from_seed([0xa2; 32]);
+    let open = open_vault(&folder, Unlocker::Password(&pw_secret), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xef; 16], [0xff; 16]);
+    let card_c = mint_external_card(0xa3, "Cee");
+    let staged = stage_crashed_share(&folder, open, block_uuid, device_uuid, &card_c, &mut rng);
+
+    let approval = FfiApprovedWidening {
+        block_uuid,
+        file_fingerprint: staged.file_fingerprint,
+        added_recipients: vec![staged.added_contact_uuid],
+    };
+
+    // A PRESENT but garbage state file at the exact path load() reads.
+    std::fs::write(
+        secretary_cli::state::state_file_path(state_dir.path(), staged.vault_uuid),
+        b"not a canonical SyncState",
+    )
+    .unwrap();
+
+    let err = repair_vault_with_password_in(
+        Some(state_dir.path()),
+        &folder,
+        &pw,
+        &device_uuid,
+        3_000,
+        &[approval],
+    )
+    .expect_err("§10 fail-closed must win even with a valid approval present");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "expected CorruptVault, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        staged.manifest_pre_share,
+        "refused repair must not mutate the manifest (fail-closed pre-write wins over consent)",
     );
 }

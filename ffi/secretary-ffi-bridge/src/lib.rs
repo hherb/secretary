@@ -144,6 +144,7 @@ pub use identity::UnlockedIdentity;
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use repair::{
     repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
+    FfiApprovedWidening,
 };
 pub use restore::restore_block;
 pub use revoke::revoke_block;
