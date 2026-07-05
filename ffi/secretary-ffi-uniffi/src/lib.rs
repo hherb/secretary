@@ -69,6 +69,7 @@ pub use namespace::{
     add_device_slot, append_record, create_block, create_vault, create_vault_in_folder,
     edit_record, import_contact_card, move_record, open_vault_with_password,
     open_vault_with_recovery, open_with_device_secret, open_with_password, open_with_recovery,
+    preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
     read_block, remove_device_slot, rename_block, repair_with_device_secret, repair_with_password,
     repair_with_recovery, restore_block, resurrect_record, save_block, share_block, share_block_to,
     sync_commit_decisions, sync_status, sync_vault, tombstone_record, trash_block,
@@ -83,7 +84,9 @@ pub use wrappers::sync::{
     CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
 };
 pub use wrappers::vault::{BlockSummary, OpenVaultManifest, OpenVaultOutput};
-pub use wrappers::ContactSummary;
+pub use wrappers::{
+    AddedRecipient, ApprovedWidening, ContactSummary, RepairPreview, WideningReport,
+};
 
 /// Smoke test: returns the vault format version exposed by the core crate.
 ///
