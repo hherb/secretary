@@ -2247,10 +2247,17 @@ fn preview_reports_widening_with_names_and_fingerprints() {
 /// key actually gains access — not by the attacker-controlled
 /// `contact_uuid`.
 ///
-/// The decoy's filename (`{c_uuid_hex}-zzz-decoy.card`) sorts after C's
-/// real card's filename (`{c_uuid_hex}.card`) so a naive last-write-wins
-/// bug is caught deterministically by this test, not by directory-scan
-/// order luck.
+/// `scan_verified_contact_cards` now iterates `contacts/` in sorted
+/// filename order (deterministic; #374 fix-wave re-review), so this test
+/// no longer relies on filesystem enumeration order. The decoy's filename
+/// (`zzzz-decoy.card`, starting with `'z'`) byte-sorts AFTER C's real
+/// card's filename (`{c_uuid_hex}.card`, starting with a hex digit), so
+/// under a hypothetical uuid-keyed last-write-wins regression the decoy
+/// would ALWAYS be the last entry inserted into such a map and would
+/// therefore ALWAYS win the lookup — making this test deterministically
+/// RED against that regression, not order-luck RED. The actual (fixed)
+/// content-addressed-by-fingerprint lookup renders C's real card
+/// regardless of scan order.
 #[test]
 fn preview_renders_identity_of_the_key_that_gains_access() {
     let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, manifest_before) =
@@ -2272,11 +2279,12 @@ fn preview_renders_identity_of_the_key_that_gains_access() {
         .verify_self()
         .expect("decoy must be internally self-consistent (verify_self) despite the forged uuid");
 
-    let c_uuid_hex = format_uuid_hyphenated(&c_uuid);
+    // "zzzz-decoy.card" starts with 'z' (0x7A), which byte-sorts after
+    // every hex digit ('0'-'9' / 'a'-'f', all <= 0x66) that starts C's
+    // real card's filename (`{c_uuid_hex}.card`) — see the deterministic-
+    // RED rationale in the doc comment above.
     fs::write(
-        folder
-            .join("contacts")
-            .join(format!("{c_uuid_hex}-zzz-decoy.card")),
+        folder.join("contacts").join("zzzz-decoy.card"),
         decoy_card.to_canonical_cbor().unwrap(),
     )
     .unwrap();
@@ -2300,6 +2308,13 @@ fn preview_renders_identity_of_the_key_that_gains_access() {
     assert_eq!(
         w.added[0].card_fingerprint, expected_card_fp,
         "card_fingerprint must be C's real card fingerprint, not the decoy's"
+    );
+    // Belt-and-braces against partial regressions: the decoy's
+    // display_name must not surface ANYWHERE in the preview, not just
+    // fail to be the one asserted-on value above.
+    assert!(
+        !format!("{preview:?}").contains("Mom"),
+        "the decoy display_name 'Mom' must not appear anywhere in the preview"
     );
     // Read-only regardless of the decoy: manifest bytes untouched.
     assert_eq!(

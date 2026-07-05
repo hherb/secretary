@@ -2171,6 +2171,7 @@ pub(crate) fn scan_verified_contact_cards(folder: &Path) -> Result<Vec<ContactCa
     let mut cards = Vec::new();
     let contacts_dir = folder.join(CONTACTS_SUBDIR);
     if contacts_dir.exists() {
+        let mut entries = Vec::new();
         for entry in std::fs::read_dir(&contacts_dir).map_err(|e| VaultError::Io {
             context: "failed to read_dir contacts/",
             source: e,
@@ -2179,7 +2180,18 @@ pub(crate) fn scan_verified_contact_cards(folder: &Path) -> Result<Vec<ContactCa
                 context: "failed to iterate contacts/ entry",
                 source: e,
             })?;
-            let path = entry.path();
+            entries.push(entry.path());
+        }
+        // `read_dir` order is unspecified (filesystem-dependent, not even
+        // stable across runs on the same host). Sort by file name so this
+        // scan has a deterministic iteration order: any order-sensitive
+        // bug in a consumer (e.g. a last-write-wins map keyed by something
+        // other than the card's own content-address) fails reproducibly
+        // instead of flaking with directory-enumeration order. Consumers
+        // that key by fingerprint (content-addressed, order-independent)
+        // are unaffected either way.
+        entries.sort();
+        for path in entries {
             if path.extension().and_then(|s| s.to_str()) != Some("card") {
                 continue;
             }
