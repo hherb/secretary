@@ -7,6 +7,13 @@
 /// One user-approved crash-repair recipient widening, projected across the
 /// FFI seam.
 ///
+/// **Mint fresh from a `preview_repair_with_*` run; never persist.**
+/// vault-format.md §6.5 scopes an approval to the immediately-following
+/// repair invocation: the fingerprint/delta bind deliberately does not
+/// cover the committed manifest state, so a persisted approval replayed
+/// after an intervening revocation of the same recipient would re-license
+/// a re-planted copy of the previously-approved file without fresh consent.
+///
 /// `block_uuid` / `file_fingerprint` are fixed-size arrays, so there is no
 /// length to validate — wrong-length raw byte buffers on the foreign side
 /// are the BINDING layer's job to reject before constructing this type

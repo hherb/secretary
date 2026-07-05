@@ -18,6 +18,14 @@ pub enum RepairPolicy {
 }
 
 /// One user-approved widening, bound to exactly what the preview showed.
+///
+/// **Mint fresh from a [`super::preview_repair`] run; never persist.** The
+/// bind below covers the on-disk file bytes and the added-recipient delta
+/// but deliberately NOT the committed manifest state the delta was computed
+/// against — a persisted approval replayed after an intervening revocation
+/// of the same recipient would exactly match a re-planted copy of the
+/// previously-approved file and re-grant access without fresh consent
+/// (normative: vault-format.md §6.5 consent scoping).
 #[derive(Debug, Clone)]
 pub struct ApprovedWidening {
     /// The block whose widening the user approved.

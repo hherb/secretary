@@ -55,6 +55,14 @@ use crate::vault::{OpenVaultManifest, OpenVaultOutput};
 /// uniffi binding's `convert_approvals` helper does
 /// (`secretary-ffi-uniffi/src/namespace/repair.rs`) — except here
 /// validation happens once, at construction, rather than per-call.
+///
+/// Mint fresh from a `preview_repair_with_*` run; never persist. An
+/// approval is scoped to the immediately-following repair invocation
+/// (vault-format.md §6.5): the fingerprint/delta bind deliberately does
+/// not cover the committed manifest state, so a persisted approval
+/// replayed after an intervening revocation of the same recipient would
+/// re-license a re-planted copy of the previously-approved file without
+/// fresh consent.
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct ApprovedWidening {
