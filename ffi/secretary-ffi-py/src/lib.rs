@@ -55,6 +55,7 @@ mod identity;
 mod record;
 mod record_edit;
 mod repair;
+mod repair_preview;
 mod restore;
 mod save;
 mod share;
@@ -84,7 +85,13 @@ use errors::{
 use identity::UnlockedIdentity;
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
 use record_edit::{append_record, edit_record, resurrect_record, tombstone_record, RecordContent};
-use repair::{repair_with_device_secret, repair_with_password, repair_with_recovery};
+use repair::{
+    repair_with_device_secret, repair_with_password, repair_with_recovery, ApprovedWidening,
+};
+use repair_preview::{
+    preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
+    AddedRecipient, RepairPreview, WideningReport,
+};
 use restore::restore_block;
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
@@ -357,6 +364,19 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(repair_with_password, m)?)?;
     m.add_function(wrap_pyfunction!(repair_with_recovery, m)?)?;
     m.add_function(wrap_pyfunction!(repair_with_device_secret, m)?)?;
+
+    // #374 Task 8 — informed-consent surface: ApprovedWidening (input) +
+    // preview_repair_with_* trio + RepairPreview / WideningReport /
+    // AddedRecipient (output). Error surface unchanged: a preview that
+    // finds nothing to repair raises the same classes as the plain
+    // repair_with_* / open_* calls.
+    m.add_class::<ApprovedWidening>()?;
+    m.add_class::<RepairPreview>()?;
+    m.add_class::<WideningReport>()?;
+    m.add_class::<AddedRecipient>()?;
+    m.add_function(wrap_pyfunction!(preview_repair_with_password, m)?)?;
+    m.add_function(wrap_pyfunction!(preview_repair_with_recovery, m)?)?;
+    m.add_function(wrap_pyfunction!(preview_repair_with_device_secret, m)?)?;
 
     Ok(())
 }
