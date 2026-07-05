@@ -876,7 +876,7 @@ fn repair_refuses_uuid_mismatched_rollback_baseline() {
     );
 }
 
-// ── #374 part 5: approvals on the three repair arms ────────────────────────
+// ── #374 part 3: approvals on the three repair arms ────────────────────────
 
 /// Happy-adopt (password arm): an exact approval — bound to the on-disk
 /// block file's own BLAKE3 fingerprint and the exact added-recipient set —
@@ -1057,7 +1057,7 @@ fn repair_refuses_stale_approval_as_repair_rejected() {
     );
 }
 
-/// #374 part 5 / §10 regression: even with a VALID (exact-matching)
+/// #374 part 3 / §10 regression: even with a VALID (exact-matching)
 /// approval present, an existing-but-unreadable §10 rollback baseline
 /// state file must still refuse the repair as `CorruptVault` — the
 /// rollback gate runs strictly BEFORE any per-block classification/consent

@@ -1,5 +1,5 @@
 //! FFI-seam type for consented crash-repair recipient-widening adoption
-//! (#374 part 5). Projects `secretary_core::vault::ApprovedWidening`
+//! (#374 part 3). Projects `secretary_core::vault::ApprovedWidening`
 //! across the FFI boundary; see `super::orchestration` module docs for
 //! how the three repair arms map a slice of these into a
 //! `secretary_core::vault::RepairPolicy`.

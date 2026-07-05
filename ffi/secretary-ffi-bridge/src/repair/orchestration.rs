@@ -154,7 +154,7 @@ pub(super) fn baseline_provider(
 ///
 /// `approvals` licenses consent-eligible recipient-widening residue (the
 /// crashed-`share_block` shape); an empty slice is the documented safe
-/// zero-value and behaves exactly as pre-#374-part-5 (fail-closed on any
+/// zero-value and behaves exactly as pre-#374-part-3 (fail-closed on any
 /// widening). See [`FfiApprovedWidening`] for the exact-bind semantics.
 ///
 /// # Errors
