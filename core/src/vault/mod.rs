@@ -30,6 +30,7 @@ pub mod manifest;
 pub(crate) mod orchestrators;
 pub mod record;
 mod repair;
+pub(crate) mod trash_relocation;
 
 pub use block::{
     decode_block_file, decrypt_block, encode_block_file, encrypt_block, verify_block_signature,
