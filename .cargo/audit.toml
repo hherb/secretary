@@ -16,13 +16,33 @@
 # FFI bridge, and mobile clients.
 [advisories]
 ignore = [
-  # --- quick-xml DoS via malicious XML, transitive via tauri -> plist (desktop) ---
-  # HIGH (7.5) but NOT reachable here: `plist` only parses the app's own
-  # trusted macOS Info.plist bundle metadata; no secretary crate uses
-  # plist/quick-xml, and vault data is CBOR/TOML, never XML. Not fixable yet —
-  # the latest plist (1.9.0) still pins quick-xml ^0.39.2, so 0.41 cannot
-  # resolve in. Drop both once plist adopts quick-xml >=0.41 and Tauri adopts
-  # that plist. Tracked in #383.
+  # --- quick-xml DoS via malicious XML, transitive via Tauri (desktop only) ---
+  # HIGH (7.5), fixed in quick-xml >=0.41.0, but NOT reachable here. quick-xml
+  # 0.39.4 enters the tree via TWO Tauri-only paths, neither attacker-facing
+  # (no secretary crate uses quick-xml; vault data is CBOR/TOML, never XML):
+  #   1. plist -> tauri (macOS): `plist` parses only the app's own trusted,
+  #      signed Info.plist bundle metadata. `cargo tree -i quick-xml` shows this.
+  #   2. wayland-scanner -> wl-clipboard-rs -> arboard ->
+  #      tauri-plugin-clipboard-manager (Linux): a BUILD-TIME proc-macro that
+  #      parses static Wayland protocol XML during compilation. Trusted,
+  #      compile-time input; only visible in `cargo tree -i quick-xml --target
+  #      all` or on a Linux host. This second path is why the fix is not simply
+  #      "bump plist" (see below).
+  #
+  # Exit criteria (BOTH must hold before dropping these two ids; verified
+  # 2026-07-06, #383): the vulnerable quick-xml 0.39.x must be gone from
+  # Cargo.lock entirely.
+  #   - plist: DONE upstream. plist 1.10.0 requires quick-xml ^0.41 and Tauri
+  #     accepts it (`plist ^1`). But `cargo update -p plist` alone does NOT
+  #     clear the advisory: it ADDS quick-xml 0.41.0 while wayland-scanner keeps
+  #     0.39.4 in the lock (two copies), so 0194/0195 still fire and we gain a
+  #     duplicate dep for no audit benefit. Deferred until path 2 also moves, so
+  #     a single quick-xml 0.41 resolves and both ids drop in one step.
+  #   - wayland-scanner: PENDING. Latest (0.31.10) still pins quick-xml ^0.39.
+  #     Clears when a wayland-scanner adopting >=0.41 resolves via a
+  #     wl-clipboard-rs/arboard/tauri-plugin-clipboard-manager bump.
+  # Re-check on every Tauri upgrade and whenever `cargo update` touches plist or
+  # the arboard/wayland-* clipboard chain.
   "RUSTSEC-2026-0194", # quick-xml quadratic duplicate-attribute-name check
   "RUSTSEC-2026-0195", # quick-xml unbounded NsReader namespace allocation
 
