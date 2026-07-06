@@ -38,6 +38,7 @@ use crate::identity::fingerprint::{fingerprint, Fingerprint};
 use crate::unlock::{
     self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity,
 };
+use crate::vault::trash_relocation::log_relocation;
 
 use super::ids::{BlockUuid, DeviceUuid, RecipientUuid};
 use super::{block, io, manifest};
@@ -2075,7 +2076,10 @@ pub(crate) const TRASH_SUBDIR: &str = "trash";
 /// into `trash/` so it doesn't linger indefinitely, but correctness does
 /// not depend on that sweep running. `EXDEV` is therefore no longer a
 /// `trash_block` abort condition — it degrades to the same best-effort
-/// residue as any other rename failure.
+/// residue as any other rename failure. Since #376 the failure is no longer
+/// silent: `log_relocation` emits a `tracing::warn!` (EXDEV distinguished
+/// from other I/O errors) so an operator can observe the lingering-orphan
+/// state; the relocation itself stays best-effort.
 pub fn trash_block(
     folder: &Path,
     open: &mut OpenVault,
@@ -2153,8 +2157,16 @@ pub fn trash_block(
     let dst = folder
         .join(TRASH_SUBDIR)
         .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
-    let _ = std::fs::create_dir_all(folder.join(TRASH_SUBDIR))
-        .and_then(|()| std::fs::rename(&src, &dst));
+    // #376: no longer swallowed silently — log_relocation emits a structured
+    // warn! on persistent failure (EXDEV cross-mount trash/ distinguished from
+    // other I/O errors) and returns the outcome, which we drop. The move stays
+    // best-effort; every outcome leaves the vault correct and the block
+    // restorable.
+    let _ = log_relocation(
+        &block_uuid,
+        std::fs::create_dir_all(folder.join(TRASH_SUBDIR))
+            .and_then(|()| std::fs::rename(&src, &dst)),
+    );
 
     Ok(())
 }

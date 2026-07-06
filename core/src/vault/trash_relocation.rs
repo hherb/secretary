@@ -27,16 +27,6 @@ pub(crate) enum RelocationOutcome {
 /// outcome. Callers drop the return value; it exists so the kind → message
 /// routing is unit-testable without capturing a `tracing` subscriber. Single
 /// source of truth for the mapping — matched exactly once.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the trash_block and open-time-sweep call \
-                  sites landing in the next two commits of #376; only the \
-                  unit tests exercise it so far, and cfg(test) builds call \
-                  it directly so no expectation applies there"
-    )
-)]
 pub(crate) fn log_relocation(
     block_uuid: &[u8; 16],
     result: Result<(), std::io::Error>,
