@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-06-repair-consent-widening-374-shipped.md
+docs/handoffs/2026-07-06-audit-quickxml-triage-383-shipped.md
