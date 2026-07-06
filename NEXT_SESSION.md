@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-07-drop-desktop-typecheck-script-394-shipped.md
+docs/handoffs/2026-07-07-split-desktop-errors-379-shipped.md
