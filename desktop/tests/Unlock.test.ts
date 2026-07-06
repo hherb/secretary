@@ -32,9 +32,10 @@ const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBefor
 // Mock the IPC layer + the backend invoke() PathPicker uses directly (both
 // used by the form). `vi.hoisted` returns the mocks before the `vi.mock`
 // factories run.
-const { unlockMock, repairMock, settingsMock, invokeMock } = vi.hoisted(() => ({
+const { unlockMock, repairMock, previewMock, settingsMock, invokeMock } = vi.hoisted(() => ({
   unlockMock: vi.fn(),
   repairMock: vi.fn(),
+  previewMock: vi.fn(),
   settingsMock: vi.fn(),
   invokeMock: vi.fn()
 }));
@@ -46,6 +47,7 @@ vi.mock('../src/lib/ipc', async (importActual) => {
     ...actual,
     unlockWithPassword: unlockMock,
     repairVault: repairMock,
+    previewRepair: previewMock,
     getSettings: settingsMock
   };
 });
@@ -57,6 +59,7 @@ beforeEach(() => {
   _resetSessionStateForTest();
   unlockMock.mockReset();
   repairMock.mockReset();
+  previewMock.mockReset();
   settingsMock.mockReset();
   invokeMock.mockReset();
 });
@@ -215,8 +218,9 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     expect(getByRole('alert').textContent).not.toMatch(/unknown error/i);
   });
 
-  it('confirming repair calls repairVault with the same folder + password still in the form', async () => {
+  it('(a) empty-widenings path: previews clean, calls repairVault once with [] — same as today', async () => {
     unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [] });
     repairMock.mockResolvedValueOnce(MANIFEST);
     settingsMock.mockResolvedValueOnce(SETTINGS);
     invokeMock.mockResolvedValueOnce('/home/alice/vault');
@@ -235,8 +239,11 @@ describe('Unlock — #374 "repair now?" affordance', () => {
 
     await fireEvent.click(getByRole('button', { name: /repair now/i }));
 
+    await waitFor(() => expect(get(sessionState).status).toBe('unlocked'));
+    expect(previewMock).toHaveBeenCalledTimes(1);
+    expect(previewMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
     expect(repairMock).toHaveBeenCalledTimes(1);
-    expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
+    expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2', []);
   });
 
   it('shows the in-flight "Repairing…" progress state while repair runs', async () => {
@@ -246,6 +253,7 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     // during the (Argon2id-slow) repair. Drive it with a manually-resolved
     // promise so we can observe the intermediate render before repair settles.
     unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [] });
     let resolveRepair!: (m: typeof MANIFEST) => void;
     repairMock.mockReturnValueOnce(
       new Promise<typeof MANIFEST>((resolve) => {
@@ -276,6 +284,7 @@ describe('Unlock — #374 "repair now?" affordance', () => {
 
   it('repair success proceeds exactly as a normal unlock', async () => {
     unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [] });
     repairMock.mockResolvedValueOnce(MANIFEST);
     settingsMock.mockResolvedValueOnce(SETTINGS);
     invokeMock.mockResolvedValueOnce('/v');
@@ -297,8 +306,120 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     }
   });
 
-  it('repair_rejected shows the detail with no auto-fix control', async () => {
+  const WIDENING = {
+    blockUuidHex: 'aaaaaaaa-0000-0000-0000-000000000001',
+    blockName: 'Family Passwords',
+    fileFingerprintHex: 'bbbbbbbb-0000-0000-0000-000000000002',
+    added: [
+      {
+        uuidHex: 'cccccccc-0000-0000-0000-000000000003',
+        displayName: 'Cee',
+        cardFingerprintHex: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'
+      }
+    ]
+  };
+
+  it('(b) consent path: preview finds a widening, renders the dialog, Grant repairs with approvals built verbatim', async () => {
     unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [WIDENING] });
+    repairMock.mockResolvedValueOnce(MANIFEST);
+    settingsMock.mockResolvedValueOnce(SETTINGS);
+    invokeMock.mockResolvedValueOnce('/home/alice/vault');
+
+    const { getByRole, getByLabelText, findByText } = render(Unlock);
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
+
+    await fireEvent.click(getByRole('button', { name: /repair now/i }));
+
+    // The consent dialog renders with the block name + recipient found by
+    // preview.
+    expect(await findByText('Family Passwords')).toBeTruthy();
+    expect(await findByText('Cee')).toBeTruthy();
+
+    await fireEvent.click(getByRole('button', { name: 'Grant access and repair' }));
+
+    await waitFor(() => expect(get(sessionState).status).toBe('unlocked'));
+    expect(repairMock).toHaveBeenCalledTimes(1);
+    // The consent-binding property: approvals are built VERBATIM from the
+    // preview's own fields — no recomputation, no reformatting.
+    expect(repairMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2', [
+      {
+        blockUuidHex: WIDENING.blockUuidHex,
+        fileFingerprintHex: WIDENING.fileFingerprintHex,
+        addedUuidsHex: [WIDENING.added[0].uuidHex]
+      }
+    ]);
+  });
+
+  it('(c) cancel path: repairVault is NOT called, session returns to locked with the affordance still rendered', async () => {
+    unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [WIDENING] });
+    invokeMock.mockResolvedValueOnce('/home/alice/vault');
+
+    const { getByRole, getByLabelText, findByText, findByRole } = render(Unlock);
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+    const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
+    await fireEvent.input(passwordInput, { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
+
+    await fireEvent.click(getByRole('button', { name: /repair now/i }));
+    expect(await findByText('Family Passwords')).toBeTruthy();
+
+    await fireEvent.click(getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
+    expect(repairMock).not.toHaveBeenCalled();
+    // Restores the vault_needs_repair error — the "Repair now?" affordance
+    // is still rendered, not a hard error.
+    expect(await findByRole('button', { name: /repair now/i })).toBeTruthy();
+    // The password stays bound — Cancel keeps the affordance usable without
+    // re-prompting.
+    expect(passwordInput.value).toBe('hunter2');
+  });
+
+  it('(d) stale-consent path: repairVault rejects repair_rejected after Grant — detail shown, locked, no dialog', async () => {
+    unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [WIDENING] });
+    repairMock.mockRejectedValueOnce({
+      code: 'repair_rejected',
+      block_uuid_hex: 'ab',
+      detail: 'block ab: consent is stale — the block changed since preview'
+    });
+    invokeMock.mockResolvedValueOnce('/v');
+
+    const { getByRole, getByLabelText, findByText, queryByRole } = render(Unlock);
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalled());
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+    await waitFor(() => expect(get(sessionState).status).toBe('locked'));
+
+    await fireEvent.click(getByRole('button', { name: /repair now/i }));
+    expect(await findByText('Family Passwords')).toBeTruthy();
+
+    await fireEvent.click(getByRole('button', { name: 'Grant access and repair' }));
+    await waitFor(() =>
+      expect(get(sessionState).status === 'locked' && get(sessionState)).toMatchObject({
+        lastError: { code: 'repair_rejected' }
+      })
+    );
+
+    expect(await findByText(/consent is stale/i)).toBeTruthy();
+    // repair_rejected is not vault_needs_repair — no repeat-repair affordance.
+    expect(queryByRole('button', { name: /repair now/i })).toBeNull();
+    // The consent dialog itself is gone.
+    expect(queryByRole('button', { name: 'Grant access and repair' })).toBeNull();
+  });
+
+  it('repair_rejected on the empty-widenings path (no consent needed) shows the detail with no auto-fix control', async () => {
+    unlockMock.mockRejectedValueOnce({ code: 'vault_needs_repair', block_uuid_hex: 'ab' });
+    previewMock.mockResolvedValueOnce({ widenings: [] });
     repairMock.mockRejectedValueOnce({
       code: 'repair_rejected',
       block_uuid_hex: 'ab',

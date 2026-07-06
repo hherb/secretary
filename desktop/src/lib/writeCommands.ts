@@ -103,6 +103,13 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     reason:
       'pre-unlock crash-recovery path invoked from the locked Unlock screen (mirrors unlock_with_password) — takes the vault password directly and there is no unlocked session yet to protect',
   },
+  preview_repair: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'previewRepair',
+    reason:
+      'pre-unlock read-only consent preview invoked from the locked Unlock screen (mirrors repair_vault) — takes the vault password directly, performs no vault mutation',
+  },
 
   // --- session / auth ---
   unlock_with_password: { kind: 'session' },

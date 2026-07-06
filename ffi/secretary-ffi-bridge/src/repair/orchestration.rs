@@ -50,13 +50,44 @@ use std::path::Path;
 
 use rand_core::OsRng;
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::vault::{repair_vault, Unlocker, VaultError, VectorClockEntry};
+use secretary_core::vault::{
+    repair_vault, ApprovedWidening, RepairPolicy, Unlocker, VaultError, VectorClockEntry,
+};
 
 use crate::error::FfiVaultError;
+use crate::repair::types::FfiApprovedWidening;
 use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 
+/// Map the FFI-seam approvals slice into the [`RepairPolicy`] the three
+/// arms hand to core `repair_vault`. An empty `approvals` slice is the
+/// documented safe zero-value: it maps to [`RepairPolicy::FailClosed`],
+/// replacing the Task 2 hardcoded stopgap. A non-empty slice licenses
+/// ONLY the exact widenings named — every other consent-eligible shape
+/// (missing approval, mismatched fingerprint, mismatched added-recipient
+/// set) still refuses inside core's classification (see
+/// `core/src/vault/repair/policy.rs` / `orchestration.rs`).
+fn build_repair_policy(approvals: &[FfiApprovedWidening]) -> RepairPolicy {
+    if approvals.is_empty() {
+        RepairPolicy::FailClosed
+    } else {
+        RepairPolicy::AdoptApproved(
+            approvals
+                .iter()
+                .map(|a| ApprovedWidening {
+                    block_uuid: a.block_uuid,
+                    file_fingerprint: a.file_fingerprint,
+                    added_recipients: a.added_recipients.iter().copied().collect(),
+                })
+                .collect(),
+        )
+    }
+}
+
 /// Build the §10 rollback-baseline provider shared by the three repair
-/// arms. Core `repair_vault` invokes the returned closure with the
+/// arms AND the three `preview_repair_with_*` arms in
+/// [`super::preview`] (the fail-closed posture applies identically to a
+/// read-only preview — see that module's docs). Core `repair_vault` /
+/// `preview_repair` invokes the returned closure with the
 /// **verified** `manifest.vault_uuid` (post hybrid-verify + AEAD
 /// decrypt), so the state lookup can never be keyed by an
 /// attacker-controlled plaintext value (#384). A `None` state dir (no
@@ -70,7 +101,7 @@ use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
 /// mutating path a skipped check would launder a rollback permanently,
 /// whereas the read-only open path's skip posture self-heals on the next
 /// open (#384; deliberate asymmetry).
-fn baseline_provider(
+pub(super) fn baseline_provider(
     state_dir: Option<&Path>,
 ) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
     move |vault_uuid: &[u8; 16]| {
@@ -121,18 +152,25 @@ fn baseline_provider(
 /// Repair a crash-residue vault opened by master password. See
 /// [`crate::open_vault_with_password`] for the open-only counterpart.
 ///
+/// `approvals` licenses consent-eligible recipient-widening residue (the
+/// crashed-`share_block` shape); an empty slice is the documented safe
+/// zero-value and behaves exactly as pre-#374-part-3 (fail-closed on any
+/// widening). See [`FfiApprovedWidening`] for the exact-bind semantics.
+///
 /// # Errors
 ///
 /// Returns [`FfiVaultError`]. [`FfiVaultError::RepairRejected`] means the
 /// on-disk residue failed one of the fail-closed adoption gates (hybrid
 /// verify, header binding, clock freshness, or the recipient-widening
-/// guard) — no change was written. Other variants mirror
+/// guard, including a widening with no matching — or a stale — approval)
+/// — no change was written. Other variants mirror
 /// [`crate::open_vault_with_password`].
 pub fn repair_vault_with_password(
     folder: &Path,
     password: &[u8],
     device_uuid: &[u8; 16],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_password_in(
         secretary_cli::state::default_state_dir().as_deref(),
@@ -140,6 +178,7 @@ pub fn repair_vault_with_password(
         password,
         device_uuid,
         now_ms,
+        approvals,
     )
 }
 
@@ -154,11 +193,15 @@ pub(crate) fn repair_vault_with_password_in(
     password: &[u8],
     device_uuid: &[u8; 16],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let pw = SecretBytes::new(password.to_vec());
     // Core invokes the provider with the VERIFIED manifest vault_uuid and
     // runs the §10 check on the COMMITTED clock before it ticks/rewrites
     // the manifest — the pre-write gate for this mutating path (module docs).
+    // §10 fail-closed is unconditional here: it runs before any per-block
+    // classification/consent decision, so a valid `approvals` entry never
+    // overrides a refused rollback baseline.
     let core_out = repair_vault(
         folder,
         Unlocker::Password(&pw),
@@ -166,6 +209,7 @@ pub(crate) fn repair_vault_with_password_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        build_repair_policy(approvals),
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
     // pw drops here → ZeroizeOnDrop wipes the local copy.
@@ -173,6 +217,10 @@ pub(crate) fn repair_vault_with_password_in(
 
 /// Repair a crash-residue vault opened by 24-word BIP-39 recovery phrase.
 /// See [`crate::open_vault_with_recovery`] for the open-only counterpart.
+///
+/// `approvals` licenses consent-eligible recipient-widening residue; see
+/// [`repair_vault_with_password`] for the exact-bind semantics and the
+/// empty-slice safe zero-value.
 ///
 /// # Errors
 ///
@@ -183,6 +231,7 @@ pub fn repair_vault_with_recovery(
     mnemonic_bytes: &[u8],
     device_uuid: &[u8; 16],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_recovery_in(
         secretary_cli::state::default_state_dir().as_deref(),
@@ -190,6 +239,7 @@ pub fn repair_vault_with_recovery(
         mnemonic_bytes,
         device_uuid,
         now_ms,
+        approvals,
     )
 }
 
@@ -201,6 +251,7 @@ pub(crate) fn repair_vault_with_recovery_in(
     mnemonic_bytes: &[u8],
     device_uuid: &[u8; 16],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let phrase =
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiVaultError::InvalidMnemonic {
@@ -216,6 +267,7 @@ pub(crate) fn repair_vault_with_recovery_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        build_repair_policy(approvals),
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
 }
@@ -224,6 +276,10 @@ pub(crate) fn repair_vault_with_recovery_in(
 /// The single `device_uuid` selects the `devices/<uuid>.wrap` slot AND keys the
 /// manifest-clock tick — the unlocking device is the slot's device. See
 /// [`crate::open_with_device_secret`] for the open-only counterpart.
+///
+/// `approvals` licenses consent-eligible recipient-widening residue; see
+/// [`repair_vault_with_password`] for the exact-bind semantics and the
+/// empty-slice safe zero-value.
 ///
 /// # Errors
 ///
@@ -234,6 +290,7 @@ pub fn repair_vault_with_device_secret(
     device_uuid: &[u8; 16],
     device_secret: &[u8; 32],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_device_secret_in(
         secretary_cli::state::default_state_dir().as_deref(),
@@ -241,6 +298,7 @@ pub fn repair_vault_with_device_secret(
         device_uuid,
         device_secret,
         now_ms,
+        approvals,
     )
 }
 
@@ -252,6 +310,7 @@ pub(crate) fn repair_vault_with_device_secret_in(
     device_uuid: &[u8; 16],
     device_secret: &[u8; 32],
     now_ms: u64,
+    approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let secret = SecretBytes::new(device_secret.to_vec());
     // Core invokes the provider with the VERIFIED manifest vault_uuid and
@@ -267,6 +326,7 @@ pub(crate) fn repair_vault_with_device_secret_in(
         *device_uuid,
         now_ms,
         &mut OsRng,
+        build_repair_policy(approvals),
     )?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
     // secret drops here → SecretBytes ZeroizeOnDrop wipes our local copy.

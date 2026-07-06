@@ -134,6 +134,38 @@ export interface RecordRevealDto {
   fields: RevealedFieldWithNameDto[];
 }
 
+// #374 Task 9: repair-preview / approved-widening DTOs. NOTE the hex fields
+// here are NOT the plain 32-hex-char form the rest of this file uses (e.g.
+// `BlockSummaryDto.blockUuidHex`) — they are the Rust bridge's own
+// lowercase-hyphenated `format_uuid_hyphenated` output (36 chars),
+// passed through verbatim end-to-end. `ApprovedWideningDto` must echo back
+// exactly the strings a `RepairPreviewDto` produced — no reformatting —
+// since the file-fingerprint bind proves the approval matches what the
+// user was shown.
+
+export interface AddedRecipientDto {
+  uuidHex: string;
+  displayName: string;
+  cardFingerprintHex: string;
+}
+
+export interface WideningReportDto {
+  blockUuidHex: string;
+  blockName: string;
+  fileFingerprintHex: string;
+  added: AddedRecipientDto[];
+}
+
+export interface RepairPreviewDto {
+  widenings: WideningReportDto[];
+}
+
+export interface ApprovedWideningDto {
+  blockUuidHex: string;
+  fileFingerprintHex: string;
+  addedUuidsHex: string[];
+}
+
 export function isAppError(err: unknown): err is AppError {
   if (typeof err !== 'object' || err === null || !('code' in err)) {
     return false;
@@ -202,9 +234,30 @@ export async function unlockWithPassword(
  * normal unlock. Rejects with `repair_rejected` (carrying a human-readable
  * `detail`) when the residue isn't safely adoptable — see
  * `repair_vault.rs`'s equal-clock invariant.
+ *
+ * `approvals` (#374 Task 9) is the user's consented recipient-widening set,
+ * built from a prior `previewRepair` result — pass `[]` to preserve the
+ * pre-Task-9 fail-closed behavior (every widening rejected).
  */
-export async function repairVault(folderPath: string, password: string): Promise<ManifestDto> {
-  return call<ManifestDto>('repair_vault', { folderPath, password });
+export async function repairVault(
+  folderPath: string,
+  password: string,
+  approvals: ApprovedWideningDto[]
+): Promise<ManifestDto> {
+  return call<ManifestDto>('repair_vault', { folderPath, password, approvals });
+}
+
+/**
+ * Read-only preview of the recipient widenings a `repairVault` call would
+ * need consent for (#374 Task 9) — invoked from the same locked "Repair
+ * now?" affordance, before the user approves anything. Performs no vault
+ * mutation and does not unlock the session.
+ */
+export async function previewRepair(
+  folderPath: string,
+  password: string
+): Promise<RepairPreviewDto> {
+  return call<RepairPreviewDto>('preview_repair', { folderPath, password });
 }
 
 export async function listBlocks(): Promise<BlockSummaryDto[]> {

@@ -126,7 +126,19 @@ def test_repair_with_password_adopts_crashed_save(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_repair_rejects_recipient_widening(tmp_path: Path) -> None:
+def _stage_recipient_widening_residue(tmp_path: Path) -> Path:
+    """Stage a crash residue vault whose crashed manifest write would have
+    committed a recipient-widening `share_block`: save a block, snapshot
+    the pre-share manifest, share it to a peer, then roll the on-disk
+    manifest back to the pre-share snapshot to simulate the widening's
+    manifest commit never landing. Returns the vault path; the caller can
+    re-read `_manifest_path(vault)` for the pre-share bytes since that is
+    exactly what's on disk once this returns.
+
+    Factored out of the original recipient-widening rejection test (below)
+    for reuse by the informed-consent (`preview_repair`/`ApprovedWidening`)
+    tests added in #374 Task 8.
+    """
     vault = _fresh_writable_vault(tmp_path)
     password = _golden_vault_password()
 
@@ -156,6 +168,13 @@ def test_repair_rejects_recipient_widening(tmp_path: Path) -> None:
     # Crash simulation: the {owner, peer} block hit disk, but the manifest
     # write that would have committed the widened recipient set was lost.
     _manifest_path(vault).write_bytes(manifest_pre_share)
+    return vault
+
+
+def test_repair_rejects_recipient_widening(tmp_path: Path) -> None:
+    vault = _stage_recipient_widening_residue(tmp_path)
+    password = _golden_vault_password()
+    manifest_pre_share = _manifest_path(vault).read_bytes()
 
     with pytest.raises(VaultRepairRejected):
         secretary_ffi_py.repair_with_password(
@@ -164,6 +183,93 @@ def test_repair_rejects_recipient_widening(tmp_path: Path) -> None:
 
     # All-or-nothing: the rejected repair must not have touched the manifest.
     assert _manifest_path(vault).read_bytes() == manifest_pre_share
+
+
+# ---------------------------------------------------------------------------
+# Case 3: informed consent — refusal without approvals mentions "consent";
+# preview_repair surfaces the widening with a display_name; passing the
+# preview-derived approval back adopts the widening and the vault reopens
+# clean. (#374 Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_without_approvals_mentions_consent(tmp_path: Path) -> None:
+    vault = _stage_recipient_widening_residue(tmp_path)
+    password = _golden_vault_password()
+
+    with pytest.raises(VaultRepairRejected) as exc_info:
+        # approvals defaults to None -> fails closed, same as omitting it
+        # entirely; this also proves existing (pre-Task-8) call sites that
+        # never pass `approvals` keep working unchanged.
+        secretary_ffi_py.repair_with_password(
+            str(vault).encode(), password, DEVICE_UUID, NOW_MS_BASE + 2_000
+        )
+
+    assert "consent" in str(exc_info.value)
+
+
+def test_preview_repair_with_password_returns_widening_with_display_name(
+    tmp_path: Path,
+) -> None:
+    vault = _stage_recipient_widening_residue(tmp_path)
+    password = _golden_vault_password()
+
+    preview = secretary_ffi_py.preview_repair_with_password(
+        str(vault).encode(), password
+    )
+
+    assert len(preview.widenings) == 1
+    widening = preview.widenings[0]
+    assert widening.block_uuid_hex
+    assert widening.file_fingerprint_hex
+    assert len(widening.added) == 1
+    added = widening.added[0]
+    assert isinstance(added.display_name, str) and added.display_name
+    assert added.uuid_hex
+
+
+def test_repair_with_password_adopts_approved_widening(tmp_path: Path) -> None:
+    vault = _stage_recipient_widening_residue(tmp_path)
+    password = _golden_vault_password()
+
+    preview = secretary_ffi_py.preview_repair_with_password(
+        str(vault).encode(), password
+    )
+    widening = preview.widenings[0]
+    added = widening.added[0]
+
+    approval = secretary_ffi_py.ApprovedWidening(
+        block_uuid=bytes.fromhex(widening.block_uuid_hex.replace("-", "")),
+        file_fingerprint=bytes.fromhex(widening.file_fingerprint_hex),
+        added_recipients=[bytes.fromhex(added.uuid_hex.replace("-", ""))],
+    )
+
+    repaired = secretary_ffi_py.repair_with_password(
+        str(vault).encode(),
+        password,
+        DEVICE_UUID,
+        NOW_MS_BASE + 2_000,
+        approvals=[approval],
+    )
+    with repaired as vault_out:
+        with vault_out.identity as identity, vault_out.manifest as manifest:
+            entry = manifest.find_block(BLOCK_UUID)
+            assert entry is not None
+
+    # A subsequent plain open is green: the widening was durably adopted.
+    reopened = secretary_ffi_py.open_vault_with_password(str(vault), password)
+    with reopened as vault_out:
+        with vault_out.identity as identity, vault_out.manifest as manifest:
+            assert manifest.find_block(BLOCK_UUID) is not None
+
+
+def test_approved_widening_wrong_length_block_uuid_raises_value_error() -> None:
+    with pytest.raises(ValueError):
+        secretary_ffi_py.ApprovedWidening(
+            block_uuid=bytes(15),
+            file_fingerprint=bytes(32),
+            added_recipients=[],
+        )
 
 
 # ---------------------------------------------------------------------------

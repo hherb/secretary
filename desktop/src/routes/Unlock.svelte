@@ -1,8 +1,18 @@
 <script lang="ts">
   import LockKeyhole from '../components/icons/LockKeyhole.svelte';
   import PathPicker from '../components/PathPicker.svelte';
+  import RepairConsentDialog from '../components/RepairConsentDialog.svelte';
   import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
-  import { unlockWithPassword, repairVault, getSettings, isAppError } from '../lib/ipc';
+  import {
+    unlockWithPassword,
+    repairVault,
+    previewRepair,
+    getSettings,
+    isAppError,
+    type ApprovedWideningDto,
+    type WideningReportDto
+  } from '../lib/ipc';
+  import type { AppError } from '../lib/errors';
   import { userMessageFor } from '../lib/errors';
   import { seedReauthClock } from '../lib/writeGuard';
   import { openCreateWizard, createdVaultPath } from '../lib/route';
@@ -50,6 +60,23 @@
   // mounted on `needsRepair || repairing` lets the in-flight state render.
   let repairing = $state(false);
 
+  // #374 Task 10: the widenings a `previewRepair` call found that need
+  // informed consent before `repairVault` may adopt them. Non-empty renders
+  // `RepairConsentDialog` (see the template) while the session stays
+  // `unlocking` (see `repairing` above for why that keeps the affordance
+  // block mounted underneath). Built from `previewRepair`'s own response and
+  // never mutated field-by-field — `onGrantConsent` reads it verbatim to
+  // build the approvals passed to `repairVault`.
+  let consentWidenings: WideningReportDto[] = $state([]);
+
+  // The `vault_needs_repair` error captured just before `confirmRepair`'s
+  // `beginUnlock()` clears it from session state. `onCancelConsent` restores
+  // it via `unlockFailed(priorRepairError)` so Cancel returns to exactly the
+  // locked-with-affordance state the user started from, even though the
+  // consent dialog may have been open for an arbitrarily long time (the user
+  // reviewing the recipient list) since that capture.
+  let priorRepairError: AppError | null = null;
+
   const formValid = $derived(folderPath.length > 0 && password.length > 0);
 
   async function submit(e: SubmitEvent): Promise<void> {
@@ -91,10 +118,16 @@
 
   // #374: confirm the "Repair now?" affordance. Reuses `folderPath` +
   // `password` still bound to the form (see `keepPassword` above — the
-  // failed unlock's `finally` deliberately did not clear it). Whatever the
-  // outcome, the password is no longer needed afterwards, so it is always
-  // cleared here: success proceeds into the unlocked session, and
-  // `repair_rejected` has no auto-fix retry that would need it again.
+  // failed unlock's `finally` deliberately did not clear it).
+  //
+  // #374 Task 10: this is a preview-then-repair flow, not a direct repair.
+  // `previewRepair` (read-only, no vault mutation) runs first; a clean
+  // preview (no widenings) repairs immediately with `[]` approvals — byte-
+  // for-byte the same as the pre-Task-10 behavior. A preview that finds
+  // widenings instead surfaces `RepairConsentDialog` and waits for the user:
+  // `onGrantConsent` repairs with approvals built verbatim from the preview;
+  // `onCancelConsent` restores the locked-with-affordance state without
+  // calling `repairVault` at all.
   async function confirmRepair(): Promise<void> {
     // #374: guard on `formValid` like `submit` does, not just `submitting`.
     // `needsRepair` is derived from persistent session state, but `password`
@@ -103,6 +136,10 @@
     // "Repair now" button could fire `repairVault(folderPath, '')` with an
     // empty password, producing a spurious wrong-password/corrupt error.
     if (!formValid || submitting) return;
+    // Capture BEFORE beginUnlock() clears `$sessionState.lastError` — this is
+    // the only point at which the `vault_needs_repair` error is still live in
+    // session state.
+    priorRepairError = $sessionState.status === 'locked' ? $sessionState.lastError : null;
     submitting = true;
     // Keep the repair affordance mounted while repair runs — see `repairing`.
     repairing = true;
@@ -112,7 +149,32 @@
     // state as their `from`.
     beginUnlock();
     try {
-      const manifest = await repairVault(folderPath, password);
+      const preview = await previewRepair(folderPath, password);
+      if (preview.widenings.length === 0) {
+        await finishRepair([]);
+      } else {
+        // Render RepairConsentDialog (see the template) and wait for
+        // onGrantConsent / onCancelConsent — `finally` below is deliberately
+        // NOT reached yet, so `submitting`/`repairing` stay true and the
+        // password stays bound while the user reviews the widenings.
+        consentWidenings = preview.widenings;
+      }
+    } catch (err) {
+      unlockFailed(err);
+      password = '';
+      submitting = false;
+      repairing = false;
+    }
+  }
+
+  // Shared tail of the repair flow for both the no-consent-needed path and
+  // the post-Grant path: calls `repairVault` with the given approvals,
+  // proceeds into the unlocked session on success, and always resets the
+  // in-flight UI state (password, submitting, repairing, consent dialog)
+  // afterwards regardless of outcome.
+  async function finishRepair(approvals: ApprovedWideningDto[]): Promise<void> {
+    try {
+      const manifest = await repairVault(folderPath, password, approvals);
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
       seedReauthClock(Date.now());
@@ -122,7 +184,35 @@
       password = '';
       submitting = false;
       repairing = false;
+      consentWidenings = [];
     }
+  }
+
+  // RepairConsentDialog's Grant callback. The approvals are built VERBATIM
+  // from the preview's own fields (`blockUuidHex`, `fileFingerprintHex`,
+  // `added[].uuidHex`) — never recomputed or edited — because the file-
+  // fingerprint bind is exactly what proves the approval matches the
+  // recipient set the user was shown.
+  function onGrantConsent(): void {
+    const approvals: ApprovedWideningDto[] = consentWidenings.map((w) => ({
+      blockUuidHex: w.blockUuidHex,
+      fileFingerprintHex: w.fileFingerprintHex,
+      addedUuidsHex: w.added.map((a) => a.uuidHex)
+    }));
+    consentWidenings = [];
+    void finishRepair(approvals);
+  }
+
+  // RepairConsentDialog's Cancel callback. No `repairVault` call at all —
+  // the vault is untouched. Restores the `vault_needs_repair` error captured
+  // at the top of `confirmRepair` so the "Repair now?" affordance re-renders,
+  // and deliberately does NOT clear `password` — the affordance reuses it
+  // exactly like the initial failed-unlock path does.
+  function onCancelConsent(): void {
+    consentWidenings = [];
+    submitting = false;
+    repairing = false;
+    unlockFailed(priorRepairError);
   }
 
   // Inline error: render the userMessageFor() shape of the last unlock
@@ -238,4 +328,15 @@
       </div>
     </form>
   </div>
+
+  {#if consentWidenings.length > 0}
+    <!-- #374 Task 10: previewRepair found recipient widenings — hold the
+         session at `unlocking` (see `repairing` above) and require explicit
+         consent before repairVault may adopt them. -->
+    <RepairConsentDialog
+      widenings={consentWidenings}
+      onCancel={onCancelConsent}
+      onGrant={onGrantConsent}
+    />
+  {/if}
 </main>

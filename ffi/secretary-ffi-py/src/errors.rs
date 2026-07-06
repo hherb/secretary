@@ -207,3 +207,17 @@ pub(crate) fn uuid_array_or_value_error(bytes: &[u8], field: &str) -> PyResult<[
         ))
     })
 }
+
+/// Validate a 32-byte slice (e.g. a BLAKE3-256 fingerprint); surface wrong
+/// length as `ValueError` with the field name embedded in the message.
+/// Sibling of [`uuid_array_or_value_error`] for the one non-16-byte
+/// fixed-size field on the FFI seam so far (#374's
+/// `ApprovedWidening.file_fingerprint`).
+pub(crate) fn array32_or_value_error(bytes: &[u8], field: &str) -> PyResult<[u8; 32]> {
+    bytes.try_into().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{field} must be 32 bytes, got {}",
+            bytes.len()
+        ))
+    })
+}

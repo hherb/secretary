@@ -2159,13 +2159,83 @@ pub fn trash_block(
     Ok(())
 }
 
+/// Scan `contacts/*.card`, parse each, and keep only the cards that pass
+/// their embedded Ed25519 ∧ ML-DSA-65 self-verification (see the
+/// security note below — a card failing self-verify is skipped, not
+/// fatal). Returns an empty vec if `contacts/` does not exist.
+///
+/// Extracted from [`resolve_recipient_uuids`] (#374 Task 4) so
+/// `preview_repair`'s recipient name/fingerprint lookup and the repair
+/// path's fingerprint→uuid resolution share one scan implementation.
+pub(crate) fn scan_verified_contact_cards(folder: &Path) -> Result<Vec<ContactCard>, VaultError> {
+    let mut cards = Vec::new();
+    let contacts_dir = folder.join(CONTACTS_SUBDIR);
+    if contacts_dir.exists() {
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&contacts_dir).map_err(|e| VaultError::Io {
+            context: "failed to read_dir contacts/",
+            source: e,
+        })? {
+            let entry = entry.map_err(|e| VaultError::Io {
+                context: "failed to iterate contacts/ entry",
+                source: e,
+            })?;
+            entries.push(entry.path());
+        }
+        // `read_dir` order is unspecified (filesystem-dependent, not even
+        // stable across runs on the same host). Sort by file name so this
+        // scan has a deterministic iteration order: any order-sensitive
+        // bug in a consumer (e.g. a last-write-wins map keyed by something
+        // other than the card's own content-address) fails reproducibly
+        // instead of flaking with directory-enumeration order. Consumers
+        // that key by fingerprint (content-addressed, order-independent)
+        // are unaffected either way.
+        entries.sort();
+        for path in entries {
+            if path.extension().and_then(|s| s.to_str()) != Some("card") {
+                continue;
+            }
+            let card_bytes = std::fs::read(&path).map_err(|e| VaultError::Io {
+                context: "failed to read contact card",
+                source: e,
+            })?;
+            let Ok(card) = ContactCard::from_canonical_cbor(&card_bytes) else {
+                continue;
+            };
+            // Self-signature verification is REQUIRED before we trust
+            // the card's `contact_uuid` for the manifest's recipient
+            // table. `from_canonical_cbor` only parses; it does not
+            // verify the embedded Ed25519 ∧ ML-DSA-65 self-signature
+            // (see card.rs::verify_self). Without this check, an
+            // attacker with write access to `contacts/` could plant a
+            // forged card matching a wrap's fingerprint and mint a
+            // `contact_uuid` of their choice into the manifest. The
+            // block plaintext is still gated by the §6.1 hybrid
+            // verify on the trashed file itself, but the manifest's
+            // `BlockEntry.recipients` is load-bearing for share /
+            // sync logic and must not carry un-attested UUIDs.
+            //
+            // We `continue` past an unverifiable card rather than
+            // hard-failing so a single corrupt or malicious card in
+            // `contacts/` cannot wedge restore for every block — the
+            // legitimate cards alongside it still resolve. If no
+            // verified card matches a given fingerprint, the caller's
+            // fingerprint resolution surfaces `MissingRecipientCard`
+            // (or, for `preview_repair`, a defensive `RepairRejected`)
+            // and the manifest stays untouched.
+            if card.verify_self().is_err() {
+                continue;
+            }
+            cards.push(card);
+        }
+    }
+    Ok(cards)
+}
+
 /// Resolve every `recipient_fingerprint` in a block file's §6.2 wrap
 /// table to a `contact_uuid`: the owner card matches in memory; any
-/// other fingerprint requires a `contacts/*.card` scan where each card
-/// must pass its embedded Ed25519 ∧ ML-DSA-65 self-verification before
-/// its `contact_uuid` is trusted (see the security note inside — cards
-/// failing self-verify are skipped, not fatal). Unresolved →
-/// [`VaultError::MissingRecipientCard`].
+/// other fingerprint requires a [`scan_verified_contact_cards`] scan.
+/// Unresolved → [`VaultError::MissingRecipientCard`].
 ///
 /// Shared by [`restore_block`] (§7.1 step 4) and
 /// [`crate::vault::repair_vault`] (#350) — both rebuild a manifest
@@ -2181,54 +2251,9 @@ pub(crate) fn resolve_recipient_uuids(
     fp_to_uuid.insert(owner_fp, owner_card.contact_uuid);
     let needs_scan = wraps.iter().any(|w| w.recipient_fingerprint != owner_fp);
     if needs_scan {
-        let contacts_dir = folder.join(CONTACTS_SUBDIR);
-        if contacts_dir.exists() {
-            for entry in std::fs::read_dir(&contacts_dir).map_err(|e| VaultError::Io {
-                context: "failed to read_dir contacts/",
-                source: e,
-            })? {
-                let entry = entry.map_err(|e| VaultError::Io {
-                    context: "failed to iterate contacts/ entry",
-                    source: e,
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("card") {
-                    continue;
-                }
-                let card_bytes = std::fs::read(&path).map_err(|e| VaultError::Io {
-                    context: "failed to read contact card",
-                    source: e,
-                })?;
-                let Ok(card) = ContactCard::from_canonical_cbor(&card_bytes) else {
-                    continue;
-                };
-                // Self-signature verification is REQUIRED before we trust
-                // the card's `contact_uuid` for the manifest's recipient
-                // table. `from_canonical_cbor` only parses; it does not
-                // verify the embedded Ed25519 ∧ ML-DSA-65 self-signature
-                // (see card.rs::verify_self). Without this check, an
-                // attacker with write access to `contacts/` could plant a
-                // forged card matching a wrap's fingerprint and mint a
-                // `contact_uuid` of their choice into the manifest. The
-                // block plaintext is still gated by the §6.1 hybrid
-                // verify on the trashed file itself, but the manifest's
-                // `BlockEntry.recipients` is load-bearing for share /
-                // sync logic and must not carry un-attested UUIDs.
-                //
-                // We `continue` past an unverifiable card rather than
-                // hard-failing so a single corrupt or malicious card in
-                // `contacts/` cannot wedge restore for every block — the
-                // legitimate cards alongside it still resolve. If no
-                // verified card matches a given fingerprint, the loop
-                // at step 5's wrap-resolution surfaces
-                // `MissingRecipientCard` and the manifest stays
-                // untouched.
-                if card.verify_self().is_err() {
-                    continue;
-                }
-                let fp = fingerprint(&card.to_canonical_cbor()?);
-                fp_to_uuid.insert(fp, card.contact_uuid);
-            }
+        for card in scan_verified_contact_cards(folder)? {
+            let fp = fingerprint(&card.to_canonical_cbor()?);
+            fp_to_uuid.insert(fp, card.contact_uuid);
         }
     }
     let mut recipients_uuids: Vec<[u8; 16]> = Vec::with_capacity(wraps.len());

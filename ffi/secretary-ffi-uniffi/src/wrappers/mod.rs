@@ -6,6 +6,7 @@
 //! - [`block`] — `BlockReadOutput`, `Record`, `FieldHandle`
 //! - [`save`] — `BlockInput`, `RecordInput`, `FieldInput`, `FieldInputValue`
 //! - [`contacts`] — `ContactSummary`
+//! - [`repair`] — `ApprovedWidening`, `AddedRecipient`, `WideningReport`, `RepairPreview`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
 //! All the actual logic lives in `secretary-ffi-bridge`; this layer exists
@@ -16,8 +17,10 @@ pub mod block;
 pub mod contacts;
 pub mod device;
 pub mod identity;
+pub mod repair;
 pub mod save;
 pub mod sync;
 pub mod vault;
 
 pub use contacts::ContactSummary;
+pub use repair::{AddedRecipient, ApprovedWidening, RepairPreview, WideningReport};

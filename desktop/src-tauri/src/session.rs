@@ -200,7 +200,18 @@ impl VaultSession {
     /// `unlock` does. The post-open tail (settings load, `inner` population,
     /// idle reset, approval clear) is identical and shared via
     /// `Self::populate_unlocked`.
-    pub fn repair(&mut self, folder: &Path, password: &[u8]) -> Result<(), AppError> {
+    ///
+    /// `approvals` (#374 Task 9) is the caller's consented recipient-widening
+    /// set — each entry decoded by `commands::repair` from a
+    /// `dtos::ApprovedWideningArg` the user approved after reviewing a
+    /// `preview_repair` result. An empty slice preserves the pre-Task-9
+    /// fail-closed behavior: every widening is rejected.
+    pub fn repair(
+        &mut self,
+        folder: &Path,
+        password: &[u8],
+        approvals: &[secretary_ffi_bridge::FfiApprovedWidening],
+    ) -> Result<(), AppError> {
         if self.inner.is_some() {
             return Err(AppError::AlreadyUnlocked);
         }
@@ -223,10 +234,32 @@ impl VaultSession {
             password,
             &device_uuid,
             now_ms(),
+            approvals,
         )?;
 
         self.populate_unlocked(output, device_uuid, folder);
         Ok(())
+    }
+
+    /// Preview crash residue in a vault authenticated by password, WITHOUT
+    /// unlocking it (#374 Task 9). Read-only: writes nothing to disk,
+    /// populates no session state, and — unlike `repair` — needs no
+    /// per-vault device UUID, since the bridge's
+    /// `preview_repair_with_password` takes none (a preview isn't scoped to
+    /// any one device's crash residue). Powers the "Repair now?"
+    /// informed-consent prompt: the UI shows the returned recipient
+    /// widenings BEFORE the user picks which ones to approve via `repair`.
+    pub fn preview(
+        &self,
+        folder: &Path,
+        password: &[u8],
+    ) -> Result<secretary_ffi_bridge::FfiRepairPreview, AppError> {
+        if self.inner.is_some() {
+            return Err(AppError::AlreadyUnlocked);
+        }
+        Ok(secretary_ffi_bridge::preview_repair_with_password(
+            folder, password,
+        )?)
     }
 
     /// Shared post-open tail for `unlock` and `repair`: loads settings

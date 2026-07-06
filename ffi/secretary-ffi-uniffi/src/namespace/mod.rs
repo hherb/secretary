@@ -23,7 +23,10 @@ mod record_edit;
 pub use record_edit::{append_record, edit_record, resurrect_record, tombstone_record};
 
 mod repair;
-pub use repair::{repair_with_device_secret, repair_with_password, repair_with_recovery};
+pub use repair::{
+    preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
+    repair_with_device_secret, repair_with_password, repair_with_recovery,
+};
 
 mod sync;
 pub use sync::{sync_commit_decisions, sync_status, sync_vault};
@@ -598,6 +601,16 @@ pub fn remove_device_slot(folder_path: Vec<u8>, device_uuid: Vec<u8>) -> Result<
 pub(crate) fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
     bytes.try_into().map_err(|_| VaultError::InvalidArgument {
         detail: format!("{field} must be 16 bytes, got {}", bytes.len()),
+    })
+}
+
+/// Validate a 32-byte slice (e.g. an `ApprovedWidening.file_fingerprint`);
+/// surface wrong length as [`VaultError::InvalidArgument`] with the field
+/// name in the detail. Mirrors [`uuid_from_vec`] exactly, for the 32-byte
+/// case. (#374)
+pub(crate) fn array32_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 32], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
+        detail: format!("{field} must be 32 bytes, got {}", bytes.len()),
     })
 }
 
