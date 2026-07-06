@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-07-dialog-aria-labelledby-389-shipped.md
+docs/handoffs/2026-07-07-drop-desktop-typecheck-script-394-shipped.md
