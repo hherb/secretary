@@ -32,8 +32,8 @@ use super::orchestration::{
 };
 use super::preview::preview_repair_with_password_in;
 use super::{
-    preview_repair_with_password, repair_vault_with_device_secret, repair_vault_with_password,
-    repair_vault_with_recovery,
+    preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
+    repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
 };
 
 // ── fixture helpers (mirrors `device.rs`'s `tmp_golden_vault`) ─────────────
