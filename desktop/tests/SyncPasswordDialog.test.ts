@@ -28,14 +28,14 @@ describe('SyncPasswordDialog.svelte', () => {
       const dialog = container.querySelector('dialog') as HTMLDialogElement;
       expect(dialog.hasAttribute('open')).toBe(true);
     });
-    expect(getByLabelText(/password/i)).toBeTruthy();
+    expect(getByLabelText(/^password$/i)).toBeTruthy();
     expect(getByRole('button', { name: /sync/i })).toBeTruthy();
   });
 
   it('calls syncNow with the typed password and onSynced with the outcome', async () => {
     mockSyncNow.mockResolvedValue({ kind: 'nothingToDo' });
     const { getByLabelText, getByRole, onSynced } = renderDialog();
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'hunter2' } });
     await fireEvent.click(getByRole('button', { name: /^sync$/i }));
     await waitFor(() => expect(mockSyncNow).toHaveBeenCalledWith('hunter2'));
     expect(onSynced).toHaveBeenCalledWith({ kind: 'nothingToDo' });
@@ -46,7 +46,7 @@ describe('SyncPasswordDialog.svelte', () => {
     // unhandled-rejection that fails this test even though it is caught.
     mockSyncNow.mockRejectedValueOnce({ code: 'wrong_password' });
     const { getByLabelText, getByRole, findByRole, onSynced } = renderDialog();
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'bad' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'bad' } });
     await fireEvent.click(getByRole('button', { name: /^sync$/i }));
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/wrong password/i);
@@ -72,7 +72,7 @@ describe('SyncPasswordDialog.svelte', () => {
     };
     mockSyncNow.mockResolvedValueOnce(outcome);
     const { getByLabelText, getByRole, onConflicts, onSynced } = renderDialog();
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'thepassword' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'thepassword' } });
     await fireEvent.click(getByRole('button', { name: /^sync$/i }));
     await waitFor(() => expect(onConflicts).toHaveBeenCalledWith(outcome, 'thepassword'));
     expect(onSynced).not.toHaveBeenCalled();
@@ -83,5 +83,17 @@ describe('SyncPasswordDialog.svelte', () => {
     await fireEvent.click(getByRole('button', { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(mockSyncNow).not.toHaveBeenCalled();
+  });
+
+  // #389: announce the dialog's title to screen readers on open.
+  it('labels the dialog with its title via aria-labelledby (#389)', () => {
+    const { container } = renderDialog();
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('Confirm your password');
   });
 });

@@ -64,9 +64,14 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="sync-dialog" oncancel={onNativeCancel}>
+<dialog
+  bind:this={dialogEl}
+  class="sync-dialog"
+  aria-labelledby="sync-dialog-title"
+  oncancel={onNativeCancel}
+>
   <form class="sync-dialog__form" onsubmit={submit}>
-    <h2 class="sync-dialog__title">Confirm your password</h2>
+    <h2 id="sync-dialog-title" class="sync-dialog__title">Confirm your password</h2>
     <p class="sync-dialog__subtitle">Needed to sync this vault.</p>
 
     <label class="sync-dialog__label" for="sync-password">Password</label>

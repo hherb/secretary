@@ -86,4 +86,16 @@ describe('ConflictResolutionDialog.svelte', () => {
     });
     expect(getByText(/auto-merged/i)).toBeTruthy();
   });
+
+  // #389: announce the dialog's title to screen readers on open.
+  it('labels the dialog with its title via aria-labelledby (#389)', () => {
+    const { container } = renderDialog();
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('Resolve sync conflicts');
+  });
 });

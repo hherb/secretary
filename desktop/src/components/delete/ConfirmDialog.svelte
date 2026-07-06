@@ -39,8 +39,13 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="confirm-dialog" oncancel={onNativeCancel}>
-  <h2 class="confirm-dialog__title">{title}</h2>
+<dialog
+  bind:this={dialogEl}
+  class="confirm-dialog"
+  aria-labelledby="confirm-dialog-title"
+  oncancel={onNativeCancel}
+>
+  <h2 id="confirm-dialog-title" class="confirm-dialog__title">{title}</h2>
   <p class="confirm-dialog__body">{body}</p>
 
   <div class="confirm-dialog__actions">

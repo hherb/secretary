@@ -123,8 +123,13 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="share-dialog" oncancel={onNativeCancel}>
-  <h2 class="share-dialog__title">Share “{block.blockName}”</h2>
+<dialog
+  bind:this={dialogEl}
+  class="share-dialog"
+  aria-labelledby="share-dialog-title"
+  oncancel={onNativeCancel}
+>
+  <h2 id="share-dialog-title" class="share-dialog__title">Share “{block.blockName}”</h2>
 
   {#if unreadable > 0}
     <p class="share-dialog__warn" role="status">

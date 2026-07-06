@@ -83,9 +83,14 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="conflict-dialog" oncancel={onNativeCancel}>
+<dialog
+  bind:this={dialogEl}
+  class="conflict-dialog"
+  aria-labelledby="conflict-dialog-title"
+  oncancel={onNativeCancel}
+>
   <form class="conflict-dialog__form" onsubmit={apply}>
-    <h2 class="conflict-dialog__title">Resolve sync conflicts</h2>
+    <h2 id="conflict-dialog-title" class="conflict-dialog__title">Resolve sync conflicts</h2>
     <p class="conflict-dialog__subtitle">
       These records were deleted on another device but you still have them. Choose what to keep —
       nothing is written until you click Apply.
