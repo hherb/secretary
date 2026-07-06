@@ -62,9 +62,14 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="reauth-dialog" onclose={onNativeClose}>
+<dialog
+  bind:this={dialogEl}
+  class="reauth-dialog"
+  aria-labelledby="reauth-dialog-title"
+  onclose={onNativeClose}
+>
   {#if prompt}
-    <h2 class="reauth-dialog__title">Confirm with your password</h2>
+    <h2 id="reauth-dialog-title" class="reauth-dialog__title">Confirm with your password</h2>
     <p class="reauth-dialog__reason">{prompt.reason}</p>
     <label class="reauth-dialog__field">
       <span class="reauth-dialog__label">Password</span>

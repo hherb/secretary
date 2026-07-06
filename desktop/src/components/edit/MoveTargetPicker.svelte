@@ -26,8 +26,8 @@
   });
 </script>
 
-<dialog class="move-picker" open>
-  <h3 class="move-picker__title">Move to which block?</h3>
+<dialog class="move-picker" aria-labelledby="move-picker-title" open>
+  <h3 id="move-picker-title" class="move-picker__title">Move to which block?</h3>
   {#if error}
     {@const msg = userMessageFor(error)}
     <p class="move-picker__error" role="alert">{msg.title}</p>

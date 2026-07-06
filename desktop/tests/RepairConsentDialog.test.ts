@@ -138,4 +138,16 @@ describe('RepairConsentDialog.svelte', () => {
       'button'
     );
   });
+
+  // #389: the consent modal must announce its title to screen readers on open.
+  it('labels the dialog with its title via aria-labelledby (#389)', () => {
+    const { container } = renderDialog();
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('An interrupted share was found.');
+  });
 });

@@ -66,8 +66,13 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="repair-consent" oncancel={onNativeCancel}>
-  <h2 class="repair-consent__title">An interrupted share was found.</h2>
+<dialog
+  bind:this={dialogEl}
+  class="repair-consent"
+  aria-labelledby="repair-consent-title"
+  oncancel={onNativeCancel}
+>
+  <h2 id="repair-consent-title" class="repair-consent__title">An interrupted share was found.</h2>
   <p class="repair-consent__body">
     Adopting this repair will give these contacts access to this block. If you don't recognize
     this, choose Cancel — the vault stays unchanged.

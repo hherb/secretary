@@ -50,7 +50,7 @@ describe('SyncPill.svelte', () => {
     const { findByRole, getByLabelText, findByText } = render(SyncPill);
 
     await fireEvent.click(await findByRole('button', { name: /sync/i }));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'pw' } });
     await fireEvent.click(await findByRole('button', { name: /^sync$/i }));
 
     expect(await findByText(/your vault is up to date/i)).toBeTruthy();
@@ -65,7 +65,7 @@ describe('SyncPill.svelte', () => {
     mockSyncNow.mockResolvedValue({ kind: 'nothingToDo' });
     const { findByRole, getByLabelText, findByText } = render(SyncPill);
     await fireEvent.click(await findByRole('button', { name: /sync/i }));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'pw' } });
     await fireEvent.click(await findByRole('button', { name: /^sync$/i }));
     expect(await findByText(/already up to date/i)).toBeTruthy();
     expect(mockRefresh).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe('SyncPill.svelte', () => {
 
     // Open password dialog, enter password, sync → conflictsPending.
     await fireEvent.click(await findByRole('button', { name: /sync/i }));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'pw' } });
     await fireEvent.click(await findByRole('button', { name: /^sync$/i }));
 
     // The resolution dialog renders.
@@ -125,7 +125,7 @@ describe('SyncPill.svelte', () => {
 
       // Trigger a sync so a notice appears.
       await fireEvent.click(await findByRole('button', { name: /sync/i }));
-      await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+      await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'pw' } });
       await fireEvent.click(await findByRole('button', { name: /^sync$/i }));
 
       // Drain only microtasks (Promise resolutions) without advancing timers,

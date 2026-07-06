@@ -209,8 +209,13 @@
   }
 </script>
 
-<dialog bind:this={dialogEl} class="settings-dialog" onclose={onNativeClose}>
-  <h2 class="settings-dialog__title">Settings</h2>
+<dialog
+  bind:this={dialogEl}
+  class="settings-dialog"
+  aria-labelledby="settings-dialog-title"
+  onclose={onNativeClose}
+>
+  <h2 id="settings-dialog-title" class="settings-dialog__title">Settings</h2>
 
   <label class="settings-dialog__field">
     <span class="settings-dialog__label">Auto-lock after</span>

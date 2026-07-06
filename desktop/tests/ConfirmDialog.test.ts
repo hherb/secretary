@@ -70,4 +70,18 @@ describe('ConfirmDialog.svelte', () => {
     expect(getByRole('button', { name: 'Delete' }).getAttribute('type')).toBe('button');
     expect(getByRole('button', { name: /cancel/i }).getAttribute('type')).toBe('button');
   });
+
+  // #389: screen readers should announce the dialog's title on open. Native
+  // <dialog> gives an implicit role="dialog" but no accessible name unless the
+  // title is wired via aria-labelledby.
+  it('labels the dialog with its title via aria-labelledby (#389)', () => {
+    const { container } = renderDialog();
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('Delete this record?');
+  });
 });

@@ -105,6 +105,19 @@ describe('ShareDialog.svelte', () => {
     // The dialog stays open on error (onClose only fires on success).
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  // #389: announce the dialog's title (which names the block) on open.
+  it('labels the dialog with its title via aria-labelledby (#389)', async () => {
+    invokeMock.mockResolvedValueOnce({ contacts: [], unreadableCount: 0 }); // list_contacts
+    const { container } = render(ShareDialog, { props: { block: BLOCK, onClose: vi.fn() } });
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toMatch(/Share.*Logins/);
+  });
 });
 
 describe('ShareDialog — write-reauth gate', () => {

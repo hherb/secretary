@@ -75,7 +75,7 @@ describe('ReauthPasswordDialog.svelte — confirm happy path', () => {
     const { getByText, getByLabelText } = render(ReauthPasswordDialog);
     openReauthPrompt('Confirm deleting this entry');
     await waitFor(() => getByText('Confirm deleting this entry'));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'pw' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'pw' } });
     await fireEvent.click(getByText('Confirm'));
     await waitFor(() => {
       expect(verifyPassword).toHaveBeenCalledWith('pw');
@@ -87,7 +87,7 @@ describe('ReauthPasswordDialog.svelte — confirm happy path', () => {
     const { getByText, getByLabelText } = render(ReauthPasswordDialog);
     openReauthPrompt('Confirm saving');
     await waitFor(() => getByText('Confirm saving'));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'correct-pw' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'correct-pw' } });
     await fireEvent.click(getByText('Confirm'));
     await waitFor(() => {
       expect(resolveReauthMock).toHaveBeenCalledTimes(1);
@@ -102,7 +102,7 @@ describe('ReauthPasswordDialog.svelte — wrong password stays open', () => {
     const { getByText, getByLabelText, queryByRole } = render(ReauthPasswordDialog);
     openReauthPrompt('Confirm saving this entry');
     await waitFor(() => getByText('Confirm saving this entry'));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'bad' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'bad' } });
     await fireEvent.click(getByText('Confirm'));
     await waitFor(() => {
       expect(queryByRole('alert')).toBeTruthy();
@@ -114,7 +114,7 @@ describe('ReauthPasswordDialog.svelte — wrong password stays open', () => {
     const { getByText, getByLabelText, queryByRole } = render(ReauthPasswordDialog);
     openReauthPrompt('Confirm saving this entry');
     await waitFor(() => getByText('Confirm saving this entry'));
-    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'bad' } });
+    await fireEvent.input(getByLabelText(/^password$/i), { target: { value: 'bad' } });
     await fireEvent.click(getByText('Confirm'));
     // Wait for the error alert to appear (means verify settled), then assert no resolve.
     await waitFor(() => expect(queryByRole('alert')).toBeTruthy());
@@ -141,5 +141,21 @@ describe('ReauthPasswordDialog.svelte — cancel', () => {
     await waitFor(() => {
       expect(resolveReauthMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('ReauthPasswordDialog.svelte — accessibility', () => {
+  // #389: when open, the dialog's accessible name is its title heading.
+  it('labels the dialog with its title via aria-labelledby (#389)', async () => {
+    const { container, getByText } = render(ReauthPasswordDialog);
+    openReauthPrompt('Confirm something');
+    await waitFor(() => getByText('Confirm something'));
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('Confirm with your password');
   });
 });

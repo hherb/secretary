@@ -23,4 +23,19 @@ describe('MoveTargetPicker', () => {
     await fireEvent.click(getByRole('button', { name: /Target/ }));
     expect(onSelect).toHaveBeenCalledWith(blocks[1]);
   });
+
+  // #389: announce the picker's title to screen readers on open.
+  it('labels the dialog with its title via aria-labelledby (#389)', () => {
+    invokeMock.mockResolvedValueOnce(blocks); // list_blocks
+    const { container } = render(MoveTargetPicker, {
+      props: { sourceBlockUuidHex: 'src', onSelect: vi.fn(), onCancel: vi.fn() }
+    });
+    const dialog = container.querySelector('dialog') as HTMLDialogElement;
+    const labelId = dialog.getAttribute('aria-labelledby');
+    expect(labelId).toBeTruthy();
+    const title = container.querySelector(`#${labelId}`);
+    expect(title).not.toBeNull();
+    expect(dialog.contains(title)).toBe(true);
+    expect(title?.textContent).toBe('Move to which block?');
+  });
 });
