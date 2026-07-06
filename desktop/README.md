@@ -54,8 +54,7 @@ pnpm tauri dev                          # launches Vite dev server + Tauri windo
 
 ```bash
 pnpm test                               # Vitest — pure TS module unit tests
-pnpm tsc --noEmit                       # TypeScript type-check
-pnpm svelte-check                       # Svelte type-check
+pnpm svelte-check                       # Type-check (Svelte + .ts); understands component module exports
 pnpm lint                               # ESLint
 # From repo root:
 cargo test --release --workspace        # Rust backend unit + integration tests
