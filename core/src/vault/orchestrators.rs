@@ -38,7 +38,7 @@ use crate::identity::fingerprint::{fingerprint, Fingerprint};
 use crate::unlock::{
     self, bundle::IdentityBundle, mnemonic::Mnemonic, vault_toml, UnlockedIdentity,
 };
-use crate::vault::trash_relocation::log_relocation;
+use crate::vault::trash_relocation::relocate_and_log;
 
 use super::ids::{BlockUuid, DeviceUuid, RecipientUuid};
 use super::{block, io, manifest};
@@ -2157,16 +2157,12 @@ pub fn trash_block(
     let dst = folder
         .join(TRASH_SUBDIR)
         .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
-    // #376: no longer swallowed silently — log_relocation emits a structured
+    // #376: no longer swallowed silently — relocate_and_log emits a structured
     // warn! on persistent failure (EXDEV cross-mount trash/ distinguished from
     // other I/O errors) and returns the outcome, which we drop. The move stays
     // best-effort; every outcome leaves the vault correct and the block
     // restorable.
-    let _ = log_relocation(
-        &block_uuid,
-        std::fs::create_dir_all(folder.join(TRASH_SUBDIR))
-            .and_then(|()| std::fs::rename(&src, &dst)),
-    );
+    let _ = relocate_and_log(&block_uuid, &folder.join(TRASH_SUBDIR), &src, &dst);
 
     Ok(())
 }

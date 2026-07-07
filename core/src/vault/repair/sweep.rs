@@ -5,7 +5,7 @@ use crate::vault::manifest::Manifest;
 use crate::vault::orchestrators::{
     format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, TRASH_SUBDIR,
 };
-use crate::vault::trash_relocation::log_relocation;
+use crate::vault::trash_relocation::relocate_and_log;
 
 /// Best-effort completion of trash renames interrupted between
 /// `trash_block`'s manifest commit and its physical move (#350).
@@ -65,10 +65,6 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
         // instead of swallowing it. Best-effort is unchanged — a vault that
         // cannot complete the move stays in the benign orphan state that
         // restore_block resumes from.
-        let _ = log_relocation(
-            &entry.block_uuid,
-            std::fs::create_dir_all(&trash_dir)
-                .and_then(|()| std::fs::rename(&blocks_path, &trash_path)),
-        );
+        let _ = relocate_and_log(&entry.block_uuid, &trash_dir, &blocks_path, &trash_path);
     }
 }

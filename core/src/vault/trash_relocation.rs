@@ -8,11 +8,13 @@
 //! turns that swallow into a structured `tracing::warn!` so a mis-configured
 //! vault is observable to an operator, while keeping the move best-effort.
 
+use std::path::Path;
+
 use crate::vault::orchestrators::format_uuid_hyphenated;
 
 /// Outcome of a best-effort `blocks/ → trash/` relocation, for logging only.
 ///
-/// `Relocated` covers success (and the already-relocated no-op). `CrossDevice`
+/// `Relocated` is a successful move. `CrossDevice`
 /// is EXDEV — `trash/` on a different filesystem than `blocks/`, an actionable
 /// mis-config. `OtherFailure` is any other I/O error (permissions, transient
 /// FS error). All three leave the vault correct and the block restorable.
@@ -23,10 +25,29 @@ pub(crate) enum RelocationOutcome {
     OtherFailure,
 }
 
+/// Perform the best-effort `blocks/ → trash/` move and log its outcome.
+///
+/// Single source of truth for the move idiom shared by `trash_block` and the
+/// open-time sweep: `create_dir_all(trash_dir)` then `rename(src, dst)`,
+/// routed through [`log_relocation`]. Best-effort — the returned outcome is
+/// informational (callers drop it); every outcome leaves the vault correct
+/// and the block restorable.
+pub(crate) fn relocate_and_log(
+    block_uuid: &[u8; 16],
+    trash_dir: &Path,
+    src: &Path,
+    dst: &Path,
+) -> RelocationOutcome {
+    log_relocation(
+        block_uuid,
+        std::fs::create_dir_all(trash_dir).and_then(|()| std::fs::rename(src, dst)),
+    )
+}
+
 /// Emit the operator-facing `warn!` for a relocation attempt and return its
-/// outcome. Callers drop the return value; it exists so the kind → message
-/// routing is unit-testable without capturing a `tracing` subscriber. Single
-/// source of truth for the mapping — matched exactly once.
+/// outcome. The return value is the test seam — it exists so the kind →
+/// message routing is unit-testable without capturing a `tracing` subscriber.
+/// Single source of truth for the mapping — matched exactly once.
 pub(crate) fn log_relocation(
     block_uuid: &[u8; 16],
     result: Result<(), std::io::Error>,
