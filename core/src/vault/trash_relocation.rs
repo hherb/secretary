@@ -62,7 +62,10 @@ mod tests {
     const UUID: [u8; 16] = [0x11; 16];
 
     #[test]
-    fn ok_result_is_relocated_and_emits_nothing() {
+    fn ok_result_maps_to_relocated() {
+        // The Ok arm returns `Relocated` and emits no warn! — the latter is
+        // true by inspection of the arm (no subscriber is installed here, so
+        // emission is not asserted); the name reflects only what is asserted.
         assert_eq!(log_relocation(&UUID, Ok(())), RelocationOutcome::Relocated);
     }
 
