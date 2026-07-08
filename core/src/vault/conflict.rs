@@ -670,7 +670,7 @@ fn merge_tags(l: &Record, r: &Record, outcome: TombstoneOutcome) -> Vec<String> 
 /// Combined: serialising a v1-canonical [`UnknownValue`] to a `Vec<u8>`
 /// has no reachable error path, so `.expect()` here cannot fire on any
 /// value [`merge_unknown_map`] is called with.
-fn merge_unknown_map(
+pub(crate) fn merge_unknown_map(
     l: &BTreeMap<String, UnknownValue>,
     r: &BTreeMap<String, UnknownValue>,
 ) -> BTreeMap<String, UnknownValue> {
