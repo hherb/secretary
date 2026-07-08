@@ -71,7 +71,7 @@ use device::{
     DeviceSecretOutput,
 };
 use errors::{
-    CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash,
+    CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash, VaultBlockPurged,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
     VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
     VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
@@ -268,6 +268,8 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultBlockNotInTrash",
         py.get_type::<VaultBlockNotInTrash>(),
     )?;
+    // #399 Task 8: restore_block against a purged block.
+    m.add("VaultBlockPurged", py.get_type::<VaultBlockPurged>())?;
 
     // D.1.6 share-contacts error surface — 2 typed exception classes
     // mirroring the bridge's FfiVaultError variants.

@@ -49,6 +49,9 @@ create_exception!(secretary_ffi_py, VaultCardDecodeFailure, PyException);
 // classes mirroring the bridge's new FfiVaultError variants.
 create_exception!(secretary_ffi_py, VaultBlockUuidAlreadyLive, PyException);
 create_exception!(secretary_ffi_py, VaultBlockNotInTrash, PyException);
+// #399 Task 8: restore_block against a purged block — mirrors the
+// bridge's FfiVaultError::BlockPurged.
+create_exception!(secretary_ffi_py, VaultBlockPurged, PyException);
 // D.1.6 share-contacts error surface — 2 typed exception classes mirroring
 // the bridge's new FfiVaultError variants.
 create_exception!(secretary_ffi_py, VaultContactAlreadyExists, PyException);
@@ -155,6 +158,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             VaultBlockUuidAlreadyLive::new_err(detail)
         }
         FfiVaultError::BlockNotInTrash { detail } => VaultBlockNotInTrash::new_err(detail),
+        // #399 Task 8: same args[0] contract — the purged block's UUID
+        // hex rides as the exception payload.
+        FfiVaultError::BlockPurged { detail } => VaultBlockPurged::new_err(detail),
         // D.1.6 share-contacts error surface — same args[0] contract: the
         // contact-UUID hex rides as the exception payload.
         FfiVaultError::ContactAlreadyExists { uuid_hex } => {

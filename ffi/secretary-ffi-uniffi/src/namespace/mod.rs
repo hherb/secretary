@@ -442,6 +442,8 @@ pub fn trash_block(
 ///   live; the caller must trash the live copy first.
 /// - [`VaultError::BlockNotInTrash`] — no matching file in
 ///   `trash/<uuid>.cbor.enc.*` and no matching `TrashEntry`.
+/// - [`VaultError::BlockPurged`] — the `TrashEntry` is marked purged;
+///   the ciphertext has been permanently deleted and cannot be restored.
 /// - [`VaultError::CorruptVault`] — the trashed file failed §6.1
 ///   hybrid-signature verification (folded from
 ///   `RestoreVerificationFailed`).

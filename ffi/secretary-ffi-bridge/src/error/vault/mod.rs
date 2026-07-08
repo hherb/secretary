@@ -268,6 +268,20 @@ pub enum FfiVaultError {
         detail: String,
     },
 
+    /// `restore_block`: the block's `TrashEntry` is marked purged — the
+    /// trashed ciphertext has been permanently deleted from disk (§7.2).
+    /// This is NOT an integrity failure like `CorruptVault`; it's an
+    /// expected, intentional terminal state (the caller deliberately
+    /// purged the block, or another device did and it propagated).
+    /// Folder-in counterpart to
+    /// [`secretary_core::vault::VaultError::BlockPurged`].
+    #[error("block has been purged and cannot be restored: {detail}")]
+    BlockPurged {
+        /// Diagnostic text including the UUID. Free-form; not part of
+        /// the API contract.
+        detail: String,
+    },
+
     /// `delete_contact_card`: the requested uuid is the vault owner's own
     /// self-card, which must never be removed (removing it corrupts the
     /// vault's identity). Defense in depth — the contacts pane already omits
@@ -513,22 +527,18 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 ),
             },
 
-            // #399 (Task 2 stopgap — NOT the final mapping): the block's
-            // TrashEntry is marked purged. This is NOT an integrity failure
-            // like RestoreVerificationFailed / RestoreTargetMissing above —
-            // it's an expected, intentional state — so folding to
-            // CorruptVault here is a known-imprecise placeholder, kept only
-            // to make this exhaustive match compile while `purge_block` and
-            // its FFI surface do not exist yet (#399 Task 3). A dedicated
-            // typed `FfiVaultError::BlockPurged` variant (mirroring
-            // `BlockNotInTrash` above) is #399 Task 8's job — that change
-            // also needs threading through uniffi/pyo3 and the Swift/Kotlin
-            // conformance harnesses, which is out of scope here.
-            VE::BlockPurged { block_uuid } => FfiVaultError::CorruptVault {
-                detail: format!(
-                    "block {} has been purged and cannot be restored",
-                    hex::encode(block_uuid),
-                ),
+            // #399 Task 8: the block's TrashEntry is marked purged. This is
+            // NOT an integrity failure like RestoreVerificationFailed /
+            // RestoreTargetMissing above — it's an expected, intentional
+            // state (the ciphertext was deliberately purged) — so it gets
+            // its own typed variant rather than folding to CorruptVault.
+            // NOTE: this arm is currently dead code — the restore FFI path
+            // routes through `map_core_vault_error_restore` in
+            // `restore::orchestration`, not this generic `From` impl (Task 2
+            // Minor #2) — but it's mapped correctly here for exhaustiveness
+            // and any future caller of this generic conversion.
+            VE::BlockPurged { block_uuid } => FfiVaultError::BlockPurged {
+                detail: hex::encode(block_uuid),
             },
 
             // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault

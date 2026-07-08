@@ -91,6 +91,14 @@ pub enum AppError {
     #[error("That trashed block is no longer available")]
     TrashEntryNotFound { block_uuid_hex: String },
 
+    /// #399 Task 8: restore was requested on a block whose `TrashEntry`
+    /// is marked purged — the ciphertext has been permanently deleted
+    /// and cannot be restored. Distinct from `TrashEntryNotFound` (no
+    /// tombstone at all) so the UI can render "permanently deleted"
+    /// rather than "already restored".
+    #[error("That block was permanently deleted and can't be restored")]
+    BlockPurged { block_uuid_hex: String },
+
     #[error("Only the block's author can share it")]
     NotAuthor,
 

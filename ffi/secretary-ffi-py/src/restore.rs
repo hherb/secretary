@@ -19,6 +19,8 @@ use crate::vault::OpenVaultManifest;
 ///   must trash the live copy before restoring.
 /// - `VaultBlockNotInTrash` — no matching file in
 ///   `trash/<uuid>.cbor.enc.*` and no matching `TrashEntry`.
+/// - `VaultBlockPurged` — the `TrashEntry` is marked purged; the
+///   ciphertext has been permanently deleted and cannot be restored.
 /// - `VaultCorruptVault` — the trashed file failed §6.1 hybrid-
 ///   signature verification (folded from `RestoreVerificationFailed`).
 /// - `VaultMissingRecipientCard` — a wrap recipient cannot be

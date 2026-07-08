@@ -228,6 +228,26 @@ fn ffi_block_not_in_trash_maps_to_trash_entry_not_found() {
 }
 
 #[test]
+fn block_purged_carries_hex() {
+    let v = round_trip(&AppError::BlockPurged {
+        block_uuid_hex: "ab12".into(),
+    });
+    assert_eq!(v["code"], "block_purged");
+    assert_eq!(v["block_uuid_hex"], "ab12");
+}
+
+#[test]
+fn ffi_block_purged_maps_to_block_purged() {
+    let mapped = map_ffi_error(FfiVaultError::BlockPurged {
+        detail: "ef01".into(),
+    });
+    assert!(
+        matches!(mapped, AppError::BlockPurged { block_uuid_hex } if block_uuid_hex == "ef01"),
+        "BlockPurged must map to AppError::BlockPurged carrying the hex"
+    );
+}
+
+#[test]
 fn share_errors_serialize_typed() {
     assert_eq!(round_trip(&AppError::NotAuthor)["code"], "not_author");
     assert_eq!(

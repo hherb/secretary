@@ -12,7 +12,8 @@
 //!   typed; everything else folds to `RecordSaveFailed`),
 //! - block trash/restore/list use the shared [`map_ffi_error`], which already
 //!   routes the trash-precondition variants (`BlockUuidAlreadyLive` →
-//!   `BlockRestoreConflict`, `BlockNotInTrash` → `TrashEntryNotFound`).
+//!   `BlockRestoreConflict`, `BlockNotInTrash` → `TrashEntryNotFound`,
+//!   `BlockPurged` → `BlockPurged`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

@@ -25,6 +25,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.CardDecodeFailure -> "CardDecodeFailure"
     is VaultException.BlockUuidAlreadyLive -> "BlockUuidAlreadyLive"
     is VaultException.BlockNotInTrash -> "BlockNotInTrash"
+    is VaultException.BlockPurged -> "BlockPurged"
     is VaultException.RecordNotFound -> "RecordNotFound"
     is VaultException.ContactAlreadyExists -> "ContactAlreadyExists"
     is VaultException.ContactNotFound -> "ContactNotFound"
@@ -54,6 +55,7 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.CardDecodeFailure -> e.detail
     is VaultException.BlockUuidAlreadyLive -> e.detail
     is VaultException.BlockNotInTrash -> e.detail
+    is VaultException.BlockPurged -> e.detail
     is VaultException.SyncStateCorrupt -> e.detail
     is VaultException.SyncFailed -> e.detail
     is VaultException.DeviceUuidMismatch -> e.detail

@@ -424,6 +424,29 @@ fn from_core_block_not_in_trash_routes_to_block_not_in_trash() {
 }
 
 #[test]
+fn from_core_block_purged_routes_to_block_purged() {
+    let core_err = VaultError::BlockPurged {
+        block_uuid: [7; 16],
+    };
+    let ffi: FfiVaultError = core_err.into();
+    let FfiVaultError::BlockPurged { detail } = ffi else {
+        panic!("expected BlockPurged, got {ffi:?}");
+    };
+    assert!(detail.contains("07"));
+}
+
+#[test]
+fn block_purged_display_format() {
+    let e = FfiVaultError::BlockPurged {
+        detail: "[7, 7, 7]".into(),
+    };
+    assert_eq!(
+        e.to_string(),
+        "block has been purged and cannot be restored: [7, 7, 7]"
+    );
+}
+
+#[test]
 fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
     let core_err = VaultError::RestoreVerificationFailed {
         block_uuid: [0xcc; 16],

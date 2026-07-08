@@ -25,6 +25,7 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .CardDecodeFailure: return "CardDecodeFailure"
     case .BlockUuidAlreadyLive: return "BlockUuidAlreadyLive"
     case .BlockNotInTrash: return "BlockNotInTrash"
+    case .BlockPurged: return "BlockPurged"
     case .InvalidArgument: return "InvalidArgument"
     case .RecordNotFound: return "RecordNotFound"
     case .ContactAlreadyExists: return "ContactAlreadyExists"
@@ -54,6 +55,7 @@ func vaultErrorDetail(_ e: VaultError) -> String? {
     case .CardDecodeFailure(let d): return d
     case .BlockUuidAlreadyLive(let d): return d
     case .BlockNotInTrash(let d): return d
+    case .BlockPurged(let d): return d
     case .InvalidArgument(let d): return d
     case .SyncStateCorrupt(let d): return d
     case .SyncFailed(let d): return d
