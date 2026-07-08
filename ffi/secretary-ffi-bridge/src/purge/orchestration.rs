@@ -207,6 +207,178 @@ fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
     }
 }
 
+/// Report of a completed [`empty_trash`] call: aggregate counts across
+/// every `TrashEntry` purged by this call.
+///
+/// Bridge-side projection of [`secretary_core::vault::EmptyTrashReport`]:
+/// identical field-for-field except every count is narrowed from `usize`
+/// to `u32` for uniffi/pyo3 portability (a vault holding more than 2^32
+/// trashed blocks is not a realistic vault state).
+#[derive(Debug, Clone, Default)]
+pub struct EmptyTrashReport {
+    /// Number of `TrashEntry` records newly marked purged by this call.
+    pub purged_count: u32,
+    /// Of `purged_count`, how many were classified as shared (at least
+    /// one non-owner recipient) at classification time.
+    pub shared_count: u32,
+    /// Of `purged_count`, how many were classified as owner-only.
+    pub owner_only_count: u32,
+    /// Of `purged_count`, how many could not be classified (trash file
+    /// unreadable/undecodable — an honest "unknown", never fabricated).
+    pub unknown_count: u32,
+    /// Total on-disk `trash/` files removed across every purged entry.
+    pub files_removed: u32,
+    /// Total on-disk `trash/` file removals that errored (benign
+    /// orphans; never fatal).
+    pub files_failed: u32,
+}
+
+impl From<secretary_core::vault::EmptyTrashReport> for EmptyTrashReport {
+    fn from(r: secretary_core::vault::EmptyTrashReport) -> Self {
+        EmptyTrashReport {
+            purged_count: r.purged_count as u32,
+            shared_count: r.shared_count as u32,
+            owner_only_count: r.owner_only_count as u32,
+            unknown_count: r.unknown_count as u32,
+            files_removed: r.files_removed as u32,
+            files_failed: r.files_failed as u32,
+        }
+    }
+}
+
+/// Permanently purge every currently-trashed, not-already-purged,
+/// not-live block in one batch. See
+/// [`secretary_core::vault::empty_trash`] for the normative sequence
+/// (single manifest commit covering every target). Unlike
+/// [`purge_block`], this takes no `block_uuid` — it targets the entire
+/// trash in one call.
+///
+/// # Errors
+///
+/// - [`FfiVaultError::CorruptVault`] — either handle has been wiped,
+///   or `replace_manifest_and_file` failed.
+/// - [`FfiVaultError::FolderInvalid`] — I/O failure (e.g. cross-
+///   filesystem rename `EXDEV`, or an atomic-write failure on the
+///   manifest).
+/// - [`FfiVaultError::SaveCryptoFailure`] — crypto / encoding failure
+///   on already-validated inputs.
+pub fn empty_trash(
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    device_uuid: [u8; 16],
+    now_ms: u64,
+) -> Result<EmptyTrashReport, FfiVaultError> {
+    // Step 1: snapshot manifest (5-tuple) under one lock acquisition.
+    // Re-uses save's snapshot fn unchanged — empty_trash needs the same
+    // 5-tuple shape as purge/trash/restore.
+    let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
+        .snapshot_for_save_block()
+        .ok_or_else(|| FfiVaultError::CorruptVault {
+            detail: "vault manifest handle has been closed".into(),
+        })?;
+
+    // Step 2: snapshot identity. empty_trash re-signs the manifest
+    // (Ed25519 + ML-DSA-65 secret keys) — the bundle clone is consumed
+    // by OpenVault, and core::empty_trash re-wraps the raw seeds
+    // internally.
+    let identity_clone =
+        identity
+            .clone_inner_bundle()
+            .ok_or_else(|| FfiVaultError::CorruptVault {
+                detail: "identity handle has been closed".into(),
+            })?;
+
+    // Step 3: build temporary OpenVault from the snapshots.
+    let mut open_vault = OpenVault {
+        identity_block_key: ibk,
+        identity: identity_clone,
+        owner_card,
+        manifest: manifest_body,
+        manifest_file,
+    };
+
+    // Step 4: call core.
+    let result = secretary_core::vault::empty_trash(
+        &vault_folder,
+        &mut open_vault,
+        device_uuid,
+        now_ms,
+        &mut OsRng,
+    );
+
+    // Step 5: on Ok, write back via the existing replace_manifest_and_file
+    // helper. On Err, the bridge handle is untouched (the OpenVault
+    // clone owned the only mutated state and is about to drop).
+    match result {
+        Ok(report) => manifest
+            .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
+            .map(|()| EmptyTrashReport::from(report))
+            .map_err(|e| FfiVaultError::CorruptVault {
+                detail: e.to_string(),
+            }),
+        Err(e) => Err(map_core_vault_error_empty_trash(e)),
+    }
+}
+
+/// Map `core::VaultError` → `FfiVaultError` for the `empty_trash` path.
+///
+/// Exhaustive (no `_ =>` catchall) per issue #40. Adding a new
+/// `core::VaultError` variant becomes a *compile* error here rather
+/// than a silent fold to `SaveCryptoFailure`.
+fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
+    match &e {
+        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
+            detail: format!("{context}: {source}"),
+        },
+        // `core::empty_trash` takes no `block_uuid` and never looks one
+        // up — BlockNotInTrash cannot fire from this path (unlike
+        // purge_block's mapper). Listed for exhaustiveness per issue #40
+        // and folded to the crypto/encoding umbrella below.
+        VaultError::BlockNotInTrash { .. }
+        | VaultError::Record(_)
+        | VaultError::Block(_)
+        | VaultError::Manifest(_)
+        | VaultError::Conflict(_)
+        | VaultError::Rollback { .. }
+        | VaultError::Unlock(_)
+        | VaultError::Card(_)
+        | VaultError::Sig(_)
+        | VaultError::OwnerUuidMismatch { .. }
+        | VaultError::ManifestAuthorMismatch
+        | VaultError::ManifestVaultUuidMismatch { .. }
+        | VaultError::KdfParamsMismatch
+        | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
+        | VaultError::NotAuthor { .. }
+        | VaultError::BlockNotFound { .. }
+        | VaultError::RecipientAlreadyPresent
+        | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
+        | VaultError::MissingRecipientCard { .. }
+        | VaultError::BlockUuidAlreadyLive { .. }
+        | VaultError::RestoreVerificationFailed { .. }
+        | VaultError::RestoreTargetMissing { .. }
+        // #399: restore-only; unreachable from empty_trash, listed for
+        // exhaustiveness per issue #40.
+        | VaultError::BlockPurged { .. }
+        // Unreachable from empty_trash (open_vault always precedes and
+        // would have surfaced this earlier), but listed for exhaustiveness
+        // per issue #40. The generic `From<VaultError>` impl routes this
+        // to `CorruptVault` on the read path.
+        | VaultError::BlockFingerprintMismatch { .. }
+        // #350: unreachable from empty_trash (repair is a separate
+        // orchestrator entry point); listed for exhaustiveness per
+        // issue #40.
+        | VaultError::BlockFileMissing { .. }
+        | VaultError::RepairRejected { .. }
+        // ADR 0009 (B.1): unreachable from empty_trash; listed for
+        // exhaustiveness per issue #40.
+        | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
+            detail: format!("{e}"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +425,57 @@ mod tests {
             device_uuid: [0xff; 16],
         };
         let ffi = map_core_vault_error_purge(core_err);
+        assert!(matches!(ffi, FfiVaultError::SaveCryptoFailure { .. }));
+    }
+
+    #[test]
+    fn empty_trash_report_from_core_narrows_usize_to_u32() {
+        let core_report = secretary_core::vault::EmptyTrashReport {
+            purged_count: 3,
+            shared_count: 1,
+            owner_only_count: 2,
+            unknown_count: 0,
+            files_removed: 3,
+            files_failed: 0,
+        };
+        let bridge_report = EmptyTrashReport::from(core_report);
+        assert_eq!(bridge_report.purged_count, 3);
+        assert_eq!(bridge_report.shared_count, 1);
+        assert_eq!(bridge_report.owner_only_count, 2);
+        assert_eq!(bridge_report.unknown_count, 0);
+        assert_eq!(bridge_report.files_removed, 3);
+        assert_eq!(bridge_report.files_failed, 0);
+    }
+
+    #[test]
+    fn map_core_block_not_in_trash_folds_to_save_crypto_failure_for_empty_trash() {
+        // Unlike purge_block's mapper, empty_trash's mapper cannot
+        // observe a real BlockNotInTrash (the core fn takes no
+        // block_uuid), so it folds to the umbrella surface rather than
+        // the typed variant.
+        let core_err = VaultError::BlockNotInTrash {
+            block_uuid: [0xbb; 16],
+        };
+        let ffi = map_core_vault_error_empty_trash(core_err);
+        assert!(matches!(ffi, FfiVaultError::SaveCryptoFailure { .. }));
+    }
+
+    #[test]
+    fn map_core_io_routes_to_folder_invalid_for_empty_trash() {
+        let core_err = VaultError::Io {
+            context: "test",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        };
+        let ffi = map_core_vault_error_empty_trash(core_err);
+        assert!(matches!(ffi, FfiVaultError::FolderInvalid { .. }));
+    }
+
+    #[test]
+    fn map_core_clock_overflow_folds_to_save_crypto_failure_for_empty_trash() {
+        let core_err = VaultError::ClockOverflow {
+            device_uuid: [0xff; 16],
+        };
+        let ffi = map_core_vault_error_empty_trash(core_err);
         assert!(matches!(ffi, FfiVaultError::SaveCryptoFailure { .. }));
     }
 }

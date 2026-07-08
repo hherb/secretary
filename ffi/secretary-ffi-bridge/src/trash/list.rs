@@ -54,20 +54,26 @@ pub struct TrashedBlock {
 
 /// List every trashed block in an open vault, projected by name.
 ///
-/// For each entry in `manifest.trash`, locates the newest
+/// For each NOT-yet-purged entry in `manifest.trash`, locates the newest
 /// `trash/<uuid>.cbor.enc.<ts>` file, decrypts it as the vault owner,
 /// and projects `{ block_uuid, block_name, tombstoned_at_ms,
 /// tombstoned_by }`. The decrypted block plaintext (including all record
 /// material) is dropped — and thereby zeroized — at the end of each
 /// iteration; nothing but the block name leaves this function.
 ///
+/// #399: an already-purged entry (`purged_at_ms.is_some()`) is skipped
+/// silently — its trash file was intentionally removed by `purge_block`
+/// / `empty_trash`, so a missing file there is expected, not an
+/// integrity violation.
+///
 /// # Errors
 ///
 /// - [`FfiVaultError::CorruptVault`] — the manifest handle has been
-///   wiped, a trash entry has no matching file on disk (an integrity
-///   violation, surfaced as a typed error rather than silently skipped),
-///   or any decrypt failure from `decrypt_block_file_bytes`
-///   (malformed file, signature/decap/tag failure, closed identity).
+///   wiped, a NOT-yet-purged trash entry has no matching file on disk
+///   (an integrity violation, surfaced as a typed error rather than
+///   silently skipped), or any decrypt failure from
+///   `decrypt_block_file_bytes` (malformed file, signature/decap/tag
+///   failure, closed identity).
 /// - [`FfiVaultError::FolderInvalid`] — a trashed file is present but
 ///   unreadable for non-NotFound IO reasons (permissions, EBUSY, etc).
 pub fn list_trashed_blocks(
@@ -88,6 +94,15 @@ pub fn list_trashed_blocks(
         manifest_body.trash.iter().map(|e| e.block_uuid).collect();
 
     for entry in &manifest_body.trash {
+        // #399: a purged entry legitimately has no trash file — its
+        // ciphertext was intentionally deleted by `purge_block` /
+        // `empty_trash`. Skip it silently rather than falling into the
+        // "no file ⇒ integrity error" check below, which is reserved for
+        // a NOT-yet-purged entry whose file is unexpectedly missing.
+        if entry.purged_at_ms.is_some() {
+            continue;
+        }
+
         let (path, ts) = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
             FfiVaultError::CorruptVault {
                 detail: format!(

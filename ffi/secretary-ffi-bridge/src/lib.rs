@@ -142,7 +142,7 @@ pub use edit::{
 };
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
-pub use purge::{purge_block, PurgeReport};
+pub use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use repair::{
     preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,

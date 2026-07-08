@@ -6,7 +6,7 @@
 //! - [`block`] — `BlockReadOutput`, `Record`, `FieldHandle`
 //! - [`save`] — `BlockInput`, `RecordInput`, `FieldInput`, `FieldInputValue`
 //! - [`contacts`] — `ContactSummary`
-//! - [`purge`] — `PurgeReport`
+//! - [`purge`] — `PurgeReport`, `EmptyTrashReport`
 //! - [`repair`] — `ApprovedWidening`, `AddedRecipient`, `WideningReport`, `RepairPreview`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
