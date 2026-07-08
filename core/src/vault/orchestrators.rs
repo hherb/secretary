@@ -2116,6 +2116,7 @@ pub fn trash_block(
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
         fingerprint: Some(content_fingerprint),
+        purged_at_ms: None,
         unknown: std::collections::BTreeMap::new(),
     });
     // Tick the manifest-level (vault-level) vector clock on the staged
