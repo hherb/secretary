@@ -111,6 +111,7 @@ pub mod device;
 pub mod edit;
 pub mod error;
 pub mod identity;
+pub mod purge;
 pub mod record;
 pub mod repair;
 pub mod restore;
@@ -141,6 +142,7 @@ pub use edit::{
 };
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
+pub use purge::{purge_block, PurgeReport};
 pub use record::{read_block, BlockReadOutput, FieldHandle, Record};
 pub use repair::{
     preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,

@@ -10,6 +10,7 @@ use crate::wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
 use crate::wrappers::identity::{
     CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
 };
+use crate::wrappers::purge::PurgeReport;
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
@@ -460,6 +461,40 @@ pub fn restore_block(
     let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
     let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::restore_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map_err(VaultError::from)
+}
+
+/// Permanently purge a trashed block — uniffi namespace fn projection of
+/// [`secretary_ffi_bridge::purge_block`]. See `docs/vault-format.md` §7
+/// (purge extension, #399) for the normative sequence.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` or
+///   `device_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::BlockNotInTrash`] — no `TrashEntry` exists for
+///   `block_uuid`.
+/// - [`VaultError::FolderInvalid`] — IO failure during the manifest
+///   atomic-write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn purge_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<PurgeReport, VaultError> {
+    let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::purge_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map(|r| PurgeReport {
+            block_uuid: r.block_uuid.to_vec(),
+            was_shared: r.was_shared,
+            recipient_count: r.recipient_count,
+            files_removed: r.files_removed,
+        })
         .map_err(VaultError::from)
 }
 

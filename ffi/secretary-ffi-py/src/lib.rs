@@ -52,6 +52,7 @@ mod contacts;
 mod device;
 mod errors;
 mod identity;
+mod purge;
 mod record;
 mod record_edit;
 mod repair;
@@ -83,6 +84,7 @@ use errors::{
     VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
+use purge::{purge_block, PurgeReport};
 use record::{read_block, BlockReadOutput, FieldHandle, Record};
 use record_edit::{append_record, edit_record, resurrect_record, tombstone_record, RecordContent};
 use repair::{
@@ -270,6 +272,13 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     // #399 Task 8: restore_block against a purged block.
     m.add("VaultBlockPurged", py.get_type::<VaultBlockPurged>())?;
+
+    // #399 Task 9: purge_block pyfunction + PurgeReport DTO. No new
+    // typed exception classes — purge_block's error surface
+    // (VaultBlockNotInTrash, VaultFolderInvalid, VaultSaveCryptoFailure,
+    // CorruptVault) is already registered above.
+    m.add_class::<PurgeReport>()?;
+    m.add_function(wrap_pyfunction!(purge_block, m)?)?;
 
     // D.1.6 share-contacts error surface — 2 typed exception classes
     // mirroring the bridge's FfiVaultError variants.
