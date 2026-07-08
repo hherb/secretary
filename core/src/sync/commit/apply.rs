@@ -162,6 +162,7 @@ mod tests {
             post_merge_clock: vec![],
             per_block_clocks: BTreeMap::new(),
             per_block_records: BTreeMap::new(),
+            merged_trash: Vec::new(),
         }
     }
 
