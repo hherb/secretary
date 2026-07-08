@@ -1731,3 +1731,128 @@ mod manifest_props {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #401 — trash-list merge CRDT invariants on merge_trash_entry / _lists.
+// Mirrors the record-merge properties: commutativity, associativity,
+// idempotence, well-formedness, plus purge monotonicity.
+// ---------------------------------------------------------------------------
+mod trash_merge_props {
+    use super::*;
+    use secretary_core::vault::manifest::TrashEntry;
+    use secretary_core::vault::record::UnknownValue;
+    use secretary_core::vault::trash_merge::{merge_trash_entry, merge_trash_lists};
+    use std::collections::BTreeMap;
+
+    fn arb_unknown_map() -> impl Strategy<Value = BTreeMap<String, UnknownValue>> {
+        // Values are canonical single-byte CBOR ints (0..=23 encode as one
+        // byte equal to the value), always valid `UnknownValue`s.
+        prop::collection::btree_map(
+            "[a-z]{1,4}",
+            (0u8..=23u8)
+                .prop_map(|n| UnknownValue::from_canonical_cbor(&[n]).expect("tiny CBOR int")),
+            0..3,
+        )
+    }
+
+    fn arb_trash_entry() -> impl Strategy<Value = TrashEntry> {
+        (
+            any::<[u8; 16]>(),
+            any::<u64>(),
+            any::<[u8; 16]>(),
+            prop::option::of(any::<[u8; 32]>()),
+            prop::option::of(any::<u64>()),
+            arb_unknown_map(),
+        )
+            .prop_map(
+                |(
+                    block_uuid,
+                    tombstoned_at_ms,
+                    tombstoned_by,
+                    fingerprint,
+                    purged_at_ms,
+                    unknown,
+                )| {
+                    TrashEntry {
+                        block_uuid,
+                        tombstoned_at_ms,
+                        tombstoned_by,
+                        fingerprint,
+                        purged_at_ms,
+                        unknown,
+                    }
+                },
+            )
+    }
+
+    proptest! {
+        /// Commutativity: merge_trash_entry(a, b) == merge_trash_entry(b, a).
+        #[test]
+        fn trash_merge_entry_commutativity(
+            uuid in any::<[u8; 16]>(),
+            a in arb_trash_entry(),
+            b in arb_trash_entry(),
+        ) {
+            let mut a = a; let mut b = b;
+            a.block_uuid = uuid; b.block_uuid = uuid;
+            prop_assert_eq!(merge_trash_entry(&a, &b), merge_trash_entry(&b, &a));
+        }
+
+        /// Associativity: merge(merge(a,b),c) == merge(a,merge(b,c)).
+        #[test]
+        fn trash_merge_entry_associativity(
+            uuid in any::<[u8; 16]>(),
+            a in arb_trash_entry(),
+            b in arb_trash_entry(),
+            c in arb_trash_entry(),
+        ) {
+            let mut a = a; let mut b = b; let mut c = c;
+            a.block_uuid = uuid; b.block_uuid = uuid; c.block_uuid = uuid;
+            let left = merge_trash_entry(&merge_trash_entry(&a, &b), &c);
+            let right = merge_trash_entry(&a, &merge_trash_entry(&b, &c));
+            prop_assert_eq!(left, right);
+        }
+
+        /// Idempotence: merge_trash_entry(a, a) == a.
+        #[test]
+        fn trash_merge_entry_idempotence(a in arb_trash_entry()) {
+            prop_assert_eq!(merge_trash_entry(&a, &a), a);
+        }
+
+        /// Purge monotonicity: merged purge marker is Some iff either side is,
+        /// and never decreases below either input.
+        #[test]
+        fn trash_merge_entry_purge_monotone(
+            uuid in any::<[u8; 16]>(),
+            a in arb_trash_entry(),
+            b in arb_trash_entry(),
+        ) {
+            let mut a = a; let mut b = b;
+            a.block_uuid = uuid; b.block_uuid = uuid;
+            let m = merge_trash_entry(&a, &b);
+            if a.purged_at_ms.is_some() || b.purged_at_ms.is_some() {
+                prop_assert!(m.purged_at_ms.is_some());
+            } else {
+                prop_assert!(m.purged_at_ms.is_none());
+            }
+            prop_assert!(m.purged_at_ms >= a.purged_at_ms);
+            prop_assert!(m.purged_at_ms >= b.purged_at_ms);
+        }
+
+        /// Well-formedness: merge_trash_lists output is sorted ascending by
+        /// block_uuid with no duplicates, for arbitrary (possibly malformed)
+        /// input lists.
+        #[test]
+        fn trash_merge_lists_well_formed(
+            lists in prop::collection::vec(
+                prop::collection::vec(arb_trash_entry(), 0..4), 0..4
+            ),
+        ) {
+            let refs: Vec<&[TrashEntry]> = lists.iter().map(|l| l.as_slice()).collect();
+            let merged = merge_trash_lists(&refs);
+            for w in merged.windows(2) {
+                prop_assert!(w[0].block_uuid < w[1].block_uuid, "sorted, no dup");
+            }
+        }
+    }
+}
