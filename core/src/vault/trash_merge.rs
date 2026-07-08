@@ -130,6 +130,24 @@ mod tests {
     }
 
     #[test]
+    fn merge_lists_folds_colliding_uuid() {
+        let a = te(0x05, 100, 0xAA, Some(0x11), None);
+        let b = te(0x05, 200, 0xBB, Some(0x22), Some(40));
+        let expected = merge_trash_entry(&a, &b);
+
+        // Same list: two entries sharing block_uuid must fold, not overwrite.
+        let merged_same_list = merge_trash_lists(&[&[a.clone(), b.clone()][..]]);
+        assert_eq!(merged_same_list.len(), 1, "colliding uuid must dedupe");
+        assert_eq!(merged_same_list[0], expected);
+
+        // Across two lists: same fold must happen when entries arrive from
+        // separate conflict-copy lists rather than the same slice.
+        let merged_across_lists = merge_trash_lists(&[&[a][..], &[b][..]]);
+        assert_eq!(merged_across_lists.len(), 1, "colliding uuid must dedupe");
+        assert_eq!(merged_across_lists[0], expected);
+    }
+
+    #[test]
     fn purge_some_if_either_and_max() {
         assert_eq!(
             merge_trash_entry(&te(1, 10, 0, None, None), &te(1, 10, 0, None, Some(50)))
