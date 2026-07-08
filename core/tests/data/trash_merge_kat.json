@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "comment": "#401 block-level trash-list merge KAT (docs/crypto-design.md §11.6). Replayed by core/tests/conflict.rs::trash_merge_kat_replays_match_rust and core/tests/python/conformance.py::py_merge_trash. Pins union, latest-tombstone-wins triple, monotone purged_at_ms (Some-if-either / max / None<Some), and unknown-map union.",
+  "vectors": [
+    {
+      "name": "union_disjoint",
+      "description": "Two lists with distinct block_uuids union into a sorted 2-entry list.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "02020202020202020202020202020202", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null}
+        ],
+        [
+          {"block_uuid_hex": "01010101010101010101010101010101", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "01010101010101010101010101010101", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null},
+        {"block_uuid_hex": "02020202020202020202020202020202", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null}
+      ]
+    },
+    {
+      "name": "latest_triple_wins_purge_independent",
+      "description": "Same block_uuid: side A later triple but unpurged; side B earlier triple but purged. Merged keeps A's triple and B's purge marker.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "07070707070707070707070707070707", "tombstoned_at_ms": 200, "tombstoned_by_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "fingerprint_hex": "1111111111111111111111111111111111111111111111111111111111111111", "purged_at_ms": null}
+        ],
+        [
+          {"block_uuid_hex": "07070707070707070707070707070707", "tombstoned_at_ms": 100, "tombstoned_by_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "fingerprint_hex": "2222222222222222222222222222222222222222222222222222222222222222", "purged_at_ms": 50}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "07070707070707070707070707070707", "tombstoned_at_ms": 200, "tombstoned_by_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "fingerprint_hex": "1111111111111111111111111111111111111111111111111111111111111111", "purged_at_ms": 50}
+      ]
+    },
+    {
+      "name": "purge_max_millis",
+      "description": "Both sides purged at different times: merged takes the max.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "09090909090909090909090909090909", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": 30}
+        ],
+        [
+          {"block_uuid_hex": "09090909090909090909090909090909", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": 70}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "09090909090909090909090909090909", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": 70}
+      ]
+    },
+    {
+      "name": "unknown_union",
+      "description": "Disjoint unknown keys on the same block_uuid union together.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null, "unknown_hex": {"ka": "0a"}}
+        ],
+        [
+          {"block_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null, "unknown_hex": {"kb": "0b"}}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null, "unknown_hex": {"ka": "0a", "kb": "0b"}}
+      ]
+    }
+  ]
+}
