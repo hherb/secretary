@@ -599,6 +599,12 @@ pub fn open_vault(
     // repair::complete_pending_trash_renames.
     super::repair::complete_pending_trash_renames(folder, &manifest_body);
 
+    // #399: best-effort removal of local trash/ files for entries the
+    // signed manifest already marks purged — this is what propagates a
+    // purge across the owner's devices via manifest file sync. Gated on
+    // "not live in manifest.blocks" so a concurrent restore always wins.
+    super::repair::sweep_purged_trash_files(folder, &manifest_body);
+
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,

@@ -425,3 +425,214 @@ fn re_purge_is_idempotent_no_second_resign() {
         "re-purge on an already-purged block must not otherwise mutate the manifest body"
     );
 }
+
+// ---------------------------------------------------------------------------
+// sweep_purged_trash_files — Task 4 (open-time purge-cleanup sweep)
+// ---------------------------------------------------------------------------
+
+/// Re-sign `manifest` with the still-open identity and atomically write it,
+/// mirroring `crash_recovery.rs`'s hand-mutation-then-resign pattern (the
+/// test holds the owner identity, so this is a legitimate re-sign — it
+/// simulates a manifest that arrived via file sync, e.g. from a peer device
+/// that purged or restored the same block).
+fn resign_and_write(
+    folder: &std::path::Path,
+    open: &OpenVault,
+    manifest: &Manifest,
+    now_ms: u64,
+    rng: &mut ChaCha20Rng,
+) {
+    let header = ManifestHeader {
+        vault_uuid: open.manifest_file.header.vault_uuid,
+        created_at_ms: open.manifest_file.header.created_at_ms,
+        last_mod_ms: now_ms,
+    };
+    let pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    let mut nonce = [0u8; 24];
+    rng.fill_bytes(&mut nonce);
+    let mf = sign_manifest(
+        header,
+        manifest,
+        &open.identity_block_key,
+        &nonce,
+        open.manifest_file.author_fingerprint,
+        &open.identity.ed25519_sk,
+        &pq_sk,
+    )
+    .unwrap();
+    fs::write(
+        folder.join("manifest.cbor.enc"),
+        encode_manifest_file(&mf).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Case 1: a purged, NOT-live entry whose `trash/` file has lingered (e.g.
+/// a peer device received the already-purged manifest via file sync before
+/// running its own delete) must be removed by the open-time sweep. This is
+/// what propagates a purge across the owner's devices.
+#[test]
+fn open_vault_sweep_removes_purged_file_when_not_live() {
+    let (dir, _mnemonic, pw) = make_fast_vault(70, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x70; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe0; 16], [0xc0; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "to-purge"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    let report = purge_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng).unwrap();
+    assert!(report.files_removed >= 1);
+    assert!(
+        trash_files_for(folder, &block_uuid).is_empty(),
+        "purge_block's own best-effort delete already removed the file"
+    );
+
+    // Recreate the file to simulate a peer device that has not yet run its
+    // own delete — the sweep's job is to converge that peer to the purged
+    // state at its next open.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let linger_path = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
+    fs::write(&linger_path, b"stale ciphertext lingering on a peer device").unwrap();
+    assert!(linger_path.is_file(), "fixture sanity: file must linger");
+
+    drop(open);
+    let _reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(
+        !linger_path.exists(),
+        "open-time sweep must remove a purged, non-live trash file"
+    );
+}
+
+/// Case 2: a purged entry whose `block_uuid` IS live again in
+/// `manifest.blocks` (a concurrent restore won the merge) must be left
+/// completely untouched — the "not live" gate is what makes the restore
+/// win safely.
+#[test]
+fn open_vault_sweep_keeps_purged_file_when_uuid_is_live() {
+    let (dir, _mnemonic, pw) = make_fast_vault(71, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x71; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe1; 16], [0xc1; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "gen-1"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_path = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
+    assert!(trash_path.is_file(), "fixture sanity");
+
+    // Same uuid re-saved (restore-equivalent): manifest now has both a live
+    // BlockEntry and the (stale) TrashEntry, mirroring
+    // `crash_recovery.rs::sweep_skips_live_uuid`.
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "gen-2"),
+        &recipients,
+        device_uuid,
+        3_000,
+        &mut rng,
+    )
+    .unwrap();
+    assert!(open
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+
+    // Hand-mark the stale TrashEntry purged: models a manifest merge where
+    // a peer's purge and this device's restore both landed. The gate must
+    // never delete a live block's trash residue, regardless of the purge
+    // flag.
+    let mut manifest = open.manifest.clone();
+    let idx = manifest
+        .trash
+        .iter()
+        .position(|t| t.block_uuid == block_uuid)
+        .unwrap();
+    manifest.trash[idx].purged_at_ms = Some(9_999);
+    resign_and_write(folder, &open, &manifest, 4_000, &mut rng);
+    drop(open);
+
+    let reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(
+        trash_path.is_file(),
+        "sweep must never delete a live block's trash file, purged or not"
+    );
+    assert!(reopened
+        .manifest
+        .blocks
+        .iter()
+        .any(|b| b.block_uuid == block_uuid));
+    assert!(reopened
+        .manifest
+        .trash
+        .iter()
+        .any(|t| t.block_uuid == block_uuid && t.purged_at_ms == Some(9_999)));
+}
+
+/// Case 3: a NOT-purged trash entry's file must be left untouched by the
+/// sweep (baseline regression — the sweep only acts on purged entries).
+#[test]
+fn open_vault_sweep_keeps_non_purged_trash_file() {
+    let (dir, _mnemonic, pw) = make_fast_vault(72, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x72; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe2; 16], [0xc2; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "keep-me"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let trash_path = folder
+        .join("trash")
+        .join(format!("{uuid_hex}.cbor.enc.2000"));
+    assert!(trash_path.is_file(), "fixture sanity");
+    assert!(open
+        .manifest
+        .trash
+        .iter()
+        .any(|t| t.block_uuid == block_uuid && t.purged_at_ms.is_none()));
+    drop(open);
+
+    let _reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(
+        trash_path.is_file(),
+        "sweep must not touch a not-purged trash entry's file"
+    );
+}

@@ -68,3 +68,66 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
         let _ = relocate_and_log(&entry.block_uuid, &trash_dir, &blocks_path, &trash_path);
     }
 }
+
+/// Best-effort removal of local `trash/` files for entries the signed
+/// manifest marks purged (#399). For every `TrashEntry` with
+/// `purged_at_ms.is_some()` whose `block_uuid` is **not live** in
+/// `manifest.blocks`, every `trash/<uuid>.cbor.enc.*` file is deleted. The
+/// "not live" gate mirrors [`complete_pending_trash_renames`] exactly and
+/// is what makes a concurrent restore win safely: a restored block is live
+/// again, so its file is left untouched regardless of the (stale) purge
+/// flag on the merged-in `TrashEntry`.
+///
+/// No manifest mutation, no signing, no trust-state change; idempotent
+/// (a purged, non-live entry with no matching file is simply a no-op); every
+/// I/O failure is logged at `tracing::warn!` and otherwise tolerated — a
+/// leftover file is a benign orphan, never a correctness problem, since
+/// `restore_block` already fails fast with `VaultError::BlockPurged` on a
+/// purged entry regardless of what is on disk.
+///
+/// This is what propagates a purge across the owner's devices via manifest
+/// file sync: a peer device that already synced the purged manifest but has
+/// not yet run its own local delete converges to the purged state at its
+/// next `open_vault`.
+pub(crate) fn sweep_purged_trash_files(folder: &Path, manifest: &Manifest) {
+    let trash_dir = folder.join(TRASH_SUBDIR);
+    for entry in &manifest.trash {
+        if entry.purged_at_ms.is_none() {
+            continue;
+        }
+        // Live-and-purged (should not arise from a single well-behaved
+        // device, but can appear as a merge outcome — e.g. this device's
+        // concurrent restore and a peer's purge both landing): never
+        // delete a live block's file.
+        if manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == entry.block_uuid)
+        {
+            continue;
+        }
+        let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
+        let prefix = format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.");
+        let Ok(rd) = std::fs::read_dir(&trash_dir) else {
+            continue;
+        };
+        for de in rd.flatten() {
+            let path = de.path();
+            let is_match = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with(&prefix))
+                .unwrap_or(false);
+            if !is_match {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!(
+                    block_uuid = %uuid_hex,
+                    error = %e,
+                    "purge sweep: failed to remove purged trash file; benign orphan remains"
+                );
+            }
+        }
+    }
+}

@@ -24,7 +24,7 @@ use super::classify::{
     WideningReport,
 };
 use super::policy::RepairPolicy;
-use super::sweep::complete_pending_trash_renames;
+use super::sweep::{complete_pending_trash_renames, sweep_purged_trash_files};
 
 /// One `ConsentEligibleWidening` collected during `preview_repair`'s
 /// classification pass, before the added-recipient uuids have been
@@ -274,6 +274,7 @@ pub fn repair_vault(
     if adoptions.is_empty() {
         // Healthy vault: repair degrades to a plain open (idempotent).
         complete_pending_trash_renames(folder, &manifest);
+        sweep_purged_trash_files(folder, &manifest);
         return Ok(OpenVault {
             identity_block_key: unlocked.identity_block_key,
             identity: unlocked.identity,
@@ -304,6 +305,7 @@ pub fn repair_vault(
     )?;
 
     complete_pending_trash_renames(folder, &manifest);
+    sweep_purged_trash_files(folder, &manifest);
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
