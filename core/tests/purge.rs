@@ -24,9 +24,9 @@ use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
-    encode_manifest_file, open_vault, purge_block, restore_block, save_block, sign_manifest,
-    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker,
-    VaultError,
+    empty_trash, encode_manifest_file, open_vault, purge_block, restore_block, save_block,
+    sign_manifest, trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault,
+    Unlocker, VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -635,4 +635,168 @@ fn open_vault_sweep_keeps_non_purged_trash_file() {
         trash_path.is_file(),
         "sweep must not touch a not-purged trash entry's file"
     );
+}
+
+// ---------------------------------------------------------------------------
+// empty_trash — Task 5 (single-resign batch purge)
+// ---------------------------------------------------------------------------
+
+/// Build a fresh vault with three trashed blocks: one owner-only trashed
+/// (not yet purged), one shared-with-a-second-recipient trashed (not yet
+/// purged), and one owner-only trashed AND already purged (via
+/// `purge_block`, so its `TrashEntry.purged_at_ms` is already `Some(1_600)`
+/// before `empty_trash` ever runs). All three share the same device, so
+/// `empty_trash`'s single vector-clock tick / single re-sign is provable
+/// against a genuinely mixed target set. The RNG is returned positioned so
+/// callers can pass it straight into `empty_trash`.
+fn setup_vault_with_mixed_trash() -> (tempfile::TempDir, OpenVault, [u8; 16], ChaCha20Rng) {
+    let (dir, _mnemonic, pw) = make_fast_vault(90, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x90; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0x91; 16];
+
+    // 1. owner-only, trashed, not purged.
+    let owner_only_uuid = [0xa1; 16];
+    let owner_only_recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(owner_only_uuid, "owner-only"),
+        &owner_only_recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(
+        folder,
+        &mut open,
+        owner_only_uuid,
+        device_uuid,
+        1_100,
+        &mut rng,
+    )
+    .unwrap();
+
+    // 2. shared with a second recipient, trashed, not purged.
+    let shared_uuid = [0xa2; 16];
+    let other_card = mint_external_card(91, "Other");
+    let shared_recipients = vec![open.owner_card.clone(), other_card];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(shared_uuid, "shared"),
+        &shared_recipients,
+        device_uuid,
+        1_200,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, shared_uuid, device_uuid, 1_300, &mut rng).unwrap();
+
+    // 3. owner-only, trashed, AND already purged — must be skipped by
+    // `empty_trash` (not re-counted, `purged_at_ms` left untouched).
+    let purged_uuid = [0xa3; 16];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(purged_uuid, "already-purged"),
+        &owner_only_recipients,
+        device_uuid,
+        1_400,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, purged_uuid, device_uuid, 1_500, &mut rng).unwrap();
+    purge_block(folder, &mut open, purged_uuid, device_uuid, 1_600, &mut rng).unwrap();
+
+    (dir, open, device_uuid, rng)
+}
+
+/// The single-resign requirement, proven directly: seed a mixed trash (one
+/// owner-only unpurged, one shared unpurged, one already-purged), call
+/// `empty_trash` once, and assert both the aggregate classification counts
+/// AND that the two freshly-purged entries share the exact same
+/// `purged_at_ms == now_ms` — which could only happen if both were staged
+/// into the same manifest clone before a single `resign_and_write_manifest`
+/// call. The already-purged entry must be left at its original stamp,
+/// proving it was skipped rather than re-counted.
+#[test]
+fn empty_trash_purges_all_unpurged_in_single_resign() {
+    let (dir, mut open, device, mut rng) = setup_vault_with_mixed_trash();
+    let folder = dir.path();
+
+    let report = empty_trash(folder, &mut open, device, 7_000, &mut rng).unwrap();
+
+    assert_eq!(report.purged_count, 2, "already-purged is skipped");
+    assert_eq!(report.owner_only_count, 1);
+    assert_eq!(report.shared_count, 1);
+    assert_eq!(report.unknown_count, 0);
+    assert!(report.files_removed >= 2);
+    assert_eq!(
+        report.files_failed, 0,
+        "no removal failures expected in this fixture"
+    );
+
+    // Every trash entry is now purged (the pre-existing one always was).
+    assert!(open.manifest.trash.iter().all(|t| t.purged_at_ms.is_some()));
+
+    // Single new signed manifest: both freshly-purged entries share the
+    // exact same now_ms stamp.
+    let purged_stamps: std::collections::HashSet<_> = open
+        .manifest
+        .trash
+        .iter()
+        .filter_map(|t| t.purged_at_ms)
+        .collect();
+    assert!(
+        purged_stamps.contains(&7_000),
+        "both freshly-purged entries must share now_ms=7000"
+    );
+
+    // The pre-existing purge keeps its own original stamp — untouched, not
+    // re-stamped with the new now_ms.
+    let pre_purged_uuid = [0xa3; 16];
+    let pre_purged_stamp = open
+        .manifest
+        .trash
+        .iter()
+        .find(|t| t.block_uuid == pre_purged_uuid)
+        .unwrap()
+        .purged_at_ms;
+    assert_eq!(
+        pre_purged_stamp,
+        Some(1_600),
+        "already-purged entry must not be touched by empty_trash"
+    );
+}
+
+/// Calling `empty_trash` when there is nothing to purge (no trash at all)
+/// must return a zeroed default report WITHOUT re-signing the manifest.
+#[test]
+fn empty_trash_on_empty_target_set_is_noop_no_resign() {
+    let (dir, _mnemonic, pw) = make_fast_vault(92, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x92; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0x93; 16];
+
+    let manifest_file_before = open.manifest_file.clone();
+    let manifest_before = open.manifest.clone();
+
+    let report = empty_trash(folder, &mut open, device_uuid, 5_000, &mut rng).unwrap();
+
+    assert_eq!(report.purged_count, 0);
+    assert_eq!(report.shared_count, 0);
+    assert_eq!(report.owner_only_count, 0);
+    assert_eq!(report.unknown_count, 0);
+    assert_eq!(report.files_removed, 0);
+    assert_eq!(report.files_failed, 0);
+    assert_eq!(
+        open.manifest_file, manifest_file_before,
+        "empty target set must not re-sign the manifest"
+    );
+    assert_eq!(open.manifest, manifest_before);
 }

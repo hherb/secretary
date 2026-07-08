@@ -59,21 +59,24 @@ pub struct PurgeReport {
 /// Best-effort removal of every `trash/<uuid>.cbor.enc.*` file for
 /// `block_uuid` (there is normally exactly one — the current tombstoned
 /// copy — but a crash-residue orphan from an earlier trash/restore cycle
-/// could also match). Returns the count actually removed.
+/// could also match). Returns `(removed, failed)` — the count actually
+/// removed and the count whose `fs::remove_file` call errored.
 ///
 /// Individual failures are logged via `tracing::warn!` and tolerated: a
 /// lingering file is a benign orphan (`open_vault`'s fingerprint check
 /// only walks `manifest.blocks`, and a purged UUID is never re-added
-/// there), not a correctness problem. Caller must have already
-/// established `block_uuid` is a trash entry (true by construction for
-/// every `purge_block` call site).
-fn remove_trash_files(folder: &Path, block_uuid: &[u8; 16]) -> usize {
+/// there), not a correctness problem — callers that don't need the
+/// failure count (`purge_block`) simply discard it. Caller must have
+/// already established `block_uuid` is a trash entry (true by
+/// construction for every call site).
+fn remove_trash_files(folder: &Path, block_uuid: &[u8; 16]) -> (usize, usize) {
     let trash_dir = folder.join(TRASH_SUBDIR);
     let uuid_hex = format_uuid_hyphenated(block_uuid);
     let prefix = format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.");
     let mut removed = 0usize;
+    let mut failed = 0usize;
     let Ok(rd) = std::fs::read_dir(&trash_dir) else {
-        return 0;
+        return (0, 0);
     };
     for entry in rd.flatten() {
         let path = entry.path();
@@ -87,14 +90,17 @@ fn remove_trash_files(folder: &Path, block_uuid: &[u8; 16]) -> usize {
         }
         match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
-            Err(e) => tracing::warn!(
-                block_uuid = %uuid_hex,
-                error = %e,
-                "purge_block: failed to remove trash file; benign orphan remains"
-            ),
+            Err(e) => {
+                failed += 1;
+                tracing::warn!(
+                    block_uuid = %uuid_hex,
+                    error = %e,
+                    "failed to remove trash file; benign orphan remains"
+                );
+            }
         }
     }
-    removed
+    (removed, failed)
 }
 
 /// Best-effort classification of the current trash target
@@ -163,7 +169,7 @@ pub fn purge_block(
     // write. Still best-effort clean any residual file (crash residue
     // from a prior partial purge, or a lingering orphan).
     if open.manifest.trash[idx].purged_at_ms.is_some() {
-        let files_removed = remove_trash_files(folder, &block_uuid);
+        let (files_removed, _files_failed) = remove_trash_files(folder, &block_uuid);
         return Ok(PurgeReport {
             block_uuid,
             was_shared: None,
@@ -207,13 +213,137 @@ pub fn purge_block(
     // Step 6: best-effort physical removal. The uuid is (by construction,
     // step 1) a trash entry, never a live `manifest.blocks` entry, so
     // deleting its `trash/` files cannot orphan a live block.
-    let files_removed = remove_trash_files(folder, &block_uuid);
+    let (files_removed, _files_failed) = remove_trash_files(folder, &block_uuid);
     Ok(PurgeReport {
         block_uuid,
         was_shared,
         recipient_count,
         files_removed,
     })
+}
+
+/// Report of a completed `empty_trash` call: aggregate counts across every
+/// `TrashEntry` that was not-yet-purged and not-live at call time.
+///
+/// `Default` yields the all-zero report `empty_trash` returns when there is
+/// nothing to purge (no manifest write occurs in that case).
+#[derive(Debug, Clone, Default)]
+pub struct EmptyTrashReport {
+    /// Number of `TrashEntry` records newly marked purged by this call.
+    pub purged_count: usize,
+    /// Of `purged_count`, how many were classified as shared (at least one
+    /// non-owner recipient) at classification time.
+    pub shared_count: usize,
+    /// Of `purged_count`, how many were classified as owner-only.
+    pub owner_only_count: usize,
+    /// Of `purged_count`, how many could not be classified (trash file
+    /// unreadable/undecodable — an honest "unknown", never fabricated).
+    pub unknown_count: usize,
+    /// Total on-disk `trash/` files removed across every purged entry.
+    pub files_removed: usize,
+    /// Total on-disk `trash/` file removals that errored (benign orphans;
+    /// logged via `tracing::warn!` at removal time, never fatal).
+    pub files_failed: usize,
+}
+
+/// Permanently purge every currently-trashed, not-already-purged,
+/// not-live block in one batch — the "empty trash" user operation.
+/// `docs/vault-format.md` §7 (purge extension, #399).
+///
+/// Targets are every `TrashEntry` with `purged_at_ms.is_none()` whose
+/// `block_uuid` does not also appear in `manifest.blocks` (a live entry
+/// there means a concurrent restore won the merge — see
+/// `repair.rs`/`crash_recovery.rs`'s "not live" gate — and must never be
+/// purged).
+///
+/// Unlike `purge_block`, which re-signs the manifest once per call, this
+/// is a **single batch commit**: every target is classified against the
+/// still-on-disk trash file *before* the write, then all of them are
+/// marked purged on one manifest clone, ticked once, re-signed once, and
+/// atomically written once — one `now_ms`, one signature, one on-disk
+/// generation. Only after that single write succeeds does the best-effort
+/// file cleanup run (per-file failure never aborts the batch, mirroring
+/// `purge_block`'s step 6).
+///
+/// An empty target set (nothing to purge) returns
+/// `EmptyTrashReport::default()` without touching the manifest at all —
+/// no clock tick, no re-sign, no write.
+pub fn empty_trash(
+    folder: &Path,
+    open: &mut OpenVault,
+    device_uuid: [u8; 16],
+    now_ms: u64,
+    rng: &mut (impl RngCore + CryptoRng),
+) -> Result<EmptyTrashReport, VaultError> {
+    // Collect indices of not-yet-purged, not-live trash entries.
+    let targets: Vec<usize> = open
+        .manifest
+        .trash
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            t.purged_at_ms.is_none()
+                && !open
+                    .manifest
+                    .blocks
+                    .iter()
+                    .any(|b| b.block_uuid == t.block_uuid)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if targets.is_empty() {
+        return Ok(EmptyTrashReport::default());
+    }
+
+    // Classify every target BEFORE the manifest write, while the trash
+    // files are still guaranteed present (reporting-only, best-effort —
+    // mirrors purge_block's step 3).
+    let mut report = EmptyTrashReport::default();
+    let mut target_uuids: Vec<[u8; 16]> = Vec::with_capacity(targets.len());
+    for &idx in &targets {
+        let block_uuid = open.manifest.trash[idx].block_uuid;
+        let tombstoned_at_ms = open.manifest.trash[idx].tombstoned_at_ms;
+        match classify_trash_target(folder, &block_uuid, tombstoned_at_ms, &open.owner_card) {
+            Some((true, _)) => report.shared_count += 1,
+            Some((false, _)) => report.owner_only_count += 1,
+            None => report.unknown_count += 1,
+        }
+        target_uuids.push(block_uuid);
+    }
+
+    // Single commit point: stage every target purged on one manifest
+    // clone, tick the vault clock once, re-sign once, write once.
+    let mut staged = open.manifest.clone();
+    for &idx in &targets {
+        staged.trash[idx].purged_at_ms = Some(now_ms);
+    }
+    tick_clock(&mut staged.vector_clock, &device_uuid)?;
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
+        &staged,
+        &open.identity,
+        &open.identity_block_key,
+        &open.manifest_file.header,
+        now_ms,
+        open.manifest_file.author_fingerprint,
+        rng,
+        "empty_trash: failed to write manifest.cbor.enc",
+    )?;
+
+    // Swap staged state into `open`. From here the batch purge has
+    // happened; nothing below may fail the call.
+    open.manifest = staged;
+    open.manifest_file = new_manifest_file;
+    report.purged_count = targets.len();
+
+    // Best-effort physical removal across every purged target. Per-file
+    // failure never aborts the batch (mirrors purge_block's step 6).
+    for block_uuid in &target_uuids {
+        let (removed, failed) = remove_trash_files(folder, block_uuid);
+        report.files_removed += removed;
+        report.files_failed += failed;
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
