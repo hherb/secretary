@@ -197,18 +197,25 @@ func assertEmptyTrashReport(
     check: (Bool, String, String) -> Bool
 ) {
     guard let pinned = expected["empty_trash_report"] as? [String: Any] else { return }
-    if let want = pinned["purged_count"] as? Int {
-        _ = check(Int(actual.purgedCount) == want, name, "empty_trash_report.purged_count mismatch (got \(actual.purgedCount), want \(want))")
-    }
-    if let want = pinned["shared_count"] as? Int {
-        _ = check(Int(actual.sharedCount) == want, name, "empty_trash_report.shared_count mismatch (got \(actual.sharedCount), want \(want))")
-    }
-    if let want = pinned["owner_only_count"] as? Int {
-        _ = check(Int(actual.ownerOnlyCount) == want, name, "empty_trash_report.owner_only_count mismatch (got \(actual.ownerOnlyCount), want \(want))")
-    }
-    if let want = pinned["unknown_count"] as? Int {
-        _ = check(Int(actual.unknownCount) == want, name, "empty_trash_report.unknown_count mismatch (got \(actual.unknownCount), want \(want))")
-    }
+    // The four count fields are MANDATORY exact-match — parity with the
+    // Kotlin runner's `pinned.getLong(...)` (throws if absent) and the
+    // Rust reference's non-Option `u64` fields in
+    // core/tests/conformance_kat_helpers/types.rs::ExpectedEmptyTrashReport
+    // (asserted with bare `assert_eq!`). The `as! Int` force-cast is the
+    // vector-authoring contract used throughout this runner (e.g.
+    // `inputs["now_ms"] as! Int`): a vector missing one of these keys is a
+    // malformed KAT and must trap loudly, never silently skip — that
+    // silent skip was the exact cross-language drift this suite catches.
+    let purgedWant = pinned["purged_count"] as! Int
+    _ = check(Int(actual.purgedCount) == purgedWant, name, "empty_trash_report.purged_count mismatch (got \(actual.purgedCount), want \(purgedWant))")
+    let sharedWant = pinned["shared_count"] as! Int
+    _ = check(Int(actual.sharedCount) == sharedWant, name, "empty_trash_report.shared_count mismatch (got \(actual.sharedCount), want \(sharedWant))")
+    let ownerOnlyWant = pinned["owner_only_count"] as! Int
+    _ = check(Int(actual.ownerOnlyCount) == ownerOnlyWant, name, "empty_trash_report.owner_only_count mismatch (got \(actual.ownerOnlyCount), want \(ownerOnlyWant))")
+    let unknownWant = pinned["unknown_count"] as! Int
+    _ = check(Int(actual.unknownCount) == unknownWant, name, "empty_trash_report.unknown_count mismatch (got \(actual.unknownCount), want \(unknownWant))")
+    // files_removed_min / files_failed remain optional — parity with
+    // Kotlin's `has()`-guarded reads and Rust's `Option<u64>` fields.
     if let min = pinned["files_removed_min"] as? Int {
         _ = check(Int(actual.filesRemoved) >= min, name, "empty_trash_report.files_removed \(actual.filesRemoved) < expected minimum \(min)")
     }
