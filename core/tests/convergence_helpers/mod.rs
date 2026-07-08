@@ -1,4 +1,8 @@
-//! Reusable two-device convergence harness. See `convergence.rs`.
+//! Reusable two-device convergence harness. See `convergence.rs` and
+//! `sync_trash_merge.rs` — two separate test binaries share this module
+//! tree, each exercising a different subset of it.
+
+#![allow(dead_code, unused_imports)] // not every test consumes every helper.
 
 mod assert;
 mod baseline;

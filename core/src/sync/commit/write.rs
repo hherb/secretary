@@ -161,6 +161,22 @@ pub fn commit_with_decisions(
         }
     }
 
+    // #401: apply the reconciled trash list and resolve any live-vs-trash
+    // collision so the signed manifest stays well-formed (disjoint
+    // blocks/trash). Purge is terminal — a purged trash entry whose block
+    // is (concurrently) live wins: the block is dropped, the entry kept.
+    // A non-purged collision loses to the live block. commit never deletes
+    // block *files*; the open-time sweep destroys purged ciphertext.
+    let live_uuids: BTreeSet<[u8; 16]> = new_manifest.blocks.iter().map(|b| b.block_uuid).collect();
+    let (blocks_to_remove, reconciled_trash) =
+        crate::vault::resolve_live_vs_trash(&live_uuids, draft.merged_trash.clone());
+    if !blocks_to_remove.is_empty() {
+        new_manifest
+            .blocks
+            .retain(|b| !blocks_to_remove.contains(&b.block_uuid));
+    }
+    new_manifest.trash = reconciled_trash;
+
     // Step 7: sign + encode + atomic-write the manifest. The manifest
     // header preserves vault_uuid + created_at_ms from the prior
     // envelope; only last_mod_ms advances.
