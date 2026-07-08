@@ -69,14 +69,16 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
     }
 }
 
-/// Best-effort removal of local `trash/` files for entries the signed
-/// manifest marks purged (#399). For every `TrashEntry` with
-/// `purged_at_ms.is_some()` whose `block_uuid` is **not live** in
-/// `manifest.blocks`, every `trash/<uuid>.cbor.enc.*` file is deleted. The
-/// "not live" gate mirrors [`complete_pending_trash_renames`] exactly and
-/// is what makes a concurrent restore win safely: a restored block is live
-/// again, so its file is left untouched regardless of the (stale) purge
-/// flag on the merged-in `TrashEntry`.
+/// Best-effort removal of local `trash/` **and** `blocks/` files for
+/// entries the signed manifest marks purged (#399, extended by #401). For
+/// every `TrashEntry` with `purged_at_ms.is_some()` whose `block_uuid` is
+/// **not live** in `manifest.blocks`, every `trash/<uuid>.cbor.enc.*` file
+/// is deleted, and the exact `blocks/<uuid>.cbor.enc` file (if any) is
+/// deleted too. The "not live" gate mirrors
+/// [`complete_pending_trash_renames`] exactly and is what makes a
+/// concurrent restore win safely: a restored block is live again, so its
+/// files are left untouched regardless of the (stale) purge flag on the
+/// merged-in `TrashEntry`.
 ///
 /// No manifest mutation, no signing, no trust-state change; idempotent
 /// (a purged, non-live entry with no matching file is simply a no-op); every
@@ -88,7 +90,11 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 /// This is what propagates a purge across the owner's devices via manifest
 /// file sync: a peer device that already synced the purged manifest but has
 /// not yet run its own local delete converges to the purged state at its
-/// next `open_vault`.
+/// next `open_vault`. The `blocks/` pass additionally completes a purge on
+/// a device that had concurrently restored the block before a peer's purge
+/// won at the manifest level in a conflict-copy merge (§11.6): that
+/// device's leftover `blocks/<uuid>.cbor.enc` is otherwise never cleaned up
+/// since the block is purged-and-not-live, not trashed-and-not-live.
 pub(crate) fn sweep_purged_trash_files(folder: &Path, manifest: &Manifest) {
     // Build the target prefix set once. Purged tombstones are terminal and
     // never pruned from `manifest.trash`, so this set grows over a vault's
@@ -135,6 +141,28 @@ pub(crate) fn sweep_purged_trash_files(folder: &Path, manifest: &Manifest) {
                 error = %e,
                 "purge sweep: failed to remove purged trash file; benign orphan remains"
             );
+        }
+    }
+
+    // #401: a purged, not-live entry may also have a leftover
+    // `blocks/<uuid>.cbor.enc` — the residue of a conflict-copy merge in
+    // which this device concurrently restored the block before a peer's
+    // purge won at the manifest level (§11.6). Remove it to complete the
+    // purge on this device. Exact filename (no tombstone suffix), so no
+    // read_dir scan is needed.
+    let blocks_dir = folder.join(BLOCKS_SUBDIR);
+    for (_prefix, uuid_hex) in &targets {
+        let blocks_path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+        match std::fs::remove_file(&blocks_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // no residue — normal
+            Err(e) => {
+                tracing::warn!(
+                    block_uuid = %uuid_hex,
+                    error = %e,
+                    "purge sweep: failed to remove purged blocks/ residue; benign orphan remains"
+                );
+            }
         }
     }
 }

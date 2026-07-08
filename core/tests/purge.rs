@@ -637,6 +637,66 @@ fn open_vault_sweep_keeps_non_purged_trash_file() {
     );
 }
 
+/// #401: a purged, NOT-live entry may also leave a leftover
+/// `blocks/<uuid>.cbor.enc` — the residue of a conflict-copy merge in which
+/// this device had concurrently restored the block before a peer's purge
+/// won at the manifest level. The open-time sweep must unlink that file
+/// too, completing the purge on this device.
+///
+/// Built directly from `make_fast_vault` (rather than
+/// `setup_vault_with_trashed_block`, which does not return the vault
+/// password) since the reopen below needs the password in scope, mirroring
+/// the `open_vault_sweep_*` fixtures above.
+#[test]
+fn sweep_removes_purged_blocks_residue() {
+    let (dir, _mnemonic, pw) = make_fast_vault(73, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x73; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let (device_uuid, block_uuid) = ([0xe3; 16], [0xc3; 16]);
+    let recipients = vec![open.owner_card.clone()];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(block_uuid, "to-purge-residue"),
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+    purge_block(folder, &mut open, block_uuid, device_uuid, 3_000, &mut rng).unwrap();
+    assert!(
+        !open
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == block_uuid),
+        "fixture sanity: purged block must not be live"
+    );
+
+    // Plant the conflict-copy-restore residue: a leftover blocks/ file for
+    // the now-purged, not-live uuid. The sweep removes by exact filename —
+    // content is irrelevant.
+    let blocks_path = folder
+        .join("blocks")
+        .join(format!("{}.cbor.enc", format_uuid_hyphenated(&block_uuid)));
+    fs::write(
+        &blocks_path,
+        b"leftover ciphertext from a conflict-copy restore",
+    )
+    .unwrap();
+    assert!(blocks_path.is_file(), "fixture sanity: residue must exist");
+
+    drop(open);
+    let _reopened = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    assert!(
+        !blocks_path.exists(),
+        "open-time sweep must remove a purged, non-live blocks/ residue file"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // empty_trash — Task 5 (single-resign batch purge)
 // ---------------------------------------------------------------------------
