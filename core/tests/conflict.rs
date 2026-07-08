@@ -652,3 +652,73 @@ fn kat_replays_match_rust_merge() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #401 block-level trash-list merge KAT replay
+// ---------------------------------------------------------------------------
+//
+// Loads `core/tests/data/trash_merge_kat.json` and replays each vector
+// through `merge_trash_lists`, asserting bit-equal output against the JSON's
+// `expected` field. The Python sibling (`core/tests/python/conformance.py`
+// `py_merge_trash`) re-runs the merge from spec docs only and asserts the
+// same expected output.
+
+fn parse_trash_entry(spec: &serde_json::Value) -> secretary_core::vault::manifest::TrashEntry {
+    let fingerprint = spec["fingerprint_hex"].as_str().map(parse_hex_array::<32>);
+    let purged_at_ms = spec["purged_at_ms"].as_u64();
+    secretary_core::vault::manifest::TrashEntry {
+        block_uuid: parse_hex_array(spec["block_uuid_hex"].as_str().expect("block_uuid_hex")),
+        tombstoned_at_ms: spec["tombstoned_at_ms"].as_u64().expect("tombstoned_at_ms"),
+        tombstoned_by: parse_hex_array(
+            spec["tombstoned_by_hex"]
+                .as_str()
+                .expect("tombstoned_by_hex"),
+        ),
+        fingerprint,
+        purged_at_ms,
+        unknown: parse_unknown_map(spec),
+    }
+}
+
+#[test]
+fn trash_merge_kat_replays_match_rust() {
+    use secretary_core::vault::manifest::TrashEntry;
+    use secretary_core::vault::trash_merge::merge_trash_lists;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("trash_merge_kat.json");
+    let raw = std::fs::read_to_string(&path).expect("read trash_merge_kat.json");
+    let kat: serde_json::Value = serde_json::from_str(&raw).expect("parse trash_merge_kat.json");
+    assert_eq!(kat["version"], 1);
+
+    let vectors = kat["vectors"].as_array().expect("vectors[]");
+    assert!(!vectors.is_empty(), "KAT has at least one vector");
+
+    for vector in vectors {
+        let name = vector["name"].as_str().expect("name");
+        let input_lists: Vec<Vec<TrashEntry>> = vector["inputs"]
+            .as_array()
+            .expect("inputs[]")
+            .iter()
+            .map(|l| {
+                l.as_array()
+                    .expect("list[]")
+                    .iter()
+                    .map(parse_trash_entry)
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[TrashEntry]> = input_lists.iter().map(|l| l.as_slice()).collect();
+        let got = merge_trash_lists(&refs);
+
+        let expected: Vec<TrashEntry> = vector["expected"]
+            .as_array()
+            .expect("expected[]")
+            .iter()
+            .map(parse_trash_entry)
+            .collect();
+        assert_eq!(got, expected, "vector {name}: merged trash list");
+    }
+}

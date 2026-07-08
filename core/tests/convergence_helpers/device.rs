@@ -12,7 +12,8 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{
-    open_vault, save_block, BlockPlaintext, Record, RecordField, RecordFieldValue, Unlocker,
+    open_vault, purge_block, restore_block, save_block, trash_block, BlockPlaintext, Record,
+    RecordField, RecordFieldValue, Unlocker,
 };
 
 use crate::convergence_helpers::Baseline;
@@ -126,6 +127,54 @@ impl Device {
             &mut self.rng,
         )
         .expect("save_block");
+    }
+
+    /// Trash a whole block (`blocks/` -> `trash/`) at `now_ms`, via a real
+    /// `trash_block` call. Mirrors `save_records`'s open+call+expect shape.
+    pub fn trash_block(&mut self, block_uuid: [u8; 16], now_ms: u64) {
+        let mut open = open_vault(&self.folder, Unlocker::Password(&self.password), None)
+            .expect("open working copy");
+        trash_block(
+            &self.folder,
+            &mut open,
+            block_uuid,
+            self.device_uuid,
+            now_ms,
+            &mut self.rng,
+        )
+        .expect("trash_block");
+    }
+
+    /// Restore a trashed block (`trash/` -> `blocks/`) at `now_ms`, via a
+    /// real `restore_block` call.
+    pub fn restore_block(&mut self, block_uuid: [u8; 16], now_ms: u64) {
+        let mut open = open_vault(&self.folder, Unlocker::Password(&self.password), None)
+            .expect("open working copy");
+        restore_block(
+            &self.folder,
+            &mut open,
+            block_uuid,
+            self.device_uuid,
+            now_ms,
+            &mut self.rng,
+        )
+        .expect("restore_block");
+    }
+
+    /// Permanently purge a trashed block at `now_ms`, via a real
+    /// `purge_block` call.
+    pub fn purge_block(&mut self, block_uuid: [u8; 16], now_ms: u64) {
+        let mut open = open_vault(&self.folder, Unlocker::Password(&self.password), None)
+            .expect("open working copy");
+        purge_block(
+            &self.folder,
+            &mut open,
+            block_uuid,
+            self.device_uuid,
+            now_ms,
+            &mut self.rng,
+        )
+        .expect("purge_block");
     }
 
     /// Current manifest vector clock of this device's working copy.

@@ -122,6 +122,15 @@ pub struct DraftMerge {
     /// values are 16-byte public UUIDs.
     #[zeroize(skip)]
     pub per_block_records: BTreeMap<[u8; 16], Vec<RecordId>>,
+    /// Union of `bundle.canonical.manifest.trash` and every
+    /// `bundle.copies[*].manifest.trash`, reconciled by
+    /// `trash_merge::merge_trash_lists` (#401). `commit_with_decisions`
+    /// applies it as `new_manifest.trash` after the purge-terminal
+    /// live-vs-trash resolution. `#[zeroize(skip)]` — `TrashEntry` carries
+    /// no secret material (UUIDs, timestamps, fingerprint, unknown-map),
+    /// same as the vector-clock fields.
+    #[zeroize(skip)]
+    pub merged_trash: Vec<crate::vault::manifest::TrashEntry>,
 }
 
 /// One record that the merge would tombstone if accepted as-is, but
@@ -343,6 +352,7 @@ mod tests {
             post_merge_clock: Vec::new(),
             per_block_clocks: per_block_clocks.clone(),
             per_block_records: per_block_records.clone(),
+            merged_trash: Vec::new(),
         };
         assert_eq!(d.vault_uuid, [9; 16]);
         assert_eq!(d.plan.diverging_blocks.len(), 1);

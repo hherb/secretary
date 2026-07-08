@@ -31,6 +31,7 @@ pub(crate) mod orchestrators;
 pub mod purge;
 pub mod record;
 mod repair;
+pub mod trash_merge;
 pub(crate) mod trash_relocation;
 
 pub use block::{
@@ -61,6 +62,7 @@ pub use repair::{
     preview_repair, repair_vault, AddedRecipient, ApprovedWidening, RepairPolicy, RepairPreview,
     WideningReport,
 };
+pub use trash_merge::{merge_trash_entry, merge_trash_lists, resolve_live_vs_trash};
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
 // canonical UUID-to-filename formatter and the blocks-subdir / block
