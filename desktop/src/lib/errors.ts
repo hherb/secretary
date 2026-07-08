@@ -231,7 +231,7 @@ export function userMessageFor(err: AppError): UserMessage {
     case 'block_purged':
       return {
         title: 'Permanently deleted',
-        actionHint: 'That block was permanently deleted and can’t be restored.'
+        actionHint: "That block was permanently deleted and can't be restored."
       };
     case 'not_author':
       return { title: "You can't share this block", actionHint: 'Only the block author can share it.' };
