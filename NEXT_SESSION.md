@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-07-trash-relocation-observability-376-shipped.md
+docs/handoffs/2026-07-08-purge-empty-trash-399-shipped.md
