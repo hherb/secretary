@@ -23,8 +23,9 @@
 mod conformance_kat_helpers;
 
 use conformance_kat_helpers::dispatch::{
-    assert_open_ok, assert_post_state, assert_read_block_ok, run_open_device_secret,
-    run_open_password, run_open_recovery, run_open_writable, run_read_block, run_restore_block,
+    assert_empty_trash_report, assert_open_ok, assert_post_state, assert_purge_report,
+    assert_read_block_ok, run_empty_trash, run_open_device_secret, run_open_password,
+    run_open_recovery, run_open_writable, run_purge_block, run_read_block, run_restore_block,
     run_save_block, run_share_block, run_trash_block,
 };
 use conformance_kat_helpers::errors::{
@@ -216,6 +217,62 @@ fn replay_conformance_kat() {
                 let result = run_restore_block(&vector.inputs, cached);
                 handle_write_op_result(label, &vector.expected, result, cached);
             }
+            (Operation::PurgeBlock, Some(predecessor)) => {
+                let cache_key = find_cache_ancestor_name(predecessor, &cache, &kat.vectors)
+                    .unwrap_or_else(|| {
+                        panic!("{label}: no cached ancestor along after-chain from {predecessor}")
+                    });
+                let cached = cache.get(&cache_key).unwrap();
+                let result = run_purge_block(&vector.inputs, cached);
+                match (&vector.expected, result) {
+                    (Expected::Ok(payload), Ok(report)) => {
+                        if let Some(pr) = &payload.purge_report {
+                            assert_purge_report(label, &report, pr);
+                        }
+                        if let Some(ps) = &payload.post_state {
+                            assert_post_state(label, cached, ps);
+                        }
+                    }
+                    (Expected::Err { .. }, Err(e)) => {
+                        let v = read_block_err_variant(&e);
+                        let d = read_block_err_detail(&e);
+                        assert_err(label, v, d, &vector.expected);
+                    }
+                    (Expected::Ok(_), Err(e)) => panic!(
+                        "{label}: expected Ok, got Err {}",
+                        read_block_err_variant(&e)
+                    ),
+                    (Expected::Err { .. }, Ok(_)) => panic!("{label}: expected Err, got Ok"),
+                }
+            }
+            (Operation::EmptyTrash, Some(predecessor)) => {
+                let cache_key = find_cache_ancestor_name(predecessor, &cache, &kat.vectors)
+                    .unwrap_or_else(|| {
+                        panic!("{label}: no cached ancestor along after-chain from {predecessor}")
+                    });
+                let cached = cache.get(&cache_key).unwrap();
+                let result = run_empty_trash(&vector.inputs, cached);
+                match (&vector.expected, result) {
+                    (Expected::Ok(payload), Ok(report)) => {
+                        if let Some(er) = &payload.empty_trash_report {
+                            assert_empty_trash_report(label, &report, er);
+                        }
+                        if let Some(ps) = &payload.post_state {
+                            assert_post_state(label, cached, ps);
+                        }
+                    }
+                    (Expected::Err { .. }, Err(e)) => {
+                        let v = read_block_err_variant(&e);
+                        let d = read_block_err_detail(&e);
+                        assert_err(label, v, d, &vector.expected);
+                    }
+                    (Expected::Ok(_), Err(e)) => panic!(
+                        "{label}: expected Ok, got Err {}",
+                        read_block_err_variant(&e)
+                    ),
+                    (Expected::Err { .. }, Ok(_)) => panic!("{label}: expected Err, got Ok"),
+                }
+            }
             (Operation::ReadBlock, None) => {
                 panic!("{label}: ReadBlock vectors must specify `after:`")
             }
@@ -234,7 +291,9 @@ fn replay_conformance_kat() {
                 Operation::SaveBlock
                 | Operation::ShareBlock
                 | Operation::TrashBlock
-                | Operation::RestoreBlock,
+                | Operation::RestoreBlock
+                | Operation::PurgeBlock
+                | Operation::EmptyTrash,
                 None,
             ) => {
                 panic!("{label}: write-op vectors must specify `after:`")

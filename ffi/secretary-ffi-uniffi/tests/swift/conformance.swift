@@ -407,6 +407,57 @@ struct ConformanceRunner {
                     _ = check(false, name, "unexpected non-VaultError exception: \(error)")
                 }
 
+            case ("purge_block", let predecessor?):
+                guard let cacheKey = findCacheAncestorName(predecessor, cache: cache, vectors: vectors),
+                      let cached = cache[cacheKey] else {
+                    _ = check(false, name, "no cached ancestor along after-chain from \(predecessor)")
+                    break
+                }
+                guard let blockUuid = uuidFromInputs(inputs, primary: "block_uuid_hex", bytes: "block_uuid_bytes_hex"),
+                      let deviceUuid = uuidFromInputs(inputs, primary: "device_uuid_hex", bytes: "device_uuid_bytes_hex") else {
+                    _ = check(false, name, "uuid resolution failed")
+                    break
+                }
+                let nowMs = UInt64(inputs["now_ms"] as! Int)
+                do {
+                    let report = try purgeBlock(identity: cached.identity, manifest: cached.manifest, blockUuid: blockUuid, deviceUuid: deviceUuid, nowMs: nowMs)
+                    if kind != "ok" {
+                        _ = check(false, name, "expected err, got ok")
+                    } else {
+                        assertPurgeReport(name: name, actual: report, expected: expected, check: check)
+                        assertPostState(name: name, identity: cached.identity, manifest: cached.manifest, expected: expected, check: check)
+                    }
+                } catch let e as VaultError {
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
+                } catch {
+                    _ = check(false, name, "unexpected non-VaultError exception: \(error)")
+                }
+
+            case ("empty_trash", let predecessor?):
+                guard let cacheKey = findCacheAncestorName(predecessor, cache: cache, vectors: vectors),
+                      let cached = cache[cacheKey] else {
+                    _ = check(false, name, "no cached ancestor along after-chain from \(predecessor)")
+                    break
+                }
+                guard let deviceUuid = uuidFromInputs(inputs, primary: "device_uuid_hex", bytes: "device_uuid_bytes_hex") else {
+                    _ = check(false, name, "uuid resolution failed")
+                    break
+                }
+                let nowMs = UInt64(inputs["now_ms"] as! Int)
+                do {
+                    let report = try emptyTrash(identity: cached.identity, manifest: cached.manifest, deviceUuid: deviceUuid, nowMs: nowMs)
+                    if kind != "ok" {
+                        _ = check(false, name, "expected err, got ok")
+                    } else {
+                        assertEmptyTrashReport(name: name, actual: report, expected: expected, check: check)
+                        assertPostState(name: name, identity: cached.identity, manifest: cached.manifest, expected: expected, check: check)
+                    }
+                } catch let e as VaultError {
+                    handleVaultError(e: e, expected: expected, name: name, kind: kind, check: check)
+                } catch {
+                    _ = check(false, name, "unexpected non-VaultError exception: \(error)")
+                }
+
             default:
                 _ = check(false, name, "unhandled operation '\(operation)' with after=\(String(describing: after))")
             }

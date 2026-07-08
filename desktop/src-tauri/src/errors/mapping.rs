@@ -115,6 +115,14 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             block_uuid_hex: detail,
         },
 
+        // #399 Task 8: restore precondition — the TrashEntry is marked
+        // purged. Typed variant (distinct from TrashEntryNotFound) so the
+        // UI can tell "permanently deleted" apart from "already restored".
+        // Same bridge contract as above: `detail` is the bare hex.
+        FfiVaultError::BlockPurged { detail } => AppError::BlockPurged {
+            block_uuid_hex: detail,
+        },
+
         // Block-share authorization failures and recipient table mismatches,
         // plus contact-table preconditions: now typed (D.1.6 share UI). The
         // recipient fingerprints in `NotAuthor` are dropped at the seam — the

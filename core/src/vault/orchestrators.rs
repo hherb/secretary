@@ -599,6 +599,12 @@ pub fn open_vault(
     // repair::complete_pending_trash_renames.
     super::repair::complete_pending_trash_renames(folder, &manifest_body);
 
+    // #399: best-effort removal of local trash/ files for entries the
+    // signed manifest already marks purged — this is what propagates a
+    // purge across the owner's devices via manifest file sync. Gated on
+    // "not live in manifest.blocks" so a concurrent restore always wins.
+    super::repair::sweep_purged_trash_files(folder, &manifest_body);
+
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
@@ -2116,6 +2122,7 @@ pub fn trash_block(
         tombstoned_at_ms: now_ms,
         tombstoned_by: device_uuid,
         fingerprint: Some(content_fingerprint),
+        purged_at_ms: None,
         unknown: std::collections::BTreeMap::new(),
     });
     // Tick the manifest-level (vault-level) vector clock on the staged
@@ -2339,6 +2346,23 @@ pub fn restore_block(
         .any(|b| b.block_uuid == block_uuid)
     {
         return Err(VaultError::BlockUuidAlreadyLive { block_uuid });
+    }
+
+    // Step 1a (#399): fail fast on a purged block BEFORE any trash/ scan.
+    // The TrashEntry lookup is a pure in-memory scan of `open.manifest.trash`,
+    // so it is cheap to run here; a purged entry's ciphertext is permanently
+    // gone, so there is nothing to read, verify, or restore. Ordered AFTER the
+    // Step 1 live-collision check so `BlockUuidAlreadyLive` still wins if a
+    // uuid were somehow both live and purged. Step 3 below re-runs the same
+    // in-memory `find` to extract `expected_ts`/`committed_fp` (a second scan
+    // is negligible) and still returns `BlockNotInTrash` when absent.
+    if open
+        .manifest
+        .trash
+        .iter()
+        .any(|t| t.block_uuid == block_uuid && t.purged_at_ms.is_some())
+    {
+        return Err(VaultError::BlockPurged { block_uuid });
     }
 
     // Step 2: scan trash/ for matches of `<uuid>.cbor.enc.<u64>`.

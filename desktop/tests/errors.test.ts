@@ -36,6 +36,7 @@ describe('userMessageFor', () => {
     { code: 'vault_create_failed' },
     { code: 'block_restore_conflict', block_uuid_hex: 'ab' },
     { code: 'trash_entry_not_found', block_uuid_hex: 'ab' },
+    { code: 'block_purged', block_uuid_hex: 'ab' },
     { code: 'not_author' },
     { code: 'recipient_already_present' },
     { code: 'missing_recipient_card' },
@@ -189,6 +190,12 @@ describe('trash error codes', () => {
     expect(m.title).toMatch(/trash/i);
     expect(m.actionHint?.length ?? 0).toBeGreaterThan(0);
   });
+
+  it('block_purged has a sensible title', () => {
+    const m = userMessageFor({ code: 'block_purged', block_uuid_hex: 'ab' });
+    expect(m.title).toMatch(/deleted/i);
+    expect(m.actionHint?.length ?? 0).toBeGreaterThan(0);
+  });
 });
 
 describe('share / contact error codes', () => {
@@ -271,6 +278,7 @@ describe('error code allowlists', () => {
       'vault_create_failed',
       'block_restore_conflict',
       'trash_entry_not_found',
+      'block_purged',
       'not_author',
       'recipient_already_present',
       'missing_recipient_card',

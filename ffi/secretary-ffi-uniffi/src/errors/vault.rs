@@ -80,6 +80,11 @@ pub enum VaultError {
     /// on a UUID with no `TrashEntry` and no matching trash file.
     #[error("block is not in trash: {detail}")]
     BlockNotInTrash { detail: String },
+    /// Mirrors `FfiVaultError::BlockPurged`. Restore was requested on a
+    /// UUID whose `TrashEntry` is marked purged — the ciphertext has
+    /// been permanently deleted and cannot be restored.
+    #[error("block has been purged and cannot be restored: {detail}")]
+    BlockPurged { detail: String },
     /// A contact card with this `contact_uuid` is already present in the
     /// vault's `contacts/` directory. Mirrors `FfiVaultError::ContactAlreadyExists`.
     #[error("contact already exists in vault: {uuid_hex}")]
@@ -183,6 +188,7 @@ impl From<FfiVaultError> for VaultError {
                 VaultError::BlockUuidAlreadyLive { detail }
             }
             FfiVaultError::BlockNotInTrash { detail } => VaultError::BlockNotInTrash { detail },
+            FfiVaultError::BlockPurged { detail } => VaultError::BlockPurged { detail },
             FfiVaultError::ContactAlreadyExists { uuid_hex } => {
                 VaultError::ContactAlreadyExists { uuid_hex }
             }
@@ -488,6 +494,29 @@ mod tests {
             panic!("expected BlockNotInTrash");
         };
         assert_eq!(detail, "[4,5,6]");
+    }
+
+    #[test]
+    fn ffi_to_uniffi_block_purged() {
+        let ffi = FfiVaultError::BlockPurged {
+            detail: "[7,7,7]".into(),
+        };
+        let uniffi: VaultError = ffi.into();
+        let VaultError::BlockPurged { detail } = uniffi else {
+            panic!("expected BlockPurged");
+        };
+        assert_eq!(detail, "[7,7,7]");
+    }
+
+    #[test]
+    fn uniffi_block_purged_display() {
+        let e = VaultError::BlockPurged {
+            detail: "xyz".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "block has been purged and cannot be restored: xyz"
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use secretary_ffi_bridge::{
-    create_block, list_trashed_blocks, open_vault_with_password, trash_block, OpenVaultManifest,
-    UnlockedIdentity,
+    create_block, list_trashed_blocks, open_vault_with_password, purge_block, trash_block,
+    OpenVaultManifest, UnlockedIdentity,
 };
 
 const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
@@ -327,4 +327,72 @@ fn newer_ts_forces_redecrypt_not_stale_cache() {
         "newer ts is a cache miss; decrypting the corrupt newest file must error, \
          not silently serve the stale cached name",
     );
+}
+
+/// #399 regression: a purged trash entry has NO on-disk file by design
+/// (its ciphertext was deleted by `purge_block`). Before the fix,
+/// `list_trashed_blocks` treated the missing file as an integrity
+/// violation and raised `CorruptVault`. Trash two blocks, purge one,
+/// and confirm the listing silently excludes the purged one — no error,
+/// and exactly the not-purged block is returned.
+#[test]
+fn list_trashed_skips_purged_entries() {
+    let opened = open_writable_golden_001();
+
+    let kept_uuid = [0x55u8; 16];
+    create_block(
+        &opened.identity,
+        &opened.manifest,
+        kept_uuid,
+        "Kept in trash".into(),
+        DEVICE_UUID,
+        1_000,
+    )
+    .expect("create_block kept");
+    trash_block(
+        &opened.identity,
+        &opened.manifest,
+        kept_uuid,
+        DEVICE_UUID,
+        2_000,
+    )
+    .expect("trash_block kept");
+
+    let purged_uuid = [0x56u8; 16];
+    create_block(
+        &opened.identity,
+        &opened.manifest,
+        purged_uuid,
+        "Purged away".into(),
+        DEVICE_UUID,
+        1_000,
+    )
+    .expect("create_block purged");
+    trash_block(
+        &opened.identity,
+        &opened.manifest,
+        purged_uuid,
+        DEVICE_UUID,
+        2_000,
+    )
+    .expect("trash_block purged");
+    purge_block(
+        &opened.identity,
+        &opened.manifest,
+        purged_uuid,
+        DEVICE_UUID,
+        3_000,
+    )
+    .expect("purge_block");
+
+    let listed = list_trashed_blocks(&opened.identity, &opened.manifest)
+        .expect("list_trashed_blocks must not error on a purged entry");
+
+    assert_eq!(
+        listed.len(),
+        1,
+        "purged block is not listed and does not error; listing was {listed:?}"
+    );
+    assert_eq!(listed[0].block_uuid, kept_uuid);
+    assert_eq!(listed[0].block_name, "Kept in trash");
 }

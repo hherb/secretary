@@ -33,6 +33,7 @@ export const APP_ERROR_CODES = [
   'vault_create_failed',
   'block_restore_conflict',
   'trash_entry_not_found',
+  'block_purged',
   'not_author',
   'recipient_already_present',
   'missing_recipient_card',
@@ -85,6 +86,7 @@ export type AppError =
   | { code: 'vault_create_failed' }
   | { code: 'block_restore_conflict'; block_uuid_hex: string }
   | { code: 'trash_entry_not_found'; block_uuid_hex: string }
+  | { code: 'block_purged'; block_uuid_hex: string }
   | { code: 'not_author' }
   | { code: 'recipient_already_present' }
   | { code: 'missing_recipient_card' }
@@ -225,6 +227,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: 'Not in trash',
         actionHint: 'That trashed block is no longer available.'
+      };
+    case 'block_purged':
+      return {
+        title: 'Permanently deleted',
+        actionHint: "That block was permanently deleted and can't be restored."
       };
     case 'not_author':
       return { title: "You can't share this block", actionHint: 'Only the block author can share it.' };

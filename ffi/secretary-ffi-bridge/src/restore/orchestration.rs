@@ -34,6 +34,8 @@ use crate::vault::OpenVaultManifest;
 ///   live copy first.
 /// - [`FfiVaultError::BlockNotInTrash`] — no matching file in
 ///   `trash/<uuid>.cbor.enc.*` and no matching `TrashEntry`.
+/// - [`FfiVaultError::BlockPurged`] — the `TrashEntry` is marked purged;
+///   the ciphertext has been permanently deleted and cannot be restored.
 /// - [`FfiVaultError::MissingRecipientCard`] — a recipient on the
 ///   trashed file's wrap table cannot be resolved to a `contact_uuid`
 ///   via the contacts/-scan; the trash file and manifest are untouched.
@@ -89,9 +91,9 @@ pub fn restore_block(
 
 /// Map `core::VaultError` → `FfiVaultError` for the restore path.
 ///
-/// Exhaustive (no `_ =>` catchall) per issue #40. The four restore-
+/// Exhaustive (no `_ =>` catchall) per issue #40. The five restore-
 /// specific routings are typed (`BlockUuidAlreadyLive`,
-/// `BlockNotInTrash`, `RestoreVerificationFailed`,
+/// `BlockNotInTrash`, `BlockPurged`, `RestoreVerificationFailed`,
 /// `MissingRecipientCard`); the rest fold to `SaveCryptoFailure` as
 /// the umbrella variant.
 fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
@@ -127,6 +129,15 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
                 "restore target for block {} is missing (expected tombstoned_at_ms {expected_tombstoned_at_ms})",
                 hex::encode(block_uuid),
             ),
+        },
+        // #399 Task 8: the block's TrashEntry is marked purged. Unlike
+        // RestoreVerificationFailed / RestoreTargetMissing this is NOT an
+        // integrity failure — it's an expected, intentional state (the
+        // ciphertext was deliberately purged, locally or propagated from
+        // another device) — so it gets its own typed variant, mirroring
+        // `BlockNotInTrash` above, rather than folding to CorruptVault.
+        VaultError::BlockPurged { block_uuid } => FfiVaultError::BlockPurged {
+            detail: hex::encode(block_uuid),
         },
         // The contacts/-scan in restore step 5 surfaces this when a
         // wrap's recipient is not in contacts/.
@@ -202,6 +213,18 @@ mod tests {
             panic!("expected BlockNotInTrash");
         };
         assert!(detail.contains("bb"));
+    }
+
+    #[test]
+    fn map_core_block_purged_routes_typed() {
+        let core_err = VaultError::BlockPurged {
+            block_uuid: [0xff; 16],
+        };
+        let ffi = map_core_vault_error_restore(core_err);
+        let FfiVaultError::BlockPurged { detail } = ffi else {
+            panic!("expected BlockPurged, got {ffi:?}");
+        };
+        assert!(detail.contains("ff"));
     }
 
     #[test]

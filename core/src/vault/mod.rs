@@ -28,6 +28,7 @@ pub mod ids;
 pub(crate) mod io;
 pub mod manifest;
 pub(crate) mod orchestrators;
+pub mod purge;
 pub mod record;
 mod repair;
 pub(crate) mod trash_relocation;
@@ -55,6 +56,7 @@ pub use orchestrators::{
     create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
     save_block, share_block, trash_block, OpenVault, Unlocker,
 };
+pub use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};
 pub use repair::{
     preview_repair, repair_vault, AddedRecipient, ApprovedWidening, RepairPolicy, RepairPreview,
     WideningReport,
@@ -299,6 +301,13 @@ pub enum VaultError {
     /// without the other is also a `BlockNotInTrash`.)
     #[error("block {block_uuid:?} is not in trash")]
     BlockNotInTrash { block_uuid: [u8; 16] },
+
+    /// `restore_block`: the block's `TrashEntry` is marked purged
+    /// (`purged_at_ms.is_some()`) — the ciphertext was permanently removed
+    /// and cannot be restored. Distinct from `BlockNotInTrash` (no signed
+    /// tombstone at all) and `RestoreVerificationFailed` (integrity failure).
+    #[error("block {block_uuid:02x?} has been purged and cannot be restored")]
+    BlockPurged { block_uuid: [u8; 16] },
 
     /// `restore_block` step 3: the trashed block file failed §6.1 hybrid
     /// signature verification or AEAD decrypt. An attacker with write

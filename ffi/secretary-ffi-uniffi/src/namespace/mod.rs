@@ -10,6 +10,7 @@ use crate::wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
 use crate::wrappers::identity::{
     CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
 };
+use crate::wrappers::purge::{EmptyTrashReport, PurgeReport};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
@@ -442,6 +443,8 @@ pub fn trash_block(
 ///   live; the caller must trash the live copy first.
 /// - [`VaultError::BlockNotInTrash`] — no matching file in
 ///   `trash/<uuid>.cbor.enc.*` and no matching `TrashEntry`.
+/// - [`VaultError::BlockPurged`] — the `TrashEntry` is marked purged;
+///   the ciphertext has been permanently deleted and cannot be restored.
 /// - [`VaultError::CorruptVault`] — the trashed file failed §6.1
 ///   hybrid-signature verification (folded from
 ///   `RestoreVerificationFailed`).
@@ -458,6 +461,74 @@ pub fn restore_block(
     let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
     let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::restore_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map_err(VaultError::from)
+}
+
+/// Permanently purge a trashed block — uniffi namespace fn projection of
+/// [`secretary_ffi_bridge::purge_block`]. See `docs/vault-format.md` §7
+/// (purge extension, #399) for the normative sequence.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `block_uuid` or
+///   `device_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::BlockNotInTrash`] — no `TrashEntry` exists for
+///   `block_uuid`.
+/// - [`VaultError::FolderInvalid`] — IO failure during the manifest
+///   atomic-write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn purge_block(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    block_uuid: Vec<u8>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<PurgeReport, VaultError> {
+    let block_uuid = uuid_from_vec(&block_uuid, "block_uuid")?;
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::purge_block(&identity.0, &manifest.0, block_uuid, device_uuid, now_ms)
+        .map(|r| PurgeReport {
+            block_uuid: r.block_uuid.to_vec(),
+            was_shared: r.was_shared,
+            recipient_count: r.recipient_count,
+            files_removed: r.files_removed,
+        })
+        .map_err(VaultError::from)
+}
+
+/// Permanently purge every currently-trashed, not-already-purged,
+/// not-live block in one batch — uniffi namespace fn projection of
+/// [`secretary_ffi_bridge::empty_trash`]. See `docs/vault-format.md` §7
+/// (purge extension, #399) for the normative sequence. Unlike
+/// `purge_block`, this takes no `block_uuid` — it targets the entire
+/// trash in one call.
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `device_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::FolderInvalid`] — IO failure during the manifest
+///   atomic-write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn empty_trash(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<EmptyTrashReport, VaultError> {
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::empty_trash(&identity.0, &manifest.0, device_uuid, now_ms)
+        .map(|r| EmptyTrashReport {
+            purged_count: r.purged_count,
+            shared_count: r.shared_count,
+            owner_only_count: r.owner_only_count,
+            unknown_count: r.unknown_count,
+            files_removed: r.files_removed,
+            files_failed: r.files_failed,
+        })
         .map_err(VaultError::from)
 }
 

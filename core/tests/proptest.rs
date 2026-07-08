@@ -1421,14 +1421,18 @@ mod manifest_props {
             any::<u64>(),
             arr16(),
             prop::option::of(arr32_fp()), // arr32_fp(): in-scope [u8; FINGERPRINT_LEN] strategy
+            prop::option::of(any::<u64>()), // purged_at_ms (#399): same optional shape as fingerprint
         )
             .prop_map(
-                |(block_uuid, tombstoned_at_ms, tombstoned_by, fingerprint)| TrashEntry {
-                    block_uuid,
-                    tombstoned_at_ms,
-                    tombstoned_by,
-                    fingerprint,
-                    unknown: BTreeMap::new(),
+                |(block_uuid, tombstoned_at_ms, tombstoned_by, fingerprint, purged_at_ms)| {
+                    TrashEntry {
+                        block_uuid,
+                        tombstoned_at_ms,
+                        tombstoned_by,
+                        fingerprint,
+                        purged_at_ms,
+                        unknown: BTreeMap::new(),
+                    }
                 },
             )
     }

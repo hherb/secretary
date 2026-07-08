@@ -101,6 +101,7 @@ const KEY_LAST_MOD_MS: &str = "last_mod_ms";
 // Trash-entry keys
 const KEY_TOMBSTONED_AT_MS: &str = "tombstoned_at_ms";
 const KEY_TOMBSTONED_BY: &str = "tombstoned_by";
+const KEY_PURGED_AT_MS: &str = "purged_at_ms";
 
 // kdf_params keys
 const KEY_MEMORY_KIB: &str = "memory_kib";
@@ -370,6 +371,12 @@ pub struct TrashEntry {
     /// for entries written before this field existed (legacy vaults); restore
     /// then falls back to suffix-equality + §6.1 hybrid-verify only.
     pub fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]>,
+    /// `Some(t)` = this block has been purged: its local ciphertext was
+    /// permanently removed at unix-millis `t`. Terminal and monotonic — a
+    /// purged entry never un-purges. `None` = a still-restorable trash entry.
+    /// Additive optional field (§6.3.2 forward-compat), same shape as
+    /// `fingerprint`; absent key decodes to `None` and re-encodes to absent.
+    pub purged_at_ms: Option<u64>,
     /// Forward-compat unknown keys preserved verbatim per the §6.3.2 pattern.
     pub unknown: BTreeMap<String, UnknownValue>,
 }
@@ -578,6 +585,14 @@ fn trash_entry_to_value(entry: &TrashEntry) -> Result<Value, ManifestError> {
         inner.push((
             Value::Text(KEY_FINGERPRINT.into()),
             Value::Bytes(fp.to_vec()),
+        ));
+    }
+    // #399: optional purge commitment. Omitted when None so legacy-shaped
+    // (still-restorable) entries stay byte-identical (no format bump).
+    if let Some(purged_at_ms) = entry.purged_at_ms {
+        inner.push((
+            Value::Text(KEY_PURGED_AT_MS.into()),
+            Value::Integer(purged_at_ms.into()),
         ));
     }
     for (k, v) in &entry.unknown {
@@ -979,6 +994,7 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
     let mut tombstoned_at_ms: Option<u64> = None;
     let mut tombstoned_by: Option<[u8; UUID_LEN]> = None;
     let mut fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]> = None;
+    let mut purged_at_ms: Option<u64> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
 
     for (k, val) in entries {
@@ -999,6 +1015,9 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
                     KEY_FINGERPRINT,
                 )?);
             }
+            KEY_PURGED_AT_MS => {
+                purged_at_ms = Some(take_u64(val, KEY_PURGED_AT_MS)?);
+            }
             _ => {
                 unknown.insert(key, value_to_unknown(val)?);
             }
@@ -1016,6 +1035,7 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
             field: KEY_TOMBSTONED_BY,
         })?,
         fingerprint,
+        purged_at_ms,
         unknown,
     })
 }
@@ -1930,6 +1950,7 @@ mod tests {
             tombstoned_at_ms: 1_714_060_900_000,
             tombstoned_by: [0xaa; UUID_LEN],
             fingerprint: Some([0xcd; BLOCK_FINGERPRINT_LEN]),
+            purged_at_ms: None,
             unknown: BTreeMap::new(),
         }];
         Manifest {
@@ -1995,6 +2016,58 @@ mod tests {
         );
         let decoded = decode_manifest(&bytes).unwrap();
         assert_eq!(decoded.trash[0].fingerprint, None, "None must round-trip");
+    }
+
+    // ---- TrashEntry.purged_at_ms round-trip (#399) ------------------------
+
+    #[test]
+    fn trash_entry_purged_at_ms_some_round_trips() {
+        // A TrashEntry marked as purged must survive a full encode → decode
+        // cycle with purged_at_ms intact (#399).
+        let mut m = populated_manifest();
+        m.trash[0].purged_at_ms = Some(1_724_000_000_123);
+        let bytes = encode_manifest(&m).unwrap();
+        let decoded = decode_manifest(&bytes).unwrap();
+        assert_eq!(
+            decoded.trash[0].purged_at_ms,
+            Some(1_724_000_000_123),
+            "Some(purged_at_ms) must round-trip"
+        );
+        // The typed key must NOT leak into the forward-compat `unknown` map.
+        assert!(
+            decoded.trash[0].unknown.is_empty(),
+            "purged_at_ms must decode as a typed field, not into unknown"
+        );
+    }
+
+    #[test]
+    fn trash_entry_purged_at_ms_none_roundtrips_byte_identical() {
+        // A still-restorable trash entry (not purged) must encode WITHOUT
+        // the "purged_at_ms" key and decode back to None — byte-compatible
+        // with pre-#399 manifests (frozen-v1 no-format-bump guarantee).
+        let mut m = populated_manifest();
+        m.trash[0].purged_at_ms = None;
+        let entry_value = trash_entry_to_value(&m.trash[0]).unwrap();
+        let mut entry_bytes = Vec::new();
+        ciborium::ser::into_writer(&entry_value, &mut entry_bytes).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&entry_bytes).contains("purged_at_ms"),
+            "None must not emit the purged_at_ms key"
+        );
+
+        let bytes = encode_manifest(&m).unwrap();
+        let decoded = decode_manifest(&bytes).unwrap();
+        assert_eq!(decoded.trash[0].purged_at_ms, None, "None must round-trip");
+
+        // Absent key, not explicit null: re-encoding the decoded entry
+        // reproduces byte-identical bytes to the pre-purge entry.
+        let re_entry_value = trash_entry_to_value(&decoded.trash[0]).unwrap();
+        let mut re_entry_bytes = Vec::new();
+        ciborium::ser::into_writer(&re_entry_value, &mut re_entry_bytes).unwrap();
+        assert_eq!(
+            entry_bytes, re_entry_bytes,
+            "None must re-encode byte-identically (no explicit null)"
+        );
     }
 
     // ---- Round-trip ------------------------------------------------------
@@ -2301,6 +2374,7 @@ mod tests {
             tombstoned_at_ms: u64::from(suffix),
             tombstoned_by: [0xd1; UUID_LEN],
             fingerprint: Some([suffix; BLOCK_FINGERPRINT_LEN]),
+            purged_at_ms: None,
             unknown: BTreeMap::new(),
         };
         let m = Manifest {

@@ -6,6 +6,7 @@
 //! - [`block`] — `BlockReadOutput`, `Record`, `FieldHandle`
 //! - [`save`] — `BlockInput`, `RecordInput`, `FieldInput`, `FieldInputValue`
 //! - [`contacts`] — `ContactSummary`
+//! - [`purge`] — `PurgeReport`, `EmptyTrashReport`
 //! - [`repair`] — `ApprovedWidening`, `AddedRecipient`, `WideningReport`, `RepairPreview`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
@@ -17,6 +18,7 @@ pub mod block;
 pub mod contacts;
 pub mod device;
 pub mod identity;
+pub mod purge;
 pub mod repair;
 pub mod save;
 pub mod sync;

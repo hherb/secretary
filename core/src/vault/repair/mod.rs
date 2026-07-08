@@ -14,4 +14,4 @@ mod sweep;
 pub use classify::{AddedRecipient, RepairPreview, WideningReport};
 pub use orchestration::{preview_repair, repair_vault};
 pub use policy::{ApprovedWidening, RepairPolicy};
-pub(crate) use sweep::complete_pending_trash_renames;
+pub(crate) use sweep::{complete_pending_trash_renames, sweep_purged_trash_files};

@@ -267,6 +267,9 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         // #205: restore-only; unreachable from share_block, listed for
         // exhaustiveness per issue #40.
         | VaultError::RestoreTargetMissing { .. }
+        // #399: restore-only; unreachable from share_block, listed for
+        // exhaustiveness per issue #40.
+        | VaultError::BlockPurged { .. }
         // Unreachable from share_block (open_vault always precedes
         // and would have surfaced this earlier), but listed for
         // exhaustiveness per issue #40. The generic `From<VaultError>`

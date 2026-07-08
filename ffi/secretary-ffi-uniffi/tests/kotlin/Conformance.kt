@@ -21,9 +21,11 @@ import org.json.JSONObject
 import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.VaultException
 import uniffi.secretary.addDeviceSlot
+import uniffi.secretary.emptyTrash
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithDeviceSecret
+import uniffi.secretary.purgeBlock
 import uniffi.secretary.readBlock
 import uniffi.secretary.restoreBlock
 import uniffi.secretary.saveBlock
@@ -440,6 +442,63 @@ fun main() {
                     if (kind != "ok") {
                         check(false, name, "expected err, got ok")
                     } else {
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "purge_block" && after != null -> {
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                val blockUuid = uuidFromInputs(inputs, "block_uuid_hex", "block_uuid_bytes_hex")
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (blockUuid == null || deviceUuid == null) {
+                    check(false, name, "uuid resolution failed")
+                    continue
+                }
+                val nowMs = inputs.getLong("now_ms").toULong()
+                try {
+                    val report = purgeBlock(cached.identity, cached.manifest, blockUuid, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertPurgeReport(name, report, expected, ::check)
+                        assertPostState(name, cached.identity, cached.manifest, expected, ::check)
+                    }
+                } catch (e: VaultException) {
+                    handleVaultError(e, expected, name, kind, ::check)
+                } catch (e: Throwable) {
+                    check(false, name, "unexpected non-VaultException: $e")
+                }
+            }
+
+            operation == "empty_trash" && after != null -> {
+                val cacheKey = findCacheAncestorName(after, cache, vectors)
+                val cached = cacheKey?.let { cache[it] }
+                if (cached == null) {
+                    check(false, name, "no cached ancestor along after-chain from $after")
+                    continue
+                }
+                val deviceUuid = uuidFromInputs(inputs, "device_uuid_hex", "device_uuid_bytes_hex")
+                if (deviceUuid == null) {
+                    check(false, name, "uuid resolution failed")
+                    continue
+                }
+                val nowMs = inputs.getLong("now_ms").toULong()
+                try {
+                    val report = emptyTrash(cached.identity, cached.manifest, deviceUuid, nowMs)
+                    if (kind != "ok") {
+                        check(false, name, "expected err, got ok")
+                    } else {
+                        assertEmptyTrashReport(name, report, expected, ::check)
                         assertPostState(name, cached.identity, cached.manifest, expected, ::check)
                     }
                 } catch (e: VaultException) {

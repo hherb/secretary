@@ -38,12 +38,18 @@ pub enum Operation {
     ShareBlock,
     TrashBlock,
     RestoreBlock,
+    // Purge ops — issue #399 (Task 11a).
+    PurgeBlock,
+    EmptyTrash,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Expected {
-    Ok(OkPayload),
+    // Boxed: the #399 Task 11a purge_report / empty_trash_report additions
+    // pushed OkPayload past clippy::large_enum_variant's threshold relative
+    // to the Err variant.
+    Ok(Box<OkPayload>),
     Err {
         variant: String,
         #[serde(default)]
@@ -66,6 +72,45 @@ pub struct OkPayload {
     // v2 lifecycle ops:
     #[serde(default)]
     pub post_state: Option<PostState>,
+    // purge_block (#399, Task 11a). Present only on purge_block Ok vectors.
+    #[serde(default)]
+    pub purge_report: Option<ExpectedPurgeReport>,
+    // empty_trash (#399, Task 11a). Present only on empty_trash Ok vectors.
+    #[serde(default)]
+    pub empty_trash_report: Option<ExpectedEmptyTrashReport>,
+}
+
+/// Pinned expectation for a [`secretary_ffi_bridge::PurgeReport`] returned
+/// by `purge_block`. `files_removed_min` is a lower-bound assertion (the
+/// bridge doc calls `files_removed` "best-effort; normally 0 or 1") rather
+/// than an exact match, mirroring the bridge crate's own integration tests
+/// (`ffi/secretary-ffi-bridge/tests/purge_block.rs`).
+#[derive(Debug, Deserialize)]
+pub struct ExpectedPurgeReport {
+    #[serde(default)]
+    pub was_shared: Option<bool>,
+    #[serde(default)]
+    pub recipient_count: Option<u16>,
+    #[serde(default)]
+    pub files_removed_min: Option<u64>,
+}
+
+/// Pinned expectation for a [`secretary_ffi_bridge::EmptyTrashReport`]
+/// returned by `empty_trash`. `files_removed_min` mirrors
+/// [`ExpectedPurgeReport::files_removed_min`]'s lower-bound rationale;
+/// `files_failed` is asserted exactly (0 in every vector this KAT pins —
+/// a nonzero value needs a platform-flaky permission failure to produce,
+/// per the Task 5 minor-finding note in `.superpowers/sdd/progress.md`).
+#[derive(Debug, Deserialize)]
+pub struct ExpectedEmptyTrashReport {
+    pub purged_count: u64,
+    pub shared_count: u64,
+    pub owner_only_count: u64,
+    pub unknown_count: u64,
+    #[serde(default)]
+    pub files_removed_min: Option<u64>,
+    #[serde(default)]
+    pub files_failed: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
