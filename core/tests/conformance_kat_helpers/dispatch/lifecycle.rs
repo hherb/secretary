@@ -7,7 +7,9 @@
 //! with the uniffi-layer length checks — see `super::inputs` for details.
 
 use super::super::fixtures::read_contact_card_bytes;
-use super::super::types::{BridgeOrSyntheticErr, PostState};
+use super::super::types::{
+    BridgeOrSyntheticErr, ExpectedEmptyTrashReport, ExpectedPurgeReport, PostState,
+};
 use super::inputs::{block_input_from_inputs, now_ms_from_inputs, uuid_from_inputs};
 use super::read::assert_read_block_records;
 
@@ -160,6 +162,125 @@ pub fn run_restore_block(
         now_ms,
     )
     .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+/// Dispatch purge_block (#399, Task 11a). Unlike `save`/`share`/`trash`/
+/// `restore` (which return `()`), the bridge call returns a
+/// [`secretary_ffi_bridge::PurgeReport`] that the caller must assert
+/// against the vector's `expected.purge_report`.
+pub fn run_purge_block(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) -> Result<secretary_ffi_bridge::PurgeReport, BridgeOrSyntheticErr> {
+    let block_uuid = uuid_from_inputs(
+        inputs,
+        "block_uuid_hex",
+        "block_uuid_bytes_hex",
+        "block_uuid",
+    )?;
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
+    let now_ms = now_ms_from_inputs(inputs);
+    secretary_ffi_bridge::purge_block(
+        &cached.identity,
+        &cached.manifest,
+        block_uuid,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+/// Dispatch empty_trash (#399, Task 11a). Takes no `block_uuid` — it
+/// targets every not-yet-purged, not-live `TrashEntry` in one batch.
+/// Returns a [`secretary_ffi_bridge::EmptyTrashReport`] the caller
+/// asserts against `expected.empty_trash_report`.
+pub fn run_empty_trash(
+    inputs: &serde_json::Value,
+    cached: &secretary_ffi_bridge::vault::OpenVaultOutput,
+) -> Result<secretary_ffi_bridge::EmptyTrashReport, BridgeOrSyntheticErr> {
+    let device_uuid = uuid_from_inputs(
+        inputs,
+        "device_uuid_hex",
+        "device_uuid_bytes_hex",
+        "device_uuid",
+    )?;
+    let now_ms = now_ms_from_inputs(inputs);
+    secretary_ffi_bridge::empty_trash(&cached.identity, &cached.manifest, device_uuid, now_ms)
+        .map_err(BridgeOrSyntheticErr::Bridge)
+}
+
+/// Assert a `purge_block` Ok result against its pinned expectation.
+/// `files_removed_min` (if pinned) is a lower-bound assertion — see
+/// [`ExpectedPurgeReport`]'s doc comment for rationale.
+pub fn assert_purge_report(
+    label: &str,
+    actual: &secretary_ffi_bridge::PurgeReport,
+    expected: &ExpectedPurgeReport,
+) {
+    assert_eq!(
+        actual.was_shared, expected.was_shared,
+        "{label}: purge_report.was_shared mismatch"
+    );
+    assert_eq!(
+        actual.recipient_count, expected.recipient_count,
+        "{label}: purge_report.recipient_count mismatch"
+    );
+    if let Some(min) = expected.files_removed_min {
+        assert!(
+            u64::from(actual.files_removed) >= min,
+            "{label}: purge_report.files_removed {} < expected minimum {min}",
+            actual.files_removed
+        );
+    }
+}
+
+/// Assert an `empty_trash` Ok result against its pinned expectation.
+/// `files_removed_min` (if pinned) is a lower-bound assertion, mirroring
+/// [`assert_purge_report`]; every other count is an exact match.
+pub fn assert_empty_trash_report(
+    label: &str,
+    actual: &secretary_ffi_bridge::EmptyTrashReport,
+    expected: &ExpectedEmptyTrashReport,
+) {
+    assert_eq!(
+        u64::from(actual.purged_count),
+        expected.purged_count,
+        "{label}: empty_trash_report.purged_count mismatch"
+    );
+    assert_eq!(
+        u64::from(actual.shared_count),
+        expected.shared_count,
+        "{label}: empty_trash_report.shared_count mismatch"
+    );
+    assert_eq!(
+        u64::from(actual.owner_only_count),
+        expected.owner_only_count,
+        "{label}: empty_trash_report.owner_only_count mismatch"
+    );
+    assert_eq!(
+        u64::from(actual.unknown_count),
+        expected.unknown_count,
+        "{label}: empty_trash_report.unknown_count mismatch"
+    );
+    if let Some(min) = expected.files_removed_min {
+        assert!(
+            u64::from(actual.files_removed) >= min,
+            "{label}: empty_trash_report.files_removed {} < expected minimum {min}",
+            actual.files_removed
+        );
+    }
+    if let Some(failed) = expected.files_failed {
+        assert_eq!(
+            u64::from(actual.files_failed),
+            failed,
+            "{label}: empty_trash_report.files_failed mismatch"
+        );
+    }
 }
 
 /// Assert all pinned post_state fields against the post-call manifest.
