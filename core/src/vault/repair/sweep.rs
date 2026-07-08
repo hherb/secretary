@@ -90,44 +90,51 @@ pub(crate) fn complete_pending_trash_renames(folder: &Path, manifest: &Manifest)
 /// not yet run its own local delete converges to the purged state at its
 /// next `open_vault`.
 pub(crate) fn sweep_purged_trash_files(folder: &Path, manifest: &Manifest) {
+    // Build the target prefix set once. Purged tombstones are terminal and
+    // never pruned from `manifest.trash`, so this set grows over a vault's
+    // lifetime; reading the trash directory once and matching every entry
+    // against the set keeps the per-open cost at a single `read_dir`
+    // syscall rather than one per purged entry.
+    let live: std::collections::HashSet<[u8; 16]> =
+        manifest.blocks.iter().map(|b| b.block_uuid).collect();
+    // `(prefix, uuid_hex)` per purged-and-not-live entry; `uuid_hex` is
+    // retained for the warn log. A live-and-purged UUID (should not arise
+    // from a single well-behaved device, but can appear as a merge outcome —
+    // e.g. this device's concurrent restore and a peer's purge both landing)
+    // is excluded here so its file is never deleted.
+    let targets: Vec<(String, String)> = manifest
+        .trash
+        .iter()
+        .filter(|e| e.purged_at_ms.is_some() && !live.contains(&e.block_uuid))
+        .map(|e| {
+            let uuid_hex = format_uuid_hyphenated(&e.block_uuid);
+            (format!("{uuid_hex}{BLOCK_FILE_EXTENSION}."), uuid_hex)
+        })
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
     let trash_dir = folder.join(TRASH_SUBDIR);
-    for entry in &manifest.trash {
-        if entry.purged_at_ms.is_none() {
-            continue;
-        }
-        // Live-and-purged (should not arise from a single well-behaved
-        // device, but can appear as a merge outcome — e.g. this device's
-        // concurrent restore and a peer's purge both landing): never
-        // delete a live block's file.
-        if manifest
-            .blocks
-            .iter()
-            .any(|b| b.block_uuid == entry.block_uuid)
-        {
-            continue;
-        }
-        let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
-        let prefix = format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.");
-        let Ok(rd) = std::fs::read_dir(&trash_dir) else {
+    let Ok(rd) = std::fs::read_dir(&trash_dir) else {
+        return;
+    };
+    for de in rd.flatten() {
+        let path = de.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        for de in rd.flatten() {
-            let path = de.path();
-            let is_match = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|n| n.starts_with(&prefix))
-                .unwrap_or(false);
-            if !is_match {
-                continue;
-            }
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!(
-                    block_uuid = %uuid_hex,
-                    error = %e,
-                    "purge sweep: failed to remove purged trash file; benign orphan remains"
-                );
-            }
+        let Some((_, uuid_hex)) = targets
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix.as_str()))
+        else {
+            continue;
+        };
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!(
+                block_uuid = %uuid_hex,
+                error = %e,
+                "purge sweep: failed to remove purged trash file; benign orphan remains"
+            );
         }
     }
 }

@@ -56,23 +56,38 @@ pub struct PurgeReport {
     pub files_removed: usize,
 }
 
-/// Best-effort removal of every `trash/<uuid>.cbor.enc.*` file for
-/// `block_uuid` (there is normally exactly one — the current tombstoned
-/// copy — but a crash-residue orphan from an earlier trash/restore cycle
-/// could also match). Returns `(removed, failed)` — the count actually
-/// removed and the count whose `fs::remove_file` call errored.
+/// Best-effort removal of every `trash/<uuid>.cbor.enc.*` file for any
+/// UUID in `block_uuids` (for a given UUID there is normally exactly one —
+/// the current tombstoned copy — but a crash-residue orphan from an
+/// earlier trash/restore cycle could also match). Returns
+/// `(removed, failed)` — the count actually removed and the count whose
+/// `fs::remove_file` call errored, aggregated across every target UUID.
+///
+/// The trash directory is read a **single time** and each entry matched
+/// against every target prefix, so the syscall cost is one `read_dir`
+/// regardless of how many UUIDs are being purged — `empty_trash` (a whole
+/// batch) would otherwise re-scan the directory once per target.
 ///
 /// Individual failures are logged via `tracing::warn!` and tolerated: a
 /// lingering file is a benign orphan (`open_vault`'s fingerprint check
 /// only walks `manifest.blocks`, and a purged UUID is never re-added
 /// there), not a correctness problem — callers that don't need the
 /// failure count (`purge_block`) simply discard it. Caller must have
-/// already established `block_uuid` is a trash entry (true by
+/// already established each `block_uuid` is a trash entry (true by
 /// construction for every call site).
-fn remove_trash_files(folder: &Path, block_uuid: &[u8; 16]) -> (usize, usize) {
+fn remove_trash_files(folder: &Path, block_uuids: &[[u8; 16]]) -> (usize, usize) {
+    if block_uuids.is_empty() {
+        return (0, 0);
+    }
     let trash_dir = folder.join(TRASH_SUBDIR);
-    let uuid_hex = format_uuid_hyphenated(block_uuid);
-    let prefix = format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.");
+    // `(prefix, uuid_hex)` per target; `uuid_hex` retained for the warn log.
+    let targets: Vec<(String, String)> = block_uuids
+        .iter()
+        .map(|u| {
+            let uuid_hex = format_uuid_hyphenated(u);
+            (format!("{uuid_hex}{BLOCK_FILE_EXTENSION}."), uuid_hex)
+        })
+        .collect();
     let mut removed = 0usize;
     let mut failed = 0usize;
     let Ok(rd) = std::fs::read_dir(&trash_dir) else {
@@ -80,14 +95,15 @@ fn remove_trash_files(folder: &Path, block_uuid: &[u8; 16]) -> (usize, usize) {
     };
     for entry in rd.flatten() {
         let path = entry.path();
-        let is_match = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|n| n.starts_with(&prefix))
-            .unwrap_or(false);
-        if !is_match {
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
-        }
+        };
+        let Some((_, uuid_hex)) = targets
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix.as_str()))
+        else {
+            continue;
+        };
         match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
             Err(e) => {
@@ -169,7 +185,7 @@ pub fn purge_block(
     // write. Still best-effort clean any residual file (crash residue
     // from a prior partial purge, or a lingering orphan).
     if open.manifest.trash[idx].purged_at_ms.is_some() {
-        let (files_removed, _files_failed) = remove_trash_files(folder, &block_uuid);
+        let (files_removed, _files_failed) = remove_trash_files(folder, &[block_uuid]);
         return Ok(PurgeReport {
             block_uuid,
             was_shared: None,
@@ -213,7 +229,7 @@ pub fn purge_block(
     // Step 6: best-effort physical removal. The uuid is (by construction,
     // step 1) a trash entry, never a live `manifest.blocks` entry, so
     // deleting its `trash/` files cannot orphan a live block.
-    let (files_removed, _files_failed) = remove_trash_files(folder, &block_uuid);
+    let (files_removed, _files_failed) = remove_trash_files(folder, &[block_uuid]);
     Ok(PurgeReport {
         block_uuid,
         was_shared,
@@ -336,13 +352,12 @@ pub fn empty_trash(
     open.manifest_file = new_manifest_file;
     report.purged_count = targets.len();
 
-    // Best-effort physical removal across every purged target. Per-file
-    // failure never aborts the batch (mirrors purge_block's step 6).
-    for block_uuid in &target_uuids {
-        let (removed, failed) = remove_trash_files(folder, block_uuid);
-        report.files_removed += removed;
-        report.files_failed += failed;
-    }
+    // Best-effort physical removal across every purged target, in one
+    // directory scan. Per-file failure never aborts the batch (mirrors
+    // purge_block's step 6).
+    let (removed, failed) = remove_trash_files(folder, &target_uuids);
+    report.files_removed += removed;
+    report.files_failed += failed;
     Ok(report)
 }
 
