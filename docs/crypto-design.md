@@ -588,6 +588,22 @@ Well-formed records satisfy three invariants that the §11 merge relies on. Impl
 
 **The merge is commutative, associative, and idempotent across the full record domain — including arbitrary tombstone histories and non-empty `unknown` maps.** The death clock (`tombstoned_at_ms`, §11.3) is itself a CRDT: `max` is a commutative-associative-idempotent lattice join, and the staleness filter is a function of the merged death clock alone, independent of merge order. The §11.3 identity-metadata override on `tags` and `record_type` is also associativity-preserving (see §11.3 for why); `unknown` is excluded from the override precisely so the per-key lattice join in §11.1 holds globally. Property-based tests in `core/tests/proptest.rs` certify the three properties on the full record domain (records with arbitrary `tombstone` values, arbitrary `tombstoned_at_ms`, arbitrary field counts and last-mods, populated `unknown` maps). Tombstone interactions are additionally exercised by the inline unit tests in `core/src/vault/conflict.rs`, the integration tests in `core/tests/conflict.rs`, and the §15 cross-language KAT replayed by both the Rust integration tests and `core/tests/python/conformance.py` Section 4.
 
+### 11.6 Trash-list reconciliation (conflict-copy merge)
+
+When two conflict copies of a vault are merged, their `trash` lists are reconciled by a block-level merge keyed by `block_uuid`. The merge is commutative, associative, and idempotent.
+
+- **Union.** Every `block_uuid` present in any copy's `trash` appears in the merged `trash`. The merge never drops an entry.
+- **Tombstone triple.** For a `block_uuid` present with differing `(tombstoned_at_ms, tombstoned_by, fingerprint)` triples, the merged entry keeps the triple that is greatest under the total order comparing `tombstoned_at_ms` ascending, then `tombstoned_by` ascending (16 bytes, lexicographic), then `fingerprint` with `None < Some(_)` and `Some` compared bytewise. The three fields are always taken together from the winning side — never mixed.
+- **Purge marker.** `purged_at_ms` is merged independently and monotonically: the merged value is `Some` if either side is `Some`, taking the maximum milliseconds; `None` loses to any `Some`. A purged entry never un-purges.
+- **Unknown map.** Merged per the §11.1 per-key rule (a key in one side kept verbatim; a key in both with equal value kept once; differing values take the lex-larger canonical-CBOR value bytes).
+
+Because each field merge is a join over a total order and the key set is unioned, the reconciliation is commutative, associative, and idempotent.
+
+**Live-vs-trash collision.** After reconciliation a `block_uuid` may be simultaneously live in `blocks` (one copy kept or restored it) and present in the merged `trash` (another copy trashed it). A signed manifest requires `blocks` and `trash` to be disjoint, so the collision is resolved **purge-terminally**:
+
+- if the merged trash entry is purged (`purged_at_ms` is `Some`), **purge wins**: the block is removed from `blocks` and kept purged-in-`trash` — a permanent purge is terminal and beats a concurrent restore or edit;
+- otherwise **live wins**: the trash entry is dropped and the block stays live.
+
 ---
 
 ## 12. Cipher-suite migration
