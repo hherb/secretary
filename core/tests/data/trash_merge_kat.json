@@ -62,6 +62,36 @@
       "expected": [
         {"block_uuid_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null, "unknown_hex": {"ka": "0a", "kb": "0b"}}
       ]
+    },
+    {
+      "name": "tombstoned_by_tie_break",
+      "description": "Same block_uuid and equal tombstoned_at_ms: the triple total order breaks the tie on tombstoned_by (side B's 0xBB..BB > side A's 0xAA..AA), so B's triple wins even though A was listed first.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "tombstoned_at_ms": 100, "tombstoned_by_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "fingerprint_hex": null, "purged_at_ms": null}
+        ],
+        [
+          {"block_uuid_hex": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "tombstoned_at_ms": 100, "tombstoned_by_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "fingerprint_hex": null, "purged_at_ms": null}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "tombstoned_at_ms": 100, "tombstoned_by_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "fingerprint_hex": null, "purged_at_ms": null}
+      ]
+    },
+    {
+      "name": "fingerprint_none_lt_some_tie_break",
+      "description": "Same block_uuid, equal tombstoned_at_ms AND equal tombstoned_by: the triple total order breaks the tie on fingerprint, where None < Some, so side B's Some(0x33..33) wins over side A's None.",
+      "inputs": [
+        [
+          {"block_uuid_hex": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": null, "purged_at_ms": null}
+        ],
+        [
+          {"block_uuid_hex": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": "3333333333333333333333333333333333333333333333333333333333333333", "purged_at_ms": null}
+        ]
+      ],
+      "expected": [
+        {"block_uuid_hex": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d", "tombstoned_at_ms": 100, "tombstoned_by_hex": "01010101010101010101010101010101", "fingerprint_hex": "3333333333333333333333333333333333333333333333333333333333333333", "purged_at_ms": null}
+      ]
     }
   ]
 }
