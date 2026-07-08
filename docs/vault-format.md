@@ -230,6 +230,13 @@ Signature details (per crypto-design §8 with role `"manifest"`):
                                                    ; Absent for entries written by pre-this-version
                                                    ; clients; restore then falls back to suffix +
                                                    ; hybrid-verify only.
+      "purged_at_ms":   <u64, optional>            ; unix-millis this block was permanently purged
+                                                   ; (local trash/ ciphertext removed). Terminal and
+                                                   ; monotonic — a purged entry never un-purges.
+                                                   ; Absent = still restorable. Additive optional key
+                                                   ; (§6.3.2 forward-compat pattern, same shape as
+                                                   ; `fingerprint` above): old clients round-trip it
+                                                   ; verbatim via the unknown-keys map. See §7.2.
     },
     ...
   ],
@@ -501,6 +508,40 @@ Restore preserves the block-level vector clock so that a sync of the restored bl
 Deleting a record (within a block) sets `tombstone: true` on the record, updates `last_mod_ms`, and sets `tombstoned_at_ms = last_mod_ms`. The record's `fields` may be cleared on tombstoning (recommended) or kept for undelete; a tombstoned record is invisible to UI but its presence prevents resurrection on merge from a device that hadn't seen the deletion.
 
 `tombstoned_at_ms` is the high-water mark of every tombstone observation this record has been part of. It is preserved (not reset) across merges and across resurrection: a record that was tombstoned at T1 and later resurrected by a live edit at T2 > T1 carries `tombstone = false`, `last_mod_ms = T2`, `tombstoned_at_ms = T1`. The merge primitive uses this field to drop fields whose `last_mod` is at or below the death-clock — see crypto-design §11.3 for the staleness filter that keeps merge associative under arbitrary tombstone histories.
+
+### 7.2 Purging a block
+
+Purge is a distinct, explicit user-initiated operation from trashing (§7) and restoring (§7.1): it permanently removes a trashed block's local ciphertext. There is no separate purge-time secret to destroy — a block's plaintext is recoverable only via its per-block **Block Content Key (BCK)**, and the BCK exists *only* wrapped per-recipient inside the block file itself (§6.2). Consequently:
+
+- For an **owner-only** block (the §6.2 recipient table names only the owner), removing the local `trash/` ciphertext *is* the crypto-shred: once the file is gone, no key store or fallback exists from which the owner could re-derive the BCK.
+- For a **shared/synced** block, any recipient holding their own copy of the ciphertext can still decrypt it independently. Purge cannot reach those copies — purging a shared block is **local cleanup only**, never a global "unshare" or "forget."
+
+**One erasure mechanism, honestly described.** Purge does exactly one thing to the file bytes: `fs::remove_file` (unlink). There is no overwrite pass. This is deliberate, not an oversight: overwrite-then-unlink is not a reliable erasure guarantee on modern storage — SSD wear-leveling remaps writes instead of updating in place, copy-on-write/journaling filesystems (btrfs, APFS, ZFS) retain the old extent until garbage collection, and a filesystem snapshot or backup taken before the purge retains the original bytes regardless of what happens to the live copy. A conforming implementation MUST NOT claim that purge is a secure-overwrite / forensic-erase operation; its only guarantee is: (a) the local live-filesystem path to the plaintext is severed, and (b), for an owner-only block, that severing is what removes the last copy of the wrapped BCK anywhere the owner controls, which is the load-bearing property that actually renders the plaintext unrecoverable going forward.
+
+**Owner-only vs. shared classification is reporting-only.** Before marking a block purged, the implementation MAY read the current trash file's §6.2 recipient table and classify it as `owner-only` or `shared` (with a recipient count) purely to inform the user honestly ("this was never shared" vs. "N other people may still hold a readable copy"). This classification never gates whether the purge proceeds — there is exactly one purge code path regardless of the outcome. If the file is already absent or fails to decode at classification time (crash residue, a prior partial purge), classification is reported as unknown rather than fabricated as `false`/`0`.
+
+**`purge_block(block_uuid)` sequence** (manifest-first, mirroring §7 step 3's discipline, but inverted: mark unrestorable *before* removing bytes, so the manifest never advertises a restorable block whose file is mid-deletion):
+
+**Preconditions:**
+
+- `block_uuid` MUST have a `TrashEntry` in `manifest.trash`, else the operation fails (no signed record that this block was ever trashed).
+- If that `TrashEntry` is already purged (`purged_at_ms` already `Some`), purge is an **idempotent no-op success**: the manifest is not re-signed; only a best-effort cleanup of any residual file runs. Re-purging a block must never fail.
+
+**Sequence** (skipped when the idempotent case above applies):
+
+1. Locate the current trash file for `block_uuid` (the file whose suffix equals the signed `tombstoned_at_ms`, per §7.1 step 2) and classify its §6.2 recipient table as above. Best-effort; a read/decode failure yields an unknown classification and does not block the purge.
+2. Stage a manifest clone with `TrashEntry.purged_at_ms` set to the current unix-millis time; tick the vault-level vector clock; re-sign and atomically write the manifest. **This write is the commit point.** From here the block is purged regardless of what happens to the physical file below.
+3. Best-effort: `fs::remove_file` every `trash/<block-uuid>.cbor.enc.*` copy matching this `block_uuid` (the current trashed copy and any stale crash-residue siblings). This step is gated on `block_uuid` not being live in `manifest.blocks` — a no-op on a well-formed manifest (a trashed UUID is never simultaneously live, by construction), but load-bearing defense-in-depth against ever deleting a live block's file from a corrupt both-live-and-trashed manifest. Individual file-removal failures are logged and tolerated: a crash between step 2 and step 3 leaves a purged-marked entry with a lingering file, which is a benign orphan — restore already refuses it via the marker (below), and the open-time purge-cleanup sweep removes the leftover file on a later open.
+
+**`empty_trash()` — bulk purge.** Collects every `TrashEntry` with `purged_at_ms` absent and `block_uuid` not live in `manifest.blocks`, classifies each (best-effort, as above; an unreadable target does not abort the batch), then performs **one** manifest write for the whole batch: all collected entries are marked purged with a single shared timestamp, the vector clock is ticked once, and the manifest is re-signed and written once — not once per entry. Only after that single write succeeds does best-effort file removal run across every purged entry; a per-file failure never aborts the batch. An empty target set (nothing eligible to purge) returns without touching the manifest at all — no clock tick, no re-sign, no write.
+
+**Restore interaction.** §7.1 restore gains a fail-fast precondition, checked *before* any `trash/` directory scan: if the matching `TrashEntry.purged_at_ms` is `Some`, restore fails immediately with a dedicated purged-block error, distinct from "not in trash at all" (no signed record) and from a restore-verification failure (an integrity problem with an otherwise-restorable file) — here the content is intentionally and permanently gone. Because `TrashEntry` lives inside the signed manifest body, an attacker cannot strip the purged marker without invalidating the manifest signature.
+
+**Open-time purge-cleanup sweep.** On each successful open, for every `TrashEntry` with `purged_at_ms` set whose local `trash/` file(s) still exist **and** whose `block_uuid` is not live in `manifest.blocks`, the reader deletes the file(s) — best-effort, rename-free, no manifest mutation, no re-signing. This mirrors the §7 open-time relocation sweep's "not live in `manifest.blocks`" gate exactly, and that gate is what makes a concurrent restore win safely: if, concurrent with a purge on one device, another device restored the same block (removing the `TrashEntry`, adding a live `BlockEntry`), the merged manifest resolves liveness by the ordinary trash/restore and block-vector-clock rules — purge adds nothing to that decision — and the sweep, seeing the UUID live, leaves its file untouched. The sweep is also the mechanism that propagates a purge across the owner's own devices in the common single-writer case: the signed manifest is the synced artifact, so once one device's `purged_at_ms` write reaches another device via the ordinary manifest file sync, that device's own next open runs this sweep and converges to the purged state locally — no separate purge-propagation protocol exists or is needed.
+
+**Documented limitation — conflict-copy trash-list merge-monotonicity.** The concurrent-write conflict-copy merge path does not reconcile trash lists at all today (a pre-existing gap that predates purge — plain, unpurged tombstones do not merge across conflict copies either), so a purged marker is not guaranteed to survive a manifest merge performed across a conflict copy. This is a **durability** gap, not a security hole: dropping a purged marker across that specific merge path at worst means the purge did not stick for that one device pairing — no plaintext or key is exposed to anyone who did not already hold a copy. Reconciling trash-list merge semantics (a purged-if-either-side-is, max-timestamp rule) is deferred to a follow-up.
+
+Conformance: `core/tests/purge.rs::purge_owner_only_block_reports_not_shared_and_removes_file` / `purge_shared_block_reports_shared_and_count` / `purge_unknown_uuid_is_block_not_in_trash` / `re_purge_is_idempotent_no_second_resign` / `restore_of_purged_block_returns_block_purged` / `open_vault_sweep_removes_purged_file_when_not_live` / `open_vault_sweep_keeps_purged_file_when_uuid_is_live` / `open_vault_sweep_keeps_non_purged_trash_file` / `empty_trash_purges_all_unpurged_in_single_resign` / `empty_trash_on_empty_target_set_is_noop_no_resign`.
 
 ---
 
