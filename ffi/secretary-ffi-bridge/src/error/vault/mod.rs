@@ -513,6 +513,24 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 ),
             },
 
+            // #399 (Task 2 stopgap — NOT the final mapping): the block's
+            // TrashEntry is marked purged. This is NOT an integrity failure
+            // like RestoreVerificationFailed / RestoreTargetMissing above —
+            // it's an expected, intentional state — so folding to
+            // CorruptVault here is a known-imprecise placeholder, kept only
+            // to make this exhaustive match compile while `purge_block` and
+            // its FFI surface do not exist yet (#399 Task 3). A dedicated
+            // typed `FfiVaultError::BlockPurged` variant (mirroring
+            // `BlockNotInTrash` above) is #399 Task 8's job — that change
+            // also needs threading through uniffi/pyo3 and the Swift/Kotlin
+            // conformance harnesses, which is out of scope here.
+            VE::BlockPurged { block_uuid } => FfiVaultError::CorruptVault {
+                detail: format!(
+                    "block {} has been purged and cannot be restored",
+                    hex::encode(block_uuid),
+                ),
+            },
+
             // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault
             // fold in B.1 before the device-slot FFI surface existed).
             VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,

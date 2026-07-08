@@ -2416,6 +2416,12 @@ pub fn restore_block(
         .iter()
         .find(|t| t.block_uuid == block_uuid)
     {
+        // Fail fast, before the trash-file scan result (`matches`, step 2)
+        // is used to select a restore source: a purged entry's ciphertext
+        // is permanently gone, so there is nothing to verify or restore.
+        Some(entry) if entry.purged_at_ms.is_some() => {
+            return Err(VaultError::BlockPurged { block_uuid });
+        }
         Some(entry) => (entry.tombstoned_at_ms, entry.fingerprint),
         None => return Err(VaultError::BlockNotInTrash { block_uuid }),
     };

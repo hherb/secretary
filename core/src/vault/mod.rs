@@ -300,6 +300,13 @@ pub enum VaultError {
     #[error("block {block_uuid:?} is not in trash")]
     BlockNotInTrash { block_uuid: [u8; 16] },
 
+    /// `restore_block`: the block's `TrashEntry` is marked purged
+    /// (`purged_at_ms.is_some()`) — the ciphertext was permanently removed
+    /// and cannot be restored. Distinct from `BlockNotInTrash` (no signed
+    /// tombstone at all) and `RestoreVerificationFailed` (integrity failure).
+    #[error("block {block_uuid:02x?} has been purged and cannot be restored")]
+    BlockPurged { block_uuid: [u8; 16] },
+
     /// `restore_block` step 3: the trashed block file failed §6.1 hybrid
     /// signature verification or AEAD decrypt. An attacker with write
     /// access to `trash/` planted a corrupt or forged file. The

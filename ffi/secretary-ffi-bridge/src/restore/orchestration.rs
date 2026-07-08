@@ -128,6 +128,23 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
                 hex::encode(block_uuid),
             ),
         },
+        // #399 (Task 2 stopgap — NOT the final mapping): the block's
+        // TrashEntry is marked purged. Unlike RestoreVerificationFailed /
+        // RestoreTargetMissing this is NOT an integrity failure — it's an
+        // expected, intentional state (the ciphertext was deliberately
+        // purged) — so folding to CorruptVault here is a known-imprecise
+        // placeholder, kept only to make this exhaustive match compile
+        // while `purge_block` and its FFI surface do not exist yet (#399
+        // Task 3). A dedicated typed `FfiVaultError::BlockPurged` variant
+        // (mirroring `BlockNotInTrash`) is #399 Task 8's job — that change
+        // also needs threading through uniffi/pyo3 and the Swift/Kotlin
+        // conformance harnesses, which is out of scope here.
+        VaultError::BlockPurged { block_uuid } => FfiVaultError::CorruptVault {
+            detail: format!(
+                "block {} has been purged and cannot be restored",
+                hex::encode(block_uuid),
+            ),
+        },
         // The contacts/-scan in restore step 5 surfaces this when a
         // wrap's recipient is not in contacts/.
         VaultError::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {
