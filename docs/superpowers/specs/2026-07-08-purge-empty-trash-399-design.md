@@ -85,10 +85,11 @@ Returns `EmptyTrashReport { purged_count, shared_count, owner_only_count, unknow
 
 ## CRDT / cross-device propagation
 
-The signed manifest is the synced artifact, so the purged marker propagates to the owner's other devices. Two additions make purge meaningful across replicas without weakening any existing guarantee:
+The signed manifest is the synced artifact, so the purged marker propagates to the owner's other devices. The **common single-writer path** needs no merge change: device A writes the manifest with `purged_at_ms`, the cloud folder syncs that file, device B opens it (same owner signature — verifies fine), and B's open-time purge-cleanup sweep deletes B's local purged files. That path is delivered entirely by the sweep below.
 
-- **Merge monotonicity.** When two manifests carry a `TrashEntry` for the same `block_uuid`, the merged `purged_at_ms` is purged if *either* side is purged (take the `Some` with the max millis; `None` loses to any `Some`). Purge is terminal — a merge never un-purges. This is a pure metadata monotone join on an already-dead tombstone; it introduces **no** new resurrection semantics.
-- **Open-time purge-cleanup sweep.** On each successful open, for every `TrashEntry` with `purged_at_ms.is_some()` whose local `trash/` file still exists **and whose `block_uuid` is not live in `manifest.blocks`**, delete the file (best-effort, rename-free, no manifest change). This is a direct mirror of the existing §7 relocation sweep (`repair/sweep.rs::complete_pending_trash_renames`) and reuses its "not live in `manifest.blocks`" gate.
+- **Open-time purge-cleanup sweep** (in scope). On each successful open, for every `TrashEntry` with `purged_at_ms.is_some()` whose local `trash/` file still exists **and whose `block_uuid` is not live in `manifest.blocks`**, delete the file (best-effort, rename-free, no manifest change). This is a direct mirror of the existing §7 relocation sweep (`repair/sweep.rs::complete_pending_trash_renames`) and reuses its "not live in `manifest.blocks`" gate.
+
+- **Merge monotonicity across conflict copies** (deferred — see below). The concurrent-write / conflict-copy merge path (`core/src/sync/commit/write.rs`) does **not** reconcile trash lists today: the merged manifest is `open.manifest.clone()`, so peer trash entries — purged or not — are never unioned in. Making the purged marker survive a conflict-copy merge (`purged` if *either* side is; max millis; `None` loses to `Some`) requires net-new trash-list reconciliation in the C-layer sync merge — a pre-existing gap that predates purge (plain trashings don't merge across conflict copies either). It is a **durability** gap, not a security hole: a dropped purged marker at worst means "purge didn't stick across that one conflict merge" (device B always held its own copy anyway; nothing is exposed that a recipient/device didn't already have). Filed as a follow-up issue; out of scope for this slice.
 
 **Concurrent restore is safe by construction.** If, concurrent with a purge on device A, device B restores the block (removing the `TrashEntry`, adding a live `BlockEntry`), the merged manifest resolves the block's liveness by the *existing* trash/restore + block-vector-clock rules — purge adds nothing to that decision. The purge-cleanup sweep's "not live in `manifest.blocks`" gate means: if a restore won, the block is live, and the sweep leaves its file untouched. Purge therefore can never delete the ciphertext of a block that is live in the merged manifest.
 
@@ -110,14 +111,13 @@ Placed under a new `purge/` module in the bridge (mirroring `trash/`, `restore/`
 - `purge_block` happy path: owner-only block → report `was_shared = Some(false)`, files gone, `TrashEntry.purged_at_ms = Some(_)`, `BlockEntry` still absent.
 - Shared block → `was_shared = Some(true)`, `recipient_count` correct.
 - Idempotent re-purge → no-op success, no second re-sign (assert manifest bytes unchanged on the second call).
-- `BlockNotInTrash` for an unknown UUID; `BlockUuidAlreadyLive` for a live UUID.
+- `BlockNotInTrash` for a UUID with no `TrashEntry`.
 - Crash residue: manifest marked purged but file present → open-time sweep removes it; sweep skips a purged entry whose UUID is live (concurrent-restore safety).
 - `restore_block` on a purged entry → `BlockPurged` (fail-fast, before any file scan).
 - `empty_trash`: mixed owner-only + shared + already-purged → aggregate report correct, single re-sign, one failure does not abort.
-- Merge monotonicity: purged ∨ non-purged → purged; take max millis; `None` loses to `Some`.
 - `purged_at_ms` CBOR round-trip: `None` re-encodes byte-identically (absent key); `Some` round-trips; an old-client `unknown`-map round-trip preserves it.
 
-**Conformance (`core/tests/python/conformance.py`):** add a purge scenario proving the manifest marker + merge-monotonicity are reproducible clean-room from `docs/` alone; extend the merge-KAT set with a purged-tombstone case (`conflict_kat.json`).
+**Conformance (`core/tests/python/conformance.py`):** add a purge scenario proving the manifest `purged_at_ms` marker (encode/decode + restore-refuses-purged) is reproducible clean-room from `docs/` alone. (Merge-monotonicity KATs are deferred with the conflict-copy trash-reconciliation follow-up.)
 
 **FFI conformance:** `purge_block` / `empty_trash` / restore-of-purged replayed through the Swift + Kotlin uniffi harnesses (`run_conformance.sh`), asserting the same observable output as the Rust bridge replay; thread `BlockPurged` through `ConformanceErrors.{swift,kt}` ([[project_secretary_ffivaulterror_workspace_match]]).
 
@@ -125,6 +125,7 @@ Placed under a new `purge/` module in the bridge (mirroring `trash/`, `restore/`
 
 - **No overwrite pass, no secure-erase claim.** Document the honest limitation in §7.2 and in the FFI doc comments.
 - **No retention auto-purge** (§7 step 5 auto-delete on open) — separate future issue.
+- **No conflict-copy trash-list reconciliation** (purged-marker merge monotonicity in `sync/commit/write.rs`) — deferred follow-up; a pre-existing durability-only gap (see CRDT section). Cross-device purge propagation for the common single-writer case is delivered by the open-time sweep, which *is* in scope.
 - **No new crypto.** No `crypto-design.md` change; purge introduces no new primitive, KEM, or signature site.
 - **No `manifest_version` bump.** `purged_at_ms` is an additive optional field via the established `unknown`-map forward-compat mechanism.
 - **No platform-UI code** this slice.
