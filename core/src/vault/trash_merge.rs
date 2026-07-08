@@ -26,7 +26,8 @@ use crate::vault::manifest::TrashEntry;
 /// - `purged_at_ms`: independent + monotone — `Some` if either side is,
 ///   `max` millis, `None` loses to `Some`. `Option<u64>`'s `Ord` (`None <
 ///   Some`) makes `max` yield exactly this.
-/// - `unknown`: §11.1 per-key union via [`merge_unknown_map`].
+/// - `unknown`: §11.1 per-key union via `merge_unknown_map` (reused from
+///   [`super::conflict`]).
 pub fn merge_trash_entry(a: &TrashEntry, b: &TrashEntry) -> TrashEntry {
     debug_assert_eq!(
         a.block_uuid, b.block_uuid,
