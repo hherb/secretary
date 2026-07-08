@@ -1841,13 +1841,27 @@ mod trash_merge_props {
 
         /// Well-formedness: merge_trash_lists output is sorted ascending by
         /// block_uuid with no duplicates, for arbitrary (possibly malformed)
-        /// input lists.
+        /// input lists. `block_uuid` is remapped into a small domain so
+        /// collisions occur frequently, actually exercising the fold/dedup
+        /// path (with the full 128-bit uuid space, collisions essentially
+        /// never happen).
         #[test]
         fn trash_merge_lists_well_formed(
             lists in prop::collection::vec(
-                prop::collection::vec(arb_trash_entry(), 0..4), 0..4
+                prop::collection::vec((0u8..6u8, arb_trash_entry()), 0..4), 0..4
             ),
         ) {
+            let lists: Vec<Vec<TrashEntry>> = lists
+                .into_iter()
+                .map(|l| {
+                    l.into_iter()
+                        .map(|(u, mut e)| {
+                            e.block_uuid = [u; 16];
+                            e
+                        })
+                        .collect()
+                })
+                .collect();
             let refs: Vec<&[TrashEntry]> = lists.iter().map(|l| l.as_slice()).collect();
             let merged = merge_trash_lists(&refs);
             for w in merged.windows(2) {
