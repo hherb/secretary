@@ -2956,8 +2956,9 @@ def _normalise_trash_entry(e: dict) -> dict:
         "block_uuid_hex": e["block_uuid_hex"].lower(),
         "tombstoned_at_ms": e["tombstoned_at_ms"],
         "tombstoned_by_hex": e["tombstoned_by_hex"].lower(),
-        "fingerprint_hex": (e.get("fingerprint_hex") or None),
-        "purged_at_ms": (e.get("purged_at_ms") if e.get("purged_at_ms") is not None else None),
+        # `.get` already yields None for absent-key and explicit-null alike.
+        "fingerprint_hex": e.get("fingerprint_hex"),
+        "purged_at_ms": e.get("purged_at_ms"),
     }
     unk = e.get("unknown_hex") or {}
     out["unknown_hex"] = {k: bytes.fromhex(v).hex() for k, v in sorted(unk.items())}
