@@ -2354,6 +2354,57 @@ def conflict_kat_path() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "conflict_kat.json"
 
 
+def trash_merge_kat_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "data" / "trash_merge_kat.json"
+
+
+def _trash_triple_key(e: dict) -> tuple:
+    """Total order for the tombstone triple (docs §11.6): tombstoned_at_ms
+    asc, then tombstoned_by bytes asc, then fingerprint with None < Some
+    and Some bytewise. Encode fingerprint as (0, b"") for None and
+    (1, bytes) for Some so None sorts first."""
+    fp = e.get("fingerprint_hex")
+    fp_key = (0, b"") if fp is None else (1, bytes.fromhex(fp))
+    return (e["tombstoned_at_ms"], bytes.fromhex(e["tombstoned_by_hex"]), fp_key)
+
+
+def py_merge_trash_entry(a: dict, b: dict) -> dict:
+    """Merge two trash entries with the same block_uuid (docs §11.6)."""
+    winner = a if _trash_triple_key(a) >= _trash_triple_key(b) else b
+    # purged: Some-if-either, max millis, None loses to Some.
+    pa, pb = a.get("purged_at_ms"), b.get("purged_at_ms")
+    if pa is None and pb is None:
+        purged = None
+    elif pa is None:
+        purged = pb
+    elif pb is None:
+        purged = pa
+    else:
+        purged = max(pa, pb)
+    merged = {
+        "block_uuid_hex": a["block_uuid_hex"],
+        "tombstoned_at_ms": winner["tombstoned_at_ms"],
+        "tombstoned_by_hex": winner["tombstoned_by_hex"],
+        "fingerprint_hex": winner.get("fingerprint_hex"),
+        "purged_at_ms": purged,
+    }
+    unk = py_merge_unknown_map(a.get("unknown_hex", {}), b.get("unknown_hex", {}))
+    if unk:
+        merged["unknown_hex"] = unk
+    return merged
+
+
+def py_merge_trash(lists: list[list[dict]]) -> list[dict]:
+    """Union + reconcile trash lists (docs §11.6). Output sorted ascending
+    by block_uuid, no duplicates."""
+    acc: dict[bytes, dict] = {}
+    for lst in lists:
+        for entry in lst:
+            key = bytes.fromhex(entry["block_uuid_hex"])
+            acc[key] = py_merge_trash_entry(acc[key], entry) if key in acc else dict(entry)
+    return [acc[k] for k in sorted(acc.keys())]
+
+
 # §11 — clock_relation {Equal, IncomingDominates, IncomingDominated, Concurrent}.
 
 def py_clock_relation(local: list[dict], incoming: list[dict]) -> str:
@@ -2895,6 +2946,62 @@ def section4_conflict_kat() -> tuple[bool, list[str]]:
 
         lines.append(f"PASS  conflict_kat.json {name!r}: {expected['relation']}")
 
+    return all_ok, lines
+
+
+def _normalise_trash_entry(e: dict) -> dict:
+    """Canonical comparison shape: fingerprint/purged/unknown normalised so
+    absent-key and explicit-null compare equal, and unknown-hex is lowercase."""
+    out = {
+        "block_uuid_hex": e["block_uuid_hex"].lower(),
+        "tombstoned_at_ms": e["tombstoned_at_ms"],
+        "tombstoned_by_hex": e["tombstoned_by_hex"].lower(),
+        "fingerprint_hex": (e.get("fingerprint_hex") or None),
+        "purged_at_ms": (e.get("purged_at_ms") if e.get("purged_at_ms") is not None else None),
+    }
+    unk = e.get("unknown_hex") or {}
+    out["unknown_hex"] = {k: bytes.fromhex(v).hex() for k, v in sorted(unk.items())}
+    if out["fingerprint_hex"] is not None:
+        out["fingerprint_hex"] = out["fingerprint_hex"].lower()
+    return out
+
+
+def section4b_trash_merge_kat() -> tuple[bool, list[str]]:
+    lines: list[str] = []
+    path = trash_merge_kat_path()
+    if not path.exists():
+        print(f"MISSING: trash_merge_kat.json at {path}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        kat = load_json_fixture(path, "trash_merge_kat.json")
+    except (json.JSONDecodeError, OSError):
+        sys.exit(2)
+    if kat.get("version") != 1:
+        lines.append(f"FAIL  trash_merge_kat.json version={kat.get('version')}, expected 1")
+        return False, lines
+    vectors = kat.get("vectors") or []
+    if not vectors:
+        lines.append("FAIL  trash_merge_kat.json has no vectors")
+        return False, lines
+
+    all_ok = True
+    for vector in vectors:
+        name = vector["name"]
+        try:
+            got = py_merge_trash(vector["inputs"])
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"FAIL  vector {name!r}: merge raised {exc!r}")
+            all_ok = False
+            continue
+        got_n = [_normalise_trash_entry(e) for e in got]
+        exp_n = [_normalise_trash_entry(e) for e in vector["expected"]]
+        if got_n != exp_n:
+            lines.append(f"FAIL  vector {name!r}: merged trash mismatch")
+            lines.append(f"  got:      {json.dumps(got_n, sort_keys=True)}")
+            lines.append(f"  expected: {json.dumps(exp_n, sort_keys=True)}")
+            all_ok = False
+            continue
+        lines.append(f"PASS  trash_merge_kat.json {name!r}")
     return all_ok, lines
 
 
@@ -4037,6 +4144,12 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section 4b: trash_merge_kat.json trash-list merge replay ---")
+    section4b_ok, section4b_lines = section4b_trash_merge_kat()
+    for ln in section4b_lines:
+        print(ln)
+
+    print()
     print("--- Section 5: py_merge_unknown_map case-insensitivity guard ---")
     section5_ok, section5_lines = section5_unknown_map_case_insensitivity()
     for ln in section5_lines:
@@ -4072,6 +4185,7 @@ def main() -> int:
         and section2_ok
         and section3_ok
         and section4_ok
+        and section4b_ok
         and section5_ok
         and revoke_ok
         and sync_pass_ok
@@ -4088,6 +4202,8 @@ def main() -> int:
         print("FAIL: ml_dsa_65_verify tamper-rejection regression", file=sys.stderr)
     if not section4_ok:
         print("FAIL: conflict_kat.json CRDT merge cross-language replay", file=sys.stderr)
+    if not section4b_ok:
+        print("FAIL: trash_merge_kat.json trash-list merge cross-language replay", file=sys.stderr)
     if not section5_ok:
         print("FAIL: py_merge_unknown_map case-insensitivity guard", file=sys.stderr)
     if not revoke_ok:
