@@ -5,10 +5,15 @@
 // returns false on mismatch and appends to the runner's failures list.
 //
 // `assertPostState` mirrors assert_post_state in core/tests/conformance_kat_helpers/dispatch/lifecycle.rs.
+//
+// `assertPurgeReport` / `assertEmptyTrashReport` (#399, Task 11b) mirror
+// assert_purge_report / assert_empty_trash_report in the same Rust file.
 
 import org.json.JSONObject
+import uniffi.secretary.EmptyTrashReport
 import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
+import uniffi.secretary.PurgeReport
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.readBlock
@@ -200,5 +205,59 @@ internal fun assertPostState(
         } catch (e: Throwable) {
             check(false, name, "post_state.read_block threw $e")
         }
+    }
+}
+
+/// Assert a `purge_block` Ok result against the vector's pinned
+/// `expected.purge_report`. Mirrors assert_purge_report in
+/// core/tests/conformance_kat_helpers/dispatch/lifecycle.rs:
+/// `was_shared` / `recipient_count` are exact-match (both nullable —
+/// null classifies "could not read the trash file", not "false"/"0"),
+/// `files_removed_min` (if pinned) is a lower-bound assertion.
+internal fun assertPurgeReport(
+    name: String,
+    actual: PurgeReport,
+    expected: JSONObject,
+    check: (Boolean, String, String) -> Boolean,
+) {
+    val pinned = expected.optJSONObject("purge_report") ?: return
+    if (pinned.has("was_shared") && !pinned.isNull("was_shared")) {
+        val want = pinned.getBoolean("was_shared")
+        check(actual.wasShared == want, name, "purge_report.was_shared mismatch (got ${actual.wasShared}, want $want)")
+    }
+    if (pinned.has("recipient_count") && !pinned.isNull("recipient_count")) {
+        val want = pinned.getInt("recipient_count")
+        check(actual.recipientCount?.toInt() == want, name, "purge_report.recipient_count mismatch (got ${actual.recipientCount}, want $want)")
+    }
+    if (pinned.has("files_removed_min")) {
+        val min = pinned.getLong("files_removed_min")
+        check(actual.filesRemoved.toLong() >= min, name, "purge_report.files_removed ${actual.filesRemoved} < expected minimum $min")
+    }
+}
+
+/// Assert an `empty_trash` Ok result against the vector's pinned
+/// `expected.empty_trash_report`. Mirrors assert_empty_trash_report in
+/// core/tests/conformance_kat_helpers/dispatch/lifecycle.rs:
+/// `purged_count` / `shared_count` / `owner_only_count` / `unknown_count`
+/// are exact-match, `files_removed_min` (if pinned) is a lower-bound
+/// assertion, and `files_failed` (if pinned) is exact-match.
+internal fun assertEmptyTrashReport(
+    name: String,
+    actual: EmptyTrashReport,
+    expected: JSONObject,
+    check: (Boolean, String, String) -> Boolean,
+) {
+    val pinned = expected.optJSONObject("empty_trash_report") ?: return
+    check(actual.purgedCount.toLong() == pinned.getLong("purged_count"), name, "empty_trash_report.purged_count mismatch (got ${actual.purgedCount}, want ${pinned.getLong("purged_count")})")
+    check(actual.sharedCount.toLong() == pinned.getLong("shared_count"), name, "empty_trash_report.shared_count mismatch (got ${actual.sharedCount}, want ${pinned.getLong("shared_count")})")
+    check(actual.ownerOnlyCount.toLong() == pinned.getLong("owner_only_count"), name, "empty_trash_report.owner_only_count mismatch (got ${actual.ownerOnlyCount}, want ${pinned.getLong("owner_only_count")})")
+    check(actual.unknownCount.toLong() == pinned.getLong("unknown_count"), name, "empty_trash_report.unknown_count mismatch (got ${actual.unknownCount}, want ${pinned.getLong("unknown_count")})")
+    if (pinned.has("files_removed_min")) {
+        val min = pinned.getLong("files_removed_min")
+        check(actual.filesRemoved.toLong() >= min, name, "empty_trash_report.files_removed ${actual.filesRemoved} < expected minimum $min")
+    }
+    if (pinned.has("files_failed")) {
+        val want = pinned.getLong("files_failed")
+        check(actual.filesFailed.toLong() == want, name, "empty_trash_report.files_failed mismatch (got ${actual.filesFailed}, want $want)")
     }
 }

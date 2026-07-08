@@ -159,3 +159,60 @@ func assertPostState(
         }
     }
 }
+
+/// Assert a `purge_block` Ok result against the vector's pinned
+/// `expected.purge_report`. Mirrors assert_purge_report in
+/// core/tests/conformance_kat_helpers/dispatch/lifecycle.rs:
+/// `was_shared` / `recipient_count` are exact-match (both nullable —
+/// nil classifies "could not read the trash file", not "false"/"0"),
+/// `files_removed_min` (if pinned) is a lower-bound assertion.
+func assertPurgeReport(
+    name: String,
+    actual: PurgeReport,
+    expected: [String: Any],
+    check: (Bool, String, String) -> Bool
+) {
+    guard let pinned = expected["purge_report"] as? [String: Any] else { return }
+    if let want = pinned["was_shared"] as? Bool {
+        _ = check(actual.wasShared == want, name, "purge_report.was_shared mismatch (got \(String(describing: actual.wasShared)), want \(want))")
+    }
+    if let want = pinned["recipient_count"] as? Int {
+        _ = check(actual.recipientCount.map { Int($0) } == want, name, "purge_report.recipient_count mismatch (got \(String(describing: actual.recipientCount)), want \(want))")
+    }
+    if let min = pinned["files_removed_min"] as? Int {
+        _ = check(Int(actual.filesRemoved) >= min, name, "purge_report.files_removed \(actual.filesRemoved) < expected minimum \(min)")
+    }
+}
+
+/// Assert an `empty_trash` Ok result against the vector's pinned
+/// `expected.empty_trash_report`. Mirrors assert_empty_trash_report in
+/// core/tests/conformance_kat_helpers/dispatch/lifecycle.rs:
+/// `purged_count` / `shared_count` / `owner_only_count` / `unknown_count`
+/// are exact-match, `files_removed_min` (if pinned) is a lower-bound
+/// assertion, and `files_failed` (if pinned) is exact-match.
+func assertEmptyTrashReport(
+    name: String,
+    actual: EmptyTrashReport,
+    expected: [String: Any],
+    check: (Bool, String, String) -> Bool
+) {
+    guard let pinned = expected["empty_trash_report"] as? [String: Any] else { return }
+    if let want = pinned["purged_count"] as? Int {
+        _ = check(Int(actual.purgedCount) == want, name, "empty_trash_report.purged_count mismatch (got \(actual.purgedCount), want \(want))")
+    }
+    if let want = pinned["shared_count"] as? Int {
+        _ = check(Int(actual.sharedCount) == want, name, "empty_trash_report.shared_count mismatch (got \(actual.sharedCount), want \(want))")
+    }
+    if let want = pinned["owner_only_count"] as? Int {
+        _ = check(Int(actual.ownerOnlyCount) == want, name, "empty_trash_report.owner_only_count mismatch (got \(actual.ownerOnlyCount), want \(want))")
+    }
+    if let want = pinned["unknown_count"] as? Int {
+        _ = check(Int(actual.unknownCount) == want, name, "empty_trash_report.unknown_count mismatch (got \(actual.unknownCount), want \(want))")
+    }
+    if let min = pinned["files_removed_min"] as? Int {
+        _ = check(Int(actual.filesRemoved) >= min, name, "empty_trash_report.files_removed \(actual.filesRemoved) < expected minimum \(min)")
+    }
+    if let want = pinned["files_failed"] as? Int {
+        _ = check(Int(actual.filesFailed) == want, name, "empty_trash_report.files_failed mismatch (got \(actual.filesFailed), want \(want))")
+    }
+}
