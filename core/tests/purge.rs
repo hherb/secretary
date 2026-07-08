@@ -1,11 +1,13 @@
-//! Integration tests for the #399 purge/empty-trash slice — Task 2:
-//! `VaultError::BlockPurged` and the `restore_block` fail-fast guard.
+//! Integration tests for the #399 purge/empty-trash slice.
 //!
-//! A `TrashEntry.purged_at_ms.is_some()` means the block's ciphertext was
-//! permanently removed (purge_block, Task 3 — not implemented yet). This
-//! test isolates JUST the `restore_block` guard by hand-setting the
-//! manifest marker on a normally-trashed block, without needing
-//! `purge_block` to exist.
+//! Task 2 landed `VaultError::BlockPurged` + the `restore_block` fail-fast
+//! guard, tested below by hand-setting the manifest marker on a normally-
+//! trashed block (isolates the guard without needing `purge_block`).
+//!
+//! Task 3 (this file's remaining tests) exercises `purge_block` itself:
+//! the owner-only happy path, the shared-block classification, the
+//! `BlockNotInTrash` rejection for an unknown uuid, and idempotent
+//! re-purge (no second manifest re-sign).
 
 #![forbid(unsafe_code)]
 
@@ -22,8 +24,9 @@ use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
-    encode_manifest_file, open_vault, restore_block, save_block, sign_manifest, trash_block,
-    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker, VaultError,
+    encode_manifest_file, open_vault, purge_block, restore_block, save_block, sign_manifest,
+    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker,
+    VaultError,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -227,5 +230,198 @@ fn restore_of_purged_block_returns_block_purged() {
     assert!(
         !open.manifest.blocks.iter().any(|b| b.block_uuid == uuid),
         "BlockEntry must not be added after a rejected restore"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// purge_block — Task 3
+// ---------------------------------------------------------------------------
+
+/// Mint a fully independent, self-signed `ContactCard` for use as an
+/// *additional* `save_block` recipient (never opens or writes a vault of
+/// its own — only the card is needed). Uses a distinct RNG seed from the
+/// owner's (see `feedback_test_crypto_random_not_hardcoded`: derive, don't
+/// hard-code) so the two identities' keys are independent.
+fn mint_external_card(seed: u8, display_name: &str) -> ContactCard {
+    let mut rng = ChaCha20Rng::from_seed([seed; 32]);
+    let mut pw_bytes = [0u8; 16];
+    rng.fill_bytes(&mut pw_bytes);
+    let pw = SecretBytes::new(pw_bytes.to_vec());
+    let created_at_ms = 1_714_060_800_000u64;
+    let created =
+        create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng).unwrap();
+    let pq_sk = MlDsa65Secret::from_bytes(created.identity.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: created.identity.user_uuid,
+        display_name: created.identity.display_name.clone(),
+        x25519_pk: created.identity.x25519_pk,
+        ml_kem_768_pk: created.identity.ml_kem_768_pk.clone(),
+        ed25519_pk: created.identity.ed25519_pk,
+        ml_dsa_65_pk: created.identity.ml_dsa_65_pk.clone(),
+        created_at_ms: created.identity.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&created.identity.ed25519_sk, &pq_sk).unwrap();
+    card
+}
+
+/// Same shape as `setup_vault_with_trashed_block`, but the trashed block
+/// was saved with a second (external) recipient, so `purge_block`'s
+/// classification is exercised on a genuinely shared block.
+fn setup_vault_with_trashed_shared_block() -> (
+    tempfile::TempDir,
+    OpenVault,
+    [u8; 16],
+    ChaCha20Rng,
+    [u8; 16],
+) {
+    let (dir, _mnemonic, pw) = make_fast_vault(50, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0xf1; 32]);
+
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device_uuid = [0xf2; 16];
+    let block_uuid = [0xf3; 16];
+    let plaintext = make_simple_plaintext(block_uuid, "to-be-purged-shared");
+    let other_card = mint_external_card(77, "Other");
+    let recipients = vec![open.owner_card.clone(), other_card];
+    save_block(
+        folder,
+        &mut open,
+        plaintext,
+        &recipients,
+        device_uuid,
+        1_000,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, block_uuid, device_uuid, 2_000, &mut rng).unwrap();
+
+    (dir, open, device_uuid, rng, block_uuid)
+}
+
+/// List every `trash/<uuid_hex>.cbor.enc.*` file currently on disk for
+/// `block_uuid`.
+fn trash_files_for(folder: &std::path::Path, block_uuid: &[u8; 16]) -> Vec<std::path::PathBuf> {
+    let trash_dir = folder.join("trash");
+    let uuid_hex = format_uuid_hyphenated(block_uuid);
+    let prefix = format!("{uuid_hex}.cbor.enc.");
+    let Ok(rd) = fs::read_dir(&trash_dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Owner-only happy path: `purge_block` marks the `TrashEntry` purged,
+/// reports `was_shared == Some(false)` / `recipient_count == Some(1)`,
+/// and removes the on-disk trash file. The block must stay absent from
+/// `manifest.blocks` (it was never resurrected).
+#[test]
+fn purge_owner_only_block_reports_not_shared_and_removes_file() {
+    let (dir, mut open, device, mut rng, uuid) = setup_vault_with_trashed_block();
+    let folder = dir.path();
+
+    assert!(
+        !trash_files_for(folder, &uuid).is_empty(),
+        "fixture sanity: a trash file must exist before purge"
+    );
+
+    let report = purge_block(folder, &mut open, uuid, device, 5_000, &mut rng).unwrap();
+
+    assert_eq!(report.block_uuid, uuid);
+    assert_eq!(report.was_shared, Some(false));
+    assert_eq!(report.recipient_count, Some(1));
+    assert!(report.files_removed >= 1);
+
+    let idx = open
+        .manifest
+        .trash
+        .iter()
+        .position(|t| t.block_uuid == uuid)
+        .unwrap();
+    assert!(open.manifest.trash[idx].purged_at_ms.is_some());
+    assert!(!open.manifest.blocks.iter().any(|b| b.block_uuid == uuid));
+    assert!(
+        trash_files_for(folder, &uuid).is_empty(),
+        "purge must remove every trash/ file for the purged uuid"
+    );
+}
+
+/// Shared-block variant: two recipients on the block at trash time ⇒
+/// `was_shared == Some(true)` and `recipient_count == Some(2)`.
+#[test]
+fn purge_shared_block_reports_shared_and_count() {
+    let (dir, mut open, device, mut rng, uuid) = setup_vault_with_trashed_shared_block();
+    let folder = dir.path();
+
+    let report = purge_block(folder, &mut open, uuid, device, 5_000, &mut rng).unwrap();
+
+    assert_eq!(report.was_shared, Some(true));
+    assert_eq!(report.recipient_count, Some(2));
+    assert!(report.files_removed >= 1);
+    assert!(trash_files_for(folder, &uuid).is_empty());
+}
+
+/// An unknown `block_uuid` (never trashed) must surface `BlockNotInTrash`
+/// without mutating the manifest.
+#[test]
+fn purge_unknown_uuid_is_block_not_in_trash() {
+    let (dir, mut open, device, mut rng, _uuid) = setup_vault_with_trashed_block();
+    let folder = dir.path();
+    let trash_len_before = open.manifest.trash.len();
+
+    let err = purge_block(folder, &mut open, [0x99; 16], device, 5_000, &mut rng).unwrap_err();
+
+    assert!(
+        matches!(err, VaultError::BlockNotInTrash { block_uuid } if block_uuid == [0x99; 16]),
+        "expected BlockNotInTrash, got {err:?}"
+    );
+    assert_eq!(open.manifest.trash.len(), trash_len_before);
+}
+
+/// Re-purging an already-purged block must be a no-op with respect to the
+/// signed manifest: the second call must NOT re-sign / re-write
+/// `manifest.cbor.enc`. Proven by cloning `open.manifest_file` (the
+/// signed on-disk envelope — header, AEAD ct/tag, hybrid signature) after
+/// the first purge and asserting it is byte-for-byte (field-for-field,
+/// via `PartialEq`) identical after the second call.
+#[test]
+fn re_purge_is_idempotent_no_second_resign() {
+    let (dir, mut open, device, mut rng, uuid) = setup_vault_with_trashed_block();
+    let folder = dir.path();
+
+    let first = purge_block(folder, &mut open, uuid, device, 5_000, &mut rng).unwrap();
+    assert_eq!(first.was_shared, Some(false));
+
+    let manifest_file_before = open.manifest_file.clone();
+    let manifest_before = open.manifest.clone();
+
+    let second = purge_block(folder, &mut open, uuid, device, 6_000, &mut rng).unwrap();
+
+    assert_eq!(
+        second.was_shared, None,
+        "already-purged re-purge must report unknown classification, not a fabricated one"
+    );
+    assert_eq!(
+        second.recipient_count, None,
+        "already-purged re-purge must report unknown recipient_count"
+    );
+    assert_eq!(
+        open.manifest_file, manifest_file_before,
+        "re-purge on an already-purged block must NOT re-sign the manifest"
+    );
+    assert_eq!(
+        open.manifest, manifest_before,
+        "re-purge on an already-purged block must not otherwise mutate the manifest body"
     );
 }

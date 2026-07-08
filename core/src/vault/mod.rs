@@ -28,6 +28,7 @@ pub mod ids;
 pub(crate) mod io;
 pub mod manifest;
 pub(crate) mod orchestrators;
+pub mod purge;
 pub mod record;
 mod repair;
 pub(crate) mod trash_relocation;
@@ -55,6 +56,7 @@ pub use orchestrators::{
     create_vault, open_vault, read_vault_manifest, restore_block, revoke_block_recipient,
     save_block, share_block, trash_block, OpenVault, Unlocker,
 };
+pub use purge::{purge_block, PurgeReport};
 pub use repair::{
     preview_repair, repair_vault, AddedRecipient, ApprovedWidening, RepairPolicy, RepairPreview,
     WideningReport,
