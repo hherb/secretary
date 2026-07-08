@@ -2342,6 +2342,23 @@ pub fn restore_block(
         return Err(VaultError::BlockUuidAlreadyLive { block_uuid });
     }
 
+    // Step 1a (#399): fail fast on a purged block BEFORE any trash/ scan.
+    // The TrashEntry lookup is a pure in-memory scan of `open.manifest.trash`,
+    // so it is cheap to run here; a purged entry's ciphertext is permanently
+    // gone, so there is nothing to read, verify, or restore. Ordered AFTER the
+    // Step 1 live-collision check so `BlockUuidAlreadyLive` still wins if a
+    // uuid were somehow both live and purged. Step 3 below re-runs the same
+    // in-memory `find` to extract `expected_ts`/`committed_fp` (a second scan
+    // is negligible) and still returns `BlockNotInTrash` when absent.
+    if open
+        .manifest
+        .trash
+        .iter()
+        .any(|t| t.block_uuid == block_uuid && t.purged_at_ms.is_some())
+    {
+        return Err(VaultError::BlockPurged { block_uuid });
+    }
+
     // Step 2: scan trash/ for matches of `<uuid>.cbor.enc.<u64>`.
     let trash_dir = folder.join(TRASH_SUBDIR);
     let uuid_hex = format_uuid_hyphenated(&block_uuid);
@@ -2416,12 +2433,6 @@ pub fn restore_block(
         .iter()
         .find(|t| t.block_uuid == block_uuid)
     {
-        // Fail fast, before the trash-file scan result (`matches`, step 2)
-        // is used to select a restore source: a purged entry's ciphertext
-        // is permanently gone, so there is nothing to verify or restore.
-        Some(entry) if entry.purged_at_ms.is_some() => {
-            return Err(VaultError::BlockPurged { block_uuid });
-        }
         Some(entry) => (entry.tombstoned_at_ms, entry.fingerprint),
         None => return Err(VaultError::BlockNotInTrash { block_uuid }),
     };
