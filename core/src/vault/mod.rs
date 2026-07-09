@@ -63,7 +63,10 @@ pub use repair::{
     preview_repair, repair_vault, AddedRecipient, ApprovedWidening, RepairPolicy, RepairPreview,
     WideningReport,
 };
-pub use retention::{expired_trash_entries, ExpiredEntry, DEFAULT_RETENTION_WINDOW_MS};
+pub use retention::{
+    auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport,
+    DEFAULT_RETENTION_WINDOW_MS,
+};
 pub use trash_merge::{merge_trash_entry, merge_trash_lists, resolve_live_vs_trash};
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the

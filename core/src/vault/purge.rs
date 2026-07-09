@@ -127,7 +127,7 @@ fn remove_trash_files(folder: &Path, block_uuids: &[[u8; 16]]) -> (usize, usize)
 /// `None` when the file is absent or fails to decode (crash residue,
 /// prior purge, on-disk corruption): an honest "unknown" rather than a
 /// fabricated classification.
-fn classify_trash_target(
+pub(crate) fn classify_trash_target(
     folder: &Path,
     block_uuid: &[u8; 16],
     tombstoned_at_ms: u64,
