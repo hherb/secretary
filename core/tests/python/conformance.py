@@ -3040,8 +3040,11 @@ def section4c_retention_kat() -> tuple[bool, list[str]]:
     path = retention_kat_path()
     if not path.exists():
         print(f"MISSING: retention_kat.json at {path}", file=sys.stderr)
-        return False, lines
-    kat = json.loads(path.read_text())
+        sys.exit(2)
+    try:
+        kat = load_json_fixture(path, "retention_kat.json")
+    except (json.JSONDecodeError, OSError):
+        sys.exit(2)
     if kat.get("version") != 1:
         return False, [f"unexpected retention_kat version {kat.get('version')}"]
     ok = True
@@ -4263,7 +4266,7 @@ def main() -> int:
     if not section4b_ok:
         print("FAIL: trash_merge_kat.json trash-list merge cross-language replay", file=sys.stderr)
     if not section4c_ok:
-        print("SECTION 4c FAILED: retention eligibility KAT mismatch", file=sys.stderr)
+        print("FAIL: retention_kat.json trash retention eligibility replay", file=sys.stderr)
     if not section5_ok:
         print("FAIL: py_merge_unknown_map case-insensitivity guard", file=sys.stderr)
     if not revoke_ok:
