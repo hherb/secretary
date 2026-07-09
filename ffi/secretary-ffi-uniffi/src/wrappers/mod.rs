@@ -8,6 +8,7 @@
 //! - [`contacts`] — `ContactSummary`
 //! - [`purge`] — `PurgeReport`, `EmptyTrashReport`
 //! - [`repair`] — `ApprovedWidening`, `AddedRecipient`, `WideningReport`, `RepairPreview`
+//! - [`retention`] — `ExpiredEntry`, `RetentionPurgeReport`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
 //! All the actual logic lives in `secretary-ffi-bridge`; this layer exists
@@ -20,6 +21,7 @@ pub mod device;
 pub mod identity;
 pub mod purge;
 pub mod repair;
+pub mod retention;
 pub mod save;
 pub mod sync;
 pub mod vault;

@@ -66,8 +66,9 @@ uniffi::include_scaffolding!("secretary");
 
 pub use errors::{UnlockError, VaultError};
 pub use namespace::{
-    add_device_slot, append_record, create_block, create_vault, create_vault_in_folder,
-    edit_record, empty_trash, import_contact_card, move_record, open_vault_with_password,
+    add_device_slot, append_record, auto_purge_expired, create_block, create_vault,
+    create_vault_in_folder, default_retention_window_ms, edit_record, empty_trash,
+    expired_trash_entries, import_contact_card, move_record, open_vault_with_password,
     open_vault_with_recovery, open_with_device_secret, open_with_password, open_with_recovery,
     preview_repair_with_device_secret, preview_repair_with_password, preview_repair_with_recovery,
     purge_block, read_block, remove_device_slot, rename_block, repair_with_device_secret,
@@ -81,6 +82,7 @@ pub use wrappers::identity::{
     CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
 };
 pub use wrappers::purge::{EmptyTrashReport, PurgeReport};
+pub use wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
 pub use wrappers::save::{BlockInput, FieldInput, FieldInputValue, RecordContent, RecordInput};
 pub use wrappers::sync::{
     CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,

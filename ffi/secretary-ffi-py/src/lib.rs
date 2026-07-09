@@ -58,6 +58,7 @@ mod record_edit;
 mod repair;
 mod repair_preview;
 mod restore;
+mod retention;
 mod save;
 mod share;
 mod sync;
@@ -95,6 +96,7 @@ use repair_preview::{
     AddedRecipient, RepairPreview, WideningReport,
 };
 use restore::restore_block;
+use retention::{auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport};
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use share::share_block;
 use sync::{
@@ -286,6 +288,17 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // classes needed.
     m.add_class::<EmptyTrashReport>()?;
     m.add_function(wrap_pyfunction!(empty_trash, m)?)?;
+
+    // #402: retention auto-purge — preview + commit + 90-day default window.
+    // No new typed exception classes (reuses empty_trash's error surface).
+    m.add_class::<ExpiredEntry>()?;
+    m.add_class::<RetentionPurgeReport>()?;
+    m.add_function(wrap_pyfunction!(expired_trash_entries, m)?)?;
+    m.add_function(wrap_pyfunction!(auto_purge_expired, m)?)?;
+    m.add(
+        "DEFAULT_RETENTION_WINDOW_MS",
+        secretary_ffi_bridge::DEFAULT_RETENTION_WINDOW_MS,
+    )?;
 
     // D.1.6 share-contacts error surface — 2 typed exception classes
     // mirroring the bridge's FfiVaultError variants.

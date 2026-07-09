@@ -115,6 +115,7 @@ pub mod purge;
 pub mod record;
 pub mod repair;
 pub mod restore;
+pub mod retention;
 pub mod revoke;
 pub mod save;
 pub mod share;
@@ -150,8 +151,15 @@ pub use repair::{
     FfiAddedRecipient, FfiApprovedWidening, FfiRepairPreview, FfiWideningReport,
 };
 pub use restore::restore_block;
+pub use retention::{
+    auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport,
+};
 pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
+/// The v1 default retention window (90 days, ms). Re-exported unchanged
+/// from `secretary-core` — the single source of the value for both
+/// binding crates. `docs/vault-format.md` §7 step 5.
+pub use secretary_core::vault::DEFAULT_RETENTION_WINDOW_MS;
 pub use share::share_block;
 pub use sync::{
     sync_commit_decisions, sync_commit_decisions_in, sync_status, sync_status_in, sync_vault,
