@@ -121,6 +121,31 @@ pub const SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS: &str = "require_password
 pub const SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS: &str = "reauth_grace_window_ms";
 
 // =============================================================================
+// Retention window (auto-purge of trashed blocks past this age)
+// =============================================================================
+
+/// Milliseconds per day. Used to convert the user-visible retention window
+/// (days) to/from the wire-format ms.
+pub const MS_PER_DAY: u64 = 86_400_000;
+
+/// Default retention window, in milliseconds. Re-exported from the bridge's
+/// `DEFAULT_RETENTION_WINDOW_MS` (90 days) so the desktop default can never
+/// drift from the FFI default.
+pub const RETENTION_WINDOW_DEFAULT_MS: u64 = secretary_ffi_bridge::DEFAULT_RETENTION_WINDOW_MS;
+
+/// Lower bound for `retention_window_ms`. One day — a 0-day window would purge
+/// everything on the next run; the floor makes that a deliberate impossibility
+/// through the settings surface.
+pub const RETENTION_WINDOW_MIN_MS: u64 = MS_PER_DAY;
+
+/// Upper bound for `retention_window_ms`. 3650 days (10 years) — a sanity
+/// ceiling; beyond this the window is effectively "never purge".
+pub const RETENTION_WINDOW_MAX_MS: u64 = 3650 * MS_PER_DAY;
+
+/// Settings field name: the retention window in milliseconds.
+pub const SETTINGS_FIELD_RETENTION_WINDOW_MS: &str = "retention_window_ms";
+
+// =============================================================================
 // Deterministic UUID derivation (for the settings block and record)
 // =============================================================================
 
@@ -206,6 +231,12 @@ mod tests {
     fn reauth_default_is_two_minutes() {
         const TWO_MINUTES_MS: u64 = 2 * 60 * 1_000;
         assert_eq!(REAUTH_WINDOW_DEFAULT_MS, TWO_MINUTES_MS);
+    }
+
+    #[test]
+    fn retention_window_bounds_are_ordered() {
+        const _: () = assert!(RETENTION_WINDOW_MIN_MS < RETENTION_WINDOW_DEFAULT_MS);
+        const _: () = assert!(RETENTION_WINDOW_DEFAULT_MS < RETENTION_WINDOW_MAX_MS);
     }
 
     #[test]

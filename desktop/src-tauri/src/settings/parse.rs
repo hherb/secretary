@@ -9,8 +9,10 @@
 use crate::constants::{
     AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS, REAUTH_WINDOW_DEFAULT_MS,
     REAUTH_WINDOW_MAX_MS, REAUTH_WINDOW_MIN_MS, REQUIRE_PASSWORD_DEFAULT,
+    RETENTION_WINDOW_DEFAULT_MS, RETENTION_WINDOW_MAX_MS, RETENTION_WINDOW_MIN_MS,
     SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS, SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS,
-    SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS, SETTINGS_RECORD_TYPE,
+    SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS, SETTINGS_FIELD_RETENTION_WINDOW_MS,
+    SETTINGS_RECORD_TYPE,
 };
 use crate::errors::{AppError, AppWarning};
 
@@ -20,6 +22,7 @@ pub struct Settings {
     pub auto_lock_timeout_ms: u64,
     pub require_password_before_edits: bool,
     pub reauth_grace_window_ms: u64,
+    pub retention_window_ms: u64,
 }
 
 impl Default for Settings {
@@ -28,6 +31,7 @@ impl Default for Settings {
             auto_lock_timeout_ms: AUTO_LOCK_DEFAULT_MS,
             require_password_before_edits: REQUIRE_PASSWORD_DEFAULT,
             reauth_grace_window_ms: REAUTH_WINDOW_DEFAULT_MS,
+            retention_window_ms: RETENTION_WINDOW_DEFAULT_MS,
         }
     }
 }
@@ -82,6 +86,15 @@ pub fn parse_settings_fields(record_type: &str, fields: &[(String, String)]) -> 
                     value.parse().map_err(|e| AppError::SettingsCorrupt {
                         detail: format!("require_password_before_edits parse failure: {e}"),
                     })?;
+            }
+            SETTINGS_FIELD_RETENTION_WINDOW_MS => {
+                let raw: u64 = value.parse().map_err(|e| AppError::SettingsCorrupt {
+                    detail: format!("retention_window_ms parse failure: {e}"),
+                })?;
+                let (v, mut w) =
+                    clamp_ms_with_warning(raw, RETENTION_WINDOW_MIN_MS, RETENTION_WINDOW_MAX_MS);
+                settings.retention_window_ms = v;
+                warnings.append(&mut w);
             }
             other => {
                 // Forward-compat: a field this build doesn't know about is a
@@ -138,6 +151,12 @@ pub fn validate_save_settings(s: &Settings) -> Result<(), AppError> {
             max: REAUTH_WINDOW_MAX_MS,
         });
     }
+    if !(RETENTION_WINDOW_MIN_MS..=RETENTION_WINDOW_MAX_MS).contains(&s.retention_window_ms) {
+        return Err(AppError::SettingsOutOfRange {
+            min: RETENTION_WINDOW_MIN_MS,
+            max: RETENTION_WINDOW_MAX_MS,
+        });
+    }
     Ok(())
 }
 
@@ -162,6 +181,11 @@ pub fn serialize_settings(s: &Settings) -> Vec<(String, String, String)> {
             SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS.to_string(),
             s.reauth_grace_window_ms.to_string(),
         ),
+        (
+            SETTINGS_RECORD_TYPE.to_string(),
+            SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
+            s.retention_window_ms.to_string(),
+        ),
     ]
 }
 
@@ -170,8 +194,9 @@ mod tests {
     use super::*;
     use crate::constants::{
         REAUTH_WINDOW_DEFAULT_MS, REAUTH_WINDOW_MAX_MS, REQUIRE_PASSWORD_DEFAULT,
-        SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS, SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS,
-        SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS, SETTINGS_RECORD_TYPE,
+        RETENTION_WINDOW_MIN_MS, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS,
+        SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS, SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+        SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
     };
 
     // =========================================================================
@@ -214,6 +239,7 @@ mod tests {
             auto_lock_timeout_ms: 900_000,
             require_password_before_edits: false,
             reauth_grace_window_ms: 30_000,
+            ..Settings::default()
         };
         let triples = serialize_settings(&original);
         let fields: Vec<(String, String)> = triples
@@ -428,6 +454,7 @@ mod tests {
             auto_lock_timeout_ms: AUTO_LOCK_DEFAULT_MS,
             require_password_before_edits: true,
             reauth_grace_window_ms: REAUTH_WINDOW_MAX_MS + 1,
+            ..Settings::default()
         };
         let err = validate_save_settings(&s).expect_err("must reject");
         assert!(matches!(err, AppError::SettingsOutOfRange { .. }));
@@ -443,6 +470,7 @@ mod tests {
             auto_lock_timeout_ms: 900_000,
             require_password_before_edits: false,
             reauth_grace_window_ms: 30_000,
+            ..Settings::default()
         };
         let triples = serialize_settings(&original);
         // The auto-lock triple is always first.
@@ -455,5 +483,64 @@ mod tests {
         let (parsed, warnings) = parse_settings_fields(record_type, &fields).expect("parse");
         assert_eq!(parsed, original);
         assert!(warnings.is_empty());
+    }
+
+    // =========================================================================
+    // retention_window_ms
+    // =========================================================================
+
+    #[test]
+    fn default_includes_retention_window() {
+        assert_eq!(
+            Settings::default().retention_window_ms,
+            crate::constants::RETENTION_WINDOW_DEFAULT_MS
+        );
+    }
+
+    #[test]
+    fn parse_retention_window_field() {
+        let fields = vec![(
+            SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
+            (30 * crate::constants::MS_PER_DAY).to_string(),
+        )];
+        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+        assert_eq!(s.retention_window_ms, 30 * crate::constants::MS_PER_DAY);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_retention_window_clamps_below_min() {
+        let fields = vec![(
+            SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
+            "1000".to_string(),
+        )];
+        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
+        assert_eq!(s.retention_window_ms, RETENTION_WINDOW_MIN_MS);
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn validate_save_rejects_out_of_range_retention() {
+        let s = Settings {
+            retention_window_ms: 999,
+            ..Settings::default()
+        };
+        assert!(matches!(
+            validate_save_settings(&s),
+            Err(AppError::SettingsOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn serialize_round_trips_retention_window() {
+        let s = Settings {
+            retention_window_ms: 45 * crate::constants::MS_PER_DAY,
+            ..Settings::default()
+        };
+        let triples = serialize_settings(&s);
+        assert!(triples
+            .iter()
+            .any(|(_, name, val)| name == SETTINGS_FIELD_RETENTION_WINDOW_MS
+                && val == &(45 * crate::constants::MS_PER_DAY).to_string()));
     }
 }

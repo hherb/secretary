@@ -513,6 +513,7 @@ fn settings_round_trip_persists_all_three_fields() {
         auto_lock_timeout_ms: 600_000,
         require_password_before_edits: false,
         reauth_grace_window_ms: 30_000,
+        ..Settings::default()
     };
 
     // Write all three fields through the multi-field save path.

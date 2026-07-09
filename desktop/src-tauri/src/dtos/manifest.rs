@@ -109,6 +109,14 @@ impl From<&SettingsInput> for Settings {
             auto_lock_timeout_ms: s.auto_lock_timeout_ms,
             require_password_before_edits: s.require_password_before_edits,
             reauth_grace_window_ms: s.reauth_grace_window_ms,
+            // TODO(retention slice): `SettingsInput` doesn't carry
+            // `retention_window_ms` yet — a later task in this slice wires
+            // it through the DTO/IPC layer. Until then this conversion
+            // resets any persisted custom retention window back to the
+            // compiled-in default on every `set_settings` IPC call (this
+            // command has no other path that sets retention today, so
+            // there is nothing yet to lose).
+            ..Settings::default()
         }
     }
 }
@@ -178,6 +186,7 @@ mod tests {
             auto_lock_timeout_ms: 600_000,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            ..Settings::default()
         });
         let v = to_json_value(&dto);
         assert_eq!(v["autoLockTimeoutMs"], 600_000_u64);
@@ -261,6 +270,7 @@ mod tests {
             auto_lock_timeout_ms: 600_000,
             require_password_before_edits: true,
             reauth_grace_window_ms: 120_000,
+            ..Settings::default()
         });
         let v = to_json_value(&dto);
         assert_eq!(v["requirePasswordBeforeEdits"], true);
