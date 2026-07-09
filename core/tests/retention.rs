@@ -21,8 +21,9 @@ use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
-    auto_purge_expired, empty_trash, encode_manifest_file, open_vault, save_block, sign_manifest,
-    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker,
+    auto_purge_expired, empty_trash, encode_manifest_file, expired_trash_entries, open_vault,
+    save_block, sign_manifest, trash_block, BlockEntry, BlockPlaintext, KdfParamsRef, Manifest,
+    ManifestHeader, OpenVault, TrashEntry, Unlocker,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -375,4 +376,118 @@ fn auto_purge_expired_is_subset_of_empty_trash() {
 
     // Together they purge every eligible entry — auto_purge's set ⊆ empty_trash's set.
     assert!(open.manifest.trash.iter().all(|t| t.purged_at_ms.is_some()));
+}
+
+// ---------------------------------------------------------------------------
+// Cross-language KAT replay — Task 6
+//
+// Loads `core/tests/data/retention_kat.json` and replays each vector through
+// `expired_trash_entries`, asserting the SET of selected UUIDs matches the
+// fixture's `expected_uuids_hex`. The Python sibling
+// (`core/tests/python/conformance.py::section4c_retention_kat`, Task 7)
+// re-implements the eligibility predicate from `docs/vault-format.md` §7
+// step 5 alone and replays the same fixture, completing the cross-language
+// conformance contract for the retention selector (mirrors
+// `core/tests/conflict.rs::trash_merge_kat_replays_match_rust`).
+// ---------------------------------------------------------------------------
+
+fn parse_hex_array<const N: usize>(s: &str) -> [u8; N] {
+    let bytes: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect();
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+/// Build a minimal `Manifest` from a KAT vector: `manifest.trash` from
+/// `trash[]` (mirrors the `trash_entry` helper in
+/// `core/src/vault/retention.rs`'s inline tests) and `manifest.blocks` from
+/// `blocks[]` (mirrors `push_live_block`). `expired_trash_entries` reads
+/// only these two fields, so the rest are minimal placeholders.
+fn build_manifest_from_kat(vector: &serde_json::Value) -> Manifest {
+    let mut manifest = Manifest {
+        manifest_version: 1,
+        vault_uuid: [0x01; 16],
+        format_version: FORMAT_VERSION,
+        suite_id: SUITE_ID,
+        owner_user_uuid: [0x02; 16],
+        vector_clock: Vec::new(),
+        blocks: Vec::new(),
+        trash: Vec::new(),
+        kdf_params: KdfParamsRef {
+            memory_kib: 262_144,
+            iterations: 3,
+            parallelism: 1,
+            salt: [0x11; 32],
+        },
+        unknown: BTreeMap::new(),
+    };
+
+    for b in vector["blocks"].as_array().expect("blocks[]") {
+        let block_uuid = parse_hex_array::<16>(b.as_str().expect("block uuid hex"));
+        manifest.blocks.push(BlockEntry {
+            block_uuid,
+            block_name: String::new(),
+            fingerprint: [0u8; 32],
+            recipients: Vec::new(),
+            vector_clock_summary: Vec::new(),
+            suite_id: SUITE_ID,
+            created_at_ms: 0,
+            last_mod_ms: 0,
+            unknown: BTreeMap::new(),
+        });
+    }
+
+    for t in vector["trash"].as_array().expect("trash[]") {
+        let block_uuid =
+            parse_hex_array::<16>(t["block_uuid_hex"].as_str().expect("block_uuid_hex"));
+        let tombstoned_at_ms = t["tombstoned_at_ms"].as_u64().expect("tombstoned_at_ms");
+        let purged_at_ms = if t["purged_at_ms"].is_null() {
+            None
+        } else {
+            Some(t["purged_at_ms"].as_u64().expect("purged_at_ms"))
+        };
+        manifest.trash.push(TrashEntry {
+            block_uuid,
+            tombstoned_at_ms,
+            tombstoned_by: [0u8; 16],
+            fingerprint: None,
+            purged_at_ms,
+            unknown: BTreeMap::new(),
+        });
+    }
+
+    manifest
+}
+
+#[test]
+fn expired_trash_entries_kat_replays_match_rust() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("retention_kat.json");
+    let raw = std::fs::read_to_string(&path).expect("read retention_kat.json");
+    let kat: serde_json::Value = serde_json::from_str(&raw).expect("parse retention_kat.json");
+    assert_eq!(kat["version"], 1);
+
+    for vector in kat["vectors"].as_array().expect("vectors[]") {
+        let name = vector["name"].as_str().expect("name");
+        let window_ms = vector["window_ms"].as_u64().expect("window_ms");
+        let now_ms = vector["now_ms"].as_u64().expect("now_ms");
+        let manifest = build_manifest_from_kat(vector);
+        let got: std::collections::BTreeSet<[u8; 16]> =
+            expired_trash_entries(&manifest, window_ms, now_ms)
+                .into_iter()
+                .map(|e| e.block_uuid)
+                .collect();
+        let expected: std::collections::BTreeSet<[u8; 16]> = vector["expected_uuids_hex"]
+            .as_array()
+            .expect("expected_uuids_hex[]")
+            .iter()
+            .map(|v| parse_hex_array::<16>(v.as_str().unwrap()))
+            .collect();
+        assert_eq!(got, expected, "vector {name}");
+    }
 }
