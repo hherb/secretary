@@ -2,9 +2,9 @@
 //! permanently purging trashed blocks older than a retention window, plus
 //! the `auto_purge_expired` orchestrator. `docs/vault-format.md` §7 step 5.
 //!
-//! The selector is pure and I/O-free ([[feedback_pure_functions]]); the
-//! commit reuses `purge::purge_batch_commit` (the same batch path
-//! `empty_trash` uses) so both share one audited manifest-write sequence.
+//! The selector is pure and I/O-free; the commit reuses
+//! `purge::purge_batch_commit` (the same batch path `empty_trash` uses) so
+//! both share one audited manifest-write sequence.
 
 use std::path::Path;
 
@@ -105,7 +105,7 @@ pub struct RetentionPurgeReport {
 /// Permanently purge every trashed block older than `window_ms` — the
 /// retention auto-purge operation (`docs/vault-format.md` §7 step 5, #402).
 ///
-/// Eligibility is the pure [`expired_trash_indices`] rule: not already
+/// Eligibility is the pure `expired_trash_indices` rule: not already
 /// purged, not live in `manifest.blocks`, and `now_ms − tombstoned_at_ms >
 /// window_ms` (saturating, exclusive boundary). Targets are classified for
 /// reporting (best-effort, before the write) and committed in one batch via
