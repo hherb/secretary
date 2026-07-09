@@ -21,8 +21,8 @@ use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint::fingerprint;
 use secretary_core::unlock::{create_vault_unchecked, mnemonic::Mnemonic, vault_toml};
 use secretary_core::vault::{
-    auto_purge_expired, encode_manifest_file, open_vault, save_block, sign_manifest, trash_block,
-    BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker,
+    auto_purge_expired, empty_trash, encode_manifest_file, open_vault, save_block, sign_manifest,
+    trash_block, BlockPlaintext, KdfParamsRef, Manifest, ManifestHeader, OpenVault, Unlocker,
 };
 use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
@@ -315,4 +315,64 @@ fn auto_purge_expired_on_empty_target_set_is_noop_no_resign() {
         "empty target set must not re-sign the manifest"
     );
     assert_eq!(open.manifest, manifest_before);
+}
+
+/// Running `auto_purge_expired` twice: the second run at a later `now_ms`
+/// must purge nothing new (OLD is already purged and skipped by the
+/// not-purged clause; FRESH is still too young) AND must leave the
+/// vector clock unchanged, proving the empty-target-set path did not
+/// re-sign the manifest a second time.
+#[test]
+fn auto_purge_expired_is_idempotent() {
+    let old_uuid = [0xA1; 16];
+    let new_uuid = [0xB2; 16];
+    let (dir, mut open, device, mut rng, _pw) =
+        stage_two_trashed_blocks(old_uuid, 1_000, new_uuid, 9_950);
+    let folder = dir.path();
+    let (window_ms, now_ms) = (100u64, 10_000u64);
+
+    let first = auto_purge_expired(folder, &mut open, window_ms, now_ms, device, &mut rng).unwrap();
+    assert_eq!(first.purged_count, 1);
+    let clock_after_first = open.manifest.vector_clock.clone();
+
+    // Second run at a LATER now_ms: OLD is already purged (skipped by the
+    // not-purged clause); FRESH is still too young. Nothing to do.
+    let second =
+        auto_purge_expired(folder, &mut open, window_ms, now_ms + 1, device, &mut rng).unwrap();
+    assert_eq!(second.purged_count, 0, "no entry re-purged");
+    assert_eq!(
+        open.manifest.vector_clock, clock_after_first,
+        "empty target set => no second re-sign / clock tick"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// auto_purge_expired vs. empty_trash — subset relationship
+// ---------------------------------------------------------------------------
+
+/// With OLD past the window and FRESH within it, `auto_purge_expired`
+/// purges exactly {OLD}; a following `empty_trash` on the same state mops
+/// up the remainder ({FRESH}). Together every trash entry ends purged: the
+/// age filter only ever removes targets from `empty_trash`'s full set, it
+/// never adds any — auto_purge's purged set is a subset of empty_trash's.
+#[test]
+fn auto_purge_expired_is_subset_of_empty_trash() {
+    let old_uuid = [0xA1; 16];
+    let new_uuid = [0xB2; 16];
+    let (dir, mut open, device, mut rng, _pw) =
+        stage_two_trashed_blocks(old_uuid, 1_000, new_uuid, 9_950);
+    let folder = dir.path();
+
+    let auto = auto_purge_expired(folder, &mut open, 100, 10_000, device, &mut rng).unwrap();
+    assert_eq!(auto.purged_count, 1);
+
+    // Now empty_trash the remainder: FRESH (still not purged, not live).
+    let rest = empty_trash(folder, &mut open, device, 11_000, &mut rng).unwrap();
+    assert_eq!(
+        rest.purged_count, 1,
+        "empty_trash mops up the within-window entry auto-purge left"
+    );
+
+    // Together they purge every eligible entry — auto_purge's set ⊆ empty_trash's set.
+    assert!(open.manifest.trash.iter().all(|t| t.purged_at_ms.is_some()));
 }
