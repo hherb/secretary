@@ -568,7 +568,7 @@ Death-clock invariants:
 
 The staleness filter applies uniformly: in the `BothLive` outcome (where the field union runs through per-field LWW), in the `LocalTombstoneLost` / `RemoteTombstoneLost` outcomes (where the live side's fields would otherwise pass through unchanged), and trivially in tombstone-wins outcomes (where `fields` is already empty).
 
-Tombstones are garbage-collected only after a configurable retention window (default: 90 days) to ensure all syncing devices have observed the deletion before the on-disk evidence is removed.
+Tombstones are garbage-collected only after a configurable retention window (default: 90 days) to ensure all syncing devices have observed the deletion before the on-disk evidence is removed. Retention auto-purge (vault-format §7 step 5, #402) removes the trashed block's **ciphertext** once it is older than this window, but the `TrashEntry` **tombstone itself persists** in the signed manifest — the two have distinct lifetimes: the ciphertext is purged at the retention window, while tombstone GC (removing the `TrashEntry` entirely) is a separate, not-yet-implemented concern that must wait until every device has observed the deletion.
 
 ### 11.4 Concurrent value collisions and UI resolution
 
