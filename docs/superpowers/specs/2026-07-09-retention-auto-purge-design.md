@@ -63,7 +63,7 @@ New file `core/src/vault/retention.rs`:
 - `pub const DEFAULT_RETENTION_WINDOW_MS: u64` = 90 days in millis (`90 * 24 * 60 * 60 * 1000`), named (no magic number).
 - `pub struct ExpiredEntry { pub block_uuid: [u8; 16], pub tombstoned_at_ms: u64, pub age_ms: u64 }`.
 - `pub fn expired_trash_entries(manifest: &Manifest, window_ms: u64, now_ms: u64) -> Vec<ExpiredEntry>` — pure.
-- `pub struct RetentionPurgeReport { purged_count, shared_count, owner_only_count, unknown_count, files_removed, files_failed: usize, window_ms: u64 }` (`Default`).
+- `pub struct RetentionPurgeReport { purged_count, shared_count, owner_only_count, unknown_count, files_removed, files_failed: usize, window_ms: u64 }` (derives `Debug, Clone`; deliberately **not** `Default` — the empty-target return still carries the real `window_ms`).
 - `pub fn auto_purge_expired(folder, open: &mut OpenVault, window_ms, now_ms, device_uuid, rng) -> Result<RetentionPurgeReport, VaultError>`.
 
 `core/src/vault/purge.rs`: extract `pub(crate) fn purge_batch_commit(...)` from `empty_trash`; `empty_trash` refactored to call it. No behaviour change to `empty_trash` (verified by its existing tests staying green unmodified).
