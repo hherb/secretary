@@ -147,6 +147,37 @@ fn make_simple_plaintext(block_uuid: [u8; 16], block_name: &str) -> BlockPlainte
     }
 }
 
+/// Mint a fully independent, self-signed `ContactCard` for use as an
+/// *additional* `save_block` recipient (never opens or writes a vault of
+/// its own — only the card is needed). Duplicated from `core/tests/purge.rs`
+/// (no shared test-helper crate exists yet). A distinct RNG seed from the
+/// owner's keeps the two identities' keys independent
+/// (`feedback_test_crypto_random_not_hardcoded`).
+fn mint_external_card(seed: u8, display_name: &str) -> ContactCard {
+    let mut rng = ChaCha20Rng::from_seed([seed; 32]);
+    let mut pw_bytes = [0u8; 16];
+    rng.fill_bytes(&mut pw_bytes);
+    let pw = SecretBytes::new(pw_bytes.to_vec());
+    let created_at_ms = 1_714_060_800_000u64;
+    let created =
+        create_vault_unchecked(&pw, display_name, created_at_ms, fast_kdf(), &mut rng).unwrap();
+    let pq_sk = MlDsa65Secret::from_bytes(created.identity.ml_dsa_65_sk.expose()).unwrap();
+    let mut card = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: created.identity.user_uuid,
+        display_name: created.identity.display_name.clone(),
+        x25519_pk: created.identity.x25519_pk,
+        ml_kem_768_pk: created.identity.ml_kem_768_pk.clone(),
+        ed25519_pk: created.identity.ed25519_pk,
+        ml_dsa_65_pk: created.identity.ml_dsa_65_pk.clone(),
+        created_at_ms: created.identity.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    card.sign(&created.identity.ed25519_sk, &pq_sk).unwrap();
+    card
+}
+
 /// Build a fresh vault, unlock it, and stage two owner-only trashed
 /// blocks: `old_uuid` trashed at `old_tombstoned_ms`, `new_uuid` trashed at
 /// `new_tombstoned_ms`. Returns the vault's temp dir (kept alive), the open
@@ -345,6 +376,47 @@ fn auto_purge_expired_is_idempotent() {
         open.manifest.vector_clock, clock_after_first,
         "empty target set => no second re-sign / clock tick"
     );
+}
+
+/// A trashed block saved with a second (external) recipient is classified
+/// `shared` when auto-purged. `auto_purge_expired` carries its OWN copy of
+/// the `classify_trash_target` match (it is not shared code with
+/// `empty_trash`), so exercise its `Some((true, _)) => shared_count` arm
+/// directly — the owner-only arm is covered by
+/// `auto_purge_expired_purges_old_keeps_fresh`.
+#[test]
+fn auto_purge_expired_classifies_shared_block() {
+    let (dir, _mnemonic, pw) = make_fast_vault(64, "Owner");
+    let folder = dir.path();
+    let mut rng = ChaCha20Rng::from_seed([0x64; 32]);
+    let mut open = open_vault(folder, Unlocker::Password(&pw), None).unwrap();
+    let device = [0x65; 16];
+
+    let uuid = [0xC3; 16];
+    let recipients = vec![open.owner_card.clone(), mint_external_card(78, "Other")];
+    save_block(
+        folder,
+        &mut open,
+        make_simple_plaintext(uuid, "old-shared"),
+        &recipients,
+        device,
+        500,
+        &mut rng,
+    )
+    .unwrap();
+    trash_block(folder, &mut open, uuid, device, 1_000, &mut rng).unwrap();
+
+    // age = 10_000 - 1_000 = 9_000 > window 100 => eligible.
+    let report = auto_purge_expired(folder, &mut open, 100, 10_000, device, &mut rng).unwrap();
+
+    assert_eq!(report.purged_count, 1);
+    assert_eq!(
+        report.shared_count, 1,
+        "two recipients => classified shared"
+    );
+    assert_eq!(report.owner_only_count, 0);
+    assert_eq!(report.unknown_count, 0);
+    reopen_ok(folder, &pw);
 }
 
 // ---------------------------------------------------------------------------
