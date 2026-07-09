@@ -6,6 +6,7 @@
 //! `purge::purge_batch_commit` (the same batch path `empty_trash` uses) so
 //! both share one audited manifest-write sequence.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rand_core::{CryptoRng, RngCore};
@@ -43,6 +44,9 @@ pub(crate) fn expired_trash_indices(
     window_ms: u64,
     now_ms: u64,
 ) -> Vec<usize> {
+    // Hoist the live-block set into an O(1)-lookup index once, so the scan
+    // is O(trash + blocks) rather than O(trash × blocks).
+    let live: HashSet<[u8; 16]> = manifest.blocks.iter().map(|b| b.block_uuid).collect();
     manifest
         .trash
         .iter()
@@ -50,7 +54,7 @@ pub(crate) fn expired_trash_indices(
         .filter(|(_, e)| {
             e.purged_at_ms.is_none()
                 && now_ms.saturating_sub(e.tombstoned_at_ms) > window_ms
-                && !manifest.blocks.iter().any(|b| b.block_uuid == e.block_uuid)
+                && !live.contains(&e.block_uuid)
         })
         .map(|(i, _)| i)
         .collect()
