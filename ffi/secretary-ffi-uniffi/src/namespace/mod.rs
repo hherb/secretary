@@ -11,6 +11,7 @@ use crate::wrappers::identity::{
     CreateVaultOutput, CreatedVaultInFolder, MnemonicOutput, UnlockedIdentity,
 };
 use crate::wrappers::purge::{EmptyTrashReport, PurgeReport};
+use crate::wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
@@ -716,6 +717,70 @@ fn convert_record_input(
         tags: r.tags,
         fields,
     })
+}
+
+/// Pure preview of the entries retention auto-purge would remove — uniffi
+/// projection of [`secretary_ffi_bridge::expired_trash_entries`]. No I/O;
+/// returns an empty sequence on a wiped handle. `docs/vault-format.md`
+/// §7 step 5 (#402).
+pub fn expired_trash_entries(
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    window_ms: u64,
+    now_ms: u64,
+) -> Vec<ExpiredEntry> {
+    secretary_ffi_bridge::expired_trash_entries(&manifest.0, window_ms, now_ms)
+        .into_iter()
+        .map(|e| ExpiredEntry {
+            block_uuid: e.block_uuid.to_vec(),
+            tombstoned_at_ms: e.tombstoned_at_ms,
+            age_ms: e.age_ms,
+        })
+        .collect()
+}
+
+/// Permanently purge every trashed block older than `window_ms` — uniffi
+/// projection of [`secretary_ffi_bridge::auto_purge_expired`].
+/// `docs/vault-format.md` §7 step 5 (#402).
+///
+/// # Errors
+///
+/// - [`VaultError::InvalidArgument`] — wrong-length `device_uuid`.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped.
+/// - [`VaultError::FolderInvalid`] — IO failure during the manifest write.
+/// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn auto_purge_expired(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    window_ms: u64,
+    now_ms: u64,
+    device_uuid: Vec<u8>,
+) -> Result<RetentionPurgeReport, VaultError> {
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::auto_purge_expired(
+        &identity.0,
+        &manifest.0,
+        window_ms,
+        now_ms,
+        device_uuid,
+    )
+    .map(|r| RetentionPurgeReport {
+        purged_count: r.purged_count,
+        shared_count: r.shared_count,
+        owner_only_count: r.owner_only_count,
+        unknown_count: r.unknown_count,
+        files_removed: r.files_removed,
+        files_failed: r.files_failed,
+        window_ms: r.window_ms,
+    })
+    .map_err(VaultError::from)
+}
+
+/// The v1 default retention window (90 days, in ms). uniffi has no UDL
+/// `const`, so the value is exposed as a namespace fn reading the single
+/// bridge-re-exported core const. `docs/vault-format.md` §7 step 5 (#402).
+pub fn default_retention_window_ms() -> u64 {
+    secretary_ffi_bridge::DEFAULT_RETENTION_WINDOW_MS
 }
 
 #[cfg(test)]
