@@ -4,13 +4,13 @@
 //! byte-for-byte `empty_trash`'s orchestration plus two scalar args
 //! (`window_ms`, `now_ms`) and one pass-through report field (`window_ms`).
 //! `docs/vault-format.md` §7 step 5.
-//!
-//! NOTE(#402 Task 1): the free-function entry points (`auto_purge_expired`,
-//! `expired_trash_entries`) and their supporting imports (`OsRng`,
-//! `OpenVault`/`VaultError`, `FfiVaultError`, `UnlockedIdentity`,
-//! `OpenVaultManifest`) land in Task 2. This task only carries the
-//! bridge-side DTOs + `From` impls, so those imports are intentionally
-//! absent here (clippy `-D warnings` would reject them unused).
+
+use rand_core::OsRng;
+use secretary_core::vault::{OpenVault, VaultError};
+
+use crate::error::FfiVaultError;
+use crate::identity::UnlockedIdentity;
+use crate::vault::OpenVaultManifest;
 
 /// One trash entry eligible for retention auto-purge — the pure preview
 /// record a platform shows before committing. Bridge projection of
@@ -36,7 +36,7 @@ impl From<secretary_core::vault::ExpiredEntry> for ExpiredEntry {
     }
 }
 
-/// Aggregate outcome of an `auto_purge_expired` call. Bridge projection
+/// Aggregate outcome of an [`auto_purge_expired`] call. Bridge projection
 /// of [`secretary_core::vault::RetentionPurgeReport`]: every count narrowed
 /// `usize`→`u32` for uniffi/pyo3 portability (a vault with more than 2^32
 /// trashed blocks is not a realistic state); `window_ms` passes through.
@@ -73,6 +73,138 @@ impl From<secretary_core::vault::RetentionPurgeReport> for RetentionPurgeReport 
             files_failed: r.files_failed as u32,
             window_ms: r.window_ms,
         }
+    }
+}
+
+/// Pure, side-effect-free preview of the entries retention auto-purge would
+/// permanently remove for `(window_ms, now_ms)`. Reads only the manifest; no
+/// identity, no I/O. Returns an empty vec on a wiped handle (safe-default
+/// convention, matching `block_summaries`). `docs/vault-format.md` §7 step 5.
+pub fn expired_trash_entries(
+    manifest: &OpenVaultManifest,
+    window_ms: u64,
+    now_ms: u64,
+) -> Vec<ExpiredEntry> {
+    match manifest.manifest_body() {
+        Some(body) => secretary_core::vault::expired_trash_entries(&body, window_ms, now_ms)
+            .into_iter()
+            .map(ExpiredEntry::from)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Permanently purge every trashed block older than `window_ms` — the
+/// retention auto-purge commit. See
+/// [`secretary_core::vault::auto_purge_expired`] for the normative sequence
+/// (single manifest commit; empty target set → zero-count report carrying
+/// the real `window_ms`, no manifest write). Same handle-snapshot shape as
+/// [`crate::empty_trash`], with `window_ms` threaded to the core call.
+///
+/// # Errors
+///
+/// - [`FfiVaultError::CorruptVault`] — either handle has been wiped, or
+///   `replace_manifest_and_file` failed.
+/// - [`FfiVaultError::FolderInvalid`] — I/O failure (atomic-write, cross-fs
+///   rename).
+/// - [`FfiVaultError::SaveCryptoFailure`] — crypto / encoding failure on
+///   already-validated inputs.
+pub fn auto_purge_expired(
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    window_ms: u64,
+    now_ms: u64,
+    device_uuid: [u8; 16],
+) -> Result<RetentionPurgeReport, FfiVaultError> {
+    // Step 1: snapshot manifest (5-tuple) under one lock acquisition.
+    let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
+        .snapshot_for_save_block()
+        .ok_or_else(|| FfiVaultError::CorruptVault {
+            detail: "vault manifest handle has been closed".into(),
+        })?;
+
+    // Step 2: snapshot identity (re-sign needs the secret keys).
+    let identity_clone =
+        identity
+            .clone_inner_bundle()
+            .ok_or_else(|| FfiVaultError::CorruptVault {
+                detail: "identity handle has been closed".into(),
+            })?;
+
+    // Step 3: build a temporary OpenVault from the snapshots.
+    let mut open_vault = OpenVault {
+        identity_block_key: ibk,
+        identity: identity_clone,
+        owner_card,
+        manifest: manifest_body,
+        manifest_file,
+    };
+
+    // Step 4: call core.
+    let result = secretary_core::vault::auto_purge_expired(
+        &vault_folder,
+        &mut open_vault,
+        window_ms,
+        now_ms,
+        device_uuid,
+        &mut OsRng,
+    );
+
+    // Step 5: on Ok, write back; on Err, the bridge handle is untouched
+    // (the OpenVault clone owned the only mutated state and drops).
+    match result {
+        Ok(report) => manifest
+            .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
+            .map(|()| RetentionPurgeReport::from(report))
+            .map_err(|e| FfiVaultError::CorruptVault {
+                detail: e.to_string(),
+            }),
+        Err(e) => Err(map_core_vault_error_retention(e)),
+    }
+}
+
+/// Map `core::VaultError` → `FfiVaultError` for the retention path.
+///
+/// Exhaustive (no `_ =>` catchall) per issue #40. Identical arm set to
+/// `map_core_vault_error_empty_trash`: retention takes no `block_uuid`, so
+/// `BlockNotInTrash` cannot fire and folds to the crypto/encoding umbrella.
+/// Adding a new `core::VaultError` variant becomes a compile error here.
+fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
+    match &e {
+        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
+            detail: format!("{context}: {source}"),
+        },
+        VaultError::BlockNotInTrash { .. }
+        | VaultError::Record(_)
+        | VaultError::Block(_)
+        | VaultError::Manifest(_)
+        | VaultError::Conflict(_)
+        | VaultError::Rollback { .. }
+        | VaultError::Unlock(_)
+        | VaultError::Card(_)
+        | VaultError::Sig(_)
+        | VaultError::OwnerUuidMismatch { .. }
+        | VaultError::ManifestAuthorMismatch
+        | VaultError::ManifestVaultUuidMismatch { .. }
+        | VaultError::KdfParamsMismatch
+        | VaultError::ClockOverflow { .. }
+        | VaultError::ContactCardUuidMismatch { .. }
+        | VaultError::NotAuthor { .. }
+        | VaultError::BlockNotFound { .. }
+        | VaultError::RecipientAlreadyPresent
+        | VaultError::RecipientNotPresent
+        | VaultError::CannotRevokeOwner
+        | VaultError::MissingRecipientCard { .. }
+        | VaultError::BlockUuidAlreadyLive { .. }
+        | VaultError::RestoreVerificationFailed { .. }
+        | VaultError::RestoreTargetMissing { .. }
+        | VaultError::BlockPurged { .. }
+        | VaultError::BlockFingerprintMismatch { .. }
+        | VaultError::BlockFileMissing { .. }
+        | VaultError::RepairRejected { .. }
+        | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
+            detail: format!("{e}"),
+        },
     }
 }
 
@@ -120,5 +252,41 @@ mod tests {
             crate::DEFAULT_RETENTION_WINDOW_MS,
             secretary_core::vault::DEFAULT_RETENTION_WINDOW_MS
         );
+    }
+
+    #[test]
+    fn map_core_io_routes_to_folder_invalid() {
+        let core_err = VaultError::Io {
+            context: "test",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        };
+        assert!(matches!(
+            map_core_vault_error_retention(core_err),
+            FfiVaultError::FolderInvalid { .. }
+        ));
+    }
+
+    #[test]
+    fn map_core_clock_overflow_folds_to_save_crypto_failure() {
+        let core_err = VaultError::ClockOverflow {
+            device_uuid: [0xff; 16],
+        };
+        assert!(matches!(
+            map_core_vault_error_retention(core_err),
+            FfiVaultError::SaveCryptoFailure { .. }
+        ));
+    }
+
+    #[test]
+    fn map_core_block_not_in_trash_folds_to_save_crypto_failure() {
+        // retention takes no block_uuid, so BlockNotInTrash cannot fire;
+        // folds to the umbrella (mirrors empty_trash's mapper).
+        let core_err = VaultError::BlockNotInTrash {
+            block_uuid: [0xbb; 16],
+        };
+        assert!(matches!(
+            map_core_vault_error_retention(core_err),
+            FfiVaultError::SaveCryptoFailure { .. }
+        ));
     }
 }

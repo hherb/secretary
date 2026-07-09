@@ -151,7 +151,9 @@ pub use repair::{
     FfiAddedRecipient, FfiApprovedWidening, FfiRepairPreview, FfiWideningReport,
 };
 pub use restore::restore_block;
-pub use retention::{ExpiredEntry, RetentionPurgeReport};
+pub use retention::{
+    auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport,
+};
 pub use revoke::revoke_block;
 pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 /// The v1 default retention window (90 days, ms). Re-exported unchanged

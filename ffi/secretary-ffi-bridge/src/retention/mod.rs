@@ -6,4 +6,6 @@
 
 pub mod orchestration;
 
-pub use orchestration::{ExpiredEntry, RetentionPurgeReport};
+pub use orchestration::{
+    auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport,
+};
