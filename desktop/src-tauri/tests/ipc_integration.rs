@@ -415,6 +415,7 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect("set_settings must succeed");
@@ -446,6 +447,7 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
             auto_lock_timeout_ms: BELOW_MIN_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect_err("below-min input must reject");
@@ -482,18 +484,25 @@ fn set_settings_while_locked_returns_not_unlocked() {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect_err("must reject while locked");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
 
-/// All three settings fields survive a save→load round-trip through the
+/// All four settings fields survive a save→load round-trip through the
 /// vault. Exercises the multi-field `save_to_vault` / `load_from_vault`
 /// paths added in Task 3, against a temp copy of the golden vault so the
 /// frozen KAT fixture is never mutated.
+///
+/// `retention_window_ms` is given an explicit non-default value (30 days,
+/// vs. the 90-day compiled-in default) rather than picked up via
+/// `..Settings::default()`, so this test actually proves Task 2 closed the
+/// interim gap where `From<&SettingsInput> for Settings` silently reset
+/// `retention_window_ms` to the default on every conversion.
 #[test]
-fn settings_round_trip_persists_all_three_fields() {
+fn settings_round_trip_persists_all_fields() {
     let (_vault_dir, vault_path) = ephemeral_golden_copy();
     let device_dir = tempfile::tempdir().expect("device tempdir");
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
@@ -509,14 +518,22 @@ fn settings_round_trip_persists_all_three_fields() {
     )
     .expect("unlock");
 
+    let non_default_retention_window_ms = 30 * secretary_desktop::constants::MS_PER_DAY;
+    assert_ne!(
+        non_default_retention_window_ms,
+        Settings::default().retention_window_ms,
+        "test fixture must pick a retention window distinct from the default, \
+         or a reset-to-default regression would go unnoticed"
+    );
+
     let to_save = Settings {
         auto_lock_timeout_ms: 600_000,
         require_password_before_edits: false,
         reauth_grace_window_ms: 30_000,
-        ..Settings::default()
+        retention_window_ms: non_default_retention_window_ms,
     };
 
-    // Write all three fields through the multi-field save path.
+    // Write all four fields through the multi-field save path.
     state
         .lock()
         .expect("mutex")
@@ -542,6 +559,10 @@ fn settings_round_trip_persists_all_three_fields() {
         loaded.auto_lock_timeout_ms, 600_000,
         "auto_lock_timeout_ms must survive round-trip"
     );
+    assert_eq!(
+        loaded.retention_window_ms, non_default_retention_window_ms,
+        "retention_window_ms must survive round-trip, not reset to the compiled-in default"
+    );
     assert!(
         warnings.is_empty(),
         "clean round-trip must produce no warnings; got: {warnings:?}"
@@ -549,7 +570,7 @@ fn settings_round_trip_persists_all_three_fields() {
 }
 
 /// A vault written by an older client (only the `auto_lock_timeout_ms`
-/// field present) is loaded with the new two fields defaulted — no
+/// field present) is loaded with the other three fields defaulted — no
 /// SettingsClamped or SettingsCorrupt warning, since missing-but-defaulted
 /// fields are forward-compat silently accepted.
 #[test]
