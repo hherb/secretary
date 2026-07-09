@@ -127,7 +127,7 @@ fn remove_trash_files(folder: &Path, block_uuids: &[[u8; 16]]) -> (usize, usize)
 /// `None` when the file is absent or fails to decode (crash residue,
 /// prior purge, on-disk corruption): an honest "unknown" rather than a
 /// fabricated classification.
-fn classify_trash_target(
+pub(crate) fn classify_trash_target(
     folder: &Path,
     block_uuid: &[u8; 16],
     tombstoned_at_ms: u64,
@@ -262,6 +262,61 @@ pub struct EmptyTrashReport {
     pub files_failed: usize,
 }
 
+/// Batch commit for permanent purge, shared by [`empty_trash`] and
+/// `retention::auto_purge_expired`. Stages `purged_at_ms = Some(now_ms)`
+/// on every `target_indices` entry of one manifest clone, ticks the vault
+/// clock **once**, re-signs **once**, atomic-writes **once**, swaps the
+/// staged state into `open`, then best-effort removes every purged UUID's
+/// `trash/` files in one directory scan. Returns `(files_removed,
+/// files_failed)`.
+///
+/// **Precondition:** `target_indices` is non-empty and every index is a
+/// not-already-purged, not-live `manifest.trash` entry (a live-and-trashed
+/// UUID must never be purged — the two lists are mutually exclusive). The
+/// caller performs any recipient classification *before* calling, while
+/// the trash files are still guaranteed present. The manifest write is the
+/// commit point; nothing after it may fail the call.
+///
+/// `context` is the caller-supplied error-context label passed through to
+/// `resign_and_write_manifest` on a manifest-write failure, so the reported
+/// error identifies which caller (`empty_trash`, `auto_purge_expired`, ...)
+/// triggered the failing write rather than a generic
+/// `purge_batch_commit: ...` message.
+pub(crate) fn purge_batch_commit(
+    folder: &Path,
+    open: &mut OpenVault,
+    target_indices: &[usize],
+    now_ms: u64,
+    device_uuid: [u8; 16],
+    rng: &mut (impl RngCore + CryptoRng),
+    context: &'static str,
+) -> Result<(usize, usize), VaultError> {
+    let mut staged = open.manifest.clone();
+    for &idx in target_indices {
+        staged.trash[idx].purged_at_ms = Some(now_ms);
+    }
+    tick_clock(&mut staged.vector_clock, &device_uuid)?;
+    let new_manifest_file = resign_and_write_manifest(
+        folder,
+        &staged,
+        &open.identity,
+        &open.identity_block_key,
+        &open.manifest_file.header,
+        now_ms,
+        open.manifest_file.author_fingerprint,
+        rng,
+        context,
+    )?;
+    open.manifest = staged;
+    open.manifest_file = new_manifest_file;
+
+    let target_uuids: Vec<[u8; 16]> = target_indices
+        .iter()
+        .map(|&idx| open.manifest.trash[idx].block_uuid)
+        .collect();
+    Ok(remove_trash_files(folder, &target_uuids))
+}
+
 /// Permanently purge every currently-trashed, not-already-purged,
 /// not-live block in one batch — the "empty trash" user operation.
 /// `docs/vault-format.md` §7 (purge extension, #399).
@@ -315,7 +370,6 @@ pub fn empty_trash(
     // files are still guaranteed present (reporting-only, best-effort —
     // mirrors purge_block's step 3).
     let mut report = EmptyTrashReport::default();
-    let mut target_uuids: Vec<[u8; 16]> = Vec::with_capacity(targets.len());
     for &idx in &targets {
         let block_uuid = open.manifest.trash[idx].block_uuid;
         let tombstoned_at_ms = open.manifest.trash[idx].tombstoned_at_ms;
@@ -324,38 +378,19 @@ pub fn empty_trash(
             Some((false, _)) => report.owner_only_count += 1,
             None => report.unknown_count += 1,
         }
-        target_uuids.push(block_uuid);
     }
 
-    // Single commit point: stage every target purged on one manifest
-    // clone, tick the vault clock once, re-sign once, write once.
-    let mut staged = open.manifest.clone();
-    for &idx in &targets {
-        staged.trash[idx].purged_at_ms = Some(now_ms);
-    }
-    tick_clock(&mut staged.vector_clock, &device_uuid)?;
-    let new_manifest_file = resign_and_write_manifest(
+    // Single batch commit via the shared primitive (Task 3).
+    let (removed, failed) = purge_batch_commit(
         folder,
-        &staged,
-        &open.identity,
-        &open.identity_block_key,
-        &open.manifest_file.header,
+        open,
+        &targets,
         now_ms,
-        open.manifest_file.author_fingerprint,
+        device_uuid,
         rng,
         "empty_trash: failed to write manifest.cbor.enc",
     )?;
-
-    // Swap staged state into `open`. From here the batch purge has
-    // happened; nothing below may fail the call.
-    open.manifest = staged;
-    open.manifest_file = new_manifest_file;
     report.purged_count = targets.len();
-
-    // Best-effort physical removal across every purged target, in one
-    // directory scan. Per-file failure never aborts the batch (mirrors
-    // purge_block's step 6).
-    let (removed, failed) = remove_trash_files(folder, &target_uuids);
     report.files_removed += removed;
     report.files_failed += failed;
     Ok(report)

@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-08-trash-merge-monotonicity-401-shipped.md
+docs/handoffs/2026-07-09-retention-auto-purge-402-shipped.md

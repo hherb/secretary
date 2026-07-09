@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "note": "Retention auto-purge eligibility KAT (#402). Cross-language: Rust core/tests/retention.rs::expired_trash_entries_kat_replays_match_rust and Python conformance.py::section4c_retention_kat both replay this and must agree.",
+  "vectors": [
+    {
+      "name": "old_not_purged_not_live_is_eligible",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": [],
+      "trash": [{ "block_uuid_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "tombstoned_at_ms": 1000, "purged_at_ms": null }],
+      "expected_uuids_hex": ["a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"]
+    },
+    {
+      "name": "already_purged_skipped",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": [],
+      "trash": [{ "block_uuid_hex": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2", "tombstoned_at_ms": 1000, "purged_at_ms": 2000 }],
+      "expected_uuids_hex": []
+    },
+    {
+      "name": "too_young_skipped",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": [],
+      "trash": [{ "block_uuid_hex": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3", "tombstoned_at_ms": 4950, "purged_at_ms": null }],
+      "expected_uuids_hex": []
+    },
+    {
+      "name": "boundary_equal_window_skipped",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": [],
+      "trash": [{ "block_uuid_hex": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4", "tombstoned_at_ms": 4900, "purged_at_ms": null }],
+      "expected_uuids_hex": []
+    },
+    {
+      "name": "future_dated_saturates_skipped",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": [],
+      "trash": [{ "block_uuid_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5", "tombstoned_at_ms": 9000, "purged_at_ms": null }],
+      "expected_uuids_hex": []
+    },
+    {
+      "name": "live_uuid_skipped_even_if_old",
+      "window_ms": 100, "now_ms": 5000,
+      "blocks": ["a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6"],
+      "trash": [{ "block_uuid_hex": "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6", "tombstoned_at_ms": 1000, "purged_at_ms": null }],
+      "expected_uuids_hex": []
+    },
+    {
+      "name": "mixed_list_selects_only_eligible",
+      "window_ms": 100, "now_ms": 10000,
+      "blocks": ["b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3"],
+      "trash": [
+        { "block_uuid_hex": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", "tombstoned_at_ms": 1000, "purged_at_ms": null },
+        { "block_uuid_hex": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "tombstoned_at_ms": 9950, "purged_at_ms": null },
+        { "block_uuid_hex": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3", "tombstoned_at_ms": 1000, "purged_at_ms": null },
+        { "block_uuid_hex": "b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4", "tombstoned_at_ms": 1000, "purged_at_ms": 500 }
+      ],
+      "expected_uuids_hex": ["b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"]
+    }
+  ]
+}

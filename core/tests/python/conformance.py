@@ -2358,6 +2358,32 @@ def trash_merge_kat_path() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "trash_merge_kat.json"
 
 
+def retention_kat_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "data" / "retention_kat.json"
+
+
+def py_expired_trash_entries(
+    trash: list[dict], live_uuids: set[str], window_ms: int, now_ms: int
+) -> set[str]:
+    """Clean-room retention eligibility (docs/vault-format.md §7 step 5).
+
+    An entry is eligible iff: not already purged, its uuid is not live,
+    and now_ms - tombstoned_at_ms > window_ms (saturating: a future-dated
+    tombstone yields age 0). Returns the set of eligible block_uuid hex.
+    """
+    out: set[str] = set()
+    for e in trash:
+        if e.get("purged_at_ms") is not None:
+            continue
+        uuid_hex = e["block_uuid_hex"]
+        if uuid_hex in live_uuids:
+            continue
+        age = max(0, now_ms - int(e["tombstoned_at_ms"]))  # saturating
+        if age > window_ms:
+            out.add(uuid_hex)
+    return out
+
+
 def _trash_triple_key(e: dict) -> tuple:
     """Total order for the tombstone triple (docs §11.6): tombstoned_at_ms
     asc, then tombstoned_by bytes asc, then fingerprint with None < Some
@@ -3004,6 +3030,33 @@ def section4b_trash_merge_kat() -> tuple[bool, list[str]]:
             continue
         lines.append(f"PASS  trash_merge_kat.json {name!r}")
     return all_ok, lines
+
+
+def section4c_retention_kat() -> tuple[bool, list[str]]:
+    """§4c: replay retention_kat.json; assert clean-room eligibility
+    matches each vector's expected UUID set (cross-language with Rust
+    core/tests/retention.rs::expired_trash_entries_kat_replays_match_rust)."""
+    lines: list[str] = []
+    path = retention_kat_path()
+    if not path.exists():
+        print(f"MISSING: retention_kat.json at {path}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        kat = load_json_fixture(path, "retention_kat.json")
+    except (json.JSONDecodeError, OSError):
+        sys.exit(2)
+    if kat.get("version") != 1:
+        return False, [f"unexpected retention_kat version {kat.get('version')}"]
+    ok = True
+    for v in kat["vectors"]:
+        live = set(v.get("blocks", []))
+        got = py_expired_trash_entries(v["trash"], live, v["window_ms"], v["now_ms"])
+        expected = set(v["expected_uuids_hex"])
+        status = "PASS" if got == expected else "FAIL"
+        if got != expected:
+            ok = False
+        lines.append(f"  §4c {v['name']}: {status}")
+    return ok, lines
 
 
 # ---------------------------------------------------------------------------
@@ -4151,6 +4204,12 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section 4c: retention_kat.json trash retention eligibility replay ---")
+    section4c_ok, section4c_lines = section4c_retention_kat()
+    for ln in section4c_lines:
+        print(ln)
+
+    print()
     print("--- Section 5: py_merge_unknown_map case-insensitivity guard ---")
     section5_ok, section5_lines = section5_unknown_map_case_insensitivity()
     for ln in section5_lines:
@@ -4187,6 +4246,7 @@ def main() -> int:
         and section3_ok
         and section4_ok
         and section4b_ok
+        and section4c_ok
         and section5_ok
         and revoke_ok
         and sync_pass_ok
@@ -4205,6 +4265,8 @@ def main() -> int:
         print("FAIL: conflict_kat.json CRDT merge cross-language replay", file=sys.stderr)
     if not section4b_ok:
         print("FAIL: trash_merge_kat.json trash-list merge cross-language replay", file=sys.stderr)
+    if not section4c_ok:
+        print("FAIL: retention_kat.json trash retention eligibility replay", file=sys.stderr)
     if not section5_ok:
         print("FAIL: py_merge_unknown_map case-insensitivity guard", file=sys.stderr)
     if not revoke_ok:
