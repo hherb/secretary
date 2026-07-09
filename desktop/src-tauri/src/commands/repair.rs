@@ -85,6 +85,7 @@ fn parse_plain_hex<const N: usize>(s: &str) -> Result<[u8; N], AppError> {
 fn convert_approval(arg: ApprovedWideningArg) -> Result<FfiApprovedWidening, AppError> {
     let block_uuid = parse_hyphenated_uuid(&arg.block_uuid_hex)?;
     let file_fingerprint = parse_plain_hex::<32>(&arg.file_fingerprint_hex)?;
+    let committed_fingerprint = parse_plain_hex::<32>(&arg.committed_fingerprint_hex)?;
     let added_recipients = arg
         .added_uuids_hex
         .iter()
@@ -93,6 +94,7 @@ fn convert_approval(arg: ApprovedWideningArg) -> Result<FfiApprovedWidening, App
     Ok(FfiApprovedWidening {
         block_uuid,
         file_fingerprint,
+        committed_fingerprint,
         added_recipients,
     })
 }
@@ -425,9 +427,31 @@ mod tests {
         let arg = ApprovedWideningArg {
             block_uuid_hex: secretary_core::vault::format_uuid_hyphenated(&block_uuid),
             file_fingerprint_hex: "zz".to_string(),
+            committed_fingerprint_hex: hex::encode([0u8; 32]),
             added_uuids_hex: vec![],
         };
         let err = convert_approval(arg).expect_err("bad fingerprint hex");
+        assert!(
+            matches!(err, AppError::InvalidArgument { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn convert_approval_rejects_bad_committed_fingerprint() {
+        use rand_core::{OsRng, RngCore};
+
+        let mut block_uuid = [0u8; 16];
+        let mut fingerprint = [0u8; 32];
+        OsRng.fill_bytes(&mut block_uuid);
+        OsRng.fill_bytes(&mut fingerprint);
+        let arg = ApprovedWideningArg {
+            block_uuid_hex: secretary_core::vault::format_uuid_hyphenated(&block_uuid),
+            file_fingerprint_hex: hex::encode(fingerprint),
+            committed_fingerprint_hex: "zz".to_string(),
+            added_uuids_hex: vec![],
+        };
+        let err = convert_approval(arg).expect_err("bad committed fingerprint hex");
         assert!(
             matches!(err, AppError::InvalidArgument { .. }),
             "got {err:?}"
@@ -445,6 +469,7 @@ mod tests {
         let arg = ApprovedWideningArg {
             block_uuid_hex: secretary_core::vault::format_uuid_hyphenated(&block_uuid),
             file_fingerprint_hex: hex::encode(fingerprint),
+            committed_fingerprint_hex: hex::encode(fingerprint),
             added_uuids_hex: vec!["not-a-uuid".to_string()],
         };
         let err = convert_approval(arg).expect_err("bad recipient uuid hex");
@@ -460,13 +485,16 @@ mod tests {
 
         let mut block_uuid = [0u8; 16];
         let mut fingerprint = [0u8; 32];
+        let mut committed_fingerprint = [0u8; 32];
         let mut recipient_uuid = [0u8; 16];
         OsRng.fill_bytes(&mut block_uuid);
         OsRng.fill_bytes(&mut fingerprint);
+        OsRng.fill_bytes(&mut committed_fingerprint);
         OsRng.fill_bytes(&mut recipient_uuid);
         let arg = ApprovedWideningArg {
             block_uuid_hex: secretary_core::vault::format_uuid_hyphenated(&block_uuid),
             file_fingerprint_hex: hex::encode(fingerprint),
+            committed_fingerprint_hex: hex::encode(committed_fingerprint),
             added_uuids_hex: vec![secretary_core::vault::format_uuid_hyphenated(
                 &recipient_uuid,
             )],
@@ -474,6 +502,7 @@ mod tests {
         let approved = convert_approval(arg).expect("valid approval");
         assert_eq!(approved.block_uuid, block_uuid);
         assert_eq!(approved.file_fingerprint, fingerprint);
+        assert_eq!(approved.committed_fingerprint, committed_fingerprint);
         assert_eq!(approved.added_recipients, vec![recipient_uuid]);
     }
 }

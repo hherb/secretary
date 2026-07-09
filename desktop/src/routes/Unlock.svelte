@@ -190,13 +190,15 @@
 
   // RepairConsentDialog's Grant callback. The approvals are built VERBATIM
   // from the preview's own fields (`blockUuidHex`, `fileFingerprintHex`,
-  // `added[].uuidHex`) — never recomputed or edited — because the file-
-  // fingerprint bind is exactly what proves the approval matches the
-  // recipient set the user was shown.
+  // `committedFingerprintHex`, `added[].uuidHex`) — never recomputed or
+  // edited — because the file-fingerprint + committed-fingerprint binds
+  // are exactly what prove the approval matches the recipient set and the
+  // committed state the user was shown (#391).
   function onGrantConsent(): void {
     const approvals: ApprovedWideningDto[] = consentWidenings.map((w) => ({
       blockUuidHex: w.blockUuidHex,
       fileFingerprintHex: w.fileFingerprintHex,
+      committedFingerprintHex: w.committedFingerprintHex,
       addedUuidsHex: w.added.map((a) => a.uuidHex)
     }));
     consentWidenings = [];

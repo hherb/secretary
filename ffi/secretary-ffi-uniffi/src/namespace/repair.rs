@@ -20,7 +20,8 @@
 //! `preview_repair_with_*` fns let a caller build that approval set from a
 //! read-only, nothing-written-to-disk preview. Every `bytes` field of
 //! every `ApprovedWidening` is length-validated here — 16 bytes for
-//! `block_uuid`, 32 for `file_fingerprint`, 16 for each entry of
+//! `block_uuid`, 32 for `file_fingerprint`, 32 for
+//! `committed_fingerprint` (#391), 16 for each entry of
 //! `added_recipients` — BEFORE the bridge call, per the established rule
 //! that FFI input validation lives at the binding wrapper: the bridge's
 //! `FfiApprovedWidening` trusts its caller (see
@@ -52,6 +53,10 @@ fn convert_approvals(
                 &w.file_fingerprint,
                 &format!("approvals[{idx}].file_fingerprint"),
             )?;
+            let committed_fingerprint = array32_from_vec(
+                &w.committed_fingerprint,
+                &format!("approvals[{idx}].committed_fingerprint"),
+            )?;
             let added_recipients = w
                 .added_recipients
                 .iter()
@@ -61,6 +66,7 @@ fn convert_approvals(
             Ok(secretary_ffi_bridge::FfiApprovedWidening {
                 block_uuid,
                 file_fingerprint,
+                committed_fingerprint,
                 added_recipients,
             })
         })
@@ -473,6 +479,7 @@ mod tests {
         ApprovedWidening {
             block_uuid: vec![0u8; 15], // wrong: must be 16
             file_fingerprint: vec![0u8; 32],
+            committed_fingerprint: vec![0u8; 32],
             added_recipients: vec![],
         }
     }
@@ -481,6 +488,16 @@ mod tests {
         ApprovedWidening {
             block_uuid: vec![0u8; 16],
             file_fingerprint: vec![0u8; 31], // wrong: must be 32
+            committed_fingerprint: vec![0u8; 32],
+            added_recipients: vec![],
+        }
+    }
+
+    fn bad_approval_wrong_committed_fingerprint() -> ApprovedWidening {
+        ApprovedWidening {
+            block_uuid: vec![0u8; 16],
+            file_fingerprint: vec![0u8; 32],
+            committed_fingerprint: vec![0u8; 33], // wrong: must be 32
             added_recipients: vec![],
         }
     }
@@ -489,6 +506,7 @@ mod tests {
         ApprovedWidening {
             block_uuid: vec![0u8; 16],
             file_fingerprint: vec![0u8; 32],
+            committed_fingerprint: vec![0u8; 32],
             added_recipients: vec![vec![0u8; 17]], // wrong: must be 16
         }
     }
@@ -526,6 +544,22 @@ mod tests {
     }
 
     #[test]
+    fn convert_approvals_rejects_wrong_length_committed_fingerprint() {
+        match convert_approvals(vec![bad_approval_wrong_committed_fingerprint()]) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(
+                    detail.contains("approvals[0].committed_fingerprint")
+                        && detail.contains("32 bytes")
+                        && detail.contains("got 33"),
+                    "detail did not name the failing field: {detail}"
+                );
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length committed_fingerprint"),
+        }
+    }
+
+    #[test]
     fn convert_approvals_rejects_wrong_length_added_recipient() {
         match convert_approvals(vec![bad_approval_wrong_added_recipient()]) {
             Err(VaultError::InvalidArgument { detail }) => {
@@ -552,12 +586,14 @@ mod tests {
         let good = ApprovedWidening {
             block_uuid: vec![1u8; 16],
             file_fingerprint: vec![2u8; 32],
+            committed_fingerprint: vec![5u8; 32],
             added_recipients: vec![vec![3u8; 16], vec![4u8; 16]],
         };
         let converted = convert_approvals(vec![good]).unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].block_uuid, [1u8; 16]);
         assert_eq!(converted[0].file_fingerprint, [2u8; 32]);
+        assert_eq!(converted[0].committed_fingerprint, [5u8; 32]);
         assert_eq!(converted[0].added_recipients, vec![[3u8; 16], [4u8; 16]]);
     }
 

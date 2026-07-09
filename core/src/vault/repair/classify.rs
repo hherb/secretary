@@ -355,6 +355,13 @@ pub struct WideningReport {
     /// these bytes (a file swapped between preview and repair fails
     /// the bind as stale consent).
     pub file_fingerprint: [u8; 32],
+    /// The committed manifest `BlockEntry.fingerprint` this widening was
+    /// diffed against. Copy it verbatim into
+    /// [`super::ApprovedWidening::committed_fingerprint`] — the third
+    /// consent bind (#391): any committed write to the block between
+    /// preview and repair changes this value and fails the bind as stale
+    /// consent, making approvals structurally single-use.
+    pub committed_fingerprint: [u8; 32],
     pub added: Vec<AddedRecipient>,
 }
 

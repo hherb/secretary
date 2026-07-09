@@ -161,6 +161,9 @@ fn stage_crashed_save(
 struct StagedCrashedShare {
     manifest_pre_share: Vec<u8>,
     file_fingerprint: [u8; 32],
+    /// The committed manifest entry fingerprint the residue is diffed
+    /// against — the #391 third bind an exact approval must carry.
+    committed_fingerprint: [u8; 32],
     added_contact_uuid: [u8; 16],
     vault_uuid: [u8; 16],
 }
@@ -195,6 +198,13 @@ fn stage_crashed_share(
     )
     .unwrap();
     let manifest_pre_share = std::fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    let committed_fingerprint = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .fingerprint;
 
     let author_card = open.owner_card.clone();
     let author_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
@@ -226,6 +236,7 @@ fn stage_crashed_share(
     StagedCrashedShare {
         manifest_pre_share,
         file_fingerprint,
+        committed_fingerprint,
         added_contact_uuid: card_c.contact_uuid,
         vault_uuid,
     }

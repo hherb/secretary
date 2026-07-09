@@ -35,6 +35,11 @@ struct RawWidening {
     block_uuid: [u8; 16],
     block_name: String,
     file_fingerprint: [u8; 32],
+    /// The committed manifest `BlockEntry.fingerprint` the residue was
+    /// diffed against — carried into
+    /// [`WideningReport::committed_fingerprint`] so an approval can bind
+    /// to the committed state it was minted from (#391).
+    committed_fingerprint: [u8; 32],
     /// uuid -> the §6.2 wrap `recipient_fingerprint` that resolved to it
     /// (see [`AddedRecipient::card_fingerprint`] doc comment for why the
     /// fingerprint, not the uuid, must drive the identity lookup below).
@@ -97,8 +102,10 @@ struct RawWidening {
 ///      NOT auto-adopted by default; it is adoptable ONLY via
 ///      [`RepairPolicy::AdoptApproved`] with a preview-bound
 ///      [`super::ApprovedWidening`] (exact on-disk fingerprint AND exact
-///      added-recipient set — never subset/superset) — the rejection
-///      `detail` names the recipients that would be added.
+///      added-recipient set — never subset/superset — AND the exact
+///      committed manifest fingerprint the preview diffed against, #391)
+///      — the rejection `detail` names the recipients that would be
+///      added.
 ///    - Everything else (`IncomingDominated` = rollback plant,
 ///      `Concurrent` = torn multi-device state this function must not
 ///      guess about) is refused.
@@ -232,9 +239,17 @@ pub fn repair_vault(
                 // before this change.
                 let added_uuids: BTreeSet<[u8; 16]> = added.keys().copied().collect();
                 match approval {
-                    // Exact bind: the previewed bytes AND the previewed delta.
+                    // Exact three-way bind: the previewed bytes, the
+                    // previewed delta, AND the committed manifest entry
+                    // the preview diffed against (#391 — the third bind
+                    // makes approvals structurally single-use: a
+                    // persisted approval replayed after any committed
+                    // write to this block, e.g. the revoke-then-replant
+                    // re-grant scenario, fails here even though the
+                    // replanted file matches the first two binds).
                     Some(a)
                         if a.file_fingerprint == file_fingerprint
+                            && a.committed_fingerprint == entry.fingerprint
                             && a.added_recipients == added_uuids =>
                     {
                         adoptions.push((idx, staged));
@@ -246,8 +261,9 @@ pub fn repair_vault(
                             block_uuid: entry.block_uuid,
                             detail: format!(
                                 "approval does not match the on-disk residue (stale \
-                                 consent — the block file or recipient delta changed \
-                                 after preview; re-run the preview): residue would ADD \
+                                 consent — the block file, recipient delta, or \
+                                 committed manifest entry changed after preview; \
+                                 re-run the preview): residue would ADD \
                                  recipients {{{}}}",
                                 added_hex.join(", ")
                             ),
@@ -388,6 +404,7 @@ pub fn preview_repair(
                 block_uuid: entry.block_uuid,
                 block_name,
                 file_fingerprint,
+                committed_fingerprint: entry.fingerprint,
                 added,
             });
         }
@@ -422,10 +439,11 @@ pub fn preview_repair(
 
     let mut widenings = Vec::with_capacity(raw_widenings.len());
     for raw in raw_widenings {
-        let (block_uuid, block_name, file_fingerprint, added) = (
+        let (block_uuid, block_name, file_fingerprint, committed_fingerprint, added) = (
             raw.block_uuid,
             raw.block_name,
             raw.file_fingerprint,
+            raw.committed_fingerprint,
             raw.added,
         );
         let mut added_recipients = Vec::with_capacity(added.len());
@@ -454,6 +472,7 @@ pub fn preview_repair(
             block_uuid,
             block_name,
             file_fingerprint,
+            committed_fingerprint,
             added: added_recipients,
         });
     }

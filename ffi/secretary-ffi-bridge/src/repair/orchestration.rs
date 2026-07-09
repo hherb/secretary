@@ -76,6 +76,7 @@ fn build_repair_policy(approvals: &[FfiApprovedWidening]) -> RepairPolicy {
                 .map(|a| ApprovedWidening {
                     block_uuid: a.block_uuid,
                     file_fingerprint: a.file_fingerprint,
+                    committed_fingerprint: a.committed_fingerprint,
                     added_recipients: a.added_recipients.iter().copied().collect(),
                 })
                 .collect(),

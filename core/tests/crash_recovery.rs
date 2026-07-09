@@ -1593,6 +1593,7 @@ fn stage_crashed_share(
     [u8; 16],    // C's contact_uuid (the added recipient)
     ContactCard, // C's card (so callers can recompute its identity fingerprint)
     [u8; 32],    // on-disk file fingerprint (blake3 of block bytes)
+    [u8; 32],    // committed manifest entry fingerprint (the #391 third bind)
     Vec<u8>,     // pre-repair manifest bytes
 ) {
     let (dir, _mnemonic, pw) = make_fast_vault(seed, "Owner");
@@ -1618,6 +1619,15 @@ fn stage_crashed_share(
     )
     .unwrap();
     let manifest_pre_share = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    // The committed entry fingerprint the preview will diff the residue
+    // against — the value an approval's #391 third bind must carry.
+    let committed_fp = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .fingerprint;
 
     let author_card = open.owner_card.clone();
     let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
@@ -1651,18 +1661,21 @@ fn stage_crashed_share(
         c_uuid,
         card_c,
         file_fp,
+        committed_fp,
         manifest_pre_share,
     )
 }
 
 #[test]
 fn repair_adopts_crashed_share_with_matching_approval() {
-    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, _) = stage_crashed_share(0x90);
+    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, committed_fp, _) =
+        stage_crashed_share(0x90);
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x91; 32]);
     let approval = secretary_core::vault::ApprovedWidening {
         block_uuid,
         file_fingerprint: file_fp,
+        committed_fingerprint: committed_fp,
         added_recipients: [c_uuid].into_iter().collect(),
     };
     let open = secretary_core::vault::repair_vault(
@@ -1690,14 +1703,24 @@ fn repair_adopts_crashed_share_with_matching_approval() {
 
 #[test]
 fn repair_rejects_approval_with_stale_fingerprint() {
-    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, mut file_fp, manifest_before) =
-        stage_crashed_share(0x92);
+    let (
+        dir,
+        pw,
+        device_uuid,
+        block_uuid,
+        c_uuid,
+        _card_c,
+        mut file_fp,
+        committed_fp,
+        manifest_before,
+    ) = stage_crashed_share(0x92);
     let folder = dir.path();
     let mut rng = ChaCha20Rng::from_seed([0x93; 32]);
     file_fp[0] ^= 0x01; // consent bound to different bytes than on disk
     let approval = secretary_core::vault::ApprovedWidening {
         block_uuid,
         file_fingerprint: file_fp,
+        committed_fingerprint: committed_fp,
         added_recipients: [c_uuid].into_iter().collect(),
     };
     let err = secretary_core::vault::repair_vault(
@@ -1728,7 +1751,7 @@ fn repair_rejects_approval_with_stale_fingerprint() {
 fn repair_rejects_approval_with_wrong_added_set() {
     // Three wrong shapes: empty set, superset-of-actual, disjoint. Exact
     // equality is required — subset/superset of the real delta all refuse.
-    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, manifest_before) =
+    let (dir, pw, device_uuid, block_uuid, c_uuid, _card_c, file_fp, committed_fp, manifest_before) =
         stage_crashed_share(0x94);
     let folder = dir.path();
     for wrong in [
@@ -1742,6 +1765,7 @@ fn repair_rejects_approval_with_wrong_added_set() {
         let approval = secretary_core::vault::ApprovedWidening {
             block_uuid,
             file_fingerprint: file_fp,
+            committed_fingerprint: committed_fp,
             added_recipients: wrong,
         };
         let err = secretary_core::vault::repair_vault(
@@ -1763,6 +1787,112 @@ fn repair_rejects_approval_with_wrong_added_set() {
             manifest_before
         );
     }
+}
+
+/// #391: approvals are structurally single-use — the third bind
+/// (`committed_fingerprint`) refuses a persisted approval replayed after
+/// ANY committed write to the block, closing the revoke-then-replant
+/// re-grant window even against a non-conforming client that persists
+/// approvals. Full replay scenario: mint an approval from the canonical
+/// crashed-share residue, adopt it once (proving it was valid when
+/// minted), have the owner revoke the added recipient C (a §6.5.1
+/// re-key: clock preserved, committed entry fingerprint changed), replant
+/// the previously-approved block file, and replay the persisted approval.
+/// The replanted residue exactly matches the approval's file fingerprint
+/// AND added-recipient set (the two pre-#391 binds — under the old
+/// semantics this replay re-granted C), but the committed entry changed,
+/// so the third bind must refuse and write nothing.
+#[test]
+fn repair_rejects_approval_after_committed_entry_changed() {
+    let (dir, pw, device_uuid, block_uuid, c_uuid, card_c, file_fp, committed_fp, _) =
+        stage_crashed_share(0x98);
+    let folder = dir.path();
+
+    // Misbehaving-client persistence: retain the approval and the approved
+    // on-disk share-file bytes across the repair.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
+    let approved_share_bytes = fs::read(&block_path).unwrap();
+    let persisted_approval = secretary_core::vault::ApprovedWidening {
+        block_uuid,
+        file_fingerprint: file_fp,
+        committed_fingerprint: committed_fp,
+        added_recipients: [c_uuid].into_iter().collect(),
+    };
+
+    // First use adopts — the approval was valid when minted.
+    let mut rng = ChaCha20Rng::from_seed([0x99; 32]);
+    let mut open = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |_| Ok(None),
+        device_uuid,
+        3_000,
+        &mut rng,
+        secretary_core::vault::RepairPolicy::AdoptApproved(vec![persisted_approval.clone()]),
+    )
+    .expect("fresh approval must adopt the crashed share");
+
+    // The owner revokes C: committed set back to {owner}, block clock
+    // preserved (§6.5.1), committed entry fingerprint CHANGED by the
+    // re-key's re-encryption.
+    let author_card = open.owner_card.clone();
+    let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
+        secretary_core::crypto::secret::Sensitive::new(*open.identity.ed25519_sk.expose());
+    let author_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+    let all_cards = vec![open.owner_card.clone(), card_c.clone()];
+    secretary_core::vault::revoke_block_recipient(
+        folder,
+        &mut open,
+        secretary_core::vault::BlockUuid::new(block_uuid),
+        &author_card,
+        &author_sk_ed,
+        &author_sk_pq,
+        &all_cards,
+        secretary_core::vault::RecipientUuid::new(c_uuid),
+        secretary_core::vault::DeviceUuid::new(device_uuid),
+        4_000,
+        &mut rng,
+    )
+    .unwrap();
+    drop(open);
+    let manifest_post_revoke = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+
+    // Attacker (vault-folder write access) replants the previously-approved
+    // share file. Relative to the post-revoke committed entry this residue
+    // is again the consent-eligible shape: Equal clock, pure add of {C},
+    // and it matches the persisted approval's file fingerprint and added
+    // set EXACTLY — only the committed entry has moved on.
+    fs::write(&block_path, &approved_share_bytes).unwrap();
+
+    let mut rng2 = ChaCha20Rng::from_seed([0x9a; 32]);
+    let err = secretary_core::vault::repair_vault(
+        folder,
+        Unlocker::Password(&pw),
+        |_| Ok(None),
+        device_uuid,
+        5_000,
+        &mut rng2,
+        secretary_core::vault::RepairPolicy::AdoptApproved(vec![persisted_approval]),
+    )
+    .expect_err("a replayed approval must not re-grant a revoked recipient");
+    assert!(
+        matches!(&err, VaultError::RepairRejected { block_uuid: b, .. } if *b == block_uuid),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string()
+            .contains("does not match the on-disk residue"),
+        "must be the stale-consent (Some(_)) rejection arm — file fingerprint and \
+         added set DO match here, so only the committed-fingerprint bind can have \
+         refused: {err}"
+    );
+    // Nothing written; the revocation stands.
+    assert_eq!(
+        fs::read(folder.join("manifest.cbor.enc")).unwrap(),
+        manifest_post_revoke,
+        "refused replay must not touch the manifest"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,6 +1968,15 @@ fn repair_approval_does_not_license_dominating_widening() {
     )
     .unwrap();
     let manifest_committed = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    // The committed (post-revoke) entry fingerprint, for the approval's
+    // #391 third bind below — exact, so the shape gate alone refuses.
+    let committed_fp = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .fingerprint;
 
     // Mint the DOMINATING wide generation on D2: a content save
     // re-encrypting to {owner, B} ticks the block clock to {D1:1, D2:1}
@@ -1869,6 +2008,7 @@ fn repair_approval_does_not_license_dominating_widening() {
     let approval = secretary_core::vault::ApprovedWidening {
         block_uuid,
         file_fingerprint: file_fp,
+        committed_fingerprint: committed_fp,
         added_recipients: [card_b.contact_uuid].into_iter().collect(),
     };
     let mut repair_rng = ChaCha20Rng::from_seed([0xA3; 32]);
@@ -1948,6 +2088,15 @@ fn repair_approval_does_not_license_mixed_delta() {
     // Snapshot the committed state: {owner, B}. This is what the manifest
     // will still say once rolled back after the crash below.
     let manifest_committed = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    // The committed entry fingerprint, for the approval's #391 third bind
+    // below — exact, so the shape gate alone refuses.
+    let committed_fp = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .unwrap()
+        .fingerprint;
 
     let author_card = open.owner_card.clone();
     let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
@@ -2004,6 +2153,7 @@ fn repair_approval_does_not_license_mixed_delta() {
     let approval = secretary_core::vault::ApprovedWidening {
         block_uuid,
         file_fingerprint: file_fp,
+        committed_fingerprint: committed_fp,
         added_recipients: [c_uuid].into_iter().collect(),
     };
     let mut repair_rng = ChaCha20Rng::from_seed([0xB4; 32]);
@@ -2080,6 +2230,17 @@ fn repair_all_or_nothing_with_partial_approvals() {
     .unwrap();
     // Snapshot committed state: both blocks owner-only.
     let manifest_committed = fs::read(folder.join("manifest.cbor.enc")).unwrap();
+    // The committed entry fingerprints, for the approvals' #391 third bind.
+    let committed_fp_of = |open: &secretary_core::vault::OpenVault, uuid: [u8; 16]| {
+        open.manifest
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == uuid)
+            .unwrap()
+            .fingerprint
+    };
+    let committed_fp_a = committed_fp_of(&open, block_a);
+    let committed_fp_b = committed_fp_of(&open, block_b);
 
     let author_card = open.owner_card.clone();
     let author_sk_ed: secretary_core::crypto::sig::Ed25519Secret =
@@ -2136,6 +2297,7 @@ fn repair_all_or_nothing_with_partial_approvals() {
     let approval_a = secretary_core::vault::ApprovedWidening {
         block_uuid: block_a,
         file_fingerprint: fp_a,
+        committed_fingerprint: committed_fp_a,
         added_recipients: [c_uuid].into_iter().collect(),
     };
 
@@ -2167,6 +2329,7 @@ fn repair_all_or_nothing_with_partial_approvals() {
     let approval_b = secretary_core::vault::ApprovedWidening {
         block_uuid: block_b,
         file_fingerprint: fp_b,
+        committed_fingerprint: committed_fp_b,
         added_recipients: [c_uuid].into_iter().collect(),
     };
     let mut rng2 = ChaCha20Rng::from_seed([0xC4; 32]);
@@ -2208,7 +2371,7 @@ fn repair_all_or_nothing_with_partial_approvals() {
 /// block write and its manifest write).
 #[test]
 fn preview_reports_widening_with_names_and_fingerprints() {
-    let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, manifest_before) =
+    let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, committed_fp, manifest_before) =
         stage_crashed_share(0x96);
     let folder = dir.path();
     let expected_card_fp = fingerprint(&card_c.to_canonical_cbor().unwrap());
@@ -2220,6 +2383,9 @@ fn preview_reports_widening_with_names_and_fingerprints() {
     assert_eq!(w.block_uuid, block_uuid);
     assert_eq!(w.block_name, "mine");
     assert_eq!(w.file_fingerprint, file_fp);
+    // #391: the preview must hand back the committed entry fingerprint the
+    // residue was diffed against, so an approval can carry the third bind.
+    assert_eq!(w.committed_fingerprint, committed_fp);
     assert_eq!(w.added.len(), 1);
     assert_eq!(w.added[0].uuid, c_uuid);
     assert_eq!(w.added[0].display_name, "Cee");
@@ -2260,8 +2426,17 @@ fn preview_reports_widening_with_names_and_fingerprints() {
 /// regardless of scan order.
 #[test]
 fn preview_renders_identity_of_the_key_that_gains_access() {
-    let (dir, pw, _device_uuid, block_uuid, c_uuid, card_c, file_fp, manifest_before) =
-        stage_crashed_share(0x99);
+    let (
+        dir,
+        pw,
+        _device_uuid,
+        block_uuid,
+        c_uuid,
+        card_c,
+        file_fp,
+        _committed_fp,
+        manifest_before,
+    ) = stage_crashed_share(0x99);
     let folder = dir.path();
 
     // Mint a second identity for the decoy, build its self-signed card,
