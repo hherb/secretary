@@ -425,7 +425,16 @@ fn build_manifest_from_kat(vector: &serde_json::Value) -> Manifest {
         unknown: BTreeMap::new(),
     };
 
-    for b in vector["blocks"].as_array().expect("blocks[]") {
+    // An absent "blocks" key is treated as an empty live set — mirrors the
+    // Python side's `v.get("blocks", [])` in conformance.py's
+    // `section4c_retention_kat` so a future KAT vector that omits the key
+    // (all-purge / nothing-live scenario) doesn't panic here.
+    let empty_blocks = Vec::new();
+    let blocks = vector
+        .get("blocks")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty_blocks);
+    for b in blocks {
         let block_uuid = parse_hex_array::<16>(b.as_str().expect("block uuid hex"));
         manifest.blocks.push(BlockEntry {
             block_uuid,
