@@ -276,6 +276,12 @@ pub struct EmptyTrashReport {
 /// caller performs any recipient classification *before* calling, while
 /// the trash files are still guaranteed present. The manifest write is the
 /// commit point; nothing after it may fail the call.
+///
+/// `context` is the caller-supplied error-context label passed through to
+/// `resign_and_write_manifest` on a manifest-write failure, so the reported
+/// error identifies which caller (`empty_trash`, `auto_purge_expired`, ...)
+/// triggered the failing write rather than a generic
+/// `purge_batch_commit: ...` message.
 pub(crate) fn purge_batch_commit(
     folder: &Path,
     open: &mut OpenVault,
@@ -283,6 +289,7 @@ pub(crate) fn purge_batch_commit(
     now_ms: u64,
     device_uuid: [u8; 16],
     rng: &mut (impl RngCore + CryptoRng),
+    context: &'static str,
 ) -> Result<(usize, usize), VaultError> {
     let mut staged = open.manifest.clone();
     for &idx in target_indices {
@@ -298,7 +305,7 @@ pub(crate) fn purge_batch_commit(
         now_ms,
         open.manifest_file.author_fingerprint,
         rng,
-        "purge_batch_commit: failed to write manifest.cbor.enc",
+        context,
     )?;
     open.manifest = staged;
     open.manifest_file = new_manifest_file;
@@ -374,7 +381,15 @@ pub fn empty_trash(
     }
 
     // Single batch commit via the shared primitive (Task 3).
-    let (removed, failed) = purge_batch_commit(folder, open, &targets, now_ms, device_uuid, rng)?;
+    let (removed, failed) = purge_batch_commit(
+        folder,
+        open,
+        &targets,
+        now_ms,
+        device_uuid,
+        rng,
+        "empty_trash: failed to write manifest.cbor.enc",
+    )?;
     report.purged_count = targets.len();
     report.files_removed += removed;
     report.files_failed += failed;

@@ -154,7 +154,15 @@ pub fn auto_purge_expired(
         }
     }
 
-    let (removed, failed) = purge_batch_commit(folder, open, &targets, now_ms, device_uuid, rng)?;
+    let (removed, failed) = purge_batch_commit(
+        folder,
+        open,
+        &targets,
+        now_ms,
+        device_uuid,
+        rng,
+        "auto_purge_expired: failed to write manifest.cbor.enc",
+    )?;
     report.purged_count = targets.len();
     report.files_removed = removed;
     report.files_failed = failed;
