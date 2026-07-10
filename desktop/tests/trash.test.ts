@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sortTrashed, formatTrashedWhen } from '../src/lib/trash';
+import { sortTrashed, formatTrashedWhen, emptyTrashConfirmBody } from '../src/lib/trash';
 import type { TrashedBlockDto } from '../src/lib/ipc';
 
 const mk = (blockUuidHex: string, tombstonedAtMs: number): TrashedBlockDto => ({
@@ -28,5 +28,19 @@ describe('sortTrashed', () => {
 describe('formatTrashedWhen', () => {
   it('returns a non-empty string', () => {
     expect(formatTrashedWhen(Date.now()).length).toBeGreaterThan(0);
+  });
+});
+
+describe('emptyTrashConfirmBody', () => {
+  it('uses the singular form for one item', () => {
+    expect(emptyTrashConfirmBody(1)).toBe(
+      'The 1 item in trash will be permanently deleted. This cannot be undone.',
+    );
+  });
+
+  it('uses the plural form for multiple items', () => {
+    expect(emptyTrashConfirmBody(4)).toBe(
+      'All 4 items in trash will be permanently deleted. This cannot be undone.',
+    );
   });
 });
