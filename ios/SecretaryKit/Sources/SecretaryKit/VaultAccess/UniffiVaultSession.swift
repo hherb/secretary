@@ -29,8 +29,14 @@ import SecretaryVaultAccess
 /// mutable `wiped`/`currentBlock`/`cachedDeviceUuid` state and the `deviceUuids`
 /// provider are all lock-serialized, so the guarantee is asserted here.
 public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
-    private let identity: UnlockedIdentity
-    private let manifest: OpenVaultManifest
+    // `internal`, not `private`: the trash-port conformance in
+    // `UniffiVaultSession+Trash.swift` is a same-module, different-file
+    // extension and reads these two handles directly inside its FFI-call
+    // closures (Swift's `private` is file-scoped, so a same-type extension
+    // in another file cannot see a `private` stored property). Still not
+    // `public` — no cross-module surface is added.
+    internal let identity: UnlockedIdentity
+    internal let manifest: OpenVaultManifest
     private let deviceUuids: DeviceUuidProviding?
     /// Serializes all access to the FFI handles + `currentBlock`. The held section
     /// spans the block decrypt, so a concurrent `wipe()` waits for an in-flight read
@@ -287,6 +293,55 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
             }
         }
     }
+
+    /// Read under the lock with the wiped-guard, returning a value or throwing.
+    /// Mirrors `write`'s wiped-check-then-map-error shape for the read side
+    /// (`listTrashedBlocks` is the only throwing trash read).
+    internal func readTrash<T>(_ body: () throws -> T) throws -> T {
+        try lock.withLock {
+            if wiped { throw VaultAccessError.other("read on a wiped session") }
+            do {
+                return try body()
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
+            }
+        }
+    }
+
+    /// Infallible read under the lock; returns an empty projection when wiped
+    /// rather than throwing, matching `blockSummaries()`'s post-wipe contract.
+    internal func readTrashInfallible<T>(_ body: () -> [T]) -> [T] {
+        lock.withLock { wiped ? [] : body() }
+    }
+
+    /// Like `write`, but the body returns a value (purge/empty-trash/auto-purge
+    /// all report a summary struct on success).
+    internal func writeTrashReturning<T>(
+        _ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> T
+    ) throws -> T {
+        try lock.withLock {
+            if wiped { throw VaultAccessError.other("write on a wiped session") }
+            let dev = try deviceUuid()
+            do {
+                return try body(dev, Self.nowMs())
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
+            }
+        }
+    }
+
+    /// Alias for the existing private `write`, exposed so the trash extension
+    /// (a different file) can drive a Void-returning write
+    /// (`restoreBlock`) without widening `write` itself.
+    internal func writeTrash(
+        _ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> Void
+    ) throws {
+        try write(body)
+    }
+
+    /// `nowMs()` exposed for the infallible-read preview path
+    /// (`expiredTrashEntries`), which has no write to derive `now` from.
+    internal static func nowMsPublic() -> UInt64 { nowMs() }
 
     private func deviceUuid() throws -> [UInt8] {
         if let c = cachedDeviceUuid { return c }
