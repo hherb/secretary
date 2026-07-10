@@ -42,7 +42,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithPassword(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            password = env.password001,
+            password = env.password001.direct(),
         ).use { identity ->
             val displayName = identity.displayName()
             val uuid = identity.userUuid()
@@ -60,7 +60,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithPassword(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            password = "definitely wrong".toByteArray(Charsets.UTF_8),
+            password = "definitely wrong".toByteArray(Charsets.UTF_8).direct(),
         )
         check(false, "wrong password should have thrown WrongPasswordOrCorrupt")
     } catch (e: UnlockException.WrongPasswordOrCorrupt) {
@@ -74,7 +74,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithPassword(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle002,
-            password = env.password001,
+            password = env.password001.direct(),
         )
         check(false, "vault_001 toml + vault_002 bundle should have thrown VaultMismatch")
     } catch (e: UnlockException.VaultMismatch) {
@@ -89,7 +89,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithPassword(
             vaultTomlBytes = truncated,
             identityBundleBytes = env.bundle001,
-            password = env.password001,
+            password = env.password001.direct(),
         )
         check(false, "truncated toml should have thrown CorruptVault")
     } catch (e: UnlockException.CorruptVault) {
@@ -107,7 +107,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         val identity = openWithPassword(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            password = env.password001,
+            password = env.password001.direct(),
         )
         identity.wipe()
         identity.wipe() // idempotent — must not throw
@@ -132,7 +132,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithRecovery(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            mnemonic = env.phrase001,
+            mnemonic = env.phrase001.direct(),
         ).use { identity ->
             val displayName = identity.displayName()
             val uuid = identity.userUuid()
@@ -150,7 +150,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithRecovery(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            mnemonic = env.phrase002,
+            mnemonic = env.phrase002.direct(),
         )
         check(false, "vault_002 phrase against vault_001 should have thrown WrongMnemonicOrCorrupt")
     } catch (e: UnlockException.WrongMnemonicOrCorrupt) {
@@ -165,7 +165,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithRecovery(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle001,
-            mnemonic = bad,
+            mnemonic = bad.direct(),
         )
         check(false, "3-word phrase should have thrown InvalidMnemonic")
     } catch (e: UnlockException.InvalidMnemonic) {
@@ -182,7 +182,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
         openWithRecovery(
             vaultTomlBytes = env.toml001,
             identityBundleBytes = env.bundle002,
-            mnemonic = env.phrase001,
+            mnemonic = env.phrase001.direct(),
         )
         check(false, "vault_001 toml + vault_002 bundle (recovery) should have thrown VaultMismatch")
     } catch (e: UnlockException.VaultMismatch) {
@@ -198,7 +198,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
     // identity is immediately live with the display_name we passed.
     try {
         val out = createVault(
-            password = "smoke-runner-password".toByteArray(Charsets.UTF_8),
+            password = "smoke-runner-password".toByteArray(Charsets.UTF_8).direct(),
             displayName = "Owner",
             createdAtMs = 1_700_000_000_000UL,
         )
@@ -222,7 +222,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
     try {
         val pw = "round-trip-password".toByteArray(Charsets.UTF_8)
         val out = createVault(
-            password = pw,
+            password = pw.direct(),
             displayName = "RoundTripBob",
             createdAtMs = 1_700_000_000_000UL,
         )
@@ -231,7 +231,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
             openWithPassword(
                 vaultTomlBytes = out.vaultTomlBytes,
                 identityBundleBytes = out.identityBundleBytes,
-                password = pw,
+                password = pw.direct(),
             ).use { reopened ->
                 check(
                     reopened.displayName() == "RoundTripBob",
@@ -247,7 +247,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
     // the recovery path. Pins create→take→open end-to-end.
     try {
         val out = createVault(
-            password = "unused".toByteArray(Charsets.UTF_8),
+            password = "unused".toByteArray(Charsets.UTF_8).direct(),
             displayName = "RoundTripCarol",
             createdAtMs = 1_700_000_000_000UL,
         )
@@ -260,7 +260,7 @@ fun runBytesInAsserts(env: SmokeEnv) {
                     openWithRecovery(
                         vaultTomlBytes = out.vaultTomlBytes,
                         identityBundleBytes = out.identityBundleBytes,
-                        mnemonic = phrase,
+                        mnemonic = phrase.direct(),
                     ).use { reopened ->
                         check(
                             reopened.displayName() == "RoundTripCarol",

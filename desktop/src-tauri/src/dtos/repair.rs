@@ -50,6 +50,12 @@ pub struct WideningReportDto {
     /// the eventual `repair_vault` call to exactly these bytes; a file
     /// swapped between preview and repair fails that bind as stale consent.
     pub file_fingerprint_hex: String,
+    /// 64 lowercase hex chars — the committed manifest entry fingerprint
+    /// this widening was diffed against. The frontend echoes it back
+    /// verbatim as `ApprovedWideningArg::committed_fingerprint_hex` — the
+    /// #391 third consent bind; any committed write to the block between
+    /// preview and repair fails it as stale consent.
+    pub committed_fingerprint_hex: String,
     /// The exact recipients this widening would add, in no particular order.
     pub added: Vec<AddedRecipientDto>,
 }
@@ -74,6 +80,7 @@ impl From<FfiRepairPreview> for RepairPreviewDto {
                     block_uuid_hex: w.block_uuid_hex,
                     block_name: w.block_name,
                     file_fingerprint_hex: w.file_fingerprint_hex,
+                    committed_fingerprint_hex: w.committed_fingerprint_hex,
                     added: w
                         .added
                         .into_iter()
@@ -103,6 +110,10 @@ pub struct ApprovedWideningArg {
     /// Must equal the `WideningReportDto::file_fingerprint_hex` the user
     /// consented to — the stale-consent bind.
     pub file_fingerprint_hex: String,
+    /// Must equal the `WideningReportDto::committed_fingerprint_hex` the
+    /// user was shown — the #391 committed-state bind making approvals
+    /// structurally single-use.
+    pub committed_fingerprint_hex: String,
     /// The exact set of `AddedRecipientDto::uuid_hex` values the user
     /// approved adding.
     pub added_uuids_hex: Vec<String>,
@@ -122,6 +133,8 @@ mod tests {
     const SAMPLE_RECIPIENT_UUID_HEX: &str = "fedcba98-7654-3210-fedc-ba9876543210";
     const SAMPLE_FILE_FINGERPRINT_HEX: &str =
         "0011223344556677001122334455667700112233445566770011223344556677";
+    const SAMPLE_COMMITTED_FINGERPRINT_HEX: &str =
+        "8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff";
     const SAMPLE_CARD_FINGERPRINT_HEX: &str = "00112233445566778899aabbccddeeff";
 
     #[test]
@@ -144,15 +157,21 @@ mod tests {
             block_uuid_hex: SAMPLE_BLOCK_UUID_HEX.to_string(),
             block_name: "Banking".to_string(),
             file_fingerprint_hex: SAMPLE_FILE_FINGERPRINT_HEX.to_string(),
+            committed_fingerprint_hex: SAMPLE_COMMITTED_FINGERPRINT_HEX.to_string(),
             added: vec![],
         };
         let v = to_json(&dto);
         assert_eq!(v["blockUuidHex"], SAMPLE_BLOCK_UUID_HEX);
         assert_eq!(v["blockName"], "Banking");
         assert_eq!(v["fileFingerprintHex"], SAMPLE_FILE_FINGERPRINT_HEX);
+        assert_eq!(
+            v["committedFingerprintHex"],
+            SAMPLE_COMMITTED_FINGERPRINT_HEX
+        );
         assert_eq!(v["added"], serde_json::json!([]));
         assert!(v.get("block_uuid_hex").is_none());
         assert!(v.get("file_fingerprint_hex").is_none());
+        assert!(v.get("committed_fingerprint_hex").is_none());
     }
 
     #[test]
@@ -162,6 +181,7 @@ mod tests {
                 block_uuid_hex: SAMPLE_BLOCK_UUID_HEX.to_string(),
                 block_name: "Banking".to_string(),
                 file_fingerprint_hex: SAMPLE_FILE_FINGERPRINT_HEX.to_string(),
+                committed_fingerprint_hex: SAMPLE_COMMITTED_FINGERPRINT_HEX.to_string(),
                 added: vec![FfiAddedRecipient {
                     uuid_hex: SAMPLE_RECIPIENT_UUID_HEX.to_string(),
                     display_name: "Alice".to_string(),
@@ -176,6 +196,10 @@ mod tests {
         // own string — no re-encoding, no case change.
         assert_eq!(w.block_uuid_hex, SAMPLE_BLOCK_UUID_HEX);
         assert_eq!(w.file_fingerprint_hex, SAMPLE_FILE_FINGERPRINT_HEX);
+        assert_eq!(
+            w.committed_fingerprint_hex,
+            SAMPLE_COMMITTED_FINGERPRINT_HEX
+        );
         assert_eq!(w.added[0].uuid_hex, SAMPLE_RECIPIENT_UUID_HEX);
         assert_eq!(w.added[0].card_fingerprint_hex, SAMPLE_CARD_FINGERPRINT_HEX);
     }
@@ -187,6 +211,7 @@ mod tests {
                 block_uuid_hex: SAMPLE_BLOCK_UUID_HEX.to_string(),
                 block_name: "Banking".to_string(),
                 file_fingerprint_hex: SAMPLE_FILE_FINGERPRINT_HEX.to_string(),
+                committed_fingerprint_hex: SAMPLE_COMMITTED_FINGERPRINT_HEX.to_string(),
                 added: vec![],
             }],
         };
@@ -197,11 +222,15 @@ mod tests {
     #[test]
     fn approved_widening_arg_deserializes_from_camel_case() {
         let json = format!(
-            r#"{{"blockUuidHex":"{SAMPLE_BLOCK_UUID_HEX}","fileFingerprintHex":"{SAMPLE_FILE_FINGERPRINT_HEX}","addedUuidsHex":["{SAMPLE_RECIPIENT_UUID_HEX}"]}}"#
+            r#"{{"blockUuidHex":"{SAMPLE_BLOCK_UUID_HEX}","fileFingerprintHex":"{SAMPLE_FILE_FINGERPRINT_HEX}","committedFingerprintHex":"{SAMPLE_COMMITTED_FINGERPRINT_HEX}","addedUuidsHex":["{SAMPLE_RECIPIENT_UUID_HEX}"]}}"#
         );
         let arg: ApprovedWideningArg = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(arg.block_uuid_hex, SAMPLE_BLOCK_UUID_HEX);
         assert_eq!(arg.file_fingerprint_hex, SAMPLE_FILE_FINGERPRINT_HEX);
+        assert_eq!(
+            arg.committed_fingerprint_hex,
+            SAMPLE_COMMITTED_FINGERPRINT_HEX
+        );
         assert_eq!(
             arg.added_uuids_hex,
             vec![SAMPLE_RECIPIENT_UUID_HEX.to_string()]
@@ -211,7 +240,7 @@ mod tests {
     #[test]
     fn approved_widening_arg_rejects_snake_case_payload() {
         let json = format!(
-            r#"{{"block_uuid_hex":"{SAMPLE_BLOCK_UUID_HEX}","file_fingerprint_hex":"{SAMPLE_FILE_FINGERPRINT_HEX}","added_uuids_hex":[]}}"#
+            r#"{{"block_uuid_hex":"{SAMPLE_BLOCK_UUID_HEX}","file_fingerprint_hex":"{SAMPLE_FILE_FINGERPRINT_HEX}","committed_fingerprint_hex":"{SAMPLE_COMMITTED_FINGERPRINT_HEX}","added_uuids_hex":[]}}"#
         );
         let result: Result<ApprovedWideningArg, _> = serde_json::from_str(&json);
         assert!(result.is_err(), "snake_case input must fail to deserialize");

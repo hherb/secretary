@@ -14,7 +14,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
     // Assert 19: read_block success → record_count == 1 + field_count == 2.
     try {
         val folderPathBytes = env.vault001Path.toString().toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPathBytes, env.password001)
+        val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
         out.identity.use { id ->
             out.manifest.use { mf ->
                 readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->
@@ -35,7 +35,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
     // Assert 20: field_by_name("password").expose_text() == "hunter2".
     try {
         val folderPathBytes = env.vault001Path.toString().toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPathBytes, env.password001)
+        val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
         out.identity.use { id ->
             out.manifest.use { mf ->
                 readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->
@@ -56,7 +56,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
     // Assert 21: read_block(unknown_uuid) → VaultException.BlockNotFound(uuid_hex matches).
     try {
         val folderPathBytes = env.vault001Path.toString().toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPathBytes, env.password001)
+        val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
         out.identity.use { id ->
             out.manifest.use { mf ->
                 val unknownUuid = ByteArray(16)
@@ -83,7 +83,7 @@ fun runReadBlockAsserts(env: SmokeEnv) {
     // sentinel rather than throwing.
     try {
         val folderPathBytes = env.vault001Path.toString().toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPathBytes, env.password001)
+        val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
         out.identity.use { id ->
             out.manifest.use { mf ->
                 readBlock(id, mf, VAULT_001_BLOCK_UUID, false).use { block ->

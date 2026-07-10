@@ -34,23 +34,34 @@ import java.security.SecureRandom
  * without retaining them. [openWithDeviceSecret] behaves identically — it runs on [ioDispatcher]
  * and forwards the 16-byte device UUID + 32-byte device secret per call without retaining them,
  * opening via the per-device wrap slot. The open function is an injectable seam defaulting to the real binding.
+ *
+ * The secret argument crosses the FFI as a direct [java.nio.ByteBuffer] minted (and scrubbed) per
+ * call by [withDirectSecret] — uniffi 0.32's `[ByRef] bytes` zero-copy path (#307).
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val deviceUuids: DeviceUuidProvider? = null,
-    private val openFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithPassword,
-    private val recoveryFn: (ByteArray, ByteArray) -> OpenVaultOutput = ::openVaultWithRecovery,
-    private val deviceSecretFn: (ByteArray, ByteArray, ByteArray) -> OpenVaultOutput = ::ffiOpenWithDeviceSecret,
+    private val openFn: (ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::openVaultWithPassword,
+    private val recoveryFn: (ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::openVaultWithRecovery,
+    private val deviceSecretFn: (ByteArray, ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::ffiOpenWithDeviceSecret,
 ) : VaultOpenPort {
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession =
         withContext(ioDispatcher) {
-            val output = mapErrors { openFn(vaultFolder.toByteArray(Charsets.UTF_8), password) }
+            val output = mapErrors {
+                withDirectSecret(password) { pw ->
+                    openFn(vaultFolder.toByteArray(Charsets.UTF_8), pw)
+                }
+            }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
 
     override suspend fun openWithRecovery(vaultFolder: String, phrase: ByteArray): VaultSession =
         withContext(ioDispatcher) {
-            val output = mapErrors { recoveryFn(vaultFolder.toByteArray(Charsets.UTF_8), phrase) }
+            val output = mapErrors {
+                withDirectSecret(phrase) { p ->
+                    recoveryFn(vaultFolder.toByteArray(Charsets.UTF_8), p)
+                }
+            }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
 
@@ -61,7 +72,9 @@ class UniffiVaultOpenPort(
     ): VaultSession =
         withContext(ioDispatcher) {
             val output = mapErrors {
-                deviceSecretFn(vaultFolder.toByteArray(Charsets.UTF_8), deviceUuid, deviceSecret)
+                withDirectSecret(deviceSecret) { secret ->
+                    deviceSecretFn(vaultFolder.toByteArray(Charsets.UTF_8), deviceUuid, secret)
+                }
             }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }

@@ -124,7 +124,7 @@ fun main() {
                 val vaultDir = resolveVaultDir(inputs, goldenVaultDir)
                 val password = resolvePassword(inputs, goldenVaultDir)
                 try {
-                    val out = openVaultWithPassword(vaultDir, password)
+                    val out = openVaultWithPassword(vaultDir, password.direct())
                     handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
                     handleVaultError(e, expected, name, kind, ::check)
@@ -137,7 +137,7 @@ fun main() {
                 val vaultDir = resolveVaultDir(inputs, goldenVaultDir)
                 val mnemonic = resolveMnemonic(inputs, goldenVaultDir)
                 try {
-                    val out = openVaultWithRecovery(vaultDir, mnemonic)
+                    val out = openVaultWithRecovery(vaultDir, mnemonic.direct())
                     handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
                     handleVaultError(e, expected, name, kind, ::check)
@@ -166,7 +166,7 @@ fun main() {
                 } else {
                     val vaultDir = resolveVaultDir(inputs, goldenVaultDir)
                     try {
-                        val out = openWithDeviceSecret(vaultDir, deviceUuid, deviceSecret)
+                        val out = openWithDeviceSecret(vaultDir, deviceUuid, deviceSecret.direct())
                         handleOpenOk(out, expected, name, kind, cache, ::check)
                     } catch (e: VaultException) {
                         handleVaultError(e, expected, name, kind, ::check)
@@ -283,7 +283,7 @@ fun main() {
                 val password = resolvePassword(inputs, goldenVaultDir)
                 val folderPath = tmp.toString().toByteArray(Charsets.UTF_8)
                 try {
-                    val out = openVaultWithPassword(folderPath, password)
+                    val out = openVaultWithPassword(folderPath, password.direct())
                     handleOpenOk(out, expected, name, kind, cache, ::check)
                 } catch (e: VaultException) {
                     handleVaultError(e, expected, name, kind, ::check)
@@ -543,7 +543,7 @@ fun main() {
         val folderPath = tmp.toString().toByteArray(Charsets.UTF_8)
         val password = resolveSource("golden_vault_001_inputs.json:password", goldenVaultDir)
         try {
-            val enroll = addDeviceSlot(folderPath, password)
+            val enroll = addDeviceSlot(folderPath, password.direct())
             check(enroll.deviceUuid.size == 16, enrolName, "device_uuid expected 16 bytes, got ${enroll.deviceUuid.size}")
             val secret = enroll.deviceSecret.takeSecret()
             check(secret != null, enrolName, "takeSecret() returned null on first call")
@@ -552,7 +552,7 @@ fun main() {
             if (secret != null) {
                 // takeSecret() is `bytes?` → a ByteArray? directly (#261); no boxed-list conversion.
                 try {
-                    val out = openWithDeviceSecret(folderPath, enroll.deviceUuid, secret)
+                    val out = openWithDeviceSecret(folderPath, enroll.deviceUuid, secret.direct())
                     check(out.identity.displayName() == "Owner", enrolName,
                         "enrol-then-open display_name mismatch (got '${out.identity.displayName()}', want 'Owner')")
                     check(out.manifest.blockCount().toInt() == 1, enrolName,

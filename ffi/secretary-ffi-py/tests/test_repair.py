@@ -222,6 +222,9 @@ def test_preview_repair_with_password_returns_widening_with_display_name(
     widening = preview.widenings[0]
     assert widening.block_uuid_hex
     assert widening.file_fingerprint_hex
+    # #391: the preview must surface the committed entry fingerprint so an
+    # approval can carry the third (committed-state) bind.
+    assert len(widening.committed_fingerprint_hex) == 64
     assert len(widening.added) == 1
     added = widening.added[0]
     assert isinstance(added.display_name, str) and added.display_name
@@ -241,6 +244,7 @@ def test_repair_with_password_adopts_approved_widening(tmp_path: Path) -> None:
     approval = secretary_ffi_py.ApprovedWidening(
         block_uuid=bytes.fromhex(widening.block_uuid_hex.replace("-", "")),
         file_fingerprint=bytes.fromhex(widening.file_fingerprint_hex),
+        committed_fingerprint=bytes.fromhex(widening.committed_fingerprint_hex),
         added_recipients=[bytes.fromhex(added.uuid_hex.replace("-", ""))],
     )
 
@@ -268,6 +272,19 @@ def test_approved_widening_wrong_length_block_uuid_raises_value_error() -> None:
         secretary_ffi_py.ApprovedWidening(
             block_uuid=bytes(15),
             file_fingerprint=bytes(32),
+            committed_fingerprint=bytes(32),
+            added_recipients=[],
+        )
+
+
+def test_approved_widening_wrong_length_committed_fingerprint_raises_value_error() -> (
+    None
+):
+    with pytest.raises(ValueError, match="committed_fingerprint"):
+        secretary_ffi_py.ApprovedWidening(
+            block_uuid=bytes(16),
+            file_fingerprint=bytes(32),
+            committed_fingerprint=bytes(31),
             added_recipients=[],
         )
 

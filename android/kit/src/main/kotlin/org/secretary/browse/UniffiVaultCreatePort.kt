@@ -24,7 +24,7 @@ import uniffi.secretary.createVaultInFolder
 class UniffiVaultCreatePort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clockMs: () -> Long = System::currentTimeMillis,
-    private val createFn: (ByteArray, ByteArray, String, ULong) -> Pair<ByteArray, ByteArray>? =
+    private val createFn: (ByteArray, java.nio.ByteBuffer, String, ULong) -> Pair<ByteArray, ByteArray>? =
         { folderPath, password, displayName, createdAtMs ->
             // createVaultInFolder returns CreatedVaultInFolder (Disposable, not AutoCloseable);
             // extract the phrase from the inner MnemonicOutput handle (AutoCloseable) first,
@@ -45,7 +45,9 @@ class UniffiVaultCreatePort(
     ): CreatedVault =
         withContext(ioDispatcher) {
             val result = mapProvisioningErrors {
-                createFn(folderPath.toByteArray(Charsets.UTF_8), password, displayName, clockMs().toULong())
+                withDirectSecret(password) { pw ->
+                    createFn(folderPath.toByteArray(Charsets.UTF_8), pw, displayName, clockMs().toULong())
+                }
             } ?: throw VaultProvisioningError.CreateFailed("recovery phrase unavailable")
             CreatedVault(phrase = result.first, vaultUuid = result.second)
         }

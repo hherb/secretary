@@ -39,7 +39,11 @@ class UniffiVaultSyncPortTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> error("statusFn should not be called in this test") },
-            syncFn = { _, _, pw, _ -> seenPassword = pw; SyncOutcomeDto.AppliedAutomatically },
+            syncFn = { _, _, pw, _ ->
+                // #307: the secret now crosses as a direct ByteBuffer; copy it out to assert.
+                seenPassword = ByteArray(pw.remaining()).also { pw.duplicate().get(it) }
+                SyncOutcomeDto.AppliedAutomatically
+            },
             commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 

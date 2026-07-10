@@ -134,14 +134,19 @@ func runFolderInAsserts(env: SmokeEnv) {
 
         let folderPath = Data(tmp.path.utf8)
         let pw = Data("create-smoke-pw".utf8)
-        let mnem = try createVaultInFolder(
+        // createVaultInFolder returns CreatedVaultInFolder holding the one-shot
+        // MnemonicOutput handle — take the phrase from the inner handle and wipe it.
+        // (This block had rotted against the pre-Slice-5 MnemonicOutput-returning
+        // shape; the smoke runner is not a CI gate, so it only surfaced when re-run
+        // for #307.)
+        let created = try createVaultInFolder(
             folderPath: folderPath,
             password: pw,
             displayName: "Swift-Create-Bob",
             createdAtMs: 1_700_000_000_000
         )
-        defer { mnem.wipe() }
-        let wordCount = mnem.takePhrase().map {
+        defer { created.mnemonic.wipe() }
+        let wordCount = created.mnemonic.takePhrase().map {
             String(decoding: $0, as: UTF8.self).split(separator: " ").count
         } ?? 0
 

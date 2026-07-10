@@ -310,6 +310,7 @@ describe('Unlock — #374 "repair now?" affordance', () => {
     blockUuidHex: 'aaaaaaaa-0000-0000-0000-000000000001',
     blockName: 'Family Passwords',
     fileFingerprintHex: 'bbbbbbbb-0000-0000-0000-000000000002',
+    committedFingerprintHex: '9999999900000000000000000000000000000000000000000000000000000009',
     added: [
       {
         uuidHex: 'cccccccc-0000-0000-0000-000000000003',
@@ -350,6 +351,7 @@ describe('Unlock — #374 "repair now?" affordance', () => {
       {
         blockUuidHex: WIDENING.blockUuidHex,
         fileFingerprintHex: WIDENING.fileFingerprintHex,
+        committedFingerprintHex: WIDENING.committedFingerprintHex,
         addedUuidsHex: [WIDENING.added[0].uuidHex]
       }
     ]);

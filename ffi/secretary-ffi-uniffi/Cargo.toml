@@ -28,12 +28,12 @@ secretary-ffi-bridge = { path = "../secretary-ffi-bridge" }
 # `tempfile = "=3.27.0"` exact-pin discipline doesn't apply. Mirrors
 # `pyo3 = "0.28"` in the sibling secretary-ffi-py crate. See
 # secretary_next_session.md "Begin Sub-project B.1.1" decisions.
-uniffi = { version = "0.31" }
+uniffi = { version = "0.32" }
 thiserror = "2"
 zeroize = "=1.8.2"
 
 [build-dependencies]
-uniffi = { version = "0.31", features = ["build"] }
+uniffi = { version = "0.32", features = ["build"] }
 
 [dev-dependencies]
 # Deterministic seeded RNG for the B.3b mod tests' fast

@@ -182,6 +182,11 @@ export interface WideningReportDto {
   blockUuidHex: string;
   blockName: string;
   fileFingerprintHex: string;
+  /** The committed manifest entry fingerprint the preview diffed against —
+   * echo back verbatim as `ApprovedWideningDto.committedFingerprintHex`
+   * (#391: the third consent bind making approvals structurally
+   * single-use). */
+  committedFingerprintHex: string;
   added: AddedRecipientDto[];
 }
 
@@ -192,6 +197,7 @@ export interface RepairPreviewDto {
 export interface ApprovedWideningDto {
   blockUuidHex: string;
   fileFingerprintHex: string;
+  committedFingerprintHex: string;
   addedUuidsHex: string[];
 }
 

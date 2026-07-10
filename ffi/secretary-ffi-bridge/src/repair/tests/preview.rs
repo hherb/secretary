@@ -41,6 +41,12 @@ fn preview_with_password_reports_widening() {
         hex::encode(staged.file_fingerprint),
         "file_fingerprint_hex must round-trip the on-disk BLAKE3 fingerprint"
     );
+    assert_eq!(
+        report.committed_fingerprint_hex,
+        hex::encode(staged.committed_fingerprint),
+        "committed_fingerprint_hex must round-trip the committed manifest \
+         entry fingerprint (#391 third consent bind)"
+    );
     assert_eq!(report.added.len(), 1, "exactly one added recipient");
     let added = &report.added[0];
     assert_eq!(

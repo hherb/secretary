@@ -28,7 +28,11 @@ class UniffiVaultCreatePortTest {
         val port = UniffiVaultCreatePort(
             clockMs = { 1_700_000_000_000L },
             createFn = { fp, pw, dn, ts ->
-                seenPath = fp; seenPw = pw; seenName = dn; seenClock = ts
+                // #307: the secret now crosses as a direct ByteBuffer; copy it out to assert.
+                seenPath = fp
+                seenPw = ByteArray(pw.remaining()).also { pw.duplicate().get(it) }
+                seenName = dn
+                seenClock = ts
                 "x".toByteArray(Charsets.UTF_8) to ByteArray(16)
             },
         )

@@ -15,6 +15,7 @@ import uniffi.secretary.BlockInput
 import uniffi.secretary.FieldInput
 import uniffi.secretary.FieldInputValue
 import uniffi.secretary.RecordInput
+import org.secretary.browse.withDirectSecret
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.readBlock
 import uniffi.secretary.saveBlock
@@ -108,7 +109,7 @@ class TwoWorkingCopiesConflictInstrumentedTest {
      */
     private fun appendRecord(workingDir: File, newRecordUuid: ByteArray, who: String, deviceUuid: ByteArray) {
         val folderPathBytes = workingDir.path.toByteArray()
-        val out = openVaultWithPassword(folderPathBytes, goldenPassword)
+        val out = withDirectSecret(goldenPassword) { pw -> openVaultWithPassword(folderPathBytes, pw) }
         out.identity.use { id ->
             out.manifest.use { mf ->
                 val existing = mutableListOf<RecordInput>()
@@ -146,7 +147,7 @@ class TwoWorkingCopiesConflictInstrumentedTest {
     /** Read the block in [workingDir] as a `{recordUuidHex → who-field}` map (live records only). */
     private fun readWhoMap(workingDir: File): Map<String, String?> {
         val folderPathBytes = workingDir.path.toByteArray()
-        val out = openVaultWithPassword(folderPathBytes, goldenPassword)
+        val out = withDirectSecret(goldenPassword) { pw -> openVaultWithPassword(folderPathBytes, pw) }
         val result = linkedMapOf<String, String?>()
         out.identity.use { id ->
             out.manifest.use { mf ->

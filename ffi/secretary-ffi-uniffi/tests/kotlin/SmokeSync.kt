@@ -79,7 +79,7 @@ fun runSyncAsserts(env: SmokeEnv) {
         val outcome = syncVault(
             stateDir.toString(),
             vaultFolder.toString(),
-            env.password001,
+            env.password001.direct(),
             1_715_000_000_000UL,
         )
         if (outcome is SyncOutcomeDto.AppliedAutomatically) {
