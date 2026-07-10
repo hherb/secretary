@@ -42,7 +42,8 @@ import {
   REAUTH_WINDOW_MIN_MS,
   REAUTH_WINDOW_MAX_MS,
   REAUTH_WINDOW_DEFAULT_MS,
-  REQUIRE_PASSWORD_DEFAULT
+  REQUIRE_PASSWORD_DEFAULT,
+  RETENTION_WINDOW_DEFAULT_MS
 } from '../src/lib/constants';
 import {
   __setWriteGuardTestSeam,
@@ -68,7 +69,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const INITIAL_SETTINGS: SettingsDto = { autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }; // 15 minutes
+const INITIAL_SETTINGS: SettingsDto = { autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }; // 15 minutes
 
 // Hoist the setSettings IPC mock so individual tests can drive
 // resolve / reject as needed.
@@ -133,7 +134,7 @@ describe('SettingsDialog.svelte — open / closed state', () => {
 
 describe('SettingsDialog.svelte — initial value', () => {
   it('pre-populates the input from sessionState.settings (rounded to minutes)', async () => {
-    unlockWith({ autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 }); // 15 min
+    unlockWith({ autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 15 min
     const { container } = renderOpen();
     await waitFor(() => {
       const input = container.querySelector('input[type="number"]') as HTMLInputElement;
@@ -369,7 +370,7 @@ describe('SettingsDialog.svelte — IPC error path', () => {
 
 describe('SettingsDialog.svelte — reauth controls', () => {
   it('saves the reauth toggle and window', async () => {
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
     setSettingsMock.mockResolvedValueOnce(undefined);
     const { getByLabelText, getByText } = renderOpen();
 
@@ -392,7 +393,7 @@ describe('SettingsDialog.svelte — reauth controls', () => {
     // REAUTH_WINDOW_MIN_MS is 0 (0 min is valid); there is no sub-zero
     // integer we can enter in a min=0 number field — the browser/JSDOM
     // clamps. Test a value above MAX instead.
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
     const { container, getByLabelText, getByRole, findByText } = renderOpen();
     // Sanity: the auto-lock input must not be affected by an out-of-range
     // window value — only the window field triggers the error.
@@ -416,7 +417,7 @@ describe('SettingsDialog.svelte — reauth controls', () => {
   });
 
   it('pre-populates the window input from sessionState.settings.reauthGraceWindowMs', async () => {
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 180_000 }); // 3 min
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 180_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 3 min
     const { getByLabelText } = renderOpen();
     await waitFor(() => {
       const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
@@ -455,7 +456,7 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
       now: () => 0,
       prompt: () => Promise.reject(ReauthCancelled)
     });
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
     const onClose = vi.fn();
     const { getByLabelText, getByRole } = renderOpen(onClose);
 
@@ -474,7 +475,7 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
       now: () => 0,
       prompt
     });
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000 }); // 2 min
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 2 min
     const { getByLabelText, getByRole } = renderOpen();
 
     await fireEvent.input(getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i), {
@@ -497,7 +498,7 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
       now: () => 0,
       prompt
     });
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 300_000 }); // 5 min
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 300_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 5 min
     const { getByLabelText, getByRole } = renderOpen();
 
     // Tighten the window (5 → 1 min) — strengthens protection, must not prompt.
@@ -517,7 +518,7 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
       now: () => 0,
       prompt
     });
-    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 });
+    unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
     const { getByLabelText, getByRole } = renderOpen();
 
     // Widen the window while the gate is off — no live protection to reduce.

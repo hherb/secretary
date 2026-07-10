@@ -46,7 +46,7 @@ vi.mock('../src/lib/stores', async () => {
   return { ...real, refreshManifest: refreshManifestMock };
 });
 
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: 7_776_000_000 };
 
 function blockFixture(name: string, uuidHex: string): BlockSummaryDto {
   return {

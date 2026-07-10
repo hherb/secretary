@@ -37,7 +37,8 @@ const MANIFEST: ManifestDto = {
 const SETTINGS: SettingsDto = {
   autoLockTimeoutMs: 600_000,
   requirePasswordBeforeEdits: false,
-  reauthGraceWindowMs: 120_000
+  reauthGraceWindowMs: 120_000,
+  retentionWindowMs: 7_776_000_000
 };
 const WRONG_PWD: AppError = { code: 'wrong_password' };
 const INTERNAL_ERR: AppError = { code: 'internal' };
@@ -139,7 +140,7 @@ describe('legal transitions', () => {
     unlockSucceeded(MANIFEST, SETTINGS);
     const before = get(sessionState);
     const beforeManifest = before.status === 'unlocked' ? before.manifest : null;
-    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000 };
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000, retentionWindowMs: 7_776_000_000 };
     settingsUpdated(newSettings);
     const after = get(sessionState);
     expect(after.status).toBe('unlocked');
@@ -400,20 +401,20 @@ describe('illegal transitions throw in dev', () => {
   });
 
   it('settingsUpdated from locked is rejected', () => {
-    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000 };
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000, retentionWindowMs: 7_776_000_000 };
     expect(() => settingsUpdated(newSettings)).toThrow(/illegal session transition/i);
     expect(get(sessionState).status).toBe('locked');
   });
 
   it('settingsUpdated from unlocking is rejected', () => {
-    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000 };
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000, retentionWindowMs: 7_776_000_000 };
     beginUnlock(0);
     expect(() => settingsUpdated(newSettings)).toThrow(/illegal session transition/i);
     expect(get(sessionState).status).toBe('unlocking');
   });
 
   it('settingsUpdated from locking is rejected', () => {
-    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000 };
+    const newSettings: SettingsDto = { autoLockTimeoutMs: 300_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 60_000, retentionWindowMs: 7_776_000_000 };
     beginUnlock(0);
     unlockSucceeded(MANIFEST, SETTINGS);
     beginLock(0);

@@ -62,7 +62,7 @@ describe('ipc wrappers — argument shape', () => {
 
   it('setSettings nests the DTO under a `settings` key', async () => {
     invokeMock.mockResolvedValue(undefined);
-    const dto: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
+    const dto: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: 7_776_000_000 };
     await setSettings(dto);
     expect(invokeMock).toHaveBeenCalledWith('set_settings', { settings: dto });
   });
