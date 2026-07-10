@@ -59,6 +59,13 @@ pub struct FfiWideningReport {
     /// file swapped between preview and repair fails that bind as stale
     /// consent.
     pub file_fingerprint_hex: String,
+    /// 64 lowercase hex chars — the committed manifest entry fingerprint
+    /// this widening was diffed against. Copy it verbatim into
+    /// [`super::FfiApprovedWidening::committed_fingerprint`] (decode back
+    /// to `[u8; 32]`) — the #391 third bind: any committed write to the
+    /// block between preview and repair fails it as stale consent,
+    /// making approvals structurally single-use.
+    pub committed_fingerprint_hex: String,
     /// The exact recipients this widening would add, in no particular
     /// order.
     pub added: Vec<FfiAddedRecipient>,
@@ -84,6 +91,7 @@ fn project_preview(core_preview: secretary_core::vault::RepairPreview) -> FfiRep
                 block_uuid_hex: format_uuid_hyphenated(&w.block_uuid),
                 block_name: w.block_name,
                 file_fingerprint_hex: hex::encode(w.file_fingerprint),
+                committed_fingerprint_hex: hex::encode(w.committed_fingerprint),
                 added: w
                     .added
                     .into_iter()

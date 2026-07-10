@@ -65,6 +65,12 @@ pub struct WideningReport {
     /// approval to exactly these bytes; a file swapped between preview
     /// and repair fails that bind as stale consent.
     pub file_fingerprint_hex: String,
+    /// 64 lowercase hex chars — the committed manifest entry fingerprint
+    /// this widening was diffed against. Hex-decode back to `[u8; 32]`
+    /// for `ApprovedWidening.committed_fingerprint` — the #391 third
+    /// bind: any committed write to the block between preview and repair
+    /// fails it as stale consent (approvals are structurally single-use).
+    pub committed_fingerprint_hex: String,
     /// The exact recipients this widening would add, in no particular
     /// order.
     pub added: Vec<AddedRecipient>,
@@ -76,6 +82,7 @@ impl From<secretary_ffi_bridge::FfiWideningReport> for WideningReport {
             block_uuid_hex: w.block_uuid_hex,
             block_name: w.block_name,
             file_fingerprint_hex: w.file_fingerprint_hex,
+            committed_fingerprint_hex: w.committed_fingerprint_hex,
             added: w.added.into_iter().map(AddedRecipient::from).collect(),
         }
     }

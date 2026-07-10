@@ -22,6 +22,7 @@ const WIDENING: WideningReportDto = {
   blockUuidHex: 'aaaaaaaa-0000-0000-0000-000000000001',
   blockName: 'Family Passwords',
   fileFingerprintHex: 'bbbbbbbb-0000-0000-0000-000000000002',
+  committedFingerprintHex: '9999999900000000000000000000000000000000000000000000000000000009',
   added: [
     {
       uuidHex: 'cccccccc-0000-0000-0000-000000000003',
@@ -88,6 +89,7 @@ describe('RepairConsentDialog.svelte', () => {
       blockUuidHex: 'dddddddd-0000-0000-0000-000000000004',
       blockName: 'Work Logins',
       fileFingerprintHex: 'eeeeeeee-0000-0000-0000-000000000005',
+      committedFingerprintHex: '7777777700000000000000000000000000000000000000000000000000000007',
       added: [
         {
           uuidHex: 'ffffffff-0000-0000-0000-000000000006',

@@ -46,28 +46,31 @@ use crate::identity::UnlockedIdentity;
 use crate::vault::{OpenVaultManifest, OpenVaultOutput};
 
 /// One user-approved crash-repair recipient widening (informed-consent
-/// input). Constructor length-validates all three byte fields —
-/// `block_uuid` (16), `file_fingerprint` (32), each entry of
-/// `added_recipients` (16) — raising `ValueError` naming the field and the
-/// length actually received. Mirrors the input-record length-validation
-/// discipline in `save.rs`'s `BlockInput`/`RecordInput` constructors, and
-/// projects `secretary_ffi_bridge::FfiApprovedWidening` the same way the
-/// uniffi binding's `convert_approvals` helper does
+/// input). Constructor length-validates all four byte fields —
+/// `block_uuid` (16), `file_fingerprint` (32), `committed_fingerprint`
+/// (32), each entry of `added_recipients` (16) — raising `ValueError`
+/// naming the field and the length actually received. Mirrors the
+/// input-record length-validation discipline in `save.rs`'s
+/// `BlockInput`/`RecordInput` constructors, and projects
+/// `secretary_ffi_bridge::FfiApprovedWidening` the same way the uniffi
+/// binding's `convert_approvals` helper does
 /// (`secretary-ffi-uniffi/src/namespace/repair.rs`) — except here
 /// validation happens once, at construction, rather than per-call.
 ///
 /// Mint fresh from a `preview_repair_with_*` run; never persist. An
 /// approval is scoped to the immediately-following repair invocation
-/// (vault-format.md §6.5): the fingerprint/delta bind deliberately does
-/// not cover the committed manifest state, so a persisted approval
-/// replayed after an intervening revocation of the same recipient would
-/// re-license a re-planted copy of the previously-approved file without
-/// fresh consent.
+/// (vault-format.md §6.5), and as of #391 that scoping is structural:
+/// `committed_fingerprint` binds the approval to the committed manifest
+/// entry the preview diffed against, so a persisted approval replayed
+/// after any committed write to the block (e.g. an intervening revocation
+/// of the same recipient followed by a re-plant of the previously-
+/// approved file) is refused as stale consent.
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct ApprovedWidening {
     block_uuid: [u8; 16],
     file_fingerprint: [u8; 32],
+    committed_fingerprint: [u8; 32],
     added_recipients: Vec<[u8; 16]>,
 }
 
@@ -80,10 +83,13 @@ impl ApprovedWidening {
     fn new(
         block_uuid: Vec<u8>,
         file_fingerprint: Vec<u8>,
+        committed_fingerprint: Vec<u8>,
         added_recipients: Vec<Vec<u8>>,
     ) -> PyResult<Self> {
         let block_uuid = uuid_array_or_value_error(&block_uuid, "block_uuid")?;
         let file_fingerprint = array32_or_value_error(&file_fingerprint, "file_fingerprint")?;
+        let committed_fingerprint =
+            array32_or_value_error(&committed_fingerprint, "committed_fingerprint")?;
         let added_recipients = added_recipients
             .iter()
             .enumerate()
@@ -92,6 +98,7 @@ impl ApprovedWidening {
         Ok(Self {
             block_uuid,
             file_fingerprint,
+            committed_fingerprint,
             added_recipients,
         })
     }
@@ -105,6 +112,7 @@ impl ApprovedWidening {
         secretary_ffi_bridge::FfiApprovedWidening {
             block_uuid: self.block_uuid,
             file_fingerprint: self.file_fingerprint,
+            committed_fingerprint: self.committed_fingerprint,
             added_recipients: self.added_recipients.clone(),
         }
     }

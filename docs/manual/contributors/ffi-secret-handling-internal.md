@@ -319,19 +319,33 @@ foreign-runtime heap-copy caveat documented per accessor is not a
 of the FFI boundary that the bridge documents and works around with
 the opaque-handle + `wipe()` primitive.
 
-### Accepted limitation: uniffi value-marshalling secret residue (#299)
+### Resolved (#307): uniffi inbound value-marshalling secret residue (#299)
 
 The per-accessor foreign-runtime caveat above concerns the **outbound**
 direction (`expose_*` / `take_*` returns: Rust → foreign). The
 **inbound** direction — a user-entered master password or 24-word
 recovery phrase travelling foreign → Rust (`open_vault_with_password` /
-`open_vault_with_recovery` / `create_vault_in_folder` / sync) — has a
-*distinct*, symmetric residue that no side can scrub. #229 / #298 added
-`withZeroizingData` to scrub the iOS adapter-owned `Data` copy, and the
-uniffi namespace wrappers (`ffi/secretary-ffi-uniffi/src/namespace/
-mod.rs`) `zeroize()` the `Vec<u8>` parameter on both success and error
-paths — but **uniffi's generated value-marshalling allocates two further
-intermediate copies that neither scrub reaches.**
+`open_vault_with_recovery` / `create_vault_in_folder` / sync) — had a
+*distinct*, symmetric residue that no side could scrub. **As of #307
+(uniffi 0.32, 2026-07-10) this limitation is closed for every inbound
+secret argument**: all 16 secret `bytes` args across the unlock /
+create / device-slot / repair / preview / sync surfaces are declared
+`[ByRef] bytes` in `secretary.udl` and travel as a zero-copy
+`ForeignBytes` borrow of the foreign caller's buffer — the two
+un-scrubbable marshalling copies described below **never exist**. The
+foreign adapter's scrub of its own buffer is now the *complete* scrub:
+iOS `withZeroizingData` (unchanged — Swift call sites still pass
+`Data`), Android `withDirectSecret` (`android/kit/.../DirectSecret.kt`,
+which mints a direct `java.nio.ByteBuffer` per call and overwrites its
+off-heap memory in a `finally`), Python `bytes` (caller-owned,
+unchanged). The Rust namespace wrappers take `&[u8]` and own nothing.
+
+The remainder of this section preserves the pre-#307 analysis for the
+record — it documents what the RustBuffer path allocated and why no
+scrub could reach it, which is the contract a future uniffi upgrade
+must not silently regress (any new secret-bearing `bytes` argument MUST
+be declared `[ByRef]`; async fns still copy upstream, so no secret arg
+may become async without revisiting this).
 
 Confirmed against the actual generated `secretary.swift` (uniffi 0.31,
 regenerated via `ios/scripts/build-xcframework.sh`'s bindgen step) and
@@ -380,38 +394,31 @@ pointless"); an opt-in `#[uniffi(zeroize)]` was floated but met "probably
 no appetite". We have registered the specific secrets-manager consumer
 ask on #2080.
 
-**Remediation on the horizon — zero-copy `[ByRef] bytes` (uniffi
-[#2864](https://github.com/mozilla/uniffi-rs/issues/2864) /
+**Remediation — SHIPPED as #307 (uniffi 0.32.0, zero-copy `[ByRef]
+bytes`; upstream [#2864](https://github.com/mozilla/uniffi-rs/issues/2864) /
 [#2878](https://github.com/mozilla/uniffi-rs/pull/2878)).** Rather than
-scrubbing the marshalling copies, upstream chose to *avoid* them:
-[#2878](https://github.com/mozilla/uniffi-rs/pull/2878) (merged to
-`main` 2026-05-10, **unreleased** as of 0.31.2) lets an inbound `bytes`
-argument declared `[ByRef] bytes` (UDL) / `&[u8]` (proc-macro) travel as
-a `ForeignBytes` (pointer + length) — a borrow of foreign memory —
-**instead of being copied through a `RustBuffer`.** For synchronous
-calls (which all our unlock entry points are) this eliminates *both*
-residue copies above: copy #2 (the Rust `RustBuffer`) never exists, and
-on Swift the `Data` is passed by pointer with no `createWriter` /
-`RustBuffer(bytes:)` dance, so copy #1 never exists either. The foreign
-side retains ownership of its buffer, which makes #298's
-`withZeroizingData` scrub of the adapter `Data` the *complete* scrub.
-(Async args still revert to copying; not applicable here. Kotlin
-call sites must pass a *direct* `java.nio.ByteBuffer` rather than a
-`ByteArray`.) Once a uniffi release ships #2878, migrating the inbound
-secret args (`open_vault_with_password` / `open_vault_with_recovery` /
-`create_vault_in_folder`, currently `Vec<u8>`) to `&[u8]` closes this
-limitation. Tracked as #307.
+scrubbing the marshalling copies, upstream chose to *avoid* them: an
+inbound `bytes` argument declared `[ByRef] bytes` (UDL) / `&[u8]`
+(proc-macro) travels as a `ForeignBytes` (pointer + length) — a borrow
+of foreign memory — **instead of being copied through a `RustBuffer`.**
+For synchronous calls (which all our unlock entry points are) this
+eliminates *both* residue copies above: copy #2 (the Rust `RustBuffer`)
+never exists, and on Swift the `Data` is passed by pointer with no
+`createWriter` / `RustBuffer(bytes:)` dance, so copy #1 never exists
+either. The foreign side retains ownership of its buffer, which makes
+#298's `withZeroizingData` scrub of the adapter `Data` the *complete*
+scrub. (Async args still revert to copying upstream — none of our
+secret-bearing fns are async, and none may become so without revisiting
+this. Kotlin call sites pass a *direct* `java.nio.ByteBuffer`; the
+`withDirectSecret` helper in `android/kit` mints and scrubs it.)
 
-**Threat framing.** Worst case is a residency window for one secret copy
-in freed-but-not-yet-reused heap — not a logic bug. The core
-`Sensitive<T>` / `SecretBytes` discipline is unaffected, and the
-idiomatic mitigation (keep secret material behind Rust-owned `Arc`
-handles, as the device-unlock path already does) is applied wherever the
-secret is *not* user-entered. For inbound user-entered password / phrase
-there is no avoidance path in any *released* uniffi as of 0.31.2, so this
-is accepted as a limitation of the released value-marshalling model —
-**not** an inherent one: the unreleased `[ByRef] bytes` zero-copy path
-above is the remediation once it ships. See
+**Threat framing (historical).** Worst case was a residency window for
+one secret copy in freed-but-not-yet-reused heap — not a logic bug. The
+core `Sensitive<T>` / `SecretBytes` discipline was unaffected
+throughout, and the idiomatic mitigation (keep secret material behind
+Rust-owned `Arc` handles, as the device-unlock path already does)
+remains applied wherever the secret is *not* user-entered. The #307
+migration closed the inbound user-entered path. See
 [`docs/superpowers/specs/2026-06-25-uniffi-secret-residue-investigation-design.md`](../../superpowers/specs/2026-06-25-uniffi-secret-residue-investigation-design.md)
 for the full investigation record.
 

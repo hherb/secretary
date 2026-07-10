@@ -23,6 +23,7 @@ fn repair_with_password_adopts_with_exact_approval() {
     let approval = FfiApprovedWidening {
         block_uuid,
         file_fingerprint: staged.file_fingerprint,
+        committed_fingerprint: staged.committed_fingerprint,
         added_recipients: vec![staged.added_contact_uuid],
     };
     let repaired = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[approval])
@@ -58,6 +59,7 @@ fn repair_with_recovery_adopts_with_exact_approval() {
     let approval = FfiApprovedWidening {
         block_uuid,
         file_fingerprint: staged.file_fingerprint,
+        committed_fingerprint: staged.committed_fingerprint,
         added_recipients: vec![staged.added_contact_uuid],
     };
     let repaired =
@@ -113,6 +115,7 @@ fn repair_with_device_secret_adopts_with_exact_approval() {
     let approval = FfiApprovedWidening {
         block_uuid,
         file_fingerprint: staged.file_fingerprint,
+        committed_fingerprint: staged.committed_fingerprint,
         added_recipients: vec![staged.added_contact_uuid],
     };
     let repaired =
@@ -158,6 +161,7 @@ fn repair_refuses_stale_approval_as_repair_rejected() {
     let approval = FfiApprovedWidening {
         block_uuid,
         file_fingerprint: stale_fingerprint,
+        committed_fingerprint: staged.committed_fingerprint,
         added_recipients: vec![staged.added_contact_uuid],
     };
     let err = repair_vault_with_password(&folder, &pw, &device_uuid, 3_000, &[approval])
@@ -207,6 +211,7 @@ fn repair_refuses_unreadable_rollback_baseline_even_with_valid_approval() {
     let approval = FfiApprovedWidening {
         block_uuid,
         file_fingerprint: staged.file_fingerprint,
+        committed_fingerprint: staged.committed_fingerprint,
         added_recipients: vec![staged.added_contact_uuid],
     };
 

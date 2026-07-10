@@ -16,13 +16,15 @@ import uniffi.secretary.removeDeviceSlot as ffiRemoveDeviceSlot
  */
 class UniffiVaultDeviceSlotPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val addFn: (ByteArray, ByteArray) -> DeviceEnrollOutput = ::ffiAddDeviceSlot,
+    private val addFn: (ByteArray, java.nio.ByteBuffer) -> DeviceEnrollOutput = ::ffiAddDeviceSlot,
     private val removeFn: (ByteArray, ByteArray) -> Unit = ::ffiRemoveDeviceSlot,
 ) : VaultDeviceSlotPort {
     override suspend fun addDeviceSlot(vaultFolder: String, password: ByteArray): EnrolledSlot =
         withContext(ioDispatcher) {
             mapErrors {
-                val out = addFn(vaultFolder.toByteArray(Charsets.UTF_8), password)
+                val out = withDirectSecret(password) { pw ->
+                    addFn(vaultFolder.toByteArray(Charsets.UTF_8), pw)
+                }
                 try {
                     // takeSecret() is `bytes?` in the UDL, so uniffi hands back a zeroizable ByteArray? directly —
                     // no intermediate boxed List<UByte> left un-overwritable in the heap (#261). The FFI handle is

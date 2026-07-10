@@ -51,21 +51,18 @@ pub use sync::{sync_commit_decisions, sync_status, sync_vault};
 pub fn open_with_password(
     vault_toml_bytes: Vec<u8>,
     identity_bundle_bytes: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
 ) -> Result<std::sync::Arc<UnlockedIdentity>, UnlockError> {
-    // Mirrors the secretary-ffi-py wrapper's stack-residue discipline:
-    // zero the password Vec after the bridge returns. The bridge already
-    // zeroizes its SecretBytes copy; this wipes the projection-side
-    // transient.
-    let result = secretary_ffi_bridge::open_with_password(
-        &vault_toml_bytes,
-        &identity_bundle_bytes,
-        &password,
-    )
-    .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
-    .map_err(UnlockError::from);
-    password.zeroize();
-    result
+    // `[ByRef] bytes` (#307): `password` is a zero-copy borrow of the
+    // foreign caller's buffer (uniffi ForeignBytes) — no projection-side
+    // Vec exists to zeroize, and the marshalling copies the pre-0.32
+    // RustBuffer path allocated never exist. The foreign adapter owns the
+    // buffer and its scrub (iOS withZeroizingData / Android direct
+    // ByteBuffer zeroed after the call); the bridge zeroizes its own
+    // SecretBytes copy.
+    secretary_ffi_bridge::open_with_password(&vault_toml_bytes, &identity_bundle_bytes, password)
+        .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
+        .map_err(UnlockError::from)
 }
 
 /// Unlock a vault using its 24-word BIP-39 recovery phrase. uniffi-projected.
@@ -83,20 +80,13 @@ pub fn open_with_password(
 pub fn open_with_recovery(
     vault_toml_bytes: Vec<u8>,
     identity_bundle_bytes: Vec<u8>,
-    mut mnemonic: Vec<u8>,
+    mnemonic: &[u8],
 ) -> Result<std::sync::Arc<UnlockedIdentity>, UnlockError> {
-    // Mirrors the open_with_password wrapper-side stack-residue discipline:
-    // zero the mnemonic Vec after the bridge returns. The bridge takes &[u8]
-    // and never retains; this Vec is the projection-side transient.
-    let result = secretary_ffi_bridge::open_with_recovery(
-        &vault_toml_bytes,
-        &identity_bundle_bytes,
-        &mnemonic,
-    )
-    .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
-    .map_err(UnlockError::from);
-    mnemonic.zeroize();
-    result
+    // `[ByRef] bytes` (#307): zero-copy borrow of the foreign buffer —
+    // see open_with_password for the ownership/scrub contract.
+    secretary_ffi_bridge::open_with_recovery(&vault_toml_bytes, &identity_bundle_bytes, mnemonic)
+        .map(|inner| std::sync::Arc::new(UnlockedIdentity(inner)))
+        .map_err(UnlockError::from)
 }
 
 /// Create a fresh v1 vault. uniffi-projected. (B.3b)
@@ -114,16 +104,13 @@ pub fn open_with_recovery(
 /// [`FfiUnlockError`](secretary_ffi_bridge::FfiUnlockError) docs for the
 /// thinned 5-variant rationale.
 pub fn create_vault(
-    mut password: Vec<u8>,
+    password: &[u8],
     display_name: String,
     created_at_ms: u64,
 ) -> Result<CreateVaultOutput, UnlockError> {
-    // Mirrors the open_with_password / open_with_recovery wrapper-side
-    // stack-residue discipline: zero the password Vec after the bridge
-    // returns. The bridge takes &[u8] and never retains; this Vec is the
-    // projection-side transient.
-    let result = secretary_ffi_bridge::create_vault(&password, &display_name, created_at_ms);
-    password.zeroize();
+    // `[ByRef] bytes` (#307): zero-copy borrow of the foreign buffer —
+    // see open_with_password for the ownership/scrub contract.
+    let result = secretary_ffi_bridge::create_vault(password, &display_name, created_at_ms);
 
     let bridge_out = result.map_err(UnlockError::from)?;
 
@@ -159,19 +146,20 @@ pub fn create_vault(
 /// failure.
 pub fn create_vault_in_folder(
     folder_path: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
     display_name: String,
     created_at_ms: u64,
 ) -> Result<CreatedVaultInFolder, VaultError> {
-    // Compute the full result chain into a single binding so the password
-    // is zeroized BEFORE any `?`-propagation (mirrors open_vault_with_password).
+    // `[ByRef] bytes` (#307): `password` is a zero-copy borrow of the
+    // foreign buffer — nothing owned here to zeroize; see
+    // open_with_password for the ownership/scrub contract.
     let result: Result<secretary_ffi_bridge::CreatedVaultInFolder, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
                 secretary_ffi_bridge::create_vault_in_folder(
                     &path,
-                    &password,
+                    password,
                     &display_name,
                     created_at_ms,
                 )
@@ -182,7 +170,6 @@ pub fn create_vault_in_folder(
             }),
         };
 
-    password.zeroize();
     let bridge_out = result?;
     Ok(CreatedVaultInFolder {
         vault_uuid: bridge_out.vault_uuid.to_vec(),
@@ -203,26 +190,22 @@ pub fn create_vault_in_folder(
 /// thinned 6-variant rationale.
 pub fn open_vault_with_password(
     folder_path: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Compute the full result chain (path validation + bridge call) into a
-    // single binding so we can zeroize the password BEFORE any `?`-propagation.
-    // Both fallible paths produce the same Err type, so there is no lost
-    // context in the match arms.
+    // `[ByRef] bytes` (#307): `password` is a zero-copy borrow of the
+    // foreign buffer — nothing owned here to zeroize; see
+    // open_with_password for the ownership/scrub contract.
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::open_vault_with_password(&path, &password)
+                secretary_ffi_bridge::open_vault_with_password(&path, password)
                     .map_err(VaultError::from)
             }
             Err(_) => Err(VaultError::FolderInvalid {
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    password.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -243,26 +226,22 @@ pub fn open_vault_with_password(
 /// Returns [`VaultError`] on failure.
 pub fn open_vault_with_recovery(
     folder_path: Vec<u8>,
-    mut mnemonic: Vec<u8>,
+    mnemonic: &[u8],
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Compute the full result chain (path validation + bridge call) into a
-    // single binding so we can zeroize the mnemonic BEFORE any `?`-propagation.
-    // Both fallible paths produce the same Err type, so there is no lost
-    // context in the match arms.
+    // `[ByRef] bytes` (#307): `mnemonic` is a zero-copy borrow of the
+    // foreign buffer — nothing owned here to zeroize; see
+    // open_with_password for the ownership/scrub contract.
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::open_vault_with_recovery(&path, &mnemonic)
+                secretary_ffi_bridge::open_vault_with_recovery(&path, mnemonic)
                     .map_err(VaultError::from)
             }
             Err(_) => Err(VaultError::FolderInvalid {
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    mnemonic.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -545,23 +524,21 @@ pub fn empty_trash(
 /// - [`VaultError::WrongPasswordOrCorrupt`] — wrong password or corrupt vault files.
 pub fn add_device_slot(
     folder_path: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
 ) -> Result<DeviceEnrollOutput, VaultError> {
-    // Compute the full result chain into a single binding so we can zeroize
-    // the password BEFORE any `?`-propagation — mirrors open_vault_with_password.
+    // `[ByRef] bytes` (#307): `password` is a zero-copy borrow of the
+    // foreign buffer — nothing owned here to zeroize; see
+    // open_with_password for the ownership/scrub contract.
     let result: Result<secretary_ffi_bridge::DeviceEnrollOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::add_device_slot(&path, &password).map_err(VaultError::from)
+                secretary_ffi_bridge::add_device_slot(&path, password).map_err(VaultError::from)
             }
             Err(_) => Err(VaultError::FolderInvalid {
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    password.zeroize();
 
     let bridge_out = result?;
     Ok(DeviceEnrollOutput {
@@ -574,7 +551,10 @@ pub fn add_device_slot(
 ///
 /// `folder_path` is the UTF-8-encoded filesystem path as bytes.
 /// `device_uuid` must be exactly 16 bytes; `device_secret` must be exactly 32 bytes.
-/// Both are validated before the bridge call; `device_secret` is zeroized on all paths.
+/// Both are validated before the bridge call. `device_secret` is a zero-copy
+/// borrow of the foreign buffer (`[ByRef] bytes`, #307) — the foreign adapter
+/// owns it and its scrub; the transient `[u8; 32]` stack copy made here is
+/// zeroized on all paths.
 ///
 /// # Errors
 ///
@@ -586,18 +566,14 @@ pub fn add_device_slot(
 pub fn open_with_device_secret(
     folder_path: Vec<u8>,
     device_uuid: Vec<u8>,
-    mut device_secret: Vec<u8>,
+    device_secret: &[u8],
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Length pre-checks BEFORE UTF-8 validation so we can zeroize device_secret
-    // on all early-return paths.
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
             detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
         });
     }
     if device_secret.len() != 32 {
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
             detail: format!(
                 "device_secret must be 32 bytes, got {}",
@@ -606,16 +582,13 @@ pub fn open_with_device_secret(
         });
     }
 
-    // Compute the full result chain into a single binding so we can zeroize
-    // device_secret BEFORE any `?`-propagation — mirrors open_vault_with_password.
     let uuid_arr: [u8; 16] = device_uuid
         .as_slice()
         .try_into()
         .expect("len checked above");
-    let secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — a
+    // re-binding `let mut` would copy the array and wipe only the copy.
+    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -629,13 +602,9 @@ pub fn open_with_device_secret(
             }),
         };
 
-    // Zeroize unconditionally — runs on both success and error paths.
-    // Note: secret_arr is [u8; 32] (Copy), so we must zeroize both the array
-    // and the source Vec to prevent stack residue — same discipline as the
-    // bridge's derive_wrap_key / derive_master_kek pattern in CLAUDE.md.
-    let mut secret_arr = secret_arr;
+    // Zeroize the transient stack copy unconditionally — the borrowed
+    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
     secret_arr.zeroize();
-    device_secret.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -803,7 +772,7 @@ mod tests {
         // rather than panicking or returning a different variant.
         // OpenVaultOutput doesn't implement Debug (it holds Arc<opaque handles>),
         // so we match rather than calling unwrap_err().
-        match open_vault_with_password(b"\xff\xfe".to_vec(), b"hunter2".to_vec()) {
+        match open_vault_with_password(b"\xff\xfe".to_vec(), b"hunter2") {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),
             Ok(_) => panic!("expected Err for invalid UTF-8 path"),
@@ -815,7 +784,7 @@ mod tests {
         // Mirror of the password variant — pins the mnemonic forwarder.
         match open_vault_with_recovery(
             b"\xff\xfe".to_vec(),
-            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec(),
+            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         ) {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),
@@ -830,7 +799,7 @@ mod tests {
         // we match rather than calling unwrap_err().
         match create_vault_in_folder(
             b"\xff\xfe".to_vec(),
-            b"pw".to_vec(),
+            b"pw",
             "X".to_string(),
             1_700_000_000_000,
         ) {
@@ -854,8 +823,7 @@ mod tests {
         let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../core/tests/data/golden_vault_001");
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
-        let pwd = b"correct horse battery staple".to_vec();
-        let out = open_vault_with_password(folder_bytes, pwd).unwrap();
+        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
         match read_block(out.identity, out.manifest, vec![0u8; 15], false) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(

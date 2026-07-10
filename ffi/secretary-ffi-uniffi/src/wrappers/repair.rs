@@ -4,10 +4,10 @@
 //! output, projected from the bridge's `preview_repair_with_*` trio).
 //! Mirrors the `ContactSummary` wiring pattern in `wrappers/contacts.rs`.
 //!
-//! `ApprovedWidening`'s three byte fields are NOT validated by this type —
+//! `ApprovedWidening`'s four byte fields are NOT validated by this type —
 //! per the established rule (FFI input validation lives at the binding
 //! wrapper, not the dictionary), the namespace-fn wrappers in
-//! `namespace/repair.rs` length-check every field (16/32/16-each bytes)
+//! `namespace/repair.rs` length-check every field (16/32/32/16-each bytes)
 //! before converting to `secretary_ffi_bridge::FfiApprovedWidening`.
 
 /// One user-approved crash-repair recipient widening. uniffi dictionary
@@ -19,6 +19,11 @@ pub struct ApprovedWidening {
     pub block_uuid: Vec<u8>,
     /// Should be exactly 32 bytes; validated at the namespace-fn wrapper.
     pub file_fingerprint: Vec<u8>,
+    /// Should be exactly 32 bytes; validated at the namespace-fn wrapper.
+    /// The committed manifest entry fingerprint from
+    /// [`WideningReport::committed_fingerprint_hex`] — the #391 third
+    /// consent bind.
+    pub committed_fingerprint: Vec<u8>,
     /// Each entry should be exactly 16 bytes; validated at the
     /// namespace-fn wrapper.
     pub added_recipients: Vec<Vec<u8>>,
@@ -53,6 +58,11 @@ pub struct WideningReport {
     pub block_uuid_hex: String,
     pub block_name: String,
     pub file_fingerprint_hex: String,
+    /// The committed manifest entry fingerprint this widening was diffed
+    /// against — copy verbatim into
+    /// [`ApprovedWidening::committed_fingerprint`] (decoded to raw
+    /// bytes); the #391 third consent bind.
+    pub committed_fingerprint_hex: String,
     pub added: Vec<AddedRecipient>,
 }
 
@@ -62,6 +72,7 @@ impl From<secretary_ffi_bridge::FfiWideningReport> for WideningReport {
             block_uuid_hex: w.block_uuid_hex,
             block_name: w.block_name,
             file_fingerprint_hex: w.file_fingerprint_hex,
+            committed_fingerprint_hex: w.committed_fingerprint_hex,
             added: w.added.into_iter().map(AddedRecipient::from).collect(),
         }
     }
@@ -105,6 +116,7 @@ mod tests {
             block_uuid_hex: "block-uuid".to_string(),
             block_name: "Passwords".to_string(),
             file_fingerprint_hex: "ff00".to_string(),
+            committed_fingerprint_hex: "cc11".to_string(),
             added: vec![secretary_ffi_bridge::FfiAddedRecipient {
                 uuid_hex: "0102-uuid".to_string(),
                 display_name: "Carol".to_string(),
@@ -115,6 +127,7 @@ mod tests {
         assert_eq!(p.block_uuid_hex, "block-uuid");
         assert_eq!(p.block_name, "Passwords");
         assert_eq!(p.file_fingerprint_hex, "ff00");
+        assert_eq!(p.committed_fingerprint_hex, "cc11");
         assert_eq!(p.added.len(), 1);
         assert_eq!(p.added[0].display_name, "Carol");
     }
@@ -133,6 +146,7 @@ mod tests {
                 block_uuid_hex: "block-uuid".to_string(),
                 block_name: "Passwords".to_string(),
                 file_fingerprint_hex: "ff00".to_string(),
+                committed_fingerprint_hex: "cc11".to_string(),
                 added: vec![],
             }],
         };

@@ -3,6 +3,7 @@ package org.secretary.sync
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.secretary.browse.withDirectSecret
 import uniffi.secretary.SyncOutcomeDto
 import uniffi.secretary.SyncStatusDto
 import uniffi.secretary.VaultException
@@ -27,9 +28,9 @@ import uniffi.secretary.syncVault
 class UniffiVaultSyncPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val statusFn: (String, ByteArray) -> SyncStatusDto = ::syncStatus,
-    private val syncFn: (String, String, ByteArray, ULong) -> SyncOutcomeDto = ::syncVault,
+    private val syncFn: (String, String, java.nio.ByteBuffer, ULong) -> SyncOutcomeDto = ::syncVault,
     // (stateDir, vaultFolder, password, decisions, manifestHash, nowMs) -> outcome
-    private val commitFn: (String, String, ByteArray, List<VetoDecisionDto>, ByteArray, ULong) -> SyncOutcomeDto =
+    private val commitFn: (String, String, java.nio.ByteBuffer, List<VetoDecisionDto>, ByteArray, ULong) -> SyncOutcomeDto =
         ::syncCommitDecisions,
 ) : VaultSyncPort {
 
@@ -42,7 +43,9 @@ class UniffiVaultSyncPort(
         password: ByteArray,
         nowMs: ULong,
     ): SyncOutcome = withContext(ioDispatcher) {
-        mapOutcome(callMappingErrors { syncFn(stateDir, vaultFolder, password, nowMs) })
+        mapOutcome(callMappingErrors {
+            withDirectSecret(password) { pw -> syncFn(stateDir, vaultFolder, pw, nowMs) }
+        })
     }
 
     override suspend fun commitDecisions(
@@ -55,7 +58,9 @@ class UniffiVaultSyncPort(
     ): SyncOutcome = withContext(ioDispatcher) {
         val dtoDecisions = decisions.map(::toVetoDecisionDto)
         mapOutcome(callMappingErrors {
-            commitFn(stateDir, vaultFolder, password, dtoDecisions, manifestHash, nowMs)
+            withDirectSecret(password) { pw ->
+                commitFn(stateDir, vaultFolder, pw, dtoDecisions, manifestHash, nowMs)
+            }
         })
     }
 }

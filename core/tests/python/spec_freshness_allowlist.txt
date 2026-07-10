@@ -105,3 +105,17 @@ docs/manual/contributors/index.md::sync_vault
 
 # reason: ffi/secretary-ffi-uniffi/src/namespace/sync.rs::sync_commit_decisions — uniffi-projected fn, not in core/
 docs/manual/contributors/index.md::sync_commit_decisions
+
+# --- threat-model §6 (D.4 browser autofill, ADR 0010): per-credential
+# --- origin-binding field/value names for the NOT-YET-BUILT native helper.
+# --- Design-spec identifiers, not core/ fn or test names; remove these
+# --- entries when D.4 lands the symbols in code.
+
+# reason: D.4 autofill design identifier (per-credential field name), no code yet — see ADR 0010
+docs/threat-model.md::origin_binding
+
+# reason: D.4 autofill design identifier (origin_binding mode value), no code yet — see ADR 0010
+docs/threat-model.md::registrable_domain
+
+# reason: D.4 autofill design identifier (origin_binding mode value), no code yet — see ADR 0010
+docs/threat-model.md::exact_origin

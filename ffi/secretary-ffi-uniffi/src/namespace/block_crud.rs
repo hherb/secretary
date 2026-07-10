@@ -178,7 +178,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         copy_dir_recursive(&src, tmp.path());
         let folder_bytes = tmp.path().to_str().unwrap().as_bytes().to_vec();
-        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple".to_vec())
+        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple")
             .expect("open writable vault");
         (tmp, out.identity, out.manifest)
     }

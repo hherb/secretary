@@ -114,12 +114,8 @@ mod tests {
         // Slow test: real Argon2id. ~1s. Sole uniffi-layer integration test
         // for create_vault; the bridge crate already covers MnemonicOutput
         // contract semantics in isolation.
-        let out = create_vault(
-            b"hunter2".to_vec(),
-            "UniffiTest".to_string(),
-            1_700_000_000_000,
-        )
-        .expect("create_vault should succeed");
+        let out = create_vault(b"hunter2", "UniffiTest".to_string(), 1_700_000_000_000)
+            .expect("create_vault should succeed");
         assert_eq!(out.identity.display_name(), "UniffiTest");
         assert_eq!(out.identity.user_uuid().len(), 16);
         assert!(!out.vault_toml_bytes.is_empty());

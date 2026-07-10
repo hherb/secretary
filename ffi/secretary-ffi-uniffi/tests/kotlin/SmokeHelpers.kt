@@ -25,6 +25,22 @@ import uniffi.secretary.openVaultWithPassword
 import kotlin.system.exitProcess
 
 // =============================================================================
+// #307 zero-copy secret args
+// =============================================================================
+
+/// uniffi 0.32's `[ByRef] bytes` secret args cross the FFI as a borrow of a
+/// DIRECT `java.nio.ByteBuffer` (ForeignBytes) instead of copying through a
+/// RustBuffer. This helper mints a fresh direct buffer per call; production
+/// adapters (android/kit) additionally zero the buffer after the call — the
+/// harness passes fixture secrets, so no scrub is needed here.
+fun ByteArray.direct(): java.nio.ByteBuffer {
+    val buf = java.nio.ByteBuffer.allocateDirect(size)
+    buf.put(this)
+    buf.flip()
+    return buf
+}
+
+// =============================================================================
 // Pinned KAT constants
 // =============================================================================
 
@@ -314,7 +330,7 @@ fun freshWritableVault(env: SmokeEnv): Pair<OpenVaultOutput, java.nio.file.Path>
     val tmp = java.nio.file.Files.createTempDirectory("secretary_smoke_kotlin_")
     recursiveCopy(env.vault001Path, tmp)
     val folderPathBytes = tmp.toString().toByteArray(Charsets.UTF_8)
-    val out = openVaultWithPassword(folderPathBytes, env.password001)
+    val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
     return Pair(out, tmp)
 }
 
@@ -326,7 +342,7 @@ fun aliceCardBytes(env: SmokeEnv): ByteArray {
     try {
         recursiveCopy(env.vault002Path, tmp)
         val folderPathBytes = tmp.toString().toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPathBytes, env.password002)
+        val out = openVaultWithPassword(folderPathBytes, env.password002.direct())
         out.identity.use {
             out.manifest.use { mf ->
                 return mf.ownerCardBytes()

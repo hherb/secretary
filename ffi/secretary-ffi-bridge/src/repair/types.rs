@@ -9,14 +9,17 @@
 ///
 /// **Mint fresh from a `preview_repair_with_*` run; never persist.**
 /// vault-format.md §6.5 scopes an approval to the immediately-following
-/// repair invocation: the fingerprint/delta bind deliberately does not
-/// cover the committed manifest state, so a persisted approval replayed
-/// after an intervening revocation of the same recipient would re-license
-/// a re-planted copy of the previously-approved file without fresh consent.
+/// repair invocation, and as of #391 that scoping is structural: the
+/// `committed_fingerprint` bind ties the approval to the committed
+/// manifest entry the preview diffed against, so a persisted approval
+/// replayed after any committed write to the block (e.g. an intervening
+/// revocation of the same recipient followed by a re-plant of the
+/// previously-approved file) is refused by core as stale consent rather
+/// than re-licensing the widening without fresh consent.
 ///
-/// `block_uuid` / `file_fingerprint` are fixed-size arrays, so there is no
-/// length to validate — wrong-length raw byte buffers on the foreign side
-/// are the BINDING layer's job to reject before constructing this type
+/// The byte fields are fixed-size arrays, so there is no length to
+/// validate — wrong-length raw byte buffers on the foreign side are the
+/// BINDING layer's job to reject before constructing this type
 /// (uniffi/pyo3 wrappers), per the established rule that FFI input
 /// validation lives at the binding wrapper, not the bridge; the bridge
 /// trusts its caller here exactly as it does for the existing
@@ -39,6 +42,13 @@ pub struct FfiApprovedWidening {
     /// [`crate::error::FfiVaultError::RepairRejected`] with a detail
     /// naming it stale consent.
     pub file_fingerprint: [u8; 32],
+    /// The committed manifest entry fingerprint the preview diffed the
+    /// residue against — copy
+    /// `FfiWideningReport::committed_fingerprint_hex` back to raw bytes
+    /// verbatim. Any committed write to the block between preview and
+    /// repair fails this bind as stale consent (#391 — approvals are
+    /// structurally single-use).
+    pub committed_fingerprint: [u8; 32],
     /// The exact added-recipient set (contact UUIDs) the user approved.
     /// Compared with set equality by core — never subset/superset.
     pub added_recipients: Vec<[u8; 16]>,

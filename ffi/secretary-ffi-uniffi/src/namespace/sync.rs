@@ -27,8 +27,9 @@ pub fn sync_status(state_dir: String, vault_uuid: Vec<u8>) -> Result<SyncStatusD
 
 /// Run one manual sync pass. uniffi-projected (#187).
 ///
-/// Wraps `password` in `SecretBytes` immediately (mirrors
-/// `open_with_password` zeroize discipline). `now_ms` is the caller's
+/// `password` is a zero-copy borrow of the foreign caller's buffer
+/// (`[ByRef] bytes`, #307); the one controlled copy made here is wrapped
+/// in `SecretBytes` (ZeroizeOnDrop) immediately. `now_ms` is the caller's
 /// wall-clock used as the merge timestamp on a clean concurrent merge.
 ///
 /// # Errors
@@ -37,19 +38,17 @@ pub fn sync_status(state_dir: String, vault_uuid: Vec<u8>) -> Result<SyncStatusD
 pub fn sync_vault(
     state_dir: String,
     vault_folder: String,
-    password: Vec<u8>,
+    password: &[u8],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
     use secretary_core::crypto::secret::SecretBytes;
-    // Ownership of `password` moves into SecretBytes here; the bridge
-    // `_in` seam takes the SecretBytes by value and its ZeroizeOnDrop wipes
-    // the same backing allocation when it drops. Unlike the borrow-based
-    // wrappers (open_with_password takes &[u8], so it keeps + zeroizes its
-    // own Vec), there is no separate projection-side transient to zeroize.
+    // The borrowed `password` is foreign-owned (the adapter scrubs it);
+    // SecretBytes owns the single Rust-side copy and its ZeroizeOnDrop
+    // wipes that allocation when the bridge `_in` seam drops it.
     secretary_ffi_bridge::sync_vault_in(
         std::path::Path::new(&state_dir),
         std::path::Path::new(&vault_folder),
-        SecretBytes::new(password),
+        SecretBytes::new(password.to_vec()),
         now_ms,
     )
     .map(sync_outcome_from_bridge)
@@ -67,7 +66,7 @@ pub fn sync_vault(
 pub fn sync_commit_decisions(
     state_dir: String,
     vault_folder: String,
-    password: Vec<u8>,
+    password: &[u8],
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
     now_ms: u64,
@@ -82,15 +81,14 @@ pub fn sync_commit_decisions(
             keep_local: d.keep_local,
         })
         .collect();
-    // Ownership of `password` moves into SecretBytes here; the bridge
-    // `_in` seam takes the SecretBytes by value and its ZeroizeOnDrop wipes
-    // the same backing allocation when it drops. Unlike the borrow-based
-    // wrappers (open_with_password takes &[u8], so it keeps + zeroizes its
-    // own Vec), there is no separate projection-side transient to zeroize.
+    // `[ByRef] bytes` (#307): the borrowed `password` is foreign-owned
+    // (the adapter scrubs it); SecretBytes owns the single Rust-side copy
+    // and its ZeroizeOnDrop wipes that allocation when the bridge `_in`
+    // seam drops it.
     secretary_ffi_bridge::sync_commit_decisions_in(
         std::path::Path::new(&state_dir),
         std::path::Path::new(&vault_folder),
-        SecretBytes::new(password),
+        SecretBytes::new(password.to_vec()),
         bridge_decisions,
         manifest_hash,
         now_ms,
@@ -185,7 +183,7 @@ mod tests {
         match super::sync_commit_decisions(
             dir.path().to_str().unwrap().to_string(),
             folder.to_str().unwrap().to_string(),
-            b"correct horse battery staple".to_vec(),
+            b"correct horse battery staple",
             vec![],
             vec![0u8; 5], // != 32 -> reject before vault open
             0,
