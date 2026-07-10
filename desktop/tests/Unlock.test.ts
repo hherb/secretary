@@ -27,7 +27,7 @@ const MANIFEST: ManifestDto = {
   blockSummaries: [],
   warnings: []
 };
-const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000 };
+const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: 7_776_000_000 };
 
 // Mock the IPC layer + the backend invoke() PathPicker uses directly (both
 // used by the form). `vi.hoisted` returns the mocks before the `vi.mock`

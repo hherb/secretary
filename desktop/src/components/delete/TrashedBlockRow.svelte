@@ -6,8 +6,12 @@
   import type { TrashedBlockDto } from '../../lib/ipc';
   import { formatTrashedWhen } from '../../lib/trash';
 
-  type Props = { entry: TrashedBlockDto; onRestore: (entry: TrashedBlockDto) => void };
-  let { entry, onRestore }: Props = $props();
+  type Props = {
+    entry: TrashedBlockDto;
+    onRestore: (entry: TrashedBlockDto) => void;
+    onPurge: (entry: TrashedBlockDto) => void;
+  };
+  let { entry, onRestore, onPurge }: Props = $props();
 </script>
 
 <div class="trashed-row">
@@ -20,5 +24,13 @@
     onclick={() => onRestore(entry)}
   >
     Restore
+  </button>
+  <button
+    type="button"
+    class="trashed-row__purge"
+    aria-label={`Permanently delete block ${entry.blockName}`}
+    onclick={() => onPurge(entry)}
+  >
+    Delete forever
   </button>
 </div>

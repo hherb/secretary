@@ -15,8 +15,9 @@
 //! `create` (D.1.3 vault-create DTOs), `edit` (D.1.4 record-edit DTOs),
 //! `trash` (D.1.5 trashed-block DTO), `contact` (D.1.6 contact-summary
 //! DTOs), `recipient` (D.1.8 per-block recipient DTOs), `sync`
-//! (D.1.14 sync-status / outcome DTOs), and `repair` (#374 informed-consent
-//! preview / approved-widening DTOs).
+//! (D.1.14 sync-status / outcome DTOs), `repair` (#374 informed-consent
+//! preview / approved-widening DTOs), and `retention` (retention-preview /
+//! purge-report DTOs).
 
 mod browse;
 mod contact;
@@ -25,6 +26,7 @@ mod edit;
 mod manifest;
 mod recipient;
 mod repair;
+mod retention;
 mod sync;
 mod trash;
 
@@ -38,5 +40,6 @@ pub use edit::{
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
 pub use recipient::{RecipientDto, RecipientKindDto};
 pub use repair::{AddedRecipientDto, ApprovedWideningArg, RepairPreviewDto, WideningReportDto};
+pub use retention::{ExpiredEntryDto, PurgeReportDto, RetentionPreviewDto, RetentionReportDto};
 pub use sync::{CollisionDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto};
 pub use trash::TrashedBlockDto;

@@ -58,3 +58,17 @@ export const REAUTH_WINDOW_MAX_MS = 3_600_000;
  *  Mirror of `desktop/src-tauri/src/constants.rs::REQUIRE_PASSWORD_DEFAULT` — change both.
  *  Secure-by-default: on. */
 export const REQUIRE_PASSWORD_DEFAULT = true;
+
+/** Milliseconds per day. Mirror of `constants.rs::MS_PER_DAY`. */
+export const MS_PER_DAY = 86_400_000;
+
+/** Default retention window (90 days). Mirror of
+ *  `constants.rs::RETENTION_WINDOW_DEFAULT_MS` (= bridge default). */
+export const RETENTION_WINDOW_DEFAULT_MS = 7_776_000_000;
+
+/** Lower bound (1 day). Mirror of `constants.rs::RETENTION_WINDOW_MIN_MS`. */
+export const RETENTION_WINDOW_MIN_MS = 86_400_000;
+
+/** Upper bound (3650 days / 10 years). Mirror of
+ *  `constants.rs::RETENTION_WINDOW_MAX_MS`. */
+export const RETENTION_WINDOW_MAX_MS = 315_360_000_000;

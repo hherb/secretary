@@ -415,6 +415,7 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect("set_settings must succeed");
@@ -446,6 +447,7 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
             auto_lock_timeout_ms: BELOW_MIN_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect_err("below-min input must reject");
@@ -482,18 +484,25 @@ fn set_settings_while_locked_returns_not_unlocked() {
             auto_lock_timeout_ms: NEW_AUTO_LOCK_MS,
             require_password_before_edits: false,
             reauth_grace_window_ms: 120_000,
+            retention_window_ms: Settings::default().retention_window_ms,
         },
     )
     .expect_err("must reject while locked");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
 
-/// All three settings fields survive a save→load round-trip through the
+/// All four settings fields survive a save→load round-trip through the
 /// vault. Exercises the multi-field `save_to_vault` / `load_from_vault`
 /// paths added in Task 3, against a temp copy of the golden vault so the
 /// frozen KAT fixture is never mutated.
+///
+/// `retention_window_ms` is given an explicit non-default value (30 days,
+/// vs. the 90-day compiled-in default) rather than picked up via
+/// `..Settings::default()`, so this test actually proves Task 2 closed the
+/// interim gap where `From<&SettingsInput> for Settings` silently reset
+/// `retention_window_ms` to the default on every conversion.
 #[test]
-fn settings_round_trip_persists_all_three_fields() {
+fn settings_round_trip_persists_all_fields() {
     let (_vault_dir, vault_path) = ephemeral_golden_copy();
     let device_dir = tempfile::tempdir().expect("device tempdir");
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
@@ -509,13 +518,22 @@ fn settings_round_trip_persists_all_three_fields() {
     )
     .expect("unlock");
 
+    let non_default_retention_window_ms = 30 * secretary_desktop::constants::MS_PER_DAY;
+    assert_ne!(
+        non_default_retention_window_ms,
+        Settings::default().retention_window_ms,
+        "test fixture must pick a retention window distinct from the default, \
+         or a reset-to-default regression would go unnoticed"
+    );
+
     let to_save = Settings {
         auto_lock_timeout_ms: 600_000,
         require_password_before_edits: false,
         reauth_grace_window_ms: 30_000,
+        retention_window_ms: non_default_retention_window_ms,
     };
 
-    // Write all three fields through the multi-field save path.
+    // Write all four fields through the multi-field save path.
     state
         .lock()
         .expect("mutex")
@@ -541,6 +559,10 @@ fn settings_round_trip_persists_all_three_fields() {
         loaded.auto_lock_timeout_ms, 600_000,
         "auto_lock_timeout_ms must survive round-trip"
     );
+    assert_eq!(
+        loaded.retention_window_ms, non_default_retention_window_ms,
+        "retention_window_ms must survive round-trip, not reset to the compiled-in default"
+    );
     assert!(
         warnings.is_empty(),
         "clean round-trip must produce no warnings; got: {warnings:?}"
@@ -548,7 +570,7 @@ fn settings_round_trip_persists_all_three_fields() {
 }
 
 /// A vault written by an older client (only the `auto_lock_timeout_ms`
-/// field present) is loaded with the new two fields defaulted — no
+/// field present) is loaded with the other three fields defaulted — no
 /// SettingsClamped or SettingsCorrupt warning, since missing-but-defaulted
 /// fields are forward-compat silently accepted.
 #[test]
@@ -1510,6 +1532,126 @@ mod delete_path {
         let err = delete::tombstone_record_impl(&state, &block.block_uuid_hex, &random_record_hex)
             .expect_err("tombstone of absent record must fail");
         assert!(matches!(err, AppError::RecordNotFound { .. }));
+    }
+}
+
+// ============================================================================
+// Retention / purge path (#402/#406 desktop wiring, Task 4). Fresh-vault
+// coverage: preview_retention / run_retention have nothing to do on a
+// brand-new vault (no trash yet); purge_block is exercised end-to-end by
+// trashing a block first (via delete::trash_block_impl) then purging it,
+// including the idempotent re-purge path.
+// ============================================================================
+
+mod retention_path {
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+    use secretary_desktop::commands::retention;
+
+    const CREATE_DISPLAY_NAME: &str = "D.1.15 retention test identity";
+
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    fn unlocked_session_over_new_vault() -> (Mutex<VaultSession>, tempfile::TempDir, Vec<u8>) {
+        let vault_dir = tempfile::tempdir().expect("vault tempdir");
+        let path = vault_dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        let (state, _device_dir) = fresh_state();
+        state.lock().unwrap().approve_path(
+            PathPurpose::CreateParent,
+            canonicalize_for_auth(vault_dir.path()).unwrap(),
+        );
+        create::create_vault_impl(
+            &state,
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault_impl for retention test");
+
+        unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
+        (state, vault_dir, pw)
+    }
+
+    #[test]
+    fn preview_retention_locked_session_errors() {
+        let (state, _device_dir) = fresh_state();
+        let err = retention::preview_retention_impl(&state).expect_err("locked must error");
+        assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+    }
+
+    #[test]
+    fn preview_retention_unlocked_returns_empty_preview_on_fresh_vault() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let preview = retention::preview_retention_impl(&state).expect("preview_retention");
+        assert!(
+            preview.entries.is_empty(),
+            "a freshly-minted vault has no expired trash"
+        );
+        assert_eq!(
+            preview.window_ms,
+            secretary_desktop::constants::RETENTION_WINDOW_DEFAULT_MS
+        );
+    }
+
+    #[test]
+    fn run_retention_unlocked_ok_on_fresh_vault() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let report = retention::run_retention_impl(&state).expect("run_retention");
+        assert_eq!(report.purged_count, 0, "nothing expired in a fresh vault");
+        assert_eq!(
+            report.window_ms,
+            secretary_desktop::constants::RETENTION_WINDOW_DEFAULT_MS
+        );
+    }
+
+    #[test]
+    fn purge_block_bad_uuid_errors() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let err = retention::purge_block_impl(&state, "not-hex").expect_err("bad hex must error");
+        assert!(matches!(err, AppError::Internal { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn purge_block_after_trash_removes_it_from_trash_list_and_reports_fields() {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Bank logins").expect("create_block");
+        let block_hex = block.block_uuid_hex.clone();
+
+        delete::trash_block_impl(&state, &block_hex).expect("trash_block");
+
+        let report = retention::purge_block_impl(&state, &block_hex).expect("purge_block");
+        assert_eq!(report.block_uuid_hex, block_hex);
+        assert_eq!(report.was_shared, Some(false), "owner-only block");
+        assert_eq!(
+            report.recipient_count,
+            Some(1),
+            "owner is the sole recipient"
+        );
+
+        let trashed = delete::list_trashed_blocks_impl(&state).expect("list_trashed");
+        assert!(
+            !trashed.iter().any(|t| t.block_uuid_hex == block_hex),
+            "purged block absent from trash list"
+        );
+
+        // Idempotent re-purge: core::purge_block returns Ok on an
+        // already-purged UUID (no second manifest write), with an honest
+        // "unknown" classification since the trash file is already gone.
+        let second =
+            retention::purge_block_impl(&state, &block_hex).expect("idempotent re-purge is Ok");
+        assert_eq!(second.was_shared, None);
+        assert_eq!(second.recipient_count, None);
     }
 }
 
