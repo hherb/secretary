@@ -67,6 +67,12 @@ export interface TrashedBlockDto {
   tombstonedByHex: string;
 }
 
+export interface ExpiredEntryDto {
+  blockUuidHex: string;
+  tombstonedAtMs: number;
+  ageMs: number;
+}
+
 export interface RevealedFieldDto {
   isText: boolean;
   value: string;
