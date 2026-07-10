@@ -3,7 +3,7 @@
 //! (parity with `TrashedBlockDto`); `u32` counts serialize as JSON numbers.
 //! None of these fields is secret material.
 
-use secretary_ffi_bridge::{ExpiredEntry, PurgeReport, RetentionPurgeReport};
+use secretary_ffi_bridge::{EmptyTrashReport, ExpiredEntry, PurgeReport, RetentionPurgeReport};
 
 /// One trashed block that is past the retention window (preview only).
 #[derive(Debug, serde::Serialize)]
@@ -65,6 +65,33 @@ impl From<&RetentionPurgeReport> for RetentionReportDto {
             files_removed: r.files_removed,
             files_failed: r.files_failed,
             window_ms: r.window_ms,
+        }
+    }
+}
+
+/// Report from an `empty_trash` batch purge. Aggregate counts only —
+/// no per-block UUID, no window, no plaintext (parity with the security
+/// contract of `RetentionReportDto`; nothing secret is projected).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyTrashReportDto {
+    pub purged_count: u32,
+    pub shared_count: u32,
+    pub owner_only_count: u32,
+    pub unknown_count: u32,
+    pub files_removed: u32,
+    pub files_failed: u32,
+}
+
+impl From<&EmptyTrashReport> for EmptyTrashReportDto {
+    fn from(r: &EmptyTrashReport) -> Self {
+        Self {
+            purged_count: r.purged_count,
+            shared_count: r.shared_count,
+            owner_only_count: r.owner_only_count,
+            unknown_count: r.unknown_count,
+            files_removed: r.files_removed,
+            files_failed: r.files_failed,
         }
     }
 }
@@ -149,6 +176,29 @@ mod tests {
         assert_eq!(v["purgedCount"], 3);
         assert_eq!(v["filesFailed"], 0);
         assert_eq!(v["windowMs"], 7_776_000_000_u64);
+    }
+
+    #[test]
+    fn empty_trash_report_dto_camel_case() {
+        let dto = EmptyTrashReportDto::from(&secretary_ffi_bridge::EmptyTrashReport {
+            purged_count: 4,
+            shared_count: 1,
+            owner_only_count: 3,
+            unknown_count: 0,
+            files_removed: 4,
+            files_failed: 0,
+        });
+        let v = to_json(&dto);
+        assert_eq!(v["purgedCount"], 4);
+        assert_eq!(v["sharedCount"], 1);
+        assert_eq!(v["ownerOnlyCount"], 3);
+        assert_eq!(v["unknownCount"], 0);
+        assert_eq!(v["filesRemoved"], 4);
+        assert_eq!(v["filesFailed"], 0);
+        // No snake_case / UUID / window leakage.
+        assert!(v.get("purged_count").is_none());
+        assert!(v.get("blockUuidHex").is_none());
+        assert!(v.get("windowMs").is_none());
     }
 
     #[test]
