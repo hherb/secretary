@@ -376,3 +376,28 @@ def test_trash_restore_persist_across_reopen(tmp_path: Path) -> None:
     with out_after_restore as vault:
         with vault.identity as identity, vault.manifest as manifest:
             assert manifest.find_block(NEW_BLOCK_UUID) is not None
+
+
+# ---------------------------------------------------------------------------
+# list_trashed_blocks — projects block name + tombstone metadata
+# ---------------------------------------------------------------------------
+
+
+def test_list_trashed_blocks_projects_name_and_tombstone(tmp_path):
+    out, _dst = _fresh_writable_vault(tmp_path)
+    block_uuid = bytes([0xB7] * 16)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            _save_one_record_block(identity, manifest, block_uuid)
+            trashed_at = NOW_MS_BASE + 5_000
+            secretary_ffi_py.trash_block(
+                identity, manifest, block_uuid, DEVICE_UUID, trashed_at
+            )
+
+            listed = secretary_ffi_py.list_trashed_blocks(identity, manifest)
+
+            assert len(listed) == 1
+            assert bytes(listed[0].block_uuid) == block_uuid
+            assert listed[0].block_name == "Notes"
+            assert listed[0].tombstoned_at_ms == trashed_at
+            assert bytes(listed[0].tombstoned_by) == DEVICE_UUID

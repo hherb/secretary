@@ -103,7 +103,7 @@ use sync::{
     sync_commit_decisions, sync_status, sync_vault, CollisionDto, DeviceClockDto, SyncOutcomeDto,
     SyncStatusDto, VetoDecisionDto, VetoDto,
 };
-use trash::trash_block;
+use trash::{list_trashed_blocks, trash_block, TrashedBlock};
 use unlock::{
     create_vault, create_vault_in_folder, open_with_password, open_with_recovery,
     CreateVaultOutput, MnemonicOutput,
@@ -240,6 +240,8 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // exception classes (registered below in the existing block).
     m.add_function(wrap_pyfunction!(trash_block, m)?)?;
     m.add_function(wrap_pyfunction!(restore_block, m)?)?;
+    m.add_class::<TrashedBlock>()?;
+    m.add_function(wrap_pyfunction!(list_trashed_blocks, m)?)?;
     m.add("VaultNotAuthor", py.get_type::<VaultNotAuthor>())?;
     m.add(
         "VaultRecipientAlreadyPresent",
