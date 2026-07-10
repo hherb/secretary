@@ -14,3 +14,14 @@ export function sortTrashed(dtos: TrashedBlockDto[]): TrashedBlockDto[] {
 export function formatTrashedWhen(ms: number): string {
   return formatShortDate(ms);
 }
+
+/**
+ * Body text for the "Empty trash?" confirmation dialog. Pure — no IPC / DOM.
+ * `count` is the number of trashed blocks about to be permanently deleted
+ * (always ≥ 1 in practice: the button that triggers this only renders when
+ * the trash list is non-empty). Pluralized for a clean singular case.
+ */
+export function emptyTrashConfirmBody(count: number): string {
+  const subject = count === 1 ? 'The 1 item' : `All ${count} items`;
+  return `${subject} in trash will be permanently deleted. This cannot be undone.`;
+}

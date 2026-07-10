@@ -96,6 +96,15 @@ export interface PurgeReportDto {
   filesRemoved: number;
 }
 
+export interface EmptyTrashReportDto {
+  purgedCount: number;
+  sharedCount: number;
+  ownerOnlyCount: number;
+  unknownCount: number;
+  filesRemoved: number;
+  filesFailed: number;
+}
+
 export interface RevealedFieldDto {
   isText: boolean;
   value: string;
@@ -386,6 +395,10 @@ export async function runRetention(): Promise<RetentionReportDto> {
 
 export async function purgeBlock(blockUuidHex: string): Promise<PurgeReportDto> {
   return call<PurgeReportDto>('purge_block', { blockUuidHex });
+}
+
+export async function emptyTrash(): Promise<EmptyTrashReportDto> {
+  return call<EmptyTrashReportDto>('empty_trash', {});
 }
 
 export async function getSettings(): Promise<SettingsDto> {

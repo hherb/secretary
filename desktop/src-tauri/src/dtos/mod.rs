@@ -40,6 +40,8 @@ pub use edit::{
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
 pub use recipient::{RecipientDto, RecipientKindDto};
 pub use repair::{AddedRecipientDto, ApprovedWideningArg, RepairPreviewDto, WideningReportDto};
-pub use retention::{ExpiredEntryDto, PurgeReportDto, RetentionPreviewDto, RetentionReportDto};
+pub use retention::{
+    EmptyTrashReportDto, ExpiredEntryDto, PurgeReportDto, RetentionPreviewDto, RetentionReportDto,
+};
 pub use sync::{CollisionDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto};
 pub use trash::TrashedBlockDto;

@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-10-desktop-retention-purge-shipped.md
+docs/handoffs/2026-07-10-desktop-empty-trash-shipped.md

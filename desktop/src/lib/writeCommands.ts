@@ -44,6 +44,7 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   delete_contact_card: { kind: 'write', gate: 'gated', wrapper: 'deleteContactCard' },
   run_retention: { kind: 'write', gate: 'gated', wrapper: 'runRetention' },
   purge_block: { kind: 'write', gate: 'gated', wrapper: 'purgeBlock' },
+  empty_trash: { kind: 'write', gate: 'gated', wrapper: 'emptyTrash' },
 
   // --- writes: exempt, with recorded reason ---
   create_vault: {

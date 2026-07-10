@@ -116,6 +116,7 @@ fn main() {
             retention::preview_retention,
             retention::run_retention,
             retention::purge_block,
+            retention::empty_trash,
         ])
         .setup(|app| {
             // Spawn the auto-lock timer thread. It lives for the lifetime of

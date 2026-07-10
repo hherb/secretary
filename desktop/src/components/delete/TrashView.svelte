@@ -5,8 +5,8 @@
   // a load() async fn, a $effect that calls it on mount, and a typed
   // AppError surfaced via userMessageFor.
 
-  import { listTrashedBlocks, restoreBlock, purgeBlock, isAppError, type TrashedBlockDto } from '../../lib/ipc';
-  import { sortTrashed } from '../../lib/trash';
+  import { listTrashedBlocks, restoreBlock, purgeBlock, emptyTrash, isAppError, type TrashedBlockDto } from '../../lib/ipc';
+  import { sortTrashed, emptyTrashConfirmBody } from '../../lib/trash';
   import { back } from '../../lib/browse';
   import { refreshManifest } from '../../lib/stores';
   import { userMessageFor, type AppError } from '../../lib/errors';
@@ -19,6 +19,7 @@
   let error = $state<AppError | null>(null);
   let showRetention = $state(false);
   let pendingPurge = $state<TrashedBlockDto | null>(null);
+  let pendingEmpty = $state(false);
 
   // Generation guard (see RecordList): the mount load and a post-restore
   // reload can overlap, so only the newest load() writes `entries`.
@@ -79,6 +80,29 @@
       error = isAppError(e) ? e : { code: 'internal' };
     }
   }
+
+  // Mirrors `confirmPurge` for the whole-trash batch: authorize, run the
+  // irreversible empty, then refresh the manifest and reload the (now empty)
+  // list. The returned report is intentionally not surfaced — the empty list
+  // is the success signal (parity with per-block purge).
+  async function confirmEmpty() {
+    pendingEmpty = false;
+    error = null;
+    try {
+      await authorizeWrite('Confirm permanently deleting all trashed blocks');
+    } catch (err) {
+      if (err === ReauthCancelled) return;
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    try {
+      await emptyTrash();
+      await refreshManifest();
+      await load();
+    } catch (e) {
+      error = isAppError(e) ? e : { code: 'internal' };
+    }
+  }
 </script>
 
 <section class="trash-view">
@@ -86,6 +110,11 @@
   <button type="button" class="trash-view__retention" onclick={() => (showRetention = true)}>
     Run retention now
   </button>
+  {#if entries && entries.length > 0}
+    <button type="button" class="trash-view__empty-all" onclick={() => (pendingEmpty = true)}>
+      Empty trash
+    </button>
+  {/if}
 
   {#if error}
     {@const msg = userMessageFor(error)}
@@ -117,5 +146,15 @@
     confirmLabel="Delete forever"
     onConfirm={confirmPurge}
     onCancel={() => (pendingPurge = null)}
+  />
+{/if}
+
+{#if pendingEmpty}
+  <ConfirmDialog
+    title="Empty trash?"
+    body={emptyTrashConfirmBody(entries?.length ?? 0)}
+    confirmLabel="Empty trash"
+    onConfirm={confirmEmpty}
+    onCancel={() => (pendingEmpty = false)}
   />
 {/if}
