@@ -7,19 +7,20 @@ import {
 } from '../src/lib/writeCommands';
 
 describe('writeCommands registry', () => {
-  it('classifies exactly the 43 registered commands', () => {
-    expect(classifiedCommandNames().size).toBe(43);
+  it('classifies exactly the 44 registered commands', () => {
+    expect(classifiedCommandNames().size).toBe(44);
   });
 
-  it('lists the gated write wrappers (16)', () => {
+  it('lists the gated write wrappers (17)', () => {
     const w = gatedWrappers();
     expect(w).toContain('saveRecord');
     expect(w).toContain('importContact');
     expect(w).toContain('runRetention');
     expect(w).toContain('purgeBlock');
+    expect(w).toContain('emptyTrash');
     expect(w).not.toContain('createVault'); // exempt
     expect(w).not.toContain('listBlocks'); // read
-    expect(w).toHaveLength(16);
+    expect(w).toHaveLength(17);
   });
 
   it('requires every exempt write to record a reason', () => {
