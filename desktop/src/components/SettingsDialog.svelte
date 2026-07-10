@@ -1,7 +1,8 @@
 <script lang="ts">
   // Settings dialog — native <dialog> overlay for editing app settings.
-  // Edits auto-lock timeout (minutes) + write re-auth toggle and grace window.
-  // Validation + save flow kept generic for future fields.
+  // Edits auto-lock timeout (minutes), write re-auth toggle and grace window,
+  // and the trash retention window (days). Validation + save flow kept
+  // generic for future fields.
   //
   // Contract (pinned by SettingsDialog.test.ts):
   //   - Parent toggles `open` (bindable). $effect drives showModal/close
@@ -19,13 +20,17 @@
   import { userMessageFor, type AppError } from '../lib/errors';
   import {
     MS_PER_MINUTE,
+    MS_PER_DAY,
     AUTO_LOCK_MIN_MS,
     AUTO_LOCK_MAX_MS,
     AUTO_LOCK_DEFAULT_MS,
     REAUTH_WINDOW_MIN_MS,
     REAUTH_WINDOW_MAX_MS,
     REAUTH_WINDOW_DEFAULT_MS,
-    REQUIRE_PASSWORD_DEFAULT
+    REQUIRE_PASSWORD_DEFAULT,
+    RETENTION_WINDOW_MIN_MS,
+    RETENTION_WINDOW_MAX_MS,
+    RETENTION_WINDOW_DEFAULT_MS
   } from '../lib/constants';
 
   type Props = {
@@ -41,6 +46,10 @@
   const WINDOW_MIN_MINUTES = REAUTH_WINDOW_MIN_MS / MS_PER_MINUTE;
   const WINDOW_MAX_MINUTES = REAUTH_WINDOW_MAX_MS / MS_PER_MINUTE;
   const WINDOW_DEFAULT_MINUTES = REAUTH_WINDOW_DEFAULT_MS / MS_PER_MINUTE;
+
+  const RETENTION_MIN_DAYS = RETENTION_WINDOW_MIN_MS / MS_PER_DAY;
+  const RETENTION_MAX_DAYS = RETENTION_WINDOW_MAX_MS / MS_PER_DAY;
+  const RETENTION_DEFAULT_DAYS = RETENTION_WINDOW_DEFAULT_MS / MS_PER_DAY;
 
   // Source-of-truth for the displayed values is the current store; the
   // dialog is a thin editor. The $derived means re-opening after a
@@ -64,9 +73,16 @@
       : REAUTH_WINDOW_DEFAULT_MS
   );
 
+  let currentRetentionMs = $derived(
+    $sessionState.status === 'unlocked'
+      ? $sessionState.settings.retentionWindowMs
+      : RETENTION_WINDOW_DEFAULT_MS
+  );
+
   let inputMinutes = $state(DEFAULT_MINUTES);
   let inputRequirePassword = $state(REQUIRE_PASSWORD_DEFAULT);
   let inputWindowMinutes = $state(WINDOW_DEFAULT_MINUTES);
+  let inputRetentionDays = $state(RETENTION_DEFAULT_DAYS);
   let formError = $state<AppError | null>(null);
   let submitting = $state(false);
   let dialogEl: HTMLDialogElement | undefined = $state();
@@ -80,6 +96,7 @@
     inputMinutes = Math.round(currentMs / MS_PER_MINUTE);
     inputRequirePassword = currentRequirePassword;
     inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
+    inputRetentionDays = Math.round(currentRetentionMs / MS_PER_DAY);
     formError = null;
   });
 
@@ -115,6 +132,17 @@
         max: REAUTH_WINDOW_MAX_MS
       };
     }
+    if (
+      !Number.isInteger(inputRetentionDays) ||
+      inputRetentionDays < RETENTION_MIN_DAYS ||
+      inputRetentionDays > RETENTION_MAX_DAYS
+    ) {
+      return {
+        code: 'settings_out_of_range',
+        min: RETENTION_WINDOW_MIN_MS,
+        max: RETENTION_WINDOW_MAX_MS
+      };
+    }
     return null;
   }
 
@@ -127,7 +155,8 @@
     const newSettings = {
       autoLockTimeoutMs: inputMinutes * MS_PER_MINUTE,
       requirePasswordBeforeEdits: inputRequirePassword,
-      reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE
+      reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE,
+      retentionWindowMs: inputRetentionDays * MS_PER_DAY
     };
     submitting = true;
     formError = null;
@@ -194,6 +223,7 @@
     inputMinutes = Math.round(currentMs / MS_PER_MINUTE);
     inputRequirePassword = currentRequirePassword;
     inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
+    inputRetentionDays = Math.round(currentRetentionMs / MS_PER_DAY);
     onClose();
   }
 
@@ -256,6 +286,22 @@
         disabled={submitting}
       />
       <span class="settings-dialog__suffix">minutes</span>
+    </div>
+  </label>
+
+  <label class="settings-dialog__field">
+    <span class="settings-dialog__label">Retention window</span>
+    <div class="settings-dialog__input-row">
+      <input
+        type="number"
+        class="settings-dialog__input"
+        min={RETENTION_MIN_DAYS}
+        max={RETENTION_MAX_DAYS}
+        step="1"
+        bind:value={inputRetentionDays}
+        disabled={submitting}
+      />
+      <span class="settings-dialog__suffix">days</span>
     </div>
   </label>
 

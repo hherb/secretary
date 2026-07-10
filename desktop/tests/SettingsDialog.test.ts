@@ -36,6 +36,7 @@ import {
 } from '../src/lib/stores';
 import {
   MS_PER_MINUTE,
+  MS_PER_DAY,
   AUTO_LOCK_MIN_MS,
   AUTO_LOCK_MAX_MS,
   AUTO_LOCK_DEFAULT_MS,
@@ -43,6 +44,8 @@ import {
   REAUTH_WINDOW_MAX_MS,
   REAUTH_WINDOW_DEFAULT_MS,
   REQUIRE_PASSWORD_DEFAULT,
+  RETENTION_WINDOW_MIN_MS,
+  RETENTION_WINDOW_MAX_MS,
   RETENTION_WINDOW_DEFAULT_MS
 } from '../src/lib/constants';
 import {
@@ -441,6 +444,92 @@ describe('SettingsDialog.svelte — reauth controls', () => {
       const windowInput = getByLabelText(/re-?auth.*grace|grace.*window|grace.*minutes/i) as HTMLInputElement;
       expect(windowInput.value).toBe(String(REAUTH_WINDOW_DEFAULT_MS / MS_PER_MINUTE));
     });
+  });
+});
+
+describe('SettingsDialog.svelte — retention window', () => {
+  it('pre-populates the retention input from sessionState.settings.retentionWindowMs (in days)', async () => {
+    unlockWith({
+      autoLockTimeoutMs: 600_000,
+      requirePasswordBeforeEdits: true,
+      reauthGraceWindowMs: 120_000,
+      retentionWindowMs: 30 * MS_PER_DAY
+    });
+    const { getByLabelText } = renderOpen();
+    await waitFor(() => {
+      const input = getByLabelText(/retention window/i) as HTMLInputElement;
+      expect(input.value).toBe('30');
+    });
+  });
+
+  it('Save includes retentionWindowMs (input days × MS_PER_DAY) in the setSettings payload', async () => {
+    unlockWith();
+    const { getByLabelText, getByRole } = renderOpen();
+    const input = getByLabelText(/retention window/i);
+    await fireEvent.input(input, { target: { value: '45' } });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(setSettingsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ retentionWindowMs: 45 * MS_PER_DAY })
+      );
+    });
+  });
+
+  it('Save with a retention value of 0 days surfaces settings_out_of_range, no IPC call', async () => {
+    unlockWith();
+    const onClose = vi.fn();
+    const { getByLabelText, getByRole, findByText } = renderOpen(onClose);
+    const input = getByLabelText(/retention window/i);
+    await fireEvent.input(input, { target: { value: '0' } });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    expect(await findByText(/value out of range/i)).toBeTruthy();
+    expect(setSettingsMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('retention input has min/max attributes matching the bounds (in days)', () => {
+    unlockWith();
+    const { getByLabelText } = renderOpen();
+    const input = getByLabelText(/retention window/i) as HTMLInputElement;
+    expect(input.getAttribute('min')).toBe(String(RETENTION_WINDOW_MIN_MS / MS_PER_DAY));
+    expect(input.getAttribute('max')).toBe(String(RETENTION_WINDOW_MAX_MS / MS_PER_DAY));
+    expect(input.getAttribute('step')).toBe('1');
+  });
+
+  it('fallback retentionWindowMs uses RETENTION_WINDOW_DEFAULT_MS when not unlocked', async () => {
+    const { getByLabelText } = renderOpen();
+    await waitFor(() => {
+      const input = getByLabelText(/retention window/i) as HTMLInputElement;
+      expect(input.value).toBe(String(RETENTION_WINDOW_DEFAULT_MS / MS_PER_DAY));
+    });
+  });
+
+  it('does not gate retention widening behind write re-auth', async () => {
+    // Retention widening only delays discarding ciphertext — it is not a
+    // security REDUCTION, unlike widening auto-lock or the reauth window.
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      prompt
+    });
+    unlockWith({
+      autoLockTimeoutMs: 600_000,
+      requirePasswordBeforeEdits: true,
+      reauthGraceWindowMs: 120_000,
+      retentionWindowMs: 30 * MS_PER_DAY
+    });
+    const { getByLabelText, getByRole } = renderOpen();
+
+    await fireEvent.input(getByLabelText(/retention window/i), {
+      target: { value: '365' } // widen 30 -> 365 days
+    });
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
+    expect(prompt).not.toHaveBeenCalled();
   });
 });
 
