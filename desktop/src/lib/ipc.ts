@@ -34,6 +34,7 @@ export interface SettingsDto {
   autoLockTimeoutMs: number;
   requirePasswordBeforeEdits: boolean;
   reauthGraceWindowMs: number;
+  retentionWindowMs: number;
 }
 
 export interface FieldMetaDto {
@@ -71,6 +72,28 @@ export interface ExpiredEntryDto {
   blockUuidHex: string;
   tombstonedAtMs: number;
   ageMs: number;
+}
+
+export interface RetentionPreviewDto {
+  entries: ExpiredEntryDto[];
+  windowMs: number;
+}
+
+export interface RetentionReportDto {
+  purgedCount: number;
+  sharedCount: number;
+  ownerOnlyCount: number;
+  unknownCount: number;
+  filesRemoved: number;
+  filesFailed: number;
+  windowMs: number;
+}
+
+export interface PurgeReportDto {
+  blockUuidHex: string;
+  wasShared: boolean | null;
+  recipientCount: number | null;
+  filesRemoved: number;
 }
 
 export interface RevealedFieldDto {
@@ -345,6 +368,18 @@ export async function restoreBlock(blockUuidHex: string): Promise<BlockSummaryDt
 
 export async function listTrashedBlocks(): Promise<TrashedBlockDto[]> {
   return call<TrashedBlockDto[]>('list_trashed_blocks', {});
+}
+
+export async function previewRetention(): Promise<RetentionPreviewDto> {
+  return call<RetentionPreviewDto>('preview_retention', {});
+}
+
+export async function runRetention(): Promise<RetentionReportDto> {
+  return call<RetentionReportDto>('run_retention', {});
+}
+
+export async function purgeBlock(blockUuidHex: string): Promise<PurgeReportDto> {
+  return call<PurgeReportDto>('purge_block', { blockUuidHex });
 }
 
 export async function getSettings(): Promise<SettingsDto> {

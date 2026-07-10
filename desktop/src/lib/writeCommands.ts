@@ -42,6 +42,8 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   share_block: { kind: 'write', gate: 'gated', wrapper: 'shareBlock' },
   revoke_block_from: { kind: 'write', gate: 'gated', wrapper: 'revokeBlockFrom' },
   delete_contact_card: { kind: 'write', gate: 'gated', wrapper: 'deleteContactCard' },
+  run_retention: { kind: 'write', gate: 'gated', wrapper: 'runRetention' },
+  purge_block: { kind: 'write', gate: 'gated', wrapper: 'purgeBlock' },
 
   // --- writes: exempt, with recorded reason ---
   create_vault: {
@@ -130,6 +132,7 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   block_recipients: { kind: 'read' },
   list_contact_blocks: { kind: 'read' },
   sync_status: { kind: 'read' },
+  preview_retention: { kind: 'read' },
 };
 
 /** Set of every classified command string. */
