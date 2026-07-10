@@ -165,4 +165,19 @@ mod tests {
         assert_eq!(v["recipientCount"], 2);
         assert_eq!(v["filesRemoved"], 1);
     }
+
+    #[test]
+    fn purge_report_dto_none_serializes_to_null() {
+        let dto = PurgeReportDto::from(&secretary_ffi_bridge::PurgeReport {
+            block_uuid: SAMPLE_UUID_BYTES,
+            was_shared: None,
+            recipient_count: None,
+            files_removed: 5,
+        });
+        let v = to_json(&dto);
+        assert_eq!(v["blockUuidHex"], SAMPLE_UUID_HEX);
+        assert!(v["wasShared"].is_null());
+        assert!(v["recipientCount"].is_null());
+        assert_eq!(v["filesRemoved"], 5);
+    }
 }

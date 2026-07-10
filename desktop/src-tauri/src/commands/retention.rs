@@ -81,6 +81,8 @@ pub fn purge_block_impl(
     let block_uuid = parse_uuid_16(block_uuid_hex)?;
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
+        // NOTE arg order: `bridge_purge_block` takes `block_uuid` BEFORE
+        // `device_uuid` — both are `[u8; 16]`, so a swap compiles silently.
         let report = bridge_purge_block(
             &u.identity,
             &u.manifest,
