@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-09-retention-ffi-402-shipped.md
+docs/handoffs/2026-07-10-desktop-retention-purge-shipped.md
