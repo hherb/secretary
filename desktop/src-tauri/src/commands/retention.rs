@@ -11,13 +11,13 @@ use std::sync::Mutex;
 use tauri::State;
 
 use secretary_ffi_bridge::{
-    auto_purge_expired as bridge_auto_purge, expired_trash_entries as bridge_expired_entries,
-    purge_block as bridge_purge_block,
+    auto_purge_expired as bridge_auto_purge, empty_trash as bridge_empty_trash,
+    expired_trash_entries as bridge_expired_entries, purge_block as bridge_purge_block,
 };
 
 use crate::auto_lock::now_ms;
 use crate::commands::shared::{lock_session, parse_uuid_16};
-use crate::dtos::{PurgeReportDto, RetentionPreviewDto, RetentionReportDto};
+use crate::dtos::{EmptyTrashReportDto, PurgeReportDto, RetentionPreviewDto, RetentionReportDto};
 use crate::errors::{map_ffi_error, AppError};
 use crate::session::VaultSession;
 
@@ -41,6 +41,13 @@ pub async fn purge_block(
     block_uuid_hex: String,
 ) -> Result<PurgeReportDto, AppError> {
     purge_block_impl(state.inner(), &block_uuid_hex)
+}
+
+#[tauri::command]
+pub async fn empty_trash(
+    state: State<'_, Mutex<VaultSession>>,
+) -> Result<EmptyTrashReportDto, AppError> {
+    empty_trash_impl(state.inner())
 }
 
 /// Preview which trashed blocks are past the configured window. Read-only,
@@ -92,5 +99,22 @@ pub fn purge_block_impl(
         )
         .map_err(map_ffi_error)?;
         Ok(PurgeReportDto::from(&report))
+    })
+}
+
+/// Permanently delete every currently-trashed, not-already-purged block in
+/// one batch ("empty trash"). Unlike `purge_block`, takes no `block_uuid` —
+/// the bridge targets the entire trash in a single manifest commit.
+pub fn empty_trash_impl(state: &Mutex<VaultSession>) -> Result<EmptyTrashReportDto, AppError> {
+    let session = lock_session(state)?;
+    session.with_unlocked(|u| {
+        // NOTE arg order: `bridge_empty_trash(identity, manifest, device_uuid,
+        // now_ms)` — `device_uuid` is `[u8; 16]` and `now_ms` is `u64`, so the
+        // trailing two are distinct types and cannot swap silently (unlike the
+        // same-`u64` window/now hazard in `run_retention` or the same-`[u8;16]`
+        // hazard in `purge_block`). Guard comment kept for parity.
+        let report = bridge_empty_trash(&u.identity, &u.manifest, u.device_uuid, now_ms())
+            .map_err(map_ffi_error)?;
+        Ok(EmptyTrashReportDto::from(&report))
     })
 }
