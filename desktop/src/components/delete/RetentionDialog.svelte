@@ -1,5 +1,6 @@
 <script lang="ts">
-  // Two-step retention dialog (reached from Settings' "Run retention now").
+  // Two-step retention dialog (reached from the Trash view's "Run retention
+  // now" button).
   // Step 1: preview which trashed blocks are past the window (calls
   // previewRetention on mount, mirrors TrashView's load/error shape).
   // Step 2: an irreversible bulk purge, gated behind the same
@@ -7,6 +8,13 @@
   // then refreshManifest, then onClose. Mounts only while open (parent
   // controls mount, like ConfirmDialog) — no bindable `open` prop and no
   // closed state to model.
+  //
+  // The danger-button count is the *previewed* set; the actual purge is
+  // recomputed at commit time by the bridge from current vault state +
+  // the current settings window (runRetention consumes no snapshot), so a
+  // trash change between preview and confirm makes the label indicative,
+  // not a committed count. Safe by construction — the bridge is the source
+  // of truth.
   //
   // NOTE for future edits: don't write a wrapper name followed by `(` in a
   // comment above — the write-gate coverage scanner (writeGateScanner.ts,
