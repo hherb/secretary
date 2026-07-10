@@ -27,7 +27,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // throws — the prior sequential-cleanup pattern leaked both handles on exception.
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
-        val out = openVaultWithPassword(folderPath, env.password001)
+        val out = openVaultWithPassword(folderPath, env.password001.direct())
         out.identity.use { identity ->
             out.manifest.use { manifest ->
                 val displayName = identity.displayName()
@@ -46,7 +46,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
         val wrongPassword = "definitely wrong".toByteArray(Charsets.UTF_8)
-        openVaultWithPassword(folderPath, wrongPassword)
+        openVaultWithPassword(folderPath, wrongPassword.direct())
         check(false, "wrong password (vault) should have thrown VaultException.WrongPasswordOrCorrupt")
     } catch (e: VaultException.WrongPasswordOrCorrupt) {
         check(true, "open_vault_with_password wrong password → VaultException.WrongPasswordOrCorrupt")
@@ -57,7 +57,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // Assertion 18: nonexistent folder → VaultException.FolderInvalid with detail.
     try {
         val folderPath = "/tmp/__nonexistent_b4a_kotlin__".toByteArray(Charsets.UTF_8)
-        openVaultWithPassword(folderPath, env.password001)
+        openVaultWithPassword(folderPath, env.password001.direct())
         check(false, "nonexistent folder should have thrown VaultException.FolderInvalid")
     } catch (e: VaultException.FolderInvalid) {
         val detail = e.detail.lowercase()
@@ -84,7 +84,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // Same chained-.use { } cleanup as assert 16 above — see that comment.
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
-        val out = openVaultWithRecovery(folderPath, env.phrase001)
+        val out = openVaultWithRecovery(folderPath, env.phrase001.direct())
         out.identity.use { identity ->
             out.manifest.use { manifest ->
                 val displayName = identity.displayName()
@@ -103,7 +103,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
         val bad = "only three words".toByteArray(Charsets.UTF_8)
-        openVaultWithRecovery(folderPath, bad)
+        openVaultWithRecovery(folderPath, bad.direct())
         check(false, "3-word phrase should have thrown VaultException.InvalidMnemonic")
     } catch (e: VaultException.InvalidMnemonic) {
         check(
@@ -117,7 +117,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
     // Assert 38: open_vault_with_recovery vault_002 phrase against vault_001 folder → WrongMnemonicOrCorrupt.
     try {
         val folderPath = goldenVault001Folder.toByteArray(Charsets.UTF_8)
-        openVaultWithRecovery(folderPath, env.phrase002)
+        openVaultWithRecovery(folderPath, env.phrase002.direct())
         check(false, "vault_002 phrase against vault_001 folder should have thrown VaultException.WrongMnemonicOrCorrupt")
     } catch (e: VaultException.WrongMnemonicOrCorrupt) {
         check(true, "open_vault_with_recovery wrong-vault phrase → VaultException.WrongMnemonicOrCorrupt")
@@ -137,15 +137,30 @@ fun runFolderInAsserts(env: SmokeEnv) {
             val folderPath = tmp.path.toByteArray(Charsets.UTF_8)
             val pw = "create-smoke-pw".toByteArray(Charsets.UTF_8)
             var wordCount = 0
-            createVaultInFolder(folderPath, pw, "Kotlin-Create-Bob", 1_700_000_000_000UL).use { mn ->
-                val phrase = mn.takePhrase()
-                check(phrase != null, "create_vault_in_folder take_phrase returned null")
-                if (phrase != null) {
-                    // takePhrase() is `bytes?` → a ByteArray? directly (#261); decode UTF-8 to count words.
-                    wordCount = phrase.toString(Charsets.UTF_8).split(" ").size
+            // createVaultInFolder returns CreatedVaultInFolder (Disposable) holding the
+            // one-shot MnemonicOutput handle — extract the phrase from the inner handle,
+            // destroy the outer record in finally. (This block had rotted against the
+            // pre-Slice-5 MnemonicOutput-returning shape; the smoke runner is not a CI
+            // gate, so it only surfaced when re-run for #307.)
+            val created = createVaultInFolder(
+                folderPath,
+                pw.direct(),
+                "Kotlin-Create-Bob",
+                1_700_000_000_000UL,
+            )
+            try {
+                created.mnemonic.use { mn ->
+                    val phrase = mn.takePhrase()
+                    check(phrase != null, "create_vault_in_folder take_phrase returned null")
+                    if (phrase != null) {
+                        // takePhrase() is `bytes?` → a ByteArray? directly (#261); decode UTF-8 to count words.
+                        wordCount = phrase.toString(Charsets.UTF_8).split(" ").size
+                    }
                 }
+            } finally {
+                created.destroy()
             }
-            val out = openVaultWithPassword(folderPath, pw)
+            val out = openVaultWithPassword(folderPath, pw.direct())
             out.identity.use { identity ->
                 out.manifest.use { _ ->
                     val name = identity.displayName()
@@ -169,7 +184,7 @@ fun runFolderInAsserts(env: SmokeEnv) {
             java.io.File(tmp, "junk").writeText("x")
             createVaultInFolder(
                 tmp.path.toByteArray(Charsets.UTF_8),
-                "pw".toByteArray(Charsets.UTF_8),
+                "pw".toByteArray(Charsets.UTF_8).direct(),
                 "X",
                 1_700_000_000_000UL,
             )

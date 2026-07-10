@@ -9,6 +9,19 @@ import org.json.JSONObject
 import uniffi.secretary.OpenVaultOutput
 import kotlin.system.exitProcess
 
+// --- #307 zero-copy secret args ---
+
+/// uniffi 0.32's `[ByRef] bytes` secret args cross the FFI as a borrow of a
+/// DIRECT `java.nio.ByteBuffer` (ForeignBytes) instead of copying through a
+/// RustBuffer. Mints a fresh direct buffer per call (duplicate of the
+/// Smoke runner's helper — the two runners compile as separate jars).
+internal fun ByteArray.direct(): java.nio.ByteBuffer {
+    val buf = java.nio.ByteBuffer.allocateDirect(size)
+    buf.put(this)
+    buf.flip()
+    return buf
+}
+
 // --- Input resolution helpers ---
 
 internal fun resolveSource(source: String, goldenVaultDir: String): ByteArray {

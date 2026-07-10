@@ -43,7 +43,7 @@ fun runDeviceSlotAsserts(env: SmokeEnv) {
         devTmp = tmp
 
         // addDeviceSlot → 16-byte device_uuid + one-shot secret handle.
-        val enroll = addDeviceSlot(folderPath, env.password001)
+        val enroll = addDeviceSlot(folderPath, env.password001.direct())
         check(
             enroll.deviceUuid.size == 16,
             "addDeviceSlot: device_uuid is 16 bytes (got ${enroll.deviceUuid.size})",
@@ -59,7 +59,7 @@ fun runDeviceSlotAsserts(env: SmokeEnv) {
         }
         // takeSecret() is `bytes?` → a ByteArray? directly (#261); no boxed-list conversion.
         // openWithDeviceSecret → opens to the same owner (display_name "Owner").
-        openWithDeviceSecret(folderPath, enroll.deviceUuid, secret).let { out ->
+        openWithDeviceSecret(folderPath, enroll.deviceUuid, secret.direct()).let { out ->
             out.identity.use { id ->
                 out.manifest.use {
                     check(
@@ -80,7 +80,7 @@ fun runDeviceSlotAsserts(env: SmokeEnv) {
 
         // openWithDeviceSecret AGAIN → VaultException.DeviceSlotNotFound (wrap deleted).
         try {
-            openWithDeviceSecret(folderPath, enroll.deviceUuid, secret)
+            openWithDeviceSecret(folderPath, enroll.deviceUuid, secret.direct())
             check(false, "open after remove should have thrown VaultException.DeviceSlotNotFound")
         } catch (e: VaultException.DeviceSlotNotFound) {
             check(true, "openWithDeviceSecret after remove → VaultException.DeviceSlotNotFound")

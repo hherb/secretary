@@ -1,8 +1,9 @@
 //! uniffi namespace fns projecting the bridge's crash-recovery
 //! `repair_vault_with_*` trio (#374). Each mirrors its `open_*` /
 //! `open_with_device_secret` counterpart one-for-one — same folder-path
-//! UTF-8 validation, same credential-length checks, same zeroize
-//! discipline — but calls `secretary_ffi_bridge::repair_vault_with_*`
+//! UTF-8 validation, same credential-length checks, same `[ByRef] bytes`
+//! zero-copy secret handling (#307) — but calls
+//! `secretary_ffi_bridge::repair_vault_with_*`
 //! instead of the plain open path. See `docs/vault-format.md` §10 and
 //! `core/src/vault/repair.rs` for the crash-recovery semantics; repair is
 //! never a weaker open. Each bridge repair fn loads the local §10 rollback
@@ -80,8 +81,9 @@ fn convert_approvals(
 /// [`VaultError::InvalidArgument`]. `approvals` licenses consent-eligible
 /// recipient-widening residue — see module docs for the per-field
 /// validation; an empty vec is the safe zero-value (fail-closed on any
-/// widening, matching pre-Task-7 behavior). `password` is zeroized
-/// unconditionally on return.
+/// widening, matching pre-Task-7 behavior). `password` is a zero-copy
+/// borrow of the foreign caller's buffer (`[ByRef] bytes`, #307) — the
+/// foreign adapter owns it and its scrub.
 ///
 /// # Errors
 ///
@@ -93,39 +95,27 @@ fn convert_approvals(
 /// Other variants mirror [`super::open_vault_with_password`].
 pub fn repair_with_password(
     folder_path: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
     device_uuid: Vec<u8>,
     now_ms: u64,
     approvals: Vec<ApprovedWidening>,
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Validate approvals FIRST, before device_uuid / the fallible path
-    // chain, so any early return here still zeroizes password.
-    let approvals = match convert_approvals(approvals) {
-        Ok(a) => a,
-        Err(e) => {
-            password.zeroize();
-            return Err(e);
-        }
-    };
+    // `[ByRef] bytes` (#307): `password` is a zero-copy borrow of the
+    // foreign buffer — nothing owned here to zeroize (the pre-0.32
+    // early-return zeroize choreography is gone with the owned Vec); see
+    // `super::open_with_password` for the ownership/scrub contract.
+    // Approvals are still validated BEFORE device_uuid / the fallible
+    // path chain — the InvalidArgument precedence pinned by the tests
+    // below is unchanged.
+    let approvals = convert_approvals(approvals)?;
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
 
-    // Length-check device_uuid BEFORE the fallible path chain so we can
-    // zeroize password on this early-return arm too.
-    let uuid_arr = match uuid_from_vec(&device_uuid, "device_uuid") {
-        Ok(u) => u,
-        Err(e) => {
-            password.zeroize();
-            return Err(e);
-        }
-    };
-
-    // Compute the full result chain into a single binding so we can zeroize
-    // the password BEFORE any `?`-propagation — mirrors open_vault_with_password.
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
                 secretary_ffi_bridge::repair_vault_with_password(
-                    &path, &password, &uuid_arr, now_ms, &approvals,
+                    &path, password, &uuid_arr, now_ms, &approvals,
                 )
                 .map_err(VaultError::from)
             }
@@ -133,9 +123,6 @@ pub fn repair_with_password(
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    password.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -155,8 +142,9 @@ pub fn repair_with_password(
 /// `device_uuid` must be exactly 16 bytes; otherwise returns
 /// [`VaultError::InvalidArgument`]. `approvals` licenses consent-eligible
 /// recipient-widening residue — see [`repair_with_password`] for the
-/// per-field validation and the empty-vec safe zero-value. `mnemonic` is
-/// zeroized unconditionally on return.
+/// per-field validation and the empty-vec safe zero-value. `mnemonic` is a
+/// zero-copy borrow of the foreign caller's buffer (`[ByRef] bytes`, #307)
+/// — the foreign adapter owns it and its scrub.
 ///
 /// # Errors
 ///
@@ -164,35 +152,21 @@ pub fn repair_with_password(
 /// repair-specific error semantics.
 pub fn repair_with_recovery(
     folder_path: Vec<u8>,
-    mut mnemonic: Vec<u8>,
+    mnemonic: &[u8],
     device_uuid: Vec<u8>,
     now_ms: u64,
     approvals: Vec<ApprovedWidening>,
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Validate approvals FIRST, before device_uuid / the fallible path
-    // chain, so any early return here still zeroizes mnemonic.
-    let approvals = match convert_approvals(approvals) {
-        Ok(a) => a,
-        Err(e) => {
-            mnemonic.zeroize();
-            return Err(e);
-        }
-    };
-
-    let uuid_arr = match uuid_from_vec(&device_uuid, "device_uuid") {
-        Ok(u) => u,
-        Err(e) => {
-            mnemonic.zeroize();
-            return Err(e);
-        }
-    };
+    // `[ByRef] bytes` (#307): zero-copy borrow — see repair_with_password.
+    let approvals = convert_approvals(approvals)?;
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
                 secretary_ffi_bridge::repair_vault_with_recovery(
-                    &path, &mnemonic, &uuid_arr, now_ms, &approvals,
+                    &path, mnemonic, &uuid_arr, now_ms, &approvals,
                 )
                 .map_err(VaultError::from)
             }
@@ -200,9 +174,6 @@ pub fn repair_with_recovery(
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    mnemonic.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -220,8 +191,9 @@ pub fn repair_with_recovery(
 /// 32 bytes. `approvals` licenses consent-eligible recipient-widening
 /// residue — see [`repair_with_password`] for the per-field validation and
 /// the empty-vec safe zero-value. All credential/approval fields are
-/// validated before the bridge call; `device_secret` is zeroized on all
-/// paths.
+/// validated before the bridge call. `device_secret` is a zero-copy borrow
+/// of the foreign buffer (`[ByRef] bytes`, #307); the transient `[u8; 32]`
+/// stack copy made here is zeroized on all paths.
 ///
 /// # Errors
 ///
@@ -234,37 +206,27 @@ pub fn repair_with_recovery(
 pub fn repair_with_device_secret(
     folder_path: Vec<u8>,
     device_uuid: Vec<u8>,
-    mut device_secret: Vec<u8>,
+    device_secret: &[u8],
     now_ms: u64,
     approvals: Vec<ApprovedWidening>,
 ) -> Result<OpenVaultOutput, VaultError> {
-    // Validate approvals FIRST, before the length pre-checks / UTF-8
-    // validation, so any early return here still zeroizes device_secret.
-    let approvals = match convert_approvals(approvals) {
-        Ok(a) => a,
-        Err(e) => {
-            device_secret.zeroize();
-            return Err(e);
-        }
-    };
+    // `[ByRef] bytes` (#307): `device_secret` is a zero-copy borrow of the
+    // foreign buffer — no owned Vec, so the pre-0.32 early-return zeroize
+    // choreography is gone. Approvals are still validated FIRST (the
+    // InvalidArgument precedence pinned by the tests below is unchanged).
+    let approvals = convert_approvals(approvals)?;
 
-    // Length pre-checks BEFORE UTF-8 validation so we can zeroize
-    // device_secret on all early-return paths — mirrors open_with_device_secret.
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
             detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
         });
     }
     if device_secret.len() != 32 {
-        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
-        // `self.clear()` (zeroize crate's Vec impl), so reading
-        // `device_secret.len()` after zeroizing would always report 0
-        // rather than the actual wrong length.
-        let got = device_secret.len();
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
-            detail: format!("device_secret must be 32 bytes, got {got}"),
+            detail: format!(
+                "device_secret must be 32 bytes, got {}",
+                device_secret.len()
+            ),
         });
     }
 
@@ -276,10 +238,7 @@ pub fn repair_with_device_secret(
     // immutably and later doing `let mut secret_arr = secret_arr;` would COPY
     // the array (`[u8; 32]: Copy`) into a fresh slot and wipe only the copy,
     // leaving this original slot's 32 plaintext bytes as stack residue.
-    let mut secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -299,12 +258,9 @@ pub fn repair_with_device_secret(
             }),
         };
 
-    // Zeroize unconditionally — runs on both success and error paths.
-    // secret_arr is [u8; 32] (Copy), so both the array and the source Vec
-    // must be zeroized to prevent stack residue — same discipline as
-    // open_with_device_secret / the bridge's derive_wrap_key pattern.
+    // Zeroize the transient stack copy unconditionally — the borrowed
+    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
     secret_arr.zeroize();
-    device_secret.zeroize();
 
     let bridge_out = result?;
     Ok(OpenVaultOutput {
@@ -322,8 +278,8 @@ pub fn repair_with_device_secret(
 /// never writes, so there is no device-clock tick and no manifest re-sign
 /// to key by device or timestamp. Lets a caller build an informed-consent
 /// prompt (recipient names + fingerprints) and derive an `ApprovedWidening`
-/// set BEFORE calling [`repair_with_password`]. `password` is zeroized
-/// unconditionally on return.
+/// set BEFORE calling [`repair_with_password`]. `password` is a zero-copy
+/// borrow of the foreign caller's buffer (`[ByRef] bytes`, #307).
 ///
 /// # Errors
 ///
@@ -333,22 +289,20 @@ pub fn repair_with_device_secret(
 /// `preview_repair_with_password` docs.
 pub fn preview_repair_with_password(
     folder_path: Vec<u8>,
-    mut password: Vec<u8>,
+    password: &[u8],
 ) -> Result<RepairPreview, VaultError> {
+    // `[ByRef] bytes` (#307): zero-copy borrow — see repair_with_password.
     let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::preview_repair_with_password(&path, &password)
+                secretary_ffi_bridge::preview_repair_with_password(&path, password)
                     .map_err(VaultError::from)
             }
             Err(_) => Err(VaultError::FolderInvalid {
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    password.zeroize();
 
     let bridge_out = result?;
     Ok(RepairPreview::from(bridge_out))
@@ -358,29 +312,28 @@ pub fn preview_repair_with_password(
 /// phrase, without writing anything. uniffi-projected. (#374 Task 7)
 ///
 /// See [`preview_repair_with_password`] for the shared semantics.
-/// `mnemonic` is zeroized unconditionally on return.
+/// `mnemonic` is a zero-copy borrow of the foreign caller's buffer
+/// (`[ByRef] bytes`, #307).
 ///
 /// # Errors
 ///
 /// Returns [`VaultError`] on failure. See [`preview_repair_with_password`].
 pub fn preview_repair_with_recovery(
     folder_path: Vec<u8>,
-    mut mnemonic: Vec<u8>,
+    mnemonic: &[u8],
 ) -> Result<RepairPreview, VaultError> {
+    // `[ByRef] bytes` (#307): zero-copy borrow — see repair_with_password.
     let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
         match std::str::from_utf8(&folder_path) {
             Ok(s) => {
                 let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::preview_repair_with_recovery(&path, &mnemonic)
+                secretary_ffi_bridge::preview_repair_with_recovery(&path, mnemonic)
                     .map_err(VaultError::from)
             }
             Err(_) => Err(VaultError::FolderInvalid {
                 detail: "folder path contained invalid UTF-8".to_string(),
             }),
         };
-
-    // Zeroize unconditionally — runs on both success and error paths.
-    mnemonic.zeroize();
 
     let bridge_out = result?;
     Ok(RepairPreview::from(bridge_out))
@@ -392,7 +345,8 @@ pub fn preview_repair_with_recovery(
 /// See [`preview_repair_with_password`] for the shared semantics.
 /// `device_uuid` must be exactly 16 bytes; `device_secret` must be exactly
 /// 32 bytes; both are validated before the bridge call. `device_secret` is
-/// zeroized on all paths.
+/// a zero-copy borrow of the foreign buffer (`[ByRef] bytes`, #307); the
+/// transient `[u8; 32]` stack copy made here is zeroized on all paths.
 ///
 /// # Errors
 ///
@@ -403,26 +357,22 @@ pub fn preview_repair_with_recovery(
 pub fn preview_repair_with_device_secret(
     folder_path: Vec<u8>,
     device_uuid: Vec<u8>,
-    mut device_secret: Vec<u8>,
+    device_secret: &[u8],
 ) -> Result<RepairPreview, VaultError> {
-    // Length pre-checks BEFORE UTF-8 validation so we can zeroize
-    // device_secret on all early-return paths — mirrors
-    // repair_with_device_secret / open_with_device_secret.
+    // `[ByRef] bytes` (#307): `device_secret` is a zero-copy borrow of the
+    // foreign buffer — no owned Vec, so the pre-0.32 early-return zeroize
+    // choreography is gone.
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
             detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
         });
     }
     if device_secret.len() != 32 {
-        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
-        // `self.clear()` (zeroize crate's Vec impl), so reading
-        // `device_secret.len()` after zeroizing would always report 0
-        // rather than the actual wrong length.
-        let got = device_secret.len();
-        device_secret.zeroize();
         return Err(VaultError::InvalidArgument {
-            detail: format!("device_secret must be 32 bytes, got {got}"),
+            detail: format!(
+                "device_secret must be 32 bytes, got {}",
+                device_secret.len()
+            ),
         });
     }
 
@@ -433,10 +383,7 @@ pub fn preview_repair_with_device_secret(
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — see
     // repair_with_device_secret for why a re-binding `let mut` would leave
     // stack residue.
-    let mut secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
 
     let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -454,9 +401,9 @@ pub fn preview_repair_with_device_secret(
             }),
         };
 
-    // Zeroize unconditionally — runs on both success and error paths.
+    // Zeroize the transient stack copy unconditionally — the borrowed
+    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
     secret_arr.zeroize();
-    device_secret.zeroize();
 
     let bridge_out = result?;
     Ok(RepairPreview::from(bridge_out))
@@ -606,7 +553,7 @@ mod tests {
         // FolderInvalid instead of InvalidArgument.
         match repair_with_password(
             b"\xff\xfe".to_vec(),
-            b"hunter2".to_vec(),
+            b"hunter2",
             vec![0u8; 16],
             1_700_000_000_000,
             vec![bad_approval_wrong_block_uuid()],
@@ -623,7 +570,7 @@ mod tests {
     fn repair_with_recovery_wrong_length_approval_returns_invalid_argument_before_touching_disk() {
         match repair_with_recovery(
             b"\xff\xfe".to_vec(),
-            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec(),
+            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
             vec![0u8; 16],
             1_700_000_000_000,
             vec![bad_approval_wrong_file_fingerprint()],
@@ -642,7 +589,7 @@ mod tests {
         match repair_with_device_secret(
             b"\xff\xfe".to_vec(),
             vec![0u8; 16],
-            vec![0u8; 32],
+            &[0u8; 32],
             1_700_000_000_000,
             vec![bad_approval_wrong_added_recipient()],
         ) {
@@ -656,8 +603,7 @@ mod tests {
 
     #[test]
     fn preview_repair_with_device_secret_wrong_length_device_uuid_returns_invalid_argument() {
-        match preview_repair_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 15], vec![0u8; 32])
-        {
+        match preview_repair_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 15], &[0u8; 32]) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(detail.contains("device_uuid") && detail.contains("15"));
             }
@@ -668,8 +614,7 @@ mod tests {
 
     #[test]
     fn preview_repair_with_device_secret_wrong_length_device_secret_returns_invalid_argument() {
-        match preview_repair_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 16], vec![0u8; 31])
-        {
+        match preview_repair_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 16], &[0u8; 31]) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(detail.contains("device_secret") && detail.contains("31"));
             }
@@ -680,7 +625,7 @@ mod tests {
 
     #[test]
     fn preview_repair_with_password_invalid_utf8_path_returns_folder_invalid() {
-        match preview_repair_with_password(b"\xff\xfe".to_vec(), b"hunter2".to_vec()) {
+        match preview_repair_with_password(b"\xff\xfe".to_vec(), b"hunter2") {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),
             Ok(_) => panic!("expected Err for invalid UTF-8 path"),
@@ -691,7 +636,7 @@ mod tests {
     fn preview_repair_with_recovery_invalid_utf8_path_returns_folder_invalid() {
         match preview_repair_with_recovery(
             b"\xff\xfe".to_vec(),
-            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec(),
+            b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         ) {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),

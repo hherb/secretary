@@ -154,7 +154,7 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
 
         // Save in an inner scope so the handles release before re-open.
         run {
-            val out = openVaultWithPassword(folderPathBytes, env.password001)
+            val out = openVaultWithPassword(folderPathBytes, env.password001.direct())
             out.identity.use { id ->
                 out.manifest.use { mf ->
                     saveBlock(
@@ -179,7 +179,7 @@ fun runSaveBlockAsserts(env: SmokeEnv) {
             }
         }
 
-        val out2 = openVaultWithPassword(folderPathBytes, env.password001)
+        val out2 = openVaultWithPassword(folderPathBytes, env.password001.direct())
         out2.identity.use { id ->
             out2.manifest.use { mf ->
                 val summary = mf.findBlock(SAVE_BLOCK_NEW_BLOCK_UUID)
