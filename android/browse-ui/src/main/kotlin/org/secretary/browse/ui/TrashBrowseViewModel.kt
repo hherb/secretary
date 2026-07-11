@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.secretary.browse.ExpiredEntryInfo
+import org.secretary.browse.PurgeNotice
 import org.secretary.browse.TrashBrowseModel
 import org.secretary.browse.TrashedBlockInfo
 import org.secretary.browse.VaultBrowseError
@@ -20,6 +21,7 @@ class TrashBrowseViewModel(private val model: TrashBrowseModel) : ViewModel() {
     val error: StateFlow<VaultBrowseError?> = model.error
     val writing: StateFlow<Boolean> = model.writing
     val preview: StateFlow<List<ExpiredEntryInfo>?> = model.preview
+    val notice: StateFlow<PurgeNotice?> = model.notice
 
     val retentionWindowMs: Long get() = model.retentionWindowMs
 

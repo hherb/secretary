@@ -35,6 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.secretary.browse.PurgeNotice
+import org.secretary.browse.PurgeSeverity
 import org.secretary.browse.TrashedBlockInfo
 import org.secretary.browse.VaultBrowseError
 import org.secretary.browse.emptyTrashConfirmBody
@@ -57,6 +59,7 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
     val writing by viewModel.writing.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
+    val notice by viewModel.notice.collectAsStateWithLifecycle()
 
     var confirmDelete by remember { mutableStateOf<TrashedBlockInfo?>(null) }
     var confirmEmpty by remember { mutableStateOf(false) }
@@ -96,6 +99,7 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             error?.let { TrashErrorBanner(it) }
+            notice?.let { TrashNoticeBanner(it) }
             if (entries.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Trash is empty", style = MaterialTheme.typography.bodyLarge)
@@ -177,6 +181,20 @@ private fun TrashErrorBanner(error: VaultBrowseError) {
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.padding(16.dp).testTag("trash-error"),
+    )
+}
+
+@Composable
+private fun TrashNoticeBanner(notice: PurgeNotice) {
+    Text(
+        text = notice.text,
+        color = if (notice.severity == PurgeSeverity.WARNING) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(16.dp).testTag("trash-notice"),
     )
 }
 
