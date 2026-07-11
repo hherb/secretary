@@ -47,3 +47,42 @@ fun retentionSummary(entries: List<ExpiredEntryInfo>, windowMs: Long): String {
     val noun = if (n == 1) "item" else "items"
     return "$n $noun trashed more than $days days ago will be permanently deleted (oldest: $oldestDays days)."
 }
+
+/** Severity of a post-op purge notice (#411): a plain confirmation or a warning that some
+ * on-disk files could not be removed. Mirror of desktop/iOS `PurgeSeverity`. */
+enum class PurgeSeverity { SUCCESS, WARNING }
+
+/** A formatted post-op notice for the Trash browser banner. */
+data class PurgeNotice(val text: String, val severity: PurgeSeverity)
+
+/**
+ * Normalized outcome the model builds from whichever report an op returned. [SinglePurge]
+ * (delete-forever) carries no count — its DTO ([PurgeResultInfo]) has none. Logic mirrors desktop
+ * and iOS `formatPurgeNotice`.
+ */
+sealed interface PurgeOutcome {
+    data class EmptyTrash(val purgedCount: Int, val filesFailed: Int) : PurgeOutcome
+    data class Retention(val purgedCount: Int, val filesFailed: Int) : PurgeOutcome
+    data object SinglePurge : PurgeOutcome
+}
+
+/** "1 item" / "4 items" — English count noun. */
+private fun pluralCount(n: Int, singular: String): String =
+    if (n == 1) "1 $singular" else "$n ${singular}s"
+
+/** Map a destructive-trash outcome to a banner string + severity (#411). */
+fun formatPurgeNotice(outcome: PurgeOutcome): PurgeNotice = when (outcome) {
+    is PurgeOutcome.SinglePurge -> PurgeNotice("Deleted forever", PurgeSeverity.SUCCESS)
+    is PurgeOutcome.EmptyTrash -> countNotice(outcome.purgedCount, outcome.filesFailed, "Trash was already empty")
+    is PurgeOutcome.Retention -> countNotice(outcome.purgedCount, outcome.filesFailed, "No items were past the retention window")
+}
+
+private fun countNotice(purgedCount: Int, filesFailed: Int, zeroText: String): PurgeNotice {
+    if (purgedCount == 0) return PurgeNotice(zeroText, PurgeSeverity.SUCCESS)
+    val base = "Purged ${pluralCount(purgedCount, "item")}"
+    return if (filesFailed > 0) {
+        PurgeNotice("$base · ${pluralCount(filesFailed, "file")} could not be removed", PurgeSeverity.WARNING)
+    } else {
+        PurgeNotice(base, PurgeSeverity.SUCCESS)
+    }
+}
