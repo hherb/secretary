@@ -15,11 +15,6 @@
   // trash change between preview and confirm makes the label indicative,
   // not a committed count. Safe by construction — the bridge is the source
   // of truth.
-  //
-  // NOTE for future edits: don't write a wrapper name followed by `(` in a
-  // comment above — the write-gate coverage scanner (writeGateScanner.ts,
-  // #280) is comment-naive for call detection and will flag it as an
-  // ungated top-level call.
 
   import { previewRetention, runRetention, isAppError, type RetentionPreviewDto } from '../../lib/ipc';
   import { retentionSummary } from '../../lib/retention';
