@@ -152,8 +152,10 @@ Package `org.secretary.browse` (alongside the existing browse models).
 
 ### 2. `:kit` — real adapter over the generated bindings
 
-**`UniffiVaultSession+Trash.kt`** — conform the real `UniffiVaultSession` to `TrashPort` in a
-**same-module extension** (`org.secretary.browse`), mirror of iOS `UniffiVaultSession+Trash.swift`:
+Conform the real `UniffiVaultSession` to `TrashPort` **in the class body** of
+`UniffiVaultOpenPort.kt` (declaration becomes `class UniffiVaultSession(...) : VaultSession,
+TrashPort`). This is the functional analogue of iOS `UniffiVaultSession+Trash.swift` — but see the
+**Kotlin conformance constraint** below for why it is in-class rather than a separate extension file:
 
 - `listTrashedBlocks()` → `uniffi.secretary.listTrashedBlocks(identity, manifest)` under the read
   path (mirror `blockSummaries()`'s `synchronized(sessionLock)` + `wiped` empty-return + `mapErrors`),
@@ -166,19 +168,18 @@ Package `org.secretary.browse` (alongside the existing browse models).
   existing `write { dev, now -> ... }` helper (device-uuid + now resolution, `sessionLock`, `wiped`
   guard, `mapErrors`), returning the mapped report DTO for the write-returning ones.
 
-  > **Visibility decision (RECOMMENDED — Option B, iOS parity + one-concept-per-file):** the
-  > extension needs `identity`, `manifest`, `write`, `sessionLock`, and `wiped`, all currently
-  > `private` on `UniffiVaultSession`. Promote exactly these to `internal` (module-scoped), mirroring
-  > the iOS #412 review's blessed widening. Carry the **lock-discipline invariant note** the iOS
-  > review required: *all handle access stays serialized under `sessionLock` and honors `wiped`; the
-  > extension adds no new access pattern — it reuses `write`/the read-guard verbatim.*
-  >
-  > **Alternative (Option A — no widening):** add the `TrashPort` overrides directly to the
-  > `UniffiVaultSession` class body (they see the `private` members for free). Safer in that handles
-  > stay `private`, but grows the already-two-class `UniffiVaultOpenPort.kt` (~290 lines) and mixes
-  > the trash concern into the session file. **We choose Option B** for parity + one-concept-per-file;
-  > the widening is module-internal and the invariant note makes the guarantee explicit. If a
-  > reviewer objects to the widening, Option A is a mechanical fallback (move the methods in-class).
+  > **Kotlin conformance constraint (why in-class, no visibility widening):** unlike Swift —
+  > where `extension UniffiVaultSession: TrashPort` in a separate file provides the conformance —
+  > **Kotlin cannot satisfy an interface via extension functions.** Interface `override` members
+  > MUST live in the class body. So the 7 `TrashPort` overrides go directly into `UniffiVaultSession`,
+  > where they see the `private` `identity` / `manifest` / `write` / `sessionLock` / `wiped` members
+  > for free. **No member is widened to `internal`** — the security-sensitive handles stay `private`.
+  > This is *stricter* than the iOS build (which widened to `internal` for its extension file); the
+  > Android build keeps the handles fully encapsulated. Cost: `UniffiVaultOpenPort.kt` grows ~60
+  > lines (289 → ~350, well under the 500-line guideline) and hosts the trash concern alongside the
+  > session. The lock-discipline invariant still holds verbatim — every trash op reuses the existing
+  > `write`/read-guard, adding no new handle-access pattern (carry this as a comment on the trash
+  > block of overrides).
 
 **`BrowseMapping.kt`** — add two explicit arms above the `else` fold (per the file's MAINTAINER
 WARNING — a new op-relevant arm gets an explicit branch, never the silent `Failed` fold):
@@ -264,10 +265,10 @@ the host `:vault-access` ones.)
 
 ## Risks & open decisions
 
-1. **`:kit` visibility widening (Option B vs A)** — recommended Option B (internal + extension file,
-   iOS parity, one-concept-per-file) with the lock-discipline invariant note; Option A (in-class, no
-   widening) is a mechanical fallback if a reviewer objects. **Resolved in favor of B pending spec
-   review.**
+1. **`:kit` `TrashPort` conformance is in-class, no visibility widening** — Kotlin cannot conform to
+   an interface via an extension file (unlike Swift), so the 7 overrides live in the
+   `UniffiVaultSession` class body and keep `identity`/`manifest`/`write`/`sessionLock`/`wiped`
+   fully `private`. Stricter than the iOS build (which widened to `internal`). **Resolved.**
 2. **Report discard** — deliberate parity cut; #411 surfaces counts cross-platform later. The DTOs
    are plumbed now so #411 is UI-only.
 3. **UTC trashed-date** — deliberate (host-testable pure helper); #413 for locale-aware parity.
