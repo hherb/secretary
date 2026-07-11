@@ -45,3 +45,57 @@ public func retentionSummary(entries: [ExpiredEntryInfo], windowMs: UInt64) -> S
     let noun = n == 1 ? "item" : "items"
     return "\(n) \(noun) trashed more than \(days) days ago will be permanently deleted (oldest: \(oldestDays) days)."
 }
+
+/// Severity of a post-op purge notice (#411): a plain confirmation or a
+/// warning that some on-disk files could not be removed.
+public enum PurgeSeverity: Equatable {
+    case success
+    case warning
+}
+
+/// A formatted post-op notice for the Trash browser banner.
+public struct PurgeNotice: Equatable {
+    public let text: String
+    public let severity: PurgeSeverity
+    public init(text: String, severity: PurgeSeverity) {
+        self.text = text
+        self.severity = severity
+    }
+}
+
+/// Normalized outcome the view-model builds from whichever report an op
+/// returned. `singlePurge` (delete-forever) carries no count — its DTO
+/// (`PurgeResultInfo`) has none. Logic mirrors desktop `formatPurgeNotice`
+/// and Android's `formatPurgeNotice`.
+public enum PurgeOutcome: Equatable {
+    case emptyTrash(purgedCount: UInt32, filesFailed: UInt32)
+    case retention(purgedCount: UInt32, filesFailed: UInt32)
+    case singlePurge
+}
+
+private func pluralCount(_ n: UInt32, _ singular: String) -> String {
+    n == 1 ? "1 \(singular)" : "\(n) \(singular)s"
+}
+
+/// Map a destructive-trash outcome to a banner string + severity (#411).
+public func formatPurgeNotice(_ outcome: PurgeOutcome) -> PurgeNotice {
+    switch outcome {
+    case .singlePurge:
+        return PurgeNotice(text: "Deleted forever", severity: .success)
+    case let .emptyTrash(purgedCount, filesFailed):
+        return countNotice(purgedCount, filesFailed, zeroText: "Trash was already empty")
+    case let .retention(purgedCount, filesFailed):
+        return countNotice(purgedCount, filesFailed, zeroText: "No items were past the retention window")
+    }
+}
+
+private func countNotice(_ purgedCount: UInt32, _ filesFailed: UInt32, zeroText: String) -> PurgeNotice {
+    if purgedCount == 0 {
+        return PurgeNotice(text: zeroText, severity: .success)
+    }
+    let base = "Purged \(pluralCount(purgedCount, "item"))"
+    if filesFailed > 0 {
+        return PurgeNotice(text: "\(base) · \(pluralCount(filesFailed, "file")) could not be removed", severity: .warning)
+    }
+    return PurgeNotice(text: base, severity: .success)
+}
