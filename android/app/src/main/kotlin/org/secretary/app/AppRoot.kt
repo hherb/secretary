@@ -46,6 +46,7 @@ import org.secretary.browse.hexOfBytes
 import org.secretary.browse.safVaultLocationStore
 import org.secretary.browse.uniffiVaultCreatePort
 import org.secretary.browse.uniffiVaultOpenPort
+import org.secretary.browse.ui.TrashScreen
 import java.io.File
 
 private const val TAG = "AppRoot"
@@ -75,6 +76,7 @@ internal sealed interface Route {
         val session: BrowseSession,
         val folder: File,
         val showSettings: Boolean = false,
+        val showTrash: Boolean = false,
         val cloudTarget: CloudVaultTarget? = null,
     ) : Route
 }
@@ -436,6 +438,7 @@ fun AppRoot() {
                     r.session.browse.lock()
                 }
             }
+            val trashVm = r.session.trash
             if (r.showSettings) {
                 DeviceSettingsScreen(
                     state = settingsState,
@@ -461,6 +464,11 @@ fun AppRoot() {
                     },
                     onBack = { route = r.copy(showSettings = false) },
                 )
+            } else if (r.showTrash && trashVm != null) {
+                TrashScreen(
+                    viewModel = trashVm,
+                    onBack = { route = r.copy(showTrash = false) },
+                )
             } else {
                 BrowseWithSyncScreen(
                     browse = r.session.browse,
@@ -472,6 +480,7 @@ fun AppRoot() {
                         settingsState = settingsVm.state
                         route = r.copy(showSettings = true)
                     },
+                    onOpenTrash = { route = r.copy(showTrash = true) },
                 )
             }
         }
