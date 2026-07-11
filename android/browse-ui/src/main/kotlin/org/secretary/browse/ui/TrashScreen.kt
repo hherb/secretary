@@ -72,11 +72,15 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
                     }
                 },
                 actions = {
-                    IconButton(
+                    // A labelled text action (not an icon): the bundled `material-icons-core` set has
+                    // no distinct "run retention / cleanup" glyph, and adding `material-icons-extended`
+                    // (~10 MB) for one icon is against the project's icon policy (see sync-ui). Text also
+                    // keeps `Refresh` unique to the per-row Restore, so the two actions never look alike.
+                    TextButton(
                         onClick = { showRetention = true },
                         enabled = !writing,
                         modifier = Modifier.testTag("run-retention"),
-                    ) { Icon(Icons.Filled.Refresh, contentDescription = "Run retention now") }
+                    ) { Text("Retention") }
                     if (entries.isNotEmpty()) {
                         TextButton(
                             onClick = { confirmEmpty = true },
