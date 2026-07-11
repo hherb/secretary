@@ -175,6 +175,44 @@ describe('TrashView', () => {
     expect(status.textContent).toMatch(/purged 2 items/i);
   });
 
+  it('clears a stale success banner when a later purge is cancelled at re-auth', async () => {
+    // Regression for the stale-notice bug: notice was only cleared inside the
+    // success path, so a cancelled/failed re-auth on a SECOND destructive
+    // action left the FIRST action's success banner on screen, falsely
+    // implying the second action also succeeded.
+    invokeMock.mockResolvedValueOnce([trashedEntry(), { ...trashedEntry(), blockUuidHex: 'cd', blockName: 'Card' }]);
+    invokeMock.mockResolvedValueOnce([{ ...trashedEntry(), blockUuidHex: 'cd', blockName: 'Card' }]); // reload after 1st purge
+    purgeBlockMock.mockResolvedValueOnce({
+      blockUuidHex: 'ab', wasShared: false, recipientCount: 0, filesRemoved: 1
+    });
+
+    const { findByRole, getByText, queryByRole } = render(TrashView);
+    await waitFor(() => expect(getByText('Bank logins')).toBeTruthy());
+
+    // First purge succeeds and leaves a "Deleted forever" success banner.
+    let purgeButton = await findByRole('button', { name: /permanently delete block bank logins/i });
+    await fireEvent.click(purgeButton);
+    let confirmButton = await findByRole('button', { name: /^delete forever$/i });
+    await fireEvent.click(confirmButton);
+    const status = await findByRole('status');
+    expect(status.textContent).toMatch(/deleted forever/i);
+
+    // Second purge (remaining "Card" block) is cancelled at re-auth.
+    // mockRejectedValueOnce (not persistent mockRejectedValue): a persistent
+    // rejection would spuriously fail later tests whose click handler
+    // catches the error, and leaks unresolved-promise state across tests.
+    authorizeWriteMock.mockRejectedValueOnce(reauthCancelledSymbol);
+    await waitFor(() => expect(getByText('Card')).toBeTruthy());
+    purgeButton = await findByRole('button', { name: /permanently delete block card/i });
+    await fireEvent.click(purgeButton);
+    confirmButton = await findByRole('button', { name: /^delete forever$/i });
+    await fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(authorizeWriteMock).toHaveBeenCalledTimes(2));
+    expect(purgeBlockMock).toHaveBeenCalledTimes(1); // only the 1st purge went through
+    expect(queryByRole('status')).toBeNull(); // stale success banner must be gone
+  });
+
   it('renders a warning banner when files could not be removed', async () => {
     invokeMock.mockResolvedValueOnce([trashedEntry()]);
     invokeMock.mockResolvedValueOnce([]); // reload after purge

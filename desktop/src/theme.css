@@ -1067,6 +1067,17 @@ body {
 .trash-view__back:hover {
   background: var(--color-border);
 }
+.trash-view__notice {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  font-size: var(--font-size-sm);
+}
+.trash-view__notice--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
 .trash-view__error {
   padding: var(--space-3);
   border-radius: var(--radius-md);

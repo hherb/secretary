@@ -68,6 +68,7 @@
     pendingPurge = null;
     if (!target) return;
     error = null;
+    notice = null;
     try {
       await authorizeWrite('Confirm permanently deleting this block');
     } catch (err) {
@@ -75,7 +76,6 @@
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
-    notice = null;
     try {
       await purgeBlock(target.blockUuidHex);
       await refreshManifest();
@@ -92,6 +92,7 @@
   async function confirmEmpty() {
     pendingEmpty = false;
     error = null;
+    notice = null;
     try {
       await authorizeWrite('Confirm permanently deleting all trashed blocks');
     } catch (err) {
@@ -99,7 +100,6 @@
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
-    notice = null;
     try {
       const report = await emptyTrash();
       await refreshManifest();
@@ -171,12 +171,3 @@
     onCancel={() => (pendingEmpty = false)}
   />
 {/if}
-
-<style>
-  .trash-view__notice {
-    color: var(--color-success, #217a3c);
-  }
-  .trash-view__notice--warning {
-    color: var(--color-warning, #a15c00);
-  }
-</style>
