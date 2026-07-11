@@ -17,16 +17,22 @@ import org.secretary.sync.ui.VaultSyncViewModel
 /**
  * The unified browse+sync screen: the sync badge (and its password/conflict sheets, owned by the
  * reused [SyncScreen]) sit above the [BrowseScreen] content, with a "Device settings" entry that
- * invokes [onOpenSettings] (AppRoot routes to the Settings sub-view). Holds NO state.
+ * invokes [onOpenSettings] and a "Trash" entry that invokes [onOpenTrash] (AppRoot routes to the
+ * respective sub-view). Holds NO state.
  */
 @Composable
 fun BrowseWithSyncScreen(
     browse: VaultBrowseViewModel,
     sync: VaultSyncViewModel,
     onOpenSettings: () -> Unit = {},
+    onOpenTrash: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SyncScreen(viewModel = sync)
+        TextButton(
+            onClick = onOpenTrash,
+            modifier = Modifier.align(Alignment.End).testTag("open-trash"),
+        ) { Text("Trash") }
         TextButton(
             onClick = onOpenSettings,
             modifier = Modifier.align(Alignment.End).testTag("open-settings"),

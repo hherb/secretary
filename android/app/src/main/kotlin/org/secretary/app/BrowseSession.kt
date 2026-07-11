@@ -2,12 +2,15 @@ package org.secretary.app
 
 import android.os.SystemClock
 import org.secretary.browse.NoopReauthGate
+import org.secretary.browse.TrashBrowseModel
+import org.secretary.browse.TrashPort
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
 import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.openWithCredential
+import org.secretary.browse.ui.TrashBrowseViewModel
 import org.secretary.browse.ui.VaultBrowseViewModel
 import org.secretary.sync.ChangeDetectionMonitor
 import org.secretary.sync.makeVaultSync
@@ -18,11 +21,16 @@ import java.io.File
  * The three handles for an unlocked, browsable, sync-aware session. Mirrors the iOS
  * `.browse(VaultBrowseViewModel, VaultSyncViewModel, ChangeDetectionMonitor)` route payload.
  * The caller owns the monitor lifecycle (`start()` on screen entry, `stop()` on dispose).
+ *
+ * [trash] is OPTIONAL: it is only non-null when the opened session conforms to [TrashPort] (the
+ * real [org.secretary.browse.UniffiVaultSession] always does; a non-conforming fake session, e.g.
+ * in host tests, leaves it null so existing callers are unaffected).
  */
 data class BrowseSession(
     val browse: VaultBrowseViewModel,
     val sync: VaultSyncViewModel,
     val monitor: ChangeDetectionMonitor,
+    val trash: TrashBrowseViewModel? = null,
 )
 
 /**
@@ -74,9 +82,15 @@ suspend fun openBrowseWithSync(
     gate.seed(SystemClock.elapsedRealtime()) // just unlocked → open the grace window
     browseModel.loadBlocks()
     val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid)
+    // Built from the SAME already-open session + gate the browse write path uses — no second FFI
+    // open. `session` is the real UniffiVaultSession in production (and in every androidTest
+    // caller), which now conforms to TrashPort; the safe cast is null only for a non-conforming
+    // fake session (e.g. a host-test double), which leaves `trash` null.
+    val trashVm = (session as? TrashPort)?.let { TrashBrowseViewModel(TrashBrowseModel(it, gate)) }
     return BrowseSession(
         browse = VaultBrowseViewModel(browseModel),
         sync = VaultSyncViewModel(syncModel),
         monitor = monitor,
+        trash = trashVm,
     )
 }
