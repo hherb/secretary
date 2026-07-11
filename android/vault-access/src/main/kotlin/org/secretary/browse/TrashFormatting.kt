@@ -1,8 +1,10 @@
 package org.secretary.browse
 
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 /** Milliseconds per day — the days↔ms conversion base. */
 const val MS_PER_DAY: Long = 86_400_000L
@@ -17,18 +19,18 @@ fun msToDays(ms: Long): Long = (ms + MS_PER_DAY / 2) / MS_PER_DAY
 fun sortTrashed(entries: List<TrashedBlockInfo>): List<TrashedBlockInfo> =
     entries.sortedByDescending { it.tombstonedAtMs }
 
-/** Fixed UTC `yyyy-MM-dd` formatter (thread-safe; immutable). */
-private val TRASHED_WHEN_FORMAT: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC)
-
 /**
- * Absolute `yyyy-MM-dd` (UTC) of a tombstone timestamp. Deliberately deterministic (fixed pattern +
- * UTC) rather than desktop's locale-aware short-date, so this pure helper is host-testable without a
- * fixed clock/zone. Trade-off: the displayed calendar day is UTC, so a block trashed within a few
- * hours of local midnight can render the adjacent day. Locale-aware parity with desktop is tracked
- * in #413. Mirror of iOS `formatTrashedWhen`.
+ * Locale-aware medium-style date (e.g. "Jun 15, 2024") of a tombstone timestamp, matching desktop's
+ * short-month date and iOS `formatTrashedWhen`. The [zone] and [locale] are injected rather than
+ * read from ambient state, so this helper stays pure and host-testable: production passes
+ * `ZoneId.systemDefault()` / `Locale.getDefault()` (resolving the prior UTC-vs-local parity gap with
+ * desktop, #413), while tests pin a fixed zone and locale for deterministic assertions.
  */
-fun formatTrashedWhen(ms: Long): String = TRASHED_WHEN_FORMAT.format(Instant.ofEpochMilli(ms))
+fun formatTrashedWhen(ms: Long, zone: ZoneId, locale: Locale): String =
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
+        .withLocale(locale)
+        .withZone(zone)
+        .format(Instant.ofEpochMilli(ms))
 
 /** Empty-trash confirm body (parity: desktop/iOS `emptyTrashConfirmBody`). */
 fun emptyTrashConfirmBody(count: Int): String {

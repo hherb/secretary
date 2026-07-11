@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!--
+      The uniffi 0.31 Kotlin bindings are generated into build/generated/uniffi (never
+      committed) and wired in via a kotlin.srcDir, so Android Lint scans them as ordinary
+      source. Their runtime picks a `java.lang.ref.Cleaner` implementation reflectively —
+      `Class.forName("java.lang.ref.Cleaner")` with a JNA-cleaner fallback when the API-33
+      class is absent — so the guarded `Cleaner.create()/register()/clean()` calls are safe
+      on our minSdk-26 floor. Lint's NewApi check cannot see through the reflective guard and
+      reports them as false positives. Scope the suppression to the generated directory ONLY;
+      hand-written :kit source keeps full NewApi coverage (see #387).
+    -->
+    <issue id="NewApi">
+        <ignore path="build/generated/uniffi/**" />
+    </issue>
+</lint>

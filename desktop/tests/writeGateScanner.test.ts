@@ -212,4 +212,68 @@ describe('findUngatedWrites', () => {
       }`;
     expect(scan(src)).toEqual([]);
   });
+
+  // #408: the call-site matcher was comment-naive — a wrapper name with call syntax
+  // mentioned inside a comment was matched as a real ungated call. It must ignore
+  // comments and string literals, while still catching genuine executable calls.
+  it('does NOT flag a gated wrapper mentioned with call syntax inside a line comment (#408)', () => {
+    const src = `
+      async function onImport() {
+        // calls importContact(path) after authorizeWrite — described, not invoked
+        await authorizeWrite('Confirm importing this contact');
+        await realImport(path);
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('does NOT flag a gated wrapper mentioned with call syntax inside a block comment (#408)', () => {
+    const src = `
+      /**
+       * This handler eventually reaches saveRecord(uuid, rec) via the store.
+       */
+      async function describe2() {
+        await readBlock(b);
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('still flags a genuine ungated call sitting next to a comment mention (#408)', () => {
+    // A comment mentioning the wrapper must not mask a real ungated call in the same body.
+    const src = `
+      async function bad() {
+        // saveRecord(uuid, rec) is what this does
+        await saveRecord(uuid, rec);
+      }`;
+    expect(scan(src).map((v) => v.wrapper)).toEqual(['saveRecord']);
+  });
+
+  it('does not mistake `//` inside a string literal for a comment start (#408)', () => {
+    // If the masker treated `//` in "https://..." as a line comment, it would blank the
+    // rest of the line and the genuinely ungated saveRecord() after it would go UNSCANNED
+    // (a false NEGATIVE — the dangerous direction). The real call must still trip.
+    const src = `
+      async function bad() {
+        const url = 'https://example.com/x'; await saveRecord(uuid, rec);
+      }`;
+    expect(scan(src).map((v) => v.wrapper)).toEqual(['saveRecord']);
+  });
+
+  it('does NOT flag a gated wrapper name that only appears inside a string literal (#408)', () => {
+    const src = `
+      async function log() {
+        console.log('about to call saveRecord(uuid, rec)');
+      }`;
+    expect(scan(src)).toEqual([]);
+  });
+
+  it('STILL flags a real ungated call inside a template-literal interpolation (#408)', () => {
+    // Masking string bodies must NOT blank `${...}` interpolation code — a call there is
+    // executable and must still be caught, else masking would WEAKEN the gate.
+    const src = `
+      async function bad() {
+        const msg = \`result: \${await saveRecord(uuid, rec)}\`;
+        return msg;
+      }`;
+    expect(scan(src).map((v) => v.wrapper)).toEqual(['saveRecord']);
+  });
 });

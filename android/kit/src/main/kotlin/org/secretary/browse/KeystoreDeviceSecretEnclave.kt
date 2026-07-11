@@ -4,6 +4,7 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.nio.ByteBuffer
 import java.security.GeneralSecurityException
@@ -123,7 +124,9 @@ class KeystoreDeviceSecretEnclave(
         return generateKey(strongBox = keyConfig.strongBox)
     }
 
-    private fun generateKey(strongBox: Boolean): SecretKey {
+    /** Build the AES-256-GCM key spec. [strongBox] requests a StrongBox-backed key, which is an
+     *  API 28+ feature — the setter is guarded, so below API 28 the flag is silently ignored. */
+    private fun newKeySpecBuilder(strongBox: Boolean): KeyGenParameterSpec.Builder {
         val builder = KeyGenParameterSpec.Builder(
             keyAlias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
@@ -145,15 +148,37 @@ class KeystoreDeviceSecretEnclave(
         if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             builder.setIsStrongBoxBacked(true)
         }
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        return try {
-            generator.init(builder.build())
-            generator.generateKey()
-        } catch (e: StrongBoxUnavailableException) {
-            // Emulator / devices without StrongBox: retry without it.
-            generateKey(strongBox = false)
-        }
+        return builder
     }
+
+    private fun buildKey(builder: KeyGenParameterSpec.Builder): SecretKey {
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        generator.init(builder.build())
+        return generator.generateKey()
+    }
+
+    private fun generateKey(strongBox: Boolean): SecretKey =
+        // StrongBox is only ever requested on API 28+ (that is where the setter and the
+        // StrongBoxUnavailableException it can raise both exist), so the fallback path — and its
+        // reference to that API-28 exception type — is isolated behind an API-28 guard. On API
+        // 26/27 the class is never loaded, avoiding a NoClassDefFoundError (#387).
+        if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            generateStrongBoxBackedKey()
+        } else {
+            buildKey(newKeySpecBuilder(strongBox = false))
+        }
+
+    /** Generate a StrongBox-backed key, falling back to a software-backed key on devices whose
+     *  hardware has no StrongBox unit. Isolated behind [RequiresApi] so [StrongBoxUnavailableException]
+     *  (API 28) is never referenced on API 26/27. */
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun generateStrongBoxBackedKey(): SecretKey =
+        try {
+            buildKey(newKeySpecBuilder(strongBox = true))
+        } catch (e: StrongBoxUnavailableException) {
+            // Emulator / devices without a StrongBox security unit: retry without it.
+            buildKey(newKeySpecBuilder(strongBox = false))
+        }
 
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"

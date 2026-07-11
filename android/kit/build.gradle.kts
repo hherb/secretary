@@ -49,6 +49,12 @@ android {
             kotlin.srcDir(generatedBindingsDir.map { it.dir("uniffi/secretary") })
         }
     }
+
+    // The generated uniffi bindings are added as a source dir above, so lint scans them.
+    // lint.xml scopes a NewApi suppression to that generated directory only (see #387).
+    lint {
+        lintConfig = file("lint.xml")
+    }
 }
 
 kotlin {

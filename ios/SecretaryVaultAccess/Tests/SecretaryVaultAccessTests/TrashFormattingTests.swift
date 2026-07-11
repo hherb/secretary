@@ -37,6 +37,28 @@ final class TrashFormattingTests: XCTestCase {
             "1 item trashed more than 90 days ago will be permanently deleted (oldest: 100 days).")
     }
 
+    func testFormatTrashedWhenIsLocaleAwareMediumStyle() {
+        // 2021-01-01T00:00:00Z. Medium style is CLDR-version dependent, so assert the
+        // calendar parts (short month + year) rather than an exact string.
+        let s = formatTrashedWhen(1_609_459_200_000,
+                                  timeZone: TimeZone(identifier: "UTC")!,
+                                  locale: Locale(identifier: "en_US_POSIX"))
+        XCTAssertTrue(s.contains("2021"), s)
+        XCTAssertTrue(s.contains("Jan"), s)
+    }
+
+    func testFormatTrashedWhenHonorsInjectedTimeZoneAcrossMidnight() {
+        // 2021-01-01T02:00:00Z renders Jan 1 2021 in UTC but Dec 31 2020 in
+        // America/Los_Angeles (UTC-8) — proving the zone parameter is honored.
+        let ms: UInt64 = 1_609_459_200_000 + 2 * 3_600_000
+        let posix = Locale(identifier: "en_US_POSIX")
+        let utcDay = formatTrashedWhen(ms, timeZone: TimeZone(identifier: "UTC")!, locale: posix)
+        let laDay = formatTrashedWhen(ms, timeZone: TimeZone(identifier: "America/Los_Angeles")!, locale: posix)
+        XCTAssertTrue(utcDay.contains("2021"), utcDay)
+        XCTAssertTrue(laDay.contains("2020"), laDay)
+        XCTAssertNotEqual(utcDay, laDay)
+    }
+
     func testMsToDays() {
         XCTAssertEqual(msToDays(90 * 86_400_000), 90)
     }

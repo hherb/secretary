@@ -101,6 +101,80 @@ function matchBrace(src: string, openIdx: number): number {
   return matchBracket(src, openIdx, '{', '}');
 }
 
+/** Overwrite the string literal starting at `i` in `out` with spaces (newlines kept),
+ *  and return the index just past it. A template literal's `${...}` interpolation is
+ *  left INTACT — it is executable code, so a wrapper call inside it must still be
+ *  detectable (blanking it would make the gate weaker, not stricter). `src` is the
+ *  original text; `out` is the same-length mutable buffer being masked. */
+function maskString(src: string, out: string[], i: number): number {
+  const quote = src[i];
+  out[i] = ' ';
+  i += 1;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\\') {
+      if (out[i] !== '\n') out[i] = ' ';
+      if (i + 1 < src.length && src[i + 1] !== '\n') out[i + 1] = ' ';
+      i += 2;
+      continue;
+    }
+    if (quote === '`' && c === '$' && src[i + 1] === '{') {
+      // Skip over `${...}` on the original source (brace-balanced, string/comment aware)
+      // WITHOUT blanking it, preserving the interpolation code.
+      i = matchBrace(src, i + 1);
+      continue;
+    }
+    if (c === quote) {
+      out[i] = ' ';
+      return i + 1;
+    }
+    if (c !== '\n') out[i] = ' ';
+    i += 1;
+  }
+  return src.length;
+}
+
+/** Return a copy of `src`, identical in length, with every line/block comment and
+ *  string-literal body replaced by spaces (newlines preserved). This neutralizes
+ *  non-executable text so the call-site regex in `callIndices` never matches a wrapper
+ *  name mentioned inside a comment or string (#408). Scanning must be string-aware even
+ *  to find comments: a `//` inside `"http://x"` is not a comment, and masking it as one
+ *  would blank real code after it on the same line (a false NEGATIVE). Template `${...}`
+ *  interpolations stay intact — see `maskString`.
+ *
+ *  Blind spot (accepted, same class as the rest of the scanner): regex literals are NOT
+ *  tokenized, so a quote char inside a character class — `/['"]/` — is read as a string
+ *  start and can blank code up to the next quote (a false NEGATIVE). This matches the
+ *  pre-existing assumption in `skipString`/`matchBracket` and does not arise in practice —
+ *  this codebase never mixes such a regex with a gated write in the same handler. */
+function maskNonCode(src: string): string {
+  const out = src.split('');
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      const end = nl < 0 ? src.length : nl; // keep the newline itself
+      for (let j = i; j < end; j++) out[j] = ' ';
+      i = end;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      const end = e < 0 ? src.length : e + 2;
+      for (let j = i; j < end; j++) if (out[j] !== '\n') out[j] = ' ';
+      i = end;
+      continue;
+    }
+    if (STRING_DELIMS.has(c)) {
+      i = maskString(src, out, i);
+      continue;
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
 /** Concatenate the contents of every `<script>` block (`.svelte`), or return the
  *  whole source for a plain `.ts` file. Markup outside <script> never contains
  *  executable wrapper calls, so dropping it avoids false matches. */
@@ -257,7 +331,10 @@ export function findUngatedWrites(
   gatedWrappers: readonly string[],
   gate = 'authorizeWrite',
 ): UngatedWrite[] {
-  const src = extractScript(source, isSvelte);
+  // Mask comments and string literals up front so every downstream index-based pass
+  // (body enumeration, call-site matching) operates only on executable code. The mask
+  // preserves length, so all indices map 1:1 back to the extracted source (#408).
+  const src = maskNonCode(extractScript(source, isSvelte));
   const bodies = findFunctionBodies(src);
   const gateCalls = callIndices(src, gate);
   const violations: UngatedWrite[] = [];

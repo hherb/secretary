@@ -40,6 +40,8 @@ import org.secretary.browse.VaultBrowseError
 import org.secretary.browse.emptyTrashConfirmBody
 import org.secretary.browse.formatTrashedWhen
 import org.secretary.browse.retentionSummary
+import java.time.ZoneId
+import java.util.Locale
 
 /**
  * The Android Trash browser — mirror of iOS `TrashScreen`. Lists trashed blocks newest-first; each
@@ -192,7 +194,7 @@ private fun TrashRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(block.blockName, style = MaterialTheme.typography.bodyLarge)
             Text(
-                "trashed ${formatTrashedWhen(block.tombstonedAtMs)}",
+                "trashed ${formatTrashedWhen(block.tombstonedAtMs, ZoneId.systemDefault(), Locale.getDefault())}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
