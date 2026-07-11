@@ -43,9 +43,11 @@ public final class VaultBrowseViewModel: ObservableObject {
 
     private let session: VaultSession
     private let gate: WriteReauthGate
-    public init(session: VaultSession, gate: WriteReauthGate) {
+    private let trashPort: TrashPort?
+    public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil) {
         self.session = session
         self.gate = gate
+        self.trashPort = trashPort
     }
 
     public var vaultUuidHex: String { session.vaultUuidHex }
@@ -243,5 +245,12 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func makeEditViewModel(mode: RecordEditViewModel.Mode) -> RecordEditViewModel? {
         guard let blockUuid = selectedBlockUuid else { return nil }
         return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode, gate: gate)
+    }
+
+    /// Build the Trash browser VM sharing this session's re-auth gate.
+    /// Returns nil when no trash port was injected (e.g. in browse-only tests).
+    public func makeTrashViewModel() -> TrashViewModel? {
+        guard let trashPort else { return nil }
+        return TrashViewModel(port: trashPort, gate: gate)
     }
 }

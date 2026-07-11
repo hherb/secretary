@@ -12,6 +12,7 @@ use crate::wrappers::identity::{
 };
 use crate::wrappers::purge::{EmptyTrashReport, PurgeReport};
 use crate::wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
+use crate::wrappers::trash::TrashedBlock;
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
 
@@ -474,6 +475,34 @@ pub fn purge_block(
             was_shared: r.was_shared,
             recipient_count: r.recipient_count,
             files_removed: r.files_removed,
+        })
+        .map_err(VaultError::from)
+}
+
+/// List every not-yet-purged trashed block, projected by name — uniffi
+/// namespace fn projection of [`secretary_ffi_bridge::list_trashed_blocks`].
+/// See `ffi/secretary-ffi-bridge/src/trash/list.rs`.
+///
+/// # Errors
+///
+/// - [`VaultError::CorruptVault`] — the manifest handle has been wiped,
+///   a not-yet-purged trash entry has no matching file on disk, or any
+///   decrypt failure while recovering a block's name.
+/// - [`VaultError::FolderInvalid`] — IO failure reading a trash file.
+pub fn list_trashed_blocks(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+) -> Result<Vec<TrashedBlock>, VaultError> {
+    secretary_ffi_bridge::list_trashed_blocks(&identity.0, &manifest.0)
+        .map(|v| {
+            v.into_iter()
+                .map(|b| TrashedBlock {
+                    block_uuid: b.block_uuid.to_vec(),
+                    block_name: b.block_name,
+                    tombstoned_at_ms: b.tombstoned_at_ms,
+                    tombstoned_by: b.tombstoned_by.to_vec(),
+                })
+                .collect()
         })
         .map_err(VaultError::from)
 }

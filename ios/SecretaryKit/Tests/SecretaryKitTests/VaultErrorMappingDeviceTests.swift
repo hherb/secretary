@@ -41,4 +41,17 @@ final class VaultErrorMappingDeviceTests: XCTestCase {
         }
         XCTAssertTrue(detail.contains("clock Concurrent"))
     }
+
+    // #412 Trash browser: a block that left trash (restored or purged) between
+    // the caller listing it and acting on it must fold into `.blockNotFound`
+    // (same "refresh the list" user action), NOT slide into `.other`.
+    func testBlockNotInTrashMapsToBlockNotFoundWithDetail() {
+        let mapped = mapVaultAccessError(.BlockNotInTrash(detail: "gone"))
+        XCTAssertEqual(mapped, .blockNotFound("gone"))
+    }
+
+    func testBlockPurgedMapsToBlockNotFoundWithDetail() {
+        let mapped = mapVaultAccessError(.BlockPurged(detail: "purged"))
+        XCTAssertEqual(mapped, .blockNotFound("purged"))
+    }
 }

@@ -43,6 +43,13 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
         return .corruptVault("crash residue in block \(blockUuidHex)")
     case .RepairRejected(let blockUuidHex, let detail):
         return .corruptVault("repair refused for block \(blockUuidHex): \(detail)")
+    // Trash-lifecycle races (#4xx trash browser): the block already left
+    // trash (restored or purged) between the caller listing it and acting
+    // on it. Both fold into `.blockNotFound` — same user-facing action
+    // ("this block is no longer in trash, refresh the list") as a plain
+    // not-found, and no new VaultAccessError case is warranted.
+    case .BlockNotInTrash(let detail):      return .blockNotFound(detail)
+    case .BlockPurged(let detail):          return .blockNotFound(detail)
     default:                                return .other(String(describing: e))
     }
 }

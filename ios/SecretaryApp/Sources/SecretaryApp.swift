@@ -192,7 +192,8 @@ private struct RootView: View {
                                 authorizer: EnclaveBiometricAuthorizer(
                                     enclave: makePerVaultDeviceUnlock(vaultPath: scoped.pathData).enclave),
                                 clock: MonotonicInstant.now)   // initialAuthAt stays nil (#284)
-                            route = .browse(VaultBrowseViewModel(session: session, gate: gate),
+                            route = .browse(VaultBrowseViewModel(session: session, gate: gate,
+                                                                 trashPort: session as? TrashPort),
                                             syncVM, monitor, scoped)
                         })
                 case .browse(let browseModel, let syncVM, let monitor, _):
@@ -280,7 +281,8 @@ private struct RootView: View {
                 appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
             }
             Task { await syncVM.refreshStatus() }    // no sync password on the device path
-            route = .browse(VaultBrowseViewModel(session: session, gate: gate),
+            route = .browse(VaultBrowseViewModel(session: session, gate: gate,
+                                                 trashPort: session as? TrashPort),
                             syncVM, monitor, scoped)
         }
     }

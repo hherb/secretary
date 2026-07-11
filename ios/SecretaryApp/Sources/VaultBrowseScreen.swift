@@ -109,6 +109,17 @@ struct VaultBrowseScreen: View {
                     .disabled(viewModel.isWriting)
                     .accessibilityIdentifier("new-block")
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    if let trashVM = viewModel.makeTrashViewModel() {
+                        NavigationLink {
+                            TrashScreen(viewModel: trashVM)
+                        } label: {
+                            Label("Trash", systemImage: "trash")
+                        }
+                        .disabled(viewModel.isWriting)
+                        .accessibilityIdentifier("open-trash")
+                    }
+                }
             }
             .onAppear { viewModel.loadBlocks() }
             // Drop any revealed plaintext the moment we leave the foreground.
