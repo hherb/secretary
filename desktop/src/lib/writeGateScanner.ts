@@ -140,7 +140,13 @@ function maskString(src: string, out: string[], i: number): number {
  *  name mentioned inside a comment or string (#408). Scanning must be string-aware even
  *  to find comments: a `//` inside `"http://x"` is not a comment, and masking it as one
  *  would blank real code after it on the same line (a false NEGATIVE). Template `${...}`
- *  interpolations stay intact — see `maskString`. */
+ *  interpolations stay intact — see `maskString`.
+ *
+ *  Blind spot (accepted, same class as the rest of the scanner): regex literals are NOT
+ *  tokenized, so a quote char inside a character class — `/['"]/` — is read as a string
+ *  start and can blank code up to the next quote (a false NEGATIVE). This matches the
+ *  pre-existing assumption in `skipString`/`matchBracket` and does not arise in practice —
+ *  this codebase never mixes such a regex with a gated write in the same handler. */
 function maskNonCode(src: string): string {
   const out = src.split('');
   let i = 0;
