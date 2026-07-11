@@ -149,6 +149,9 @@
       if (n) notice = n;
       void load();
     }}
+    onBeforeCommit={() => {
+      notice = null;
+    }}
   />
 {/if}
 

@@ -23,8 +23,8 @@
   import { userMessageFor, type AppError } from '../../lib/errors';
   import { formatPurgeNotice, type PurgeNotice } from '../../lib/purgeNotice';
 
-  type Props = { onClose: (notice?: PurgeNotice) => void };
-  let { onClose }: Props = $props();
+  type Props = { onClose: (notice?: PurgeNotice) => void; onBeforeCommit?: () => void };
+  let { onClose, onBeforeCommit }: Props = $props();
 
   let preview = $state<RetentionPreviewDto | null>(null);
   let error = $state<AppError | null>(null);
@@ -61,6 +61,12 @@
   let hasExpired = $derived((preview?.entries.length ?? 0) > 0);
 
   async function confirm() {
+    // Clear the parent's stale post-op notice at the moment this write is
+    // initiated — mirrors TrashView's confirmPurge/confirmEmpty, which clear
+    // `notice` at the top of their handler, before authorizeWrite. Fires
+    // even if the write below fails, so a failed retention run never leaves
+    // a prior success banner visible behind this dialog's own error.
+    onBeforeCommit?.();
     error = null;
     try {
       await authorizeWrite('Confirm permanently deleting expired trash');
