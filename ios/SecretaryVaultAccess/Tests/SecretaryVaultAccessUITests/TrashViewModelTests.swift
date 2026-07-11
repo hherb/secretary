@@ -141,5 +141,17 @@ final class TrashViewModelTests: XCTestCase {
         await vm.runRetention()
         XCTAssertEqual(gate.authorizeCount, 1)
         XCTAssertEqual(port.autoPurgeWindows, [90 * 86_400_000])
+        XCTAssertEqual(vm.purgeNotice, PurgeNotice(text: "Purged 1 item", severity: .success))
+    }
+
+    func testRunRetentionWarnsWhenFilesFailed() async {
+        let port = FakeTrashPort(
+            expiredEntries: [ExpiredEntryInfo(blockUuid: [1], tombstonedAtMs: 0, ageMs: 1),
+                             ExpiredEntryInfo(blockUuid: [2], tombstonedAtMs: 0, ageMs: 1)])
+        port.retentionFilesFailed = 1
+        let vm = TrashViewModel(port: port, gate: FakeWriteReauthGate())
+        await vm.runRetention()
+        XCTAssertEqual(vm.purgeNotice,
+                       PurgeNotice(text: "Purged 2 items · 1 file could not be removed", severity: .warning))
     }
 }

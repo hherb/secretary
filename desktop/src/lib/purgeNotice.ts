@@ -29,6 +29,11 @@ export function formatPurgeNotice(outcome: PurgeOutcome): PurgeNotice {
     return { text: 'Deleted forever', severity: 'success' };
   }
   const { purgedCount, filesFailed } = outcome;
+  // purgedCount === 0 is checked before filesFailed by design: the Rust report
+  // source guarantees `filesFailed > 0 ⇒ purgedCount > 0` (a file only fails to
+  // unlink for a block that was in the purge set), so {0, >0} — which would show
+  // the no-op message and hide the failure — is unreachable. If that source
+  // invariant ever changes, reorder these checks (mirror in the iOS/Android formatters).
   if (purgedCount === 0) {
     const text =
       outcome.op === 'retention'

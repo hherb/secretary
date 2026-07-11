@@ -261,21 +261,28 @@ describe('TrashView', () => {
     expect(queryByRole('status')).toBeNull();
   });
 
-  it('renders a warning banner when files could not be removed', async () => {
-    invokeMock.mockResolvedValueOnce([trashedEntry()]);
-    invokeMock.mockResolvedValueOnce([]); // reload after purge
-    purgeBlockMock.mockResolvedValueOnce({
-      blockUuidHex: 'ab', wasShared: false, recipientCount: 0, filesRemoved: 1
+  it('renders an assertive warning banner when some files could not be removed', async () => {
+    // empty_trash reports a partial on-disk failure (filesFailed > 0). The
+    // banner must surface it (not hide it behind the no-op message) AND be
+    // announced assertively — role="alert", not the success path's "status".
+    invokeMock.mockResolvedValueOnce([trashedEntry(), { ...trashedEntry(), blockUuidHex: 'cd', blockName: 'Card' }]);
+    invokeMock.mockResolvedValueOnce({
+      purgedCount: 2, sharedCount: 0, ownerOnlyCount: 2, unknownCount: 0, filesRemoved: 1, filesFailed: 1
     });
-    // (single-block purge is always "Deleted forever" — this asserts the
-    // success banner text; the warning branch is covered by purgeNotice.test.ts)
-    const { findByRole, getByText } = render(TrashView);
+    invokeMock.mockResolvedValueOnce([]); // reload after empty
+
+    const { findByRole, getByText, queryByRole } = render(TrashView);
     await waitFor(() => expect(getByText('Bank logins')).toBeTruthy());
-    const purgeButton = await findByRole('button', { name: /permanently delete block bank logins/i });
-    await fireEvent.click(purgeButton);
-    const confirm = await findByRole('button', { name: /^delete forever$/i });
+
+    const emptyButton = await findByRole('button', { name: /empty trash/i });
+    await fireEvent.click(emptyButton);
+    const dialog = await findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: /^empty trash$/i });
     await fireEvent.click(confirm);
-    const status = await findByRole('status');
-    expect(status.textContent).toMatch(/deleted forever/i);
+
+    const alert = await findByRole('alert');
+    expect(alert.textContent).toMatch(/purged 2 items · 1 file could not be removed/i);
+    // A warning is assertive, never the polite success role.
+    expect(queryByRole('status')).toBeNull();
   });
 });

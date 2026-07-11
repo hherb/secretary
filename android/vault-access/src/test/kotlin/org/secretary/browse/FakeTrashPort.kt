@@ -17,6 +17,7 @@ class FakeTrashPort(
     private val windowMs: Long = 90L * MS_PER_DAY,
     private val writeGate: CompletableDeferred<Unit>? = null,
     var emptyTrashFilesFailed: Int = 0,
+    var retentionFilesFailed: Int = 0,
 ) : TrashPort {
     val restored = mutableListOf<ByteArray>()
     val purged = mutableListOf<ByteArray>()
@@ -52,6 +53,6 @@ class FakeTrashPort(
     override suspend fun autoPurgeExpired(windowMs: Long): RetentionReportInfo {
         writeGate?.await()
         autoPurged += windowMs
-        return RetentionReportInfo(expired.size, 0, expired.size, 0, expired.size, 0, windowMs)
+        return RetentionReportInfo(expired.size, 0, expired.size, 0, expired.size, retentionFilesFailed, windowMs)
     }
 }

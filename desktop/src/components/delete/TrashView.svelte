@@ -123,7 +123,13 @@
   {/if}
 
   {#if notice}
-    <p class="trash-view__notice" class:trash-view__notice--warning={notice.severity === 'warning'} role="status">
+    <!-- A partial-failure warning ("N files could not be removed") is announced
+         assertively (role=alert); a plain success confirmation stays polite (role=status). -->
+    <p
+      class="trash-view__notice"
+      class:trash-view__notice--warning={notice.severity === 'warning'}
+      role={notice.severity === 'warning' ? 'alert' : 'status'}
+    >
       {notice.text}
     </p>
   {/if}

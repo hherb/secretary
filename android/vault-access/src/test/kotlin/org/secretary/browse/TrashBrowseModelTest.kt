@@ -141,6 +141,35 @@ class TrashBrowseModelTest {
     }
 
     @Test
+    fun `runRetention sets a purged notice`() = runTest {
+        val port = FakeTrashPort(
+            expired = listOf(
+                ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY),
+                ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY),
+            ),
+        )
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.runRetention()
+        assertEquals(PurgeNotice("Purged 2 items", PurgeSeverity.SUCCESS), model.notice.value)
+    }
+
+    @Test
+    fun `runRetention warns when files failed`() = runTest {
+        val port = FakeTrashPort(
+            expired = listOf(ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY)),
+            retentionFilesFailed = 1,
+        )
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.runRetention()
+        assertEquals(
+            PurgeNotice("Purged 1 item · 1 file could not be removed", PurgeSeverity.WARNING),
+            model.notice.value,
+        )
+    }
+
+    @Test
     fun `emptyTrash sets a purged notice`() = runTest {
         val port = FakeTrashPort(list = listOf(tb("a", 100L, 1), tb("b", 200L, 2)))
         val model = TrashBrowseModel(port)

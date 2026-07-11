@@ -90,6 +90,10 @@ public func formatPurgeNotice(_ outcome: PurgeOutcome) -> PurgeNotice {
 }
 
 private func countNotice(_ purgedCount: UInt32, _ filesFailed: UInt32, zeroText: String) -> PurgeNotice {
+    // purgedCount == 0 is checked before filesFailed by design: the Rust report
+    // source guarantees `filesFailed > 0 ⇒ purgedCount > 0`, so {0, >0} — which
+    // would show the no-op message and hide the failure — is unreachable. If that
+    // source invariant changes, reorder (mirror in desktop/Android formatters).
     if purgedCount == 0 {
         return PurgeNotice(text: zeroText, severity: .success)
     }

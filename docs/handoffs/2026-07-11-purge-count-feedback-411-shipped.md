@@ -35,8 +35,12 @@ cd desktop && pnpm test                      # 644 green   ·   pnpm run svelte-
 # android (Gradle native build was warmed once this session; subsequent runs fast)
 cd android && ./gradlew :kit:lintDebug :kit:testDebugUnitTest :vault-access:test :browse-ui:compileDebugKotlin :app:assembleDebug   # BUILD SUCCESSFUL, 0 lint errors
 # ios (host package — no xcframework build)
-cd ios/SecretaryVaultAccess && swift test    # 237 green
+cd ios/SecretaryVaultAccess && swift test    # 237 green (238 after the review-fixup retention-warning test)
+# ios app-target compile (review fixup — builds the xcframework then the sim app)
+bash ios/scripts/build-app.sh                # ** BUILD SUCCEEDED ** (TrashScreen.swift render compiles)
 ```
+
+> **Review-fixup addendum (post-open):** a code review of the PR raised five points, all addressed on-branch — mobile retention→notice VM tests added (iOS+Android, with a `retentionFilesFailed` `FakeTrashPort` knob), the `purgedCount==0`-before-`filesFailed` ordering invariant documented as a tripwire in all three formatters, the desktop warning banner upgraded to assertive `role="alert"` (with a DOM test), the deferred mobile banner render test filed as [#417](https://github.com/hherb/secretary/issues/417), and the iOS app-target compile actually run (`** BUILD SUCCEEDED **`). UI/test-only; constraints unchanged.
 
 ## (2) What's next (pick per appetite)
 
@@ -46,9 +50,9 @@ cd ios/SecretaryVaultAccess && swift test    # 237 green
 
 ## (3) Open decisions and risks
 
-- **iOS `SecretaryApp` (app-target) `TrashScreen.swift` was NOT compiled this session.** The banner render is a thin binding to the host-tested `purgeNotice` (the pure formatter + view-model logic in `SecretaryVaultAccess` ARE host-tested, `swift test` 237 green). Compiling the app target triggers the multi-minute xcframework build ([[project_secretary_ios_xcframework_build_watchdog]]) — deliberately deferred, exactly as the #413 iOS call-site was last session. **A full `run-ios-tests.sh` would confirm the app-target compile.** Low risk (additive binding to an existing `@Published` property; the modifier-move was line-verified in review).
-- **No host test covers the Compose/SwiftUI banner *render*** on mobile (only the model/formatter logic). Android's `TrashNoticeBanner` carries `testTag("trash-notice")`, and iOS's carries `accessibilityIdentifier("purge-notice")` — ready for a future instrumented/Compose UI assertion (see Next #2).
-- **Latent edge case, proven unreachable — no guard added (deliberate).** In all three formatters `purgedCount==0` is checked before `filesFailed`, so `{purgedCount:0, filesFailed>0}` would show the no-op message and hide failures. The final review verified at the **Rust report source** (`empty_trash`/`auto_purge_expired` early-return `{0,0}` before `purge_batch_commit`; `files_failed>0 ⇒ targets non-empty ⇒ purged_count>0`) that this input **cannot be produced**. Adding a never-taken branch across three platforms would be over-building + coverage rot — intentionally not done.
+- **iOS `SecretaryApp` (app-target) `TrashScreen.swift` compile — NOW CONFIRMED (review fixup).** Originally deferred (compiling the app target triggers the multi-minute xcframework build, [[project_secretary_ios_xcframework_build_watchdog]]); the review flagged it as the one pre-merge check. Ran `ios/scripts/build-app.sh` (builds the xcframework then compiles the Secretary app for the simulator) → `** BUILD SUCCEEDED **`, so the banner render binding compiles clean. `SecretaryVaultAccess` host logic is `swift test` 238 green.
+- **No host test covers the Compose/SwiftUI banner *render*** on mobile (only the model/formatter logic). Android's `TrashNoticeBanner` carries `testTag("trash-notice")`, and iOS's carries `accessibilityIdentifier("purge-notice")` — ready for a future instrumented/Compose UI assertion. **Filed as [#417](https://github.com/hherb/secretary/issues/417)** (review fixup); pairs with Next #2.
+- **Latent edge case, proven unreachable — no guard added, but now documented (review fixup).** In all three formatters `purgedCount==0` is checked before `filesFailed`, so `{purgedCount:0, filesFailed>0}` would show the no-op message and hide failures. Verified at the **Rust report source** (`empty_trash`/`auto_purge_expired` early-return `{0,0}` before `purge_batch_commit`; `files_failed>0 ⇒ targets non-empty ⇒ purged_count>0`) that this input **cannot be produced**. No never-taken UI branch was added (over-building + coverage rot), but each `countNotice` now carries a tripwire comment stating the `filesFailed > 0 ⇒ purgedCount > 0` source invariant so the ordering isn't silently unsafe if that source ever changes.
 - **Warning-severity color differs per platform** (iOS `.orange`, Android `colorScheme.error`, desktop `--color-warning`) — within the design's explicit "adapt to platform idiom" latitude; the severity *branch mapping* is identical. Conscious choice, no change.
 - **Pre-op confirmation dialogs untouched** — #411 is post-op reconciliation only; the (single-user-benign) stale-snapshot pre-op count stays as designed.
 

@@ -78,6 +78,10 @@ fun formatPurgeNotice(outcome: PurgeOutcome): PurgeNotice = when (outcome) {
 }
 
 private fun countNotice(purgedCount: Int, filesFailed: Int, zeroText: String): PurgeNotice {
+    // purgedCount == 0 is checked before filesFailed by design: the Rust report
+    // source guarantees `filesFailed > 0 ⇒ purgedCount > 0`, so {0, >0} — which would
+    // show the no-op message and hide the failure — is unreachable. If that source
+    // invariant changes, reorder (mirror in desktop/iOS formatters).
     if (purgedCount == 0) return PurgeNotice(zeroText, PurgeSeverity.SUCCESS)
     val base = "Purged ${pluralCount(purgedCount, "item")}"
     return if (filesFailed > 0) {
