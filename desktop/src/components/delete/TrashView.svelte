@@ -10,6 +10,7 @@
   import { back } from '../../lib/browse';
   import { refreshManifest } from '../../lib/stores';
   import { userMessageFor, type AppError } from '../../lib/errors';
+  import { formatPurgeNotice, type PurgeNotice } from '../../lib/purgeNotice';
   import TrashedBlockRow from './TrashedBlockRow.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import RetentionDialog from './RetentionDialog.svelte';
@@ -17,6 +18,7 @@
 
   let entries = $state<TrashedBlockDto[] | null>(null);
   let error = $state<AppError | null>(null);
+  let notice = $state<PurgeNotice | null>(null);
   let showRetention = $state(false);
   let pendingPurge = $state<TrashedBlockDto | null>(null);
   let pendingEmpty = $state(false);
@@ -42,6 +44,7 @@
 
   async function restore(entry: TrashedBlockDto) {
     error = null;
+    notice = null;
     try {
       await authorizeWrite('Confirm restoring this block');
     } catch (err) {
@@ -72,9 +75,11 @@
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
+    notice = null;
     try {
       await purgeBlock(target.blockUuidHex);
       await refreshManifest();
+      notice = formatPurgeNotice({ op: 'singlePurge' });
       await load();
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
@@ -83,8 +88,7 @@
 
   // Mirrors `confirmPurge` for the whole-trash batch: authorize, run the
   // irreversible empty, then refresh the manifest and reload the (now empty)
-  // list. The returned report is intentionally not surfaced — the empty list
-  // is the success signal (parity with per-block purge).
+  // list.
   async function confirmEmpty() {
     pendingEmpty = false;
     error = null;
@@ -95,9 +99,11 @@
       error = isAppError(err) ? err : { code: 'internal' };
       return;
     }
+    notice = null;
     try {
-      await emptyTrash();
+      const report = await emptyTrash();
       await refreshManifest();
+      notice = formatPurgeNotice({ op: 'emptyTrash', purgedCount: report.purgedCount, filesFailed: report.filesFailed });
       await load();
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
@@ -116,6 +122,12 @@
     </button>
   {/if}
 
+  {#if notice}
+    <p class="trash-view__notice" class:trash-view__notice--warning={notice.severity === 'warning'} role="status">
+      {notice.text}
+    </p>
+  {/if}
+
   {#if error}
     {@const msg = userMessageFor(error)}
     <p class="trash-view__error" role="alert">{msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}</p>
@@ -132,8 +144,9 @@
 
 {#if showRetention}
   <RetentionDialog
-    onClose={() => {
+    onClose={(n) => {
       showRetention = false;
+      if (n) notice = n;
       void load();
     }}
   />
@@ -158,3 +171,12 @@
     onCancel={() => (pendingEmpty = false)}
   />
 {/if}
+
+<style>
+  .trash-view__notice {
+    color: var(--color-success, #217a3c);
+  }
+  .trash-view__notice--warning {
+    color: var(--color-warning, #a15c00);
+  }
+</style>

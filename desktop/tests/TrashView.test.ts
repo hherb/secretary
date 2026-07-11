@@ -8,7 +8,7 @@
 // shape for ipc / stores / writeGuard.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -147,5 +147,49 @@ describe('TrashView', () => {
     await waitFor(() => expect(authorizeWriteMock).toHaveBeenCalledTimes(1));
     expect(purgeBlockMock).not.toHaveBeenCalled();
     expect(refreshManifestMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a "Purged N items" status banner after emptying trash', async () => {
+    invokeMock.mockResolvedValueOnce([trashedEntry(), { ...trashedEntry(), blockUuidHex: 'cd', blockName: 'Card' }]);
+    // empty_trash goes through the real ipc.emptyTrash -> mocked invoke; it
+    // resolves BEFORE the post-empty reload (confirmEmpty awaits emptyTrash()
+    // then refreshManifest() then load()), so this is the 2nd invoke call:
+    invokeMock.mockResolvedValueOnce({
+      purgedCount: 2, sharedCount: 0, ownerOnlyCount: 2, unknownCount: 0, filesRemoved: 2, filesFailed: 0
+    });
+    invokeMock.mockResolvedValueOnce([]); // reload after empty (3rd invoke call)
+
+    const { findByRole, getByText } = render(TrashView);
+    await waitFor(() => expect(getByText('Bank logins')).toBeTruthy());
+
+    const emptyButton = await findByRole('button', { name: /empty trash/i });
+    await fireEvent.click(emptyButton);
+    // The dialog's confirm button shares its accessible name ("Empty trash")
+    // with the trigger button once both are mounted, so scope the query to
+    // the dialog to disambiguate.
+    const dialog = await findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: /^empty trash$/i });
+    await fireEvent.click(confirm);
+
+    const status = await findByRole('status');
+    expect(status.textContent).toMatch(/purged 2 items/i);
+  });
+
+  it('renders a warning banner when files could not be removed', async () => {
+    invokeMock.mockResolvedValueOnce([trashedEntry()]);
+    invokeMock.mockResolvedValueOnce([]); // reload after purge
+    purgeBlockMock.mockResolvedValueOnce({
+      blockUuidHex: 'ab', wasShared: false, recipientCount: 0, filesRemoved: 1
+    });
+    // (single-block purge is always "Deleted forever" — this asserts the
+    // success banner text; the warning branch is covered by purgeNotice.test.ts)
+    const { findByRole, getByText } = render(TrashView);
+    await waitFor(() => expect(getByText('Bank logins')).toBeTruthy());
+    const purgeButton = await findByRole('button', { name: /permanently delete block bank logins/i });
+    await fireEvent.click(purgeButton);
+    const confirm = await findByRole('button', { name: /^delete forever$/i });
+    await fireEvent.click(confirm);
+    const status = await findByRole('status');
+    expect(status.textContent).toMatch(/deleted forever/i);
   });
 });

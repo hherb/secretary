@@ -21,8 +21,9 @@
   import { authorizeWrite, ReauthCancelled } from '../../lib/writeGuard';
   import { refreshManifest } from '../../lib/stores';
   import { userMessageFor, type AppError } from '../../lib/errors';
+  import { formatPurgeNotice, type PurgeNotice } from '../../lib/purgeNotice';
 
-  type Props = { onClose: () => void };
+  type Props = { onClose: (notice?: PurgeNotice) => void };
   let { onClose }: Props = $props();
 
   let preview = $state<RetentionPreviewDto | null>(null);
@@ -70,9 +71,9 @@
     }
     submitting = true;
     try {
-      await runRetention();
+      const report = await runRetention();
       await refreshManifest();
-      onClose();
+      onClose(formatPurgeNotice({ op: 'retention', purgedCount: report.purgedCount, filesFailed: report.filesFailed }));
     } catch (e) {
       error = isAppError(e) ? e : { code: 'internal' };
     } finally {
@@ -99,7 +100,7 @@
   {/if}
 
   <div class="retention-dialog__actions">
-    <button type="button" class="retention-dialog__button" onclick={onClose} disabled={submitting}>
+    <button type="button" class="retention-dialog__button" onclick={() => onClose()} disabled={submitting}>
       {hasExpired ? 'Cancel' : 'Close'}
     </button>
     {#if hasExpired}
