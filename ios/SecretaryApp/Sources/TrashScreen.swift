@@ -21,7 +21,7 @@ struct TrashScreen: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(block.blockName.isEmpty ? "block" : block.blockName)
                         .font(.headline)
-                    Text("trashed \(formatTrashedWhen(block.tombstonedAtMs))")
+                    Text("trashed \(formatTrashedWhen(block.tombstonedAtMs, timeZone: .current, locale: .current))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .swipeActions(edge: .trailing) {

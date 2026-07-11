@@ -1,7 +1,12 @@
 package org.secretary.browse
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.util.Locale
 
 class TrashFormattingTest {
     private fun block(name: String, ms: Long) =
@@ -28,11 +33,24 @@ class TrashFormattingTest {
     }
 
     @Test
-    fun `formatTrashedWhen renders UTC yyyy-MM-dd`() {
-        // 2021-01-01T00:00:00Z = 1_609_459_200_000 ms
-        assertEquals("2021-01-01", formatTrashedWhen(1_609_459_200_000L))
-        // 2026-07-11T12:00:00Z = 1_783_771_200_000 ms
-        assertEquals("2026-07-11", formatTrashedWhen(1_783_771_200_000L))
+    fun `formatTrashedWhen is locale-aware medium style`() {
+        // 2021-01-01T00:00:00Z. Medium style is CLDR-version dependent, so assert the
+        // calendar parts (short month + year) rather than an exact string.
+        val s = formatTrashedWhen(1_609_459_200_000L, ZoneOffset.UTC, Locale.US)
+        assertTrue(s.contains("2021"), s)
+        assertTrue(s.contains("Jan"), s)
+    }
+
+    @Test
+    fun `formatTrashedWhen honors the injected time zone across midnight`() {
+        // 2021-01-01T02:00:00Z renders Jan 1 2021 in UTC but Dec 31 2020 in
+        // America/Los_Angeles (UTC-8) — proving the zone parameter is honored.
+        val ms = 1_609_459_200_000L + 2 * 3_600_000L
+        val utcDay = formatTrashedWhen(ms, ZoneOffset.UTC, Locale.US)
+        val laDay = formatTrashedWhen(ms, ZoneId.of("America/Los_Angeles"), Locale.US)
+        assertTrue(utcDay.contains("2021"), utcDay)
+        assertTrue(laDay.contains("2020"), laDay)
+        assertNotEquals(utcDay, laDay)
     }
 
     @Test

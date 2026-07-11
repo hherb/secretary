@@ -13,17 +13,18 @@ public func sortTrashed(_ entries: [TrashedBlockInfo]) -> [TrashedBlockInfo] {
     entries.sorted { $0.tombstonedAtMs > $1.tombstonedAtMs }
 }
 
-/// Absolute yyyy-MM-dd (POSIX, UTC) of a tombstone timestamp. Deliberately
-/// deterministic (fixed locale + UTC) rather than desktop's locale-aware
-/// short-date, so this pure helper is host-testable without a fixed clock/zone.
-/// Trade-off: the displayed calendar day is UTC, so a block trashed within a
-/// few hours of local midnight can render the adjacent day. Locale-aware
-/// parity with desktop is tracked in #413.
-public func formatTrashedWhen(_ ms: UInt64) -> String {
+/// Locale-aware medium-style date (e.g. "Jun 15, 2024") of a tombstone timestamp,
+/// matching desktop's short-month `formatShortDate`. The `timeZone` and `locale` are
+/// injected rather than read from ambient state, so the helper stays pure and
+/// host-testable: production passes `.current` (the user's zone/locale, resolving the
+/// prior UTC-vs-local parity gap with desktop, #413), while tests pin a fixed zone and
+/// locale for deterministic assertions.
+public func formatTrashedWhen(_ ms: UInt64, timeZone: TimeZone, locale: Locale) -> String {
     let f = DateFormatter()
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.timeZone = TimeZone(identifier: "UTC")
-    f.dateFormat = "yyyy-MM-dd"
+    f.locale = locale
+    f.timeZone = timeZone
+    f.dateStyle = .medium
+    f.timeStyle = .none
     return f.string(from: Date(timeIntervalSince1970: Double(ms) / 1000.0))
 }
 
