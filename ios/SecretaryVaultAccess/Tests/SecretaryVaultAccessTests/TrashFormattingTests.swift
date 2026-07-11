@@ -40,4 +40,11 @@ final class TrashFormattingTests: XCTestCase {
     func testMsToDays() {
         XCTAssertEqual(msToDays(90 * 86_400_000), 90)
     }
+
+    func testMsToDaysRoundsToNearest() {
+        // 90.5 days rounds up to 91 (matches desktop Math.round)
+        XCTAssertEqual(msToDays(90 * 86_400_000 + 43_200_000), 91)
+        // 90.4 days rounds down to 90
+        XCTAssertEqual(msToDays(90 * 86_400_000 + 34_560_000), 90)
+    }
 }
