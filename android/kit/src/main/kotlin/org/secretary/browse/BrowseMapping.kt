@@ -39,6 +39,11 @@ internal fun mapVaultBrowseError(e: VaultException): VaultBrowseError = when (e)
         VaultBrowseError.CorruptVault("crash residue in block ${e.blockUuidHex}")
     is VaultException.RepairRejected ->
         VaultBrowseError.CorruptVault("repair refused for block ${e.blockUuidHex}: ${e.detail}")
+    // Trash ops: no live/trashed block for this UUID (already restored, purged, or never trashed).
+    // Fold both to the existing BlockNotFound surface — no new VaultBrowseError variant (parity with
+    // iOS mapping BlockNotInTrash/BlockPurged -> .blockNotFound). e.detail is a free-text identifier.
+    is VaultException.BlockNotInTrash -> VaultBrowseError.BlockNotFound(e.detail)
+    is VaultException.BlockPurged -> VaultBrowseError.BlockNotFound(e.detail)
     else -> VaultBrowseError.Failed(e.toString())
 }
 

@@ -21,6 +21,13 @@ import uniffi.secretary.editRecord as ffiEditRecord
 import uniffi.secretary.createBlock as ffiCreateBlock
 import uniffi.secretary.renameBlock as ffiRenameBlock
 import uniffi.secretary.moveRecord as ffiMoveRecord
+import uniffi.secretary.listTrashedBlocks as ffiListTrashedBlocks
+import uniffi.secretary.expiredTrashEntries as ffiExpiredTrashEntries
+import uniffi.secretary.defaultRetentionWindowMs as ffiDefaultRetentionWindowMs
+import uniffi.secretary.restoreBlock as ffiRestoreBlock
+import uniffi.secretary.purgeBlock as ffiPurgeBlock
+import uniffi.secretary.emptyTrash as ffiEmptyTrash
+import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
 import java.security.SecureRandom
 
 /**
@@ -100,7 +107,7 @@ class UniffiVaultSession(
     output: OpenVaultOutput,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val deviceUuids: DeviceUuidProvider? = null,
-) : VaultSession {
+) : VaultSession, TrashPort {
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
 
@@ -272,6 +279,84 @@ class UniffiVaultSession(
             }
         }
     }
+
+    // ---- TrashPort (no record plaintext crosses here — only names + counts; never a decrypt call) ----
+    // These reuse the same sessionLock + `wiped` guard and `write` device-uuid/now resolution as every
+    // other session op, so they add no new handle-access pattern. Reports are returned for #411 but
+    // the pure TrashBrowseModel discards them.
+
+    override fun listTrashedBlocks(): List<TrashedBlockInfo> =
+        synchronized(sessionLock) {
+            if (wiped) emptyList()
+            else mapErrors {
+                ffiListTrashedBlocks(identity, manifest).map { b ->
+                    TrashedBlockInfo(
+                        blockUuid = b.blockUuid,
+                        blockName = b.blockName,
+                        tombstonedAtMs = b.tombstonedAtMs.toLong(),
+                        tombstonedBy = b.tombstonedBy,
+                    )
+                }
+            }
+        }
+
+    override fun expiredTrashEntries(windowMs: Long): List<ExpiredEntryInfo> =
+        synchronized(sessionLock) {
+            if (wiped) emptyList()
+            else mapErrors {
+                ffiExpiredTrashEntries(manifest, windowMs.toULong(), System.currentTimeMillis().toULong())
+                    .map { e ->
+                        ExpiredEntryInfo(
+                            blockUuid = e.blockUuid,
+                            tombstonedAtMs = e.tombstonedAtMs.toLong(),
+                            ageMs = e.ageMs.toLong(),
+                        )
+                    }
+            }
+        }
+
+    override fun defaultRetentionWindowMs(): Long = ffiDefaultRetentionWindowMs().toLong()
+
+    override suspend fun restoreBlock(uuid: ByteArray) =
+        write { dev, now -> ffiRestoreBlock(identity, manifest, uuid, dev, now) }
+
+    override suspend fun purgeBlock(uuid: ByteArray): PurgeResultInfo =
+        write { dev, now ->
+            val r = ffiPurgeBlock(identity, manifest, uuid, dev, now)
+            PurgeResultInfo(
+                blockUuid = r.blockUuid,
+                wasShared = r.wasShared,
+                recipientCount = r.recipientCount?.toInt(),
+                filesRemoved = r.filesRemoved.toInt(),
+            )
+        }
+
+    override suspend fun emptyTrash(): EmptyTrashReportInfo =
+        write { dev, now ->
+            val r = ffiEmptyTrash(identity, manifest, dev, now)
+            EmptyTrashReportInfo(
+                purgedCount = r.purgedCount.toInt(),
+                sharedCount = r.sharedCount.toInt(),
+                ownerOnlyCount = r.ownerOnlyCount.toInt(),
+                unknownCount = r.unknownCount.toInt(),
+                filesRemoved = r.filesRemoved.toInt(),
+                filesFailed = r.filesFailed.toInt(),
+            )
+        }
+
+    override suspend fun autoPurgeExpired(windowMs: Long): RetentionReportInfo =
+        write { dev, now ->
+            val r = ffiAutoPurgeExpired(identity, manifest, windowMs.toULong(), now, dev)
+            RetentionReportInfo(
+                purgedCount = r.purgedCount.toInt(),
+                sharedCount = r.sharedCount.toInt(),
+                ownerOnlyCount = r.ownerOnlyCount.toInt(),
+                unknownCount = r.unknownCount.toInt(),
+                filesRemoved = r.filesRemoved.toInt(),
+                filesFailed = r.filesFailed.toInt(),
+                windowMs = r.windowMs.toLong(),
+            )
+        }
 
     override fun wipe() {
         // Order mirrors iOS: blocks (cascade zeroize to records + fields) → manifest → identity.
