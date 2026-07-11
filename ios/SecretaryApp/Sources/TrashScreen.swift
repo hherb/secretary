@@ -118,6 +118,7 @@ private struct RetentionSheet: View {
                 }
             }
             .onAppear { viewModel.previewRetention() }
+            .onDisappear { viewModel.clearPreview() }
         }
     }
 }

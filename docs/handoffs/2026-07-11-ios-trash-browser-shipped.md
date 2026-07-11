@@ -30,7 +30,7 @@ The `list_trashed_blocks` bridge fn already existed but was **bridge-only** (use
 - `2c5700d6` T6 SwiftUI Trash screen + browse entry point + composition wiring
 - `d39c63b2` T7 docs — README + ROADMAP
 - `7e4f4bb9` final-review fixups (msToDays round-half-up parity + formatTrashedWhen doc)
-- → then this handoff commit.
+- `/review` fixups (this handoff commit): retention-sheet preview stale-flash (`clearPreview()` + `.onDisappear`), restore-path + adapter error-mapping (`BlockNotInTrash`/`BlockPurged`→`.blockNotFound`) test coverage, lock-discipline invariant note on the `internal` handle widening; UTC date-parity gap filed as #413. Verified green: pure `swift test` 225/225, `xcodebuild test -scheme SecretaryKit` 45/45, `build-app.sh` BUILD SUCCEEDED.
 
 ### Acceptance (all verified green this session, from the worktree root)
 ```bash

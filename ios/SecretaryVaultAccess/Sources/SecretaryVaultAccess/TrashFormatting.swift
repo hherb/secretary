@@ -17,7 +17,8 @@ public func sortTrashed(_ entries: [TrashedBlockInfo]) -> [TrashedBlockInfo] {
 /// deterministic (fixed locale + UTC) rather than desktop's locale-aware
 /// short-date, so this pure helper is host-testable without a fixed clock/zone.
 /// Trade-off: the displayed calendar day is UTC, so a block trashed within a
-/// few hours of local midnight can render the adjacent day.
+/// few hours of local midnight can render the adjacent day. Locale-aware
+/// parity with desktop is tracked in #413.
 public func formatTrashedWhen(_ ms: UInt64) -> String {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")

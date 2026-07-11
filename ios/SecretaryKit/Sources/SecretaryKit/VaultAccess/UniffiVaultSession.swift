@@ -35,6 +35,13 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
     // closures (Swift's `private` is file-scoped, so a same-type extension
     // in another file cannot see a `private` stored property). Still not
     // `public` — no cross-module surface is added.
+    //
+    // INVARIANT: widening these to `internal` trades away the file-scoped
+    // guarantee that once enforced lock-serialized access. Any new same-module
+    // read/write of `identity`/`manifest` MUST go through a lock-guarded helper
+    // (`readTrash`/`readTrashInfallible`/`write`/`writeTrash*`) — never touch
+    // the raw handles outside `lock.withLock`, or the `wipe()` race the lock
+    // exists to close reopens.
     internal let identity: UnlockedIdentity
     internal let manifest: OpenVaultManifest
     private let deviceUuids: DeviceUuidProviding?

@@ -40,6 +40,13 @@ public final class TrashViewModel: ObservableObject {
         preview = port.expiredTrashEntries(windowMs: port.defaultRetentionWindowMs())
     }
 
+    /// Drop the cached preview so a reopened retention sheet shows its loading
+    /// state instead of flashing the previous run's (now stale) result before
+    /// `previewRetention()` recomputes.
+    public func clearPreview() {
+        preview = nil
+    }
+
     public func restore(uuid: [UInt8]) async {
         _ = await reauthedWrite(reason: "Confirm restoring this block") {
             try self.port.restoreBlock(uuid: uuid)

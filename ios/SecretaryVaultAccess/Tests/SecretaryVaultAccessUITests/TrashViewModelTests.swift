@@ -29,6 +29,31 @@ final class TrashViewModelTests: XCTestCase {
         XCTAssertNil(vm.error)
     }
 
+    func testRestoreGatesThenRemoves() async {
+        let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100), tb(2, at: 200)])
+        let gate = FakeWriteReauthGate()
+        let vm = TrashViewModel(port: port, gate: gate)
+        vm.load()
+        await vm.restore(uuid: [1])
+        XCTAssertEqual(gate.authorizeCount, 1)
+        XCTAssertEqual(port.restoredUuids, [[1]])
+        XCTAssertEqual(vm.entries.map { $0.blockUuid }, [[2]], "restored block leaves the list")
+        XCTAssertNil(vm.error)
+    }
+
+    func testRestoreBlockedByReauthDoesNotWrite() async {
+        let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100)])
+        let gate = FakeWriteReauthGate()
+        gate.failNext = .reauthFailed("cancelled")
+        let vm = TrashViewModel(port: port, gate: gate)
+        vm.load()
+        await vm.restore(uuid: [1])
+        XCTAssertEqual(vm.error, .reauthFailed("cancelled"))
+        XCTAssertEqual(port.restoredUuids, [], "no restore on refused re-auth")
+        XCTAssertEqual(vm.entries.count, 1, "entry stays listed")
+        XCTAssertEqual(gate.authorizeCount, 1)
+    }
+
     func testPurgeBlockedByReauthDoesNotWrite() async {
         let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100)])
         let gate = FakeWriteReauthGate()
@@ -63,6 +88,17 @@ final class TrashViewModelTests: XCTestCase {
         XCTAssertEqual(port.previewCount, 1)
         XCTAssertEqual(gate.authorizeCount, 0, "preview is a read; no re-auth")
         XCTAssertEqual(vm.preview?.count, 1)
+    }
+
+    func testClearPreviewResetsCachedPreview() {
+        let port = FakeTrashPort(
+            expiredEntries: [ExpiredEntryInfo(blockUuid: [1], tombstonedAtMs: 0,
+                                              ageMs: 100 * 86_400_000)])
+        let vm = TrashViewModel(port: port, gate: FakeWriteReauthGate())
+        vm.previewRetention()
+        XCTAssertNotNil(vm.preview)
+        vm.clearPreview()
+        XCTAssertNil(vm.preview, "cleared so a reopened sheet shows its loading state")
     }
 
     func testRunRetentionUsesDefaultWindowAndGates() async {
