@@ -6,6 +6,7 @@ public final class FakeTrashPort: TrashPort, @unchecked Sendable {
     public var trashedBlocks: [TrashedBlockInfo]
     public var expiredEntries: [ExpiredEntryInfo]
     public var defaultWindowMs: UInt64
+    public var emptyTrashFilesFailed: UInt32 = 0
     public var failNextWrite: VaultAccessError?
 
     public private(set) var listCount = 0
@@ -59,7 +60,7 @@ public final class FakeTrashPort: TrashPort, @unchecked Sendable {
         let n = UInt32(trashedBlocks.count)
         trashedBlocks.removeAll()
         return EmptyTrashReportInfo(purgedCount: n, sharedCount: 0, ownerOnlyCount: n,
-                                    unknownCount: 0, filesRemoved: n, filesFailed: 0)
+                                    unknownCount: 0, filesRemoved: n, filesFailed: emptyTrashFilesFailed)
     }
 
     public func autoPurgeExpired(windowMs: UInt64) throws -> RetentionReportInfo {

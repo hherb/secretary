@@ -67,7 +67,7 @@ final class TrashViewModelTests: XCTestCase {
         XCTAssertEqual(gate.authorizeCount, 1)
     }
 
-    func testEmptyTrashGatesReloadsAndDiscardsReport() async {
+    func testEmptyTrashGatesReloadsAndSetsNotice() async {
         let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100), tb(2, at: 200)])
         let gate = FakeWriteReauthGate()
         let vm = TrashViewModel(port: port, gate: gate)
@@ -76,6 +76,37 @@ final class TrashViewModelTests: XCTestCase {
         XCTAssertEqual(gate.authorizeCount, 1)
         XCTAssertEqual(port.emptyTrashCount, 1)
         XCTAssertTrue(vm.entries.isEmpty)
+        XCTAssertEqual(vm.purgeNotice, PurgeNotice(text: "Purged 2 items", severity: .success))
+    }
+
+    func testEmptyTrashWarnsWhenFilesFailed() async {
+        let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100), tb(2, at: 200)])
+        port.emptyTrashFilesFailed = 1
+        let vm = TrashViewModel(port: port, gate: FakeWriteReauthGate())
+        vm.load()
+        await vm.emptyTrash()
+        XCTAssertEqual(vm.purgeNotice,
+                       PurgeNotice(text: "Purged 2 items · 1 file could not be removed", severity: .warning))
+    }
+
+    func testPurgeSetsDeletedForeverNotice() async {
+        let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100)])
+        let vm = TrashViewModel(port: port, gate: FakeWriteReauthGate())
+        vm.load()
+        await vm.purge(uuid: [1])
+        XCTAssertEqual(vm.purgeNotice, PurgeNotice(text: "Deleted forever", severity: .success))
+    }
+
+    func testRefusedReauthClearsPriorNoticeAndSetsNone() async {
+        let port = FakeTrashPort(trashedBlocks: [tb(1, at: 100), tb(2, at: 200)])
+        let gate = FakeWriteReauthGate()
+        let vm = TrashViewModel(port: port, gate: gate)
+        vm.load()
+        await vm.emptyTrash()                       // sets a notice
+        XCTAssertNotNil(vm.purgeNotice)
+        gate.failNext = .reauthFailed("cancelled")
+        await vm.purge(uuid: [2])                    // refused: no new notice, prior cleared
+        XCTAssertNil(vm.purgeNotice)
     }
 
     func testPreviewRetentionIsUngated() {
