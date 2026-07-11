@@ -1,6 +1,10 @@
 package org.secretary.browse
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -93,6 +97,21 @@ class TrashBrowseModelTest {
         assertTrue(gate.reasons.isEmpty())            // ungated read
         model.clearPreview()
         assertNull(model.preview.value)
+    }
+
+    @Test
+    fun `a second write while one is in flight is a no-op`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val port = FakeTrashPort(list = listOf(tb("a", 1L, 1)), writeGate = gate)
+        val model = TrashBrowseModel(port)
+        model.load()
+        val first = launch { model.purge(ByteArray(16) { 1 }) }
+        runCurrent()
+        model.purge(ByteArray(16) { 1 })   // re-entrant; blocked by `writing`
+        gate.complete(Unit)
+        advanceUntilIdle()
+        first.join()
+        assertEquals(1, port.purged.size)  // only the first write reached the port
     }
 
     @Test
