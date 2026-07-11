@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-10-desktop-empty-trash-shipped.md
+docs/handoffs/2026-07-11-ios-trash-browser-shipped.md
