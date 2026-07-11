@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.secretary.browse.TrashedBlockInfo
+import org.secretary.browse.VaultBrowseError
 import org.secretary.browse.emptyTrashConfirmBody
 import org.secretary.browse.formatTrashedWhen
 import org.secretary.browse.retentionSummary
@@ -88,13 +89,7 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            error?.let {
-                Text(
-                    it.toString(),
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(16.dp).testTag("trash-error"),
-                )
-            }
+            error?.let { TrashErrorBanner(it) }
             if (entries.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Trash is empty", style = MaterialTheme.typography.bodyLarge)
@@ -163,6 +158,20 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun TrashErrorBanner(error: VaultBrowseError) {
+    val text = when (error) {
+        is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
+        else -> "Trash operation failed: ${error::class.simpleName}"
+    }
+    Text(
+        text = text,
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(16.dp).testTag("trash-error"),
+    )
 }
 
 @Composable
