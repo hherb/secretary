@@ -118,3 +118,20 @@ jobs:
       # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps).
       - name: Kotlin uniffi conformance KAT replay
         run: bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh
+
+  ios-host:
+    name: ios host (swift test)
+    # The two mobile host packages are FFI-free (no xcframework, no Rust), so
+    # they build + test standalone on a plain macOS runner — no cargo build,
+    # no rust-cache. Mirrors run-ios-tests.sh Step 1; guards the app-layer
+    # view-model + formatter logic (e.g. the #421 neutral settings copy) that
+    # the uniffi conformance jobs do NOT cover.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: swift test — SecretaryDeviceUnlock (FFI-free host)
+        run: swift test
+        working-directory: ios/SecretaryDeviceUnlock
+      - name: swift test — SecretaryVaultAccess (FFI-free host)
+        run: swift test
+        working-directory: ios/SecretaryVaultAccess
