@@ -9,6 +9,7 @@
 //! - [`purge`] — `PurgeReport`, `EmptyTrashReport`
 //! - [`repair`] — `ApprovedWidening`, `AddedRecipient`, `WideningReport`, `RepairPreview`
 //! - [`retention`] — `ExpiredEntry`, `RetentionPurgeReport`
+//! - [`settings`] — `Settings`
 //! - [`trash`] — `TrashedBlock`
 //!
 //! The wrappers are newtype-around-bridge-type with thin forwarder methods.
@@ -24,6 +25,7 @@ pub mod purge;
 pub mod repair;
 pub mod retention;
 pub mod save;
+pub mod settings;
 pub mod sync;
 pub mod trash;
 pub mod vault;
