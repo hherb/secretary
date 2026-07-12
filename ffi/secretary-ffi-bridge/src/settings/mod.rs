@@ -4,11 +4,13 @@
 //! constants + deterministic UUIDs), `parse` (pure string↔struct + bounds),
 //! `orchestration` (vault I/O over `read_block` / `save_block`).
 //!
-//! Task 1 wired `schema`; Task 2 adds `parse`; `orchestration` lands in Task 3.
+//! Task 1 wired `schema`; Task 2 added `parse`; Task 3 adds `orchestration`.
 
+pub mod orchestration;
 pub mod parse;
 pub mod schema;
 
+pub use orchestration::{read_settings, write_settings};
 pub use parse::{
     parse_settings_fields, serialize_settings, validate_save_settings, SettingsBoundsError,
     SettingsParseError, SettingsWarning,

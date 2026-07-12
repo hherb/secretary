@@ -161,6 +161,16 @@ pub use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput}
 /// from `secretary-core` — the single source of the value for both
 /// binding crates. `docs/vault-format.md` §7 step 5.
 pub use secretary_core::vault::DEFAULT_RETENTION_WINDOW_MS;
+pub use settings::{
+    deterministic_uuid_16, parse_settings_fields, read_settings, serialize_settings,
+    validate_save_settings, write_settings, Settings, SettingsBoundsError, SettingsParseError,
+    SettingsWarning, AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS, MS_PER_DAY,
+    REAUTH_WINDOW_DEFAULT_MS, REAUTH_WINDOW_MAX_MS, REAUTH_WINDOW_MIN_MS, REQUIRE_PASSWORD_DEFAULT,
+    RETENTION_WINDOW_DEFAULT_MS, RETENTION_WINDOW_MAX_MS, RETENTION_WINDOW_MIN_MS,
+    SETTINGS_BLOCK_NAME, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS,
+    SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS, SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+    SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
+};
 pub use share::share_block;
 pub use sync::{
     sync_commit_decisions, sync_commit_decisions_in, sync_status, sync_status_in, sync_vault,
