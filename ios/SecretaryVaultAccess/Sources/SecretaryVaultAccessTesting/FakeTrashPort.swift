@@ -12,6 +12,8 @@ public final class FakeTrashPort: TrashPort, @unchecked Sendable {
 
     public private(set) var listCount = 0
     public private(set) var previewCount = 0
+    /// The `windowMs` each `expiredTrashEntries` call was made with (retention-preview spy).
+    public private(set) var previewWindows: [UInt64] = []
     public private(set) var restoredUuids: [[UInt8]] = []
     public private(set) var purgedUuids: [[UInt8]] = []
     public private(set) var emptyTrashCount = 0
@@ -36,6 +38,7 @@ public final class FakeTrashPort: TrashPort, @unchecked Sendable {
 
     public func expiredTrashEntries(windowMs: UInt64) -> [ExpiredEntryInfo] {
         previewCount += 1
+        previewWindows.append(windowMs)
         return expiredEntries
     }
 

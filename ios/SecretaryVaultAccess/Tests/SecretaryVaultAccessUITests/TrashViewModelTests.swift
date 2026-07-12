@@ -154,4 +154,32 @@ final class TrashViewModelTests: XCTestCase {
         XCTAssertEqual(vm.purgeNotice,
                        PurgeNotice(text: "Purged 2 items · 1 file could not be removed", severity: .warning))
     }
+
+    // MARK: per-vault retention window (settings integration)
+
+    func testUsesPerVaultRetentionWindowFromSettings() async {
+        let port = FakeTrashPort(
+            expiredEntries: [ExpiredEntryInfo(blockUuid: [1], tombstonedAtMs: 0, ageMs: 1)],
+            defaultWindowMs: 90 * 86_400_000)
+        let settings = FakeSettingsPort(settings: VaultSettings(
+            autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true,
+            reauthGraceWindowMs: 120_000, retentionWindowMs: 30 * 86_400_000))   // 30 d, not the 90 d default
+        let vm = TrashViewModel(port: port, settingsPort: settings, gate: FakeWriteReauthGate())
+        vm.load()
+        XCTAssertEqual(vm.retentionWindowMs, 30 * 86_400_000, "accessor reflects the per-vault window")
+        vm.previewRetention()
+        XCTAssertEqual(port.previewWindows, [30 * 86_400_000], "preview uses the per-vault window")
+        await vm.runRetention()
+        XCTAssertEqual(port.autoPurgeWindows, [30 * 86_400_000], "commit uses the per-vault window")
+    }
+
+    func testFallsBackToDefaultWhenSettingsReadFails() {
+        let port = FakeTrashPort(defaultWindowMs: 90 * 86_400_000)
+        let settings = FakeSettingsPort()
+        settings.failNextRead = .corruptVault("x")
+        let vm = TrashViewModel(port: port, settingsPort: settings, gate: FakeWriteReauthGate())
+        vm.load()
+        XCTAssertEqual(vm.retentionWindowMs, 90 * 86_400_000, "settings read error → frozen default")
+        XCTAssertNil(vm.error, "a settings read failure must not block the Trash list")
+    }
 }

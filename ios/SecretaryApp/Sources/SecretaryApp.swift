@@ -188,12 +188,12 @@ private struct RootView: View {
                                     }
                                 }
                             }
-                            let gate = GraceWindowReauthGate(
-                                authorizer: EnclaveBiometricAuthorizer(
-                                    enclave: makePerVaultDeviceUnlock(vaultPath: scoped.pathData).enclave),
-                                clock: MonotonicInstant.now)   // initialAuthAt stays nil (#284)
+                            let gate = makeRetargetableReauthGate(
+                                session: session, vaultPath: scoped.pathData,
+                                biometricUnlock: false)   // password open: initialAuthAt nil (#284)
                             route = .browse(VaultBrowseViewModel(session: session, gate: gate,
-                                                                 trashPort: session as? TrashPort),
+                                                                 trashPort: session as? TrashPort,
+                                                                 settingsPort: session as? SettingsPort),
                                             syncVM, monitor, scoped)
                         })
                 case .browse(let browseModel, let syncVM, let monitor, _):
@@ -282,7 +282,8 @@ private struct RootView: View {
             }
             Task { await syncVM.refreshStatus() }    // no sync password on the device path
             route = .browse(VaultBrowseViewModel(session: session, gate: gate,
-                                                 trashPort: session as? TrashPort),
+                                                 trashPort: session as? TrashPort,
+                                                 settingsPort: session as? SettingsPort),
                             syncVM, monitor, scoped)
         }
     }

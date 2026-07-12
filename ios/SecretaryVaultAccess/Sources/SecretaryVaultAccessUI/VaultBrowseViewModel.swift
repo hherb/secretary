@@ -44,10 +44,13 @@ public final class VaultBrowseViewModel: ObservableObject {
     private let session: VaultSession
     private let gate: WriteReauthGate
     private let trashPort: TrashPort?
-    public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil) {
+    private let settingsPort: SettingsPort?
+    public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil,
+                settingsPort: SettingsPort? = nil) {
         self.session = session
         self.gate = gate
         self.trashPort = trashPort
+        self.settingsPort = settingsPort
     }
 
     public var vaultUuidHex: String { session.vaultUuidHex }
@@ -247,10 +250,23 @@ public final class VaultBrowseViewModel: ObservableObject {
         return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode, gate: gate)
     }
 
-    /// Build the Trash browser VM sharing this session's re-auth gate.
+    /// Build the Trash browser VM sharing this session's re-auth gate. Passes the
+    /// settings port so the retention path reads the per-vault window.
     /// Returns nil when no trash port was injected (e.g. in browse-only tests).
     public func makeTrashViewModel() -> TrashViewModel? {
         guard let trashPort else { return nil }
-        return TrashViewModel(port: trashPort, gate: gate)
+        return TrashViewModel(port: trashPort, settingsPort: settingsPort, gate: gate)
+    }
+
+    /// Build the Settings VM sharing this session's settings port + the live
+    /// retargetable gate (so a grace-window change takes effect immediately for
+    /// EVERY writer). Deriving the settings gate from `gate` by downcast — rather
+    /// than a separate injected reference — guarantees the Settings save retargets
+    /// the *same* gate instance the record-edit / trash writers use; they cannot
+    /// drift apart. Returns nil when the settings port is absent or `gate` is not
+    /// a `RetargetableReauthGate` (e.g. browse-only tests with a pass-through gate).
+    public func makeSettingsViewModel() -> SettingsViewModel? {
+        guard let settingsPort, let retargetableGate = gate as? RetargetableReauthGate else { return nil }
+        return SettingsViewModel(port: settingsPort, gate: retargetableGate)
     }
 }
