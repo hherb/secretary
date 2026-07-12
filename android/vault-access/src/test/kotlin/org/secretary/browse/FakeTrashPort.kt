@@ -24,12 +24,18 @@ class FakeTrashPort(
     var emptied = 0
     val autoPurged = mutableListOf<Long>()
 
+    /** Windows passed to [expiredTrashEntries] (the retention-preview spy). */
+    val previewWindows = mutableListOf<Long>()
+
     override fun listTrashedBlocks(): List<TrashedBlockInfo> {
         listError?.let { throw it }
         return list
     }
 
-    override fun expiredTrashEntries(windowMs: Long): List<ExpiredEntryInfo> = expired
+    override fun expiredTrashEntries(windowMs: Long): List<ExpiredEntryInfo> {
+        previewWindows += windowMs
+        return expired
+    }
 
     override fun defaultRetentionWindowMs(): Long = windowMs
 

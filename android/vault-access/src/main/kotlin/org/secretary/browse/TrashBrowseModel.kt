@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class TrashBrowseModel(
     private val port: TrashPort,
     private val gate: WriteReauthGate = NoopReauthGate,
+    private val settingsPort: SettingsPort? = null,
 ) {
     private val _entries = MutableStateFlow<List<TrashedBlockInfo>>(emptyList())
     val entries: StateFlow<List<TrashedBlockInfo>> = _entries.asStateFlow()
@@ -37,12 +38,20 @@ class TrashBrowseModel(
      * new write; set on a successful op. */
     val notice: StateFlow<PurgeNotice?> = _notice.asStateFlow()
 
-    /** The frozen 90-day default retention window (no per-vault setting yet). */
-    val retentionWindowMs: Long get() = port.defaultRetentionWindowMs()
+    /**
+     * The effective per-vault retention window, refreshed on [load] from the [settingsPort] (falling
+     * back to the frozen default when there is no settings port or the read fails). Initialized to the
+     * frozen default so preview/commit before a [load] still behave. iOS `TrashViewModel` parity.
+     */
+    private var effectiveRetentionWindowMs: Long = port.defaultRetentionWindowMs()
+
+    /** The retention window the preview + auto-purge use (per-vault when set, else the frozen default). */
+    val retentionWindowMs: Long get() = effectiveRetentionWindowMs
 
     /** List trashed blocks (newest-first). A typed failure surfaces via [error]; entries cleared. */
     fun load() {
         _error.value = null
+        effectiveRetentionWindowMs = readEffectiveRetentionWindow()
         try {
             _entries.value = sortTrashed(port.listTrashedBlocks())
         } catch (e: VaultBrowseError) {
@@ -51,9 +60,19 @@ class TrashBrowseModel(
         }
     }
 
-    /** Ungated retention preview against the fixed default window. */
+    /**
+     * The per-vault retention window, or the frozen default. A settings read error falls back
+     * SILENTLY (a best-effort per-vault override; the frozen default is the safe fallback and must
+     * never block the Trash view) — mirror of iOS `readSettings()?.retentionWindowMs ??
+     * defaultRetentionWindowMs()`.
+     */
+    private fun readEffectiveRetentionWindow(): Long =
+        settingsPort?.let { runCatching { it.readSettings().retentionWindowMs }.getOrNull() }
+            ?: port.defaultRetentionWindowMs()
+
+    /** Ungated retention preview against the effective per-vault window. */
     fun previewRetention() {
-        _preview.value = port.expiredTrashEntries(port.defaultRetentionWindowMs())
+        _preview.value = port.expiredTrashEntries(effectiveRetentionWindowMs)
     }
 
     /** Drop the cached preview so a reopened retention sheet shows its loading state (no stale flash). */
@@ -78,7 +97,7 @@ class TrashBrowseModel(
     }
 
     suspend fun runRetention() {
-        val window = port.defaultRetentionWindowMs()
+        val window = effectiveRetentionWindowMs
         val report = guardedWrite("Confirm permanently deleting expired trash") { port.autoPurgeExpired(window) }
         if (report != null) {
             _notice.value = formatPurgeNotice(PurgeOutcome.Retention(report.purgedCount, report.filesFailed))
