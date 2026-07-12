@@ -830,10 +830,9 @@ pub fn write_settings(
     .map_err(VaultError::from)
 }
 
-/// Retention-window bound constants (uniffi has no UDL `const`).
-pub fn retention_window_default_ms() -> u64 {
-    secretary_ffi_bridge::RETENTION_WINDOW_DEFAULT_MS
-}
+/// Retention-window bound constants (uniffi has no UDL `const`). The default
+/// is the pre-existing `default_retention_window_ms()` (#402); only the
+/// min/max bounds are added here so there is exactly one function per value.
 pub fn retention_window_min_ms() -> u64 {
     secretary_ffi_bridge::RETENTION_WINDOW_MIN_MS
 }
@@ -932,6 +931,37 @@ mod tests {
             }
             Err(other) => panic!("expected InvalidArgument for wrong-length, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length block_uuid"),
+        }
+    }
+
+    #[test]
+    fn write_settings_out_of_range_returns_invalid_argument() {
+        // Bounds are validated at this uniffi wrapper (adversarial-IPC guard)
+        // BEFORE any vault write, so an out-of-range value rejects without
+        // mutating the vault — safe to run against the frozen golden fixture.
+        let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../core/tests/data/golden_vault_001");
+        let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
+        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
+        // retention_window_ms below the 1-day floor is out of range.
+        let bad = Settings {
+            auto_lock_timeout_ms: 600_000,
+            require_password_before_edits: true,
+            reauth_grace_window_ms: 120_000,
+            retention_window_ms: 999,
+        };
+        match write_settings(
+            out.identity,
+            out.manifest,
+            bad,
+            vec![0x07; 16],
+            1_700_000_000_000,
+        ) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("out of range"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument for out-of-range, got {other:?}"),
+            Ok(()) => panic!("expected Err for out-of-range settings"),
         }
     }
 }
