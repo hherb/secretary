@@ -85,18 +85,3 @@ struct SettingsScreen: View {
         .onAppear { viewModel.load() }
     }
 }
-
-/// Short user-facing message for a settings-save failure. Re-auth cancellation is
-/// the common case, but a non-cancel biometric failure maps to the same
-/// `reauthFailed` case, so the copy stays neutral rather than asserting "cancelled".
-/// The anti-oracle "…OrCorrupt" cases are folded upstream.
-private func settingsErrorMessage(_ e: VaultAccessError) -> String {
-    switch e {
-    case .reauthFailed:
-        return "Re-authentication didn’t complete — settings were not saved."
-    case .invalidArgument:
-        return "That value is out of range — settings were not saved."
-    default:
-        return "Couldn’t save settings. Please try again."
-    }
-}
