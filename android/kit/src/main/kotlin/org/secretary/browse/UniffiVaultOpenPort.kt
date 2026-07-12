@@ -28,6 +28,13 @@ import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.purgeBlock as ffiPurgeBlock
 import uniffi.secretary.emptyTrash as ffiEmptyTrash
 import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
+import uniffi.secretary.readSettings as ffiReadSettings
+import uniffi.secretary.writeSettings as ffiWriteSettings
+import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
+import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
+import uniffi.secretary.reauthWindowDefaultMs as ffiReauthWindowDefaultMs
+import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
+import uniffi.secretary.reauthWindowMaxMs as ffiReauthWindowMaxMs
 import java.security.SecureRandom
 
 /**
@@ -107,7 +114,7 @@ class UniffiVaultSession(
     output: OpenVaultOutput,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val deviceUuids: DeviceUuidProvider? = null,
-) : VaultSession, TrashPort {
+) : VaultSession, TrashPort, SettingsPort {
     private val identity: UnlockedIdentity = output.identity
     private val manifest: OpenVaultManifest = output.manifest
 
@@ -357,6 +364,33 @@ class UniffiVaultSession(
                 windowMs = r.windowMs.toLong(),
             )
         }
+
+    // ---- SettingsPort (only the four numeric/bool settings fields cross here — no record plaintext) ----
+    // Reuses the same sessionLock/`wiped` guard, `write` device-uuid/now resolution, and `mapErrors`
+    // mapping as every other session op. Kotlin mirror of iOS `UniffiVaultSession+Settings`.
+
+    override fun readSettings(): VaultSettings =
+        synchronized(sessionLock) {
+            // A wiped session is closed: throw without touching the zeroized handles (the model's
+            // load() catches this and falls back to the bounds defaults). Mirrors iOS readTrash.
+            if (wiped) throw VaultBrowseError.Failed("read on a wiped session")
+            mapErrors { ffiReadSettings(identity, manifest).toVaultSettings() }
+        }
+
+    override suspend fun writeSettings(settings: VaultSettings) =
+        write { dev, now ->
+            ffiWriteSettings(identity, manifest, settings.toFfiSettings(), dev, now)
+        }
+
+    override fun settingsBounds(): SettingsBounds =
+        SettingsBounds(
+            retentionDefaultMs = ffiDefaultRetentionWindowMs().toLong(),
+            retentionMinMs = ffiRetentionWindowMinMs().toLong(),
+            retentionMaxMs = ffiRetentionWindowMaxMs().toLong(),
+            reauthGraceDefaultMs = ffiReauthWindowDefaultMs().toLong(),
+            reauthGraceMinMs = ffiReauthWindowMinMs().toLong(),
+            reauthGraceMaxMs = ffiReauthWindowMaxMs().toLong(),
+        )
 
     override fun wipe() {
         // Order mirrors iOS: blocks (cascade zeroize to records + fields) → manifest → identity.

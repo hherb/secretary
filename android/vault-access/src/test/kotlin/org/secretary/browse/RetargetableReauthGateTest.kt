@@ -60,4 +60,25 @@ class RetargetableReauthGateTest {
         gate.retarget(g2)
         assertTrue(g2.seeds.isEmpty())            // recorded instant cleared by reset
     }
+
+    @Test
+    fun `retargetWindow seeds the new delegate at the given instant, not the stored open instant`() = runTest {
+        val gate = RetargetableReauthGate()
+        gate.seed(1_000L)                         // original open instant
+        val g = RecordingGate()
+        gate.retargetWindow(g, 5_000L)            // seed-at-now (5_000), NOT the stored 1_000
+        assertEquals(listOf(5_000L), g.seeds)
+        gate.authorizeWrite("w")
+        assertEquals(listOf("w"), g.authorizeReasons)
+    }
+
+    @Test
+    fun `retargetWindow advances the recorded instant so a later plain retarget re-seeds at now`() {
+        val gate = RetargetableReauthGate()
+        gate.seed(1_000L)
+        gate.retargetWindow(RecordingGate(), 5_000L)
+        val g2 = RecordingGate()
+        gate.retarget(g2)                         // uses the recorded instant, now advanced to 5_000
+        assertEquals(listOf(5_000L), g2.seeds)
+    }
 }

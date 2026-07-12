@@ -214,4 +214,35 @@ class TrashBrowseModelTest {
         model.purge(ByteArray(16) { 2 })
         assertNull(model.notice.value)
     }
+
+    @Test
+    fun `retention preview and commit use the per-vault window, not the frozen default`() = runTest {
+        val settings = FakeSettingsPort(settings = defaultVaultSettings().copy(retentionWindowMs = 30L * MS_PER_DAY))
+        val port = FakeTrashPort(windowMs = 90L * MS_PER_DAY)
+        val model = TrashBrowseModel(port, settingsPort = settings)
+        model.load()
+        assertEquals(30L * MS_PER_DAY, model.retentionWindowMs)
+        model.previewRetention()
+        model.runRetention()
+        assertEquals(listOf(30L * MS_PER_DAY), port.previewWindows) // preview used the per-vault window
+        assertEquals(listOf(30L * MS_PER_DAY), port.autoPurged)     // commit used the per-vault window
+    }
+
+    @Test
+    fun `a settings read error falls back to the frozen default window (silently)`() = runTest {
+        val settings = FakeSettingsPort(failNextRead = VaultBrowseError.CorruptVault("x"))
+        val port = FakeTrashPort(windowMs = 90L * MS_PER_DAY)
+        val model = TrashBrowseModel(port, settingsPort = settings)
+        model.load()
+        assertEquals(90L * MS_PER_DAY, model.retentionWindowMs)
+        assertNull(model.error.value) // fallback is silent — no error surfaced to the Trash view
+    }
+
+    @Test
+    fun `with no settings port the retention window is the frozen default`() = runTest {
+        val port = FakeTrashPort(windowMs = 90L * MS_PER_DAY)
+        val model = TrashBrowseModel(port)
+        model.load()
+        assertEquals(90L * MS_PER_DAY, model.retentionWindowMs)
+    }
 }

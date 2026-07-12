@@ -32,6 +32,7 @@ import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
 import org.secretary.browse.MnemonicWord
+import org.secretary.browse.RetargetableReauthGate
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
@@ -41,11 +42,13 @@ import org.secretary.browse.VaultProvisioningStep
 import org.secretary.browse.VaultProvisioningViewModel
 import org.secretary.browse.VaultSelectionState
 import org.secretary.browse.VaultSelectionViewModel
+import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.displayNameForTree
 import org.secretary.browse.hexOfBytes
 import org.secretary.browse.safVaultLocationStore
 import org.secretary.browse.uniffiVaultCreatePort
 import org.secretary.browse.uniffiVaultOpenPort
+import org.secretary.browse.ui.SettingsScreen
 import org.secretary.browse.ui.TrashScreen
 import java.io.File
 
@@ -75,8 +78,9 @@ internal sealed interface Route {
     data class Browse(
         val session: BrowseSession,
         val folder: File,
-        val showSettings: Boolean = false,
+        val showSettings: Boolean = false,       // device-enrollment (biometric) settings
         val showTrash: Boolean = false,
+        val showVaultSettings: Boolean = false,  // per-vault settings (retention + re-auth grace)
         val cloudTarget: CloudVaultTarget? = null,
     ) : Route
 }
@@ -469,6 +473,11 @@ fun AppRoot() {
                     viewModel = trashVm,
                     onBack = { route = r.copy(showTrash = false) },
                 )
+            } else if (r.showVaultSettings && r.session.settings != null) {
+                SettingsScreen(
+                    viewModel = r.session.settings,
+                    onBack = { route = r.copy(showVaultSettings = false) },
+                )
             } else {
                 BrowseWithSyncScreen(
                     browse = r.session.browse,
@@ -481,6 +490,7 @@ fun AppRoot() {
                         route = r.copy(showSettings = true)
                     },
                     onOpenTrash = { route = r.copy(showTrash = true) },
+                    onOpenVaultSettings = { route = r.copy(showVaultSettings = true) },
                 )
             }
         }
@@ -530,13 +540,17 @@ private suspend fun unlockAndOpen(
         val deviceUuids = FileDeviceUuidStore(File(context.noBackupFilesDir, "devices"))
         val stateDir = syncStateDir(context.filesDir).apply { mkdirs() }
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
-        val writeReauthGate = GraceWindowReauthGate(
-            // Monotonic clock — see BrowseSession.openBrowseWithSync; the seed there shares this base.
-            authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId),
-            clock = { SystemClock.elapsedRealtime() },
-        )
+        // Shared retargetable write-reauth gate: openBrowseWithSync seeds it from the persisted grace
+        // window (2-min schema default, aligning with iOS/desktop), and the Settings screen retargets
+        // it on a grace change. makeGraceGate builds the real grace gate for a given window.
+        // Monotonic clock — see BrowseSession.openBrowseWithSync; the seed there shares this base.
+        val clock = { SystemClock.elapsedRealtime() }
+        val authorizer = CoordinatorBiometricAuthorizer(coordinator, vaultId)
+        val makeGraceGate: (Long) -> WriteReauthGate = { w -> GraceWindowReauthGate(authorizer, clock, w) }
+        val writeReauthGate = RetargetableReauthGate()
         val session = openBrowseWithSync(
-            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate)
+            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate,
+            makeGraceGate = makeGraceGate)
         // Password → background sync-at-unlock from a COPY (deliberately outlives Browse disposal:
         // it opens its own vault handle and never touches the browse session; binding it to the
         // Browse scope would cancel the in-flight Argon2id on background). Recovery → status refresh
