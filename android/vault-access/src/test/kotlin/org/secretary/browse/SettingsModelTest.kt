@@ -219,6 +219,17 @@ class SettingsModelTest {
     }
 
     @Test
+    fun `load clears a prior save notice (the VM outlives a screen visit)`() = runTest {
+        val f = Fixture()
+        f.model.load()
+        f.model.setGraceMinutes(5)
+        f.model.save()
+        assertEquals(settingsSavedBanner(), f.model.notice.value) // banner shown after the save
+        f.model.load()                                            // re-enter the screen
+        assertNull(f.model.notice.value)                          // stale banner dropped
+    }
+
+    @Test
     fun `a second save while a write is in flight is a no-op`() = runTest {
         val writeGate = CompletableDeferred<Unit>()
         val f = Fixture(writeGate = writeGate)

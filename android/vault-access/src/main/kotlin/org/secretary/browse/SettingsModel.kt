@@ -68,6 +68,7 @@ class SettingsModel(
      */
     fun load() {
         _error.value = null
+        _notice.value = null // the VM outlives a screen visit; drop a prior save banner on re-entry
         try {
             val s = port.readSettings()
             _retentionDays.value = clampRetentionDays(retentionDaysFromMs(s.retentionWindowMs), bounds)
