@@ -36,6 +36,7 @@ A native Compose **Vault settings** screen (its own browse entry) with two per-v
 - `a062a021` README + ROADMAP feature-complete flip
 - `0c0daca8` whole-branch **review fix** (clear a stale save banner on Settings re-entry)
 - `<this handoff commit>` handoff doc + symlink retarget
+- `<PR-review-fix commit>` post-open PR-review fixes: extract the `:kit` `Settings`↔`VaultSettings` mapping to pure host-tested `toVaultSettings`/`toFfiSettings` (closes the untested `ULong`↔`Long` seam — finding #1) + `AppRoot` import ordering (finding #4); the "save"-worded banner on a load error is exact iOS parity so filed cross-platform as [#421](https://github.com/hherb/secretary/issues/421) (finding #2); the wiped-read throw / rounding no-op-save / host-untested render are confirmed intended (iOS parity / [#417](https://github.com/hherb/secretary/issues/417))
 
 ### Acceptance (all verified green this session, from the worktree)
 ```bash

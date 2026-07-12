@@ -30,10 +30,9 @@ import org.secretary.browse.DeviceUnlockViewModel
 import org.secretary.browse.FileDeviceEnrollmentMetadataStore
 import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.GraceWindowReauthGate
-import org.secretary.browse.RetargetableReauthGate
-import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.KeystoreDeviceSecretEnclave
 import org.secretary.browse.MnemonicWord
+import org.secretary.browse.RetargetableReauthGate
 import org.secretary.browse.UniffiVaultDeviceSlotPort
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
@@ -43,6 +42,7 @@ import org.secretary.browse.VaultProvisioningStep
 import org.secretary.browse.VaultProvisioningViewModel
 import org.secretary.browse.VaultSelectionState
 import org.secretary.browse.VaultSelectionViewModel
+import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.displayNameForTree
 import org.secretary.browse.hexOfBytes
 import org.secretary.browse.safVaultLocationStore

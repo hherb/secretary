@@ -28,7 +28,6 @@ import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.purgeBlock as ffiPurgeBlock
 import uniffi.secretary.emptyTrash as ffiEmptyTrash
 import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
-import uniffi.secretary.Settings as FfiSettings
 import uniffi.secretary.readSettings as ffiReadSettings
 import uniffi.secretary.writeSettings as ffiWriteSettings
 import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
@@ -375,31 +374,12 @@ class UniffiVaultSession(
             // A wiped session is closed: throw without touching the zeroized handles (the model's
             // load() catches this and falls back to the bounds defaults). Mirrors iOS readTrash.
             if (wiped) throw VaultBrowseError.Failed("read on a wiped session")
-            mapErrors {
-                val s = ffiReadSettings(identity, manifest)
-                VaultSettings(
-                    autoLockTimeoutMs = s.autoLockTimeoutMs.toLong(),
-                    requirePasswordBeforeEdits = s.requirePasswordBeforeEdits,
-                    reauthGraceWindowMs = s.reauthGraceWindowMs.toLong(),
-                    retentionWindowMs = s.retentionWindowMs.toLong(),
-                )
-            }
+            mapErrors { ffiReadSettings(identity, manifest).toVaultSettings() }
         }
 
     override suspend fun writeSettings(settings: VaultSettings) =
         write { dev, now ->
-            ffiWriteSettings(
-                identity,
-                manifest,
-                FfiSettings(
-                    autoLockTimeoutMs = settings.autoLockTimeoutMs.toULong(),
-                    requirePasswordBeforeEdits = settings.requirePasswordBeforeEdits,
-                    reauthGraceWindowMs = settings.reauthGraceWindowMs.toULong(),
-                    retentionWindowMs = settings.retentionWindowMs.toULong(),
-                ),
-                dev,
-                now,
-            )
+            ffiWriteSettings(identity, manifest, settings.toFfiSettings(), dev, now)
         }
 
     override fun settingsBounds(): SettingsBounds =
