@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-12-mobile-vault-settings-pr1-shipped.md
+docs/handoffs/2026-07-12-mobile-vault-settings-pr2-ios-shipped.md
