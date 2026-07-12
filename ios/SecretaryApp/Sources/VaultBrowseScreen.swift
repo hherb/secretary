@@ -120,6 +120,17 @@ struct VaultBrowseScreen: View {
                         .accessibilityIdentifier("open-trash")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    if let settingsVM = viewModel.makeSettingsViewModel() {
+                        NavigationLink {
+                            SettingsScreen(viewModel: settingsVM)
+                        } label: {
+                            Label("Settings", systemImage: "gear")
+                        }
+                        .disabled(viewModel.isWriting)
+                        .accessibilityIdentifier("open-settings")
+                    }
+                }
             }
             .onAppear { viewModel.loadBlocks() }
             // Drop any revealed plaintext the moment we leave the foreground.

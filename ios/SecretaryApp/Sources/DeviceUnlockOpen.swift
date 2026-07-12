@@ -7,8 +7,9 @@ import SecretaryKit
 
 /// Outcome of a biometric device-unlock open attempt.
 enum DeviceUnlockOpenResult {
-    /// Opened successfully; `gate` is already seeded with the unlock instant (#284).
-    case opened(VaultSession, gate: GraceWindowReauthGate)
+    /// Opened successfully; `gate` is retargetable (its grace window comes from
+    /// persisted settings) and already seeded with the unlock instant (#284).
+    case opened(VaultSession, gate: RetargetableReauthGate)
     /// User cancelled the biometric prompt — return to Unlock quietly (#341).
     case cancelled
     /// A real failure — surface this typed message on the Unlock screen (#341).
@@ -16,14 +17,15 @@ enum DeviceUnlockOpenResult {
 }
 
 /// Release the device secret behind a biometric prompt, open the vault with it,
-/// verify the opened vault matches the enrollment, and build a grace-window gate
-/// seeded at the unlock instant. Extracted out of `SecretaryApp.body` to keep
+/// verify the opened vault matches the enrollment, and build a retargetable
+/// re-auth gate seeded at the unlock instant (its grace window comes from the
+/// vault's persisted settings). Extracted out of `SecretaryApp.body` to keep
 /// that view small and this flow readable.
 ///
-/// `@MainActor`: `GraceWindowReauthGate` is itself `@MainActor`-isolated, so
-/// constructing it (on the success path) must happen on the main actor. The
-/// caller is a SwiftUI view's `Task { }`, which already starts on the main
-/// actor, so this adds no extra hop for the common case.
+/// `@MainActor`: the gate (and its `GraceWindowReauthGate` delegate) is
+/// `@MainActor`-isolated, so constructing it (on the success path) must happen
+/// on the main actor. The caller is a SwiftUI view's `Task { }`, which already
+/// starts on the main actor, so this adds no extra hop for the common case.
 enum DeviceUnlockOpen {
     @MainActor
     static func open(
@@ -53,11 +55,8 @@ enum DeviceUnlockOpen {
                 return .failed("This device’s biometric enrollment is for a different vault.")
             }
 
-            let gate = GraceWindowReauthGate(
-                authorizer: EnclaveBiometricAuthorizer(
-                    enclave: makePerVaultDeviceUnlock(vaultPath: vaultPath).enclave),
-                clock: MonotonicInstant.now,
-                initialAuthAt: reauthInitialAuthAt(biometricUnlock: true, now: MonotonicInstant.now()))
+            let gate = makeRetargetableReauthGate(
+                session: session, vaultPath: vaultPath, biometricUnlock: true)
             return .opened(session, gate: gate)
         } catch let e as DeviceUnlockError {
             switch deviceUnlockFailureDisplay(e) {
