@@ -64,6 +64,12 @@ final class SettingsViewModelTests: XCTestCase {
         vm.setGraceMinutes(7);     XCTAssertEqual(vm.graceMinutes, 7)
     }
 
+    func testBoundRangesComeFromProjectedBounds() {
+        let vm = SettingsViewModel(port: FakeSettingsPort(), gate: makeGate(RecordingFactory()))
+        XCTAssertEqual(vm.retentionDaysRange, 1...3650)
+        XCTAssertEqual(vm.graceMinutesRange, 0...60)
+    }
+
     // MARK: save success
 
     func testSaveWritesPreservesFieldsRetargetsAndBanners() async {
@@ -86,6 +92,38 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertNil(vm.error)
         XCTAssertEqual(f.builds.count, 2, "gate retargeted once on success")
         XCTAssertEqual(f.builds.last?.window, .milliseconds(7 * 60_000), "retargeted to the new grace window")
+    }
+
+    /// The two UI-less fields (auto-lock, require-password) must be re-read from
+    /// disk at save time, never carried from a pre-load placeholder — even if the
+    /// user somehow saves before a load ran, they are preserved, not clobbered.
+    func testSaveReReadsUneditedFieldsEvenWithoutLoad() async {
+        let port = FakeSettingsPort(settings: vs(autoLock: 300_000, requirePw: false,
+                                                 graceMs: 300_000, retentionMs: 30 * 86_400_000))
+        let vm = SettingsViewModel(port: port, gate: makeGate(RecordingFactory()))
+        vm.setRetentionDays(45)                       // edit without a preceding load()
+        await vm.save()
+        XCTAssertEqual(port.writtenSettings.last?.autoLockTimeoutMs, 300_000,
+                       "auto-lock re-read from disk, not a placeholder default")
+        XCTAssertEqual(port.writtenSettings.last?.requirePasswordBeforeEdits, false,
+                       "require-password re-read from disk, not forced true")
+        XCTAssertEqual(port.writtenSettings.last?.retentionWindowMs, 45 * 86_400_000)
+    }
+
+    /// A failed pre-write re-read aborts the save (no write, no retarget) after
+    /// the gate — nothing is clobbered.
+    func testSaveAbortsWhenRereadFails() async {
+        let port = FakeSettingsPort()
+        let f = RecordingFactory()
+        let vm = SettingsViewModel(port: port, gate: makeGate(f))
+        vm.load()
+        port.failNextRead = .corruptVault("x")        // the save's pre-write re-read throws
+        await vm.save()
+        XCTAssertEqual(vm.error, .corruptVault("x"))
+        XCTAssertTrue(port.writtenSettings.isEmpty, "no write when the pre-write re-read fails")
+        XCTAssertEqual(f.builds.count, 1, "no retarget")
+        XCTAssertNil(vm.banner)
+        XCTAssertEqual(f.gates[0].authorizeCount, 1, "gate consulted before the re-read")
     }
 
     // MARK: gate refusal

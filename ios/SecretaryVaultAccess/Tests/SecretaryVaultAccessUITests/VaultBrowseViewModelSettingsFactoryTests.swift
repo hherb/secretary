@@ -15,16 +15,23 @@ final class VaultBrowseViewModelSettingsFactoryTests: XCTestCase {
                                       clock: { t0 }) { _, _ in FakeWriteReauthGate() }
     }
 
-    func testMakeSettingsViewModelNilWithoutPortOrGate() {
-        let vm = VaultBrowseViewModel(session: session(), gate: FakeWriteReauthGate())
-        XCTAssertNil(vm.makeSettingsViewModel(), "no settings port/gate → no settings VM")
+    func testMakeSettingsViewModelNilWithoutSettingsPort() {
+        let vm = VaultBrowseViewModel(session: session(), gate: retargetable())
+        XCTAssertNil(vm.makeSettingsViewModel(), "no settings port → no settings VM")
+    }
+
+    func testMakeSettingsViewModelNilWhenGateNotRetargetable() {
+        // A pass-through gate (not a RetargetableReauthGate) can't be retargeted,
+        // so no Settings VM is built even with a settings port.
+        let vm = VaultBrowseViewModel(session: session(), gate: FakeWriteReauthGate(),
+                                      settingsPort: FakeSettingsPort())
+        XCTAssertNil(vm.makeSettingsViewModel())
     }
 
     func testMakeSettingsViewModelBuiltWhenWired() {
-        let gate = retargetable()
-        let vm = VaultBrowseViewModel(session: session(), gate: gate,
-                                      settingsPort: FakeSettingsPort(), settingsGate: gate)
-        XCTAssertNotNil(vm.makeSettingsViewModel())
+        let vm = VaultBrowseViewModel(session: session(), gate: retargetable(),
+                                      settingsPort: FakeSettingsPort())
+        XCTAssertNotNil(vm.makeSettingsViewModel(), "settings port + retargetable gate → settings VM")
     }
 
     func testMakeTrashViewModelThreadsSettingsPortForPerVaultRetention() throws {

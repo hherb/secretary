@@ -45,18 +45,12 @@ public final class VaultBrowseViewModel: ObservableObject {
     private let gate: WriteReauthGate
     private let trashPort: TrashPort?
     private let settingsPort: SettingsPort?
-    /// The shared retargetable gate, needed by the Settings save to retarget the
-    /// live grace window. Typically the same instance as `gate` (which is a
-    /// `RetargetableReauthGate` in production); kept as a distinct, concretely
-    /// typed reference so `makeSettingsViewModel` can call `retarget`.
-    private let settingsGate: RetargetableReauthGate?
     public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil,
-                settingsPort: SettingsPort? = nil, settingsGate: RetargetableReauthGate? = nil) {
+                settingsPort: SettingsPort? = nil) {
         self.session = session
         self.gate = gate
         self.trashPort = trashPort
         self.settingsPort = settingsPort
-        self.settingsGate = settingsGate
     }
 
     public var vaultUuidHex: String { session.vaultUuidHex }
@@ -265,10 +259,14 @@ public final class VaultBrowseViewModel: ObservableObject {
     }
 
     /// Build the Settings VM sharing this session's settings port + the live
-    /// retargetable gate (so a grace-window change takes effect immediately).
-    /// Returns nil when either is absent (e.g. browse-only tests).
+    /// retargetable gate (so a grace-window change takes effect immediately for
+    /// EVERY writer). Deriving the settings gate from `gate` by downcast — rather
+    /// than a separate injected reference — guarantees the Settings save retargets
+    /// the *same* gate instance the record-edit / trash writers use; they cannot
+    /// drift apart. Returns nil when the settings port is absent or `gate` is not
+    /// a `RetargetableReauthGate` (e.g. browse-only tests with a pass-through gate).
     public func makeSettingsViewModel() -> SettingsViewModel? {
-        guard let settingsPort, let settingsGate else { return nil }
-        return SettingsViewModel(port: settingsPort, gate: settingsGate)
+        guard let settingsPort, let retargetableGate = gate as? RetargetableReauthGate else { return nil }
+        return SettingsViewModel(port: settingsPort, gate: retargetableGate)
     }
 }

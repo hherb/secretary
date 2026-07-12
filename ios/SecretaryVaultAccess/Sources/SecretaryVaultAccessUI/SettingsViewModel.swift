@@ -28,39 +28,27 @@ public final class SettingsViewModel: ObservableObject {
     private let port: SettingsPort
     private let gate: RetargetableReauthGate
     private let bounds: SettingsBounds
-    /// The full settings last read or saved — holds the round-tripped fields
-    /// (`autoLockTimeoutMs` / `requirePasswordBeforeEdits`) the UI never edits,
-    /// so a save preserves them. Overwritten by `load()` and on a successful save.
-    private var loaded: VaultSettings
-
-    /// Pre-load / read-error placeholder for the unedited `autoLockTimeoutMs`
-    /// (mirrors the bridge `AUTO_LOCK_DEFAULT_MS`, which is not projected onto
-    /// the FFI). Only used before a successful `load()`; the happy path reads the
-    /// real value (an absent settings block yields the bridge default here too).
-    private static let defaultAutoLockTimeoutMs: UInt64 = 600_000
 
     public init(port: SettingsPort, gate: RetargetableReauthGate) {
         self.port = port
         self.gate = gate
         let b = port.settingsBounds()
         self.bounds = b
-        self.loaded = VaultSettings(
-            autoLockTimeoutMs: Self.defaultAutoLockTimeoutMs,
-            requirePasswordBeforeEdits: true,
-            reauthGraceWindowMs: b.reauthGraceDefaultMs,
-            retentionWindowMs: b.retentionDefaultMs)
         self.retentionDays = retentionDaysFromMs(b.retentionDefaultMs)
         self.graceMinutes = graceMinutesFromMs(b.reauthGraceDefaultMs)
     }
 
     /// Load the persisted settings into the two controls. On a hard read error
     /// (corrupt vault — unreachable for a normally-opened vault) the controls
-    /// fall back to the bounds defaults and `error` is surfaced.
+    /// fall back to the bounds defaults and `error` is surfaced. The two unedited
+    /// fields (`autoLockTimeoutMs` / `requirePasswordBeforeEdits`) are NOT cached
+    /// here — `save()` re-reads them fresh, so a save can never write back a stale
+    /// placeholder (see `save()`). The persisted retention/grace are bridge-clamped
+    /// to their valid ranges on read, so the conversions cannot overflow.
     public func load() {
         error = nil
         do {
             let s = try port.readSettings()
-            loaded = s
             retentionDays = clampRetentionDays(retentionDaysFromMs(s.retentionWindowMs), bounds: bounds)
             graceMinutes = clampGraceMinutes(graceMinutesFromMs(s.reauthGraceWindowMs), bounds: bounds)
         } catch let e as VaultAccessError {
@@ -77,6 +65,17 @@ public final class SettingsViewModel: ObservableObject {
         graceMinutes = graceMinutesFromMs(bounds.reauthGraceDefaultMs)
     }
 
+    /// The valid retention-days range (from the projected bounds), for the UI
+    /// input's range + hint — one source with the client-side clamp.
+    public var retentionDaysRange: ClosedRange<Int> {
+        retentionDaysFromMs(bounds.retentionMinMs)...retentionDaysFromMs(bounds.retentionMaxMs)
+    }
+
+    /// The valid grace-minutes range (from the projected bounds).
+    public var graceMinutesRange: ClosedRange<Int> {
+        graceMinutesFromMs(bounds.reauthGraceMinMs)...graceMinutesFromMs(bounds.reauthGraceMaxMs)
+    }
+
     /// Set the retention-days control, clamped to the projected bounds.
     public func setRetentionDays(_ days: Int) {
         retentionDays = clampRetentionDays(days, bounds: bounds)
@@ -87,8 +86,18 @@ public final class SettingsViewModel: ObservableObject {
         graceMinutes = clampGraceMinutes(minutes, bounds: bounds)
     }
 
-    /// Gated save: re-auth against the current window → persist all four fields
-    /// → on success retarget the gate to the new grace window + show the banner.
+    /// Gated save: re-auth against the current window → re-read the persisted
+    /// settings and merge only the two edited fields (retention + grace) onto the
+    /// two unedited ones → persist all four → on success retarget the gate to the
+    /// new grace window + show the banner.
+    ///
+    /// The unedited fields (`autoLockTimeoutMs` / `requirePasswordBeforeEdits`)
+    /// are re-read here — not carried from `load()` — so a save can never write a
+    /// stale/placeholder value (e.g. a save before `load()` ran, or after a load
+    /// that threw), which would silently loosen the auto-lock or force
+    /// require-password. Re-reading right before the write also closes the
+    /// load→save TOCTOU against another client that changed those fields.
+    ///
     /// `isWriting` is set before the gate await so a second save during the
     /// biometric prompt is rejected; `banner` is cleared so a new save supersedes
     /// the prior confirmation.
@@ -97,13 +106,6 @@ public final class SettingsViewModel: ObservableObject {
         isWriting = true
         banner = nil
         defer { isWriting = false }
-
-        // Preserve the two round-tripped fields; only retention + grace are edited.
-        let newSettings = VaultSettings(
-            autoLockTimeoutMs: loaded.autoLockTimeoutMs,
-            requirePasswordBeforeEdits: loaded.requirePasswordBeforeEdits,
-            reauthGraceWindowMs: msFromGraceMinutes(graceMinutes),
-            retentionWindowMs: msFromRetentionDays(retentionDays))
 
         // Gate the save against the CURRENT (pre-save) grace window.
         do {
@@ -116,6 +118,25 @@ public final class SettingsViewModel: ObservableObject {
             return
         }
 
+        // Re-read the persisted settings for the two unedited fields; abort if it
+        // fails (no write on a read error, so nothing is clobbered).
+        let current: VaultSettings
+        do {
+            current = try port.readSettings()
+        } catch let e as VaultAccessError {
+            error = e
+            return
+        } catch {
+            self.error = .other(String(describing: error))
+            return
+        }
+
+        let newSettings = VaultSettings(
+            autoLockTimeoutMs: current.autoLockTimeoutMs,
+            requirePasswordBeforeEdits: current.requirePasswordBeforeEdits,
+            reauthGraceWindowMs: msFromGraceMinutes(graceMinutes),
+            retentionWindowMs: msFromRetentionDays(retentionDays))
+
         // Persist. On failure, do NOT retarget or banner.
         do {
             try port.writeSettings(newSettings)
@@ -127,10 +148,8 @@ public final class SettingsViewModel: ObservableObject {
             return
         }
 
-        // SUCCESS — commit local state, then retarget the live gate strictly
-        // after the save (so the just-persisted save was evaluated against the
-        // pre-save window).
-        loaded = newSettings
+        // SUCCESS — retarget the live gate strictly after the save (so the
+        // just-persisted save was evaluated against the pre-save window).
         error = nil
         gate.retarget(window: .milliseconds(Int(newSettings.reauthGraceWindowMs)))
         banner = settingsSavedBanner()
