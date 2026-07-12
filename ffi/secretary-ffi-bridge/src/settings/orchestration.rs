@@ -27,7 +27,15 @@ fn find_settings_block_uuid(manifest: &OpenVaultManifest) -> Option<[u8; 16]> {
 /// Read the settings record from an unlocked vault. Returns
 /// `(Settings::default(), [])` when no settings block exists (the happy path
 /// for a vault whose owner never opened Settings). Lenient on record shape: a
-/// non-text or payload-missing field is a warning, not a hard error.
+/// non-text or payload-missing field is a warning, not a hard error. Likewise,
+/// an unparseable record (unknown version, non-integer/non-bool field text)
+/// falls back to `(Settings::default(), [SettingsWarning::Corrupt { .. }])`
+/// rather than erroring — a broken settings record must never block vault
+/// access.
+///
+/// # Errors
+/// Propagates `read_block`'s errors: `CorruptVault` on a wiped handle,
+/// `FolderInvalid` / `SaveCryptoFailure` on read failure.
 pub fn read_settings(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
@@ -122,7 +130,7 @@ pub fn write_settings(
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
     let triples = serialize_settings(settings);
-    let record_type = triples[0].0.clone();
+    let record_type = SETTINGS_RECORD_TYPE.to_string();
     let fields: Vec<FieldInput> = triples
         .into_iter()
         .map(|(_, name, value_text)| FieldInput {

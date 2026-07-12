@@ -53,6 +53,13 @@ pub(crate) fn map_warning(w: SettingsWarning) -> AppWarning {
 /// write doesn't break this client. Numeric fields clamp-on-load with a
 /// `SettingsClamped` warning; the save path rejects out-of-range rather than
 /// clamping (see `validate_save_settings`).
+///
+/// This adapter maps the bridge parser's errors/warnings onto `AppError` /
+/// `AppWarning` for callers that already have a decoded `(name, value)` field
+/// list. The live vault-load path does not call this directly — it goes
+/// through `secretary_ffi_bridge::read_settings`, which is lenient: a
+/// malformed settings record yields `(Settings::default(), [warning])`
+/// rather than an `AppError`, so a broken record never blocks vault access.
 pub fn parse_settings_fields(record_type: &str, fields: &[(String, String)]) -> ParseResult {
     match bridge_parse(record_type, fields) {
         Ok((settings, warnings)) => Ok((settings, warnings.into_iter().map(map_warning).collect())),

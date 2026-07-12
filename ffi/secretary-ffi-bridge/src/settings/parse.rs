@@ -35,7 +35,7 @@ pub enum SettingsParseError {
         /// The unrecognized `record_type` value.
         version: String,
     },
-    /// A known numeric field failed to parse as an integer.
+    /// A known field failed to parse (integer or boolean).
     Corrupt {
         /// Human-readable detail about the parse failure.
         detail: String,
