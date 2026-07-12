@@ -135,3 +135,28 @@ jobs:
       - name: swift test — SecretaryVaultAccess (FFI-free host)
         run: swift test
         working-directory: ios/SecretaryVaultAccess
+
+  android-host:
+    name: android host (:vault-access:test)
+    # `:vault-access` is pure kotlin(jvm), but the root settings.gradle.kts
+    # includes the AGP modules (:app/:kit/:browse-ui/:sync-ui), which Gradle
+    # configures even for a :vault-access-only test task — so an Android SDK
+    # must be provisioned or configuration fails with "SDK location not found".
+    # JDK 21 matches the module's jvmToolchain(21). Guards the app-layer host
+    # logic (e.g. the #421 neutral settings copy) uncovered by kotlin-conformance.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install JDK
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Provision Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: ':vault-access:test'
+        run: ./gradlew :vault-access:test
