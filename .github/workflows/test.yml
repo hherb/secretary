@@ -126,7 +126,16 @@ jobs:
     # no rust-cache. Mirrors run-ios-tests.sh Step 1; guards the app-layer
     # view-model + formatter logic (e.g. the #421 neutral settings copy) that
     # the uniffi conformance jobs do NOT cover.
-    runs-on: macos-latest
+    #
+    # PINNED to macos-26 (NOT macos-latest): the `macos-latest` label is mid-
+    # migration and nondeterministically resolves to macos-15 (Swift 6.0) OR
+    # macos-26 (Swift 6.3) — the same commit flip-flopped green/red across two
+    # runs of this PR. The Swift packages are developed against Xcode 26.5 /
+    # Swift 6.3 and rely on integer-literal type inference that Swift 6.0
+    # rejects (array-literal arithmetic in generic XCTAssertEqual), so CI must
+    # pin the toolchain the code targets. #424 tracks pinning the remaining
+    # macOS job (swift-conformance) + Xcode uniformly.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: swift test — SecretaryDeviceUnlock (FFI-free host)
