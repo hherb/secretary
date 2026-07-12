@@ -60,6 +60,7 @@ mod repair_preview;
 mod restore;
 mod retention;
 mod save;
+mod settings;
 mod share;
 mod sync;
 mod trash;
@@ -98,6 +99,7 @@ use repair_preview::{
 use restore::restore_block;
 use retention::{auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport};
 use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
+use settings::{read_settings, write_settings, Settings};
 use share::share_block;
 use sync::{
     sync_commit_decisions, sync_status, sync_vault, CollisionDto, DeviceClockDto, SyncOutcomeDto,
@@ -410,6 +412,14 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(preview_repair_with_password, m)?)?;
     m.add_function(wrap_pyfunction!(preview_repair_with_recovery, m)?)?;
     m.add_function(wrap_pyfunction!(preview_repair_with_device_secret, m)?)?;
+
+    // Vault-settings surface — Settings pyclass (input + output) +
+    // read_settings / write_settings. No new typed exception classes: both
+    // reuse ffi_vault_error_to_pyerr's existing FfiVaultError match, and
+    // out-of-range values on write raise a plain ValueError.
+    m.add_class::<Settings>()?;
+    m.add_function(wrap_pyfunction!(read_settings, m)?)?;
+    m.add_function(wrap_pyfunction!(write_settings, m)?)?;
 
     Ok(())
 }
