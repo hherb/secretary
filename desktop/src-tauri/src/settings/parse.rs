@@ -132,13 +132,9 @@ mod tests {
             reauth_grace_window_ms: 30_000,
             ..Settings::default()
         };
-        let triples = serialize_settings(&original);
-        let fields: Vec<(String, String)> = triples
-            .iter()
-            .map(|(_, name, value)| (name.clone(), value.clone()))
-            .collect();
-        let record_type = &triples[0].0;
-        let (parsed, warnings) = parse_settings_fields(record_type, &fields).expect("parse");
+        let fields = serialize_settings(&original);
+        let (parsed, warnings) =
+            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(parsed, original);
         assert!(warnings.is_empty());
     }
@@ -363,15 +359,11 @@ mod tests {
             reauth_grace_window_ms: 30_000,
             ..Settings::default()
         };
-        let triples = serialize_settings(&original);
-        // The auto-lock triple is always first.
-        assert_eq!(&triples[0].1, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS);
-        let fields: Vec<(String, String)> = triples
-            .iter()
-            .map(|(_, name, value)| (name.clone(), value.clone()))
-            .collect();
-        let record_type = &triples[0].0;
-        let (parsed, warnings) = parse_settings_fields(record_type, &fields).expect("parse");
+        let fields = serialize_settings(&original);
+        // The auto-lock field is always first.
+        assert_eq!(&fields[0].0, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS);
+        let (parsed, warnings) =
+            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(parsed, original);
         assert!(warnings.is_empty());
     }
@@ -428,10 +420,10 @@ mod tests {
             retention_window_ms: 45 * crate::constants::MS_PER_DAY,
             ..Settings::default()
         };
-        let triples = serialize_settings(&s);
-        assert!(triples
+        let pairs = serialize_settings(&s);
+        assert!(pairs
             .iter()
-            .any(|(_, name, val)| name == SETTINGS_FIELD_RETENTION_WINDOW_MS
+            .any(|(name, val)| name == SETTINGS_FIELD_RETENTION_WINDOW_MS
                 && val == &(45 * crate::constants::MS_PER_DAY).to_string()));
     }
 }

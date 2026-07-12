@@ -172,27 +172,25 @@ pub fn validate_save_settings(s: &Settings) -> Result<(), SettingsBoundsError> {
     Ok(())
 }
 
-/// Serialize a `Settings` into one `(record_type, field_name, field_value_text)`
-/// triple per field. All triples share `SETTINGS_RECORD_TYPE` as element 0.
-pub fn serialize_settings(s: &Settings) -> Vec<(String, String, String)> {
+/// Serialize a `Settings` into one `(field_name, field_value_text)` pair per
+/// field. Every pair belongs to a single `SETTINGS_RECORD_TYPE` record; the
+/// caller supplies that record type (it is constant, so it is not repeated
+/// per field). The pair order is stable, auto-lock first.
+pub fn serialize_settings(s: &Settings) -> Vec<(String, String)> {
     vec![
         (
-            SETTINGS_RECORD_TYPE.to_string(),
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             s.auto_lock_timeout_ms.to_string(),
         ),
         (
-            SETTINGS_RECORD_TYPE.to_string(),
             SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS.to_string(),
             s.require_password_before_edits.to_string(),
         ),
         (
-            SETTINGS_RECORD_TYPE.to_string(),
             SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS.to_string(),
             s.reauth_grace_window_ms.to_string(),
         ),
         (
-            SETTINGS_RECORD_TYPE.to_string(),
             SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
             s.retention_window_ms.to_string(),
         ),
@@ -227,13 +225,9 @@ mod tests {
             reauth_grace_window_ms: 30_000,
             ..Settings::default()
         };
-        let triples = serialize_settings(&original);
-        let fields: Vec<(String, String)> = triples
-            .iter()
-            .map(|(_, name, value)| (name.clone(), value.clone()))
-            .collect();
-        let record_type = &triples[0].0;
-        let (parsed, warnings) = parse_settings_fields(record_type, &fields).expect("parse");
+        let fields = serialize_settings(&original);
+        let (parsed, warnings) =
+            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(parsed, original);
         assert!(warnings.is_empty());
     }
@@ -360,16 +354,8 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
-    #[test]
-    fn parse_retention_window_clamps_below_min() {
-        let fields = vec![(
-            SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
-            "1000".to_string(),
-        )];
-        let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
-        assert_eq!(s.retention_window_ms, RETENTION_WINDOW_MIN_MS);
-        assert_eq!(warnings.len(), 1);
-    }
+    // (retention clamp-below-min is covered by `parse_below_min_clamps_with_warning`
+    // above, which asserts the exact clamped value + warning.)
 
     // =========================================================================
     // parse_settings_fields — error / warning cases
@@ -522,17 +508,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validate_save_rejects_out_of_range_retention() {
-        let s = Settings {
-            retention_window_ms: 999,
-            ..Settings::default()
-        };
-        assert!(matches!(
-            validate_save_settings(&s),
-            Err(SettingsBoundsError { .. })
-        ));
-    }
+    // (out-of-range retention is covered by `validate_rejects_out_of_range_retention`
+    // above, which asserts the exact min/max in the returned error.)
 
     // =========================================================================
     // serialize_settings
@@ -546,28 +523,24 @@ mod tests {
             reauth_grace_window_ms: 30_000,
             retention_window_ms: 45 * MS_PER_DAY,
         };
-        let triples = serialize_settings(&original);
-        let record_type = &triples[0].0;
-        let fields: Vec<(String, String)> = triples
-            .iter()
-            .map(|(_, n, v)| (n.clone(), v.clone()))
-            .collect();
-        let (parsed, warnings) = parse_settings_fields(record_type, &fields).expect("parse");
+        let fields = serialize_settings(&original);
+        let (parsed, warnings) =
+            parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
         assert_eq!(parsed, original);
         assert!(warnings.is_empty());
     }
 
     #[test]
-    fn serialize_first_triple_is_auto_lock_field() {
+    fn serialize_first_pair_is_auto_lock_field() {
         let original = Settings {
             auto_lock_timeout_ms: 900_000,
             require_password_before_edits: false,
             reauth_grace_window_ms: 30_000,
             ..Settings::default()
         };
-        let triples = serialize_settings(&original);
-        // The auto-lock triple is always first.
-        assert_eq!(&triples[0].1, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS);
+        let pairs = serialize_settings(&original);
+        // The auto-lock field is always first.
+        assert_eq!(&pairs[0].0, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS);
     }
 
     // =========================================================================
@@ -580,10 +553,10 @@ mod tests {
             retention_window_ms: 45 * MS_PER_DAY,
             ..Settings::default()
         };
-        let triples = serialize_settings(&s);
-        assert!(triples
+        let pairs = serialize_settings(&s);
+        assert!(pairs
             .iter()
-            .any(|(_, name, val)| name == SETTINGS_FIELD_RETENTION_WINDOW_MS
+            .any(|(name, val)| name == SETTINGS_FIELD_RETENTION_WINDOW_MS
                 && val == &(45 * MS_PER_DAY).to_string()));
     }
 }

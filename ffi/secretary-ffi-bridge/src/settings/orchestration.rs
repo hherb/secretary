@@ -129,11 +129,9 @@ pub fn write_settings(
         .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
     let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
 
-    let triples = serialize_settings(settings);
-    let record_type = SETTINGS_RECORD_TYPE.to_string();
-    let fields: Vec<FieldInput> = triples
+    let fields: Vec<FieldInput> = serialize_settings(settings)
         .into_iter()
-        .map(|(_, name, value_text)| FieldInput {
+        .map(|(name, value_text)| FieldInput {
             name,
             value: FieldInputValue::Text(SecretString::from(value_text)),
         })
@@ -144,7 +142,7 @@ pub fn write_settings(
         block_name: SETTINGS_BLOCK_NAME.to_string(),
         records: vec![RecordInput {
             record_uuid,
-            record_type,
+            record_type: SETTINGS_RECORD_TYPE.to_string(),
             tags: Vec::new(),
             fields,
         }],
