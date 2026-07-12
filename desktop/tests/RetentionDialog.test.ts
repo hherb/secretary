@@ -135,4 +135,16 @@ describe('RetentionDialog.svelte', () => {
     expect(await findByText(/filesystem error/i)).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('passes a formatted purge notice to onClose after a successful run', async () => {
+    previewRetentionMock.mockResolvedValue({ entries: [{ blockUuidHex: 'ab', tombstonedAtMs: 0, ageMs: 100 * MS_PER_DAY }], windowMs: 90 * MS_PER_DAY });
+    runRetentionMock.mockResolvedValueOnce({
+      purgedCount: 3, sharedCount: 0, ownerOnlyCount: 3, unknownCount: 0, filesRemoved: 3, filesFailed: 0, windowMs: 90 * MS_PER_DAY
+    });
+    const onClose = vi.fn();
+    const { findByRole } = render(RetentionDialog, { props: { onClose } });
+    const purge = await findByRole('button', { name: /purge \d+ items/i });
+    await fireEvent.click(purge);
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith({ text: 'Purged 3 items', severity: 'success' }));
+  });
 });

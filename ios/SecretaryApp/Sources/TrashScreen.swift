@@ -13,27 +13,37 @@ struct TrashScreen: View {
     }
 
     var body: some View {
-        List {
-            if viewModel.entries.isEmpty {
-                Text("Trash is empty.").foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            if let notice = viewModel.purgeNotice {
+                Text(notice.text)
+                    .font(.footnote)
+                    .foregroundStyle(notice.severity == .warning ? Color.orange : Color.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal).padding(.vertical, 8)
+                    .accessibilityIdentifier("purge-notice")
             }
-            ForEach(viewModel.entries, id: \.uuidHex) { block in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(block.blockName.isEmpty ? "block" : block.blockName)
-                        .font(.headline)
-                    Text("trashed \(formatTrashedWhen(block.tombstonedAtMs, timeZone: .current, locale: .current))")
-                        .font(.caption).foregroundStyle(.secondary)
+            List {
+                if viewModel.entries.isEmpty {
+                    Text("Trash is empty.").foregroundStyle(.secondary)
                 }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) { pendingPurge = block } label: {
-                        Label("Delete forever", systemImage: "trash")
+                ForEach(viewModel.entries, id: \.uuidHex) { block in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(block.blockName.isEmpty ? "block" : block.blockName)
+                            .font(.headline)
+                        Text("trashed \(formatTrashedWhen(block.tombstonedAtMs, timeZone: .current, locale: .current))")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    .disabled(viewModel.isWriting)
-                    Button {
-                        Task { await viewModel.restore(uuid: block.blockUuid) }
-                    } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
-                    .tint(.blue)
-                    .disabled(viewModel.isWriting)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) { pendingPurge = block } label: {
+                            Label("Delete forever", systemImage: "trash")
+                        }
+                        .disabled(viewModel.isWriting)
+                        Button {
+                            Task { await viewModel.restore(uuid: block.blockUuid) }
+                        } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
+                        .tint(.blue)
+                        .disabled(viewModel.isWriting)
+                    }
                 }
             }
         }

@@ -96,7 +96,8 @@ data class RetentionReportInfo(
 /**
  * The vault-trash operations a Trash browser needs. Conformed by the `:kit` adapter
  * ([org.secretary.browse.UniffiVaultSession]) and by `FakeTrashPort` in tests. Kotlin mirror of the
- * iOS `TrashPort` protocol. Reports are returned (plumbed for #411) but the VM discards them.
+ * iOS `TrashPort` protocol. Reports are returned and surfaced by the model as a
+ * [TrashBrowseModel.notice] (#411).
  *
  * Reads ([listTrashedBlocks]/[expiredTrashEntries]/[defaultRetentionWindowMs]) are synchronous
  * in-memory manifest reads (no decryption). Writes are `suspend` — the real adapter offloads the

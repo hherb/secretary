@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -16,6 +17,18 @@ import org.junit.jupiter.api.Test
 class TrashBrowseModelTest {
     private fun tb(name: String, ms: Long, uuid: Byte) =
         TrashedBlockInfo(ByteArray(16) { uuid }, name, ms, ByteArray(16))
+
+    /**
+     * Reauth gate whose failure can be re-scripted mid-test. [RecordingReauthGate]'s error is fixed
+     * at construction, which can't express "first call succeeds, a later call fails" — needed by
+     * `refused reauth clears a prior notice` below.
+     */
+    private class ScriptedReauthGate : WriteReauthGate {
+        var failNext: DeviceUnlockError? = null
+        override suspend fun authorizeWrite(reason: String) {
+            failNext?.let { throw it }
+        }
+    }
 
     @Test
     fun `load sorts entries newest-first`() = runTest {
@@ -125,5 +138,80 @@ class TrashBrowseModelTest {
         assertEquals(listOf("Confirm permanently deleting expired trash"), gate.reasons)
         assertEquals(1, port.autoPurged.size)
         assertTrue(model.entries.value.isEmpty())
+    }
+
+    @Test
+    fun `runRetention sets a purged notice`() = runTest {
+        val port = FakeTrashPort(
+            expired = listOf(
+                ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY),
+                ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY),
+            ),
+        )
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.runRetention()
+        assertEquals(PurgeNotice("Purged 2 items", PurgeSeverity.SUCCESS), model.notice.value)
+    }
+
+    @Test
+    fun `runRetention warns when files failed`() = runTest {
+        val port = FakeTrashPort(
+            expired = listOf(ExpiredEntryInfo(ByteArray(16), 0L, 100L * MS_PER_DAY)),
+            retentionFilesFailed = 1,
+        )
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.runRetention()
+        assertEquals(
+            PurgeNotice("Purged 1 item · 1 file could not be removed", PurgeSeverity.WARNING),
+            model.notice.value,
+        )
+    }
+
+    @Test
+    fun `emptyTrash sets a purged notice`() = runTest {
+        val port = FakeTrashPort(list = listOf(tb("a", 100L, 1), tb("b", 200L, 2)))
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.emptyTrash()
+        assertEquals(PurgeNotice("Purged 2 items", PurgeSeverity.SUCCESS), model.notice.value)
+    }
+
+    @Test
+    fun `emptyTrash warns when files failed`() = runTest {
+        val port = FakeTrashPort(
+            list = listOf(tb("a", 100L, 1), tb("b", 200L, 2)),
+            emptyTrashFilesFailed = 1,
+        )
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.emptyTrash()
+        assertEquals(
+            PurgeNotice("Purged 2 items · 1 file could not be removed", PurgeSeverity.WARNING),
+            model.notice.value,
+        )
+    }
+
+    @Test
+    fun `purge sets a deleted-forever notice`() = runTest {
+        val port = FakeTrashPort(list = listOf(tb("a", 100L, 1)))
+        val model = TrashBrowseModel(port)
+        model.load()
+        model.purge(ByteArray(16) { 1 })
+        assertEquals(PurgeNotice("Deleted forever", PurgeSeverity.SUCCESS), model.notice.value)
+    }
+
+    @Test
+    fun `refused reauth clears a prior notice`() = runTest {
+        val gate = ScriptedReauthGate()
+        val port = FakeTrashPort(list = listOf(tb("a", 100L, 1), tb("b", 200L, 2)))
+        val model = TrashBrowseModel(port, gate)
+        model.load()
+        model.emptyTrash()
+        assertNotNull(model.notice.value)
+        gate.failNext = DeviceUnlockError.UserCancelled
+        model.purge(ByteArray(16) { 2 })
+        assertNull(model.notice.value)
     }
 }
