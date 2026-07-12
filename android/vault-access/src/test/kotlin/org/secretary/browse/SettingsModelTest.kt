@@ -1,5 +1,6 @@
 package org.secretary.browse
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -137,7 +138,7 @@ class SettingsModelTest {
     }
 
     @Test
-    fun `save re-reads UI-less fields at write time (preserved without load, closes TOCTOU)`() = runTest {
+    fun `save re-reads UI-less fields at write time (closes the load-save TOCTOU)`() = runTest {
         val f = Fixture(seed = VaultSettings(600_000L, true, 120_000L, 90L * MS_PER_DAY))
         f.model.load()
         // another client changes the two UI-less fields AFTER our load
@@ -147,6 +148,37 @@ class SettingsModelTest {
         val w = f.port.writtenSettings.single()
         assertEquals(700_000L, w.autoLockTimeoutMs)  // reflects the re-read, not the load snapshot
         assertFalse(w.requirePasswordBeforeEdits)
+    }
+
+    @Test
+    fun `save preserves the UI-less fields even when load never ran`() = runTest {
+        // seed has non-default UI-less fields; the model saves WITHOUT calling load() first, so the
+        // controls hold construction defaults (90 d / 2 min) and only the re-read supplies the rest.
+        val f = Fixture(seed = VaultSettings(700_000L, false, 120_000L, 90L * MS_PER_DAY))
+        f.model.save()
+        val w = f.port.writtenSettings.single()
+        assertEquals(700_000L, w.autoLockTimeoutMs)  // preserved from the save-time re-read
+        assertFalse(w.requirePasswordBeforeEdits)
+    }
+
+    @Test
+    fun `a CancellationException from the gate propagates and is not recorded as an error`() = runTest {
+        val port = FakeSettingsPort()
+        val gate = RetargetableReauthGate()
+        gate.retarget(object : WriteReauthGate {
+            override suspend fun authorizeWrite(reason: String) = throw CancellationException("cancelled")
+        })
+        val model = SettingsModel(port, gate, makeGraceGate = { RecGate() }, nowMs = { 0L })
+        var propagated = false
+        try {
+            model.save()
+        } catch (e: CancellationException) {
+            propagated = true // NOT swallowed by the DeviceUnlockError catch (guards against a future widen to Exception)
+        }
+        assertTrue(propagated)
+        assertFalse(model.writing.value)          // the finally still reset it
+        assertTrue(port.writtenSettings.isEmpty())
+        assertNull(model.error.value)             // not misrecorded as a reauth error
     }
 
     @Test

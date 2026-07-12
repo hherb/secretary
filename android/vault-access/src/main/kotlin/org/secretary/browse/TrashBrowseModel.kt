@@ -64,11 +64,17 @@ class TrashBrowseModel(
      * The per-vault retention window, or the frozen default. A settings read error falls back
      * SILENTLY (a best-effort per-vault override; the frozen default is the safe fallback and must
      * never block the Trash view) — mirror of iOS `readSettings()?.retentionWindowMs ??
-     * defaultRetentionWindowMs()`.
+     * defaultRetentionWindowMs()`. Only the typed [VaultBrowseError] is caught: a non-typed throwable
+     * is a bug and is intentionally NOT swallowed (no broad `runCatching` over `Throwable`).
      */
-    private fun readEffectiveRetentionWindow(): Long =
-        settingsPort?.let { runCatching { it.readSettings().retentionWindowMs }.getOrNull() }
-            ?: port.defaultRetentionWindowMs()
+    private fun readEffectiveRetentionWindow(): Long {
+        val sp = settingsPort ?: return port.defaultRetentionWindowMs()
+        return try {
+            sp.readSettings().retentionWindowMs
+        } catch (e: VaultBrowseError) {
+            port.defaultRetentionWindowMs()
+        }
+    }
 
     /** Ungated retention preview against the effective per-vault window. */
     fun previewRetention() {
