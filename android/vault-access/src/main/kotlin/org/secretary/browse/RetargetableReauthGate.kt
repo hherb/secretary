@@ -36,4 +36,21 @@ class RetargetableReauthGate : WriteReauthGate {
         delegate = newGate
         seededAtMs?.let { newGate.seed(it) }
     }
+
+    /**
+     * Swap to [newGate] for a NEW grace window and open it at [nowMs] — used **after** a successful
+     * settings save that changed the grace window (mirror of iOS `RetargetableReauthGate.retarget(window:)`).
+     *
+     * Unlike [retarget], this seeds the incoming gate at the *current* instant [nowMs], not the stored
+     * unlock instant: a successful gated save means the user is genuinely present now, so the new
+     * (possibly wider) window counts from now. The security guard is the CALLER's after-save ordering
+     * — [retargetWindow] runs strictly after the gated save resolves, so the save was always evaluated
+     * against the pre-save window and a widening cannot self-authorize — NOT the seed value. The
+     * recorded instant is advanced to [nowMs] so this stays consistent with [seed]/[retarget].
+     */
+    fun retargetWindow(newGate: WriteReauthGate, nowMs: Long) {
+        delegate = newGate
+        seededAtMs = nowMs
+        newGate.seed(nowMs)
+    }
 }
