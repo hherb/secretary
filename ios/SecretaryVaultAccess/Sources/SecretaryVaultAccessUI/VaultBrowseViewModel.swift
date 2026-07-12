@@ -44,10 +44,19 @@ public final class VaultBrowseViewModel: ObservableObject {
     private let session: VaultSession
     private let gate: WriteReauthGate
     private let trashPort: TrashPort?
-    public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil) {
+    private let settingsPort: SettingsPort?
+    /// The shared retargetable gate, needed by the Settings save to retarget the
+    /// live grace window. Typically the same instance as `gate` (which is a
+    /// `RetargetableReauthGate` in production); kept as a distinct, concretely
+    /// typed reference so `makeSettingsViewModel` can call `retarget`.
+    private let settingsGate: RetargetableReauthGate?
+    public init(session: VaultSession, gate: WriteReauthGate, trashPort: TrashPort? = nil,
+                settingsPort: SettingsPort? = nil, settingsGate: RetargetableReauthGate? = nil) {
         self.session = session
         self.gate = gate
         self.trashPort = trashPort
+        self.settingsPort = settingsPort
+        self.settingsGate = settingsGate
     }
 
     public var vaultUuidHex: String { session.vaultUuidHex }
@@ -247,10 +256,19 @@ public final class VaultBrowseViewModel: ObservableObject {
         return RecordEditViewModel(session: session, blockUuid: blockUuid, mode: mode, gate: gate)
     }
 
-    /// Build the Trash browser VM sharing this session's re-auth gate.
+    /// Build the Trash browser VM sharing this session's re-auth gate. Passes the
+    /// settings port so the retention path reads the per-vault window.
     /// Returns nil when no trash port was injected (e.g. in browse-only tests).
     public func makeTrashViewModel() -> TrashViewModel? {
         guard let trashPort else { return nil }
-        return TrashViewModel(port: trashPort, gate: gate)
+        return TrashViewModel(port: trashPort, settingsPort: settingsPort, gate: gate)
+    }
+
+    /// Build the Settings VM sharing this session's settings port + the live
+    /// retargetable gate (so a grace-window change takes effect immediately).
+    /// Returns nil when either is absent (e.g. browse-only tests).
+    public func makeSettingsViewModel() -> SettingsViewModel? {
+        guard let settingsPort, let settingsGate else { return nil }
+        return SettingsViewModel(port: settingsPort, gate: settingsGate)
     }
 }

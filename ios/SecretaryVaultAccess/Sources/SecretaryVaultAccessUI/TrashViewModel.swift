@@ -18,18 +18,37 @@ public final class TrashViewModel: ObservableObject {
     @Published public private(set) var purgeNotice: PurgeNotice?
 
     private let port: TrashPort
+    /// Optional per-vault settings source. When nil (browse-only tests) the
+    /// retention window falls back to the frozen default; production injects it.
+    private let settingsPort: SettingsPort?
     private let gate: WriteReauthGate
+    /// The effective retention window, refreshed on `load()`. Cached (rather than
+    /// read on every access) so the accessor stays cheap during SwiftUI render;
+    /// the Trash screen's `.onAppear` reload picks up a change made in Settings.
+    private var cachedRetentionWindowMs: UInt64
 
-    public init(port: TrashPort, gate: WriteReauthGate) {
+    public init(port: TrashPort, settingsPort: SettingsPort? = nil, gate: WriteReauthGate) {
         self.port = port
+        self.settingsPort = settingsPort
         self.gate = gate
+        self.cachedRetentionWindowMs = port.defaultRetentionWindowMs()
     }
 
-    /// The frozen 90-day default retention window (no per-vault setting yet).
-    public var retentionWindowMs: UInt64 { port.defaultRetentionWindowMs() }
+    /// The effective per-vault retention window (persisted setting, or the frozen
+    /// default when no settings port is wired or the read fails). Refreshed by `load()`.
+    public var retentionWindowMs: UInt64 { cachedRetentionWindowMs }
+
+    /// The persisted retention window, or the frozen default when no settings
+    /// port is wired or the read errors. A settings read failure must not block
+    /// the Trash list, so it is swallowed here (fall back to the default).
+    private func effectiveRetentionWindowMs() -> UInt64 {
+        guard let settingsPort else { return port.defaultRetentionWindowMs() }
+        return (try? settingsPort.readSettings())?.retentionWindowMs ?? port.defaultRetentionWindowMs()
+    }
 
     public func load() {
         error = nil
+        cachedRetentionWindowMs = effectiveRetentionWindowMs()
         do {
             entries = sortTrashed(try port.listTrashedBlocks())
         } catch let e as VaultAccessError {
@@ -40,7 +59,7 @@ public final class TrashViewModel: ObservableObject {
     }
 
     public func previewRetention() {
-        preview = port.expiredTrashEntries(windowMs: port.defaultRetentionWindowMs())
+        preview = port.expiredTrashEntries(windowMs: cachedRetentionWindowMs)
     }
 
     /// Drop the cached preview so a reopened retention sheet shows its loading
@@ -73,7 +92,7 @@ public final class TrashViewModel: ObservableObject {
     }
 
     public func runRetention() async {
-        let window = port.defaultRetentionWindowMs()
+        let window = cachedRetentionWindowMs
         let report = await reauthedWrite(reason: "Confirm permanently deleting expired trash") {
             try self.port.autoPurgeExpired(windowMs: window)
         }
