@@ -1,40 +1,23 @@
-//! Settings record schema + parse/serialize. Pure value-type layer — every
-//! input is a `&str`, every output is owned data, no filesystem or vault
-//! handles are touched. The vault I/O facade lives in the sibling
-//! [`super::io`] module.
+//! Settings record schema + parse/serialize adapter over the shared
+//! [`secretary_ffi_bridge::settings`] module. The pure schema, bounds, and
+//! (de)serialization logic itself lives in the bridge crate (Task 1/2 of the
+//! mobile-vault-settings epic) so desktop and mobile share one Rust
+//! definition of the on-disk settings schema; this module's job is solely
+//! to map the bridge's crate-native `SettingsWarning` / `SettingsParseError`
+//! / `SettingsBoundsError` types onto the desktop `AppError` / `AppWarning`
+//! IPC wire-types. The vault I/O facade lives in the sibling [`super::io`]
+//! module.
 //!
 //! See spec §8 for the full schema rationale (record_type, deterministic
 //! UUIDs, lazy creation, validation bounds, version handling).
 
-use crate::constants::{
-    AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS, REAUTH_WINDOW_DEFAULT_MS,
-    REAUTH_WINDOW_MAX_MS, REAUTH_WINDOW_MIN_MS, REQUIRE_PASSWORD_DEFAULT,
-    RETENTION_WINDOW_DEFAULT_MS, RETENTION_WINDOW_MAX_MS, RETENTION_WINDOW_MIN_MS,
-    SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS, SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS,
-    SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS, SETTINGS_FIELD_RETENTION_WINDOW_MS,
-    SETTINGS_RECORD_TYPE,
+use secretary_ffi_bridge::{
+    parse_settings_fields as bridge_parse, validate_save_settings as bridge_validate,
+    SettingsBoundsError, SettingsParseError, SettingsWarning,
 };
+pub use secretary_ffi_bridge::{serialize_settings, Settings};
+
 use crate::errors::{AppError, AppWarning};
-
-/// Parsed app settings — pure value type, no secret material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Settings {
-    pub auto_lock_timeout_ms: u64,
-    pub require_password_before_edits: bool,
-    pub reauth_grace_window_ms: u64,
-    pub retention_window_ms: u64,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            auto_lock_timeout_ms: AUTO_LOCK_DEFAULT_MS,
-            require_password_before_edits: REQUIRE_PASSWORD_DEFAULT,
-            reauth_grace_window_ms: REAUTH_WINDOW_DEFAULT_MS,
-            retention_window_ms: RETENTION_WINDOW_DEFAULT_MS,
-        }
-    }
-}
 
 /// Result of parsing a settings record from the vault.
 ///
@@ -44,149 +27,50 @@ impl Default for Settings {
 /// the manifest.
 pub type ParseResult = Result<(Settings, Vec<AppWarning>), AppError>;
 
+/// Map a bridge load warning to the desktop IPC warning wire-type. `pub(crate)`
+/// so [`super::io`] can reuse it for [`secretary_ffi_bridge::read_settings`]'s
+/// warnings without duplicating the match.
+pub(crate) fn map_warning(w: SettingsWarning) -> AppWarning {
+    match w {
+        SettingsWarning::Clamped {
+            original_ms,
+            clamped_ms,
+        } => AppWarning::SettingsClamped {
+            original_ms,
+            clamped_ms,
+        },
+        SettingsWarning::Corrupt { detail } => AppWarning::SettingsCorrupt { detail },
+    }
+}
+
 /// Parse a settings record's `(field_name, field_value_text)` list into a
-/// `Settings`. Unknown record_type → `SettingsUnknownVersion`. Missing known
-/// fields fall back to `Settings::default()` values with no warning (forward-
-/// compat: an older-client record never wrote the new field). An unknown
-/// *extra* field name produces a non-fatal `SettingsCorrupt` warning so that
-/// a newer-client write doesn't break this client. Numeric fields clamp-on-
-/// load with a `SettingsClamped` warning; the save path rejects out-of-range
-/// rather than clamping (see `validate_save_settings`).
+/// `Settings`, delegating the pure logic to the shared bridge and mapping its
+/// warnings/errors onto the desktop IPC wire-types. Unknown record_type →
+/// `SettingsUnknownVersion`. Missing known fields fall back to
+/// `Settings::default()` values with no warning (forward-compat: an
+/// older-client record never wrote the new field). An unknown *extra* field
+/// name produces a non-fatal `SettingsCorrupt` warning so that a newer-client
+/// write doesn't break this client. Numeric fields clamp-on-load with a
+/// `SettingsClamped` warning; the save path rejects out-of-range rather than
+/// clamping (see `validate_save_settings`).
 pub fn parse_settings_fields(record_type: &str, fields: &[(String, String)]) -> ParseResult {
-    if record_type != SETTINGS_RECORD_TYPE {
-        return Err(AppError::SettingsUnknownVersion {
-            version: record_type.to_string(),
-        });
-    }
-
-    let mut settings = Settings::default();
-    let mut warnings = Vec::new();
-
-    for (name, value) in fields {
-        match name.as_str() {
-            SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS => {
-                let raw: u64 = value.parse().map_err(|e| AppError::SettingsCorrupt {
-                    detail: format!("auto_lock_timeout_ms parse failure: {e}"),
-                })?;
-                let (v, mut w) = clamp_ms_with_warning(raw, AUTO_LOCK_MIN_MS, AUTO_LOCK_MAX_MS);
-                settings.auto_lock_timeout_ms = v;
-                warnings.append(&mut w);
-            }
-            SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS => {
-                let raw: u64 = value.parse().map_err(|e| AppError::SettingsCorrupt {
-                    detail: format!("reauth_grace_window_ms parse failure: {e}"),
-                })?;
-                let (v, mut w) =
-                    clamp_ms_with_warning(raw, REAUTH_WINDOW_MIN_MS, REAUTH_WINDOW_MAX_MS);
-                settings.reauth_grace_window_ms = v;
-                warnings.append(&mut w);
-            }
-            SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS => {
-                settings.require_password_before_edits =
-                    value.parse().map_err(|e| AppError::SettingsCorrupt {
-                        detail: format!("require_password_before_edits parse failure: {e}"),
-                    })?;
-            }
-            SETTINGS_FIELD_RETENTION_WINDOW_MS => {
-                let raw: u64 = value.parse().map_err(|e| AppError::SettingsCorrupt {
-                    detail: format!("retention_window_ms parse failure: {e}"),
-                })?;
-                let (v, mut w) =
-                    clamp_ms_with_warning(raw, RETENTION_WINDOW_MIN_MS, RETENTION_WINDOW_MAX_MS);
-                settings.retention_window_ms = v;
-                warnings.append(&mut w);
-            }
-            other => {
-                // Forward-compat: a field this build doesn't know about is a
-                // warning, not a hard error — a newer client may have written
-                // it, and we must still load the fields we DO understand.
-                warnings.push(AppWarning::SettingsCorrupt {
-                    detail: format!("unknown settings field ignored: {other}"),
-                });
-            }
+    match bridge_parse(record_type, fields) {
+        Ok((settings, warnings)) => Ok((settings, warnings.into_iter().map(map_warning).collect())),
+        Err(SettingsParseError::UnknownVersion { version }) => {
+            Err(AppError::SettingsUnknownVersion { version })
         }
-    }
-
-    Ok((settings, warnings))
-}
-
-/// Clamp a millisecond value into `[min, max]`, emitting a `SettingsClamped`
-/// warning when clamped. Load-path only — the save path rejects out-of-range
-/// rather than clamping (see `validate_save_settings`).
-fn clamp_ms_with_warning(value: u64, min: u64, max: u64) -> (u64, Vec<AppWarning>) {
-    if value < min {
-        (
-            min,
-            vec![AppWarning::SettingsClamped {
-                original_ms: value,
-                clamped_ms: min,
-            }],
-        )
-    } else if value > max {
-        (
-            max,
-            vec![AppWarning::SettingsClamped {
-                original_ms: value,
-                clamped_ms: max,
-            }],
-        )
-    } else {
-        (value, vec![])
+        Err(SettingsParseError::Corrupt { detail }) => Err(AppError::SettingsCorrupt { detail }),
     }
 }
 
-/// Validate settings before saving (frontend-supplied path). Rejects
-/// out-of-range numeric values with `SettingsOutOfRange` rather than clamping
-/// — the dialog also validates client-side; this catches adversarial IPC.
+/// Validate settings before saving (frontend-supplied path), delegating to
+/// the shared bridge and mapping its bounds error onto the desktop IPC
+/// wire-type. Rejects out-of-range numeric values with `SettingsOutOfRange`
+/// rather than clamping — the dialog also validates client-side; this
+/// catches adversarial IPC.
 pub fn validate_save_settings(s: &Settings) -> Result<(), AppError> {
-    if !(AUTO_LOCK_MIN_MS..=AUTO_LOCK_MAX_MS).contains(&s.auto_lock_timeout_ms) {
-        return Err(AppError::SettingsOutOfRange {
-            min: AUTO_LOCK_MIN_MS,
-            max: AUTO_LOCK_MAX_MS,
-        });
-    }
-    if !(REAUTH_WINDOW_MIN_MS..=REAUTH_WINDOW_MAX_MS).contains(&s.reauth_grace_window_ms) {
-        return Err(AppError::SettingsOutOfRange {
-            min: REAUTH_WINDOW_MIN_MS,
-            max: REAUTH_WINDOW_MAX_MS,
-        });
-    }
-    if !(RETENTION_WINDOW_MIN_MS..=RETENTION_WINDOW_MAX_MS).contains(&s.retention_window_ms) {
-        return Err(AppError::SettingsOutOfRange {
-            min: RETENTION_WINDOW_MIN_MS,
-            max: RETENTION_WINDOW_MAX_MS,
-        });
-    }
-    Ok(())
-}
-
-/// Serialize a `Settings` into one `(record_type, field_name, field_value_text)`
-/// triple per field. All triples share `SETTINGS_RECORD_TYPE` as element 0.
-/// The save call (which packages these into a `BlockInput` and calls
-/// `secretary_ffi_bridge::save_block`) lives in [`super::io::save_to_vault`].
-pub fn serialize_settings(s: &Settings) -> Vec<(String, String, String)> {
-    vec![
-        (
-            SETTINGS_RECORD_TYPE.to_string(),
-            SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
-            s.auto_lock_timeout_ms.to_string(),
-        ),
-        (
-            SETTINGS_RECORD_TYPE.to_string(),
-            SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS.to_string(),
-            s.require_password_before_edits.to_string(),
-        ),
-        (
-            SETTINGS_RECORD_TYPE.to_string(),
-            SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS.to_string(),
-            s.reauth_grace_window_ms.to_string(),
-        ),
-        (
-            SETTINGS_RECORD_TYPE.to_string(),
-            SETTINGS_FIELD_RETENTION_WINDOW_MS.to_string(),
-            s.retention_window_ms.to_string(),
-        ),
-    ]
+    bridge_validate(s)
+        .map_err(|SettingsBoundsError { min, max }| AppError::SettingsOutOfRange { min, max })
 }
 
 #[cfg(test)]
@@ -207,7 +91,7 @@ mod tests {
     fn default_uses_constant() {
         assert_eq!(
             Settings::default().auto_lock_timeout_ms,
-            AUTO_LOCK_DEFAULT_MS
+            crate::constants::AUTO_LOCK_DEFAULT_MS
         );
     }
 
@@ -302,7 +186,7 @@ mod tests {
             "30000".to_string(),
         )];
         let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
-        assert_eq!(s.auto_lock_timeout_ms, AUTO_LOCK_MIN_MS);
+        assert_eq!(s.auto_lock_timeout_ms, crate::constants::AUTO_LOCK_MIN_MS);
         assert_eq!(warnings.len(), 1);
         match &warnings[0] {
             AppWarning::SettingsClamped {
@@ -310,7 +194,7 @@ mod tests {
                 clamped_ms,
             } => {
                 assert_eq!(*original_ms, 30_000);
-                assert_eq!(*clamped_ms, AUTO_LOCK_MIN_MS);
+                assert_eq!(*clamped_ms, crate::constants::AUTO_LOCK_MIN_MS);
             }
             other => panic!("expected SettingsClamped, got {other:?}"),
         }
@@ -318,13 +202,13 @@ mod tests {
 
     #[test]
     fn parse_above_max_clamps_with_warning() {
-        let oversized = AUTO_LOCK_MAX_MS + 1;
+        let oversized = crate::constants::AUTO_LOCK_MAX_MS + 1;
         let fields = vec![(
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS.to_string(),
             oversized.to_string(),
         )];
         let (s, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("parse");
-        assert_eq!(s.auto_lock_timeout_ms, AUTO_LOCK_MAX_MS);
+        assert_eq!(s.auto_lock_timeout_ms, crate::constants::AUTO_LOCK_MAX_MS);
         assert_eq!(warnings.len(), 1);
     }
 
@@ -408,11 +292,11 @@ mod tests {
         // The bounds are inclusive — pin that to prevent a sneaky off-by-one
         // refactor that would reject the exact min/max user-picked values.
         let min_settings = Settings {
-            auto_lock_timeout_ms: AUTO_LOCK_MIN_MS,
+            auto_lock_timeout_ms: crate::constants::AUTO_LOCK_MIN_MS,
             ..Default::default()
         };
         let max_settings = Settings {
-            auto_lock_timeout_ms: AUTO_LOCK_MAX_MS,
+            auto_lock_timeout_ms: crate::constants::AUTO_LOCK_MAX_MS,
             ..Default::default()
         };
         assert!(validate_save_settings(&min_settings).is_ok());
@@ -422,14 +306,14 @@ mod tests {
     #[test]
     fn validate_save_rejects_below_min() {
         let s = Settings {
-            auto_lock_timeout_ms: AUTO_LOCK_MIN_MS - 1,
+            auto_lock_timeout_ms: crate::constants::AUTO_LOCK_MIN_MS - 1,
             ..Default::default()
         };
         let err = validate_save_settings(&s).expect_err("must error");
         match err {
             AppError::SettingsOutOfRange { min, max } => {
-                assert_eq!(min, AUTO_LOCK_MIN_MS);
-                assert_eq!(max, AUTO_LOCK_MAX_MS);
+                assert_eq!(min, crate::constants::AUTO_LOCK_MIN_MS);
+                assert_eq!(max, crate::constants::AUTO_LOCK_MAX_MS);
             }
             other => panic!("expected SettingsOutOfRange, got {other:?}"),
         }
@@ -438,7 +322,7 @@ mod tests {
     #[test]
     fn validate_save_rejects_above_max() {
         let s = Settings {
-            auto_lock_timeout_ms: AUTO_LOCK_MAX_MS + 1,
+            auto_lock_timeout_ms: crate::constants::AUTO_LOCK_MAX_MS + 1,
             ..Default::default()
         };
         let err = validate_save_settings(&s).expect_err("must error");
@@ -451,7 +335,7 @@ mod tests {
     #[test]
     fn validate_save_rejects_window_above_max() {
         let s = Settings {
-            auto_lock_timeout_ms: AUTO_LOCK_DEFAULT_MS,
+            auto_lock_timeout_ms: crate::constants::AUTO_LOCK_DEFAULT_MS,
             require_password_before_edits: true,
             reauth_grace_window_ms: REAUTH_WINDOW_MAX_MS + 1,
             ..Settings::default()

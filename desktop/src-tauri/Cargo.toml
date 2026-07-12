@@ -30,14 +30,20 @@ tauri = { version = "2", features = [] }
 # Task 2 pure modules:
 # - `secretary-ffi-bridge` is consumed for `FfiVaultError` + the open / read /
 #   save vault entry points used by Task 3's `VaultSession`. Workspace path
-#   dep — not an FFI hop.
+#   dep — not an FFI hop. As of the mobile-vault-settings epic (Task 6) it is
+#   also the single source of truth for the settings schema/parse/I-O
+#   (`Settings`, `parse_settings_fields`, `read_settings`, `write_settings`,
+#   `deterministic_uuid_16`, and the bound constants) — desktop's
+#   `constants.rs` / `settings/parse.rs` / `settings/io.rs` re-export/delegate
+#   rather than redefine.
 # - `serde` / `serde_json` for the serde-tagged `AppError` / `AppWarning`
 #   discriminated unions that cross the Tauri IPC seam.
 # - `thiserror` for derive-based `Error` impls.
 # - `tracing` for structured logs on the Rust side (developer-facing
 #   `detail` fields are logged here but stripped before IPC serialization).
-# - `sha2` + `hex` for the deterministic SHA-256-derived UUID helper and
-#   the frozen-UUID tripwire tests in `constants::tests`.
+# - `hex` for hex-encoding UUIDs (device-uuid path encoding, error `detail`
+#   fields). The SHA-256-derived deterministic UUID helper itself now lives
+#   in the bridge crate; desktop no longer depends on `sha2` directly.
 # Versions track the workspace conventions already used by `core/` and
 # `ffi/secretary-ffi-bridge/`.
 secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge" }
@@ -51,7 +57,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
-sha2 = "0.10"
 hex = "0.4"
 
 # D.1.2 reveal path additions:

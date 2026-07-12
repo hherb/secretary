@@ -6,36 +6,26 @@
 //! self-explanatory (e.g. 0, 1, 2 for indexing) lives here with a name.
 //!
 //! See: docs/superpowers/specs/2026-05-27-d11-tauri-walking-skeleton-design.md §8
+//!
+//! The settings-record schema (`SETTINGS_*` names, the `AUTO_LOCK_*` /
+//! `REAUTH_WINDOW_*` / `RETENTION_WINDOW_*` bounds, `REQUIRE_PASSWORD_DEFAULT`,
+//! `MS_PER_DAY`, and `deterministic_uuid_16`) moved to
+//! `secretary_ffi_bridge` (Task 1 of the mobile-vault-settings epic) so
+//! desktop and mobile share one Rust definition of the on-disk schema —
+//! re-exported below rather than redefined.
 
-use sha2::{Digest, Sha256};
+pub use secretary_ffi_bridge::{
+    deterministic_uuid_16, AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS, MS_PER_DAY,
+    REAUTH_WINDOW_DEFAULT_MS, REAUTH_WINDOW_MAX_MS, REAUTH_WINDOW_MIN_MS, REQUIRE_PASSWORD_DEFAULT,
+    RETENTION_WINDOW_DEFAULT_MS, RETENTION_WINDOW_MAX_MS, RETENTION_WINDOW_MIN_MS,
+    SETTINGS_BLOCK_NAME, SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS,
+    SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS, SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
+    SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
+};
 
 // =============================================================================
 // Auto-lock timing
 // =============================================================================
-
-/// Default auto-lock timeout in milliseconds. Used when no settings record
-/// exists in the vault (first-unlock or default-only users).
-///
-/// **Value:** 600_000 (10 minutes).
-/// **Rationale:** Matches 1Password (10 min default), Bitwarden (15 min).
-/// Long enough to not annoy; short enough that "I walked away for lunch"
-/// leaves the vault locked.
-pub const AUTO_LOCK_DEFAULT_MS: u64 = 600_000;
-
-/// Lower bound for `auto_lock_timeout_ms` settings validation.
-///
-/// **Value:** 60_000 (1 minute).
-/// **Rationale:** Below this, re-prompts become tedious for the user with no
-/// security gain — a 30-second adversary window vs 60-second isn't materially
-/// different in a physical-access threat model.
-pub const AUTO_LOCK_MIN_MS: u64 = 60_000;
-
-/// Upper bound for `auto_lock_timeout_ms` settings validation.
-///
-/// **Value:** 86_400_000 (24 hours).
-/// **Rationale:** Anything longer is effectively "never auto-lock" —
-/// security antipattern we won't ship as configurable.
-pub const AUTO_LOCK_MAX_MS: u64 = 86_400_000;
 
 /// Tick interval for the auto-lock timer thread.
 ///
@@ -55,118 +45,6 @@ pub const AUTO_LOCK_TICK_MS: u64 = 5_000;
 /// Shared with `desktop/src/lib/auto_lock.ts::ACTIVITY_NOTIFY_MIN_INTERVAL_MS` —
 /// change both together.
 pub const ACTIVITY_NOTIFY_MIN_INTERVAL_MS: u64 = 2_000;
-
-// =============================================================================
-// Settings record schema
-// =============================================================================
-
-/// Reserved block name for the secretary-app settings record.
-///
-/// **Value:** `"__secretary_app_settings__"`.
-/// **Rationale:** Double-underscore prefix/suffix marks "internal"; unlikely
-/// to collide with user-created block names.
-pub const SETTINGS_BLOCK_NAME: &str = "__secretary_app_settings__";
-
-/// Versioned record_type string for the settings record.
-///
-/// **Value:** `"secretary.settings.v1"`.
-/// **Rationale:** Versioned. Future schema migrations get `v2`. Forward-compat:
-/// unknown version on load falls back to `Settings::default()` + warning.
-pub const SETTINGS_RECORD_TYPE: &str = "secretary.settings.v1";
-
-/// Field name for the auto-lock timeout setting.
-///
-/// **Value:** `"auto_lock_timeout_ms"`.
-/// **Rationale:** Snake-case matches Rust convention; matches the constant
-/// name `AUTO_LOCK_DEFAULT_MS` for grep-ability.
-pub const SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS: &str = "auto_lock_timeout_ms";
-
-// =============================================================================
-// Write re-auth (password re-entry before a mutating write)
-// =============================================================================
-
-/// Default grace window for write re-auth, in milliseconds. One successful
-/// password re-entry covers all mutating writes within this window before the
-/// next prompt.
-///
-/// **Value:** 120_000 (2 minutes).
-/// **Rationale:** Long enough that a normal editing burst costs one prompt,
-/// short enough to bound exposure on an unattended-but-unlocked machine. The
-/// verify runs a full Argon2id (m=256 MiB, t=3); this window amortises it.
-/// User-configurable (Settings dialog) — "Secretary enables maximum security;
-/// the user decides what is necessary."
-pub const REAUTH_WINDOW_DEFAULT_MS: u64 = 120_000;
-
-/// Lower bound for `reauth_grace_window_ms` validation.
-///
-/// **Value:** 0. Zero means "re-auth before EVERY mutating write" — a valid
-/// maximum-security choice. The frontend offers it explicitly.
-pub const REAUTH_WINDOW_MIN_MS: u64 = 0;
-
-/// Upper bound for `reauth_grace_window_ms` validation.
-///
-/// **Value:** 3_600_000 (1 hour). Beyond an hour the gate adds little over
-/// auto-lock; we won't ship a larger configurable value.
-pub const REAUTH_WINDOW_MAX_MS: u64 = 3_600_000;
-
-/// Default for `require_password_before_edits`.
-///
-/// **Value:** true (secure by default; user may disable).
-pub const REQUIRE_PASSWORD_DEFAULT: bool = true;
-
-/// Settings field name: the on/off toggle for write re-auth.
-pub const SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS: &str = "require_password_before_edits";
-
-/// Settings field name: the grace window in milliseconds.
-pub const SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS: &str = "reauth_grace_window_ms";
-
-// =============================================================================
-// Retention window (auto-purge of trashed blocks past this age)
-// =============================================================================
-
-/// Milliseconds per day. Used to convert the user-visible retention window
-/// (days) to/from the wire-format ms.
-pub const MS_PER_DAY: u64 = 86_400_000;
-
-/// Default retention window, in milliseconds. Re-exported from the bridge's
-/// `DEFAULT_RETENTION_WINDOW_MS` (90 days) so the desktop default can never
-/// drift from the FFI default.
-pub const RETENTION_WINDOW_DEFAULT_MS: u64 = secretary_ffi_bridge::DEFAULT_RETENTION_WINDOW_MS;
-
-/// Lower bound for `retention_window_ms`. One day — a 0-day window would purge
-/// everything on the next run; the floor makes that a deliberate impossibility
-/// through the settings surface.
-pub const RETENTION_WINDOW_MIN_MS: u64 = MS_PER_DAY;
-
-/// Upper bound for `retention_window_ms`. 3650 days (10 years) — a sanity
-/// ceiling; beyond this the window is effectively "never purge".
-pub const RETENTION_WINDOW_MAX_MS: u64 = 3650 * MS_PER_DAY;
-
-/// Settings field name: the retention window in milliseconds.
-pub const SETTINGS_FIELD_RETENTION_WINDOW_MS: &str = "retention_window_ms";
-
-// =============================================================================
-// Deterministic UUID derivation (for the settings block and record)
-// =============================================================================
-
-/// Number of bytes consumed from the front of a SHA-256 digest to form the
-/// deterministic 16-byte UUID. The vault format uses 128-bit UUIDs; SHA-256
-/// produces 256 bits so we discard the high half.
-const UUID_BYTE_LEN: usize = 16;
-
-/// Compute the deterministic 16-byte UUID for a vault-internal block name
-/// or record_type string, via `SHA-256(input)[0..16]`.
-///
-/// Used for the settings block and the settings record so that two devices
-/// creating the same block independently produce identical UUIDs — the CRDT
-/// merge layer then treats their writes as concurrent updates of one block
-/// rather than two separate blocks. See spec §8 for the full rationale.
-pub fn deterministic_uuid_16(input: &str) -> [u8; UUID_BYTE_LEN] {
-    let hash = Sha256::digest(input.as_bytes());
-    let mut out = [0u8; UUID_BYTE_LEN];
-    out.copy_from_slice(&hash[0..UUID_BYTE_LEN]);
-    out
-}
 
 #[cfg(test)]
 mod tests {

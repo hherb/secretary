@@ -3976,7 +3976,6 @@ dependencies = [
  "secretary-ffi-bridge",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
