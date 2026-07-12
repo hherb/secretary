@@ -6,10 +6,12 @@
 //! Two responsibilities:
 //!
 //! 1. [`load_from_vault`] / [`save_to_vault`] — round-trip the
-//!    `secretary.settings.v1` record through the bridge's `read_block` /
-//!    `save_block` entry points. Load is lenient (broken record shapes
-//!    fall through to defaults + warnings); save is strict
-//!    (`validate_save_settings` rejects out-of-range adversarial inputs).
+//!    `secretary.settings.v1` record by delegating to the shared
+//!    `secretary_ffi_bridge::{read_settings, write_settings}` orchestrators
+//!    (single source of truth for the vault I/O, shared with mobile via
+//!    uniffi/pyo3). Load is lenient (broken record shapes fall through to
+//!    defaults + warnings); save is strict (`validate_save_settings` rejects
+//!    out-of-range adversarial inputs).
 //! 2. [`load_or_create_device_uuid_in`] — atomic per-vault device UUID
 //!    persistence under `<data_dir>/secretary-desktop/devices/`. Used by
 //!    the bridge's `save_block` for vector-clock semantics. The `_in`
@@ -21,32 +23,11 @@ use std::path::{Path, PathBuf};
 
 use rand::rngs::OsRng;
 use rand::TryRngCore;
-use secretary_core::crypto::secret::SecretString;
-use secretary_ffi_bridge::{
-    read_block, save_block, BlockInput, FieldInput, FieldInputValue, OpenVaultManifest,
-    RecordInput, UnlockedIdentity,
-};
+use secretary_ffi_bridge::{OpenVaultManifest, UnlockedIdentity};
 
-use super::parse::{parse_settings_fields, serialize_settings, validate_save_settings, Settings};
+use super::parse::{map_warning, validate_save_settings, Settings};
 use crate::auto_lock::now_ms;
-use crate::constants::{deterministic_uuid_16, SETTINGS_BLOCK_NAME, SETTINGS_RECORD_TYPE};
 use crate::errors::{AppError, AppWarning};
-
-/// Look up the settings block UUID in the manifest by name. Returns `None`
-/// if no block matches — the happy path for vaults whose owner never opened
-/// the Settings dialog.
-///
-/// Uses the on-disk `block_uuid` rather than recomputing
-/// `deterministic_uuid_16(SETTINGS_BLOCK_NAME)`: the on-disk value is the
-/// authoritative one, and a vault created by an older client that minted a
-/// random `block_uuid` (pre-spec) keeps working.
-fn find_settings_block_uuid(manifest: &OpenVaultManifest) -> Option<[u8; 16]> {
-    manifest
-        .block_summaries()
-        .into_iter()
-        .find(|bs| bs.block_name == SETTINGS_BLOCK_NAME)
-        .map(|bs| bs.block_uuid)
-}
 
 /// Load settings from an unlocked vault. Returns the settings + any non-fatal
 /// warnings (clamped on load, unknown version, corrupt record).
@@ -56,67 +37,9 @@ pub fn load_from_vault(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
 ) -> Result<(Settings, Vec<AppWarning>), AppError> {
-    let Some(block_uuid) = find_settings_block_uuid(manifest) else {
-        return Ok((Settings::default(), Vec::new()));
-    };
-
-    let block = read_block(identity, manifest, &block_uuid, false).map_err(AppError::from)?;
-
-    if block.record_count() != 1 {
-        return Ok((
-            Settings::default(),
-            vec![AppWarning::SettingsCorrupt {
-                detail: format!(
-                    "settings block has {} records (expected 1)",
-                    block.record_count()
-                ),
-            }],
-        ));
-    }
-    let record = block
-        .record_at(0)
-        .expect("record_count==1 ⇒ record_at(0) is Some");
-
-    // Collect every text field of the (single) settings record into
-    // (name, text) pairs. A non-text or payload-missing field is skipped
-    // with a warning (lenient posture: a shaped-wrong field must not block
-    // vault access since the user's only recourse is the Settings dialog).
-    let mut field_pairs: Vec<(String, String)> = Vec::new();
-    let mut shape_warnings: Vec<AppWarning> = Vec::new();
-    for i in 0..record.field_count() {
-        let field = record.field_at(i).expect("i < field_count ⇒ Some");
-        if !field.is_text() {
-            shape_warnings.push(AppWarning::SettingsCorrupt {
-                detail: format!("settings field '{}' is not text-typed", field.name()),
-            });
-            continue;
-        }
-        let Some(text) = field.expose_text() else {
-            shape_warnings.push(AppWarning::SettingsCorrupt {
-                detail: "settings field text payload missing".to_string(),
-            });
-            continue;
-        };
-        field_pairs.push((field.name(), text));
-    }
-
-    // #141 closed: RecordInput now carries record_type, so a record this
-    // client wrote reads back with its real type. An empty type still maps
-    // to v1 (records written before #141 landed); any other value flows to
-    // parse_settings_fields, which surfaces SettingsUnknownVersion for a
-    // future v2 record.
-    let stored_record_type = record.record_type();
-    let effective_record_type = if stored_record_type.is_empty() {
-        SETTINGS_RECORD_TYPE.to_string()
-    } else {
-        stored_record_type
-    };
-
-    let (settings, mut parse_warnings) =
-        parse_settings_fields(&effective_record_type, &field_pairs)?;
-    let mut warnings = shape_warnings;
-    warnings.append(&mut parse_warnings);
-    Ok((settings, warnings))
+    let (settings, warnings) =
+        secretary_ffi_bridge::read_settings(identity, manifest).map_err(AppError::from)?;
+    Ok((settings, warnings.into_iter().map(map_warning).collect()))
 }
 
 /// Save settings to the vault. Creates the settings block on first call
@@ -124,53 +47,20 @@ pub fn load_from_vault(
 /// (the bridge's `save_block` semantics: same `block_uuid` replaces the
 /// existing manifest entry).
 ///
-/// Validates bounds via `validate_save_settings` before constructing the
-/// `BlockInput` — adversarial in-bounds-on-frontend / out-of-bounds-on-IPC
-/// inputs are rejected here with `SettingsOutOfRange`. (Clamping is
-/// load-side only per spec §8; silently clamping on save would mask user
-/// intent.)
+/// Validates bounds via `validate_save_settings` before delegating to the
+/// bridge's `write_settings` — adversarial in-bounds-on-frontend /
+/// out-of-bounds-on-IPC inputs are rejected here with `SettingsOutOfRange`.
+/// (Clamping is load-side only per spec §8; silently clamping on save would
+/// mask user intent.)
 pub fn save_to_vault(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
     device_uuid: [u8; 16],
     new_settings: &Settings,
 ) -> Result<(), AppError> {
-    validate_save_settings(new_settings)?;
-
-    // Re-use the on-disk block_uuid if a settings block already exists; fall
-    // back to the deterministic UUID for first-save. The deterministic value
-    // is also what other Secretary clients would mint, so two devices
-    // creating the settings block independently produce the same UUID and
-    // the CRDT merge layer treats them as concurrent updates of one block.
-    let block_uuid = find_settings_block_uuid(manifest)
-        .unwrap_or_else(|| deterministic_uuid_16(SETTINGS_BLOCK_NAME));
-    let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
-
-    // serialize_settings returns one triple per field; build a FieldInput
-    // for each so all three settings fields land in the vault record.
-    let triples = serialize_settings(new_settings);
-    let record_type = triples[0].0.clone();
-    let fields: Vec<FieldInput> = triples
-        .into_iter()
-        .map(|(_, name, value_text)| FieldInput {
-            name,
-            value: FieldInputValue::Text(SecretString::from(value_text)),
-        })
-        .collect();
-
-    let block_input = BlockInput {
-        block_uuid,
-        block_name: SETTINGS_BLOCK_NAME.to_string(),
-        records: vec![RecordInput {
-            record_uuid,
-            record_type,
-            tags: Vec::new(),
-            fields,
-        }],
-    };
-
-    save_block(identity, manifest, block_input, device_uuid, now_ms()).map_err(AppError::from)?;
-    Ok(())
+    validate_save_settings(new_settings)?; // desktop mapping → SettingsOutOfRange
+    secretary_ffi_bridge::write_settings(identity, manifest, new_settings, device_uuid, now_ms())
+        .map_err(AppError::from)
 }
 
 // ============================================================================

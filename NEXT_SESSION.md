@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-11-purge-count-feedback-411-shipped.md
+docs/handoffs/2026-07-12-mobile-vault-settings-pr1-shipped.md

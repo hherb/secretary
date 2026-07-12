@@ -72,9 +72,11 @@ pub use namespace::{
     open_vault_with_password, open_vault_with_recovery, open_with_device_secret,
     open_with_password, open_with_recovery, preview_repair_with_device_secret,
     preview_repair_with_password, preview_repair_with_recovery, purge_block, read_block,
+    read_settings, reauth_window_default_ms, reauth_window_max_ms, reauth_window_min_ms,
     remove_device_slot, rename_block, repair_with_device_secret, repair_with_password,
-    repair_with_recovery, restore_block, resurrect_record, save_block, share_block, share_block_to,
-    sync_commit_decisions, sync_status, sync_vault, tombstone_record, trash_block,
+    repair_with_recovery, restore_block, resurrect_record, retention_window_max_ms,
+    retention_window_min_ms, save_block, share_block, share_block_to, sync_commit_decisions,
+    sync_status, sync_vault, tombstone_record, trash_block, write_settings,
 };
 pub use wrappers::block::{BlockReadOutput, FieldHandle, Record};
 pub use wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};
@@ -84,6 +86,7 @@ pub use wrappers::identity::{
 pub use wrappers::purge::{EmptyTrashReport, PurgeReport};
 pub use wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
 pub use wrappers::save::{BlockInput, FieldInput, FieldInputValue, RecordContent, RecordInput};
+pub use wrappers::settings::Settings;
 pub use wrappers::sync::{
     CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
 };

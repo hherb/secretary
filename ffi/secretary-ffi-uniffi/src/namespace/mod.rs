@@ -12,6 +12,7 @@ use crate::wrappers::identity::{
 };
 use crate::wrappers::purge::{EmptyTrashReport, PurgeReport};
 use crate::wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
+use crate::wrappers::settings::Settings;
 use crate::wrappers::trash::TrashedBlock;
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 use zeroize::Zeroize;
@@ -781,6 +782,74 @@ pub fn default_retention_window_ms() -> u64 {
     secretary_ffi_bridge::DEFAULT_RETENTION_WINDOW_MS
 }
 
+/// Read the vault settings record. uniffi projection of
+/// `secretary_ffi_bridge::read_settings`; load warnings are not surfaced on
+/// the mobile boundary (desktop reads them from the bridge directly).
+///
+/// # Errors
+/// - [`VaultError::CorruptVault`] — a wiped handle.
+/// - [`VaultError::FolderInvalid`] / [`VaultError::SaveCryptoFailure`] — read failure.
+pub fn read_settings(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+) -> Result<Settings, VaultError> {
+    secretary_ffi_bridge::read_settings(&identity.0, &manifest.0)
+        .map(|(s, _warnings)| Settings::from(s))
+        .map_err(VaultError::from)
+}
+
+/// Persist the vault settings record. uniffi projection of
+/// `secretary_ffi_bridge::write_settings`. Validates bounds and `device_uuid`
+/// length at this wrapper (→ `InvalidArgument`), per the input-validation
+/// convention; the bridge trusts its caller for bounds.
+///
+/// # Errors
+/// - [`VaultError::InvalidArgument`] — out-of-range settings or wrong-length `device_uuid`.
+/// - [`VaultError::CorruptVault`] / [`VaultError::FolderInvalid`] / [`VaultError::SaveCryptoFailure`].
+pub fn write_settings(
+    identity: std::sync::Arc<UnlockedIdentity>,
+    manifest: std::sync::Arc<OpenVaultManifest>,
+    settings: Settings,
+    device_uuid: Vec<u8>,
+    now_ms: u64,
+) -> Result<(), VaultError> {
+    let device_uuid = uuid_from_vec(&device_uuid, "device_uuid")?;
+    let bridge_settings = secretary_ffi_bridge::Settings::from(settings);
+    secretary_ffi_bridge::validate_save_settings(&bridge_settings).map_err(|e| {
+        VaultError::InvalidArgument {
+            detail: format!("settings out of range: [{}, {}]", e.min, e.max),
+        }
+    })?;
+    secretary_ffi_bridge::write_settings(
+        &identity.0,
+        &manifest.0,
+        &bridge_settings,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(VaultError::from)
+}
+
+/// Retention-window bound constants (uniffi has no UDL `const`). The default
+/// is the pre-existing `default_retention_window_ms()` (#402); only the
+/// min/max bounds are added here so there is exactly one function per value.
+pub fn retention_window_min_ms() -> u64 {
+    secretary_ffi_bridge::RETENTION_WINDOW_MIN_MS
+}
+pub fn retention_window_max_ms() -> u64 {
+    secretary_ffi_bridge::RETENTION_WINDOW_MAX_MS
+}
+/// Re-auth-grace-window bound constants.
+pub fn reauth_window_default_ms() -> u64 {
+    secretary_ffi_bridge::REAUTH_WINDOW_DEFAULT_MS
+}
+pub fn reauth_window_min_ms() -> u64 {
+    secretary_ffi_bridge::REAUTH_WINDOW_MIN_MS
+}
+pub fn reauth_window_max_ms() -> u64 {
+    secretary_ffi_bridge::REAUTH_WINDOW_MAX_MS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,6 +931,37 @@ mod tests {
             }
             Err(other) => panic!("expected InvalidArgument for wrong-length, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length block_uuid"),
+        }
+    }
+
+    #[test]
+    fn write_settings_out_of_range_returns_invalid_argument() {
+        // Bounds are validated at this uniffi wrapper (adversarial-IPC guard)
+        // BEFORE any vault write, so an out-of-range value rejects without
+        // mutating the vault — safe to run against the frozen golden fixture.
+        let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../core/tests/data/golden_vault_001");
+        let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
+        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
+        // retention_window_ms below the 1-day floor is out of range.
+        let bad = Settings {
+            auto_lock_timeout_ms: 600_000,
+            require_password_before_edits: true,
+            reauth_grace_window_ms: 120_000,
+            retention_window_ms: 999,
+        };
+        match write_settings(
+            out.identity,
+            out.manifest,
+            bad,
+            vec![0x07; 16],
+            1_700_000_000_000,
+        ) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("out of range"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument for out-of-range, got {other:?}"),
+            Ok(()) => panic!("expected Err for out-of-range settings"),
         }
     }
 }
