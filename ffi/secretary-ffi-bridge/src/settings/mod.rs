@@ -4,10 +4,15 @@
 //! constants + deterministic UUIDs), `parse` (pure string↔struct + bounds),
 //! `orchestration` (vault I/O over `read_block` / `save_block`).
 //!
-//! Task 1 wires only `schema`; `parse` and `orchestration` land in Tasks 2–3.
+//! Task 1 wired `schema`; Task 2 adds `parse`; `orchestration` lands in Task 3.
 
+pub mod parse;
 pub mod schema;
 
+pub use parse::{
+    parse_settings_fields, serialize_settings, validate_save_settings, SettingsBoundsError,
+    SettingsParseError, SettingsWarning,
+};
 pub use schema::{
     deterministic_uuid_16, Settings, AUTO_LOCK_DEFAULT_MS, AUTO_LOCK_MAX_MS, AUTO_LOCK_MIN_MS,
     MS_PER_DAY, REAUTH_WINDOW_DEFAULT_MS, REAUTH_WINDOW_MAX_MS, REAUTH_WINDOW_MIN_MS,
