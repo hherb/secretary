@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 import secretary_ffi_py
 from secretary_ffi_py import Settings, read_settings, write_settings
 
@@ -64,3 +65,19 @@ def test_partial_update_preserves_other_fields(tmp_path):
             assert final.auto_lock_timeout_ms == 900_000
             assert final.require_password_before_edits is False
             assert final.reauth_grace_window_ms == 42_000
+
+
+def test_write_out_of_range_raises_value_error(tmp_path):
+    out, _dst = _fresh_writable_vault(tmp_path)
+    with out as vault:
+        with vault.identity as identity, vault.manifest as manifest:
+            # retention_window_ms below the 1-day floor is rejected at the
+            # binding wrapper (adversarial-IPC guard) before any vault write.
+            bad = Settings(
+                auto_lock_timeout_ms=600_000,
+                require_password_before_edits=True,
+                reauth_grace_window_ms=120_000,
+                retention_window_ms=999,
+            )
+            with pytest.raises(ValueError):
+                write_settings(identity, manifest, bad, DEVICE_UUID, NOW_MS)
