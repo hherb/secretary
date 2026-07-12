@@ -47,6 +47,7 @@ The mobile per-vault settings slice and its render loose ends are done. Pick fro
 - **#417's remaining iOS sliver** — a literal SwiftUI render assertion for `settings-error`/`purge-notice`. **Acceptance:** either add ViewInspector to `SecretaryVaultAccess` (host, fast) OR a SecretaryApp XCUITest target, and assert the `accessibilityIdentifier` node renders the bound value. Pairs with the already-tracked #414 instrumented follow-on. Deferred here as disproportionate infra for a low-risk thin binding.
 - **Desktop OS-biometric write re-auth (#277 + gate-coverage #280)** — the remaining D.1 roadmap item; completes presence-proof across all three platforms (mobile has grace-window config now; desktop still re-auths by password only). Meaty, multi-session.
 - **Security: #383** — the one open `security`-labeled item (quick-xml 0.39 DoS advisories RUSTSEC-2026-0194/0195, transitive via tauri→plist).
+- **CI: wire the mobile host-test suites into `test.yml` (#423)** — filed from this PR's review. The mobile app-layer suites (Android `:vault-access:test`, iOS `SecretaryVaultAccess`/`SecretaryDeviceUnlock` `swift test`, Android instrumented) have *never* been in CI, so a copy/render regression stays green. iOS host job is low-risk (FFI-free `swift test` on macOS); the Android host job needs Android-SDK provisioning (the root Gradle configure pulls in the Android modules). Concrete job sketches are in the issue.
 - Any user-prioritized slice.
 
 ## (3) Open decisions and risks
@@ -73,7 +74,8 @@ git worktree list && git status -s
 `NEXT_SESSION.md` is a **relative symlink** to this file in `docs/handoffs/`. Authored once here; the symlink retargeted in the same commit on the feature branch (new path → no add/add conflict; `main` updates cleanly on merge). The handoff rides inside the PR — do **not** sync to `main` during the pause window ([[feedback_next_session_main_authoritative]]). If resuming this branch for fixups, first `git fetch origin && git merge origin/main` (branch version wins on this doc) before editing.
 
 ## Closing inventory
-- **State on close:** PR opening on `feature/settings-trash-render-consolidation` (worktree `.worktrees/settings-trash-render-consolidation`). 5 branch commits (spec + plan + 3 task) + this handoff = 6.
+- **State on close:** PR opening on `feature/settings-trash-render-consolidation` (worktree `.worktrees/settings-trash-render-consolidation`). 5 branch commits (spec + plan + 3 task) + this handoff + a review-fixup commit = 7.
+- **Review pass:** PR #422 reviewed; findings addressed — the one substantive finding (mobile host/render tests are outside CI) is a pre-existing, systemic gap filed as **#423** (out of this PR's render scope); two doc-comment clarifications (structural-vs-textual mirror) + one test comment applied. No production behaviour changed (comment/doc-only). iOS host suite re-run green.
 - **Acceptance:** Android full gate + 3 instrumented render tests green; iOS full runner green incl. the app-target `SettingsScreen.swift` compile. #413 closed; #417 re-scoped.
 - **Next:** pick a new slice (the #417 iOS sliver, desktop OS-biometric #277, security #383, or user priority).
 - **README / ROADMAP:** no change (no user-facing feature; internal test coverage + copy fix).

@@ -7,7 +7,9 @@ import SecretaryVaultAccess
 /// `.reauthFailed` / `.invalidArgument` are save-specific (re-auth and range-validation never occur
 /// on a read), so the fallback stays operation-neutral ("update", not "save") — a hard read error
 /// from `load()` would otherwise be mislabelled as a save failure. The anti-oracle "…OrCorrupt"
-/// cases are folded upstream. Mirror of Android `settingsErrorMessage`.
+/// cases are folded upstream. Structural mirror of Android `settingsErrorMessage` (same arms +
+/// neutral fallback); the copy differs by platform idiom — iOS ends with a plain "Please try
+/// again.", Android appends the error type (`::simpleName`) for debuggability.
 public func settingsErrorMessage(_ e: VaultAccessError) -> String {
     switch e {
     case .reauthFailed:

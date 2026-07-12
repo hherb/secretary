@@ -3,6 +3,9 @@ import XCTest
 import SecretaryVaultAccess
 
 final class SettingsErrorMessageTests: XCTestCase {
+    // `.reauthFailed` / `.invalidArgument` fire ONLY on save() (re-auth and range-validation
+    // never occur on a read), so their "settings were not saved." wording is correct and stays —
+    // only the shared fallback, reachable from load(), was mis-worded (#421). See below.
     func testReauthFailedUsesSaveWordedCopy() {
         XCTAssertEqual(
             settingsErrorMessage(.reauthFailed("x")),

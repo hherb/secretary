@@ -7,7 +7,9 @@ package org.secretary.browse
  * The [error] state is populated by BOTH `SettingsModel.load()` and `SettingsModel.save()`; only
  * [VaultBrowseError.ReauthFailed] is save-specific (re-auth gates writes, never reads), so the
  * fallback stays operation-neutral ("update", not "save") — a hard read error from `load()` would
- * otherwise be mislabelled as a save failure. Mirror of iOS `settingsErrorMessage`.
+ * otherwise be mislabelled as a save failure. Structural mirror of iOS `settingsErrorMessage` (same
+ * arms + neutral fallback); the copy differs by platform idiom — Android appends the error type
+ * (`::simpleName`) for debuggability, iOS ends with a plain "Please try again."
  */
 fun settingsErrorMessage(error: VaultBrowseError): String = when (error) {
     is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
