@@ -28,6 +28,13 @@ public protocol WriteReauthGate: Sendable {
 
 /// v1 re-auth grace window. Writes inside this window after the last successful auth
 /// do not re-prompt. One global value (no per-write-type tuning in v1).
+///
+/// This is only the fallback window for a `GraceWindowReauthGate` built without an
+/// explicit `window` (e.g. host tests). The **iOS app's effective grace default is
+/// 2 min**, not 30 s: the composition root seeds the shared `RetargetableReauthGate`
+/// from the vault's persisted `reauth_grace_window_ms` setting, falling back to the
+/// schema default `REAUTH_WINDOW_DEFAULT_MS` (2 min) when unset — see
+/// `RetargetableGateFactory` in the app target.
 public enum ReauthWindow {
     public static let v1Default: Duration = .seconds(30)
 }
