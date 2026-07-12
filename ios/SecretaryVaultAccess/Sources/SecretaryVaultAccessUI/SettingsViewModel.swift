@@ -89,22 +89,32 @@ public final class SettingsViewModel: ObservableObject {
     /// Gated save: re-auth against the current window → re-read the persisted
     /// settings and merge only the two edited fields (retention + grace) onto the
     /// two unedited ones → persist all four → on success retarget the gate to the
-    /// new grace window + show the banner.
+    /// new grace window (only when it changed) + show the banner.
     ///
-    /// The unedited fields (`autoLockTimeoutMs` / `requirePasswordBeforeEdits`)
-    /// are re-read here — not carried from `load()` — so a save can never write a
-    /// stale/placeholder value (e.g. a save before `load()` ran, or after a load
-    /// that threw), which would silently loosen the auto-lock or force
-    /// require-password. Re-reading right before the write also closes the
-    /// load→save TOCTOU against another client that changed those fields.
+    /// The re-read protects the two *unedited* fields (`autoLockTimeoutMs` /
+    /// `requirePasswordBeforeEdits`): they are read fresh here — not carried from
+    /// `load()` — so a save can never write a stale/placeholder value (e.g. a save
+    /// before `load()` ran, or after a load that threw), which would silently
+    /// loosen the auto-lock or force require-password. Re-reading right before the
+    /// write also closes the load→save TOCTOU against another client that changed
+    /// those fields.
+    ///
+    /// The two *edited* fields (retention / grace) are WYSIWYG from the bound
+    /// controls — whatever value the screen shows is exactly what is written. The
+    /// Settings screen's `.onAppear` runs `load()` before any Save is reachable,
+    /// so the controls reflect the persisted values; this method does not
+    /// separately guard a save-before-load for them (there is no displayed value
+    /// to diverge from).
     ///
     /// `isWriting` is set before the gate await so a second save during the
-    /// biometric prompt is rejected; `banner` is cleared so a new save supersedes
-    /// the prior confirmation.
+    /// biometric prompt is rejected; `banner` and any prior `error` are cleared so
+    /// a new save supersedes the prior confirmation and doesn't leave a stale
+    /// failure message showing behind the re-auth prompt.
     public func save() async {
         guard !isWriting else { return }
         isWriting = true
         banner = nil
+        error = nil
         defer { isWriting = false }
 
         // Gate the save against the CURRENT (pre-save) grace window.
@@ -149,9 +159,17 @@ public final class SettingsViewModel: ObservableObject {
         }
 
         // SUCCESS — retarget the live gate strictly after the save (so the
-        // just-persisted save was evaluated against the pre-save window).
-        error = nil
-        gate.retarget(window: .milliseconds(Int(newSettings.reauthGraceWindowMs)))
+        // just-persisted save was evaluated against the pre-save window), but
+        // ONLY when the grace window actually changed. `retarget` reseeds the
+        // gate's presence to `now`; doing that on a grace-unchanged save (e.g. a
+        // retention-only edit) would silently extend the unattended-write window
+        // past the anchor of the user's last real authentication — something a
+        // normal within-window write never does. Comparing against the re-read
+        // `current` (not the pre-load value) keeps this decision honest.
+        // (`error` was already cleared at entry and no reached path since set it.)
+        if newSettings.reauthGraceWindowMs != current.reauthGraceWindowMs {
+            gate.retarget(window: .milliseconds(Int(newSettings.reauthGraceWindowMs)))
+        }
         banner = settingsSavedBanner()
     }
 }

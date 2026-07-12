@@ -94,6 +94,27 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(f.builds.last?.window, .milliseconds(7 * 60_000), "retargeted to the new grace window")
     }
 
+    /// A retention-only save (grace window unchanged) must NOT retarget the gate:
+    /// `retarget` reseeds presence to `now`, so retargeting on a grace-unchanged
+    /// save would silently extend the unattended-write window past the user's last
+    /// real auth. The write + banner still happen; only the (needless, weakening)
+    /// reseed is skipped.
+    func testRetentionOnlyChangeDoesNotRetargetGate() async {
+        let port = FakeSettingsPort(settings: vs(graceMs: 120_000, retentionMs: 90 * 86_400_000))
+        let f = RecordingFactory()
+        let vm = SettingsViewModel(port: port, gate: makeGate(f))
+        vm.load()                       // grace populated from persisted (2 min == makeGate's window)
+        vm.setRetentionDays(45)         // change retention only; grace untouched
+        await vm.save()
+
+        XCTAssertEqual(port.writtenSettings.count, 1, "retention change still persisted")
+        XCTAssertEqual(port.writtenSettings.last?.retentionWindowMs, 45 * 86_400_000)
+        XCTAssertEqual(port.writtenSettings.last?.reauthGraceWindowMs, 120_000, "grace unchanged")
+        XCTAssertEqual(f.builds.count, 1, "no retarget when the grace window did not change")
+        XCTAssertEqual(vm.banner, settingsSavedBanner())
+        XCTAssertNil(vm.error)
+    }
+
     /// The two UI-less fields (auto-lock, require-password) must be re-read from
     /// disk at save time, never carried from a pre-load placeholder — even if the
     /// user somehow saves before a load ran, they are preserved, not clobbered.
