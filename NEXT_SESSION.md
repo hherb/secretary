@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-12-mobile-vault-settings-pr3-android-shipped.md
+docs/handoffs/2026-07-12-settings-trash-render-consolidation-shipped.md
