@@ -820,8 +820,14 @@ pub fn write_settings(
             detail: format!("settings out of range: [{}, {}]", e.min, e.max),
         }
     })?;
-    secretary_ffi_bridge::write_settings(&identity.0, &manifest.0, &bridge_settings, device_uuid, now_ms)
-        .map_err(VaultError::from)
+    secretary_ffi_bridge::write_settings(
+        &identity.0,
+        &manifest.0,
+        &bridge_settings,
+        device_uuid,
+        now_ms,
+    )
+    .map_err(VaultError::from)
 }
 
 /// Retention-window bound constants (uniffi has no UDL `const`).
