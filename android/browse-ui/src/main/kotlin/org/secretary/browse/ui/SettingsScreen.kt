@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.secretary.browse.VaultBrowseError
+import org.secretary.browse.settingsErrorMessage
 
 /**
  * The Android per-vault Settings screen — mirror of iOS `SettingsScreen`. Two controls: trash
@@ -126,12 +127,8 @@ private fun NumberSettingField(
 
 @Composable
 private fun SettingsErrorBanner(error: VaultBrowseError) {
-    val text = when (error) {
-        is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
-        else -> "Couldn't save settings: ${error::class.simpleName}"
-    }
     Text(
-        text = text,
+        text = settingsErrorMessage(error),
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.fillMaxWidth().testTag("settings-error"),
