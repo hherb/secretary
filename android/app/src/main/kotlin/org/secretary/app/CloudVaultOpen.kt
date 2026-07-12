@@ -8,6 +8,7 @@ import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.FileDeviceUuidStore
 import org.secretary.browse.GraceWindowReauthGate
 import org.secretary.browse.NoopReauthGate
+import org.secretary.browse.ReauthWindow
 import org.secretary.browse.RetargetableReauthGate
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultLocation
@@ -144,6 +145,11 @@ internal suspend fun openCloudBrowse(
         val gate = RetargetableReauthGate()
         val clock = { SystemClock.elapsedRealtime() }
         var learnedVaultId = vaultId // will be overwritten by onVaultUuidLearned with the real resolved uuid
+        // Builds the cloud gate for the RESOLVED vault with a given grace window. openBrowseWithSync
+        // calls this AFTER onVaultUuidLearned populates learnedVaultId (installing the persisted grace
+        // window over the 30s-default placeholder retarget below); the Settings screen calls it on a
+        // grace change. The closure reads learnedVaultId at call time.
+        val makeGraceGate: (Long) -> WriteReauthGate = { w -> cloudGateForResolvedVault(deviceUnlock, learnedVaultId, clock, w) }
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids),
             workingDir,
@@ -151,9 +157,14 @@ internal suspend fun openCloudBrowse(
             vaultUuid = if (vaultId.isEmpty()) ByteArray(0) else hexToBytesPublic(vaultId),
             credential = credential,
             gate = gate,
+            makeGraceGate = makeGraceGate,
             onCommit = { coordinator.afterCommit() },
             onVaultUuidLearned = { resolvedHex ->
                 learnedVaultId = resolvedHex
+                // Robust fallback: install the resolved-vault gate at the default window immediately.
+                // openBrowseWithSync then re-installs it with the persisted grace window (via
+                // makeGraceGate) — so this default-window gate is only the gate if the grace install
+                // is ever skipped (a non-SettingsPort session, which cannot happen for a real open).
                 gate.retarget(cloudGateForResolvedVault(deviceUnlock, resolvedHex, clock))
                 onVaultUuidLearned(resolvedHex)
             },
@@ -198,10 +209,11 @@ private fun cloudGateForResolvedVault(
     deviceUnlock: CloudDeviceUnlock,
     resolvedVaultId: String,
     clock: () -> Long,
+    windowMs: Long = ReauthWindow.V1_DEFAULT_MS,
 ): WriteReauthGate =
     when (cloudReauthRoute(deviceUnlock.enclaveEnrolled, resolvedVaultId, deviceUnlock.metadataVaultId)) {
         GateChoice.GRACE_WINDOW ->
-            GraceWindowReauthGate(CoordinatorBiometricAuthorizer(deviceUnlock.coordinator, resolvedVaultId), clock)
+            GraceWindowReauthGate(CoordinatorBiometricAuthorizer(deviceUnlock.coordinator, resolvedVaultId), clock, windowMs)
         GateChoice.NOOP -> NoopReauthGate
     }
 

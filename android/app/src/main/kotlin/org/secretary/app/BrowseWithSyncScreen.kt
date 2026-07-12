@@ -26,6 +26,7 @@ fun BrowseWithSyncScreen(
     sync: VaultSyncViewModel,
     onOpenSettings: () -> Unit = {},
     onOpenTrash: () -> Unit = {},
+    onOpenVaultSettings: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SyncScreen(viewModel = sync)
@@ -33,6 +34,10 @@ fun BrowseWithSyncScreen(
             onClick = onOpenTrash,
             modifier = Modifier.align(Alignment.End).testTag("open-trash"),
         ) { Text("Trash") }
+        TextButton(
+            onClick = onOpenVaultSettings,
+            modifier = Modifier.align(Alignment.End).testTag("open-vault-settings"),
+        ) { Text("Vault settings") }
         TextButton(
             onClick = onOpenSettings,
             modifier = Modifier.align(Alignment.End).testTag("open-settings"),
