@@ -118,6 +118,7 @@ pub mod restore;
 pub mod retention;
 pub mod revoke;
 pub mod save;
+pub mod settings;
 pub mod share;
 pub mod sync;
 mod sync_helpers;
