@@ -12,13 +12,16 @@
 - **`rust-test` macOS matrix leg** pinned `macos-latest` → **`macos-26`** (no `setup-xcode` — it's Rust-only, toolchain via `rust-toolchain.toml`). **No `macos-latest` label remains anywhere** in the file.
 - **Uniform `timeout-minutes: 30`** on **all six** jobs (was: the 6h default). A single value — satisfies "no per-job drift"; a **provisional runaway cap**, not a perf target.
 - Refreshed the stale `#424 tracks…` forward-reference comment in the `ios-host` block (now: "#424 (this file) now pins Xcode 26.5…").
+- **Post-review add-on:** also pinned **`ios-tsan.yml`** (SecretaryKit under ThreadSanitizer — the one *other* macOS Swift job, exposed to the same flake) to `macos-26` + Xcode 26.5 via the same `setup-xcode` step; its existing 60-min TSan timeout kept. That workflow is path-gated to `ios/**` + its own file, so editing it re-triggers the job → the pin is CI-validated on this PR.
 
 ### Branch commits (off `main` @ `e0f47586`, in order)
 - `138b42e3` design doc (spec)
 - `a173ef15` implementation plan
 - `176b214d` **Task 1** — pin macos-26 + Xcode 26.5 on `swift-conformance` + `ios-host`
 - `df711c39` **Task 2** — uniform `timeout-minutes: 30` on all jobs + pin `rust-test` macOS leg
-- _(this commit)_ handoff doc + symlink retarget
+- `d477fdb0` handoff doc + symlink retarget
+- `fd6097db` **review add-on** — pin `ios-tsan.yml` to macos-26 + Xcode 26.5 (#424)
+- _(this commit)_ handoff doc correction (scope: `ios-tsan.yml` pinned; `rust-lint.yml`/`audit.yml` → #427)
 
 ### Acceptance (all met)
 ```bash
@@ -48,7 +51,7 @@ The `test.yml` CI is now deterministic (pinned images + Xcode) and hang-bounded.
 
 - **`timeout-minutes: 30` is provisional (accepted, user-flagged).** Grounded in this run's observed durations (max 4m16s, ~7× headroom), so it comfortably absorbs a cold cargo cache. If a future full-cache-miss `cargo test` ever clips it, the failure is a **loud** timeout (never a silent wrong result) — bump the one constant. A single uniform value (not per-job) is deliberate: "no per-job drift" + one number to justify. Re-tune only if live CI shows it's tight.
 - **`macos-26` could drop Xcode 26.5 in a future image refresh.** Then `setup-xcode` hard-fails loud → bump the `xcode-version` string on **both** Swift jobs deliberately (and re-confirm the Swift host literals compile under the new toolchain, or apply the deferred `UInt64` hardening). **Never** revert to `macos-latest` / `latest-stable` — that re-opens the nondeterminism this PR closed.
-- **Scope: only `test.yml` was hardened.** `rust-lint.yml` and the lean-binding check are unpinned/untimed too, but were out of #424's scope. The same pattern (`setup-xcode` pin where macOS is involved + `timeout-minutes`) is trivially portable if a future session wants repo-wide uniformity — not filed as its own issue (low value; those jobs are Linux-only fmt/clippy/guard and short).
+- **Scope: `test.yml` + `ios-tsan.yml` hardened; `rust-lint.yml`/`audit.yml` tracked in #427.** The PR review found the flake was NOT confined to `test.yml` (my first-pass handoff wrongly called the rest "Linux-only" — it is not): **`ios-tsan.yml`** builds SecretaryKit under `xcodebuild` on `macos-latest` → exposed to the *same* macos-15/26 Swift-toolchain flake, so it was pinned in this PR (commit `fd6097db`). Still out of scope, filed as **#427**: `rust-lint.yml` has **two `macos-latest` matrix legs** (Rust — clippy + rustdoc/#92 gate — so NOT the Swift-literal flake, but nondeterministic image) and **no `timeout-minutes` on any job**; `audit.yml` (ubuntu) has no timeout. Lower value (no Swift flake), hence deferred not done.
 - **Deferred non-goal:** the iOS test-literal `UInt64` hardening (see §2). Documented, not dropped; safe to leave.
 
 ## (4) Exact commands to resume

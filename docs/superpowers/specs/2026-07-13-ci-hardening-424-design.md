@@ -26,7 +26,7 @@ Neither gap is a correctness bug today; both are reproducibility/cost hardening.
 - **Swift test-literal hardening.** Making the fragile `[N * 86_400_000]` array literals in the iOS host tests explicitly `UInt64` so they compile under *any* Swift version. Obviated by pinning the toolchain to Swift 6.3 (the literals compile fine there), and it **cannot be verified** without a `macos-15` runner to reproduce the Swift 6.0 rejection on. Left as a documented non-goal; can be filed as a standalone code-hygiene issue if a paper trail is wanted.
 - **Emulator instrumented job** (`:browse-ui:connectedDebugAndroidTest`) — separate roadmap item.
 - **`:app`/`:kit` compile-gate** — heavier full-Android-build lift, separate enhancement.
-- **Retrofitting timeouts/pins onto other workflows** (`rust-lint.yml`, the lean-binding check). This slice is scoped to `test.yml`, the file #424 names. The same pattern is trivially portable later.
+- **Retrofitting timeouts/pins onto the Rust/Linux workflows** (`rust-lint.yml`, `audit.yml`). Scoped to `test.yml`, the file #424 names. Tracked in **#427**. **(Review addendum:** the PR review found `ios-tsan.yml` — a *macOS Swift* job building SecretaryKit under `xcodebuild` — is exposed to the *same* Swift-toolchain flake, so it was **pulled in** and pinned in this PR. The remaining `rust-lint.yml`/`audit.yml` are Rust builds with no Swift-literal flake, hence still deferred to #427.)
 
 ## Design
 
