@@ -56,7 +56,17 @@ run_with_retries() {
 }
 
 # One apt attempt: refresh indices then install, each under its own `timeout`.
+#
+# The leading `dpkg --configure -a` is a bounded, best-effort repair: if a
+# *prior* attempt's `apt-get install` was killed mid-transaction by its
+# `timeout`, dpkg is left interrupted and the next `apt-get install` aborts
+# ("dpkg was interrupted; run dpkg --configure -a") — a state the plain retry
+# could not clear on its own. It is a no-op (exit 0, instant) on a healthy
+# runner, so it costs nothing on the common path. `|| true` keeps it from being
+# the attempt's exit status: the `&&` chain below stays the SOLE result, so the
+# fail-red invariant is unchanged — a genuine outage still returns non-zero.
 apt_install() {
+  sudo timeout "${INSTALL_TIMEOUT}" dpkg --configure -a || true
   sudo timeout "${UPDATE_TIMEOUT}" apt-get update \
     && sudo timeout "${INSTALL_TIMEOUT}" apt-get install -y --no-install-recommends "${PACKAGES[@]}"
 }
