@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-13-ci-hardening-427-shipped.md
+docs/handoffs/2026-07-14-hide-move-button-273-shipped.md
