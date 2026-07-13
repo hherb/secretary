@@ -28,8 +28,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macos-26 (not macos-latest): keep every runner label deterministic —
+        # this leg is Rust-only (toolchain pinned via rust-toolchain.toml) so it
+        # needs no setup-xcode, only a fixed image (#424).
+        os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # `--workspace` includes the Tauri desktop crate (`secretary-desktop`),
@@ -55,6 +59,7 @@ jobs:
   desktop-test:
     name: desktop vitest
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     defaults:
       run:
         working-directory: desktop
@@ -85,19 +90,28 @@ jobs:
     name: swift conformance
     # The Swift conformance runner hard-requires a macOS host (swiftc + the
     # generated .modulemap); it exits non-zero on any other OS by design.
-    runs-on: macos-latest
+    # PINNED to macos-26 + a pinned Xcode (setup-xcode below): the `macos-latest`
+    # label is mid-migration and nondeterministically resolves to macos-15
+    # (Swift 6.0) or macos-26 (Swift 6.3) — pin the toolchain the code targets
+    # so the compiler can't silently change (#424; same fix as ios-host).
+    runs-on: macos-26
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: '26.5'   # Swift 6.3 — the macos-26 image default AND the code's target
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps);
-      # swiftc ships with the runner's Xcode.
+      # swiftc comes from the pinned Xcode above.
       - name: Swift uniffi conformance KAT replay
         run: bash ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh
 
   kotlin-conformance:
     name: kotlin conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Cache cargo build
@@ -133,11 +147,15 @@ jobs:
     # runs of this PR. The Swift packages are developed against Xcode 26.5 /
     # Swift 6.3 and rely on integer-literal type inference that Swift 6.0
     # rejects (array-literal arithmetic in generic XCTAssertEqual), so CI must
-    # pin the toolchain the code targets. #424 tracks pinning the remaining
-    # macOS job (swift-conformance) + Xcode uniformly.
+    # pin the toolchain the code targets. #424 (this file) now pins Xcode 26.5
+    # via setup-xcode on both macOS Swift jobs + a uniform timeout on all jobs.
     runs-on: macos-26
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: '26.5'   # Swift 6.3 — the macos-26 image default AND the code's target
       - name: swift test — SecretaryDeviceUnlock (FFI-free host)
         run: swift test
         working-directory: ios/SecretaryDeviceUnlock
@@ -154,6 +172,7 @@ jobs:
     # JDK 21 matches the module's jvmToolchain(21). Guards the app-layer host
     # logic (e.g. the #421 neutral settings copy) uncovered by kotlin-conformance.
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # runaway cap (vs the 6h default); slowest job ~5min — provisional, re-tune vs live CI
     defaults:
       run:
         working-directory: android
