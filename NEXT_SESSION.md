@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-13-ci-hardening-424-shipped.md
+docs/handoffs/2026-07-13-ci-hardening-427-shipped.md

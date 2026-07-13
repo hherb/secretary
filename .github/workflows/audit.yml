@@ -33,6 +33,10 @@ jobs:
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # Lower than the build jobs' 30: the dominant cost is a cold
+    # `cargo install cargo-audit` (~3-5min, near-instant once rust-cache warms).
+    # Provisional runaway cap (vs the 6h default); a clip fails loud (#427).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Cache cargo build
