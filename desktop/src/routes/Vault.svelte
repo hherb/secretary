@@ -140,7 +140,7 @@
     {:else if $browseNav.level === 'contacts'}
       <ContactsPane />
     {:else if $browseNav.level === 'records'}
-      <RecordList block={$browseNav.block} />
+      <RecordList block={$browseNav.block} blockCount={manifest.blockCount} />
     {:else if $browseNav.level === 'fields'}
       <FieldViewer block={$browseNav.block} record={$browseNav.record} />
     {:else if $browseNav.level === 'newBlock'}

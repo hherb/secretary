@@ -38,7 +38,7 @@ describe('RecordList — contentless resurrect confirm gate', () => {
 
   it('opens a confirm and does NOT resurrect until confirmed', async () => {
     mockReadReturning(EMPTY_TOMBSTONE);
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
 
     const restoreBtn = await waitFor(() => getByLabelText('Restore record'));
     await fireEvent.click(restoreBtn);
@@ -54,7 +54,7 @@ describe('RecordList — contentless resurrect confirm gate', () => {
 
   it('confirming invokes resurrect_record and reloads', async () => {
     mockReadReturning(EMPTY_TOMBSTONE);
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
 
     const restoreBtn = await waitFor(() => getByLabelText('Restore record'));
     await fireEvent.click(restoreBtn);
@@ -76,7 +76,7 @@ describe('RecordList — contentless resurrect confirm gate', () => {
 
   it('cancelling closes the dialog without resurrecting', async () => {
     mockReadReturning(EMPTY_TOMBSTONE);
-    const { getByLabelText, getByText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, getByText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
 
     const restoreBtn = await waitFor(() => getByLabelText('Restore record'));
     await fireEvent.click(restoreBtn);
@@ -94,7 +94,7 @@ describe('RecordList — contentless resurrect confirm gate', () => {
 
   it('resurrects a still-filled tombstone one-click (no confirm)', async () => {
     mockReadReturning(FILLED_TOMBSTONE);
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
 
     const restoreBtn = await waitFor(() => getByLabelText('Restore record'));
     await fireEvent.click(restoreBtn);

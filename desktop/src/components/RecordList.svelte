@@ -16,9 +16,15 @@
   import MoveTargetPicker from './edit/MoveTargetPicker.svelte';
   import { isContentlessTombstone } from '../lib/records';
   import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
+  import { hasMoveTargets } from '../lib/blockCrud';
 
-  type Props = { block: BlockSummaryDto };
-  let { block }: Props = $props();
+  type Props = { block: BlockSummaryDto; blockCount: number };
+  let { block, blockCount }: Props = $props();
+
+  // Hide the per-record Move button when there is nowhere to move to: a vault
+  // with only this block has no candidate target (MoveTargetPicker would only
+  // show its empty state). Reactive — a block create/trash refreshes the count.
+  let canMove = $derived(hasMoveTargets(blockCount));
 
   let records = $state<RecordDto[] | null>(null);
   let error = $state<AppError | null>(null);
@@ -168,7 +174,7 @@
     <p class="record-list__empty">No records.</p>
   {:else}
     {#each records as record (record.recordUuidHex)}
-      <RecordRow {record} onClick={openRecord} {onDelete} {onRestore} {onMove} />
+      <RecordRow {record} onClick={openRecord} {onDelete} {onRestore} onMove={canMove ? onMove : undefined} />
     {/each}
   {/if}
 </section>

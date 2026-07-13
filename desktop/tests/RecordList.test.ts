@@ -31,14 +31,14 @@ describe('RecordList', () => {
     bothCalls([
       { recordUuidHex: 'cd', recordType: 'login', tags: ['work'], createdAtMs: 1, lastModMs: 2, fieldCount: 2, fields: [] }
     ]);
-    const { getByText } = render(RecordList, { props: { block: BLOCK } });
+    const { getByText } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     await waitFor(() => expect(getByText('login')).toBeTruthy());
     expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false });
   });
 
   it('renders an empty-state when the block has no records', async () => {
     bothCalls([]);
-    const { getByText } = render(RecordList, { props: { block: BLOCK } });
+    const { getByText } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     await waitFor(() => expect(getByText(/No records/i)).toBeTruthy());
   });
 
@@ -52,7 +52,7 @@ describe('RecordList', () => {
         return Promise.resolve([{ uuidHex: '00', kind: 'owner', displayName: null }]);
       return Promise.resolve(null);
     });
-    const { findByRole } = render(RecordList, { props: { block: BLOCK } });
+    const { findByRole } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     const alert = await findByRole('alert');
     expect(alert.textContent).toMatch(/Block not found/i);
   });
@@ -66,7 +66,8 @@ describe('RecordList', () => {
       return Promise.resolve(null);
     });
     const { getByText } = render(RecordList, {
-      block: { blockUuidHex: 'deadbeef', blockName: 'Logins', lastModifiedMs: 0, createdAtMs: 0 }
+      block: { blockUuidHex: 'deadbeef', blockName: 'Logins', lastModifiedMs: 0, createdAtMs: 0 },
+      blockCount: 2
     });
     await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
     expect(invokeMock).toHaveBeenCalledWith('block_recipients', { blockUuidHex: 'deadbeef' });

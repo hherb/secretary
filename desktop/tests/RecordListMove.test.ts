@@ -24,7 +24,7 @@ describe('RecordList move flow', () => {
       if (cmd === 'move_record') return Promise.resolve({ blockUuidHex: 'dst', recordUuidHex: 'r2' });
       return Promise.resolve(null);
     });
-    const { getByRole, findByRole } = render(RecordList, { props: { block } });
+    const { getByRole, findByRole } = render(RecordList, { props: { block, blockCount: 2 } });
     await waitFor(() => getByRole('button', { name: /move record/i }));
     await fireEvent.click(getByRole('button', { name: /move record/i }));
     const target = await findByRole('button', { name: /Target/ });
@@ -53,7 +53,7 @@ describe('RecordList move flow', () => {
       return Promise.resolve(null);
     });
 
-    const { getByRole, findByRole, container } = render(RecordList, { props: { block } });
+    const { getByRole, findByRole, container } = render(RecordList, { props: { block, blockCount: 2 } });
     await waitFor(() => getByRole('button', { name: /move record/i }));
     await fireEvent.click(getByRole('button', { name: /move record/i }));
 
@@ -67,5 +67,27 @@ describe('RecordList move flow', () => {
     );
     // MoveTargetPicker MUST STILL BE PRESENT — cancel keeps the picker open
     expect(container.querySelector('.move-picker')).not.toBeNull();
+  });
+
+  it('hides the Move button when the vault has no other block (blockCount 1)', async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === 'read_block'
+        ? Promise.resolve({ blockUuidHex: 'src', blockName: 'Source', records: [rec] })
+        : Promise.resolve(null)
+    );
+    const { findByRole, queryByRole } = render(RecordList, { props: { block, blockCount: 1 } });
+    // Delete is unconditional for a live record — wait on it so the row has rendered.
+    await findByRole('button', { name: /delete record/i });
+    expect(queryByRole('button', { name: /move record/i })).toBeNull();
+  });
+
+  it('shows the Move button when the vault has another block (blockCount 2)', async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === 'read_block'
+        ? Promise.resolve({ blockUuidHex: 'src', blockName: 'Source', records: [rec] })
+        : Promise.resolve(null)
+    );
+    const { findByRole } = render(RecordList, { props: { block, blockCount: 2 } });
+    await findByRole('button', { name: /move record/i });
   });
 });

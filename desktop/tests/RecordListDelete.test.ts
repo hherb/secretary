@@ -34,7 +34,7 @@ describe('RecordList — show-deleted toggle', () => {
 
   it('reads the block with includeDeleted: false on mount', async () => {
     invokeMock.mockResolvedValue({ blockUuidHex: 'ab', blockName: 'Personal logins', records: [] });
-    render(RecordList, { props: { block: BLOCK } });
+    render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false })
     );
@@ -42,7 +42,7 @@ describe('RecordList — show-deleted toggle', () => {
 
   it('re-reads with includeDeleted: true when "Show deleted" is toggled on', async () => {
     invokeMock.mockResolvedValue({ blockUuidHex: 'ab', blockName: 'Personal logins', records: [] });
-    const { getByLabelText } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false })
     );
@@ -83,7 +83,7 @@ describe('RecordList — delete guard (write-reauth gate)', () => {
       prompt: () => Promise.reject(ReauthCancelled)
     });
 
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
     await fireEvent.click(deleteBtn);
 
@@ -110,7 +110,7 @@ describe('RecordList — delete guard (write-reauth gate)', () => {
       prompt: () => Promise.resolve()
     });
 
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
     const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
     await fireEvent.click(deleteBtn);
 
@@ -155,7 +155,7 @@ describe('RecordList — delete confirm → tombstoneRecord', () => {
       return Promise.resolve(null);
     });
 
-    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK } });
+    const { getByLabelText, container } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
 
     // Wait for the live row's Delete action to render.
     const deleteBtn = await waitFor(() => getByLabelText('Delete record'));
