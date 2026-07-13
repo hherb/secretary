@@ -29,7 +29,11 @@ permissions:
 jobs:
   ios-tsan:
     name: SecretaryKit ThreadSanitizer
-    runs-on: macos-latest
+    # PINNED to macos-26 + Xcode 26.5 (setup-xcode below), same as test.yml's
+    # Swift jobs (#424): macos-latest nondeterministically resolves to macos-15
+    # (Swift 6.0) / macos-26 (Swift 6.3), and this job builds SecretaryKit under
+    # xcodebuild — an unpinned toolchain is the same flake risk.
+    runs-on: macos-26
     # Bound the heaviest job: Argon2id under TSan runs ~5-15x slower, so a
     # pathological hang would otherwise burn the default 6h macOS budget. 60 min
     # is generous headroom over a healthy run; revisit once first-run duration is
@@ -37,6 +41,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: '26.5'   # Swift 6.3 — the macos-26 image default AND the code's target
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       # Builds the uniffi xcframework (compiles the Rust core for the iOS-sim
