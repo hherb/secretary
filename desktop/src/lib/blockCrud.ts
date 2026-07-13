@@ -16,3 +16,15 @@ export function isBlankName(name: string): boolean {
 export function isSameBlock(sourceBlockUuidHex: string, targetBlockUuidHex: string): boolean {
   return sourceBlockUuidHex.toLowerCase() === targetBlockUuidHex.toLowerCase();
 }
+
+/** Minimum live-block count for a record move to have a destination: the
+ *  record's own block plus at least one distinct target block. */
+const MIN_BLOCKS_TO_MOVE = 2;
+
+/** True when at least one block OTHER than the record's own exists, so a move
+ *  has a real destination. `blockCount` is the manifest's live-block count —
+ *  the same set `MoveTargetPicker` enumerates (minus the source block). Below
+ *  the threshold the Move affordance can only dead-end, so it is hidden. */
+export function hasMoveTargets(blockCount: number): boolean {
+  return blockCount >= MIN_BLOCKS_TO_MOVE;
+}
