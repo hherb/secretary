@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-14-hide-move-button-273-shipped.md
+docs/handoffs/2026-07-14-mobile-move-parity-429-shipped.md

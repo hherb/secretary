@@ -146,6 +146,7 @@ fun BrowseScreen(
                         onRestore = viewModel::restore,
                         onEdit = viewModel::startEdit,
                         onMove = viewModel::startMoveRecord,
+                        canMove = hasMoveTargets(blocks.size),
                     )
                     HorizontalDivider()
                 }
@@ -180,6 +181,7 @@ private fun RecordRow(
     onRestore: (RecordSummaryView) -> Unit,
     onEdit: (RecordSummaryView) -> Unit,
     onMove: (RecordSummaryView) -> Unit,
+    canMove: Boolean,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Row(
@@ -199,11 +201,13 @@ private fun RecordRow(
                         onClick = { onEdit(record) },
                         modifier = Modifier.testTag("edit-${record.uuidHex}"),
                     ) { Text("Edit") }
-                    TextButton(
-                        onClick = { onMove(record) },
-                        enabled = !writing,
-                        modifier = Modifier.testTag("move-${record.uuidHex}"),
-                    ) { Text("Move") }
+                    if (canMove) {
+                        TextButton(
+                            onClick = { onMove(record) },
+                            enabled = !writing,
+                            modifier = Modifier.testTag("move-${record.uuidHex}"),
+                        ) { Text("Move") }
+                    }
                     TextButton(
                         onClick = { onDelete(record) },
                         enabled = !writing,

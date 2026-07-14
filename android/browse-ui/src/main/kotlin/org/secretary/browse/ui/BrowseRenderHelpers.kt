@@ -28,3 +28,14 @@ fun revealedText(value: RevealedValue): String = when (value) {
     is RevealedValue.Text -> value.value
     is RevealedValue.Bytes -> hexOfBytes(value.value)
 }
+
+/** Minimum live-block count for a record move to have a destination: the record's own block plus
+ *  at least one distinct target block. */
+private const val MIN_BLOCKS_TO_MOVE = 2
+
+/** True when at least one block OTHER than the record's own exists, so a Move has a real
+ *  destination. [blockCount] is the live-block count the browse VM already holds — the same
+ *  collection the move picker enumerates — so below the threshold the Move affordance can only
+ *  dead-end into the picker's empty state and is hidden. UX layer only: the picker empty-state and
+ *  the Rust `move_record_impl` guard remain authoritative (parity with desktop #273 / mobile #429). */
+fun hasMoveTargets(blockCount: Int): Boolean = blockCount >= MIN_BLOCKS_TO_MOVE

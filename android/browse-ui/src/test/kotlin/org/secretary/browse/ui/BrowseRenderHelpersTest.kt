@@ -50,4 +50,16 @@ class BrowseRenderHelpersTest {
     fun `revealed bytes value is shown as lowercase hex`() {
         assertEquals("00ff10", revealedText(RevealedValue.Bytes(byteArrayOf(0, 0xff.toByte(), 0x10))))
     }
+
+    @Test
+    fun `move is hidden when the vault has zero or one block`() {
+        assertEquals(false, hasMoveTargets(0))
+        assertEquals(false, hasMoveTargets(1))
+    }
+
+    @Test
+    fun `move is shown once a second block exists`() {
+        assertEquals(true, hasMoveTargets(2))
+        assertEquals(true, hasMoveTargets(3))
+    }
 }

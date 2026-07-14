@@ -84,6 +84,12 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// (unless `showDeleted`), so no client-side filtering happens here.
     public var visibleRecords: [RecordView] { records ?? [] }
 
+    /// True when the vault has a candidate target block for a record move (live block count ≥ 2).
+    /// Delegates to the pure `MovePolicy`; the SwiftUI screen gates the Move swipe action on this.
+    /// UX layer only — the move picker empty-state and the Rust `move_record_impl` guard remain
+    /// authoritative (parity with desktop #273 / mobile #429).
+    public var hasMoveTargets: Bool { MovePolicy.hasMoveTargets(blockCount: blocks.count) }
+
     /// Soft-delete a record, then re-read so `visibleRecords` reflects it.
     public func delete(record: RecordView) async {
         guard let blockUuid = selectedBlockUuid else { return }
