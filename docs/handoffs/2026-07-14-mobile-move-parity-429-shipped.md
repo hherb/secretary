@@ -1,4 +1,4 @@
-# NEXT_SESSION.md — Mobile: hide per-record Move affordance when no other block (#429) ✅ SHIPPED (PR TBD)
+# NEXT_SESSION.md — Mobile: hide per-record Move affordance when no other block (#429) ✅ SHIPPED (PR #431)
 
 **Session date:** 2026-07-14, resuming from `main` @ `6b933305` (after #430 / #273 merged). This session shipped **#429** — the Android + iOS parity follow-on to desktop #273. Branch `feature/mobile-move-parity-429` off `main` @ `6b933305`; worktree `.worktrees/mobile-move-parity-429/`. Executed brainstorm → spec → plan → inline TDD (4 tasks) → clean code review → ship. Spec: [docs/superpowers/specs/2026-07-14-mobile-move-parity-429-design.md](../superpowers/specs/2026-07-14-mobile-move-parity-429-design.md). Plan: [docs/superpowers/plans/2026-07-14-mobile-move-parity-429.md](../superpowers/plans/2026-07-14-mobile-move-parity-429.md).
 
@@ -70,14 +70,14 @@ git worktree list && git status -s
 #   ./gradlew :browse-ui:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.secretary.browse.ui.BrowseScreenMoveButtonTest   # needs emulator
 #   cd ios/SecretaryVaultAccess && swift test
 # CI status for the PR:
-#   gh pr checks <PR#>
+#   gh pr checks 431
 ```
 
 ## (5) Handoff file model
 `NEXT_SESSION.md` is a **relative symlink** to this file in `docs/handoffs/`. Authored once here; the symlink retargeted in the same commit on the feature branch (new path → no add/add conflict; `main` updates cleanly on merge). The handoff rides inside the PR — do **not** sync to `main` during the pause window ([[feedback_next_session_main_authoritative]]). If resuming this branch for fixups, first `git fetch origin && git merge origin/main` (branch version wins on this doc) before editing.
 
 ## Closing inventory
-- **State on close:** PR open on `feature/mobile-move-parity-429` (worktree `.worktrees/mobile-move-parity-429`). Branch commits: spec + plan + 4 task commits + handoff. Code review clean.
+- **State on close:** PR #431 open on `feature/mobile-move-parity-429` (worktree `.worktrees/mobile-move-parity-429`). Branch commits: spec + plan + 4 task commits + handoff. Code review clean.
 - **Acceptance:** all gates green — Android host (`:browse-ui:testDebugUnitTest`), Android instrumented (5/5 on emulator), iOS host (280 swift tests), iOS app build; code review no findings. Threshold `>= 2` proven correct (source-inclusive; picker filters source).
 - **Next:** pick a new slice — #277 (biggest D.1), #417 iOS render-infra (now covers this session's gate too), #90 Rust dedup, #269 Android dup-name, or user priority. **Verify liveness first.**
 - **README / ROADMAP:** no change (cosmetic polish on an already-documented feature).
