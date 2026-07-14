@@ -23,7 +23,8 @@
 
   // Hide the per-record Move button when there is nowhere to move to: a vault
   // with only this block has no candidate target (MoveTargetPicker would only
-  // show its empty state). Reactive — a block create/trash refreshes the count.
+  // show its empty state). Derived from the reactive `blockCount` prop, so the
+  // affordance tracks `manifest.blockCount` across a refreshManifest().
   let canMove = $derived(hasMoveTargets(blockCount));
 
   let records = $state<RecordDto[] | null>(null);

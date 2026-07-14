@@ -24,7 +24,15 @@ const MIN_BLOCKS_TO_MOVE = 2;
 /** True when at least one block OTHER than the record's own exists, so a move
  *  has a real destination. `blockCount` is the manifest's live-block count —
  *  the same set `MoveTargetPicker` enumerates (minus the source block). Below
- *  the threshold the Move affordance can only dead-end, so it is hidden. */
+ *  the threshold the Move affordance can only dead-end, so it is hidden.
+ *
+ *  Correctness depends on `blockCount` and `MoveTargetPicker`'s `listBlocks()`
+ *  projecting the SAME set (both derive from `manifest.blocks` today). If they
+ *  ever diverge, mind the direction: `blockCount` UNDER-counting real targets
+ *  (fewer than `listBlocks()` returns) would wrongly HIDE Move while a valid
+ *  destination exists — a lost affordance, worse than the benign over-count
+ *  case where the button shows only to hit the picker's empty state. Keep the
+ *  two projections identical. */
 export function hasMoveTargets(blockCount: number): boolean {
   return blockCount >= MIN_BLOCKS_TO_MOVE;
 }
