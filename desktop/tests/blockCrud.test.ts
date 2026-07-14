@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isBlankName, isSameBlock } from '../src/lib/blockCrud';
+import { isBlankName, isSameBlock, hasMoveTargets } from '../src/lib/blockCrud';
 
 describe('blockCrud pure guards', () => {
   it('isBlankName: empty / whitespace are blank', () => {
@@ -18,5 +18,13 @@ describe('blockCrud pure guards', () => {
   it('isSameBlock: case-insensitive (hex case variants are the same uuid)', () => {
     expect(isSameBlock('AB', 'ab')).toBe(true);
     expect(isSameBlock('aB', 'Ab')).toBe(true);
+  });
+  it('hasMoveTargets: fewer than two blocks has no move destination', () => {
+    expect(hasMoveTargets(0)).toBe(false);
+    expect(hasMoveTargets(1)).toBe(false);
+  });
+  it('hasMoveTargets: two or more blocks has a move destination', () => {
+    expect(hasMoveTargets(2)).toBe(true);
+    expect(hasMoveTargets(3)).toBe(true);
   });
 });
