@@ -93,7 +93,7 @@ class BlockNamePolicyTest {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd android && ./gradlew :vault-access:testDebugUnitTest --tests "org.secretary.browse.BlockNamePolicyTest"`
+Run: `cd android && ./gradlew :vault-access:test --tests "org.secretary.browse.BlockNamePolicyTest"`
 Expected: FAIL — compilation error, `blockNameCollides` unresolved reference.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -132,7 +132,7 @@ fun blockNameCollides(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd android && ./gradlew :vault-access:testDebugUnitTest --tests "org.secretary.browse.BlockNamePolicyTest"`
+Run: `cd android && ./gradlew :vault-access:test --tests "org.secretary.browse.BlockNamePolicyTest"`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
@@ -375,7 +375,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Verification (whole-feature, after both tasks)
 
-- [ ] Host unit: `cd android && ./gradlew :vault-access:testDebugUnitTest` — BUILD SUCCESSFUL (full module suite, not just the new class).
+- [ ] Host unit: `cd android && ./gradlew :vault-access:test` — BUILD SUCCESSFUL (full module suite, not just the new class).
 - [ ] Instrumented: `cd android && ./gradlew :browse-ui:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.secretary.browse.ui.BlockNameDialogWarnTest,org.secretary.browse.ui.BlockCrudUiTest` — both classes green on the emulator.
 - [ ] `:kit` + `:app` compile (a `:browse-ui` public-API change ripples up): `cd android && ./gradlew :kit:compileDebugKotlin :app:compileDebugKotlin` — BUILD SUCCESSFUL. (Per [[project_secretary_conformance_scripts_dont_compile_kit]] / [[project_secretary_android_sealed_when_cross_module]]: build the consumers in the same task.)
 
