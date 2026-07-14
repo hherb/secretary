@@ -264,14 +264,18 @@ struct VaultBrowseScreen: View {
                     Label("Edit", systemImage: "pencil")
                 }
                 .tint(.orange)
-                Button {
-                    viewModel.startMoveRecord(record)
-                } label: {
-                    Label("Move", systemImage: "folder")
+                // #429: hide Move when the vault has no other block to move into
+                // (parity with desktop #273). Gated on the host-tested VM property.
+                if viewModel.hasMoveTargets {
+                    Button {
+                        viewModel.startMoveRecord(record)
+                    } label: {
+                        Label("Move", systemImage: "folder")
+                    }
+                    .tint(.indigo)
+                    .disabled(viewModel.isWriting)
+                    .accessibilityIdentifier("move-\(record.uuidHex)")
                 }
-                .tint(.indigo)
-                .disabled(viewModel.isWriting)
-                .accessibilityIdentifier("move-\(record.uuidHex)")
             }
         }
     }

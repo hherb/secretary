@@ -79,4 +79,21 @@ final class VaultBrowseViewModelTests: XCTestCase {
         XCTAssertEqual(vm.error, .blockNotFound("de"))
         XCTAssertNil(vm.records)
     }
+
+    func testHasMoveTargetsFalseWithSingleBlock() {
+        let block = BlockSummary(uuid: [7], name: "Logins", createdAtMs: 1, lastModMs: 2)
+        let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [block], recordsByBlock: [:])
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        XCTAssertFalse(vm.hasMoveTargets)
+    }
+
+    func testHasMoveTargetsTrueWithTwoBlocks() {
+        let logins = BlockSummary(uuid: [7], name: "Logins", createdAtMs: 1, lastModMs: 2)
+        let cards = BlockSummary(uuid: [8], name: "Cards", createdAtMs: 1, lastModMs: 2)
+        let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [logins, cards], recordsByBlock: [:])
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        XCTAssertTrue(vm.hasMoveTargets)
+    }
 }
