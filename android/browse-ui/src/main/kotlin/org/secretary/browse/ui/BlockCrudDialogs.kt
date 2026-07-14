@@ -19,31 +19,44 @@ import androidx.compose.ui.unit.dp
 import org.secretary.browse.BlockNameDialogState
 import org.secretary.browse.BlockSummaryView
 import org.secretary.browse.RecordSummaryView
+import org.secretary.browse.blockNameCollides
 
-/** Create/rename a block: one text field + confirm/cancel. Seeded from the current name on rename. */
+/** Create/rename a block: one text field + confirm/cancel. Seeded from the current name on rename.
+ *  Warns (but still allows — #269) when [name] collides case-insensitively with an existing block. */
 @Composable
 fun BlockNameDialog(
     state: BlockNameDialogState,
+    existingBlocks: List<BlockSummaryView>,
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit,
 ) {
     val initial = (state as? BlockNameDialogState.RenameBlock)?.currentName ?: ""
     var name by remember(state) { mutableStateOf(initial) }
     val title = if (state is BlockNameDialogState.RenameBlock) "Rename block" else "New block"
+    val renameUuid = (state as? BlockNameDialogState.RenameBlock)?.blockUuid
+    val collides = blockNameCollides(name, existingBlocks, renameUuid)
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().testTag("block-name-field"),
-            )
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("block-name-field"),
+                )
+                if (collides) {
+                    Text(
+                        text = "A block named \"${name.trim()}\" already exists.",
+                        modifier = Modifier.padding(top = 8.dp).testTag("block-name-warning"),
+                    )
+                }
+            }
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(name) }, modifier = Modifier.testTag("block-name-confirm")) {
-                Text("Save")
+                Text(if (collides) "Save anyway" else "Save")
             }
         },
         dismissButton = {
