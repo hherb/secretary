@@ -1,7 +1,9 @@
 package org.secretary.browse.ui
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -75,8 +77,11 @@ class BlockNameDialogWarnTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("block-name-confirm").performClick()
         composeRule.waitForIdle()
-        // Allow verified: the write succeeded and the model closed the dialog.
+        // Allow verified: the dialog closed AND a second block named "Work" now exists —
+        // duplicate names stay writable (warn-but-allow, not warn-and-block). Two rows read
+        // "Work": the seeded block plus the just-created duplicate.
         composeRule.onNodeWithTag("block-name-field").assertDoesNotExist()
+        composeRule.onAllNodesWithText("Work").assertCountEquals(2)
     }
 
     @Test

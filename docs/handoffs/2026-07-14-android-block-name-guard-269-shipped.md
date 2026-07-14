@@ -21,7 +21,7 @@
 - `3bb2492d` implementation plan
 - `8e633c60` **Task 1** — pure `blockNameCollides` + 8-case host tests (also fixed the plan's `:vault-access:testDebugUnitTest` → `:vault-access:test`; `:vault-access` is a kotlin-jvm module, so its test task is `test`, not the Android-library `testDebugUnitTest`)
 - `07604c29` **Task 2** — `BlockNameDialog` warn affordance + call site + instrumented render test
-- _(this commit)_ handoff doc + symlink retarget
+- _(this commit)_ **review fixups** (`/review` follow-up) — warning `Text` now uses `colorScheme.error` + `bodySmall` so it reads as a warning (mirrors `ErrorBanner`); `saveAnyway_stillCreates_dialogDismisses` strengthened to assert the duplicate actually lands (`onAllNodesWithText("Work").assertCountEquals(2)`, not just dialog dismissal). App-wide i18n gap (all mobile strings hardcoded English) filed as **#433** (pre-existing, out of scope). Instrumented 8/8 re-verified on `emulator-5554`. Plus handoff doc + symlink retarget.
 
 ### Acceptance (all met, verified this session)
 ```bash
@@ -34,6 +34,8 @@ cd android && ./gradlew :vault-access:test                       # BUILD SUCCESS
 ./gradlew :kit:compileDebugKotlin :app:compileDebugKotlin        # BUILD SUCCESSFUL
 ```
 Code review (pr-review-toolkit:code-reviewer over the `main...HEAD` android/ diff): **clean, no findings at confidence ≥ 80** — predicate correctness (trim / case-fold / self-exclusion / blank), Compose reactivity (`collides` recomputes on keystroke and on `existingBlocks` change; `remember(state)` correctly keyed), warn-but-allow intact (confirm unconditionally calls `onConfirm`; write path untouched), and test soundness (each discriminating test fails if the feature breaks) all confirmed.
+
+Follow-up `/review` (human-requested) found **no correctness issues** — two polish suggestions applied (warning error-styling; `saveAnyway` test now asserts the duplicate lands) and the app-wide i18n observation filed as **#433** (pre-existing, not this PR's regression). See the review-fixup commit above.
 
 ## (2) What's next — pick a new slice
 
