@@ -174,19 +174,11 @@ struct VaultBrowseScreen: View {
                 }
                 Button("Cancel", role: .cancel) { recordPendingDelete = nil }
             }
-            .alert(
-                blockNameAlertTitle,
-                isPresented: Binding(
-                    get: { viewModel.blockNameDialog != nil },
-                    set: { if !$0 { viewModel.cancelBlockNameDialog() } }
-                )
-            ) {
-                TextField("Block name", text: $blockNameField)
-                    .accessibilityIdentifier("block-name-field")
-                Button("Save") { Task { await viewModel.confirmBlockName(blockNameField) } }
-                    .accessibilityIdentifier("block-name-confirm")
-                Button("Cancel", role: .cancel) { viewModel.cancelBlockNameDialog() }
-                    .accessibilityIdentifier("block-name-cancel")
+            .sheet(isPresented: Binding(
+                get: { viewModel.blockNameDialog != nil },
+                set: { if !$0 { viewModel.cancelBlockNameDialog() } }
+            )) {
+                BlockNameSheet(viewModel: viewModel, name: $blockNameField, title: blockNameSheetTitle)
             }
             .sheet(item: $movingItem, onDismiss: { viewModel.cancelMove() }) { item in
                 MoveTargetPickerSheet(viewModel: viewModel, record: item.record, sourceBlockUuid: item.sourceBlockUuid)
@@ -205,7 +197,7 @@ struct VaultBrowseScreen: View {
         }
     }
 
-    private var blockNameAlertTitle: String {
+    private var blockNameSheetTitle: String {
         switch viewModel.blockNameDialog {
         case .rename: return "Rename block"
         case .create, .none: return "New block"
