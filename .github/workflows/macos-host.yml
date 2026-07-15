@@ -1,0 +1,69 @@
+name: macOS host
+
+# #437: run ios/scripts/run-macos-tests.sh in CI so the D.5.1 macOS client's
+# Rust->Swift integration is guarded — the xcframework build (incl. the
+# macos-arm64 slice), the SecretaryKit macOS *host* test (the D.5.1 win:
+# SecretaryKit builds without a simulator), and the SecretaryMac.app compile
+# proof. test.yml's ios-host job already covers the two FFI-free host packages
+# (run-macos-tests.sh step 1); steps 2-4 were uncovered until now.
+#
+# macOS-only and heavy (a 4-triple Apple cross-compile + host cdylib +
+# uniffi-bindgen + 2 xcodebuild runs), so it is path-gated to the sources that
+# can break it. A separate workflow file is the cleanest no-third-party-action
+# way to scope this without gating test.yml's rust/desktop/conformance/host jobs
+# (which must run on every PR) — same pattern as ios-tsan.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'ffi/**'
+      - 'core/**'
+      - '.github/workflows/macos-host.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'ffi/**'
+      - 'core/**'
+      - '.github/workflows/macos-host.yml'
+
+concurrency:
+  group: macos-host-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-host:
+    name: SecretaryKit macOS host + app compile
+    # PINNED to macos-26 + Xcode 26.5 (setup-xcode below), same as test.yml's
+    # Swift jobs and ios-tsan.yml (#424): macos-latest nondeterministically
+    # resolves to macos-15 (Swift 6.0) / macos-26 (Swift 6.3), and this job
+    # builds SecretaryKit + SecretaryMac under xcodebuild — an unpinned toolchain
+    # is the same flake risk.
+    runs-on: macos-26
+    # A cold 4-triple Apple cross-compile + host cdylib + uniffi-bindgen +
+    # 2 xcodebuild runs is heavier than any test.yml leg (30 min) but lighter
+    # than ios-tsan.yml's TSan run (60 min). Provisional; re-tune vs live CI
+    # once first-run duration is known.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: '26.5'   # Swift 6.3 — the macos-26 image default AND the code's target
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # build-macos-app.sh hard-requires xcodegen (it errors 'brew install
+      # xcodegen' if absent) and it has never run in this repo's CI before.
+      # Explicit provisioning gives deterministic presence rather than relying on
+      # undocumented runner-image contents. Latest formula version is fine for a
+      # project-file generator on a non-security compile-proof path; pin only if a
+      # bump ever breaks the build.
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      # The D.5.1 acceptance runner (used verbatim — CI command == local command).
+      - name: run-macos-tests.sh (SecretaryKit macOS host + app compile)
+        run: bash ios/scripts/run-macos-tests.sh
