@@ -27,10 +27,20 @@ Three layered units — only the SwiftUI render layer is untested (accepted #417
 - `c213cdb4` **Task 2** — `VaultBrowseViewModel.blockNameCollides` wiring + 6 VM host tests (incl. the load-bearing warn-but-allow write-intact proof)
 - `2fe30e6e` **Task 3** — `BlockNameSheet` live `.sheet` replaces the static `.alert`; app **BUILD SUCCEEDED**
 - `2d953aa8` **review fix** — clear stale `error` when opening the sheet (see below) + 2 regression tests
-- _(this commit)_ handoff doc + symlink retarget
+- _(handoff commit)_ handoff doc + symlink retarget
+- _(this commit)_ **second review pass** (`/review` → `/fixall`) — 4 UX-parity fixes to `BlockNameSheet` (see below); app **BUILD SUCCEEDED**, host `swift test` **296/296** unchanged
 
 ### Code review + the one fix
 `pr-review-toolkit:code-reviewer` over the `main...HEAD` `ios/` diff: **essentially clean**, one high-confidence (80) **UX-only** finding — the sheet's inline `if let error = viewModel.error` surfaced ANY VM-wide error (a prior `reveal()`/`reload()`/write failure), not just this sheet's write, and nothing cleared it on open (repro: a failed field-reveal → tap "New block" → the sheet opens already showing the stale reveal error). **Fixed** in `2d953aa8`: `startCreateBlock`/`startRenameBlock` now clear `error` on open, so only a write originating from the sheet is shown; `confirmBlockName` stays untouched. Two regression tests added (create + rename open clears a stale error). Everything else the review confirmed correct: predicate (trim/case-fold/self-exclusion/locale), warn-but-allow intact (confirm button changes only its label; action unconditional; `confirmBlockName` byte-identical to `main`), SwiftUI reactivity + `@ObservedObject` (not `@StateObject`) choice, no testTag/binding widening, discriminating tests.
+
+### Second review pass (`/review` → `/fixall`) — 4 UX-parity fixes
+A follow-on `/review` flagged that the `.alert` → `.sheet` swap quietly dropped two behaviors the modal `.alert` gave for free, plus two cleanups. All four land in `BlockNameSheet` (`BlockCrudViews.swift`) only — **no package/VM/logic change, so host `swift test` stays 296/296 unchanged**; the write path and collision predicate are still untouched:
+1. **Auto-focus** — `@FocusState` + `.onAppear { nameFocused = true }` restores the `.alert`'s tap-and-type immediacy (keyboard up on present, no extra tap).
+2. **Lighter footprint** — `.presentationDetents([.medium, .large])` so the sheet opens compact (near the old alert's size) but can expand.
+3. **No mid-write dismiss** — `.interactiveDismissDisabled(viewModel.isWriting)`: a `.sheet` (unlike a modal `.alert`) can be swipe-dismissed, so guard it while a save is in flight.
+4. **Single collision eval** — hoist `let collides = viewModel.blockNameCollides(name)` (drove both the warning `if` and the button relabel) into `body`; keeps the two in lockstep, drops a redundant per-keystroke O(n) scan.
+
+Two review notes were deliberately **not** acted on: the 5-`.sheet`-on-one-view stacking (pre-existing, correct on the iOS 17 target — a non-defect, not introduced here) and a minor indirect test-setup in `testOpeningRenameDialogClearsAStaleError` (passing; churn not worth it). The new UX behaviors (focus/detents) are still the accepted #417-class render gap — compile-proven, not simulator-verified this pass.
 
 ### Acceptance (all met, verified this session)
 ```bash

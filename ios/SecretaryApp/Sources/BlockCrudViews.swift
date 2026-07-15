@@ -47,13 +47,19 @@ struct BlockNameSheet: View {
     @ObservedObject var viewModel: VaultBrowseViewModel
     @Binding var name: String
     let title: String
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
+        // Evaluate the collision once per render: it drives both the inline warning
+        // AND the confirm-button relabel, so hoisting it keeps the two in lockstep
+        // (and avoids a redundant O(n) scan of the block list on every keystroke).
+        let collides = viewModel.blockNameCollides(name)
         NavigationStack {
             Form {
                 TextField("Block name", text: $name)
                     .accessibilityIdentifier("block-name-field")
-                if viewModel.blockNameCollides(name) {
+                    .focused($nameFocused)
+                if collides {
                     Text("A block named \"\(name.trimmingCharacters(in: .whitespacesAndNewlines))\" already exists.")
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -74,7 +80,7 @@ struct BlockNameSheet: View {
                         .accessibilityIdentifier("block-name-cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(viewModel.blockNameCollides(name) ? "Save anyway" : "Save") {
+                    Button(collides ? "Save anyway" : "Save") {
                         Task { await viewModel.confirmBlockName(name) }
                     }
                     .accessibilityIdentifier("block-name-confirm")
@@ -82,5 +88,13 @@ struct BlockNameSheet: View {
                 }
             }
         }
+        // Keep the light footprint the old .alert had, while allowing an expand.
+        .presentationDetents([.medium, .large])
+        // Restore the .alert's tap-and-type immediacy: focus the field on present
+        // so the keyboard is up without an extra tap.
+        .onAppear { nameFocused = true }
+        // A .sheet (unlike a modal .alert) can be swipe-dismissed mid-write; block
+        // that while a save is in flight so a dismiss can't race the confirm.
+        .interactiveDismissDisabled(viewModel.isWriting)
     }
 }
