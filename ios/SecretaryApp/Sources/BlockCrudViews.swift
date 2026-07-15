@@ -36,3 +36,51 @@ struct MoveTargetPickerSheet: View {
         }
     }
 }
+
+/// Create/rename a block: one text field + Cancel/Save. Warns (but still allows —
+/// #269/#434) when the entered name collides case-insensitively with an existing
+/// block; the confirm button relabels "Save" → "Save anyway". Live-reactive by
+/// design — a `.sheet` (unlike the UIKit-backed `.alert`) rebuilds as the user
+/// types, so the warning and relabel update on every keystroke. The write path is
+/// unchanged; a single "Save anyway" tap commits the duplicate.
+struct BlockNameSheet: View {
+    @ObservedObject var viewModel: VaultBrowseViewModel
+    @Binding var name: String
+    let title: String
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Block name", text: $name)
+                    .accessibilityIdentifier("block-name-field")
+                if viewModel.blockNameCollides(name) {
+                    Text("A block named \"\(name.trimmingCharacters(in: .whitespacesAndNewlines))\" already exists.")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("block-name-warning")
+                }
+                if let error = viewModel.error {
+                    // A full-screen sheet hides the parent list's error section, so
+                    // surface a failed write here (the old .alert left it merely behind).
+                    Text(String(describing: error))
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { viewModel.cancelBlockNameDialog() }
+                        .accessibilityIdentifier("block-name-cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(viewModel.blockNameCollides(name) ? "Save anyway" : "Save") {
+                        Task { await viewModel.confirmBlockName(name) }
+                    }
+                    .accessibilityIdentifier("block-name-confirm")
+                    .disabled(viewModel.isWriting)
+                }
+            }
+        }
+    }
+}
