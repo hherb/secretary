@@ -9,7 +9,7 @@ import PackageDescription
 // the build instead of slipping past minimal checking to manual review.
 let package = Package(
     name: "SecretaryKit",
-    platforms: [.iOS(.v17)],
+    platforms: [.macOS(.v13), .iOS(.v17)],
     products: [
         .library(name: "SecretaryKit", targets: ["SecretaryKit"]),
     ],
