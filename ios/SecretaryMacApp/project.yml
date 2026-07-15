@@ -9,8 +9,6 @@ packages:
     path: ../SecretaryKit
   SecretaryDeviceUnlock:
     path: ../SecretaryDeviceUnlock
-  SecretaryVaultAccess:
-    path: ../SecretaryVaultAccess
 targets:
   SecretaryMac:
     type: application
