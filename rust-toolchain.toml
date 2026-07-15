@@ -1,3 +1,10 @@
+# Pinned to an exact stable (not the moving "stable" channel) so a new stable
+# release can't silently introduce a clippy lint that reds `-D warnings` CI on
+# unrelated PRs and on main (as 1.97.0's tightened `question_mark` did, 2026-07-16).
+# Bump deliberately: change the version, then run
+#   cargo clippy --release --workspace --tests -- -D warnings
+# and fix any newly-surfaced lints in the same PR. core/fuzz/ keeps its own
+# nightly pin (separate rust-toolchain.toml).
 [toolchain]
-channel = "stable"
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]

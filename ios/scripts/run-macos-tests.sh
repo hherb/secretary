@@ -5,6 +5,10 @@
 #
 # Real Touch ID / Secure-Enclave release is a manual proof — see
 # ios/SecretaryMacApp/MANUAL-PROOF.md. Run from anywhere.
+#
+# This runner is manual/local for now; wiring it into CI as a macos-host job is
+# tracked in https://github.com/hherb/secretary/issues/437 (the pure host packages
+# are already covered by the ios-host job).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -14,11 +14,21 @@ XCFRAMEWORK="$REPO_ROOT/ios/Secretary.xcframework"
 
 command -v xcodegen >/dev/null || { echo "ERROR: xcodegen not found — 'brew install xcodegen'"; exit 1; }
 
-if [[ ! -d "$XCFRAMEWORK" ]]; then
-    echo "==> Secretary.xcframework not found — running build-xcframework.sh first"
+# Require the macOS slice specifically, not merely the framework directory: an
+# iOS-only Secretary.xcframework left over from a pre-D.5 run-ios-tests.sh
+# satisfies a bare `-d` check but has no macos-arm64 slice, so the app link would
+# fail with a confusing "no such module" error. Probe the slice and rebuild if missing.
+if [[ ! -d "$XCFRAMEWORK/macos-arm64" ]]; then
+    echo "==> Secretary.xcframework missing its macos-arm64 slice — running build-xcframework.sh first"
     bash "$SCRIPT_DIR/build-xcframework.sh"
 fi
 
+# SKELETON ONLY — this bundles the public golden_vault_001 fixture AND its inputs
+# JSON (which carries the test password) into the app so the walking skeleton can
+# self-provision. That is safe because the fixture is public test data, but it
+# must NEVER reach a distributable build. When a real vault-picker/browse UI lands
+# in a later D.5 slice, remove this staging (and the MacVaultProvisioning bundle
+# lookup) so no fixture — and no password — is ever embedded in a shipped app.
 echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/)"
 rm -rf "$RES_DIR"; mkdir -p "$RES_DIR"
 cp -R "$REPO_ROOT/core/tests/data/golden_vault_001" "$RES_DIR/golden_vault_001"
