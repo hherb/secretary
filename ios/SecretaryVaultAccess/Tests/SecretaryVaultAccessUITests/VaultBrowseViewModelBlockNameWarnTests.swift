@@ -58,4 +58,35 @@ final class VaultBrowseViewModelBlockNameWarnTests: XCTestCase {
         XCTAssertNil(vm.error)
         XCTAssertEqual(vm.blocks.filter { $0.name == "Work" }.count, 2, "the duplicate name is written")
     }
+
+    /// The block-name sheet renders `viewModel.error` inline (a full-screen sheet
+    /// would otherwise hide the list's error section on a failed write). Opening the
+    /// sheet must therefore clear any PRE-existing, unrelated error so a stale
+    /// message (from a prior reveal/read/write) never greets a fresh create/rename.
+    func testOpeningCreateDialogClearsAStaleError() async {
+        let s = FakeVaultSession(vaultUuidHex: "ab", blocks: [block(0x11, "Work")], recordsByBlock: [:])
+        let vm = VaultBrowseViewModel(session: s, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        s.failNextWrite = .other("boom")
+        vm.startCreateBlock()
+        await vm.confirmBlockName("X")            // fails → error set, dialog stays open
+        XCTAssertNotNil(vm.error, "precondition: a failed write set an error")
+        vm.cancelBlockNameDialog()
+        vm.startCreateBlock()                     // reopening must clear the stale error
+        XCTAssertNil(vm.error, "opening the block-name dialog clears any prior error")
+    }
+
+    func testOpeningRenameDialogClearsAStaleError() async {
+        let work = block(0x11, "Work")
+        let s = FakeVaultSession(vaultUuidHex: "ab", blocks: [work], recordsByBlock: [:])
+        let vm = VaultBrowseViewModel(session: s, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        s.failNextWrite = .other("boom")
+        vm.startCreateBlock()
+        await vm.confirmBlockName("X")            // fails → error set
+        XCTAssertNotNil(vm.error, "precondition: a failed write set an error")
+        vm.cancelBlockNameDialog()
+        vm.startRenameBlock(work)                 // reopening (rename) must clear the stale error
+        XCTAssertNil(vm.error, "opening the rename dialog clears any prior error")
+    }
 }

@@ -192,10 +192,13 @@ public final class VaultBrowseViewModel: ObservableObject {
         session.wipe()
     }
 
-    /// Open the name prompt for a NEW block.
-    public func startCreateBlock() { blockNameDialog = .create }
+    /// Open the name prompt for a NEW block. Clears any prior `error` first: the
+    /// block-name sheet renders `error` inline, so a stale message from an earlier
+    /// reveal/read/write must not greet a fresh create.
+    public func startCreateBlock() { error = nil; blockNameDialog = .create }
     /// Open the name prompt to RENAME `block` (pre-binds the current name in the UI).
-    public func startRenameBlock(_ block: BlockSummary) { blockNameDialog = .rename(block: block) }
+    /// Clears any prior `error` first (see `startCreateBlock`).
+    public func startRenameBlock(_ block: BlockSummary) { error = nil; blockNameDialog = .rename(block: block) }
     /// Dismiss the block-name prompt without writing.
     public func cancelBlockNameDialog() { blockNameDialog = nil }
 
