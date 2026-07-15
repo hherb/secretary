@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Secretary.xcframework for iOS (device + simulator) from the
+# Build the Secretary.xcframework for iOS (device + simulator) + macOS (Apple Silicon) from the
 # secretary-ffi-uniffi crate, generate the Swift bindings, and stage the
 # golden-vault test fixture into the SPM test target's resources.
 #
@@ -32,14 +32,19 @@ done
 
 DEVICE_TARGET="aarch64-apple-ios"
 SIM_TARGETS=("aarch64-apple-ios-sim" "x86_64-apple-ios")
+# macOS native slice (D.5.1). Apple Silicon only — Intel (x86_64-apple-darwin)
+# is deferred. This is the same triple as the host build below, but building it
+# explicitly under --target keeps the artifact at a predictable path for the
+# XCFramework packaging and future-proofs against a non-arm64 host.
+MACOS_TARGET="aarch64-apple-darwin"
 
 # --- Step 1: iOS targets ---
-echo "==> rustup target add (iOS)"
-rustup target add "$DEVICE_TARGET" "${SIM_TARGETS[@]}"
+echo "==> rustup target add (iOS + macOS)"
+rustup target add "$DEVICE_TARGET" "${SIM_TARGETS[@]}" "$MACOS_TARGET"
 
 # --- Step 2: cross-compile the staticlib for each triple ---
-echo "==> cargo build staticlib (device + simulators)"
-for t in "$DEVICE_TARGET" "${SIM_TARGETS[@]}"; do
+echo "==> cargo build staticlib (device + simulators + macOS)"
+for t in "$DEVICE_TARGET" "${SIM_TARGETS[@]}" "$MACOS_TARGET"; do
     (cd "$REPO_ROOT" && cargo build --release -p "$CRATE" --target "$t")
 done
 
@@ -52,6 +57,7 @@ lipo -create \
     "$REPO_ROOT/target/x86_64-apple-ios/release/$LIB" \
     -output "$SIM_FAT"
 DEVICE_LIB="$REPO_ROOT/target/$DEVICE_TARGET/release/$LIB"
+MACOS_LIB="$REPO_ROOT/target/$MACOS_TARGET/release/$LIB"
 
 # --- Step 4: generate Swift bindings (uniffi-bindgen) ---
 # Why a host cdylib for bindgen: uniffi 0.31's `--library` mode reads the
@@ -105,6 +111,7 @@ rm -rf "$XCFRAMEWORK"
 xcodebuild -create-xcframework \
     -library "$DEVICE_LIB" -headers "$HDRS" \
     -library "$SIM_FAT" -headers "$HDRS" \
+    -library "$MACOS_LIB" -headers "$HDRS" \
     -output "$XCFRAMEWORK"
 
 # --- Step 6: stage the golden-vault fixture as an SPM test resource ---
