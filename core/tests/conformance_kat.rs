@@ -510,14 +510,10 @@ fn find_writable_dir(
         if let Some(dir) = writable_vault_dirs.get(&current) {
             return Some(dir.clone());
         }
-        let parent = vectors
+        current = vectors
             .iter()
             .find(|v| v.name == current)
-            .and_then(|v| v.after.clone());
-        match parent {
-            Some(p) => current = p,
-            None => return None,
-        }
+            .and_then(|v| v.after.clone())?;
     }
     panic!("after-chain cycle detected starting at '{start}' (depth exceeded vectors.len())");
 }
@@ -538,14 +534,10 @@ fn find_cache_ancestor_name(
         if cache.contains_key(&current) {
             return Some(current);
         }
-        let parent = vectors
+        current = vectors
             .iter()
             .find(|v| v.name == current)
-            .and_then(|v| v.after.clone());
-        match parent {
-            Some(p) => current = p,
-            None => return None,
-        }
+            .and_then(|v| v.after.clone())?;
     }
     panic!("after-chain cycle detected starting at '{start}' (depth exceeded vectors.len())");
 }
