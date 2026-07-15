@@ -248,6 +248,21 @@ public final class VaultBrowseViewModel: ObservableObject {
         if ok { blockNameDialog = nil }
     }
 
+    /// True when `candidate` collides (case-insensitively, trimmed) with an existing
+    /// block's name, EXCLUDING the block currently being renamed. Drives the block-name
+    /// sheet's warn-but-allow affordance (`BlockNameSheet`); the write path
+    /// (`confirmBlockName`) is unchanged — duplicate names remain writable. Reads the
+    /// active dialog to pick the exclude-uuid: `.rename` excludes its own block (so a
+    /// no-op rename never warns); `.create`/`.none` exclude nothing.
+    public func blockNameCollides(_ candidate: String) -> Bool {
+        let excludeUuid: [UInt8]?
+        switch blockNameDialog {
+        case .rename(let block): excludeUuid = block.uuid
+        case .create, .none:     excludeUuid = nil
+        }
+        return BlockNamePolicy.hasNameCollision(candidate: candidate, existing: blocks, excludeUuid: excludeUuid)
+    }
+
     /// Build a record-edit VM bound to this session + the selected block.
     /// Returns nil if no block is selected. The edit screen calls `commit()`;
     /// on success the browse screen re-selects the block to refresh the list.
