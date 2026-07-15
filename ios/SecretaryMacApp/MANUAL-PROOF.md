@@ -27,6 +27,10 @@ Equivalent to the iOS #202 proof.
    return to a `failed(userCancelled, …)` / silent case — **never**
    `wrappedSecretCorrupt`.
 
+Note: the staged vault under Application Support is cached idempotently across
+runs. If you change the fixture and need to re-run this proof, delete the
+staged copy first, e.g. `rm -rf "$HOME/Library/Application Support/golden_vault_001"`.
+
 ## PASS criteria
 - [ ] Enroll → `enrolled`.
 - [ ] Relaunch + Touch ID → `unlocked(vaultUuidHex:)` matching the pinned uuid.

@@ -21,6 +21,9 @@ echo "==> swift test (pure SecretaryVaultAccess — host)"
 ( cd "$IOS_DIR/SecretaryVaultAccess" && swift test )
 
 # --- Step 2: build the framework (incl. the macOS slice) + stage fixtures ---
+# build-xcframework.sh is a multi-minute silent build with no interim output;
+# an agent runner should background it and poll the log instead of blocking
+# on it (avoids tripping the harness's watchdog timeout).
 echo "==> build-xcframework.sh"
 bash "$SCRIPT_DIR/build-xcframework.sh"
 

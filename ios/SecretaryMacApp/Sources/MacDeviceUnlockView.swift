@@ -12,7 +12,7 @@ struct MacDeviceUnlockView: View {
         // Build the real per-vault device-unlock bundle over a staged vault.
         do {
             let vaultURL = try MacVaultProvisioning.stageGoldenVault()
-            let vaultPath = Data(vaultURL.path.utf8)                    // same as SecretaryApp.swift:247
+            let vaultPath = Data(vaultURL.path.utf8)                    // matches SecretaryApp's vaultPath construction: Data(url.path.utf8)
             let vaultId = try MacVaultProvisioning.pinnedVaultUuidHex()
             let bundle = makePerVaultDeviceUnlock(vaultPath: vaultPath)
             _model = StateObject(wrappedValue: DeviceUnlockViewModel(
@@ -38,20 +38,22 @@ struct MacDeviceUnlockView: View {
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
 
-            SecureField("Vault password (to enroll)", text: $password)
-                .frame(maxWidth: 320)
+            if setupError == nil {
+                SecureField("Vault password (to enroll)", text: $password)
+                    .frame(maxWidth: 320)
 
-            HStack(spacing: 12) {
-                Button("Enroll device slot") {
-                    Task { await model.enroll(password: Array(password.utf8)); password = "" }
-                }.disabled(password.isEmpty)
+                HStack(spacing: 12) {
+                    Button("Enroll device slot") {
+                        Task { await model.enroll(password: Array(password.utf8)); password = "" }
+                    }.disabled(password.isEmpty)
 
-                Button("Unlock with Touch ID") {
-                    Task { await model.unlock(reason: "Unlock your Secretary vault") }
+                    Button("Unlock with Touch ID") {
+                        Task { await model.unlock(reason: "Unlock your Secretary vault") }
+                    }
                 }
-            }
 
-            Button("Refresh status") { model.refreshStatus() }
+                Button("Refresh status") { model.refreshStatus() }
+            }
         }
         .padding(24)
         .frame(minWidth: 440, minHeight: 260)
