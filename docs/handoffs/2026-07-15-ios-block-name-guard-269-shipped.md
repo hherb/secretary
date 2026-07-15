@@ -1,4 +1,4 @@
-# NEXT_SESSION.md — iOS duplicate block-name warn-but-allow (#434, mirror of #269) ✅ SHIPPED (PR pending)
+# NEXT_SESSION.md — iOS duplicate block-name warn-but-allow (#434, mirror of #269) ✅ SHIPPED (PR #435)
 
 **Session date:** 2026-07-15, resuming from `main` @ `2f3c0993` (after #269 / PR #432 merged). This session shipped **#434** — the **iOS mirror** of the Android warn-but-allow duplicate block-name guard. Branch `feature/ios-block-name-guard-269` off `main` @ `2f3c0993`; worktree `.worktrees/ios-block-name-guard-269/`. Executed brainstorm → spec → plan → inline TDD (3 tasks) → code review → 1 review fix → ship. Spec: [docs/superpowers/specs/2026-07-15-ios-block-name-guard-269-design.md](../superpowers/specs/2026-07-15-ios-block-name-guard-269-design.md). Plan: [docs/superpowers/plans/2026-07-15-ios-block-name-guard-269.md](../superpowers/plans/2026-07-15-ios-block-name-guard-269.md).
 
@@ -74,14 +74,14 @@ git worktree list && git status -s
 #   cd .worktrees/ios-block-name-guard-269/ios/SecretaryVaultAccess && swift test         # 296/296, fast, no simulator
 #   cd .worktrees/ios-block-name-guard-269 && bash ios/scripts/build-app.sh               # app compile-proof (multi-minute; needs xcframework)
 # CI status for the PR:
-#   gh pr checks <PR#>
+#   gh pr checks 435
 ```
 
 ## (5) Handoff file model
 `NEXT_SESSION.md` is a **relative symlink** to this file in `docs/handoffs/`. Authored once here; the symlink retargeted in the same commit on the feature branch (new path → no add/add conflict; `main` updates cleanly on merge). The handoff rides inside the PR — do **not** sync to `main` during the pause window ([[feedback_next_session_main_authoritative]]). If resuming this branch for fixups, first `git fetch origin && git merge origin/main` (branch version wins on this doc) before editing.
 
 ## Closing inventory
-- **State on close:** PR pending on `feature/ios-block-name-guard-269` (worktree `.worktrees/ios-block-name-guard-269`), tracking issue **#434**. Branch commits: spec + plan + 3 task commits + 1 review fix + handoff. Code review clean after the one fix.
+- **State on close:** PR **#435** open on `feature/ios-block-name-guard-269` (worktree `.worktrees/ios-block-name-guard-269`), tracking issue **#434**. Mergeable; CI running at handoff. Branch commits: spec + plan + 3 task commits + 1 review fix + handoff. Code review clean after the one fix.
 - **Acceptance:** host `swift test` 296/296 (8 pure-fn `BlockNamePolicyTests` + 8 `VaultBrowseViewModelBlockNameWarnTests` incl. warn-but-allow write-intact + 2 review regressions + full package); app `build-app.sh` **BUILD SUCCEEDED**. Warn-but-allow proven intact (write path byte-identical to `main`).
 - **Next:** pick a new slice — #277 (biggest D.1), #417 iOS render-infra (now backfills #434's sheet test too), #90 Rust dedup, or user priority. **Verify liveness first.**
 - **README / ROADMAP:** no change (cosmetic UX polish on an already-documented feature).
