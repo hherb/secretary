@@ -63,6 +63,7 @@ fun BrowseScreen(
         blockNameDialog?.let { state ->
             BlockNameDialog(
                 state = state,
+                existingBlocks = blocks,
                 onConfirm = { viewModel.confirmBlockName(it) },
                 onCancel = { viewModel.cancelBlockNameDialog() },
             )

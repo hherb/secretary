@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-14-mobile-move-parity-429-shipped.md
+docs/handoffs/2026-07-14-android-block-name-guard-269-shipped.md
