@@ -3,6 +3,10 @@ import Foundation
 /// Stages a WRITABLE copy of the bundled read-only golden_vault_001 into
 /// Application Support on first launch (the bundle is read-only; enroll/disenroll
 /// mutate the vault). Never touches the bundled fixture. Idempotent.
+///
+/// SKELETON ONLY: this depends on the public golden_vault_001 fixture being
+/// bundled by `build-macos-app.sh`. It must be replaced by a real vault picker in
+/// a later D.5 slice — a shipped app must embed no fixture (and no password).
 enum MacVaultProvisioning {
     struct ProvisioningError: LocalizedError {
         let message: String
