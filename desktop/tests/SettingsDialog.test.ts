@@ -761,6 +761,33 @@ describe('SettingsDialog.svelte — Touch ID (biometric) toggle (#277)', () => {
     expect(get(presencePref)).toEqual({ biometricEnabled: true, availability: 'available' });
   });
 
+  it('disabling the toggle AND changing a vault setting in one Save mirrors biometricEnabled: false to the store', async () => {
+    // MAJOR regression (#277 final review): when the save ALSO changes a vault
+    // setting, `settingsUpdated` moves the `$derived` current* values, which
+    // re-runs the input-re-seeding $effect during the pref-write await —
+    // resetting `inputBiometric` to the PRE-save store value. The disk write
+    // reads the value before that flush (correct), but the post-await
+    // `setPresencePref` mirror must not read the clobbered binding: otherwise
+    // disk says OFF while the session store still says ON, and Touch ID keeps
+    // firing all session despite the user disabling the kill-switch.
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS); // autoLockTimeoutMs 600_000 = 10 min
+    const onClose = vi.fn();
+    const { container, getByLabelText, getByRole } = renderOpen(onClose);
+
+    const autoLockInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(autoLockInput, { target: { value: '5' } }); // 10 -> 5 min (tightening)
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false (hardening)
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // Disk got the disable...
+    expect(writePresencePrefMock).toHaveBeenCalledWith(false);
+    // ...and the session store mirror agrees with the disk.
+    expect(get(presencePref)).toEqual({ biometricEnabled: false, availability: 'available' });
+  });
+
   it('pref-write rejection still surfaces the error when the vault settings also changed', async () => {
     // The changed-settings variant of the partial-save test above: here
     // `settingsUpdated` mutates the store, which re-runs the input-re-seeding

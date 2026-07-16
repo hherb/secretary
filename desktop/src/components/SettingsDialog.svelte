@@ -174,6 +174,10 @@
       reauthGraceWindowMs: inputWindowMinutes * MS_PER_MINUTE,
       retentionWindowMs: inputRetentionDays * MS_PER_DAY
     };
+    const nextBiometric = inputBiometric; // snapshot beside newSettings — the $effect
+    // re-seed can clobber inputBiometric mid-save (settingsUpdated moves the
+    // $derived current* values, which re-runs the input-re-seeding $effect
+    // during a later await), so every read below uses this snapshot.
     submitting = true;
     formError = null;
 
@@ -197,7 +201,7 @@
       currentRequirePassword &&
       (!newSettings.requirePasswordBeforeEdits ||
         newSettings.reauthGraceWindowMs > currentWindowMs);
-    const enablesBiometric = inputBiometric && !currentBiometric;
+    const enablesBiometric = nextBiometric && !currentBiometric;
     const reducesProtection = widensAutoLock || weakensWriteGate || enablesBiometric;
     if (reducesProtection) {
       try {
@@ -230,10 +234,12 @@
       // A rejection here surfaces via the catch below WITHOUT rolling back
       // the vault settings write above (partial-save: the dialog stays open
       // showing the error, and the vault settings the user just saved stay
-      // saved — re-running Save simply retries the pref write).
-      if (biometricAvailable && inputBiometric !== currentBiometric) {
-        await writePresencePref(inputBiometric);
-        setPresencePref({ biometricEnabled: inputBiometric, availability: $presencePref.availability });
+      // saved — but note that when the save also changed a vault setting,
+      // the $effect re-seed has reverted the checkbox to the store value by
+      // then, so the user must re-toggle it before re-running Save).
+      if (biometricAvailable && nextBiometric !== currentBiometric) {
+        await writePresencePref(nextBiometric);
+        setPresencePref({ biometricEnabled: nextBiometric, availability: $presencePref.availability });
       }
       onClose();
     } catch (err) {
