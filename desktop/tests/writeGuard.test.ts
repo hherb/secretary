@@ -139,4 +139,47 @@ describe('authorizeWrite biometric pre-step', () => {
     expect(s.tryBiometric).not.toHaveBeenCalled();
     expect(s.prompt).not.toHaveBeenCalled();
   });
+
+  // Per-branch clock semantics. These two pin the fail-open regression risk
+  // in this chokepoint: if a future edit advanced `lastAuthAtMs` before or
+  // inside the cancelled arm, a cancelled Touch ID would silently open a
+  // grace window — the branch tests above (windowMs 0) would stay green, so
+  // the clock must be observed via a follow-up call inside a real window
+  // (same technique as the password-cancel clock test in the describe above).
+
+  it('biometric cancelled does NOT advance the clock — follow-up call attempts biometry again', async () => {
+    const tryBiometric = vi.fn(async (): Promise<PresenceOutcome> => 'cancelled');
+    const s = biometricSeam({
+      readSettings: () => ({ enabled: true, windowMs: 60_000 }),
+      tryBiometric
+    });
+    __setWriteGuardTestSeam(s);
+
+    await expect(authorizeWrite('reason')).rejects.toBe(ReauthCancelled);
+    expect(tryBiometric).toHaveBeenCalledTimes(1);
+
+    // Clock NOT advanced: at the same now() (1000), a 60s window that had
+    // been opened by the cancelled call would skip biometry entirely. The
+    // follow-up MUST attempt biometry again.
+    tryBiometric.mockResolvedValueOnce('authenticated');
+    await authorizeWrite('reason');
+    expect(tryBiometric).toHaveBeenCalledTimes(2);
+    expect(s.prompt).not.toHaveBeenCalled();
+  });
+
+  it('biometric authenticated DOES advance the clock — follow-up call inside the window skips both', async () => {
+    const s = biometricSeam({ readSettings: () => ({ enabled: true, windowMs: 60_000 }) });
+    __setWriteGuardTestSeam(s);
+
+    // First call: never authed → biometry fires and succeeds.
+    await authorizeWrite('reason');
+    expect(s.tryBiometric).toHaveBeenCalledTimes(1);
+
+    // Second call at the same now() (1000): the authenticated outcome must
+    // have advanced the clock into the grace window, so NEITHER biometry
+    // NOR the password prompt runs.
+    await authorizeWrite('reason');
+    expect(s.tryBiometric).toHaveBeenCalledTimes(1);
+    expect(s.prompt).not.toHaveBeenCalled();
+  });
 });
