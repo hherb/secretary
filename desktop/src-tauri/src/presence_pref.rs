@@ -68,16 +68,25 @@ pub fn save_pref_in(
     let path = pref_path_in(data_dir, vault_uuid_hex);
     let dir = path.parent().expect("pref path has a parent");
     std::fs::create_dir_all(dir).map_err(|e| AppError::Io {
-        detail: e.to_string(),
+        detail: format!("mkdir -p {}: {}", dir.display(), e),
     })?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| AppError::Io {
-        detail: e.to_string(),
+        detail: format!("tempfile new_in {}: {}", dir.display(), e),
     })?;
     std::io::Write::write_all(&mut tmp, &serialize_pref(pref)).map_err(|e| AppError::Io {
-        detail: e.to_string(),
+        detail: format!(
+            "write {} (tempfile for {}): {}",
+            tmp.path().display(),
+            path.display(),
+            e
+        ),
     })?;
     tmp.persist(&path).map_err(|e| AppError::Io {
-        detail: e.to_string(),
+        detail: format!(
+            "atomic persist of presence pref file {}: {}",
+            path.display(),
+            e.error
+        ),
     })?;
     Ok(())
 }
