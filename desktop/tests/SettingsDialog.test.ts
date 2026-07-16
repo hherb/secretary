@@ -760,6 +760,34 @@ describe('SettingsDialog.svelte — Touch ID (biometric) toggle (#277)', () => {
     // The pref store was NOT mirrored to the failed value.
     expect(get(presencePref)).toEqual({ biometricEnabled: true, availability: 'available' });
   });
+
+  it('pref-write rejection still surfaces the error when the vault settings also changed', async () => {
+    // The changed-settings variant of the partial-save test above: here
+    // `settingsUpdated` mutates the store, which re-runs the input-re-seeding
+    // $effect (formError = null). The catch that sets formError must land
+    // after that flush — this pins the ordering so the error is never wiped.
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    writePresencePrefMock.mockRejectedValueOnce({ code: 'internal' });
+    const onClose = vi.fn();
+    const { container, getByLabelText, getByRole, findByText } = renderOpen(onClose);
+
+    const autoLockInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(autoLockInput, { target: { value: '5' } }); // 10 -> 5 min (tightening)
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false (hardening)
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    expect(await findByText(/internal error/i)).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    // The vault settings write succeeded and stuck.
+    const s = get(sessionState);
+    if (s.status === 'unlocked') {
+      expect(s.settings.autoLockTimeoutMs).toBe(5 * MS_PER_MINUTE);
+    } else {
+      throw new Error('expected unlocked');
+    }
+  });
 });
 
 describe('SettingsDialog.svelte — accessibility', () => {
