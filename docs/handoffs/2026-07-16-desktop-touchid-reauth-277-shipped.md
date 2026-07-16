@@ -30,8 +30,8 @@ The deferred terminal acceptance — a signed macOS build authorizing a real wri
 
 ## (2) What's next
 
-- **File the three #277 follow-up issues** — drafting done, filing was permission-blocked this session. Drafts (Title: first line + full body) live at `.worktrees/desktop-biometric-reauth-277/.superpowers/sdd/issue-{hw-proof,linux-provider,windows-hello}.md` (git-ignored scratch — copy them out before dropping the worktree): on-hardware Touch ID proof (signed build; possibly `NSFaceIDUsageDescription`), Linux fprintd/polkit provider, Windows Hello provider. **Acceptance:** three open issues cross-referencing #277.
-- **On-hardware Touch ID proof** (once filed): build a signed `SecretaryDesktop.app`, verify Touch-ID-authorizes-a-write, sheet's "Use Password" falls back, kill-switch forces password, unsigned-build failure mode documented. This machine has Touch ID (D.5 SE proof ran here).
+- **Follow-up issues FILED** (user-approved at ship): **[#442](https://github.com/hherb/secretary/issues/442)** on-hardware Touch ID proof (signed build; possibly `NSFaceIDUsageDescription`), **[#443](https://github.com/hherb/secretary/issues/443)** Linux fprintd/polkit provider, **[#444](https://github.com/hherb/secretary/issues/444)** Windows Hello provider.
+- **#442 — on-hardware Touch ID proof** is the nearest-term follow-up: build a signed `SecretaryDesktop.app`, verify Touch-ID-authorizes-a-write, sheet's "Use Password" falls back, kill-switch forces password, unsigned-build failure mode documented. This machine has Touch ID (D.5 SE proof ran here).
 - **#417 — mobile Trash purge-notice render-layer test** (verified OPEN this session's start) — iOS most tractable; also backfills #434's sheet.
 - **#90 — Rust test-helper dedup** (~13 `copy_dir_recursive` copies; verified OPEN).
 - **#437 follow-up — re-tune `macos-host` `timeout-minutes: 45`** once a few live runs exist.
@@ -70,6 +70,6 @@ git worktree list && git status -s
 
 - **State on close:** PR open on `feature/desktop-biometric-reauth-277` (worktree `.worktrees/desktop-biometric-reauth-277`), tracking issue **#277** (macOS half). 22 commits: spec + plan + 7 TDD tasks (with 2 mid-flight review fixes) + final-review fix wave + docs + this handoff.
 - **Acceptance:** all local gates green at `ee080ce9` (cargo 1773, pnpm 665, svelte-check, both clippy variants, rustdoc, fmt); final whole-branch review verdict READY TO MERGE; terminal on-hardware proof deferred + drafted as a follow-up issue.
-- **Next:** file the 3 follow-up issues (drafts in scratch — permission-blocked this session), then on-hardware proof / #417 / #90 / user priority.
+- **Next:** #442 on-hardware proof / #417 / #90 / user priority (follow-ups #442–#444 filed at ship).
 - **README:** Touch ID row added + stale note fixed. **ROADMAP:** D.1.17 entry + heading range bump.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-07-16-desktop-touchid-reauth-277-shipped.md`.
