@@ -3,6 +3,9 @@
 //! Presence proof, NOT a cryptographic binding: `evaluate` returns whether the
 //! device owner authenticated with biometry; it never touches vault key
 //! material. Password re-entry remains the KEK-knowledge fallback.
+//!
+//! All unit tests are `cfg(all(test, target_os = "macos"))` — Linux CI
+//! compiling this crate with 0 tests is by design, not a coverage gap.
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -50,6 +53,12 @@ const LA_ERROR_BIOMETRY_NOT_AVAILABLE: i64 = -6;
 const LA_ERROR_BIOMETRY_NOT_ENROLLED: i64 = -7;
 #[cfg(target_os = "macos")]
 const LA_ERROR_BIOMETRY_LOCKOUT: i64 = -8;
+// NOT an LAError code: our sentinel for "evaluatePolicy reported failure but
+// passed a nil NSError". All real LAError codes are negative, so 0 can never
+// collide with one; `classify` maps it through the unmapped-code arm to
+// `Unavailable` (fail-safe to the password path).
+#[cfg(target_os = "macos")]
+const LA_ERROR_NONE_SENTINEL: i64 = 0;
 
 /// Map the raw `evaluatePolicy` result to an outcome. PURE + host-tested —
 /// `macos.rs` is a thin shell around this, so the classification logic carries
@@ -141,7 +150,12 @@ mod tests {
 
     #[test]
     fn unknown_code_fails_safe_to_unavailable() {
-        assert_eq!(classify(Err(-999)), PresenceOutcome::Unavailable);
-        assert_eq!(classify(Err(0)), PresenceOutcome::Unavailable);
+        // Realistic LAError codes we deliberately leave unmapped —
+        // authenticationFailed (-1), passcodeNotSet (-5), appCancel (-9) —
+        // plus an out-of-range code and the nil-NSError sentinel (0). All
+        // must fail safe to the password path.
+        for code in [-1, -5, -9, -999, 0] {
+            assert_eq!(classify(Err(code)), PresenceOutcome::Unavailable);
+        }
     }
 }

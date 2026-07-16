@@ -63,6 +63,13 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
     // sent over the channel. `RcBlock` heap-allocates and refcounts the
     // closure so the framework can retain it past this frame; the send is the
     // synchronization point back to the blocked `recv` below.
+    //
+    // Send-soundness precondition: the framework invokes this block on a
+    // private framework queue, i.e. on a different thread from the one that
+    // constructed it — but `RcBlock::new` does NOT statically require the
+    // closure to be `Send`. Today the sole capture is `tx`
+    // (`mpsc::Sender<Result<(), i64>>`), which is `Send`. Any new capture
+    // added to this closure must be re-audited for `Send` by hand.
     let reply = RcBlock::new(move |success: Bool, error: *mut NSError| {
         let result = if success.as_bool() {
             Ok(())
@@ -72,12 +79,15 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
         } else if let Some(err) = unsafe { error.as_ref() } {
             Err(err.code() as i64)
         } else {
-            // Failure with no error object: 0 is not a mapped LAError code,
-            // so `classify` fails safe to `Unavailable` (password path).
-            Err(0)
+            // Failure with no error object: the sentinel is not a mapped
+            // LAError code (all real ones are negative), so `classify` fails
+            // safe to `Unavailable` (password path).
+            Err(crate::LA_ERROR_NONE_SENTINEL)
         };
-        // The receiver outlives every send: `evaluate` cannot return before
-        // `recv` yields. A send error is therefore unreachable; ignore it.
+        // The receiver outlives the FIRST send: `evaluate` cannot return
+        // before `recv` yields. A send can still fail if the framework
+        // invokes the block twice — the second send finds the receiver
+        // already dropped — and that is exactly the case we want to ignore.
         let _ = tx.send(result);
     });
 
@@ -99,9 +109,24 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
         Ok(result) => classify(result),
         Err(_) => PresenceOutcome::Unavailable,
     };
-    // Keep the context alive until AFTER the reply: deallocating an LAContext
-    // invalidates it, which would cancel an in-flight evaluation. Explicit
-    // drop pins that ordering against future refactors.
+    // Keep OUR strong reference to the context alive until AFTER the reply:
+    // dropping releases the reference (the context deallocates — and thereby
+    // invalidates, cancelling any in-flight evaluation — only if ours was the
+    // last). Holding it past `recv` guarantees we never trigger that
+    // invalidation while an evaluation is in flight; the explicit drop pins
+    // the ordering against future refactors.
     drop(context);
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_reason_fails_safe_to_unavailable() {
+        // The empty-reason guard precedes every objc2 call, so this never
+        // presents UI — safe to run on any macOS host, headless included.
+        assert_eq!(evaluate(""), PresenceOutcome::Unavailable);
+    }
 }
