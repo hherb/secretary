@@ -98,7 +98,7 @@ Registered in `generate_handler!` and classified in `writeCommands.ts` as a **no
 A per-vault, this-device preference stored under the existing `<data_dir>/secretary-desktop/` mechanism (the same home as the per-vault device-UUID file), keyed by `vault_uuid`. Written atomically. Absent or corrupt file → default **enabled** (biometric used when hardware is available).
 
 - **Pure/IO split** mirroring `settings/parse.rs` vs `settings/io.rs`: a pure parse/serialize (`{ biometric_reauth_enabled: bool }`, host-tested round-trip + default-on-absent/corrupt) and a thin atomic-write IO layer.
-- **Two IPC commands:** `read_presence_pref() -> { biometricEnabled: bool }` and `write_presence_pref(enabled: bool)`. Both resolve the currently-open vault's `vault_uuid` from the session (read-only; `NotUnlocked` if locked), the same way `verify_password_impl` resolves the open vault's folder — note this is distinct from `authenticate_presence`, which is vault-independent. The pref is loaded into a frontend store at unlock so `authorizeWrite` can consult it synchronously.
+- **Two IPC commands:** `read_presence_pref() -> { biometricEnabled: bool, availability }` (the `availability` field is what lets the UI hide the Touch ID toggle entirely off-macOS / on unusable hardware) and `write_presence_pref(enabled: bool)`. Both resolve the currently-open vault's `vault_uuid` from the session (read-only; `NotUnlocked` if locked), the same way `verify_password_impl` resolves the open vault's folder — note this is distinct from `authenticate_presence`, which is vault-independent. The pref is loaded into a frontend store at unlock so `authorizeWrite` can consult it synchronously.
 - **Changing the toggle routes through `authorizeWrite`.** It is a security-policy change, so it requires presence: this prevents a passer-by at an unlocked-but-idle session, after the grace window, from silently enabling biometric and then compelling it. The `SettingsDialog` save performs one re-auth, then persists the vault settings (existing path) and the presence pref (new path) together.
 - **UI:** a clearly this-device-scoped toggle in `SettingsDialog.svelte`, e.g. **"Use Touch ID on this Mac"**, with a one-line hint naming the travel use case. Shown only on macOS (or shown disabled with an "unavailable on this platform" note off macOS — a UI detail settled in the plan).
 
@@ -133,6 +133,7 @@ The pure `classify()` maps LAError codes so that **no outcome ever bypasses re-a
 |---|---|---|
 | success | `Authenticated` | write proceeds, clock advances |
 | `LAError.userCancel` | `Cancelled` | write aborted (`ReauthCancelled`) |
+| `LAError.systemCancel` (system dismissed the sheet) | `Cancelled` | write aborted — fail-closed; auto-opening a password dialog the user didn't ask for would be wrong |
 | `LAError.userFallback` (tapped "Use Password") | `Fallback` | password dialog opens |
 | `biometryNotAvailable` / `biometryNotEnrolled` / `biometryLockout` | `Unavailable` | password dialog opens |
 | any other / unmapped code | `Unavailable` | password dialog opens |
