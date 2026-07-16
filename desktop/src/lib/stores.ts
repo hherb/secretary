@@ -25,6 +25,7 @@
 import { writable, derived, type Readable } from 'svelte/store';
 import type { AppError } from './errors';
 import { isAppError, getManifest, type ManifestDto, type SettingsDto } from './ipc';
+import type { PresenceAvailability } from './presence';
 
 export type SessionState =
   | { status: 'locked'; lastError: AppError | null }
@@ -91,6 +92,27 @@ export function openReauthPrompt(reason: string): void {
 }
 export function closeReauthPrompt(): void {
   _reauthPrompt.set(null);
+}
+
+// --- Presence (Touch ID) preference ---------------------------------------
+// Loaded at unlock from readPresencePref(); consulted synchronously by
+// writeGuard.authorizeWrite to decide whether to attempt biometry. Reset on
+// lock so a locked session never attempts biometry. Default: not enabled
+// (safe — password path) until loaded.
+interface PresencePrefState {
+  biometricEnabled: boolean;
+  availability: PresenceAvailability;
+}
+const _presencePref = writable<PresencePrefState>({
+  biometricEnabled: false,
+  availability: 'unsupported'
+});
+export const presencePref: Readable<PresencePrefState> = { subscribe: _presencePref.subscribe };
+export function setPresencePref(dto: PresencePrefState): void {
+  _presencePref.set(dto);
+}
+export function resetPresencePref(): void {
+  _presencePref.set({ biometricEnabled: false, availability: 'unsupported' });
 }
 
 // --- Transition helpers ----------------------------------------------------

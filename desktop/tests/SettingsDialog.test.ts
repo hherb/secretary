@@ -62,6 +62,8 @@ import type { AppError } from '../src/lib/errors';
 const PASS_THROUGH_SEAM = {
   readSettings: () => ({ enabled: false, windowMs: 0 }),
   now: () => 0,
+  biometricPrefEnabled: () => false,
+  tryBiometric: () => Promise.resolve('unavailable' as const),
   prompt: () => Promise.resolve()
 };
 
@@ -513,6 +515,8 @@ describe('SettingsDialog.svelte — retention window', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({
@@ -543,6 +547,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.reject(ReauthCancelled)
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
@@ -562,6 +568,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 2 min
@@ -585,6 +593,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 300_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 5 min
@@ -605,6 +615,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: false, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });

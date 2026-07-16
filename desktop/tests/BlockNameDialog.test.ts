@@ -12,6 +12,8 @@ import BlockNameDialog from '../src/components/edit/BlockNameDialog.svelte';
 const PASS_THROUGH_SEAM = {
   readSettings: () => ({ enabled: false, windowMs: 0 }),
   now: () => 0,
+  biometricPrefEnabled: () => false,
+  tryBiometric: () => Promise.resolve('unavailable' as const),
   prompt: () => Promise.resolve()
 };
 
@@ -71,6 +73,8 @@ describe('BlockNameDialog — write-reauth gate (create)', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.reject(ReauthCancelled)
     });
 
@@ -90,6 +94,8 @@ describe('BlockNameDialog — write-reauth gate (create)', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.resolve()
     });
     invokeMock.mockResolvedValueOnce({ blockUuidHex: 'ab', blockName: 'Logins', createdAtMs: 1, lastModifiedMs: 1 });

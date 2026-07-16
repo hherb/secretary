@@ -13,13 +13,14 @@
 
 import { get } from 'svelte/store';
 import { needsReauth } from './reauth';
-import { sessionState, openReauthPrompt, closeReauthPrompt } from './stores';
+import { sessionState, openReauthPrompt, closeReauthPrompt, presencePref } from './stores';
 import { REAUTH_WINDOW_DEFAULT_MS } from './constants';
+import { authenticatePresence, type PresenceOutcome } from './presence';
 
 /** Rejected (thrown) when the user cancels the re-auth prompt. Identity-compared. */
 export const ReauthCancelled: unique symbol = Symbol('ReauthCancelled');
 
-interface WriteGuardSeam {
+export interface WriteGuardSeam {
   readSettings: () => { enabled: boolean; windowMs: number };
   now: () => number;
   /**
@@ -28,6 +29,10 @@ interface WriteGuardSeam {
    * Rejects with `ReauthCancelled` when the user cancels.
    */
   prompt: (reason: string) => Promise<void>;
+  /** True when this-device Touch ID is enabled in the presence preference. */
+  biometricPrefEnabled: () => boolean;
+  /** Fire the native Touch ID sheet; resolves to the outcome tag. */
+  tryBiometric: (reason: string) => Promise<PresenceOutcome>;
 }
 
 // --- Production seam -------------------------------------------------------
@@ -56,7 +61,9 @@ function productionSeam(): WriteGuardSeam {
         pendingResolve = resolve;
         pendingReject = reject;
         openReauthPrompt(reason);
-      })
+      }),
+    biometricPrefEnabled: () => get(presencePref).biometricEnabled,
+    tryBiometric: (reason: string) => authenticatePresence(reason)
   };
 }
 
@@ -92,7 +99,19 @@ export function seedReauthClock(nowMs: number): void {
  * The write-authorization chokepoint.
  *
  * Resolves immediately when reauth is not needed (disabled or within the grace
- * window). Otherwise opens the reauth prompt and awaits the dialog outcome:
+ * window). Otherwise, the this-device Touch ID preference (#277) gates a
+ * biometric pre-step ahead of the password dialog:
+ * - Preference OFF (or not yet loaded — `presencePref`'s safe default is
+ *   `false`) → biometry is NEVER attempted; goes straight to the password
+ *   prompt, exactly as before #277.
+ * - Preference ON → `tryBiometric` fires the native Touch ID sheet first:
+ *     - `'authenticated'` → clock advances, no password dialog.
+ *     - `'fallback' | 'unavailable'` → falls through to the same password
+ *       dialog as the OFF path (unchanged prompt contract below).
+ *     - `'cancelled'` → rejects with `ReauthCancelled` immediately; the
+ *       password dialog is never opened and the clock is NOT advanced.
+ *
+ * Password-prompt outcome (OFF path, or ON path's fallback/unavailable):
  * - Dialog calls `__resolveReauthPrompt()` after successful `verifyPassword` →
  *   advances `lastAuthAtMs` and resolves.
  * - Dialog calls `__cancelReauthPrompt()` → rejects with `ReauthCancelled`
@@ -109,8 +128,23 @@ export async function authorizeWrite(reason: string): Promise<void> {
   if (!needsReauth({ enabled, lastAuthAtMs, nowMs: seam.now(), windowMs })) {
     return;
   }
-  // `prompt` resolves when the dialog has verified the password (design B).
-  // On cancel it rejects with ReauthCancelled — we let that propagate.
+  // Toggle OFF (or not-yet-loaded) → password only. Biometry is never
+  // attempted on this path — see the doc comment above.
+  if (!seam.biometricPrefEnabled()) {
+    await seam.prompt(reason);
+    lastAuthAtMs = seam.now();
+    return;
+  }
+  // Toggle ON → Touch ID first, password on fallback/unavailable.
+  const outcome = await seam.tryBiometric(reason);
+  if (outcome === 'authenticated') {
+    lastAuthAtMs = seam.now();
+    return;
+  }
+  if (outcome === 'cancelled') {
+    throw ReauthCancelled;
+  }
+  // 'fallback' | 'unavailable' → the existing password dialog (unchanged).
   await seam.prompt(reason);
   lastAuthAtMs = seam.now();
 }
