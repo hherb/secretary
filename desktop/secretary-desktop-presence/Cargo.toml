@@ -1,0 +1,17 @@
+[package]
+name = "secretary-desktop-presence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# NOTE: this crate deliberately does NOT set `[lints] workspace = true`.
+# It is the single isolated FFI boundary for macOS LocalAuthentication and
+# therefore must permit `unsafe` (objc2 macros expand to unsafe blocks),
+# which the workspace-wide `unsafe_code = "forbid"` would otherwise reject.
+# Every OTHER crate keeps the forbid. See CLAUDE.md: "If a primitive truly
+# needs FFI, isolate it in its own crate behind a reviewed boundary."
+
+[lib]
+path = "src/lib.rs"

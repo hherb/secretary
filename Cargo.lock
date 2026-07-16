@@ -3988,6 +3988,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-desktop-presence"
+version = "0.1.0"
+
+[[package]]
 name = "secretary-ffi-bridge"
 version = "0.1.0"
 dependencies = [
