@@ -3984,6 +3984,7 @@ dependencies = [
  "rand",
  "rand_core 0.6.4",
  "secretary-core",
+ "secretary-desktop-presence",
  "secretary-ffi-bridge",
  "serde",
  "serde_json",

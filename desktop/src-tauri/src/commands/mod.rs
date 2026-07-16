@@ -26,6 +26,7 @@ pub mod delete;
 pub mod edit;
 pub mod lock;
 pub mod pick;
+pub mod presence;
 pub mod reauth;
 pub mod repair;
 pub mod retention;
