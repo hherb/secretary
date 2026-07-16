@@ -6,7 +6,8 @@
 //!
 //! Pure/IO split (mirrors `settings::parse` vs `settings::io`): `parse_pref` /
 //! `serialize_pref` are pure; `load_pref_in` / `save_pref_in` are the thin
-//! atomic-IO edge. Absent or corrupt file → default enabled.
+//! atomic-IO edge. Absent file → default enabled (product opt-in); corrupt
+//! file → biometric DISABLED (fail-safe — see `parse_pref`).
 
 use std::path::{Path, PathBuf};
 
@@ -27,10 +28,16 @@ impl Default for PresencePref {
     }
 }
 
-/// Parse the on-disk JSON. A malformed / partial file falls back to default
-/// (lenient load — mirrors settings load). Pure.
+/// Parse the on-disk JSON. A malformed / partial file yields biometric
+/// DISABLED — deliberately NOT the (enabled) default used for an absent file.
+/// This pref is the high-risk-travel kill switch: falling back to enabled on
+/// a corrupt file would silently undo an explicit user hardening, so the
+/// corrupt arm fails safe toward the password-only path instead (the same
+/// fail-safe direction as every other unusable-biometry case). Pure.
 pub fn parse_pref(bytes: &[u8]) -> PresencePref {
-    serde_json::from_slice::<PresencePref>(bytes).unwrap_or_default()
+    serde_json::from_slice::<PresencePref>(bytes).unwrap_or(PresencePref {
+        biometric_reauth_enabled: false,
+    })
 }
 
 /// Serialize to bytes for atomic write. Pure.
@@ -47,8 +54,8 @@ pub fn pref_path_in(data_dir: &Path, vault_uuid_hex: &str) -> PathBuf {
         .join(format!("{vault_uuid_hex}.json"))
 }
 
-/// Load the pref for `vault_uuid_hex`, or `Default` if the file is absent.
-/// Corrupt content is lenient (default). IO edge.
+/// Load the pref for `vault_uuid_hex`, or `Default` (enabled) if the file is
+/// absent. Corrupt content fails safe to disabled (see `parse_pref`). IO edge.
 pub fn load_pref_in(data_dir: &Path, vault_uuid_hex: &str) -> PresencePref {
     let path = pref_path_in(data_dir, vault_uuid_hex);
     match std::fs::read(&path) {
@@ -109,10 +116,29 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_bytes_fall_back_to_default() {
-        assert_eq!(parse_pref(b"not json"), PresencePref::default());
-        assert_eq!(parse_pref(b""), PresencePref::default());
-        assert_eq!(parse_pref(b"{}"), PresencePref::default());
+    fn corrupt_bytes_fail_safe_to_disabled() {
+        // NOT PresencePref::default() (enabled): a corrupt file must never
+        // silently re-enable biometry the user may have killed off.
+        let disabled = PresencePref {
+            biometric_reauth_enabled: false,
+        };
+        assert_eq!(parse_pref(b"not json"), disabled);
+        assert_eq!(parse_pref(b""), disabled);
+        assert_eq!(parse_pref(b"{}"), disabled);
+    }
+
+    /// The absent-vs-corrupt asymmetry end to end: a fresh path defaults to
+    /// enabled, a clobbered file at the same path loads as disabled.
+    #[test]
+    fn absent_defaults_enabled_but_corrupt_file_loads_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid_hex = "00112233445566778899aabbccddeeff";
+        assert!(load_pref_in(dir.path(), uuid_hex).biometric_reauth_enabled);
+
+        let path = pref_path_in(dir.path(), uuid_hex);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"garbage").unwrap();
+        assert!(!load_pref_in(dir.path(), uuid_hex).biometric_reauth_enabled);
     }
 
     #[test]

@@ -95,9 +95,9 @@ Registered in `generate_handler!` and classified in `writeCommands.ts` as a **no
 
 ### 3. Desktop-local presence preference
 
-A per-vault, this-device preference stored under the existing `<data_dir>/secretary-desktop/` mechanism (the same home as the per-vault device-UUID file), keyed by `vault_uuid`. Written atomically. Absent or corrupt file → default **enabled** (biometric used when hardware is available).
+A per-vault, this-device preference stored under the existing `<data_dir>/secretary-desktop/` mechanism (the same home as the per-vault device-UUID file), keyed by `vault_uuid`. Written atomically. Absent file → default **enabled** (biometric used when hardware is available). Corrupt file → biometric **disabled** — fail-safe: the pref is the high-risk-travel kill switch, so a clobbered file must never silently re-enable biometry the user explicitly turned off (PR-review hardening).
 
-- **Pure/IO split** mirroring `settings/parse.rs` vs `settings/io.rs`: a pure parse/serialize (`{ biometric_reauth_enabled: bool }`, host-tested round-trip + default-on-absent/corrupt) and a thin atomic-write IO layer.
+- **Pure/IO split** mirroring `settings/parse.rs` vs `settings/io.rs`: a pure parse/serialize (`{ biometric_reauth_enabled: bool }`, host-tested round-trip + default-on-absent + disabled-on-corrupt) and a thin atomic-write IO layer.
 - **Two IPC commands:** `read_presence_pref() -> { biometricEnabled: bool, availability }` (the `availability` field is what lets the UI hide the Touch ID toggle entirely off-macOS / on unusable hardware) and `write_presence_pref(enabled: bool)`. Both resolve the currently-open vault's `vault_uuid` from the session (read-only; `NotUnlocked` if locked), the same way `verify_password_impl` resolves the open vault's folder — note this is distinct from `authenticate_presence`, which is vault-independent. The pref is loaded into a frontend store at unlock so `authorizeWrite` can consult it synchronously.
 - **Changing the toggle routes through `authorizeWrite`.** It is a security-policy change, so it requires presence: this prevents a passer-by at an unlocked-but-idle session, after the grace window, from silently enabling biometric and then compelling it. The `SettingsDialog` save performs one re-auth, then persists the vault settings (existing path) and the presence pref (new path) together.
 - **UI:** a clearly this-device-scoped toggle in `SettingsDialog.svelte`, e.g. **"Use Touch ID on this Mac"**, with a one-line hint naming the travel use case. Shown only on macOS (or shown disabled with an "unavailable on this platform" note off macOS — a UI detail settled in the plan).
@@ -144,7 +144,7 @@ The default arm is **fail-safe toward the password path** — an unknown or erro
 
 - **`secretary-desktop-presence`:** pure `classify()` unit tests for every LAError code plus the "unknown code → `Unavailable`" fail-safe. The live `evaluate()` objc2 path is exercised only by the deferred on-hardware proof — untestable headlessly by nature.
 - **Backend `authenticate_presence_impl`:** a fake `PresenceProvider` returning each `PresenceOutcome` → assert pass-through, and `AppError` only on a provider fault.
-- **Presence-pref parse/serialize:** pure round-trip + default-on-absent + default-on-corrupt tests; atomic-write IO covered by an integration test with an injected `tempfile::tempdir()` (mirrors `load_or_create_device_uuid_in`).
+- **Presence-pref parse/serialize:** pure round-trip + default-on-absent + disabled-on-corrupt (fail-safe) tests; atomic-write IO covered by an integration test with an injected `tempfile::tempdir()` (mirrors `load_or_create_device_uuid_in`).
 - **Frontend `writeGuard`:** injected seam covering all branches — pref-off → password; authenticated → no dialog + clock advanced; fallback → dialog; unavailable → dialog; cancelled → `ReauthCancelled`; and the existing password-only tests stay green.
 - **`writeGateCoverage` / `writeCommands.ts`:** classify the new commands (`pnpm test` is the only gate that catches a miss).
 
