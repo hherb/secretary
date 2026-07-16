@@ -35,6 +35,9 @@ export async function authenticatePresence(reason: string): Promise<PresenceOutc
   }
 }
 
+// Deliberate asymmetry with ipc.ts: no `call<>` normalization here (`call` is
+// module-private to ipc.ts); both call sites catch-and-reset, so a raw rejection
+// is handled.
 export async function readPresencePref(): Promise<PresencePrefDto> {
   return invoke<PresencePrefDto>('read_presence_pref');
 }

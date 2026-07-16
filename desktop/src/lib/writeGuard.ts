@@ -37,7 +37,9 @@ export interface WriteGuardSeam {
 
 // --- Production seam -------------------------------------------------------
 
-// Pending promise callbacks for the in-flight reauth prompt (one at a time).
+// Pending promise callbacks for the in-flight reauth prompt. Single-in-flight
+// assumption (pre-existing #276 design): at most one prompt is ever pending —
+// a second concurrent `prompt` would overwrite these and orphan the first.
 let pendingResolve: (() => void) | null = null;
 let pendingReject: ((reason: unknown) => void) | null = null;
 

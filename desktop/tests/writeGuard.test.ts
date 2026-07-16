@@ -92,8 +92,6 @@ describe('authorizeWrite', () => {
 });
 
 describe('authorizeWrite biometric pre-step', () => {
-  beforeEach(() => resetReauthGuard());
-
   it('biometric authenticated → no password prompt, resolves', async () => {
     const s = biometricSeam();
     __setWriteGuardTestSeam(s);
@@ -181,5 +179,29 @@ describe('authorizeWrite biometric pre-step', () => {
     await authorizeWrite('reason');
     expect(s.tryBiometric).toHaveBeenCalledTimes(1);
     expect(s.prompt).not.toHaveBeenCalled();
+  });
+
+  it('biometric fallback + resolved password prompt DOES advance the clock — follow-up call inside the window skips both', async () => {
+    // The third clock arm: on the biometric-ON path, a 'fallback' outcome
+    // routes to the password prompt, and a resolved prompt must advance the
+    // clock the same way it does on the OFF path. Observed via a follow-up
+    // call inside a real window, same technique as the two tests above.
+    const s = biometricSeam({
+      readSettings: () => ({ enabled: true, windowMs: 60_000 }),
+      tryBiometric: vi.fn(async () => 'fallback' as const)
+    });
+    __setWriteGuardTestSeam(s);
+
+    // First call: biometry falls back → password prompt resolves.
+    await authorizeWrite('reason');
+    expect(s.tryBiometric).toHaveBeenCalledTimes(1);
+    expect(s.prompt).toHaveBeenCalledTimes(1);
+
+    // Second call at the same now() (1000): the resolved prompt must have
+    // advanced the clock into the grace window, so NEITHER biometry NOR the
+    // password prompt runs again.
+    await authorizeWrite('reason');
+    expect(s.tryBiometric).toHaveBeenCalledTimes(1);
+    expect(s.prompt).toHaveBeenCalledTimes(1);
   });
 });
