@@ -38,11 +38,17 @@ pub enum PresenceAvailability {
 
 // LAError codes we map explicitly (Apple `LAError.Code`, stable ABI integers).
 // Named to avoid magic numbers; values from the LocalAuthentication headers.
+#[cfg(target_os = "macos")]
 const LA_ERROR_USER_CANCEL: i64 = -2;
+#[cfg(target_os = "macos")]
 const LA_ERROR_USER_FALLBACK: i64 = -3;
+#[cfg(target_os = "macos")]
 const LA_ERROR_SYSTEM_CANCEL: i64 = -4;
+#[cfg(target_os = "macos")]
 const LA_ERROR_BIOMETRY_NOT_AVAILABLE: i64 = -6;
+#[cfg(target_os = "macos")]
 const LA_ERROR_BIOMETRY_NOT_ENROLLED: i64 = -7;
+#[cfg(target_os = "macos")]
 const LA_ERROR_BIOMETRY_LOCKOUT: i64 = -8;
 
 /// Map the raw `evaluatePolicy` result to an outcome. PURE + host-tested —
@@ -50,6 +56,8 @@ const LA_ERROR_BIOMETRY_LOCKOUT: i64 = -8;
 /// no `unsafe`. `Ok(())` = biometry succeeded; `Err(code)` = the `LAError`
 /// code from the NSError. Any unmapped code is `Unavailable` (fail-safe: send
 /// the user to the password path, never silently through the gate).
+/// macOS-gated because only the macOS provider produces LAError codes.
+#[cfg(target_os = "macos")]
 pub(crate) fn classify(result: Result<(), i64>) -> PresenceOutcome {
     match result {
         Ok(()) => PresenceOutcome::Authenticated,
@@ -87,7 +95,7 @@ pub fn evaluate(reason: &str) -> PresenceOutcome {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

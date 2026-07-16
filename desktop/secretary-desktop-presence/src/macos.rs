@@ -10,6 +10,8 @@ pub(crate) fn availability() -> PresenceAvailability {
 }
 
 pub(crate) fn evaluate(_reason: &str) -> PresenceOutcome {
-    // Task 2 replaces this with LAContext.evaluatePolicy → crate::classify.
-    PresenceOutcome::Unavailable
+    // Task 2 replaces the hardcoded code with the real LAContext.evaluatePolicy
+    // result; the stub already routes through the real mapping path
+    // (crate::classify) so nothing in the crate is dead on macOS.
+    crate::classify(Err(crate::LA_ERROR_BIOMETRY_NOT_AVAILABLE))
 }
