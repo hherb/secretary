@@ -699,6 +699,34 @@ describe('SettingsDialog.svelte — Touch ID (biometric) toggle (#277)', () => {
     expect(get(presencePref)).toEqual({ biometricEnabled: true, availability: 'available' });
   });
 
+  it('cancelling re-auth on the enable path persists nothing — neither setSettings nor writePresencePref', async () => {
+    // The abort must land BEFORE both persistence calls: a cancelled
+    // authorizeWrite may not leave the vault settings written with only the
+    // pref write skipped (or vice versa), and the store mirror must not move.
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+    setPresencePref({ biometricEnabled: false, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    const onClose = vi.fn();
+    const { getByLabelText, getByRole } = renderOpen(onClose);
+
+    await fireEvent.click(getByLabelText(/use touch id/i)); // false -> true
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(setSettingsMock).not.toHaveBeenCalled();
+    expect(writePresencePrefMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // Biometry stays structurally unreachable — the mirror never moved.
+    expect(get(presencePref)).toEqual({ biometricEnabled: false, availability: 'available' });
+  });
+
   it('disabling Touch ID from enabled does not trigger authorizeWrite but still persists the pref', async () => {
     const prompt = vi.fn(() => Promise.resolve());
     __setWriteGuardTestSeam({
