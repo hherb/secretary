@@ -486,6 +486,31 @@ fn timer_tick_reads_threshold_from_current_settings() {
     assert_eq!(tick(&mutex), TickOutcome::NoAction);
 }
 
+/// #277: `vault_uuid()` returns `Some([u8; 16])` once unlocked, and the same
+/// 16 bytes the manifest itself reports (`with_unlocked(|u| u.manifest.vault_uuid())`
+/// asserted elsewhere to be 16 bytes long) — pins the narrowing accessor
+/// against the real bridge-projected `Vec<u8>`, not just a synthetic value.
+#[test]
+fn vault_uuid_is_some_after_unlock_and_matches_manifest() {
+    let (mut session, _device_dir) = fresh_session();
+    session
+        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .expect("unlock");
+
+    let from_manifest = session
+        .with_unlocked(|u| Ok(u.manifest.vault_uuid()))
+        .expect("with_unlocked while unlocked must succeed");
+
+    let uuid = session
+        .vault_uuid()
+        .expect("vault_uuid must be Some after unlock");
+    assert_eq!(
+        uuid.to_vec(),
+        from_manifest,
+        "vault_uuid() must narrow the same bytes the manifest reports"
+    );
+}
+
 #[test]
 fn unlock_retains_vault_folder_on_the_unlocked_session() {
     let (mut session, _device_dir) = fresh_session();

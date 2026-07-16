@@ -114,6 +114,8 @@ fn main() {
             sync::sync_commit_decisions,
             reauth::verify_password,
             presence::authenticate_presence,
+            presence::read_presence_pref,
+            presence::write_presence_pref,
             retention::preview_retention,
             retention::run_retention,
             retention::purge_block,
