@@ -2035,10 +2035,27 @@ fn verify_password_while_locked_is_not_unlocked() {
 // tests' direct tempdir calls.
 // ============================================================================
 
+/// Fake `PresenceProvider` pinning a fixed availability, so the DTO's
+/// availability half is deterministic regardless of the host's hardware.
+struct FakeAvailabilityProvider(presence::PresenceAvailability);
+impl presence::PresenceProvider for FakeAvailabilityProvider {
+    fn availability(&self) -> presence::PresenceAvailability {
+        self.0
+    }
+    fn evaluate(&self, _reason: &str) -> presence::PresenceOutcome {
+        presence::PresenceOutcome::Unavailable
+    }
+}
+
+fn available_provider() -> FakeAvailabilityProvider {
+    FakeAvailabilityProvider(presence::PresenceAvailability::Available)
+}
+
 #[test]
 fn read_presence_pref_while_locked_returns_not_unlocked() {
     let (state, _device_dir) = fresh_state();
-    let err = presence::read_presence_pref_impl(&state).expect_err("locked must reject");
+    let err = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect_err("locked must reject");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
 
@@ -2053,7 +2070,8 @@ fn write_presence_pref_while_locked_returns_not_unlocked() {
 fn read_presence_pref_defaults_to_enabled_then_write_persists_and_rereads() {
     let (state, _device_dir) = unlocked_state();
 
-    let initial = presence::read_presence_pref_impl(&state).expect("read must succeed unlocked");
+    let initial = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect("read must succeed unlocked");
     assert!(
         initial.biometric_enabled,
         "a fresh vault (no pref file yet) must default to enabled"
@@ -2061,7 +2079,8 @@ fn read_presence_pref_defaults_to_enabled_then_write_persists_and_rereads() {
 
     presence::write_presence_pref_impl(&state, false).expect("write must succeed unlocked");
 
-    let after = presence::read_presence_pref_impl(&state).expect("re-read must succeed");
+    let after = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect("re-read must succeed");
     assert!(
         !after.biometric_enabled,
         "write(false) must persist and be observed on re-read"
@@ -2071,8 +2090,11 @@ fn read_presence_pref_defaults_to_enabled_then_write_persists_and_rereads() {
 #[test]
 fn presence_pref_dto_wire_format_uses_camel_case() {
     let (state, _device_dir) = unlocked_state();
-    let dto = presence::read_presence_pref_impl(&state).expect("read must succeed");
+    // A non-`available` value proves the seam's availability (not the host
+    // hardware's) reaches the wire, and pins its camelCase rendering.
+    let provider = FakeAvailabilityProvider(presence::PresenceAvailability::NotEnrolled);
+    let dto = presence::read_presence_pref_impl(&state, &provider).expect("read must succeed");
     let v = to_json(&dto);
     assert!(v["biometricEnabled"].is_boolean());
-    assert!(v["availability"].is_string());
+    assert_eq!(v["availability"], "notEnrolled");
 }

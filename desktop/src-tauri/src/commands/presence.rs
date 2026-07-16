@@ -14,10 +14,11 @@ use std::sync::Mutex;
 
 use tauri::State;
 
-use secretary_desktop_presence::{
-    availability as real_availability, evaluate as real_evaluate, PresenceAvailability,
-    PresenceOutcome,
-};
+// Re-exported so integration tests (and any future consumer) can implement
+// the `PresenceProvider` seam without depending on the presence crate.
+pub use secretary_desktop_presence::{PresenceAvailability, PresenceOutcome};
+
+use secretary_desktop_presence::{availability as real_availability, evaluate as real_evaluate};
 
 use crate::commands::shared::lock_session;
 use crate::errors::AppError;
@@ -135,7 +136,22 @@ fn open_vault_pref_key(session: &VaultSession) -> Result<(PathBuf, String), AppE
 pub async fn read_presence_pref(
     state: State<'_, Mutex<VaultSession>>,
 ) -> Result<PresencePrefDto, AppError> {
-    read_presence_pref_impl(state.inner())
+    // Key resolution is a quick in-memory step under the session mutex; the
+    // pref-file read and the LocalAuthentication availability probe are
+    // file/framework IO, so — like `authenticate_presence`'s sheet — they run
+    // on the blocking pool rather than an async-runtime worker. Same body as
+    // `read_presence_pref_impl`, split only for the `'static` move.
+    let (data_dir, uuid_hex) = {
+        let session = lock_session(state.inner())?;
+        open_vault_pref_key(&session)?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        pref_dto(&data_dir, &uuid_hex, &RealPresenceProvider)
+    })
+    .await
+    .map_err(|e| AppError::Internal {
+        detail: format!("presence pref read join error: {e}"),
+    })
 }
 
 #[tauri::command]
@@ -146,20 +162,35 @@ pub async fn write_presence_pref(
     write_presence_pref_impl(state.inner(), enabled)
 }
 
+/// IO half shared by the async command (on the blocking pool) and the sync
+/// testable core: pref-file read + hardware availability probe.
+fn pref_dto(
+    data_dir: &std::path::Path,
+    uuid_hex: &str,
+    provider: &dyn PresenceProvider,
+) -> PresencePrefDto {
+    let pref = load_pref_in(data_dir, uuid_hex);
+    PresencePrefDto {
+        biometric_enabled: pref.biometric_reauth_enabled,
+        availability: provider.availability().into(),
+    }
+}
+
 /// Testable core for `read_presence_pref`. `NotUnlocked` when locked (no
 /// vault UUID to key the pref file). The session mutex is released before
 /// the file read, mirroring the mutex-early-release pattern in
-/// `verify_password_impl`.
-pub fn read_presence_pref_impl(state: &Mutex<VaultSession>) -> Result<PresencePrefDto, AppError> {
+/// `verify_password_impl`. Takes the `PresenceProvider` seam (like
+/// `authenticate_presence_impl`) so tests can pin the availability half of
+/// the DTO deterministically off-macOS.
+pub fn read_presence_pref_impl(
+    state: &Mutex<VaultSession>,
+    provider: &dyn PresenceProvider,
+) -> Result<PresencePrefDto, AppError> {
     let (data_dir, uuid_hex) = {
         let session = lock_session(state)?;
         open_vault_pref_key(&session)?
     };
-    let pref = load_pref_in(&data_dir, &uuid_hex);
-    Ok(PresencePrefDto {
-        biometric_enabled: pref.biometric_reauth_enabled,
-        availability: RealPresenceProvider.availability().into(),
-    })
+    Ok(pref_dto(&data_dir, &uuid_hex, provider))
 }
 
 /// Testable core for `write_presence_pref`. `NotUnlocked` when locked.
@@ -224,7 +255,8 @@ mod tests {
     fn read_presence_pref_impl_while_locked_returns_not_unlocked() {
         let dir = tempfile::tempdir().unwrap();
         let state = Mutex::new(VaultSession::new(dir.path().to_path_buf()));
-        let err = read_presence_pref_impl(&state).expect_err("locked must reject");
+        let err = read_presence_pref_impl(&state, &FakeProvider(PresenceOutcome::Unavailable))
+            .expect_err("locked must reject");
         assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
     }
 
