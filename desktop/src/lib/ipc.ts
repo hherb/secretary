@@ -419,6 +419,18 @@ export async function verifyPassword(password: string): Promise<void> {
   return call<void>('verify_password', { password });
 }
 
+/**
+ * Persist the desktop's Touch ID write-reauth preference (#277). Desktop-local
+ * this-device setting, not a vault mutation — see COMMAND_CLASSIFICATION's
+ * `write_presence_pref` entry in writeCommands.ts for why it's write-exempt.
+ * The read side (`readPresencePref`) and the `authenticatePresence` sheet
+ * trigger live in ./presence.ts; this one stays here so the write-gate
+ * coverage test's ipc.ts wrapper scan keeps seeing it.
+ */
+export async function writePresencePref(enabled: boolean): Promise<void> {
+  return call<void>('write_presence_pref', { enabled });
+}
+
 export async function listContacts(): Promise<ListContactsDto> {
   return call<ListContactsDto>('list_contacts', {});
 }

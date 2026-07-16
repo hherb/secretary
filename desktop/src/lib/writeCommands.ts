@@ -120,6 +120,17 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   notify_activity: { kind: 'session' },
   verify_password: { kind: 'session' },
 
+  // --- presence (macOS Touch ID write re-auth, #277) ---
+  authenticate_presence: { kind: 'session' },
+  read_presence_pref: { kind: 'read' },
+  write_presence_pref: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'writePresencePref',
+    reason:
+      'desktop-local this-device preference; not a vault mutation. The only security-reducing direction (enabling biometric) is gated in SettingsDialog via the reducesProtection re-auth; disabling (a hardening) needs no presence proof.',
+  },
+
   // --- reads ---
   list_blocks: { kind: 'read' },
   get_manifest: { kind: 'read' },
