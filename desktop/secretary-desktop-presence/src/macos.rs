@@ -2,6 +2,10 @@
 //!
 //! Policy is `DeviceOwnerAuthenticationWithBiometrics` (Touch ID only — never
 //! the account passcode, which would muddy the "Use Password" fallback story).
+//! Deliberately NOT `…WithBiometricsOrWatch`: an Apple Watch approval is a
+//! weaker proximity proof than a fingerprint, so clamshell-mode users fall to
+//! the password dialog for now — widening to Watch is a product decision
+//! deferred to the on-hardware follow-up (#442), not an omission.
 //! `evaluatePolicy:localizedReason:reply:` is asynchronous with a completion
 //! block; we bridge it to a synchronous return over an mpsc channel so the
 //! public `evaluate()` blocks until the outcome is known. The caller
