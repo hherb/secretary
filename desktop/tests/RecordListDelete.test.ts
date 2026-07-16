@@ -22,6 +22,8 @@ const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'Personal logins
 const PASS_THROUGH_SEAM = {
   readSettings: () => ({ enabled: false, windowMs: 0 }),
   now: () => 0,
+  biometricPrefEnabled: () => false,
+  tryBiometric: () => Promise.resolve('unavailable' as const),
   prompt: () => Promise.resolve()
 };
 
@@ -80,6 +82,8 @@ describe('RecordList — delete guard (write-reauth gate)', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.reject(ReauthCancelled)
     });
 
@@ -107,6 +111,8 @@ describe('RecordList — delete guard (write-reauth gate)', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.resolve()
     });
 

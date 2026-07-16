@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
-    browse, create, delete, edit, lock, reauth, settings, sync, unlock, vault,
+    browse, create, delete, edit, lock, presence, reauth, settings, sync, unlock, vault,
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
@@ -2022,4 +2022,79 @@ fn verify_password_while_locked_is_not_unlocked() {
     let err =
         reauth::verify_password_impl(&state, b"whatever").expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+// ============================================================================
+// read_presence_pref / write_presence_pref (#277 desktop-local presence pref)
+//
+// The pref file lands under the SAME `device_dir` tempdir that `fresh_state`
+// / `unlocked_state` inject as the session's `device_data_dir` — a sibling
+// of the per-vault device-UUID file (`secretary-desktop/devices/*.dev` vs
+// `secretary-desktop/presence/*.json`), proving the real end-to-end wiring
+// (session → command → presence_pref IO), not just the presence_pref unit
+// tests' direct tempdir calls.
+// ============================================================================
+
+/// Fake `PresenceProvider` pinning a fixed availability, so the DTO's
+/// availability half is deterministic regardless of the host's hardware.
+struct FakeAvailabilityProvider(presence::PresenceAvailability);
+impl presence::PresenceProvider for FakeAvailabilityProvider {
+    fn availability(&self) -> presence::PresenceAvailability {
+        self.0
+    }
+    fn evaluate(&self, _reason: &str) -> presence::PresenceOutcome {
+        presence::PresenceOutcome::Unavailable
+    }
+}
+
+fn available_provider() -> FakeAvailabilityProvider {
+    FakeAvailabilityProvider(presence::PresenceAvailability::Available)
+}
+
+#[test]
+fn read_presence_pref_while_locked_returns_not_unlocked() {
+    let (state, _device_dir) = fresh_state();
+    let err = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect_err("locked must reject");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+#[test]
+fn write_presence_pref_while_locked_returns_not_unlocked() {
+    let (state, _device_dir) = fresh_state();
+    let err = presence::write_presence_pref_impl(&state, false).expect_err("locked must reject");
+    assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
+}
+
+#[test]
+fn read_presence_pref_defaults_to_enabled_then_write_persists_and_rereads() {
+    let (state, _device_dir) = unlocked_state();
+
+    let initial = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect("read must succeed unlocked");
+    assert!(
+        initial.biometric_enabled,
+        "a fresh vault (no pref file yet) must default to enabled"
+    );
+
+    presence::write_presence_pref_impl(&state, false).expect("write must succeed unlocked");
+
+    let after = presence::read_presence_pref_impl(&state, &available_provider())
+        .expect("re-read must succeed");
+    assert!(
+        !after.biometric_enabled,
+        "write(false) must persist and be observed on re-read"
+    );
+}
+
+#[test]
+fn presence_pref_dto_wire_format_uses_camel_case() {
+    let (state, _device_dir) = unlocked_state();
+    // A non-`available` value proves the seam's availability (not the host
+    // hardware's) reaches the wire, and pins its camelCase rendering.
+    let provider = FakeAvailabilityProvider(presence::PresenceAvailability::NotEnrolled);
+    let dto = presence::read_presence_pref_impl(&state, &provider).expect("read must succeed");
+    let v = to_json(&dto);
+    assert!(v["biometricEnabled"].is_boolean());
+    assert_eq!(v["availability"], "notEnrolled");
 }

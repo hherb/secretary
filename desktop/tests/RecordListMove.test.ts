@@ -45,6 +45,8 @@ describe('RecordList move flow', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.reject(ReauthCancelled)
     });
     invokeMock.mockImplementation((cmd: string) => {

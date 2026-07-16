@@ -27,6 +27,11 @@ tauri-build = { version = "2", features = [] }
 # need any of those. Add features per-slice as D.1.x grows.
 tauri = { version = "2", features = [] }
 
+# The isolated macOS Touch ID presence provider (#277). Pure-safe API surface
+# (PresenceOutcome/PresenceAvailability + evaluate/availability); the unsafe
+# objc2 call is contained in that crate, never here.
+secretary-desktop-presence = { path = "../secretary-desktop-presence" }
+
 # Task 2 pure modules:
 # - `secretary-ffi-bridge` is consumed for `FfiVaultError` + the open / read /
 #   save vault entry points used by Task 3's `VaultSession`. Workspace path

@@ -120,6 +120,38 @@ impl VaultSession {
         self.inner.as_ref().map(|u| u.vault_folder.clone())
     }
 
+    /// Current vault's 16-byte UUID, or `None` if locked. Keys the per-vault
+    /// desktop-local presence preference (#277) — the same identifier
+    /// already used to key the per-vault device-UUID file
+    /// (`settings::device_uuid_path_in`).
+    ///
+    /// `OpenVaultManifest::vault_uuid()` returns `Vec<u8>` (mirrors the
+    /// uniffi/pyo3 projections); narrowing to `[u8; 16]` is infallible in
+    /// practice — an opened vault's manifest UUID is always 16 bytes (see
+    /// `commands::shared::vault_uuid_bytes_16`, which asserts the same
+    /// invariant with a typed `Internal` error rather than folding to
+    /// `None`). Here the two failure shapes (locked vs. a length mismatch
+    /// that cannot occur for a successfully opened vault) are
+    /// indistinguishable to every caller of this accessor — both route to
+    /// `AppError::NotUnlocked` — so collapsing both to `None` via
+    /// `try_into().ok()` is safe.
+    pub fn vault_uuid(&self) -> Option<[u8; 16]> {
+        self.inner
+            .as_ref()
+            .and_then(|u| u.manifest.vault_uuid().try_into().ok())
+    }
+
+    /// Parent directory for per-vault device-UUID (and, per #277, presence-
+    /// preference) files. Unlike `vault_folder()`, this is not part of
+    /// `inner` — it is present regardless of lock state, since it was
+    /// injected at construction (see [`VaultSession::new`]). Returns an
+    /// owned clone so callers can release the session mutex before doing
+    /// file IO, mirroring the mutex-early-release pattern in
+    /// `verify_password_impl`.
+    pub fn device_data_dir_clone(&self) -> std::path::PathBuf {
+        self.device_data_dir.clone()
+    }
+
     /// Current settings, or `Settings::default()` if locked.
     ///
     /// Returning a defensive default on the locked path (rather than
@@ -470,5 +502,26 @@ mod tests {
         assert!(session.is_path_approved(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
         session.lock();
         assert!(!session.is_path_approved(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
+    }
+
+    /// #277: `vault_uuid()` is `None` while locked — mirrors every other
+    /// `inner`-derived accessor (`vault_folder()`, `pending_warnings()`).
+    /// The unlocked case (`Some([u8; 16])`) is covered by
+    /// `tests/session_integration.rs` since it needs a real unlock against
+    /// the golden vault.
+    #[test]
+    fn vault_uuid_is_none_while_locked() {
+        let session = VaultSession::new(std::env::temp_dir());
+        assert_eq!(session.vault_uuid(), None);
+    }
+
+    /// #277: `device_data_dir_clone()` returns the same directory the
+    /// session was constructed with, regardless of lock state (it isn't
+    /// part of `inner`).
+    #[test]
+    fn device_data_dir_clone_returns_constructor_value() {
+        let dir = tempdir().unwrap();
+        let session = VaultSession::new(dir.path().to_path_buf());
+        assert_eq!(session.device_data_dir_clone(), dir.path());
     }
 }

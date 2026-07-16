@@ -21,8 +21,8 @@ use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
 use secretary_desktop::commands::{
-    browse, contacts, create, delete, edit, lock, pick, reauth, repair, retention, settings, sync,
-    unlock, vault,
+    browse, contacts, create, delete, edit, lock, pick, presence, reauth, repair, retention,
+    settings, sync, unlock, vault,
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
@@ -113,6 +113,9 @@ fn main() {
             sync::sync_now,
             sync::sync_commit_decisions,
             reauth::verify_password,
+            presence::authenticate_presence,
+            presence::read_presence_pref,
+            presence::write_presence_pref,
             retention::preview_retention,
             retention::run_retention,
             retention::purge_block,

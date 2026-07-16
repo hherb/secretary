@@ -4,6 +4,7 @@ members = [
     "core",
     "cli",
     "desktop/src-tauri",
+    "desktop/secretary-desktop-presence",
     "ffi/secretary-ffi-py",
     "ffi/secretary-ffi-uniffi",
     "ffi/secretary-ffi-bridge",

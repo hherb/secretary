@@ -1,7 +1,9 @@
 //! Tauri IPC command handlers.
 //!
 //! Each submodule defines one or two `#[tauri::command]` functions plus a
-//! sibling `*_impl` helper that takes `&Mutex<VaultSession>` directly.
+//! sibling `*_impl` helper that takes `&Mutex<VaultSession>` directly
+//! (one exception: presence's `authenticate_presence_impl` takes
+//! `&dyn PresenceProvider` — it is vault-independent).
 //! The split is deliberate:
 //!
 //! - The `#[tauri::command]` wrapper is a thin shell — extracts the state,
@@ -26,6 +28,7 @@ pub mod delete;
 pub mod edit;
 pub mod lock;
 pub mod pick;
+pub mod presence;
 pub mod reauth;
 pub mod repair;
 pub mod retention;

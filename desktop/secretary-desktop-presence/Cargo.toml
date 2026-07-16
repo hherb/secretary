@@ -1,0 +1,40 @@
+[package]
+name = "secretary-desktop-presence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# NOTE: this crate deliberately does NOT set `[lints] workspace = true`.
+# It is the single isolated FFI boundary for macOS LocalAuthentication and
+# therefore must permit `unsafe` (objc2 macros expand to unsafe blocks),
+# which the workspace-wide `unsafe_code = "forbid"` would otherwise reject.
+# Every OTHER crate keeps the forbid. See CLAUDE.md: "If a primitive truly
+# needs FFI, isolate it in its own crate behind a reviewed boundary."
+
+[lib]
+path = "src/lib.rs"
+
+# macOS-only objc2 bindings for LocalAuthentication. Exact-pinned (`=x.y.z`)
+# per the security-path dependency discipline (see core's `tempfile` pin):
+# this crate is the process's Touch ID gate, so any bump must be a deliberate
+# edit + changelog review — never a silent `cargo update` inside a caret
+# range. Versions match the objc2 stack Tauri already resolves in Cargo.lock
+# (objc2 0.6.4 / objc2-foundation 0.3.2 / block2 0.6.2) so the workspace
+# carries a single copy of each; objc2-local-authentication 0.3.2 is the
+# matching framework-crates release. Features are trimmed to what macos.rs
+# actually uses (LAContext + its reply block; NSString/NSError plumbing).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSString",
+    "NSError",
+] }
+objc2-local-authentication = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "LAContext",
+    "block2",
+] }
+block2 = "=0.6.2"

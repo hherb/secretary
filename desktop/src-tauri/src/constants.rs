@@ -46,6 +46,20 @@ pub const AUTO_LOCK_TICK_MS: u64 = 5_000;
 /// change both together.
 pub const ACTIVITY_NOTIFY_MIN_INTERVAL_MS: u64 = 2_000;
 
+// =============================================================================
+// Desktop-local presence (biometric) preference (#277)
+// =============================================================================
+
+/// Subdirectory under `<data_dir>/secretary-desktop/` holding per-vault
+/// presence (biometric) preference files, named `<vault_uuid_hex>.json`.
+/// Sibling of the existing `devices/` subtree.
+pub const PRESENCE_PREF_SUBDIR: &str = "presence";
+
+/// Default: biometric re-auth is used when hardware is available. A fresh
+/// vault (no pref file) opts in; the user disables it explicitly (e.g. before
+/// travelling through a high-risk area).
+pub const PRESENCE_BIOMETRIC_ENABLED_DEFAULT: bool = true;
+
 #[cfg(test)]
 mod tests {
     use super::*;

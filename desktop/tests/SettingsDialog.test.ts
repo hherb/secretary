@@ -32,7 +32,10 @@ import {
   sessionState,
   beginUnlock,
   unlockSucceeded,
-  _resetSessionStateForTest
+  _resetSessionStateForTest,
+  presencePref,
+  setPresencePref,
+  resetPresencePref
 } from '../src/lib/stores';
 import {
   MS_PER_MINUTE,
@@ -62,6 +65,8 @@ import type { AppError } from '../src/lib/errors';
 const PASS_THROUGH_SEAM = {
   readSettings: () => ({ enabled: false, windowMs: 0 }),
   now: () => 0,
+  biometricPrefEnabled: () => false,
+  tryBiometric: () => Promise.resolve('unavailable' as const),
   prompt: () => Promise.resolve()
 };
 
@@ -74,23 +79,32 @@ const MANIFEST: ManifestDto = {
 };
 const INITIAL_SETTINGS: SettingsDto = { autoLockTimeoutMs: 900_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }; // 15 minutes
 
-// Hoist the setSettings IPC mock so individual tests can drive
-// resolve / reject as needed.
-const { setSettingsMock, lockMock } = vi.hoisted(() => ({
+// Hoist the setSettings / writePresencePref IPC mocks so individual tests can
+// drive resolve / reject as needed.
+const { setSettingsMock, lockMock, writePresencePrefMock } = vi.hoisted(() => ({
   setSettingsMock: vi.fn(),
-  lockMock: vi.fn()
+  lockMock: vi.fn(),
+  writePresencePrefMock: vi.fn()
 }));
 vi.mock('../src/lib/ipc', async () => {
   const real = await vi.importActual<typeof import('../src/lib/ipc')>('../src/lib/ipc');
-  return { ...real, setSettings: setSettingsMock, lock: lockMock };
+  return {
+    ...real,
+    setSettings: setSettingsMock,
+    lock: lockMock,
+    writePresencePref: writePresencePrefMock
+  };
 });
 
 beforeEach(() => {
   _resetSessionStateForTest();
+  resetPresencePref();
   setSettingsMock.mockReset();
   setSettingsMock.mockResolvedValue(undefined);
   lockMock.mockReset();
   lockMock.mockResolvedValue(undefined);
+  writePresencePrefMock.mockReset();
+  writePresencePrefMock.mockResolvedValue(undefined);
   __setWriteGuardTestSeam(PASS_THROUGH_SEAM);
 });
 
@@ -513,6 +527,8 @@ describe('SettingsDialog.svelte — retention window', () => {
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({
@@ -543,6 +559,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt: () => Promise.reject(ReauthCancelled)
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
@@ -562,6 +580,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 2 min
@@ -585,6 +605,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: true, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: true, reauthGraceWindowMs: 300_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS }); // 5 min
@@ -605,6 +627,8 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
     __setWriteGuardTestSeam({
       readSettings: () => ({ enabled: false, windowMs: 0 }),
       now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
       prompt
     });
     unlockWith({ autoLockTimeoutMs: 600_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS });
@@ -618,6 +642,206 @@ describe('SettingsDialog.svelte — security-reducing changes are gated', () => 
 
     await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
     expect(prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('SettingsDialog.svelte — Touch ID (biometric) toggle (#277)', () => {
+  // Baseline settings that hold the write-reauth gate fixed (unchanged
+  // requirePasswordBeforeEdits / reauthGraceWindowMs / autoLockTimeoutMs)
+  // so only the biometric toggle can move `reducesProtection`.
+  const BASE_SETTINGS: SettingsDto = {
+    autoLockTimeoutMs: 600_000,
+    requirePasswordBeforeEdits: true,
+    reauthGraceWindowMs: 120_000,
+    retentionWindowMs: RETENTION_WINDOW_DEFAULT_MS
+  };
+
+  it('hides the Touch ID toggle when biometry is unavailable', () => {
+    setPresencePref({ biometricEnabled: true, availability: 'unsupported' });
+    unlockWith();
+    const { queryByLabelText } = renderOpen();
+    expect(queryByLabelText(/use touch id/i)).toBeNull();
+  });
+
+  it('renders the Touch ID toggle when biometry is available', () => {
+    setPresencePref({ biometricEnabled: false, availability: 'available' });
+    unlockWith();
+    const { getByLabelText } = renderOpen();
+    expect(getByLabelText(/use touch id/i)).toBeTruthy();
+  });
+
+  it('enabling Touch ID from disabled routes through authorizeWrite before writePresencePref(true) and mirrors the store', async () => {
+    const callOrder: string[] = [];
+    const prompt = vi.fn(() => {
+      callOrder.push('authorizeWrite');
+      return Promise.resolve();
+    });
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
+      prompt
+    });
+    writePresencePrefMock.mockImplementationOnce(async () => {
+      callOrder.push('writePresencePref');
+    });
+    setPresencePref({ biometricEnabled: false, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    const { getByLabelText, getByRole } = renderOpen();
+
+    await fireEvent.click(getByLabelText(/use touch id/i)); // false -> true
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(writePresencePrefMock).toHaveBeenCalledWith(true));
+    expect(callOrder).toEqual(['authorizeWrite', 'writePresencePref']);
+    expect(get(presencePref)).toEqual({ biometricEnabled: true, availability: 'available' });
+  });
+
+  it('cancelling re-auth on the enable path persists nothing — neither setSettings nor writePresencePref', async () => {
+    // The abort must land BEFORE both persistence calls: a cancelled
+    // authorizeWrite may not leave the vault settings written with only the
+    // pref write skipped (or vice versa), and the store mirror must not move.
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      biometricPrefEnabled: () => false,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
+      prompt: () => Promise.reject(ReauthCancelled)
+    });
+    setPresencePref({ biometricEnabled: false, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    const onClose = vi.fn();
+    const { getByLabelText, getByRole } = renderOpen(onClose);
+
+    await fireEvent.click(getByLabelText(/use touch id/i)); // false -> true
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(setSettingsMock).not.toHaveBeenCalled();
+    expect(writePresencePrefMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // Biometry stays structurally unreachable — the mirror never moved.
+    expect(get(presencePref)).toEqual({ biometricEnabled: false, availability: 'available' });
+  });
+
+  it('disabling Touch ID from enabled does not trigger authorizeWrite but still persists the pref', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({
+      readSettings: () => ({ enabled: true, windowMs: 0 }),
+      now: () => 0,
+      biometricPrefEnabled: () => true,
+      tryBiometric: () => Promise.resolve('unavailable' as const),
+      prompt
+    });
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    const { getByLabelText, getByRole } = renderOpen();
+
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(writePresencePrefMock).toHaveBeenCalledWith(false));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(get(presencePref)).toEqual({ biometricEnabled: false, availability: 'available' });
+  });
+
+  it('does not call writePresencePref when the toggle is left unchanged', async () => {
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    const { getByRole } = renderOpen();
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalledTimes(1));
+    expect(writePresencePrefMock).not.toHaveBeenCalled();
+  });
+
+  it('writePresencePref rejecting after a successful setSettings surfaces the error and keeps the dialog open without rolling back the vault settings', async () => {
+    // Hardening direction (enabled -> disabled) needs no re-auth, so the
+    // PASS_THROUGH_SEAM from beforeEach is fine here — isolates the
+    // partial-save behaviour from the gating behaviour.
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    writePresencePrefMock.mockRejectedValueOnce({ code: 'internal' });
+    const onClose = vi.fn();
+    const { getByLabelText, getByRole, findByText } = renderOpen(onClose);
+
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    expect(await findByText(/internal error/i)).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(setSettingsMock).toHaveBeenCalledTimes(1);
+    // The vault settings write already succeeded and is not rolled back —
+    // sessionState reflects the persisted (unchanged, in this case) values.
+    const s = get(sessionState);
+    if (s.status === 'unlocked') {
+      expect(s.settings.autoLockTimeoutMs).toBe(BASE_SETTINGS.autoLockTimeoutMs);
+    } else {
+      throw new Error('expected unlocked');
+    }
+    // The pref store was NOT mirrored to the failed value.
+    expect(get(presencePref)).toEqual({ biometricEnabled: true, availability: 'available' });
+  });
+
+  it('disabling the toggle AND changing a vault setting in one Save mirrors biometricEnabled: false to the store', async () => {
+    // MAJOR regression (#277 final review): when the save ALSO changes a vault
+    // setting, `settingsUpdated` moves the `$derived` current* values, which
+    // re-runs the input-re-seeding $effect during the pref-write await —
+    // resetting `inputBiometric` to the PRE-save store value. The disk write
+    // reads the value before that flush (correct), but the post-await
+    // `setPresencePref` mirror must not read the clobbered binding: otherwise
+    // disk says OFF while the session store still says ON, and Touch ID keeps
+    // firing all session despite the user disabling the kill-switch.
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS); // autoLockTimeoutMs 600_000 = 10 min
+    const onClose = vi.fn();
+    const { container, getByLabelText, getByRole } = renderOpen(onClose);
+
+    const autoLockInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(autoLockInput, { target: { value: '5' } }); // 10 -> 5 min (tightening)
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false (hardening)
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // Disk got the disable...
+    expect(writePresencePrefMock).toHaveBeenCalledWith(false);
+    // ...and the session store mirror agrees with the disk.
+    expect(get(presencePref)).toEqual({ biometricEnabled: false, availability: 'available' });
+  });
+
+  it('pref-write rejection still surfaces the error when the vault settings also changed', async () => {
+    // The changed-settings variant of the partial-save test above: here
+    // `settingsUpdated` mutates the store, which re-runs the input-re-seeding
+    // $effect (formError = null). The catch that sets formError must land
+    // after that flush — this pins the ordering so the error is never wiped.
+    setPresencePref({ biometricEnabled: true, availability: 'available' });
+    unlockWith(BASE_SETTINGS);
+    writePresencePrefMock.mockRejectedValueOnce({ code: 'internal' });
+    const onClose = vi.fn();
+    const { container, getByLabelText, getByRole, findByText } = renderOpen(onClose);
+
+    const autoLockInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+    await fireEvent.input(autoLockInput, { target: { value: '5' } }); // 10 -> 5 min (tightening)
+    await fireEvent.click(getByLabelText(/use touch id/i)); // true -> false (hardening)
+
+    await fireEvent.click(getByRole('button', { name: /save/i }));
+
+    expect(await findByText(/internal error/i)).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    // The vault settings write succeeded and stuck.
+    const s = get(sessionState);
+    if (s.status === 'unlocked') {
+      expect(s.settings.autoLockTimeoutMs).toBe(5 * MS_PER_MINUTE);
+    } else {
+      throw new Error('expected unlocked');
+    }
   });
 });
 

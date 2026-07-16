@@ -2,7 +2,14 @@
   import LockKeyhole from '../components/icons/LockKeyhole.svelte';
   import PathPicker from '../components/PathPicker.svelte';
   import RepairConsentDialog from '../components/RepairConsentDialog.svelte';
-  import { sessionState, beginUnlock, unlockSucceeded, unlockFailed } from '../lib/stores';
+  import {
+    sessionState,
+    beginUnlock,
+    unlockSucceeded,
+    unlockFailed,
+    setPresencePref,
+    resetPresencePref
+  } from '../lib/stores';
   import {
     unlockWithPassword,
     repairVault,
@@ -15,6 +22,7 @@
   import type { AppError } from '../lib/errors';
   import { userMessageFor } from '../lib/errors';
   import { seedReauthClock } from '../lib/writeGuard';
+  import { readPresencePref } from '../lib/presence';
   import { openCreateWizard, createdVaultPath } from '../lib/route';
   import { get } from 'svelte/store';
 
@@ -79,6 +87,19 @@
 
   const formValid = $derived(folderPath.length > 0 && password.length > 0);
 
+  // Load the this-device Touch ID preference (#277) for the write-reauth
+  // gate, failing safe: a load error disables biometric for this session
+  // (resetPresencePref) rather than blocking the unlock. Shared by the
+  // normal-unlock and repair-unlock tails.
+  async function loadPresencePrefFailSafe(): Promise<void> {
+    try {
+      setPresencePref(await readPresencePref());
+    } catch (err) {
+      console.error('failed to load presence preference; biometric disabled this session', err);
+      resetPresencePref();
+    }
+  }
+
   async function submit(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!formValid || submitting) return;
@@ -99,6 +120,7 @@
       // Seed the reauth grace-window clock: the unlock password proves
       // presence, so a write within the grace window should not re-prompt.
       seedReauthClock(Date.now());
+      await loadPresencePrefFailSafe();
     } catch (err) {
       // `unlockFailed` accepts `unknown` and narrows internally; no cast
       // required at the call site.
@@ -178,6 +200,7 @@
       const settings = await getSettings();
       unlockSucceeded(manifest, settings);
       seedReauthClock(Date.now());
+      await loadPresencePrefFailSafe();
     } catch (err) {
       unlockFailed(err);
     } finally {

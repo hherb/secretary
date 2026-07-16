@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { sessionState, autoLockNotice, vaultLocked } from './lib/stores';
+  import { sessionState, autoLockNotice, vaultLocked, resetPresencePref } from './lib/stores';
   import { resetBrowse } from './lib/browse';
   import { startActivityTracking } from './lib/auto_lock';
   import { resetReauthGuard } from './lib/writeGuard';
@@ -47,6 +47,9 @@
       // Clear the reauth guard clock so the next session always re-prompts
       // (the unlock password re-seeds it in Unlock.svelte).
       resetReauthGuard();
+      // Reset the this-device Touch ID preference (#277) so a locked
+      // session never attempts biometry; the next unlock reloads it.
+      resetPresencePref();
       vaultLocked(notice);
     }).then((fn) => {
       if (unmounted) {
