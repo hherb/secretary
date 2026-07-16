@@ -1,21 +1,28 @@
 <script lang="ts">
   // Settings dialog — native <dialog> overlay for editing app settings.
   // Edits auto-lock timeout (minutes), write re-auth toggle and grace window,
-  // and the trash retention window (days). Validation + save flow kept
-  // generic for future fields.
+  // the trash retention window (days), and — macOS only, #277 — the
+  // desktop-local "Use Touch ID on this Mac" preference. Validation + save
+  // flow kept generic for future fields.
   //
   // Contract (pinned by SettingsDialog.test.ts):
   //   - Parent toggles `open` (bindable). $effect drives showModal/close
   //     so the native <dialog> state stays in sync.
   //   - Initial input value is pre-populated from currentSettings (or
   //     AUTO_LOCK_DEFAULT_MS in minutes if locked — defensive only).
-  //   - Save: validate → setSettings IPC (ms) → settingsUpdated → onClose.
+  //   - Save: validate → setSettings IPC (ms) → settingsUpdated → (if the
+  //     Touch ID toggle changed) writePresencePref IPC → setPresencePref →
+  //     onClose. A writePresencePref rejection surfaces via formError and
+  //     does NOT roll back the already-persisted vault settings — see #277.
   //   - Cancel: revert local edit, then onClose.
   //   - Validation failures and IPC rejections both render via
   //     userMessageFor on the same typed AppError union for consistency.
+  //   - The Touch ID toggle only renders when `$presencePref.availability
+  //     === 'available'`; the save-time pref write is independently guarded
+  //     on the same condition so a hidden toggle can never write the pref.
 
-  import { sessionState, settingsUpdated } from '../lib/stores';
-  import { setSettings, isAppError } from '../lib/ipc';
+  import { sessionState, settingsUpdated, presencePref, setPresencePref } from '../lib/stores';
+  import { setSettings, isAppError, writePresencePref } from '../lib/ipc';
   import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import { userMessageFor, type AppError } from '../lib/errors';
   import {
@@ -79,10 +86,18 @@
       : RETENTION_WINDOW_DEFAULT_MS
   );
 
+  // Desktop-local, this-device preference (#277) — independent of the
+  // vault-synced `sessionState.settings` above, so no locked-session
+  // fallback: `presencePref`'s own safe default (biometricEnabled: false,
+  // availability: 'unsupported') already covers the not-loaded case.
+  let biometricAvailable = $derived($presencePref.availability === 'available');
+  let currentBiometric = $derived($presencePref.biometricEnabled);
+
   let inputMinutes = $state(DEFAULT_MINUTES);
   let inputRequirePassword = $state(REQUIRE_PASSWORD_DEFAULT);
   let inputWindowMinutes = $state(WINDOW_DEFAULT_MINUTES);
   let inputRetentionDays = $state(RETENTION_DEFAULT_DAYS);
+  let inputBiometric = $state(false);
   let formError = $state<AppError | null>(null);
   let submitting = $state(false);
   let dialogEl: HTMLDialogElement | undefined = $state();
@@ -97,6 +112,7 @@
     inputRequirePassword = currentRequirePassword;
     inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
     inputRetentionDays = Math.round(currentRetentionMs / MS_PER_DAY);
+    inputBiometric = currentBiometric;
     formError = null;
   });
 
@@ -167,18 +183,22 @@
     // `authorizeWrite` reads the CURRENT (pre-save) policy, so within the live
     // grace window it resolves silently — consistent with every other write.
     //
-    // Two independent reductions:
+    // Three independent reductions:
     //  - Weakening the write-reauth gate: disabling it or widening its grace
     //    window. Only matters when the gate is currently effective.
     //  - Widening the auto-lock timeout (#363): keeps the vault unlocked longer,
     //    a reduction regardless of the write-reauth policy — so it is NOT gated
     //    on `currentRequirePassword`.
+    //  - Enabling Touch ID (#277): adds a compellable presence-proof path to
+    //    the write-reauth gate — a reduction. Disabling it is a hardening
+    //    (the travel kill-switch) and must NOT require re-auth by itself.
     const widensAutoLock = newSettings.autoLockTimeoutMs > currentMs;
     const weakensWriteGate =
       currentRequirePassword &&
       (!newSettings.requirePasswordBeforeEdits ||
         newSettings.reauthGraceWindowMs > currentWindowMs);
-    const reducesProtection = widensAutoLock || weakensWriteGate;
+    const enablesBiometric = inputBiometric && !currentBiometric;
+    const reducesProtection = widensAutoLock || weakensWriteGate || enablesBiometric;
     if (reducesProtection) {
       try {
         await authorizeWrite('Confirm changing the write re-auth setting');
@@ -204,6 +224,17 @@
       if ($sessionState.status === 'unlocked') {
         settingsUpdated(newSettings);
       }
+      // Persist the Touch ID preference only when it actually changed, and
+      // only when the toggle could have been shown at all — a hidden toggle
+      // (biometry unavailable) must never write the pref, even defensively.
+      // A rejection here surfaces via the catch below WITHOUT rolling back
+      // the vault settings write above (partial-save: the dialog stays open
+      // showing the error, and the vault settings the user just saved stay
+      // saved — re-running Save simply retries the pref write).
+      if (biometricAvailable && inputBiometric !== currentBiometric) {
+        await writePresencePref(inputBiometric);
+        setPresencePref({ biometricEnabled: inputBiometric, availability: $presencePref.availability });
+      }
       onClose();
     } catch (err) {
       // call() in ipc.ts already coerces non-AppError rejections, but
@@ -224,6 +255,7 @@
     inputRequirePassword = currentRequirePassword;
     inputWindowMinutes = Math.round(currentWindowMs / MS_PER_MINUTE);
     inputRetentionDays = Math.round(currentRetentionMs / MS_PER_DAY);
+    inputBiometric = currentBiometric;
     onClose();
   }
 
@@ -272,6 +304,22 @@
     />
     <span class="settings-dialog__label">Require password before edits</span>
   </label>
+
+  {#if biometricAvailable}
+    <label class="settings-dialog__field settings-dialog__field--checkbox">
+      <input
+        type="checkbox"
+        class="settings-dialog__checkbox"
+        bind:checked={inputBiometric}
+        disabled={submitting}
+      />
+      <span class="settings-dialog__label">Use Touch ID on this Mac</span>
+    </label>
+    <p class="settings-dialog__hint">
+      Applies to this device only. Turn off before travelling through high-risk areas —
+      a password will always be required instead.
+    </p>
+  {/if}
 
   <label class="settings-dialog__field">
     <span class="settings-dialog__label">Re-authentication grace window</span>
