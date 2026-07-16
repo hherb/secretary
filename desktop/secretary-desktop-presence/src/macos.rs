@@ -21,6 +21,14 @@ use crate::{classify, PresenceAvailability, PresenceOutcome};
 /// `LAError.userFallback` → `PresenceOutcome::Fallback` → password dialog.
 const FALLBACK_TITLE: &str = "Use Password";
 
+/// Identity fn whose only job is the `Send` bound: the LocalAuthentication
+/// reply block is invoked on a private framework queue (a different thread
+/// from the constructing one), so every capture must be `Send` — route the
+/// closure through here and the compiler enforces it.
+fn require_send<F: Send>(f: F) -> F {
+    f
+}
+
 pub(crate) fn availability() -> PresenceAvailability {
     // SAFETY: `LAContext` is a plain NSObject subclass constructible from any
     // thread (`AnyThread`); `new` has no other preconditions.
@@ -67,10 +75,10 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
     // Send-soundness precondition: the framework invokes this block on a
     // private framework queue, i.e. on a different thread from the one that
     // constructed it — but `RcBlock::new` does NOT statically require the
-    // closure to be `Send`. Today the sole capture is `tx`
-    // (`mpsc::Sender<Result<(), i64>>`), which is `Send`. Any new capture
-    // added to this closure must be re-audited for `Send` by hand.
-    let reply = RcBlock::new(move |success: Bool, error: *mut NSError| {
+    // closure to be `Send`. `require_send` makes the compiler enforce that
+    // precondition: a future non-`Send` capture fails to build instead of
+    // relying on a hand re-audit.
+    let reply = RcBlock::new(require_send(move |success: Bool, error: *mut NSError| {
         let result = if success.as_bool() {
             Ok(())
         // SAFETY: on failure the framework passes either nil or a pointer to
@@ -89,7 +97,7 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
         // invokes the block twice — the second send finds the receiver
         // already dropped — and that is exactly the case we want to ignore.
         let _ = tx.send(result);
-    });
+    }));
 
     // SAFETY: `context` and `reason_ns` are alive for the duration of the
     // call; the reply block is refcounted (`RcBlock`), so the framework's
