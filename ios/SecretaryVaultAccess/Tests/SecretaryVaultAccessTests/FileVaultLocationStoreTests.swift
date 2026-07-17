@@ -2,9 +2,17 @@ import XCTest
 @testable import SecretaryVaultAccess
 
 final class FileVaultLocationStoreTests: XCTestCase {
+    private var createdSuites: [String] = []
+
+    override func tearDownWithError() throws {
+        for suite in createdSuites { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        createdSuites.removeAll()
+    }
+
     /// Each test gets an isolated UserDefaults suite so nothing touches `.standard`.
     private func makeStore() -> FileVaultLocationStore {
         let suite = "test.filevaultstore.\(UUID().uuidString)"
+        createdSuites.append(suite)
         let defaults = UserDefaults(suiteName: suite)!
         return FileVaultLocationStore(defaults: defaults)
     }
