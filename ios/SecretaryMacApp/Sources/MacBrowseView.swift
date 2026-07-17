@@ -31,6 +31,8 @@ struct MacBrowseView: View {
         let title: String
     }
     @State private var editSession: EditSession?
+    /// Record awaiting delete confirmation (drives the `.confirmationDialog`). nil = none.
+    @State private var recordPendingDelete: RecordView?
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -51,7 +53,16 @@ struct MacBrowseView: View {
             if viewModel.records != nil {
                 List(viewModel.visibleRecords, id: \.uuidHex, selection: $selectedRecordHex) { record in
                     VStack(alignment: .leading) {
-                        Text(record.type.isEmpty ? "(untyped)" : record.type)
+                        HStack {
+                            Text(record.type.isEmpty ? "(untyped)" : record.type)
+                            if record.tombstone {
+                                Text("deleted")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(.quaternary, in: Capsule())
+                            }
+                        }
                         if !record.tags.isEmpty {
                             Text(record.tags.joined(separator: ", "))
                                 .font(.caption).foregroundStyle(.secondary)
@@ -59,15 +70,30 @@ struct MacBrowseView: View {
                     }
                     .tag(record.uuidHex)
                     .contextMenu {
-                        Button {
-                            guard let vm = viewModel.makeEditViewModel(
-                                mode: .edit(recordUuid: record.uuid)) else { return }
-                            vm.load(record: record)
-                            editSession = EditSession(editVM: vm, title: "Edit Record")
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
+                        if record.tombstone {
+                            Button {
+                                Task { await viewModel.restore(record: record) }
+                            } label: {
+                                Label("Restore", systemImage: "arrow.uturn.backward")
+                            }
+                            .disabled(viewModel.isWriting)
+                        } else {
+                            Button {
+                                guard let vm = viewModel.makeEditViewModel(
+                                    mode: .edit(recordUuid: record.uuid)) else { return }
+                                vm.load(record: record)
+                                editSession = EditSession(editVM: vm, title: "Edit Record")
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .disabled(viewModel.isWriting)
+                            Button(role: .destructive) {
+                                recordPendingDelete = record
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .disabled(viewModel.isWriting)
                         }
-                        .disabled(viewModel.isWriting)
                     }
                 }
                 .navigationTitle("Records")
@@ -82,6 +108,15 @@ struct MacBrowseView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                // Only meaningful once a block's records are loaded. Toggling re-reads
+                // the block through the VM (the Rust gate withholds tombstoned records
+                // unless this is on — the client never filters withheld data).
+                if viewModel.records != nil {
+                    Toggle("Show deleted", isOn: $viewModel.showDeleted)
+                        .toggleStyle(.checkbox)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 // "Add record" is only meaningful once a block is selected (the VM
                 // appends into the selected block); hidden otherwise.
@@ -123,6 +158,23 @@ struct MacBrowseView: View {
                 },
                 onCancel: { editSession = nil }
             )
+        }
+        .confirmationDialog(
+            "Delete record?",
+            isPresented: Binding(
+                get: { recordPendingDelete != nil },
+                set: { if !$0 { recordPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let record = recordPendingDelete {
+                Button("Delete", role: .destructive) {
+                    Task { await viewModel.delete(record: record) }
+                    recordPendingDelete = nil
+                }
+                .disabled(viewModel.isWriting)
+            }
+            Button("Cancel", role: .cancel) { recordPendingDelete = nil }
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
