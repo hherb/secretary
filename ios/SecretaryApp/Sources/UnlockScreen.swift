@@ -1,4 +1,5 @@
 import SwiftUI
+import SecretaryDeviceUnlock
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
@@ -78,11 +79,28 @@ struct UnlockScreen: View {
                 Section {
                     Button("Unlock") {
                         viewModel.mode = mode
-                        let secret: [UInt8] = mode == .password
+                        var secret: [UInt8] = mode == .password
                             ? Array(password.utf8)
                             : Array(RecoveryPhrase.normalize(phrase).utf8)
                         lastPasswordSecret = (mode == .password) ? secret : nil
-                        Task { await viewModel.unlock(secret: secret) }
+                        Task {
+                            await viewModel.unlock(secret: secret)
+                            // On failure the secret is never handed off (`onChange`
+                            // only fires on `.unlocked`), so drop + wipe our retained
+                            // copy now instead of holding it until the next attempt.
+                            // Nil the `@State` reference FIRST so `secret` becomes
+                            // uniquely referenced, then `zeroize` overwrites the real
+                            // backing buffer — a still-shared `[UInt8]` would only
+                            // COW-clear a throwaway copy. Best-effort: the SwiftUI
+                            // `password`/`phrase` Strings and any bytes already copied
+                            // across the FFI are out of reach (see `zeroize`). On
+                            // success the buffer is deliberately kept for sync/enroll
+                            // and released by `onChange`.
+                            if case .failed = viewModel.state {
+                                lastPasswordSecret = nil
+                                zeroize(&secret)
+                            }
+                        }
                     }
                 }
                 .disabled(isBusy)

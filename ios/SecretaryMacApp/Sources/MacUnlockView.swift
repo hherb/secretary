@@ -1,5 +1,6 @@
 import SwiftUI
 import os
+import SecretaryDeviceUnlock
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 import SecretaryKit
@@ -19,11 +20,15 @@ struct MacUnlockView: View {
 
     @State private var password: String = ""
     @State private var lastPasswordSecret: [UInt8]?
-    // Guards against a concurrent password+biometric double-open: the biometric
-    // path has its own post-prompt Argon2id window (not covered by `isBusy`,
-    // which only tracks `viewModel.state`), during which both unlock buttons
-    // must stay disabled so a second open can't start an orphan VaultSession.
-    @State private var biometricInFlight = false
+    // Guards against a concurrent double-open across BOTH unlock tiers. Set
+    // synchronously at the tap — before either the password Argon2id or the
+    // biometric prompt begins — so a second tap on EITHER button is rejected
+    // here rather than racing into a second open that would strand an orphan
+    // VaultSession. `isBusy` (derived from `viewModel.state`) only turns true
+    // AFTER the async password open starts, leaving a pre-busy gap this flag
+    // closes; the biometric path never touches `viewModel.state` at all, so it
+    // relies on this flag entirely.
+    @State private var isOpening = false
 
     init(viewModel: UnlockViewModel, vaultPath: Data, biometricEnrolled: Bool,
          biometricError: Binding<String?>, rememberDevice: Binding<Bool>,
@@ -44,7 +49,7 @@ struct MacUnlockView: View {
             if biometricEnrolled {
                 Section("Touch ID") {
                     Button("Unlock with Touch ID") { biometricUnlock() }
-                        .disabled(isBusy || biometricInFlight)
+                        .disabled(isBusy || isOpening)
                 }
             }
             Section("Master password") {
@@ -57,7 +62,7 @@ struct MacUnlockView: View {
             }
             Section {
                 Button("Unlock") { passwordUnlock() }
-                    .disabled(isBusy || biometricInFlight || password.isEmpty)
+                    .disabled(isBusy || isOpening || password.isEmpty)
             }
             if case .failed(let err) = viewModel.state {
                 Section("Error") { Text(String(describing: err)).foregroundStyle(.red) }
@@ -84,15 +89,34 @@ struct MacUnlockView: View {
     }
 
     private func passwordUnlock() {
+        guard !isOpening else { return }
+        isOpening = true
         viewModel.mode = .password
-        let secret = Array(password.utf8)
+        var secret = Array(password.utf8)
         lastPasswordSecret = secret
-        Task { await viewModel.unlock(secret: secret) }
+        Task {
+            await viewModel.unlock(secret: secret)
+            isOpening = false
+            // On failure the secret is never handed off (no `onOpened` / enroll),
+            // so drop + wipe our retained copy now instead of holding it until the
+            // next attempt or teardown. Nil the `@State` reference FIRST so `secret`
+            // becomes uniquely referenced, then `zeroize` overwrites the real
+            // backing buffer — a still-shared `[UInt8]` would only COW-clear a
+            // throwaway copy. Best-effort: the SwiftUI `password` String and any
+            // bytes already copied across the FFI are out of reach (see `zeroize`).
+            // On success the buffer is deliberately kept for enroll and released by
+            // `onChange`.
+            if case .failed = viewModel.state {
+                lastPasswordSecret = nil
+                zeroize(&secret)
+            }
+        }
     }
 
     private func biometricUnlock() {
+        guard !isOpening else { return }
         biometricError = nil
-        biometricInFlight = true
+        isOpening = true
         let coordinator = makePerVaultDeviceUnlock(vaultPath: vaultPath).coordinator
         Task {
             let result = await DeviceUnlockOpen.open(
@@ -100,12 +124,12 @@ struct MacUnlockView: View {
                 vaultPath: vaultPath, reason: "Unlock your Secretary vault")
             switch result {
             case .cancelled:
-                biometricInFlight = false                       // stay on unlock, quietly
+                isOpening = false                               // stay on unlock, quietly
             case .failed(let message):
-                biometricInFlight = false
+                isOpening = false
                 biometricError = message
             case .opened(let session, let gate):
-                biometricInFlight = false
+                isOpening = false
                 onOpened(session, gate)
             }
         }
@@ -114,6 +138,11 @@ struct MacUnlockView: View {
     /// Best-effort device-slot enrollment on password unlock (mirrors iOS): a second
     /// Argon2id open, hopped onto a background queue so the route transition is never
     /// blocked. Non-fatal — the password open already succeeded.
+    ///
+    /// This writes an additive `devices/<uuid>.wrap` slot (ADR 0009) — the one
+    /// intentional vault write in the otherwise read-only D.5.2 slice. It adds an
+    /// unlock credential only; it never touches vault content (blocks / records /
+    /// manifest), so the "read-only browse" invariant is unaffected.
     private func enrollDevice(session: VaultSession, secret: [UInt8]) {
         let coordinator = makePerVaultDeviceUnlock(vaultPath: vaultPath).coordinator
         let vaultPath = self.vaultPath
@@ -122,6 +151,14 @@ struct MacUnlockView: View {
             do {
                 try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                     DispatchQueue.global(qos: .userInitiated).async {
+                        var secret = secret
+                        // Best-effort wipe of our copy once enroll has consumed it
+                        // (#453). Bytes handed across the FFI are zeroized Rust-side;
+                        // the SwiftUI `password` String and COW-shared copies remain
+                        // out of reach — Swift value semantics preclude a full
+                        // guarantee (see `zeroize`). Local `var` inside this
+                        // `@Sendable` closure — no mutable capture across domains.
+                        defer { zeroize(&secret) }
                         do { try coordinator.enroll(vaultPath: vaultPath, vaultId: vaultId, password: secret); c.resume() }
                         catch { c.resume(throwing: error) }
                     }

@@ -19,6 +19,7 @@ Design: `docs/superpowers/specs/2026-07-17-macos-native-readonly-viewer-design.m
 - **Task 5 — browse route** (`MacBrowseView` three-column `NavigationSplitView`, reveal/mask/copy-auto-clear, Lock; retired `MacDeviceUnlockView`): `de2781f`.
 - **Task 6 — docs:** `e75d4215` (ROADMAP D.5.2 ×2 entries; README unchanged — no per-slice D.5 row, and "Desktop macOS = Tauri" stays accurate while D.5 coexists).
 - **Final whole-branch review fixes (opus review):** `4776d67` — **wipe on window close** (`NSWindow.willCloseNotification` → `viewModel.lock()`, deterministic zeroize per design §7 — the review caught this was missing), biometric double-open guard (`biometricInFlight`), "Remember this Mac" gated on `!biometricEnrolled`, defensive-redaction comment.
+- **Post-review `/fixall` round (this commit):** (1) **window-scoped wipe** — the `willCloseNotification` handler now filters on the browse window's identity (via a `WindowAccessor` `NSViewRepresentable` → `browseWindowID`) so an unrelated panel (e.g. the standard About window) closing can no longer wipe a live session; it routes through `onLock` so the scope is ended too (matters once App Sandbox lands). (2) **symmetric double-open guard** — `biometricInFlight` → `isOpening`, set synchronously at BOTH taps, closing the pre-`.busy` gap on the password path. (3) **enroll-password hygiene ([#453](https://github.com/hherb/secretary/issues/453))** — effective wipe on failed unlock (nil the `@State` ref first so the local `secret` is uniquely referenced, then `zeroize`) + best-effort post-`enroll` wipe (a local `var` inside the `@Sendable` background closure) on **both** iOS + macOS. (4) read-only-vs-device-slot-write clarified in-code. macOS + iOS app compile proofs green.
 
 ### Security invariants held (verified in review)
 - Both unlock paths funnel through the **same B.2 `open_with_device_secret` / password verify-before-decrypt** — device path never weaker. The hoisted `DeviceUnlockOpen` moved byte-for-byte (zeroize on both arms + `session.vaultUuidHex == enrolledVaultId` guard intact).
@@ -32,11 +33,9 @@ Design: `docs/superpowers/specs/2026-07-17-macos-native-readonly-viewer-design.m
 - **D.5.cutover** — retire the Tauri macOS build once native reaches parity + on-device proof.
 - **#447** (decision) / **#443**, **#444** (Linux/Windows presence, not testable on this host) / **#417** (mobile Trash render-test infra — user decision). Verify liveness first ([[project_secretary_stale_but_done_issues]]).
 
-## (3) Open decisions and risks — TWO cross-platform follow-ups FILED (surfaced by the final review)
-1. **[#453](https://github.com/hherb/secretary/issues/453) — zeroize the enroll password on iOS + macOS** (memory hygiene). Both apps capture the unlock password as `[UInt8]` into the best-effort device-slot enroll and don't `zeroize` it after `enroll(...)`. Mirrors the existing iOS convention; needs a **cross-platform** (both-apps) fix. (Partial by nature — the SwiftUI `@State String` source is un-wipeable; the bytes crossing the FFI are zeroized Rust-side.)
-2. **[#454](https://github.com/hherb/secretary/issues/454) — `LocalizedError` conformance for `VaultSelectionError` / `VaultAccessError`** so user-facing sites can drop `String(describing:)` (raw enum case) for friendly messages across all platforms at once.
-
-Neither blocks this PR (both mirror existing iOS behavior).
+## (3) Open decisions and risks
+1. **[#453](https://github.com/hherb/secretary/issues/453) — zeroize the enroll password on iOS + macOS** (memory hygiene): **ADDRESSED in this PR** by the `/fixall` round above, to the extent Swift allows. Effective wipe on the failure path (unique-reference-then-`zeroize`); best-effort post-`enroll` wipe on the success path. **Partial by nature** (as the issue itself notes): the SwiftUI `@State String` source is un-wipeable and the success-path bytes are COW-shared with the concurrent sync/FFI copies (zeroized Rust-side), so a full Swift-side guarantee is impossible without an end-to-end pinned-secret redesign. Can be closed as done-within-that-limit, or kept open for the redesign — **user's call**.
+2. **[#454](https://github.com/hherb/secretary/issues/454) — `LocalizedError` conformance for `VaultSelectionError` / `VaultAccessError`** so user-facing sites can drop `String(describing:)` (raw enum case) for friendly messages across all platforms at once. Still deferred (does not block this PR).
 
 Other notes: macOS `.privacy` redaction on reveals is defensive/currently-unreachable (commented). No folder-change monitor in this read-only slice (a vault mutated externally while open won't refresh until re-open — acceptable; the sync slice adds it).
 
@@ -64,5 +63,5 @@ git worktree list && git status -s
 ## Closing inventory
 - **State on close:** PR opening on `feature/d5-macos-readonly-viewer` (worktree `.worktrees/d5-macos-readonly-viewer`), shipping **D.5.2**. 15 commits, `a4d3590b..4776d67e`. Net: +1886 / −107 across 15 files (incl. the design + plan docs); all macOS/iOS Swift + docs, no `core`/`ffi`/on-disk change.
 - **Acceptance:** `run-macos-tests.sh` PASS + `run-ios-tests.sh` PASS (both green); final whole-branch review (opus) clean after the wipe-on-close fix.
-- **Next:** D.5.3+ write parity / D.5.N sandbox+notarization / D.5.cutover / user priority. Two cross-platform follow-ups filed ([#453](https://github.com/hherb/secretary/issues/453) enroll-password zeroize, [#454](https://github.com/hherb/secretary/issues/454) LocalizedError) — see §3.
+- **Next:** D.5.3+ write parity / D.5.N sandbox+notarization / D.5.cutover / user priority. [#453](https://github.com/hherb/secretary/issues/453) (enroll-password zeroize) **addressed in this PR** (partial-by-nature; user's call whether to close); [#454](https://github.com/hherb/secretary/issues/454) (LocalizedError) still deferred — see §3.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-07-17-d5-macos-readonly-viewer-shipped.md`.

@@ -169,6 +169,18 @@ private struct RootView: View {
                                         // context.
                                         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                                             DispatchQueue.global(qos: .userInitiated).async {
+                                                var password = password
+                                                // Best-effort wipe of our copy once
+                                                // enroll has consumed it (#453). Bytes
+                                                // handed across the FFI are zeroized
+                                                // Rust-side; the SwiftUI String and the
+                                                // concurrent sync copy remain out of
+                                                // reach — Swift value semantics preclude
+                                                // a full guarantee (see `zeroize`).
+                                                // Local `var` inside this `@Sendable`
+                                                // closure — no mutable capture across
+                                                // domains.
+                                                defer { zeroize(&password) }
                                                 do {
                                                     try coordinator.enroll(
                                                         vaultPath: vaultPath,
