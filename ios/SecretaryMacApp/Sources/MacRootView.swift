@@ -44,9 +44,12 @@ struct MacRootView: View {
                 biometricError: $biometricError,
                 rememberDevice: $rememberDevice,
                 onOpened: { session, gate in enterBrowse(session, gate: gate, scoped: scoped) })
-        case .browse:
-            // TEMPORARY stub until Task 5 adds MacBrowseView.
-            Text("Browse route (stub)").padding(24)
+        case .browse(let browseVM, let scoped):
+            MacBrowseView(viewModel: browseVM, onLock: {
+                browseVM.lock()
+                scoped.end()
+                route = .select
+            })
         }
     }
 
