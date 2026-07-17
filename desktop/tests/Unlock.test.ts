@@ -18,6 +18,7 @@ import {
   sessionState,
   _resetSessionStateForTest
 } from '../src/lib/stores';
+import { createdVaultPath } from '../src/lib/route';
 import type { ManifestDto, SettingsDto } from '../src/lib/ipc';
 
 const MANIFEST: ManifestDto = {
@@ -32,13 +33,16 @@ const SETTINGS: SettingsDto = { autoLockTimeoutMs: 600_000, requirePasswordBefor
 // Mock the IPC layer + the backend invoke() PathPicker uses directly (both
 // used by the form). `vi.hoisted` returns the mocks before the `vi.mock`
 // factories run.
-const { unlockMock, repairMock, previewMock, settingsMock, invokeMock } = vi.hoisted(() => ({
-  unlockMock: vi.fn(),
-  repairMock: vi.fn(),
-  previewMock: vi.fn(),
-  settingsMock: vi.fn(),
-  invokeMock: vi.fn()
-}));
+const { unlockMock, repairMock, previewMock, settingsMock, invokeMock, recentMock } = vi.hoisted(
+  () => ({
+    unlockMock: vi.fn(),
+    repairMock: vi.fn(),
+    previewMock: vi.fn(),
+    settingsMock: vi.fn(),
+    invokeMock: vi.fn(),
+    recentMock: vi.fn()
+  })
+);
 vi.mock('../src/lib/ipc', async (importActual) => {
   // Keep the real types + APP_ERROR_CODES export shape; override the
   // command wrappers used by Unlock.svelte.
@@ -48,7 +52,8 @@ vi.mock('../src/lib/ipc', async (importActual) => {
     unlockWithPassword: unlockMock,
     repairVault: repairMock,
     previewRepair: previewMock,
-    getSettings: settingsMock
+    getSettings: settingsMock,
+    useRecentVault: recentMock
   };
 });
 // PathPicker invokes `pick_vault_folder` directly via `@tauri-apps/api/core`
@@ -62,6 +67,9 @@ beforeEach(() => {
   previewMock.mockReset();
   settingsMock.mockReset();
   invokeMock.mockReset();
+  recentMock.mockReset();
+  // Default: no recent vault — pre-#446 tests run against an empty dialog.
+  recentMock.mockResolvedValue(null);
 });
 
 describe('Unlock — initial render', () => {
@@ -460,5 +468,88 @@ describe('Unlock — submit guards', () => {
       await fireEvent.submit(form);
     }
     expect(unlockMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('Unlock — recent-vault pre-fill (#446)', () => {
+  const folderInputOf = (container: HTMLElement): HTMLInputElement =>
+    container.querySelector('.path-picker input') as HTMLInputElement;
+
+  it('pre-fills the folder from useRecentVault and focuses the password field', async () => {
+    recentMock.mockResolvedValue('/home/alice/vault');
+    const { getByLabelText, container } = render(Unlock);
+
+    await waitFor(() => expect(folderInputOf(container).value).toBe('/home/alice/vault'));
+    const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(passwordInput));
+  });
+
+  it('unlock proceeds without any picker interaction after a pre-fill', async () => {
+    recentMock.mockResolvedValue('/home/alice/vault');
+    unlockMock.mockResolvedValueOnce(MANIFEST);
+    settingsMock.mockResolvedValueOnce(SETTINGS);
+    const { getByRole, getByLabelText, container } = render(Unlock);
+
+    await waitFor(() => expect(folderInputOf(container).value).toBe('/home/alice/vault'));
+    await fireEvent.input(getByLabelText(/password/i), { target: { value: 'hunter2' } });
+    await fireEvent.click(getByRole('button', { name: /unlock/i }));
+
+    await waitFor(() => expect(get(sessionState).status).toBe('unlocked'));
+    expect(unlockMock).toHaveBeenCalledWith('/home/alice/vault', 'hunter2');
+    // The native picker was never touched — type-password-and-Enter UX.
+    // (The post-unlock presence-pref load legitimately uses invoke, so
+    // assert on the picker command specifically.)
+    expect(invokeMock).not.toHaveBeenCalledWith('pick_vault_folder');
+  });
+
+  it('no recorded vault leaves the dialog empty (fresh install)', async () => {
+    recentMock.mockResolvedValue(null);
+    const { container } = render(Unlock);
+
+    await waitFor(() => expect(recentMock).toHaveBeenCalled());
+    expect(folderInputOf(container).value).toBe('');
+  });
+
+  it('a failing recent lookup behaves like a fresh install (fail-safe)', async () => {
+    // Once-scoped rejection: a persistent mockRejectedValue leaks an
+    // unhandled rejection into the NEXT test (see vitest quirk note in
+    // the project docs); the default null resolution covers later calls.
+    recentMock.mockRejectedValueOnce(new Error('backend exploded'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = render(Unlock);
+
+    await waitFor(() => expect(errSpy).toHaveBeenCalled());
+    expect(folderInputOf(container).value).toBe('');
+    errSpy.mockRestore();
+  });
+
+  it('created-vault seeding takes precedence — the recent lookup is skipped', async () => {
+    createdVaultPath.set('/vaults/created');
+    recentMock.mockResolvedValue('/home/alice/vault');
+    const { container } = render(Unlock);
+
+    expect(folderInputOf(container).value).toBe('/vaults/created');
+    // Deterministic after a microtask flush: mount effects have run.
+    await waitFor(() => expect(folderInputOf(container).value).toBe('/vaults/created'));
+    expect(recentMock).not.toHaveBeenCalled();
+  });
+
+  it('does not clobber a folder picked before the recent lookup resolves', async () => {
+    let resolveRecent!: (v: string | null) => void;
+    recentMock.mockReturnValueOnce(
+      new Promise<string | null>((res) => {
+        resolveRecent = res;
+      })
+    );
+    invokeMock.mockResolvedValueOnce('/picked/by/user');
+    const { getByRole, container } = render(Unlock);
+
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+    await waitFor(() => expect(folderInputOf(container).value).toBe('/picked/by/user'));
+
+    resolveRecent('/stale/recent');
+    await waitFor(() => expect(recentMock).toHaveBeenCalled());
+    // Still the user's pick — the late-resolving lookup must not overwrite it.
+    expect(folderInputOf(container).value).toBe('/picked/by/user');
   });
 });

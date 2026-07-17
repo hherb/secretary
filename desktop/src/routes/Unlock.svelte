@@ -10,12 +10,14 @@
     setPresencePref,
     resetPresencePref
   } from '../lib/stores';
+  import { onMount } from 'svelte';
   import {
     unlockWithPassword,
     repairVault,
     previewRepair,
     getSettings,
     isAppError,
+    useRecentVault,
     type ApprovedWideningDto,
     type WideningReportDto
   } from '../lib/ipc';
@@ -59,6 +61,28 @@
 
   let password = $state('');
   let submitting = $state(false);
+  let passwordInput: HTMLInputElement | null = $state(null);
+
+  // #446: pre-fill the folder with the most recently opened vault so unlock
+  // becomes type-password-and-Enter. `useRecentVault` seeds the backend
+  // `VaultFolder` approval slot itself (#353), so the pre-filled path passes
+  // the same gate a picker choice would. Skipped when the created-vault
+  // banner already seeded the field, and a folder the user picks while the
+  // lookup is in flight wins over the late-resolving result. Fail-safe: a
+  // lookup error just leaves the dialog empty (fresh-install behavior).
+  onMount(() => {
+    if (folderPath.length > 0) return;
+    useRecentVault()
+      .then((recent) => {
+        if (recent && folderPath.length === 0) {
+          folderPath = recent;
+          passwordInput?.focus();
+        }
+      })
+      .catch((err) => {
+        console.error('recent-vault lookup failed; starting with an empty dialog', err);
+      });
+  });
 
   // #374: true only while `confirmRepair` is in flight. `needsRepair` is
   // derived from session state and goes false the moment `beginUnlock()`
@@ -321,6 +345,7 @@
         <input
           type="password"
           class="unlock__password"
+          bind:this={passwordInput}
           bind:value={password}
           placeholder="••••••••"
           disabled={submitting}

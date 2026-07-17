@@ -264,6 +264,19 @@ export async function pickExportDir(): Promise<string | null> {
   return call<string | null>('pick_export_dir', {});
 }
 
+/**
+ * #446: fetch the most recently opened vault's folder for pre-filling the
+ * unlock dialog. The backend reads its desktop-local `recent.json` (written
+ * only by a successful unlock), re-validates the folder still looks like a
+ * vault, and seeds it into the same `VaultFolder` path-approval slot a
+ * `pick_vault_folder` dialog choice would use (#353) — so the returned path
+ * unlocks without further picker interaction. `null` means nothing usable is
+ * recorded (fresh install, or the vault moved/vanished).
+ */
+export async function useRecentVault(): Promise<string | null> {
+  return call<string | null>('use_recent_vault', {});
+}
+
 export async function unlockWithPassword(
   folderPath: string,
   password: string
