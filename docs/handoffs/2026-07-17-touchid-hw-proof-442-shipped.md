@@ -39,7 +39,7 @@ git diff main -- . ':!docs' ':!desktop/README.md' ':!README.md' ':!ROADMAP.md'  
 - **Ad-hoc/unsigned evaluatePolicy behaviour was NOT empirically probed** (deliberate: another guided hardware round for a DX footnote). `desktop/README.md` marks it "documented from Apple's docs; not re-proven". If a contributor reports `tauri dev` DOES show the sheet, soften that section rather than fight it.
 - **Biometric unlock (drafted issue) is a real security-boundary decision** — Tauri-side SE/Keychain adapter vs D.5 cutover. Don't start it as a casual slice; it needs the ADR-0011 coexistence question answered first.
 - **This machine now runs the signed Touch ID build from `/Applications`** (replaced the stale June 3 unsigned copy). The user's own vault has a presence pref file (`enabled: true`). Session artifacts (staged golden-vault copy, proof logs) live in the session scratchpad and die with it.
-- **Launch mechanics for future GUI proofs** are captured in memory [[project-secretary-desktop-gui-smoke-launch]] and `desktop/README.md`.
+- **Launch mechanics for future GUI proofs** are captured in memory [[project_secretary_desktop_gui_smoke_launch]] and `desktop/README.md`.
 
 ## (4) Exact commands to resume
 
