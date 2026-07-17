@@ -33,6 +33,8 @@ struct MacBrowseView: View {
     @State private var editSession: EditSession?
     /// Record awaiting delete confirmation (drives the `.confirmationDialog`). nil = none.
     @State private var recordPendingDelete: RecordView?
+    /// Bridges the VM's `movingRecord` to the `.sheet(item:)` move picker. nil = closed.
+    @State private var movingItem: MovingRecordItem?
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -87,6 +89,17 @@ struct MacBrowseView: View {
                                 Label("Edit", systemImage: "pencil")
                             }
                             .disabled(viewModel.isWriting)
+                            // Hidden when the vault has no other block to move into
+                            // (parity with iOS #429 / desktop #273). Gated on the
+                            // host-tested VM property.
+                            if viewModel.hasMoveTargets {
+                                Button {
+                                    viewModel.startMoveRecord(record)
+                                } label: {
+                                    Label("Move…", systemImage: "folder")
+                                }
+                                .disabled(viewModel.isWriting)
+                            }
                             Button(role: .destructive) {
                                 recordPendingDelete = record
                             } label: {
@@ -175,6 +188,27 @@ struct MacBrowseView: View {
                 .disabled(viewModel.isWriting)
             }
             Button("Cancel", role: .cancel) { recordPendingDelete = nil }
+        }
+        .sheet(item: $movingItem, onDismiss: { viewModel.cancelMove() }) { item in
+            MacMoveTargetPicker(
+                viewModel: viewModel,
+                record: item.record,
+                sourceBlockUuid: item.sourceBlockUuid,
+                onCancel: { viewModel.cancelMove() }
+            )
+        }
+        // Bridge the VM's movingRecord → the Identifiable sheet item. Both the
+        // record AND the source-block uuid must be known at creation time; if
+        // either is missing, clear the item instead of presenting a broken sheet.
+        // `confirmMove` clears movingRecord on success, which flips movingItem back
+        // to nil here, dismissing the sheet.
+        .onChange(of: viewModel.movingRecord?.uuidHex) { _ in
+            if let rec = viewModel.movingRecord,
+               let src = viewModel.blocks.first(where: { $0.uuidHex == selectedBlockHex })?.uuid {
+                movingItem = MovingRecordItem(record: rec, sourceBlockUuid: src)
+            } else {
+                movingItem = nil
+            }
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
