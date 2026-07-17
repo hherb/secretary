@@ -153,11 +153,16 @@ struct MacUnlockView: View {
                     DispatchQueue.global(qos: .userInitiated).async {
                         var secret = secret
                         // Best-effort wipe of our copy once enroll has consumed it
-                        // (#453). Bytes handed across the FFI are zeroized Rust-side;
-                        // the SwiftUI `password` String and COW-shared copies remain
-                        // out of reach — Swift value semantics preclude a full
-                        // guarantee (see `zeroize`). Local `var` inside this
-                        // `@Sendable` closure — no mutable capture across domains.
+                        // (#453). Genuine best-effort, NOT a guarantee: this `var`
+                        // shadow (needed so `zeroize` has an `inout`) COW-shares the
+                        // captured buffer, so while any other reference is live
+                        // `zeroize` COW-copies and clears only a throwaway — it bites
+                        // the real bytes only in the window where this task uniquely
+                        // owns them (see `testZeroizeOnlyClearsAUniquelyOwnedBuffer`).
+                        // The SwiftUI `password` String and the FFI-crossing bytes
+                        // (zeroized Rust-side) are out of reach regardless — Swift
+                        // value semantics preclude a full wipe. Local `var` inside
+                        // this `@Sendable` closure — no mutable capture across domains.
                         defer { zeroize(&secret) }
                         do { try coordinator.enroll(vaultPath: vaultPath, vaultId: vaultId, password: secret); c.resume() }
                         catch { c.resume(throwing: error) }
