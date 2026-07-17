@@ -20,9 +20,11 @@ not cut over (per ADR 0011).
 ## 2. Scope
 
 ### In scope
-- **Select** — list remembered vaults, "Open other…" via `NSOpenPanel` folder pick,
-  and "Open demo vault" (the existing bundled-golden path, retained). Backed by the
-  shared `VaultSelectionViewModel`.
+- **Select** — show the one remembered vault (the shared `VaultLocationStore` is
+  **single-vault** by design: `persist` replaces the prior location, `load()` returns
+  one `VaultLocation?`), "Open other…" via `NSOpenPanel` folder pick, and "Open demo
+  vault" (the existing bundled-golden path, retained). Backed by the shared
+  `VaultSelectionViewModel`.
 - **Unlock** — password field + "Unlock with Touch ID" (shown only when *this* vault
   is enrolled) + "Remember this Mac" checkbox (enrolls a device slot on password
   unlock). Backed by `UnlockViewModel` + the D.5.1-proven `DeviceUnlockOpen` path.
@@ -71,7 +73,8 @@ as today.
 | Vault selection state | `VaultSelectionViewModel` | `SecretaryVaultAccessUI` |
 | Vault-shape probe | `FileManagerVaultShapeProbe` | `SecretaryKit` |
 | Unlock state (password) | `UnlockViewModel`, `UniffiVaultOpenPort` | `SecretaryVaultAccessUI` / `SecretaryKit` |
-| Biometric open + enroll | `DeviceUnlockOpen`, `makePerVaultDeviceUnlock` | `SecretaryVaultAccessUI` / `SecretaryKit` |
+| Biometric open + enroll | `makePerVaultDeviceUnlock`, `DeviceUnlockCoordinator` | `SecretaryKit` / `SecretaryDeviceUnlock` |
+| Biometric open flow | `DeviceUnlockOpen` (internal to `SecretaryApp` → **ported** to macOS, not imported) | `SecretaryApp` (copied) |
 | Browse state | `VaultBrowseViewModel`, `UniffiVaultSession` | `SecretaryVaultAccessUI` / `SecretaryKit` |
 | Session open orchestration | core `open_vault` (verify-before-decrypt) | `secretary-core` (via FFI) |
 
@@ -91,14 +94,19 @@ One screen per file, each targeted < ~200 lines (split proactively):
 ### 4.2 New pure / shared code
 
 **`FileVaultLocationStore`** (⚑ decision 1 → **SecretaryVaultAccess package**):
-a pure-Foundation `VaultLocationStore` conformer that persists the remembered-vault
-**path list** (paths only — never secrets) to an Application Support JSON file. It is
-FFI-free, so it host-tests fast in the VaultAccess suite (run-macos-tests.sh Step 1,
-no xcframework build). iOS keeps its `BookmarkVaultLocationStore` (security-scoped
-bookmarks) in SecretaryKit; macOS gets this FFI-free plain-path store. On macOS
-pre-sandbox, the returned `ScopedVaultPath` holds a **no-op scope** (direct path
-access needs no security scope until App Sandbox — a later slice — at which point a
-bookmark-backed store swaps in with no view-model change).
+a pure-Foundation `VaultLocationStore` conformer that persists the one remembered
+vault as a **plain folder path** (paths only — never secrets) in `UserDefaults`
+(matching iOS's `BookmarkVaultLocationStore` pattern; an injectable `UserDefaults`
+suite makes it host-testable). It reuses the existing `VaultLocation.bookmark: Data`
+field to carry the UTF-8 path bytes — that field is documented as a non-secret
+"path-style token", and a plain path is exactly that, so **no protocol or model
+change** is needed. It is FFI-free, so it host-tests fast in the VaultAccess suite
+(run-macos-tests.sh Step 1, no xcframework build). iOS keeps its
+`BookmarkVaultLocationStore` (security-scoped bookmarks) in SecretaryKit; macOS gets
+this FFI-free plain-path store. On macOS pre-sandbox, `beginAccess` returns a
+`ScopedVaultPath` with a **no-op scope** (direct path access needs no security scope
+until App Sandbox — a later slice — at which point a bookmark-backed store swaps in
+with no view-model change).
 
 **`makeRetargetableReauthGate` hoisted into SecretaryKit** (⚑ decision 2): the
 iOS app-target factory (`ios/SecretaryApp/Sources/RetargetableGateFactory.swift`) is
@@ -129,10 +137,15 @@ iOS app target — iOS host tests + `run-ios-tests.sh` guard it.
 ## 5. Data flow
 
 1. **Select.** `VaultSelectionViewModel(store: FileVaultLocationStore(),
-   probe: FileManagerVaultShapeProbe())` loads remembered vaults. "Open other…" runs
-   `NSOpenPanel` → the picked folder is probed → persisted → surfaced. "Open demo"
-   stages the bundled golden vault. Either yields a `ScopedVaultPath` (no-op scope
-   pre-sandbox) → route `.unlock`.
+   probe: FileManagerVaultShapeProbe())` loads the remembered vault (if any) via
+   `loadPersisted()`. "Open other…" runs `NSOpenPanel` → the picked folder is checked
+   with `considerImport(url:bookmark:displayName:)` (which probes shape + persists) →
+   surfaced. "Open demo" stages the bundled golden vault into a transient
+   `ScopedVaultPath` (not persisted). The remembered/imported paths yield a
+   `ScopedVaultPath` via `viewModel.beginAccess()` (no-op scope pre-sandbox) → route
+   `.unlock`. On macOS the "bookmark" passed to `recordSelection`/`considerImport` is
+   the UTF-8 folder path (see `FileVaultLocationStore`), not a security-scoped
+   bookmark.
 2. **Unlock.** At route entry, snapshot `biometricEnrolled` **once** (per-vault; one
    Keychain + Secure-Enclave read — the iOS #347 pattern; never per-render).
    `MacUnlockView` offers password (→ `UniffiVaultOpenPort.open`) and, if enrolled,
