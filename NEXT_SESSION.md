@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-17-d5-macos-readonly-viewer-shipped.md
+docs/handoffs/2026-07-17-d5-review-followups-453-454-shipped.md
