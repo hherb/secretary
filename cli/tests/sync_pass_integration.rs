@@ -40,6 +40,7 @@ use secretary_core::vault::{
     sign_manifest, BlockHeader, BlockPlaintext, ManifestHeader, OpenVault, RecipientPublicKeys,
     Record, RecordField, RecordFieldValue, Unlocker, FILE_KIND_BLOCK,
 };
+use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 use zeroize::Zeroize as _;
 
 // --- Harness helpers (mirrored from cli/tests/pipeline_integration.rs;
@@ -57,35 +58,6 @@ const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
 /// Filenames inside the vault folder.
 const VAULT_TOML_FILENAME: &str = "vault.toml";
 const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
-
-/// Path to `core/tests/data/` rooted at the workspace root. The cli's
-/// `CARGO_MANIFEST_DIR` is the `cli/` crate directory; one level up is
-/// the workspace root.
-fn core_test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cli crate dir has a parent (workspace root)")
-        .join("core")
-        .join("tests")
-        .join("data")
-}
-
-/// Recursively copy `src` into `dst`. Mirrors the helper pattern used
-/// in `core/tests/sync_helpers/mod.rs` so each test owns its own
-/// writable vault tempdir.
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).expect("create_dir_all dst");
-    for entry in fs::read_dir(src).expect("read_dir src") {
-        let entry = entry.expect("dir entry");
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type().expect("file_type").is_dir() {
-            copy_dir_recursive(&src_path, &dst_path);
-        } else {
-            fs::copy(&src_path, &dst_path).expect("copy file");
-        }
-    }
-}
 
 /// Extract the password from `golden_vault_001_inputs.json`. We use a
 /// lightweight string-scan rather than pulling in a `serde_json`
@@ -1186,7 +1158,7 @@ fn generate_sync_conflict_fixture() {
     let vault_dest = dest.join("vault");
     let state_dest = dest.join("state");
     fs::create_dir_all(&state_dest).expect("create_dir_all state/");
-    copy_dir_recursive_fixture(&vault_dir, &vault_dest);
+    copy_dir_recursive(&vault_dir, &vault_dest);
 
     // Persist the seeded concurrent SyncState into state/ (the exact bytes
     // the Python test will load as its state_dir).
@@ -1271,7 +1243,7 @@ fn generate_sync_collision_fixture() {
     let vault_dest = dest.join("vault");
     let state_dest = dest.join("state");
     fs::create_dir_all(&state_dest).expect("create_dir_all state/");
-    copy_dir_recursive_fixture(&vault_dir, &vault_dest);
+    copy_dir_recursive(&vault_dir, &vault_dest);
 
     // Persist the seeded concurrent SyncState into state/ (the bytes the
     // bridge test loads as its state_dir, keyed by vault_uuid).
@@ -1298,19 +1270,4 @@ fn generate_sync_collision_fixture() {
     .expect("write fixture README");
 
     eprintln!("wrote sync_collision_fixture to {}", dest.display());
-}
-
-/// Local recursive dir copy for the generator (test-only).
-fn copy_dir_recursive_fixture(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive_fixture(&from, &to);
-        } else {
-            fs::copy(&from, &to).unwrap();
-        }
-    }
 }

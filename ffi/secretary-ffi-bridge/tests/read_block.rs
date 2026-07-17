@@ -12,13 +12,11 @@ use std::path::PathBuf;
 use secretary_ffi_bridge::{
     open_vault_with_password, open_vault_with_recovery, read_block, FfiVaultError,
 };
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
 
-/// Path to the golden_vault_NNN folder. CARGO_MANIFEST_DIR is
-/// ffi/secretary-ffi-bridge/, so we walk up to core/tests/data/.
+/// Path to the golden_vault_NNN folder under `core/tests/data/`.
 fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
+    core_test_data_dir().join(name)
 }
 
 const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
@@ -149,30 +147,7 @@ fn read_block_unknown_uuid_returns_block_not_found() {
 /// the new folder path. Used by the corruption tests below to mutate
 /// the on-disk layout without touching the shared fixture.
 fn copy_golden_to_tempdir() -> tempfile::TempDir {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    for name in ["vault.toml", "identity.bundle.enc", "manifest.cbor.enc"] {
-        fs::copy(src.join(name), tmp.path().join(name)).unwrap();
-    }
-    fs::create_dir_all(tmp.path().join("contacts")).unwrap();
-    for entry in fs::read_dir(src.join("contacts")).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(
-            entry.path(),
-            tmp.path().join("contacts").join(entry.file_name()),
-        )
-        .unwrap();
-    }
-    fs::create_dir_all(tmp.path().join("blocks")).unwrap();
-    for entry in fs::read_dir(src.join("blocks")).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(
-            entry.path(),
-            tmp.path().join("blocks").join(entry.file_name()),
-        )
-        .unwrap();
-    }
-    tmp
+    copy_dir_to_tempdir(&fixture_folder("golden_vault_001"))
 }
 
 #[test]

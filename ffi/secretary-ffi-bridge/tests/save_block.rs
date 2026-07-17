@@ -5,7 +5,6 @@
 //! KAT source of truth: `core/tests/data/golden_vault_001_inputs.json`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 use secretary_core::crypto::secret::{SecretBytes, SecretString};
@@ -13,45 +12,19 @@ use secretary_ffi_bridge::{
     open_vault_with_password, read_block, save_block, BlockInput, FfiVaultError, FieldInput,
     FieldInputValue, OpenVaultManifest, RecordInput, UnlockedIdentity,
 };
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
 
 // ---------------------------------------------------------------------------
 // Test fixture: writable golden_vault_001 copy
 // ---------------------------------------------------------------------------
 
-/// Path to the golden_vault_NNN folder. CARGO_MANIFEST_DIR is
-/// ffi/secretary-ffi-bridge/, so we walk up to core/tests/data/.
-fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
-}
-
 const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
-
-/// Recursively copy `src` into `dst` (which may not exist yet). Mirrors the
-/// minimal pattern used by core's tests; intentionally not pulled in as a
-/// dependency to keep the test fixture self-contained.
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&from, &to);
-        } else {
-            fs::copy(&from, &to).unwrap();
-        }
-    }
-}
 
 /// Open a writable copy of golden_vault_001 in a fresh tempdir. The
 /// tempdir is returned alongside the handles so the caller holds it
 /// alive for the test's duration; dropping it cleans up the directory.
 fn fresh_writable_vault() -> (tempfile::TempDir, UnlockedIdentity, OpenVaultManifest) {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::tempdir().expect("tempdir");
-    copy_dir_recursive(&src, tmp.path());
+    let tmp = copy_dir_to_tempdir(&core_test_data_dir().join("golden_vault_001"));
     let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
         .expect("open writable copy of golden_vault_001");
     (tmp, out.identity, out.manifest)

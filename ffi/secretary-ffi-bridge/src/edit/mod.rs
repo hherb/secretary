@@ -17,9 +17,6 @@ pub use content::RecordContent;
 mod tombstone;
 pub use tombstone::{resurrect_record, tombstone_record};
 
-#[cfg(test)]
-mod test_support;
-
 mod rename;
 pub use rename::rename_block;
 
@@ -290,47 +287,13 @@ fn save_plaintext(
 mod tests {
     use super::*;
 
-    use std::path::{Path, PathBuf};
-
     use secretary_core::crypto::secret::SecretString;
     use secretary_core::vault::record::{RecordFieldValue, UnknownValue};
 
     use crate::save::input::{FieldInput, FieldInputValue};
-    use crate::{open_vault_with_password, OpenVaultOutput};
+    use crate::test_support::open_writable_golden_001;
 
-    const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
     const DEVICE_UUID: [u8; 16] = [0x07; 16];
-
-    fn fixture_folder(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data")
-            .join(name)
-    }
-
-    fn copy_dir_recursive(src: &Path, dst: &Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let from = entry.path();
-            let to = dst.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_dir_recursive(&from, &to);
-            } else {
-                std::fs::copy(&from, &to).unwrap();
-            }
-        }
-    }
-
-    /// Open a writable copy of golden_vault_001 in a fresh tempdir. The
-    /// tempdir is returned so the caller keeps it alive for the test.
-    fn open_writable_golden_001() -> (tempfile::TempDir, OpenVaultOutput) {
-        let src = fixture_folder("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
-        copy_dir_recursive(&src, tmp.path());
-        let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
-            .expect("open writable copy of golden_vault_001");
-        (tmp, out)
-    }
 
     /// The correctness keystone for the whole D.1.4 slice: an edit must
     /// preserve forward-compat `unknown` at ALL THREE levels (block /

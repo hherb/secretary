@@ -9,6 +9,7 @@ members = [
     "ffi/secretary-ffi-uniffi",
     "ffi/secretary-ffi-bridge",
     "browser/secretary-browser-host",
+    "test-utils",
 ]
 exclude = ["core/fuzz"]
 

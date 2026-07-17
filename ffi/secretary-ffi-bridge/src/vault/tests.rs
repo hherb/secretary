@@ -3,26 +3,14 @@
 //! constants are pinned and kept honest by the fixture builder's
 //! drift-detection assertion.
 
-use std::path::PathBuf;
-
 use secretary_core::identity::card::ContactCard;
 
 use crate::error::FfiVaultError;
+use crate::test_support::{fixture_folder, VAULT_001_PASSWORD};
 
 use super::inner::BlockSummary;
 use super::manifest::ReplaceManifestError;
 use super::orchestration::{open_vault_with_password, open_vault_with_recovery};
-
-/// Path to the golden_vault_NNN folder. CARGO_MANIFEST_DIR is
-/// ffi/secretary-ffi-bridge/, so we walk up to core/tests/data/.
-fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
-}
-
-/// Pinned password for golden_vault_001. Same KAT used by unlock.rs.
-const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 /// Pinned password for golden_vault_002. Read from
 /// core/tests/data/golden_vault_002_inputs.json — adjust if that JSON
 /// changes. Unused in vault.rs tests today; kept for reference.

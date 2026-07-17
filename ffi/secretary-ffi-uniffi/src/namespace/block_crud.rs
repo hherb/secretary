@@ -154,29 +154,13 @@ mod tests {
     use super::*;
     use crate::namespace::open_vault_with_password;
 
-    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let from = entry.path();
-            let to = dst.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_dir_recursive(&from, &to);
-            } else {
-                std::fs::copy(&from, &to).unwrap();
-            }
-        }
-    }
-
     fn open_writable_vault() -> (
         tempfile::TempDir,
         std::sync::Arc<crate::wrappers::identity::UnlockedIdentity>,
         std::sync::Arc<crate::wrappers::vault::OpenVaultManifest>,
     ) {
-        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
-        copy_dir_recursive(&src, tmp.path());
+        let src = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
+        let tmp = secretary_test_utils::copy_dir_to_tempdir(&src);
         let folder_bytes = tmp.path().to_str().unwrap().as_bytes().to_vec();
         let out = open_vault_with_password(folder_bytes, b"correct horse battery staple")
             .expect("open writable vault");

@@ -10,7 +10,7 @@
 //! user's real `~/Library/Application Support/secretary-desktop/` (or
 //! XDG equivalent on Linux).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use secretary_desktop::errors::AppError;
 use secretary_desktop::session::VaultSession;
@@ -220,28 +220,9 @@ fn lock_transitions_with_unlocked_from_ok_to_not_unlocked() {
 /// `TempDir` (to keep the lifetime tied to the test) and the path of the
 /// copy.
 fn ephemeral_golden_copy() -> (TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("vault tempdir");
+    let dir = secretary_test_utils::copy_dir_to_tempdir(&golden_vault_path());
     let dst = dir.path().to_path_buf();
-    copy_recursive(&golden_vault_path(), &dst);
     (dir, dst)
-}
-
-fn copy_recursive(src: &Path, dst: &Path) {
-    use std::fs;
-    if src.is_file() {
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).expect("mkdir parent");
-        }
-        fs::copy(src, dst).expect("copy file");
-    } else if src.is_dir() {
-        fs::create_dir_all(dst).expect("mkdir dir");
-        for entry in fs::read_dir(src).expect("read_dir") {
-            let entry = entry.expect("entry");
-            let src_child = entry.path();
-            let dst_child = dst.join(entry.file_name());
-            copy_recursive(&src_child, &dst_child);
-        }
-    }
 }
 
 #[test]

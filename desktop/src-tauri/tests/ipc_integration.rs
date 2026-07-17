@@ -21,7 +21,7 @@
 //! device UUID file via `VaultSession::new`, and write-path tests
 //! additionally copy the golden vault into a `TempDir` before mutating.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
@@ -100,26 +100,9 @@ fn unlocked_state() -> (Mutex<VaultSession>, TempDir) {
 }
 
 fn ephemeral_golden_copy() -> (TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("vault tempdir");
+    let dir = secretary_test_utils::copy_dir_to_tempdir(&golden_vault_path());
     let dst = dir.path().to_path_buf();
-    copy_recursive(&golden_vault_path(), &dst);
     (dir, dst)
-}
-
-fn copy_recursive(src: &Path, dst: &Path) {
-    use std::fs;
-    if src.is_file() {
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).expect("mkdir parent");
-        }
-        fs::copy(src, dst).expect("copy file");
-    } else if src.is_dir() {
-        fs::create_dir_all(dst).expect("mkdir dir");
-        for entry in fs::read_dir(src).expect("read_dir") {
-            let entry = entry.expect("entry");
-            copy_recursive(&entry.path(), &dst.join(entry.file_name()));
-        }
-    }
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> serde_json::Value {

@@ -11,29 +11,10 @@ use secretary_ffi_bridge::{
     create_block, list_trashed_blocks, open_vault_with_password, purge_block, trash_block,
     OpenVaultManifest, UnlockedIdentity,
 };
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
 
 const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 const DEVICE_UUID: [u8; 16] = [0x07; 16];
-
-fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&from, &to);
-        } else {
-            std::fs::copy(&from, &to).unwrap();
-        }
-    }
-}
 
 /// Opened writable golden-001 vault. Holds the tempdir alive for the
 /// test's duration (dropping it cleans up the on-disk copy).
@@ -44,9 +25,7 @@ struct Opened {
 }
 
 fn open_writable_golden_001() -> Opened {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::tempdir().expect("tempdir");
-    copy_dir_recursive(&src, tmp.path());
+    let tmp = copy_dir_to_tempdir(&core_test_data_dir().join("golden_vault_001"));
     let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
         .expect("open writable copy of golden_vault_001");
     Opened {

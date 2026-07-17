@@ -2747,7 +2747,7 @@ mod orchestrator_tests {
             .join("golden_vault_001");
         let tmp = tempfile::tempdir().expect("tempdir");
         let dest = tmp.path().to_path_buf();
-        copy_recursive(&src, &dest);
+        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         let password = SecretBytes::new(read_golden_vault_001_password());
         let open = open_vault(&dest, Unlocker::Password(&password), None)
@@ -2774,22 +2774,6 @@ mod orchestrator_tests {
         let inputs: Inputs =
             serde_json::from_str(&raw).expect("golden_vault_001_inputs.json must be valid JSON");
         inputs.password.into_bytes()
-    }
-
-    fn copy_recursive(src: &Path, dest: &Path) {
-        if !dest.exists() {
-            std::fs::create_dir_all(dest).expect("mkdir -p");
-        }
-        for entry in std::fs::read_dir(src).expect("read_dir") {
-            let e = entry.expect("dir entry");
-            let s = e.path();
-            let d = dest.join(e.file_name());
-            if e.file_type().expect("file_type").is_dir() {
-                copy_recursive(&s, &d);
-            } else {
-                std::fs::copy(&s, &d).expect("copy");
-            }
-        }
     }
 
     #[test]
@@ -2887,7 +2871,7 @@ mod orchestrator_tests {
             .join("golden_vault_001");
         let tmp = tempfile::tempdir().expect("tempdir");
         let dest = tmp.path().to_path_buf();
-        copy_recursive(&src, &dest);
+        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         let password = SecretBytes::new(read_golden_vault_001_password());
 
@@ -2939,7 +2923,7 @@ mod orchestrator_tests {
             .join("golden_vault_001");
         let tmp = tempfile::tempdir().expect("tempdir");
         let dest = tmp.path().to_path_buf();
-        copy_recursive(&src, &dest);
+        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         // No device has been enrolled — devices/ directory is absent.
         let absent_uuid = [0xABu8; 16];

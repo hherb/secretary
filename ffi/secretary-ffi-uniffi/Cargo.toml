@@ -42,6 +42,11 @@ uniffi = { version = "0.32", features = ["build"] }
 # the lock entry.
 rand_chacha = "0.3"
 
+# One canonical recursive fixture-copy helper for every test target (#90).
+# Dev-only workspace crate; never on the normal-edge dependency tree that
+# ffi/scripts/check-lean-binding.sh guards.
+secretary-test-utils = { path = "../../test-utils" }
+
 # Tempdir for the sync namespace-fn unit tests (state-dir seam). Exact pin
 # to match core/Cargo.toml so we share the lock entry — tempfile is on the
 # atomic-write security path, so no caret range.

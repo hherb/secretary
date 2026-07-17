@@ -19,6 +19,7 @@ use std::fs;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use rand_core::RngCore;
+use secretary_test_utils::copy_dir_recursive;
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
@@ -1222,21 +1223,6 @@ fn repair_rejects_dominating_clock_recipient_widening() {
 // repair_vault — #350 review-followup gates: rollback, concurrent, missing,
 // idempotence
 // ---------------------------------------------------------------------------
-
-/// Minimal recursive dir copy for vault-state forking (see #186 for the
-/// planned shared helper; kept local per test-crate convention).
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), &target).unwrap();
-        }
-    }
-}
 
 /// #350 gate: a genuinely owner-signed but OLDER block copy planted
 /// over the live file is a rollback, not crash residue — clock

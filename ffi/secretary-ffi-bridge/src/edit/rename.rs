@@ -44,11 +44,11 @@ mod tests {
     use secretary_core::vault::block::BlockPlaintext;
     use secretary_core::vault::record::{Record, RecordField, RecordFieldValue, UnknownValue};
 
-    use super::super::test_support::open_writable_golden_001;
     use super::super::{BLOCK_VERSION_V1, SCHEMA_VERSION_V1};
     use super::rename_block;
     use crate::error::FfiVaultError;
     use crate::record::orchestration::decrypt_block_plaintext;
+    use crate::test_support::open_writable_golden_001;
 
     const DEVICE_UUID: [u8; 16] = [0x07; 16];
 
