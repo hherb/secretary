@@ -47,11 +47,6 @@ use zeroize::Zeroize as _;
 //     each tests/*.rs is its own binary so duplicating the block keeps
 //     per-test isolation consistent with the repo pattern) ----------------
 
-/// Filename of the golden-vault inputs JSON living alongside the
-/// fixture directory; the password we need to drive `open_with_password`
-/// is stored there.
-const GOLDEN_INPUTS_FILENAME: &str = "golden_vault_001_inputs.json";
-
 /// Filename of the golden vault folder under `core/tests/data/`.
 const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
 
@@ -59,23 +54,12 @@ const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
 const VAULT_TOML_FILENAME: &str = "vault.toml";
 const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 
-/// Extract the password from `golden_vault_001_inputs.json`. We use a
-/// lightweight string-scan rather than pulling in a `serde_json`
-/// dev-dep just for this — `golden_vault_001_inputs.json` is a stable
-/// fixture and the inputs schema is single-sourced in `core/tests/`.
+/// The golden-vault master password as `SecretBytes`, sourced from
+/// `golden_vault_001_inputs.json` via the one canonical, fixture-derived
+/// password helper ([`secretary_test_utils::golden_vault_001_password`],
+/// #450) — so it cannot drift from the fixture it unlocks.
 fn golden_vault_password() -> SecretBytes {
-    let raw = fs::read_to_string(core_test_data_dir().join(GOLDEN_INPUTS_FILENAME))
-        .expect("golden_vault_001_inputs.json must exist");
-    let needle = "\"password\":";
-    let start = raw.find(needle).expect("password key present");
-    let after_key = &raw[start + needle.len()..];
-    let first_quote = after_key
-        .find('"')
-        .expect("opening quote after password key");
-    let rest = &after_key[first_quote + 1..];
-    let closing_quote = rest.find('"').expect("closing quote after password value");
-    let password = &rest[..closing_quote];
-    SecretBytes::new(password.as_bytes().to_vec())
+    SecretBytes::new(secretary_test_utils::golden_vault_001_password())
 }
 
 /// Stage a fresh writable copy of `golden_vault_001/` into a tempdir

@@ -48,18 +48,16 @@ const BIN_NAME: &str = "secretary-sync";
 /// `generate_golden_inputs --ignored` test in `core/tests/`.
 const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
 
-/// Password for the golden vault — pinned to the value in
-/// `core/tests/data/golden_vault_001_inputs.json`. Re-stating it here
-/// (rather than reading the JSON at runtime via a custom parser the
-/// way `cli/tests/pipeline_integration.rs` does) keeps each test
-/// self-contained and avoids pulling `serde_json` into a code path
-/// where a single hard-coded string says exactly what's going on.
-///
-/// If the golden vault is ever regenerated with a different password,
-/// updating this constant is part of the regeneration checklist —
-/// `cli/tests/pipeline_integration.rs::golden_vault_password()` then
-/// catches drift end-to-end as the canonical source-of-truth path.
-const GOLDEN_VAULT_PASSWORD: &str = "correct horse battery staple";
+/// Password for the golden vault as a UTF-8 string, sourced from
+/// `core/tests/data/golden_vault_001_inputs.json` at call time via
+/// [`secretary_test_utils::golden_vault_001_password`] (the one
+/// canonical, fixture-derived password helper — #450). Returning a
+/// `String` rather than bytes because the CLI stdin / arg paths here
+/// take `&str`; the value cannot drift from the fixture it unlocks.
+fn golden_vault_password() -> String {
+    String::from_utf8(secretary_test_utils::golden_vault_001_password())
+        .expect("golden vault password is valid UTF-8")
+}
 
 /// Standard arg set for `secretary-sync once` in non-interactive mode.
 /// Tests append `--state-dir <p>` + the vault folder positional
@@ -104,7 +102,7 @@ fn run_once_with_password(
 
 /// Runtime-generated wrong-password string. 32 random bytes hex-encoded
 /// gives 64 hex characters of entropy — overwhelmingly unlikely to
-/// collide with [`GOLDEN_VAULT_PASSWORD`] across the heat-death of the
+/// collide with the golden vault password across the heat-death of the
 /// universe. Generated at test runtime rather than written as a string
 /// literal so CodeQL's `rust/hard-coded-cryptographic-value` rule does
 /// not flag the dataflow into `secretary-sync`'s password sink (the
@@ -125,7 +123,7 @@ fn random_wrong_password() -> String {
 fn once_happy_path_succeeds_on_fresh_state() {
     let state = TempDir::new().expect("state tempdir");
     let (_vault_tmp, vault_dir) = stage_golden_vault();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
 }
 
 /// Two back-to-back `once` calls both succeed — the first releases its
@@ -136,8 +134,8 @@ fn once_happy_path_succeeds_on_fresh_state() {
 fn once_second_call_is_nothing_to_do_and_still_succeeds() {
     let state = TempDir::new().expect("state tempdir");
     let (_vault_tmp, vault_dir) = stage_golden_vault();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
 }
 
 /// Wrong password → typed `UnlockError::WrongPasswordOrCorrupt`
@@ -221,7 +219,7 @@ fn once_missing_vault_folder_exits_generic_error() {
         .args(ONCE_NON_INTERACTIVE_ARGS)
         .arg(state.path())
         .arg(&bogus_vault)
-        .write_stdin(GOLDEN_VAULT_PASSWORD)
+        .write_stdin(golden_vault_password())
         .assert()
         .failure()
         .code(1)
@@ -238,7 +236,7 @@ fn once_missing_vault_folder_exits_generic_error() {
 fn once_creates_state_cbor_file_in_state_dir() {
     let state = TempDir::new().expect("state tempdir");
     let (_vault_tmp, vault_dir) = stage_golden_vault();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
 
     let cbor_files: Vec<_> = fs::read_dir(state.path())
         .expect("read state dir")
@@ -264,7 +262,7 @@ fn once_creates_state_cbor_file_in_state_dir() {
 fn once_creates_lockfile_in_state_dir() {
     let state = TempDir::new().expect("state tempdir");
     let (_vault_tmp, vault_dir) = stage_golden_vault();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
 
     let lockfiles: Vec<_> = fs::read_dir(state.path())
         .expect("read state dir")
@@ -325,7 +323,7 @@ fn once_accepts_json_log_format() {
         ])
         .arg(state.path())
         .arg(&vault_dir)
-        .write_stdin(GOLDEN_VAULT_PASSWORD)
+        .write_stdin(golden_vault_password())
         .assert()
         .success();
 }
@@ -353,7 +351,7 @@ fn once_accepts_verbosity_flags() {
             ])
             .arg(state.path())
             .arg(&vault_dir)
-            .write_stdin(GOLDEN_VAULT_PASSWORD)
+            .write_stdin(golden_vault_password())
             .assert()
             .success();
     }
@@ -369,7 +367,7 @@ fn once_accepts_verbosity_flags() {
 fn once_state_dir_flag_is_honoured() {
     let state = TempDir::new().expect("state tempdir");
     let (_vault_tmp, vault_dir) = stage_golden_vault();
-    run_once_with_password(state.path(), &vault_dir, GOLDEN_VAULT_PASSWORD).success();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
 
     let entries: Vec<_> = fs::read_dir(state.path())
         .expect("read state dir")

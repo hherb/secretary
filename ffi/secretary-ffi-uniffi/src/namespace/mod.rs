@@ -920,7 +920,11 @@ mod tests {
         // wrappers), so we match rather than calling unwrap_err().
         let folder_path = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
-        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
+        let out = open_vault_with_password(
+            folder_bytes,
+            &secretary_test_utils::golden_vault_001_password(),
+        )
+        .unwrap();
         match read_block(out.identity, out.manifest, vec![0u8; 15], false) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert!(
@@ -940,7 +944,11 @@ mod tests {
         // mutating the vault — safe to run against the frozen golden fixture.
         let folder_path = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
-        let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
+        let out = open_vault_with_password(
+            folder_bytes,
+            &secretary_test_utils::golden_vault_001_password(),
+        )
+        .unwrap();
         // retention_window_ms below the 1-day floor is out of range.
         let bad = Settings {
             auto_lock_timeout_ms: 600_000,

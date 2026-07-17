@@ -17,11 +17,13 @@ use secretary_desktop::session::VaultSession;
 use secretary_desktop::settings::Settings;
 use tempfile::TempDir;
 
-/// Known-good password for `core/tests/data/golden_vault_001/`. Sourced
-/// from `core/tests/data/golden_vault_001_inputs.json` (the deterministic
-/// vault-rebuild inputs the core fixture builder uses). If that file's
-/// `password` field ever changes the desktop tests will fail loudly.
-const GOLDEN_VAULT_PASSWORD: &[u8] = b"correct horse battery staple";
+/// Known-good password for `core/tests/data/golden_vault_001/`, sourced
+/// at call time from `golden_vault_001_inputs.json` via the one canonical,
+/// fixture-derived password helper ([`secretary_test_utils::golden_vault_001_password`],
+/// #450) — so it cannot drift from the fixture it unlocks.
+fn golden_vault_password() -> Vec<u8> {
+    secretary_test_utils::golden_vault_001_password()
+}
 
 /// Workspace-root-relative path to the read-only golden vault fixture.
 /// `cargo test` sets CWD to the crate root (`desktop/src-tauri/`), so we
@@ -49,7 +51,7 @@ fn fresh_session() -> (VaultSession, TempDir) {
 fn unlock_golden_vault_with_correct_password_succeeds() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock golden vault");
     assert!(
         session.is_unlocked(),
@@ -77,7 +79,7 @@ fn unlock_with_wrong_password_returns_wrong_password() {
 fn unlock_then_lock_clears_inner_state() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
     assert!(session.is_unlocked());
     session.lock();
@@ -91,10 +93,10 @@ fn unlock_then_lock_clears_inner_state() {
 fn second_unlock_while_already_unlocked_returns_already_unlocked() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("first unlock");
     let err = session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect_err("second unlock must reject");
     assert!(
         matches!(err, AppError::AlreadyUnlocked),
@@ -106,7 +108,7 @@ fn second_unlock_while_already_unlocked_returns_already_unlocked() {
 fn settings_load_from_vault_without_settings_block_returns_defaults() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
     let s = session.current_settings();
     assert_eq!(
@@ -120,7 +122,7 @@ fn settings_load_from_vault_without_settings_block_returns_defaults() {
 fn pending_warnings_empty_on_clean_unlock() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
     assert!(
         session.pending_warnings().is_empty(),
@@ -142,7 +144,7 @@ fn unlock_then_lock_cycles_repeatedly() {
     let (mut session, _device_dir) = fresh_session();
     for i in 0..3 {
         session
-            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .unlock(&golden_vault_path(), &golden_vault_password())
             .unwrap_or_else(|e| panic!("unlock iteration {i} must succeed: {e:?}"));
         session.lock();
         assert!(!session.is_unlocked(), "iteration {i}: must be locked");
@@ -167,7 +169,7 @@ fn notify_activity_on_locked_session_is_silent_noop() {
 fn notify_activity_on_unlocked_session_advances_idle_tracker() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
     let t0 = session.last_activity_ms();
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -188,7 +190,7 @@ fn lock_transitions_with_unlocked_from_ok_to_not_unlocked() {
     // pins the session-level state transition.
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
 
     let vault_uuid_pre = session
@@ -237,7 +239,7 @@ fn set_settings_persists_and_reloads() {
     {
         let mut session = VaultSession::new(device_dir.path().to_path_buf());
         session
-            .unlock(&vault_path, GOLDEN_VAULT_PASSWORD)
+            .unlock(&vault_path, &golden_vault_password())
             .expect("unlock #1");
         session
             .set_settings(&Settings {
@@ -252,7 +254,7 @@ fn set_settings_persists_and_reloads() {
     {
         let mut session = VaultSession::new(device_dir.path().to_path_buf());
         session
-            .unlock(&vault_path, GOLDEN_VAULT_PASSWORD)
+            .unlock(&vault_path, &golden_vault_password())
             .expect("unlock #2");
         assert_eq!(
             session.current_settings().auto_lock_timeout_ms,
@@ -270,7 +272,7 @@ fn set_settings_out_of_range_errors_without_writing() {
     {
         let mut session = VaultSession::new(device_dir.path().to_path_buf());
         session
-            .unlock(&vault_path, GOLDEN_VAULT_PASSWORD)
+            .unlock(&vault_path, &golden_vault_password())
             .expect("unlock");
 
         // Below the AUTO_LOCK_MIN_MS bound (60_000).
@@ -302,7 +304,7 @@ fn set_settings_out_of_range_errors_without_writing() {
     {
         let mut session = VaultSession::new(device_dir.path().to_path_buf());
         session
-            .unlock(&vault_path, GOLDEN_VAULT_PASSWORD)
+            .unlock(&vault_path, &golden_vault_password())
             .expect("unlock #2");
         assert_eq!(
             session.current_settings(),
@@ -343,7 +345,7 @@ fn timer_tick_auto_locks_expired_unlocked_session() {
     {
         let mut session = mutex.lock().expect("session mutex");
         session
-            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .unlock(&golden_vault_path(), &golden_vault_password())
             .expect("unlock golden vault");
         session.force_expire_idle_tracker_for_test();
         assert!(session.is_unlocked(), "precondition: unlocked");
@@ -377,7 +379,7 @@ fn timer_tick_force_locks_poisoned_unlocked_session() {
     {
         let mut session = mutex.lock().expect("session mutex");
         session
-            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .unlock(&golden_vault_path(), &golden_vault_password())
             .expect("unlock golden vault");
         assert!(session.is_unlocked(), "precondition: unlocked");
     }
@@ -417,7 +419,7 @@ fn timer_tick_no_action_on_unlocked_not_yet_expired() {
     {
         let mut session = mutex.lock().expect("session mutex");
         session
-            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .unlock(&golden_vault_path(), &golden_vault_password())
             .expect("unlock golden vault");
         // No `force_expire_idle_tracker_for_test()` — the session unlock
         // resets the idle tracker to "now", so any positive threshold
@@ -452,7 +454,7 @@ fn timer_tick_reads_threshold_from_current_settings() {
     {
         let mut session = mutex.lock().expect("session mutex");
         session
-            .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+            .unlock(&golden_vault_path(), &golden_vault_password())
             .expect("unlock golden vault");
         assert_eq!(
             session.current_settings(),
@@ -475,7 +477,7 @@ fn timer_tick_reads_threshold_from_current_settings() {
 fn vault_uuid_is_some_after_unlock_and_matches_manifest() {
     let (mut session, _device_dir) = fresh_session();
     session
-        .unlock(&golden_vault_path(), GOLDEN_VAULT_PASSWORD)
+        .unlock(&golden_vault_path(), &golden_vault_password())
         .expect("unlock");
 
     let from_manifest = session
@@ -497,7 +499,7 @@ fn unlock_retains_vault_folder_on_the_unlocked_session() {
     let (mut session, _device_dir) = fresh_session();
     let folder = golden_vault_path();
     session
-        .unlock(&folder, GOLDEN_VAULT_PASSWORD)
+        .unlock(&folder, &golden_vault_password())
         .expect("unlock golden vault");
 
     let retained: PathBuf = session
