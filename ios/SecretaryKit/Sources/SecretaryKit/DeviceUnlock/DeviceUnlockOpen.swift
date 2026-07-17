@@ -3,12 +3,11 @@ import SecretaryDeviceUnlock
 import SecretaryDeviceUnlockUI
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
-import SecretaryKit
 
 /// Outcome of a biometric device-unlock open attempt.
-enum DeviceUnlockOpenResult {
-    /// Opened successfully; `gate` is retargetable (its grace window comes from
-    /// persisted settings) and already seeded with the unlock instant (#284).
+public enum DeviceUnlockOpenResult {
+    /// Opened successfully; `gate` is retargetable and already seeded with the
+    /// unlock instant (#284).
     case opened(VaultSession, gate: RetargetableReauthGate)
     /// User cancelled the biometric prompt — return to Unlock quietly (#341).
     case cancelled
@@ -18,17 +17,13 @@ enum DeviceUnlockOpenResult {
 
 /// Release the device secret behind a biometric prompt, open the vault with it,
 /// verify the opened vault matches the enrollment, and build a retargetable
-/// re-auth gate seeded at the unlock instant (its grace window comes from the
-/// vault's persisted settings). Extracted out of `SecretaryApp.body` to keep
-/// that view small and this flow readable.
-///
-/// `@MainActor`: the gate (and its `GraceWindowReauthGate` delegate) is
-/// `@MainActor`-isolated, so constructing it (on the success path) must happen
-/// on the main actor. The caller is a SwiftUI view's `Task { }`, which already
-/// starts on the main actor, so this adds no extra hop for the common case.
-enum DeviceUnlockOpen {
+/// re-auth gate seeded at the unlock instant. Hoisted from the iOS app target into
+/// SecretaryKit (D.5.2) so the iOS and macOS apps share one copy of this
+/// security-sensitive flow (device-secret release + zeroize). Pure
+/// Foundation/domain logic — no iOS-only UI API.
+public enum DeviceUnlockOpen {
     @MainActor
-    static func open(
+    public static func open(
         coordinator: DeviceUnlockCoordinator,
         openPort: VaultOpenPort,
         vaultPath: Data,
@@ -42,7 +37,6 @@ enum DeviceUnlockOpen {
                     vaultPath: vaultPath, deviceUuid: cred.deviceUuid, deviceSecret: cred.secret)
             } catch {
                 zeroize(&cred.secret)
-                // A device-secret open failure is not a biometric cancel; surface it.
                 let display = (error as? VaultAccessError).map(vaultAccessFailureMessage)
                     ?? "Couldn’t open the vault. Unlock with your password."
                 return .failed(display)
