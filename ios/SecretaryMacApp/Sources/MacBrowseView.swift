@@ -3,9 +3,12 @@ import AppKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
-/// Read-only three-column browse (macOS): blocks sidebar | records list | field
-/// detail. Reveal is explicit and short-lived — dropped on hide, on resign-active,
-/// and on Lock. No mutation controls (read-only slice).
+/// Three-column browse (macOS): blocks sidebar | records list | field detail.
+/// Reveal is explicit and short-lived — dropped on hide, on resign-active, and on
+/// Lock. Mutation (D.5.3) is driven through the shared, host-tested
+/// `VaultBrowseViewModel` / `RecordEditViewModel` via native macOS idioms:
+/// right-click context menus for per-row actions + the window toolbar for create
+/// actions. No mutation logic lives here — the views only present the VM's surface.
 @MainActor
 struct MacBrowseView: View {
     @StateObject private var viewModel: VaultBrowseViewModel
@@ -20,6 +23,14 @@ struct MacBrowseView: View {
     /// window). Stored as an `ObjectIdentifier` rather than the window itself to
     /// avoid holding a strong reference to it.
     @State private var browseWindowID: ObjectIdentifier?
+
+    /// Thin Identifiable wrapper so `.sheet(item:)` drives the add/edit sheet.
+    private struct EditSession: Identifiable {
+        let id = UUID()
+        let editVM: RecordEditViewModel
+        let title: String
+    }
+    @State private var editSession: EditSession?
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -45,7 +56,19 @@ struct MacBrowseView: View {
                             Text(record.tags.joined(separator: ", "))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                    }.tag(record.uuidHex)
+                    }
+                    .tag(record.uuidHex)
+                    .contextMenu {
+                        Button {
+                            guard let vm = viewModel.makeEditViewModel(
+                                mode: .edit(recordUuid: record.uuid)) else { return }
+                            vm.load(record: record)
+                            editSession = EditSession(editVM: vm, title: "Edit Record")
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .disabled(viewModel.isWriting)
+                    }
                 }
                 .navigationTitle("Records")
             } else {
@@ -59,6 +82,19 @@ struct MacBrowseView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                // "Add record" is only meaningful once a block is selected (the VM
+                // appends into the selected block); hidden otherwise.
+                if selectedBlockHex != nil {
+                    Button {
+                        guard let vm = viewModel.makeEditViewModel(mode: .add) else { return }
+                        editSession = EditSession(editVM: vm, title: "Add Record")
+                    } label: {
+                        Label("Add record", systemImage: "plus")
+                    }
+                    .disabled(viewModel.isWriting)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 // `Button(_:systemImage:action:)` is macOS 14+; the app's
                 // deploymentTarget is macOS 13.0, so use the trailing-closure
@@ -76,6 +112,18 @@ struct MacBrowseView: View {
             }
         }
         .onAppear { viewModel.loadBlocks() }
+        .sheet(item: $editSession) { session in
+            MacRecordEditView(
+                viewModel: session.editVM,
+                title: session.title,
+                onDone: {
+                    editSession = nil
+                    // Re-read via the VM's own selection (not a screen-cached block).
+                    viewModel.refresh()
+                },
+                onCancel: { editSession = nil }
+            )
+        }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
         // of `.background` (macOS 12+) to avoid the deprecated positional overload.
