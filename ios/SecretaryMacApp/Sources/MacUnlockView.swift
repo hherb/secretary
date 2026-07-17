@@ -38,7 +38,7 @@ struct MacUnlockView: View {
         Form {
             if biometricEnrolled {
                 Section("Touch ID") {
-                    Button("Unlock with Touch ID") { biometricUnlock() }
+                    Button("Unlock with Touch ID") { biometricUnlock() }.disabled(isBusy)
                 }
             }
             Section("Master password") {
@@ -67,7 +67,7 @@ struct MacUnlockView: View {
             lastPasswordSecret = nil
             let gate = makeRetargetableReauthGate(session: session, vaultPath: vaultPath,
                                                   biometricUnlock: false)
-            if rememberDevice, let password { enrollDevice(session: session, password: password) }
+            if rememberDevice, let password { enrollDevice(session: session, secret: password) }
             onOpened(session, gate)
         }
     }
@@ -97,7 +97,7 @@ struct MacUnlockView: View {
     /// Best-effort device-slot enrollment on password unlock (mirrors iOS): a second
     /// Argon2id open, hopped onto a background queue so the route transition is never
     /// blocked. Non-fatal — the password open already succeeded.
-    private func enrollDevice(session: VaultSession, password: [UInt8]) {
+    private func enrollDevice(session: VaultSession, secret: [UInt8]) {
         let coordinator = makePerVaultDeviceUnlock(vaultPath: vaultPath).coordinator
         let vaultPath = self.vaultPath
         let vaultId = session.vaultUuidHex
@@ -105,7 +105,7 @@ struct MacUnlockView: View {
             do {
                 try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                     DispatchQueue.global(qos: .userInitiated).async {
-                        do { try coordinator.enroll(vaultPath: vaultPath, vaultId: vaultId, password: password); c.resume() }
+                        do { try coordinator.enroll(vaultPath: vaultPath, vaultId: vaultId, password: secret); c.resume() }
                         catch { c.resume(throwing: error) }
                     }
                 }
