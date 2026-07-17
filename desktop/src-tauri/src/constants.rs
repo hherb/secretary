@@ -60,6 +60,15 @@ pub const PRESENCE_PREF_SUBDIR: &str = "presence";
 /// travelling through a high-risk area).
 pub const PRESENCE_BIOMETRIC_ENABLED_DEFAULT: bool = true;
 
+// =============================================================================
+// Desktop-local recent-vault record (#446)
+// =============================================================================
+
+/// Filename of the most-recently-opened-vault record under
+/// `<data_dir>/secretary-desktop/` — a sibling of the `devices/` and
+/// `presence/` subtrees. See `recent_vault`.
+pub const RECENT_VAULT_FILENAME: &str = "recent.json";
+
 #[cfg(test)]
 mod tests {
     use super::*;

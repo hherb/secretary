@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
-    browse, create, delete, edit, lock, presence, reauth, settings, sync, unlock, vault,
+    browse, create, delete, edit, lock, presence, reauth, recent, settings, sync, unlock, vault,
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
@@ -192,6 +192,57 @@ fn unlock_with_password_wrong_password_collapses_to_wrong_password() {
     let v = to_json(&err);
     assert_eq!(v["code"], "wrong_password");
     assert!(v.get("detail").is_none(), "WrongPassword has no detail");
+}
+
+/// #446 end to end: a successful unlock records the vault folder in the
+/// desktop-local `recent.json`, and a brand-new session (app relaunch) can
+/// pre-fill from it via `use_recent_vault` — which seeds the `VaultFolder`
+/// slot so the follow-up unlock passes the #353 approval gate with no picker
+/// interaction.
+#[test]
+fn successful_unlock_records_recent_vault_and_prefills_next_session() {
+    let (state, device_dir) = unlocked_state();
+    drop(state);
+
+    let canonical_golden = canonicalize_for_auth(&golden_vault_path()).unwrap();
+    let recorded = secretary_desktop::recent_vault::load_recent_in(device_dir.path())
+        .expect("successful unlock records the vault folder");
+    assert_eq!(recorded, canonical_golden);
+
+    // Relaunch analogue: fresh session over the same device dir.
+    let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
+    let display = recent::use_recent_vault_impl(&state)
+        .expect("recent lookup is infallible on a readable dir")
+        .expect("recorded vault pre-fills");
+    assert_eq!(display, canonical_golden.to_string_lossy());
+
+    let dto = unlock::unlock_with_password_impl(&state, &display, GOLDEN_VAULT_PASSWORD.as_bytes())
+        .expect("pre-filled path passes the approval gate and unlocks");
+    assert_eq!(dto.vault_uuid_hex.len(), 32);
+}
+
+/// #446 fail-safe: a FAILED unlock must not update `recent.json` — failed
+/// guesses are never logged.
+#[test]
+fn failed_unlock_does_not_record_recent_vault() {
+    let (state, device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state.lock().unwrap().approve_path(
+        PathPurpose::VaultFolder,
+        canonicalize_for_auth(&golden_vault).unwrap(),
+    );
+    unlock::unlock_with_password_impl(
+        &state,
+        golden_vault.to_str().expect("utf8 path"),
+        b"definitely not the password",
+    )
+    .expect_err("wrong password must error");
+
+    assert_eq!(
+        secretary_desktop::recent_vault::load_recent_in(device_dir.path()),
+        None,
+        "a failed unlock must leave no recent-vault record"
+    );
 }
 
 #[test]

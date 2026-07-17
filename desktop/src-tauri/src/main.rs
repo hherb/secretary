@@ -21,8 +21,8 @@ use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
 use secretary_desktop::commands::{
-    browse, contacts, create, delete, edit, lock, pick, presence, reauth, repair, retention,
-    settings, sync, unlock, vault,
+    browse, contacts, create, delete, edit, lock, pick, presence, reauth, recent, repair,
+    retention, settings, sync, unlock, vault,
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
@@ -88,6 +88,7 @@ fn main() {
             create::probe_create_target,
             pick::pick_vault_folder,
             pick::pick_create_folder,
+            recent::use_recent_vault,
             pick::pick_contact_card,
             pick::pick_export_dir,
             edit::create_block,

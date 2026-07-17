@@ -18,6 +18,7 @@ pub mod dtos;
 pub mod errors;
 pub mod path_auth;
 pub mod presence_pref;
+pub mod recent_vault;
 pub mod reveal;
 pub mod secret_arg;
 pub mod session;

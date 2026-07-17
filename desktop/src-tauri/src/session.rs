@@ -23,6 +23,7 @@ use secretary_ffi_bridge::{OpenVaultManifest, UnlockedIdentity};
 use crate::auto_lock::{now_ms, IdleTracker};
 use crate::errors::{AppError, AppWarning};
 use crate::path_auth::{MatchMode, PathApprovals, PathPurpose};
+use crate::recent_vault;
 use crate::settings::{self, Settings};
 
 /// The complete unlocked-state bundle. `Drop` wipes both bridge handles in
@@ -371,6 +372,32 @@ impl VaultSession {
         // create in, or enumerate subfolders of, that subtree without a fresh
         // user pick. Runs after the caller's approval gate has already passed.
         self.approvals.clear();
+
+        // #446: record the folder as the most recently opened vault so the
+        // next launch's unlock dialog can pre-fill it. Only reachable after a
+        // successful open (both `unlock` and `repair` funnel through here), so
+        // failed guesses are never logged. Best-effort: a failed write of this
+        // UX nicety must not fail — or roll back — an unlock that already
+        // succeeded. Stored canonicalized so `recent.json` matches the display
+        // string the picker would have produced for the same folder; if
+        // canonicalization fails (a race with concurrent folder removal), skip
+        // recording rather than store a path the pre-fill would reject anyway.
+        match crate::path_auth::canonicalize_for_auth(folder) {
+            Some(canonical) => {
+                if let Err(e) = recent_vault::save_recent_in(&self.device_data_dir, &canonical) {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to record recent vault after unlock; pre-fill \
+                         will fall back to the previous record (or none)"
+                    );
+                }
+            }
+            None => tracing::warn!(
+                folder = %folder.display(),
+                "vault folder no longer canonicalizes after unlock; skipping \
+                 recent-vault record"
+            ),
+        }
     }
 
     /// Explicit lock — drops `inner`, triggering the `UnlockedSession` Drop
