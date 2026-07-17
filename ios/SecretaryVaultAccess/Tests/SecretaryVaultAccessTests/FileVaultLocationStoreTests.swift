@@ -54,4 +54,11 @@ final class FileVaultLocationStoreTests: XCTestCase {
         scoped.end()
         scoped.end()
     }
+
+    func testBeginAccessDoesNotThrowForMissingFolder() throws {
+        let store = makeStore()
+        let missing = "/no/such/vault/\(UUID().uuidString)"
+        let scoped = try store.beginAccess(VaultLocation(displayName: "Gone", bookmark: Data(missing.utf8)))
+        XCTAssertEqual(String(decoding: scoped.pathData, as: UTF8.self), missing)
+    }
 }
