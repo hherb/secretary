@@ -42,7 +42,13 @@ use tempfile::TempDir;
 // both this test file and session_integration.rs would fail loudly here.
 // ============================================================================
 
-const GOLDEN_VAULT_PASSWORD: &str = "correct horse battery staple";
+/// Known-good password for `golden_vault_001`, sourced at call time from
+/// `golden_vault_001_inputs.json` via the one canonical, fixture-derived
+/// password helper ([`secretary_test_utils::golden_vault_001_password`],
+/// #450) — so it cannot drift from the fixture it unlocks.
+fn golden_vault_password() -> Vec<u8> {
+    secretary_test_utils::golden_vault_001_password()
+}
 
 const GOLDEN_BLOCK_UUID_HEX: &str = "112233445566778899aabbccddeeff00";
 const GOLDEN_RECORD_UUID_HEX: &str = "33445566778899aabbccddeeff001122";
@@ -87,7 +93,7 @@ fn unlocked_state() -> (Mutex<VaultSession>, TempDir) {
     let dto = unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("baseline unlock against golden vault");
     // Sanity: golden vault is a real vault with a 32-hex-char UUID.
@@ -125,7 +131,7 @@ fn unlock_with_password_happy_path_returns_manifest_dto_with_warnings_field() {
     let dto = unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("unlock golden vault");
 
@@ -201,7 +207,7 @@ fn successful_unlock_records_recent_vault_and_prefills_next_session() {
         .expect("recorded vault pre-fills");
     assert_eq!(display, canonical_golden.to_string_lossy());
 
-    let dto = unlock::unlock_with_password_impl(&state, &display, GOLDEN_VAULT_PASSWORD.as_bytes())
+    let dto = unlock::unlock_with_password_impl(&state, &display, &golden_vault_password())
         .expect("pre-filled path passes the approval gate and unlocks");
     assert_eq!(dto.vault_uuid_hex.len(), 32);
 }
@@ -288,7 +294,7 @@ fn unlock_with_password_nonexistent_folder_yields_vault_path_not_found() {
     let err = unlock::unlock_with_password_impl(
         &state,
         missing.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect_err("nonexistent path must error");
 
@@ -313,7 +319,7 @@ fn unlock_with_password_empty_folder_yields_vault_path_not_a_vault() {
         canonicalize_for_auth(path).unwrap(),
     );
     let path_str = path.to_str().expect("utf8 path");
-    let err = unlock::unlock_with_password_impl(&state, path_str, GOLDEN_VAULT_PASSWORD.as_bytes())
+    let err = unlock::unlock_with_password_impl(&state, path_str, &golden_vault_password())
         .expect_err("empty folder must error");
 
     match &err {
@@ -339,7 +345,7 @@ fn unlock_with_password_already_unlocked_returns_already_unlocked() {
     let err = unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect_err("second unlock must reject");
 
@@ -372,7 +378,7 @@ fn successful_unlock_clears_the_vault_folder_approval() {
     unlock::unlock_with_password_impl(
         &state,
         golden_vault.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("unlock golden vault");
 
@@ -487,7 +493,7 @@ fn set_settings_persists_and_subsequent_get_returns_new_value() {
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("unlock");
 
@@ -519,7 +525,7 @@ fn set_settings_below_minimum_returns_out_of_range_without_writing() {
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("unlock");
 
@@ -596,7 +602,7 @@ fn settings_round_trip_persists_all_fields() {
     unlock::unlock_with_password_impl(
         &state,
         vault_path.to_str().expect("utf8 path"),
-        GOLDEN_VAULT_PASSWORD.as_bytes(),
+        &golden_vault_password(),
     )
     .expect("unlock");
 
@@ -1835,7 +1841,7 @@ mod contacts_path {
         unlock::unlock_with_password_impl(
             &state,
             vault_path.to_str().expect("utf8 path"),
-            GOLDEN_VAULT_PASSWORD.as_bytes(),
+            &golden_vault_password(),
         )
         .expect("unlock ephemeral golden copy");
         (state, vault_dir, device_dir)
@@ -2079,13 +2085,13 @@ fn sync_commit_decisions_impl_requires_unlock() {
 
 #[test]
 fn verify_password_correct_password_while_unlocked_ok() {
-    // Reuses unlocked_state() and GOLDEN_VAULT_PASSWORD from this harness.
+    // Reuses unlocked_state() and golden_vault_password() from this harness.
     // A second open_vault_with_password against the same folder while the
     // session is live must succeed — there is NO exclusive file lock on the
     // vault folder (the only LockfileGuard is in the sync path). This test
     // pins that invariant: verify runs concurrently with an open session.
     let (state, _device_dir) = unlocked_state();
-    reauth::verify_password_impl(&state, GOLDEN_VAULT_PASSWORD.as_bytes())
+    reauth::verify_password_impl(&state, &golden_vault_password())
         .expect("correct password while unlocked must verify ok");
 }
 

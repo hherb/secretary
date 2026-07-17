@@ -182,7 +182,7 @@ mod tests {
         match super::sync_commit_decisions(
             dir.path().to_str().unwrap().to_string(),
             folder.to_str().unwrap().to_string(),
-            b"correct horse battery staple",
+            &secretary_test_utils::golden_vault_001_password(),
             vec![],
             vec![0u8; 5], // != 32 -> reject before vault open
             0,

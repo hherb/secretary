@@ -46,7 +46,7 @@ use tempfile::TempDir;
 
 use secretary_cli::state;
 use secretary_core::unlock::vault_toml;
-use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
+use secretary_test_utils::{copy_dir_recursive, core_test_data_dir, golden_vault_001_password};
 
 /// Binary name as built by Cargo from `[[bin]] name = "secretary-sync"`
 /// in `cli/Cargo.toml`. Looked up via the `CARGO_BIN_EXE_*` env var
@@ -58,14 +58,6 @@ const BIN_ENV_VAR: &str = "CARGO_BIN_EXE_secretary-sync";
 /// `core/tests/data/`. The fixture is the cross-language conformance
 /// vector pinned by `core/tests/data/golden_vault_001_inputs.json`.
 const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
-
-/// Password for the golden vault — pinned to the value in
-/// `core/tests/data/golden_vault_001_inputs.json`. Same value as the
-/// constant in `cli/tests/once_integration.rs`; drift between this
-/// constant and the canonical JSON is caught by
-/// `cli/tests/pipeline_integration.rs::golden_vault_password()` which
-/// reads the JSON at runtime.
-const GOLDEN_VAULT_PASSWORD: &str = "correct horse battery staple";
 
 /// Filename of the cleartext vault metadata file inside a vault folder.
 /// Used to extract `vault_uuid` for [`state::load`] post-shutdown.
@@ -160,7 +152,7 @@ fn spawn_daemon(vault_dir: &Path, state_dir: &Path) -> Child {
     {
         let mut stdin = child.stdin.take().expect("piped stdin handle");
         stdin
-            .write_all(GOLDEN_VAULT_PASSWORD.as_bytes())
+            .write_all(&golden_vault_001_password())
             .expect("write password to child stdin");
     }
 

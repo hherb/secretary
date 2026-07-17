@@ -26,15 +26,7 @@ pub(crate) fn golden_vault_dir() -> PathBuf {
 }
 
 pub(crate) fn golden_password() -> Vec<u8> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data/golden_vault_001_inputs.json");
-    let raw = std::fs::read_to_string(p).expect("golden inputs readable");
-    let v: serde_json::Value = serde_json::from_str(&raw).expect("golden inputs parse");
-    v["password"]
-        .as_str()
-        .expect("password str")
-        .as_bytes()
-        .to_vec()
+    secretary_test_utils::golden_vault_001_password()
 }
 
 pub(crate) use secretary_test_utils::copy_dir_recursive;
