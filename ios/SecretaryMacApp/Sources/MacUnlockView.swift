@@ -58,7 +58,10 @@ struct MacUnlockView: View {
         .formStyle(.grouped)
         .frame(minWidth: 460, minHeight: 320)
         .overlay { if isBusy { ProgressView() } }
-        .onChange(of: stateIsUnlocked) { _, unlocked in
+        // Single-param overload (macOS 11+): the app's deploymentTarget is
+        // macOS 13.0, below the macOS 14.0 floor for the two-param
+        // `onChange(of:initial:_:)` used elsewhere on iOS 17+.
+        .onChange(of: stateIsUnlocked) { unlocked in
             guard unlocked, case .unlocked(let session) = viewModel.state else { return }
             let password = lastPasswordSecret
             lastPasswordSecret = nil
