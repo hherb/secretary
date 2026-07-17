@@ -35,6 +35,8 @@ struct MacBrowseView: View {
     @State private var recordPendingDelete: RecordView?
     /// Bridges the VM's `movingRecord` to the `.sheet(item:)` move picker. nil = closed.
     @State private var movingItem: MovingRecordItem?
+    /// Editable block-name text shared by the create/rename sheet (`blockNameDialog`).
+    @State private var blockNameField = ""
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -45,10 +47,28 @@ struct MacBrowseView: View {
         viewModel.visibleRecords.first { $0.uuidHex == selectedRecordHex }
     }
 
+    /// Title for the shared create/rename block sheet, keyed on the active dialog.
+    private var blockNameSheetTitle: String {
+        switch viewModel.blockNameDialog {
+        case .rename: return "Rename block"
+        case .create, .none: return "New block"
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
             List(viewModel.blocks, id: \.uuidHex, selection: $selectedBlockHex) { block in
-                Text(block.name).tag(block.uuidHex)
+                Text(block.name)
+                    .tag(block.uuidHex)
+                    .contextMenu {
+                        Button {
+                            blockNameField = block.name
+                            viewModel.startRenameBlock(block)
+                        } label: {
+                            Label("Rename…", systemImage: "pencil")
+                        }
+                        .disabled(viewModel.isWriting)
+                    }
             }
             .navigationTitle("Blocks")
         } content: {
@@ -144,6 +164,15 @@ struct MacBrowseView: View {
                 }
             }
             ToolbarItem(placement: .primaryAction) {
+                Button {
+                    blockNameField = ""
+                    viewModel.startCreateBlock()
+                } label: {
+                    Label("New block", systemImage: "folder.badge.plus")
+                }
+                .disabled(viewModel.isWriting)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 // `Button(_:systemImage:action:)` is macOS 14+; the app's
                 // deploymentTarget is macOS 13.0, so use the trailing-closure
                 // label form instead (same floor as the onChange note below).
@@ -209,6 +238,12 @@ struct MacBrowseView: View {
             } else {
                 movingItem = nil
             }
+        }
+        .sheet(isPresented: Binding(
+            get: { viewModel.blockNameDialog != nil },
+            set: { if !$0 { viewModel.cancelBlockNameDialog() } }
+        )) {
+            MacBlockNameSheet(viewModel: viewModel, name: $blockNameField, title: blockNameSheetTitle)
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
