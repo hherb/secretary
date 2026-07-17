@@ -89,6 +89,12 @@ struct MacBrowseView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             isActive = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            // Wipe the session when the vault window closes or the app quits (AppKit
+            // posts willClose for each window during termination too) — deterministic
+            // zeroize rather than waiting on ARC. Design §7 "wipe on window close".
+            viewModel.lock()
+        }
     }
 
     @ViewBuilder
@@ -112,6 +118,10 @@ struct MacBrowseView: View {
             if let revealed {
                 Text(display(revealed))
                     .textSelection(.enabled)
+                    // Defensive / currently unreachable: `hideAll()` runs in the same
+                    // didResignActive handler above, so no revealed value survives into
+                    // an inactive render today. Kept as belt-and-suspenders against a
+                    // future handler reorder.
                     .redacted(reason: isActive ? [] : .privacy)
                 Button("Copy") { copyToPasteboard(revealed) }
                 Button("Hide") { viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name) }

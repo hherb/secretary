@@ -19,6 +19,11 @@ struct MacUnlockView: View {
 
     @State private var password: String = ""
     @State private var lastPasswordSecret: [UInt8]?
+    // Guards against a concurrent password+biometric double-open: the biometric
+    // path has its own post-prompt Argon2id window (not covered by `isBusy`,
+    // which only tracks `viewModel.state`), during which both unlock buttons
+    // must stay disabled so a second open can't start an orphan VaultSession.
+    @State private var biometricInFlight = false
 
     init(viewModel: UnlockViewModel, vaultPath: Data, biometricEnrolled: Bool,
          biometricError: Binding<String?>, rememberDevice: Binding<Bool>,
@@ -38,15 +43,21 @@ struct MacUnlockView: View {
         Form {
             if biometricEnrolled {
                 Section("Touch ID") {
-                    Button("Unlock with Touch ID") { biometricUnlock() }.disabled(isBusy)
+                    Button("Unlock with Touch ID") { biometricUnlock() }
+                        .disabled(isBusy || biometricInFlight)
                 }
             }
             Section("Master password") {
                 SecureField("Password", text: $password)
-                Toggle("Remember this Mac with Touch ID", isOn: $rememberDevice)
+                // Only offered when not already enrolled (mirrors iOS): toggling
+                // while enrolled would trigger a redundant re-enroll.
+                if !biometricEnrolled {
+                    Toggle("Remember this Mac with Touch ID", isOn: $rememberDevice)
+                }
             }
             Section {
-                Button("Unlock") { passwordUnlock() }.disabled(isBusy || password.isEmpty)
+                Button("Unlock") { passwordUnlock() }
+                    .disabled(isBusy || biometricInFlight || password.isEmpty)
             }
             if case .failed(let err) = viewModel.state {
                 Section("Error") { Text(String(describing: err)).foregroundStyle(.red) }
@@ -81,15 +92,21 @@ struct MacUnlockView: View {
 
     private func biometricUnlock() {
         biometricError = nil
+        biometricInFlight = true
         let coordinator = makePerVaultDeviceUnlock(vaultPath: vaultPath).coordinator
         Task {
             let result = await DeviceUnlockOpen.open(
                 coordinator: coordinator, openPort: UniffiVaultOpenPort(),
                 vaultPath: vaultPath, reason: "Unlock your Secretary vault")
             switch result {
-            case .cancelled: break                              // stay on unlock, quietly
-            case .failed(let message): biometricError = message
-            case .opened(let session, let gate): onOpened(session, gate)
+            case .cancelled:
+                biometricInFlight = false                       // stay on unlock, quietly
+            case .failed(let message):
+                biometricInFlight = false
+                biometricError = message
+            case .opened(let session, let gate):
+                biometricInFlight = false
+                onOpened(session, gate)
             }
         }
     }
