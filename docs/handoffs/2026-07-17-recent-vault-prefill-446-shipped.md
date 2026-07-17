@@ -22,11 +22,14 @@
   - *UX consistency:* created-vault seeding now also focuses the password field.
   - *Cleanups:* write-side canonicalize dropped (read side re-canonicalizes; recorded-vs-canonical asserted in canonical space in the integration test); `make_vault_shaped` reuses unlock.rs's now-`pub(crate)` canonical filename constants; new `fs_atomic::persist_atomically` collapses the duplicated atomic tempfile-persist blocks in `recent_vault` + `presence_pref` (the settings device-UUID writer keeps its distinct `persist_noclobber` semantics).
   - *Accepted as designed (documented, not changed):* recording lives in `populate_unlocked` (the intentional "only after a successful open" choke point — a future device-secret unlock SHOULD record); `validate_vault_path` reuse from `commands::unlock` (same predicate as the real unlock = consistency; matches the existing `session.rs → commands::repair` lateral pattern); no dedicated repair-path recording test (the choke point is shared by construction — a repair test would re-test `populate_unlocked`).
+- **Post-PR review round (on-PR review of #448, all fixed on-branch):**
+  - *TOCTOU in the locked-only guard (the one real finding):* `use_recent_vault_impl` checked `is_unlocked()` only in its first lock scope; an unlock completing during the unlocked filesystem IO (arbitrarily wide on a stalled network mount) would land the late seed on an unlocked session — `populate_unlocked`'s approval clear leaves the slot vacant, so no-clobber alone can't refuse it. Fixed by `seed_slot_if_locked_and_vacant` re-checking `is_unlocked` in the SAME critical section as the slot write, with a red-first integration race-arm test (`159078a`). Desktop integration tests now 75.
+  - *Cosmetic:* `SECRETARY_DESKTOP_SUBDIR` constant replaces the tripled `"secretary-desktop"` literal in `recent_vault` / `presence_pref` / `settings::io` (`813800b`); `pick::*` handler group kept contiguous in `generate_handler!` (`59fae45`); this doc's test counts corrected (673→674 frontend).
 
 ### Acceptance (all green at HEAD)
 ```bash
 cd .worktrees/recent-vault-446
-cargo test --release --workspace                                  # full workspace; desktop = 225 lib + 74 integration
+cargo test --release --workspace                                  # full workspace; desktop = 225 lib + 75 integration
 cargo clippy --release --workspace --tests -- -D warnings         # clean
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace        # clean (new pub modules documented)
 cargo fmt --all --check                                           # clean
@@ -73,6 +76,6 @@ git worktree list && git status -s
 ## Closing inventory
 
 - **State on close:** PR open on `feature/recent-vault-prefill-446` (worktree `.worktrees/recent-vault-446`), closing issue **#446**. Net diff: desktop crate + desktop frontend + README row + this handoff. No `core` / `ffi` / on-disk-format change.
-- **Acceptance:** all issue checkboxes evidenced by automated tests (mapped above); full workspace cargo gates + 673 frontend tests + svelte-check green.
+- **Acceptance:** all issue checkboxes evidenced by automated tests (mapped above); full workspace cargo gates + 674 frontend tests + svelte-check green.
 - **Next:** optional GUI smoke / #447 (decision) / #443 / #444 / #417 / #90 / user priority.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-07-17-recent-vault-prefill-446-shipped.md`.
