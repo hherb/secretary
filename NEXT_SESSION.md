@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-17-password-dedup-450-shipped.md
+docs/handoffs/2026-07-17-d5-macos-readonly-viewer-shipped.md

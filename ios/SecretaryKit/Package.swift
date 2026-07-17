@@ -24,6 +24,7 @@ let package = Package(
             dependencies: [
                 "SecretaryFFI",
                 .product(name: "SecretaryDeviceUnlock", package: "SecretaryDeviceUnlock"),
+                .product(name: "SecretaryDeviceUnlockUI", package: "SecretaryDeviceUnlock"),
                 .product(name: "SecretaryVaultAccess", package: "SecretaryVaultAccess"),
                 .product(name: "SecretaryVaultAccessUI", package: "SecretaryVaultAccess"),
             ]
