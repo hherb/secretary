@@ -35,7 +35,7 @@ impl Device {
     pub fn fork(baseline: &Baseline, device_uuid: [u8; 16], rng_seed: u8) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let folder = tmp.path().to_path_buf();
-        secretary_test_utils::copy_dir_recursive(baseline.folder(), &folder);
+        crate::convergence_helpers::copy_dir_recursive(baseline.folder(), &folder);
         Self {
             _tmp: tmp,
             folder,
