@@ -10,7 +10,8 @@
 //! a UUID that is live again in `manifest.blocks`.
 //!
 //! Fixture helpers below are copied verbatim from `trash_restore.rs`
-//! per this repo's no-shared-test-crate convention.
+//! (integration-test bins share nothing unless pulled in via a `mod`);
+//! the generic fixture-copy itself comes from `secretary-test-utils`.
 
 #![forbid(unsafe_code)]
 
@@ -149,8 +150,8 @@ fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
 }
 
 /// Build a co-recipient contact card from a freshly-generated identity
-/// bundle. Copied verbatim from `trash_restore.rs::make_signed_card` per
-/// this repo's no-shared-test-crate convention.
+/// bundle. Copied verbatim from `trash_restore.rs::make_signed_card`
+/// (integration-test bins share nothing unless pulled in via a `mod`).
 fn make_signed_card(id: &IdentityBundle) -> ContactCard {
     let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).unwrap();
     let mut card = ContactCard {

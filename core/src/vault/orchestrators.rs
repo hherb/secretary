@@ -2745,9 +2745,8 @@ mod orchestrator_tests {
             .join("tests")
             .join("data")
             .join("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = secretary_test_utils::copy_dir_to_tempdir(&src);
         let dest = tmp.path().to_path_buf();
-        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         let password = SecretBytes::new(read_golden_vault_001_password());
         let open = open_vault(&dest, Unlocker::Password(&password), None)
@@ -2869,9 +2868,8 @@ mod orchestrator_tests {
             .join("tests")
             .join("data")
             .join("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = secretary_test_utils::copy_dir_to_tempdir(&src);
         let dest = tmp.path().to_path_buf();
-        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         let password = SecretBytes::new(read_golden_vault_001_password());
 
@@ -2921,9 +2919,8 @@ mod orchestrator_tests {
             .join("tests")
             .join("data")
             .join("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = secretary_test_utils::copy_dir_to_tempdir(&src);
         let dest = tmp.path().to_path_buf();
-        secretary_test_utils::copy_dir_recursive(&src, &dest);
 
         // No device has been enrolled — devices/ directory is absent.
         let absent_uuid = [0xABu8; 16];

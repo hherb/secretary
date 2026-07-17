@@ -178,8 +178,7 @@ mod tests {
     #[test]
     fn sync_commit_decisions_bad_manifest_hash_len_is_sync_failed() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001");
+        let folder = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
         match super::sync_commit_decisions(
             dir.path().to_str().unwrap().to_string(),
             folder.to_str().unwrap().to_string(),

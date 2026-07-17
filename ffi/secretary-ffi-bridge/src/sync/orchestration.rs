@@ -285,7 +285,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    use secretary_test_utils::copy_dir_recursive;
+    use secretary_test_utils::copy_dir_to_tempdir;
 
     use crate::test_support::{fixture_folder, VAULT_001_PASSWORD};
 
@@ -293,9 +293,7 @@ mod tests {
     /// (keep it alive), the vault folder path, a fresh password `SecretBytes`,
     /// and the vault_uuid read from the manifest.
     fn stage_golden_writable_and_password() -> (TempDir, PathBuf, SecretBytes, [u8; 16]) {
-        let src = fixture_folder("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
-        copy_dir_recursive(&src, tmp.path());
+        let tmp = copy_dir_to_tempdir(&fixture_folder("golden_vault_001"));
         let vault_folder = tmp.path().to_path_buf();
         // open core-side once to read vault_uuid (not exposed via the bridge manifest
         // handle); the second SecretBytes is what the test hands to sync_vault_in.
@@ -362,10 +360,8 @@ mod tests {
         [u8; 16],
     ) {
         let src = fixture_folder("sync_collision_fixture");
-        let vault_tmp = tempfile::tempdir().expect("vault tempdir");
-        let state_tmp = tempfile::tempdir().expect("state tempdir");
-        copy_dir_recursive(&src.join("vault"), vault_tmp.path());
-        copy_dir_recursive(&src.join("state"), state_tmp.path());
+        let vault_tmp = copy_dir_to_tempdir(&src.join("vault"));
+        let state_tmp = copy_dir_to_tempdir(&src.join("state"));
         let vault_folder = vault_tmp.path().to_path_buf();
         let state_dir = state_tmp.path().to_path_buf();
 

@@ -96,9 +96,8 @@ pub const BLOCK_NONCE_F: [u8; AEAD_NONCE_LEN] = [
 /// Returns the temp folder path; the caller is responsible for keeping
 /// the `tempfile::TempDir` alive for the duration of the test.
 pub fn fresh_vault_with_clock(new_clock: Vec<VectorClockEntry>) -> (PathBuf, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = secretary_test_utils::copy_dir_to_tempdir(Path::new(GOLDEN_VAULT_FOLDER));
     let dest = tmp.path().to_path_buf();
-    secretary_test_utils::copy_dir_recursive(Path::new(GOLDEN_VAULT_FOLDER), &dest);
     write_manifest_at(&dest, MANIFEST_FILENAME, new_clock, &CANONICAL_NONCE_A);
     (dest, tmp)
 }

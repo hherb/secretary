@@ -138,7 +138,7 @@ impl Baseline {
     pub fn from_folder(src: &Path, password: SecretBytes) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let folder = tmp.path().to_path_buf();
-        crate::convergence_helpers::copy_dir_all(src, &folder).expect("copy seeded folder");
+        crate::convergence_helpers::copy_dir_recursive(src, &folder);
         Self {
             _tmp: tmp,
             folder,

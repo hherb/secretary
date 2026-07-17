@@ -22,7 +22,7 @@ impl DeviceSecretSource for FakeSource {
 }
 
 pub(crate) fn golden_vault_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core/tests/data/golden_vault_001")
+    secretary_test_utils::core_test_data_dir().join("golden_vault_001")
 }
 
 pub(crate) fn golden_password() -> Vec<u8> {
@@ -37,26 +37,14 @@ pub(crate) fn golden_password() -> Vec<u8> {
         .to_vec()
 }
 
-pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &dst_path)?;
-        } else {
-            std::fs::copy(entry.path(), dst_path)?;
-        }
-    }
-    Ok(())
-}
+pub(crate) use secretary_test_utils::copy_dir_recursive;
 
 /// Copy the golden vault to a tempdir, enroll a fresh device slot, and return
 /// (tempdir, vault_path, device_uuid, device_secret_bytes).
 pub(crate) fn enrolled_golden() -> (tempfile::TempDir, PathBuf, [u8; 16], Vec<u8>) {
     let tmp = tempfile::tempdir().unwrap();
     let vault = tmp.path().join("casual");
-    copy_dir_all(&golden_vault_dir(), &vault).unwrap();
+    copy_dir_recursive(&golden_vault_dir(), &vault);
 
     let pw = SecretBytes::from(golden_password().as_slice());
     let mut rng = rand_core::OsRng;

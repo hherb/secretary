@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::convergence_helpers::{copy_dir_all, Device};
+use crate::convergence_helpers::{copy_dir_recursive, Device};
 
 /// The reconciled shared folder both devices sync against. Owns its TempDir.
 pub struct SharedFolder {
@@ -30,7 +30,7 @@ pub fn reconcile(
 ) -> SharedFolder {
     let tmp = tempfile::tempdir().expect("tempdir");
     let folder = tmp.path().to_path_buf();
-    copy_dir_all(canonical.folder(), &folder).expect("copy canonical into shared");
+    copy_dir_recursive(canonical.folder(), &folder);
 
     if let Some(merger_dev) = merger {
         let merger_uuid = merger_dev.device_uuid();

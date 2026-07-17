@@ -129,7 +129,8 @@ mod tests {
     /// matches `bip39::Mnemonic::from_entropy(pinned_entropy).to_string()`.
     const VAULT_002_PHRASE: &[u8] = b"debate pride tunnel elder caution media glass joke that rabbit mean write eager across furnace volume lawn cage decline fat path guess slogan hunt";
 
-    const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
+    use crate::test_support::VAULT_001_PASSWORD;
+
     const VAULT_001_OWNER_DISPLAY_NAME: &str = "Owner";
     /// Pinned KAT: hex `bf08a3300cd994b877e1a15baa28df35` from
     /// golden_vault_001_inputs.json. If this changes, all FFI smoke

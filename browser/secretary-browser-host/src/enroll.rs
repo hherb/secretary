@@ -122,13 +122,13 @@ fn scrub_string(s: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{copy_dir_all, golden_password, golden_vault_dir};
+    use crate::test_support::{copy_dir_recursive, golden_password, golden_vault_dir};
     use crate::vault::per_fill_count;
 
     fn tmp_casual() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let vault = tmp.path().join("casual");
-        copy_dir_all(&golden_vault_dir(), &vault).unwrap();
+        copy_dir_recursive(&golden_vault_dir(), &vault);
         (tmp, vault)
     }
 
