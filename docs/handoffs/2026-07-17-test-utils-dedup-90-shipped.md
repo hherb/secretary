@@ -25,7 +25,7 @@
   - *`golden_vault_001_password()` added to `secretary-test-utils`* (fixture-derived string-scan of `golden_vault_001_inputs.json`, same dependency-lean pattern as the cli's scan helper) and the 5 bridge integration-bin `VAULT_001_PASSWORD` consts converted to it — the cfg(test)-visibility blocker never applied to the test-utils route.
   - *Drift-detection made literal:* bridge `test_support::VAULT_001_PASSWORD`'s doc claimed the fixture builder kept it honest; a direct `#[test] vault_001_password_matches_inputs_json` now asserts const == inputs-JSON on every test run, and the doc points at it.
   - *`convergence_helpers/device.rs` aligned* to the module's `copy_dir_recursive` re-export (was the one caller bypassing it via the fully-qualified `secretary_test_utils::` path).
-  - *Known remaining (out of review scope, follow-up issue drafted):* golden-password dups outside the bridge — cli ×2 `GOLDEN_VAULT_PASSWORD` consts + ×2 scan helpers, uniffi ×4 inline literals, desktop ×2 consts, browser-host `golden_password()` — all now one-line conversions to the test-utils helper.
+  - *Known remaining (out of review scope, filed as #450):* golden-password dups outside the bridge — cli ×2 `GOLDEN_VAULT_PASSWORD` consts + ×2 scan helpers, uniffi ×4 inline literals, desktop ×2 consts, browser-host `golden_password()` — all now one-line conversions to the test-utils helper.
 
 ### Acceptance (all green at HEAD, run in `.worktrees/test-utils-90`)
 ```bash
