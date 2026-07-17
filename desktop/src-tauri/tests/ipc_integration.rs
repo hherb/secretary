@@ -207,7 +207,9 @@ fn successful_unlock_records_recent_vault_and_prefills_next_session() {
     let canonical_golden = canonicalize_for_auth(&golden_vault_path()).unwrap();
     let recorded = secretary_desktop::recent_vault::load_recent_in(device_dir.path())
         .expect("successful unlock records the vault folder");
-    assert_eq!(recorded, canonical_golden);
+    // The record stores the folder as the unlock received it; the pre-fill
+    // side canonicalizes on read — compare in canonical space.
+    assert_eq!(canonicalize_for_auth(&recorded).unwrap(), canonical_golden);
 
     // Relaunch analogue: fresh session over the same device dir.
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
@@ -219,6 +221,24 @@ fn successful_unlock_records_recent_vault_and_prefills_next_session() {
     let dto = unlock::unlock_with_password_impl(&state, &display, GOLDEN_VAULT_PASSWORD.as_bytes())
         .expect("pre-filled path passes the approval gate and unlocks");
     assert_eq!(dto.vault_uuid_hex.len(), 32);
+}
+
+/// #446 structural guard: against an UNLOCKED session the command is inert —
+/// `Ok(None)`, no slot re-seeded. The slot consumers are all
+/// `AlreadyUnlocked`-guarded anyway, but the guard must be enforced here, not
+/// merely emergent from today's consumer set.
+#[test]
+fn use_recent_vault_is_inert_on_an_unlocked_session() {
+    let (state, _device_dir) = unlocked_state();
+    // recent.json exists at this point (the unlock recorded it) — the guard,
+    // not a missing record, is what yields None.
+    assert_eq!(recent::use_recent_vault_impl(&state).unwrap(), None);
+    let session = state.lock().unwrap();
+    assert!(!session.is_path_approved(
+        PathPurpose::VaultFolder,
+        &golden_vault_path(),
+        secretary_desktop::path_auth::MatchMode::Exact
+    ));
 }
 
 /// #446 fail-safe: a FAILED unlock must not update `recent.json` — failed

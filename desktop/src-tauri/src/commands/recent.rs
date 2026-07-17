@@ -14,11 +14,16 @@
 //! a vault (moved, deleted, emptied) all yield `Ok(None)` and leave the
 //! approval slot untouched.
 //!
-//! Calling this against an *unlocked* session (which the frontend never does)
-//! is inert: the only consumers of the `VaultFolder` slot — `unlock` and
-//! `repair` — both reject with `AlreadyUnlocked` first, so re-seeding grants a
-//! compromised webview no post-unlock capability (the #353 threat
-//! `populate_unlocked`'s approval-clear defends against).
+//! Two structural guards keep the non-gesture seed harmless:
+//! - **Locked sessions only.** Against an unlocked session the command
+//!   returns `None` without touching the slot, so it can never re-establish
+//!   the approval that `populate_unlocked`'s post-unlock clear revoked — the
+//!   guard is enforced here, not merely emergent from today's slot consumers
+//!   all rejecting `AlreadyUnlocked`.
+//! - **Never clobbers a pick.** Seeding uses `approve_path_if_vacant`: if a
+//!   `pick_vault_folder` choice already occupies the slot (the lookup and the
+//!   picker are concurrent by design), the user's pick wins and this returns
+//!   `None`.
 
 use std::sync::Mutex;
 
@@ -44,8 +49,21 @@ pub async fn use_recent_vault(
 /// after seeding the `VaultFolder` approval slot, or `None` (with the slot
 /// untouched) when there is nothing usable to pre-fill.
 pub fn use_recent_vault_impl(state: &Mutex<VaultSession>) -> Result<Option<String>, AppError> {
-    let mut session = lock_session(state)?;
-    let Some(stored) = recent_vault::load_recent_in(&session.device_data_dir_clone()) else {
+    // Short lock: refuse post-unlock use structurally (not merely because
+    // today's slot consumers happen to reject `AlreadyUnlocked`) and grab the
+    // device dir.
+    let data_dir = {
+        let session = lock_session(state)?;
+        if session.is_unlocked() {
+            return Ok(None);
+        }
+        session.device_data_dir_clone()
+    };
+
+    // Filesystem work OUTSIDE the session lock (mirrors
+    // `unlock_with_password_impl`): a stalled network mount must not block
+    // the auto-lock tick or concurrent commands on the session mutex.
+    let Some(stored) = recent_vault::load_recent_in(&data_dir) else {
         return Ok(None);
     };
     let Some(canonical) = canonicalize_for_auth(&stored) else {
@@ -58,7 +76,13 @@ pub fn use_recent_vault_impl(state: &Mutex<VaultSession>) -> Result<Option<Strin
     if validate_vault_path(&canonical, &display).is_err() {
         return Ok(None);
     }
-    session.approve_path(PathPurpose::VaultFolder, canonical);
+
+    // Re-lock only to seed — and never clobber: if a picker choice landed
+    // while this lookup was doing IO (or before it was even dispatched), the
+    // user's fresher pick wins and the pre-fill is abandoned.
+    if !lock_session(state)?.approve_path_if_vacant(PathPurpose::VaultFolder, canonical) {
+        return Ok(None);
+    }
     Ok(Some(display))
 }
 
@@ -70,10 +94,13 @@ mod tests {
     use tempfile::tempdir;
 
     /// Make `dir` pass `validate_vault_path`'s file-presence check (the
-    /// cryptographic proof is the bridge's job, not this command's).
+    /// cryptographic proof is the bridge's job, not this command's). Uses the
+    /// same filename constants as the real check so a vault-shape change can
+    /// never leave this fixture silently green against a stale shape.
     fn make_vault_shaped(dir: &Path) {
-        std::fs::write(dir.join("vault.toml"), b"[v1]\n").unwrap();
-        std::fs::write(dir.join("identity.bundle.enc"), b"sealed").unwrap();
+        use crate::commands::unlock::{IDENTITY_BUNDLE_FILENAME, VAULT_TOML_FILENAME};
+        std::fs::write(dir.join(VAULT_TOML_FILENAME), b"[v1]\n").unwrap();
+        std::fs::write(dir.join(IDENTITY_BUNDLE_FILENAME), b"sealed").unwrap();
     }
 
     fn state_with_device_dir(device_dir: &Path) -> Mutex<VaultSession> {
@@ -148,6 +175,37 @@ mod tests {
         assert!(!session.is_path_approved(
             PathPurpose::VaultFolder,
             empty_dir.path(),
+            MatchMode::Exact
+        ));
+    }
+
+    /// Race guard: if the user already picked a folder (the picker seeded the
+    /// slot) before this lookup's backend work finished, the fresher pick must
+    /// win — the late seed is skipped and `None` returned so the frontend
+    /// leaves the user's choice alone.
+    #[test]
+    fn a_prior_user_pick_is_not_clobbered_by_a_late_lookup() {
+        let device_dir = tempdir().unwrap();
+        let recorded_vault = tempdir().unwrap();
+        make_vault_shaped(recorded_vault.path());
+        recent_vault::save_recent_in(device_dir.path(), recorded_vault.path()).unwrap();
+
+        let picked = tempdir().unwrap();
+        let state = state_with_device_dir(device_dir.path());
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(picked.path()).unwrap(),
+        );
+
+        assert_eq!(use_recent_vault_impl(&state).unwrap(), None);
+        let session = state.lock().unwrap();
+        assert!(
+            session.is_path_approved(PathPurpose::VaultFolder, picked.path(), MatchMode::Exact),
+            "the user's pick must survive a late recent-vault seed"
+        );
+        assert!(!session.is_path_approved(
+            PathPurpose::VaultFolder,
+            recorded_vault.path(),
             MatchMode::Exact
         ));
     }

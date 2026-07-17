@@ -65,33 +65,9 @@ pub fn load_recent_in(data_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Atomically persist `folder` as the most recently opened vault. Creates the
-/// `secretary-desktop/` subtree on first write. Uses the same exact-pinned
-/// `tempfile` persist as the presence-pref and device-UUID paths.
+/// `secretary-desktop/` subtree on first write. IO edge.
 pub fn save_recent_in(data_dir: &Path, folder: &Path) -> Result<(), AppError> {
-    let path = recent_path_in(data_dir);
-    let dir = path.parent().expect("recent path has a parent");
-    std::fs::create_dir_all(dir).map_err(|e| AppError::Io {
-        detail: format!("mkdir -p {}: {}", dir.display(), e),
-    })?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| AppError::Io {
-        detail: format!("tempfile new_in {}: {}", dir.display(), e),
-    })?;
-    std::io::Write::write_all(&mut tmp, &serialize_recent(folder)).map_err(|e| AppError::Io {
-        detail: format!(
-            "write {} (tempfile for {}): {}",
-            tmp.path().display(),
-            path.display(),
-            e
-        ),
-    })?;
-    tmp.persist(&path).map_err(|e| AppError::Io {
-        detail: format!(
-            "atomic persist of recent-vault file {}: {}",
-            path.display(),
-            e.error
-        ),
-    })?;
-    Ok(())
+    crate::fs_atomic::persist_atomically(&recent_path_in(data_dir), &serialize_recent(folder))
 }
 
 #[cfg(test)]

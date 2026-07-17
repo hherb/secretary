@@ -190,6 +190,17 @@ impl VaultSession {
         self.approvals.approve(purpose, canonical);
     }
 
+    /// Non-clobbering variant for non-gesture seeders (#446): records the
+    /// approval only if `purpose` has no slot yet, returning whether it landed.
+    /// A path the user actually picked always beats a stored one.
+    pub fn approve_path_if_vacant(
+        &mut self,
+        purpose: PathPurpose,
+        canonical: std::path::PathBuf,
+    ) -> bool {
+        self.approvals.approve_if_vacant(purpose, canonical)
+    }
+
     /// True iff `requested` is authorized for `purpose` under `mode` (#353).
     pub fn is_path_approved(
         &self,
@@ -378,25 +389,15 @@ impl VaultSession {
         // successful open (both `unlock` and `repair` funnel through here), so
         // failed guesses are never logged. Best-effort: a failed write of this
         // UX nicety must not fail — or roll back — an unlock that already
-        // succeeded. Stored canonicalized so `recent.json` matches the display
-        // string the picker would have produced for the same folder; if
-        // canonicalization fails (a race with concurrent folder removal), skip
-        // recording rather than store a path the pre-fill would reject anyway.
-        match crate::path_auth::canonicalize_for_auth(folder) {
-            Some(canonical) => {
-                if let Err(e) = recent_vault::save_recent_in(&self.device_data_dir, &canonical) {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to record recent vault after unlock; pre-fill \
-                         will fall back to the previous record (or none)"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                folder = %folder.display(),
-                "vault folder no longer canonicalizes after unlock; skipping \
-                 recent-vault record"
-            ),
+        // succeeded. Stored as given (the approval gate already vetted it);
+        // the pre-fill side (`use_recent_vault`) re-canonicalizes and
+        // re-validates on read, so no normalization is needed here.
+        if let Err(e) = recent_vault::save_recent_in(&self.device_data_dir, folder) {
+            tracing::warn!(
+                error = %e,
+                "failed to record recent vault after unlock; pre-fill \
+                 will fall back to the previous record (or none)"
+            );
         }
     }
 

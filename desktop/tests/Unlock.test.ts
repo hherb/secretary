@@ -553,3 +553,13 @@ describe('Unlock — recent-vault pre-fill (#446)', () => {
     expect(folderInputOf(container).value).toBe('/picked/by/user');
   });
 });
+
+describe('Unlock — password focus on any pre-filled mount (#446 review follow-up)', () => {
+  it('created-vault seeding also lands focus in the password field', async () => {
+    createdVaultPath.set('/vaults/created');
+    const { getByLabelText } = render(Unlock);
+
+    const passwordInput = getByLabelText(/password/i) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(passwordInput));
+  });
+});

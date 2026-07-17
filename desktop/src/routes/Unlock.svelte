@@ -71,7 +71,12 @@
   // lookup is in flight wins over the late-resolving result. Fail-safe: a
   // lookup error just leaves the dialog empty (fresh-install behavior).
   onMount(() => {
-    if (folderPath.length > 0) return;
+    if (folderPath.length > 0) {
+      // Already seeded (the created-vault banner) — same
+      // type-password-and-Enter UX as the recent-vault pre-fill.
+      passwordInput?.focus();
+      return;
+    }
     useRecentVault()
       .then((recent) => {
         if (recent && folderPath.length === 0) {

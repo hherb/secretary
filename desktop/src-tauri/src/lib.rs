@@ -16,6 +16,7 @@ pub mod commands;
 pub mod constants;
 pub mod dtos;
 pub mod errors;
+pub mod fs_atomic;
 pub mod path_auth;
 pub mod presence_pref;
 pub mod recent_vault;
