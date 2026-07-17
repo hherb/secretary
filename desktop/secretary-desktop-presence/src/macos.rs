@@ -103,11 +103,6 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
         let _ = tx.send(result);
     }));
 
-    // TEMPORARY #442 on-hardware-proof instrumentation — REMOVE BEFORE MERGE.
-    // This line firing is the evidence that evaluatePolicy was invoked; its
-    // ABSENCE during a toggle-OFF gated write is the toggle-OFF proof.
-    eprintln!("[#442-proof] evaluatePolicy: presenting Touch ID sheet (reason={reason:?})");
-
     // SAFETY: `context` and `reason_ns` are alive for the duration of the
     // call; the reply block is refcounted (`RcBlock`), so the framework's
     // retained copy outlives this frame even though evaluation completes
@@ -126,10 +121,6 @@ pub(crate) fn evaluate(reason: &str) -> PresenceOutcome {
         Ok(result) => classify(result),
         Err(_) => PresenceOutcome::Unavailable,
     };
-    // TEMPORARY #442 on-hardware-proof instrumentation — REMOVE BEFORE MERGE.
-    // Logs the classified outcome so each proof scenario (authenticated /
-    // cancelled / fallback) is log-correlated with what the user saw.
-    eprintln!("[#442-proof] evaluatePolicy outcome: {outcome:?}");
     // Keep OUR strong reference to the context alive until AFTER the reply:
     // dropping releases the reference (the context deallocates — and thereby
     // invalidates, cancelling any in-flight evaluation — only if ours was the
