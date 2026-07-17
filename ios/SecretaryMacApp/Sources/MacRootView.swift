@@ -37,11 +37,13 @@ struct MacRootView: View {
                 onOpen: { enterUnlock($0) },
                 onOpenDemo: { try openDemo() })
         case .unlock(let scoped):
-            // TEMPORARY stub until Task 4 adds MacUnlockView.
-            VStack(spacing: 12) {
-                Text("Unlock route (stub) — \(String(decoding: scoped.pathData, as: UTF8.self))")
-                Button("Back") { scoped.end(); route = .select }
-            }.padding(24).frame(minWidth: 460, minHeight: 200)
+            MacUnlockView(
+                viewModel: UnlockViewModel(port: UniffiVaultOpenPort(), vaultPath: scoped.pathData),
+                vaultPath: scoped.pathData,
+                biometricEnrolled: biometricEnrolled,
+                biometricError: $biometricError,
+                rememberDevice: $rememberDevice,
+                onOpened: { session, gate in enterBrowse(session, gate: gate, scoped: scoped) })
         case .browse:
             // TEMPORARY stub until Task 5 adds MacBrowseView.
             Text("Browse route (stub)").padding(24)
@@ -53,6 +55,14 @@ struct MacRootView: View {
         rememberDevice = false
         biometricEnrolled = makePerVaultDeviceUnlock(vaultPath: scoped.pathData).coordinator.isEnrolled
         route = .unlock(scoped)
+    }
+
+    private func enterBrowse(_ session: VaultSession, gate: RetargetableReauthGate,
+                             scoped: ScopedVaultPath) {
+        let vm = VaultBrowseViewModel(session: session, gate: gate,
+                                      trashPort: session as? TrashPort,
+                                      settingsPort: session as? SettingsPort)
+        route = .browse(vm, scoped)
     }
 
     /// Stage + open the bundled golden vault behind an explicit opt-in (SKELETON
