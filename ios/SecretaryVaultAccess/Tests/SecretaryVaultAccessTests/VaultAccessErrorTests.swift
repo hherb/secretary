@@ -23,4 +23,75 @@ final class VaultAccessErrorTests: XCTestCase {
         XCTAssertNotEqual(VaultAccessError.blockNotFound("x"), .invalidArgument("x"))
         XCTAssertNotEqual(VaultAccessError.folderInvalid("y"), .other("y"))
     }
+
+    // One representative value per case — the single source the description tests
+    // iterate over. Keeping it exhaustive means a newly-added case that forgets a
+    // friendly description is caught here (add its sample and the loop asserts it).
+    private static let oneOfEachCase: [VaultAccessError] = [
+        .wrongPasswordOrCorrupt, .wrongMnemonicOrCorrupt, .invalidMnemonic("bad words"),
+        .wrongDeviceSecretOrCorrupt, .vaultMismatch, .corruptVault("blk"),
+        .blockNotFound("blk"), .recordNotFound("rec"), .invalidArgument("arg"),
+        .folderInvalid("/path"), .reauthFailed("cancelled"), .other("boom"),
+    ]
+
+    // #454: every case must surface a friendly, non-nil `errorDescription`, so a
+    // user-facing `localizedDescription` never falls back to the raw enum-case name
+    // (`String(describing:)`) or the "The operation couldn't be completed" default.
+    // `as? LocalizedError` compiles before the conformance exists (yielding nil at
+    // runtime → a clean RED), then resolves to the real description once it does.
+    func testEveryCaseSurfacesAFriendlyDescription() {
+        for e in Self.oneOfEachCase {
+            let desc = (e as? LocalizedError)?.errorDescription
+            XCTAssertNotNil(desc, "case \(e) must have a friendly errorDescription")
+            guard let desc else { continue }
+            XCTAssertFalse(desc.isEmpty, "case \(e) description must not be empty")
+            // Never leak a raw Swift case identifier to the user.
+            XCTAssertFalse(desc.contains("OrCorrupt"), "case \(e) leaks a raw case name")
+            XCTAssertFalse(desc.contains("VaultAccessError"), "case \(e) leaks the type name")
+        }
+    }
+
+    // The bridged `localizedDescription` must resolve to our `errorDescription`,
+    // not the Foundation default — this is what proves the `LocalizedError`
+    // conformance is actually wired, not merely a stray `errorDescription` property.
+    func testLocalizedDescriptionUsesErrorDescription() {
+        for e in Self.oneOfEachCase {
+            XCTAssertEqual(e.localizedDescription, (e as? LocalizedError)?.errorDescription,
+                           "localizedDescription must delegate to errorDescription for \(e)")
+        }
+    }
+
+    // #454 invariant: the carried diagnostic payload (paths, uuids, underlying
+    // reasons) must NEVER be interpolated into the user-facing description — it is
+    // technical detail retained on the typed error for logs/diagnostics only. A
+    // distinctive sentinel payload per carrying case would surface in the copy if a
+    // future edit re-added `\(detail)`; this fails closed on any such regression.
+    // Exhaustive over the payload-carrying cases (the payload-less cases have
+    // nothing to leak).
+    func testCarriedDiagnosticIsNeverInterpolatedIntoCopy() {
+        let sentinel = "diag_sentinel_9f8e7d6c"
+        let carrying: [VaultAccessError] = [
+            .invalidMnemonic(sentinel), .corruptVault(sentinel), .blockNotFound(sentinel),
+            .recordNotFound(sentinel), .invalidArgument(sentinel), .folderInvalid(sentinel),
+            .reauthFailed(sentinel), .other(sentinel),
+        ]
+        for e in carrying {
+            let desc = (e as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertFalse(desc.contains(sentinel),
+                           "case \(e) leaked its diagnostic payload into user-facing copy")
+        }
+    }
+
+    // Anti-oracle invariant (crypto-design): the three folded "…OrCorrupt" cases must
+    // NEVER present the credential as definitively wrong — the vault-damage possibility
+    // stays visible in every one, so the message can never be read as a wrong-credential
+    // oracle. Standardised on the word "damaged" across all three.
+    func testFoldedCasesAlwaysSurfaceTheDamagePossibility() {
+        for e in [VaultAccessError.wrongPasswordOrCorrupt, .wrongMnemonicOrCorrupt,
+                  .wrongDeviceSecretOrCorrupt] {
+            let desc = ((e as? LocalizedError)?.errorDescription ?? "").lowercased()
+            XCTAssertTrue(desc.contains("damaged"),
+                          "folded case \(e) must keep the corruption possibility visible")
+        }
+    }
 }

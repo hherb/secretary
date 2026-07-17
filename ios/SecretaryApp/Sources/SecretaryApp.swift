@@ -171,12 +171,19 @@ private struct RootView: View {
                                             DispatchQueue.global(qos: .userInitiated).async {
                                                 var password = password
                                                 // Best-effort wipe of our copy once
-                                                // enroll has consumed it (#453). Bytes
-                                                // handed across the FFI are zeroized
-                                                // Rust-side; the SwiftUI String and the
-                                                // concurrent sync copy remain out of
-                                                // reach — Swift value semantics preclude
-                                                // a full guarantee (see `zeroize`).
+                                                // enroll has consumed it (#453). Genuine
+                                                // best-effort, NOT a guarantee: this
+                                                // buffer COW-shares with the concurrent
+                                                // `syncAtUnlock` task above, so while that
+                                                // share is live `zeroize` COW-copies and
+                                                // clears only a throwaway — it bites the
+                                                // real bytes only in the window where this
+                                                // task uniquely owns them (see
+                                                // `testZeroizeOnlyClearsAUniquelyOwnedBuffer`).
+                                                // The SwiftUI String source and the
+                                                // FFI-crossing bytes (zeroized Rust-side)
+                                                // are out of reach regardless — Swift
+                                                // value semantics preclude a full wipe.
                                                 // Local `var` inside this `@Sendable`
                                                 // closure — no mutable capture across
                                                 // domains.

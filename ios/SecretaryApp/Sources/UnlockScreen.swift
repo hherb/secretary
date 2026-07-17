@@ -107,7 +107,7 @@ struct UnlockScreen: View {
 
                 if case .failed(let err) = viewModel.state {
                     Section("Error") {
-                        Text(String(describing: err)).font(.footnote.monospaced()).foregroundStyle(.red)
+                        Text(err.localizedDescription).font(.footnote).foregroundStyle(.red)
                     }
                 }
 

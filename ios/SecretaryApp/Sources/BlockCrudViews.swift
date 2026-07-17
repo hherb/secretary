@@ -68,7 +68,7 @@ struct BlockNameSheet: View {
                 if let error = viewModel.error {
                     // A full-screen sheet hides the parent list's error section, so
                     // surface a failed write here (the old .alert left it merely behind).
-                    Text(String(describing: error))
+                    Text(error.localizedDescription)
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }

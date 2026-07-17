@@ -19,3 +19,18 @@ public enum VaultSelectionError: Error, Equatable {
     /// The persisted bookmark could not be resolved to a folder (vault moved/deleted).
     case locationUnavailable(String)
 }
+
+extension VaultSelectionError: LocalizedError {
+    /// Friendly, user-facing message for each case (#454) — see the matching
+    /// note on `VaultAccessError.errorDescription`. The `locationUnavailable`
+    /// diagnostic `String` stays on the typed error's associated value for
+    /// diagnostics; it is never interpolated into the user-facing copy.
+    public var errorDescription: String? {
+        switch self {
+        case .noVaultSelected:
+            return "No vault is selected."
+        case .locationUnavailable:
+            return "The vault location is unavailable. It may have been moved, renamed, or deleted."
+        }
+    }
+}
