@@ -27,9 +27,7 @@ git diff main -- . ':!docs' ':!desktop/README.md' ':!README.md' ':!ROADMAP.md'  
 
 ## (2) What's next
 
-- **2 drafted issues awaiting user OK to file** (drafts in `.worktrees/touchid-hw-proof-442/.superpowers/sdd/`, copy out before dropping the worktree if not yet filed):
-  - `issue-recent-vault-prefill.md` — unlock dialog pre-fills the most recently opened vault (desktop-local `recent.json`, path-auth slot routed).
-  - `issue-desktop-biometric-unlock.md` — biometric *unlock* for the Tauri client via the ADR-0009 device-slot path; decision framing: implement in Tauri (SE/Keychain adapter crate) vs wait for the D.5 native-macOS cutover.
+- **2 user-requested follow-up issues FILED** (user-approved at ship): **[#446](https://github.com/hherb/secretary/issues/446)** unlock dialog pre-fills the most recently opened vault (desktop-local `recent.json`, path-auth slot routed — a small UX slice); **[#447](https://github.com/hherb/secretary/issues/447)** biometric *unlock* for the Tauri client via the ADR-0009 device-slot path — a DECISION issue (implement SE/Keychain adapter in Tauri vs wait for the D.5 native-macOS cutover), not a casual slice.
 - **#443 / #444** — Linux (fprintd/polkit) / Windows Hello presence providers (open).
 - **#417 — mobile Trash purge-notice render-layer test** (iOS most tractable; backfills #434's sheet).
 - **#90 — Rust test-helper dedup** (~13 `copy_dir_recursive` copies).
@@ -48,8 +46,8 @@ git diff main -- . ':!docs' ':!desktop/README.md' ':!README.md' ':!ROADMAP.md'  
 ```bash
 cd /Users/hherb/src/secretary
 git fetch --prune origin && git checkout main && git pull --ff-only origin main
-# After the PR merges, drop the branch + worktree (squash-merge leaves it "not fully merged"):
-#   (FIRST copy .worktrees/touchid-hw-proof-442/.superpowers/sdd/issue-*.md out if the 2 issues aren't filed yet)
+# After the PR merges, drop the branch + worktree (squash-merge leaves it "not fully merged";
+# the 2 follow-up issues are FILED as #446/#447, so nothing needs rescuing from the worktree):
 #   git worktree remove .worktrees/touchid-hw-proof-442 && git branch -D feature/touchid-hw-proof-442
 git worktree list && git status -s
 # If resuming THIS branch for fixups (bind histories first — closes the add/add gap on the handoff doc):
@@ -66,6 +64,6 @@ git worktree list && git status -s
 
 - **State on close:** PR open on `feature/touchid-hw-proof-442` (worktree `.worktrees/touchid-hw-proof-442`), closing issue **#442**. 4 commits: instrumentation + revert + docs + handoff. Net code diff vs main: zero.
 - **Acceptance:** all four proof arms evidenced (captured log + user-observed behaviour, mapped above); crate tests + fmt green; PR body carries `Closes #442`.
-- **Next:** file the 2 drafted issues (user OK pending) / #443 / #444 / #417 / #90 / user priority.
+- **Next:** #446 (recent-vault prefill, small) / #447 (biometric-unlock decision) / #443 / #444 / #417 / #90 / user priority.
 - **README:** Touch ID row proof-date updated; desktop/README gained the signing section. **ROADMAP:** D.1.17 proof recorded.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-07-17-touchid-hw-proof-442-shipped.md`.
