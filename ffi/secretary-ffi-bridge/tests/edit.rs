@@ -12,9 +12,8 @@ use secretary_ffi_bridge::{
     resurrect_record, tombstone_record, BlockReadOutput, FieldInput, FieldInputValue,
     OpenVaultManifest, Record, RecordContent, UnlockedIdentity,
 };
-use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
-const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 const DEVICE_UUID: [u8; 16] = [0x07; 16];
 
 /// Opened writable golden-001 vault. Holds the tempdir alive for the test's
@@ -27,7 +26,7 @@ struct Opened {
 
 fn open_writable_golden_001() -> Opened {
     let tmp = copy_dir_to_tempdir(&core_test_data_dir().join("golden_vault_001"));
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+    let out = open_vault_with_password(tmp.path(), &golden_vault_001_password())
         .expect("open writable copy of golden_vault_001");
     Opened {
         _tmp: tmp,

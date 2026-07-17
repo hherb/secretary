@@ -12,20 +12,18 @@ use secretary_ffi_bridge::{
     open_vault_with_password, read_block, save_block, BlockInput, FfiVaultError, FieldInput,
     FieldInputValue, OpenVaultManifest, RecordInput, UnlockedIdentity,
 };
-use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
 // ---------------------------------------------------------------------------
 // Test fixture: writable golden_vault_001 copy
 // ---------------------------------------------------------------------------
-
-const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 
 /// Open a writable copy of golden_vault_001 in a fresh tempdir. The
 /// tempdir is returned alongside the handles so the caller holds it
 /// alive for the test's duration; dropping it cleans up the directory.
 fn fresh_writable_vault() -> (tempfile::TempDir, UnlockedIdentity, OpenVaultManifest) {
     let tmp = copy_dir_to_tempdir(&core_test_data_dir().join("golden_vault_001"));
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+    let out = open_vault_with_password(tmp.path(), &golden_vault_001_password())
         .expect("open writable copy of golden_vault_001");
     (tmp, out.identity, out.manifest)
 }
@@ -173,7 +171,7 @@ fn save_block_persists_to_disk_visible_to_fresh_open() {
     }
 
     // Re-open the same on-disk vault.
-    let out2 = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).expect("re-open");
+    let out2 = open_vault_with_password(tmp.path(), &golden_vault_001_password()).expect("re-open");
     let summary = out2
         .manifest
         .find_block(&NEW_BLOCK_UUID)
@@ -542,7 +540,7 @@ fn save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk() {
     //     is updated even though the bridge handle is gone. Re-opening
     //     the vault decodes the re-signed manifest, lists the new
     //     block, and the block file decrypts back to the original input.
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+    let out = open_vault_with_password(tmp.path(), &golden_vault_001_password())
         .expect("re-open after mid-call race");
     let summary = out
         .manifest

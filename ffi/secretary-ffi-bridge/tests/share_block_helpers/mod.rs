@@ -18,22 +18,19 @@ use secretary_ffi_bridge::{
     open_vault_with_password, save_block, BlockInput, FieldInput, FieldInputValue,
     OpenVaultManifest, RecordInput, UnlockedIdentity,
 };
-use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
 /// Path to a fixture vault folder under `core/tests/data/`.
 pub fn fixture_folder(name: &str) -> PathBuf {
     core_test_data_dir().join(name)
 }
 
-/// Pinned password for `golden_vault_001`.
-pub const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
-
 /// Open a writable copy of `golden_vault_001` in a fresh tempdir. Returns
 /// the tempdir guard (drop to clean up) plus the live `UnlockedIdentity`
 /// and `OpenVaultManifest`.
 pub fn fresh_writable_vault() -> (tempfile::TempDir, UnlockedIdentity, OpenVaultManifest) {
     let tmp = copy_dir_to_tempdir(&fixture_folder("golden_vault_001"));
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+    let out = open_vault_with_password(tmp.path(), &golden_vault_001_password())
         .expect("open writable copy of golden_vault_001");
     (tmp, out.identity, out.manifest)
 }

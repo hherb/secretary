@@ -71,6 +71,40 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
+/// Master password of the `golden_vault_001` committed fixture, extracted
+/// from `golden_vault_001_inputs.json` at call time — fixture-derived, so
+/// it cannot drift from the vault it opens.
+///
+/// Uses a lightweight string-scan rather than a JSON-parser dependency
+/// (this crate stays dependency-lean, mirroring the cli integration tests'
+/// established pattern); the inputs file is generated and its `"password"`
+/// value contains no escaped characters (asserted by this crate's tests).
+///
+/// # Panics
+///
+/// If the inputs JSON is unreadable or has no `"password"` string field.
+pub fn golden_vault_001_password() -> Vec<u8> {
+    let path = core_test_data_dir().join("golden_vault_001_inputs.json");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let needle = "\"password\":";
+    let start = raw
+        .find(needle)
+        .unwrap_or_else(|| panic!("no \"password\" key in {}", path.display()));
+    let after_key = &raw[start + needle.len()..];
+    let first_quote = after_key
+        .find('"')
+        .unwrap_or_else(|| panic!("no opening quote after password key in {}", path.display()));
+    let rest = &after_key[first_quote + 1..];
+    let closing_quote = rest.find('"').unwrap_or_else(|| {
+        panic!(
+            "no closing quote after password value in {}",
+            path.display()
+        )
+    });
+    rest.as_bytes()[..closing_quote].to_vec()
+}
+
 /// Copy the directory tree at `src` into a fresh [`tempfile::TempDir`] and
 /// return the guard.
 ///
@@ -167,6 +201,17 @@ mod tests {
         assert_eq!(
             fs::read(src.path().join("root.txt")).unwrap(),
             b"root contents"
+        );
+    }
+
+    #[test]
+    fn golden_vault_001_password_scan_yields_a_plausible_passphrase() {
+        let pw = golden_vault_001_password();
+        let s = std::str::from_utf8(&pw).expect("password is UTF-8");
+        assert!(!s.is_empty(), "password must be non-empty");
+        assert!(
+            !s.contains('"') && !s.contains('\\'),
+            "string-scan assumes an escape-free password value, got {s:?}"
         );
     }
 
