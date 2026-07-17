@@ -65,7 +65,7 @@ struct MacUnlockView: View {
                     .disabled(isBusy || isOpening || password.isEmpty)
             }
             if case .failed(let err) = viewModel.state {
-                Section("Error") { Text(String(describing: err)).foregroundStyle(.red) }
+                Section("Error") { Text(err.localizedDescription).foregroundStyle(.red) }
             }
             if let biometricError {
                 Section("Couldn’t unlock") { Text(biometricError).foregroundStyle(.red) }

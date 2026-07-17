@@ -77,7 +77,7 @@ struct VaultBrowseScreen: View {
                 }
                 if let error = viewModel.error {
                     Section("Error") {
-                        Text(String(describing: error)).font(.footnote.monospaced()).foregroundStyle(.red)
+                        Text(error.localizedDescription).font(.footnote).foregroundStyle(.red)
                     }
                 }
             }

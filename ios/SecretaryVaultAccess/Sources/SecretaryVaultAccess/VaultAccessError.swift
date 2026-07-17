@@ -37,3 +37,48 @@ public enum VaultAccessError: Error, Equatable {
     /// Any other / unmapped failure, carried as a string (never a raw panic).
     case other(String)
 }
+
+extension VaultAccessError: LocalizedError {
+    /// Friendly, user-facing message for each case (#454). Surfacing this via
+    /// `LocalizedError` lets every call site read `error.localizedDescription`
+    /// instead of `String(describing:)` (which leaks the raw Swift case name) or
+    /// falling back to Foundation's "The operation couldn't be completed." default.
+    ///
+    /// The associated diagnostic `String`s are deliberately NOT interpolated into
+    /// the copy — they are technical detail (paths, uuids, underlying reasons) kept
+    /// for logs, not the user. Mirrors the clean-prose approach of
+    /// `settingsErrorMessage`.
+    ///
+    /// Anti-oracle: the three folded "…OrCorrupt" cases each keep the
+    /// vault-damage possibility explicitly visible, so the message can never be
+    /// read as a definitive wrong-credential signal (crypto-design). Do NOT reword
+    /// them to blame the credential alone.
+    public var errorDescription: String? {
+        switch self {
+        case .wrongPasswordOrCorrupt:
+            return "Couldn’t unlock the vault. The password may be incorrect, or the vault may be damaged."
+        case .wrongMnemonicOrCorrupt:
+            return "Couldn’t unlock the vault. The recovery phrase may be incorrect, or the vault may be damaged."
+        case .invalidMnemonic:
+            return "That recovery phrase isn’t valid. Check the words and try again."
+        case .wrongDeviceSecretOrCorrupt:
+            return "Couldn’t unlock the vault on this device. The saved device key may be invalid, or the vault may be damaged."
+        case .vaultMismatch:
+            return "This vault doesn’t match the one that was expected."
+        case .corruptVault:
+            return "The vault appears to be damaged and couldn’t be read."
+        case .blockNotFound:
+            return "That item is no longer in the vault."
+        case .recordNotFound:
+            return "That entry is no longer in the vault."
+        case .invalidArgument:
+            return "That value isn’t valid."
+        case .folderInvalid:
+            return "That folder isn’t a Secretary vault."
+        case .reauthFailed:
+            return "Re-authentication didn’t complete, so the change wasn’t saved."
+        case .other:
+            return "Something went wrong. Please try again."
+        }
+    }
+}

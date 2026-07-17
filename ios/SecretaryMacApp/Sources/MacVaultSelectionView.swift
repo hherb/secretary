@@ -53,7 +53,7 @@ struct MacVaultSelectionView: View {
 
     private func open() {
         do { onOpen(try viewModel.beginAccess()) }
-        catch { errorText = String(describing: error) }
+        catch { errorText = error.localizedDescription }
     }
 
     /// macOS folder picker. The picked folder's UTF-8 path is the "bookmark".

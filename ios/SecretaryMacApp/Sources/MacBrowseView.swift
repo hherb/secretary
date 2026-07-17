@@ -72,7 +72,7 @@ struct MacBrowseView: View {
         }
         .overlay(alignment: .bottom) {
             if let error = viewModel.error {
-                Text(String(describing: error)).foregroundStyle(.red).padding(8)
+                Text(error.localizedDescription).foregroundStyle(.red).padding(8)
             }
         }
         .onAppear { viewModel.loadBlocks() }

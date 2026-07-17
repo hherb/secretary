@@ -73,7 +73,7 @@ struct VaultSelectionScreen: View {
             if case .unavailable = viewModel.state {
                 errorText = nil
             } else {
-                errorText = String(describing: error)
+                errorText = error.localizedDescription
             }
         }
     }

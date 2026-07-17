@@ -63,8 +63,8 @@ struct RecordEditScreen: View {
                 }
                 if let err = viewModel.error {
                     Section("Error") {
-                        Text(String(describing: err))
-                            .font(.footnote.monospaced())
+                        Text(err.localizedDescription)
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                 }
