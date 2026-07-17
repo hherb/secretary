@@ -29,18 +29,20 @@
 - `ios/SecretaryVaultAccess/Sources/SecretaryVaultAccess/FileVaultLocationStore.swift` — plain-path `VaultLocationStore`.
 - `ios/SecretaryVaultAccess/Tests/SecretaryVaultAccessTests/FileVaultLocationStoreTests.swift` — its host tests.
 
-**New (SecretaryKit — hoisted shared factory):**
-- `ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift` — `makeRetargetableReauthGate` moved here, made `public`.
+**New (SecretaryKit — hoisted shared helpers, both made `public`):**
+- `ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift` — `makeRetargetableReauthGate` moved here.
+- `ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/DeviceUnlockOpen.swift` — `DeviceUnlockOpen` + `DeviceUnlockOpenResult` moved here (both apps share one copy of this security-sensitive device-secret flow — no duplication).
 
 **New (macOS app target `ios/SecretaryMacApp/Sources/`):**
 - `MacRootView.swift` — the `.select | .unlock | .browse` route state machine.
 - `MacVaultSelectionView.swift` — remembered-vault + `NSOpenPanel` + demo.
-- `MacUnlockView.swift` — password + Touch ID + "Remember this Mac"; owns gate construction.
+- `MacUnlockView.swift` — password + Touch ID + "Remember this Mac"; owns gate construction; calls the shared `DeviceUnlockOpen`.
 - `MacBrowseView.swift` — three-column `NavigationSplitView`; reveal/mask/copy; Lock.
-- `MacDeviceUnlockOpen.swift` — ported (copied) `DeviceUnlockOpen` domain flow.
 
 **Modified:**
+- `ios/SecretaryKit/Package.swift` — add the `SecretaryDeviceUnlockUI` product to the SecretaryKit target deps (needed by the hoisted `DeviceUnlockOpen`; no cycle — `SecretaryDeviceUnlockUI` does not import SecretaryKit).
 - `ios/SecretaryApp/Sources/RetargetableGateFactory.swift` — **deleted**; iOS imports the hoisted SecretaryKit factory.
+- `ios/SecretaryApp/Sources/DeviceUnlockOpen.swift` — **deleted**; iOS imports the hoisted SecretaryKit copy (call sites in `SecretaryApp.swift` already `import SecretaryKit`).
 - `ios/SecretaryMacApp/project.yml` — add the `SecretaryVaultAccess` package (products `SecretaryVaultAccess` + `SecretaryVaultAccessUI`).
 - `ios/SecretaryMacApp/Sources/SecretaryMacApp.swift` — `WindowGroup { MacRootView() }`.
 - `ios/SecretaryMacApp/Sources/MacDeviceUnlockView.swift` — **deleted** (retired as root; the demo path now flows through selection → unlock).
@@ -201,19 +203,31 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Hoist `makeRetargetableReauthGate` into SecretaryKit
+## Task 2: Hoist `makeRetargetableReauthGate` AND `DeviceUnlockOpen` into SecretaryKit
 
-Behavior-preserving relocation of the reauth-gate factory from the iOS app target into SecretaryKit (public), so both the iOS app and the new macOS app share one copy. Guarded by the iOS host tests + `run-ios-tests.sh`.
+Behavior-preserving relocation of two iOS-app-target helpers into SecretaryKit (public), so both the iOS app and the new macOS app share one copy of each — no duplication of the security-sensitive device-secret flow. Guarded by the iOS host tests + `run-ios-tests.sh`.
 
 **Files:**
+- Modify: `ios/SecretaryKit/Package.swift` (add `SecretaryDeviceUnlockUI` product to the SecretaryKit target).
 - Create: `ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift`
-- Delete: `ios/SecretaryApp/Sources/RetargetableGateFactory.swift`
-- Verify (no change needed): `ios/SecretaryApp/Sources/SecretaryApp.swift` and `DeviceUnlockOpen.swift` call `makeRetargetableReauthGate(...)` — same signature, now resolved from the imported `SecretaryKit` module.
+- Create: `ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/DeviceUnlockOpen.swift`
+- Delete: `ios/SecretaryApp/Sources/RetargetableGateFactory.swift`, `ios/SecretaryApp/Sources/DeviceUnlockOpen.swift`
+- Verify (no change needed): `ios/SecretaryApp/Sources/SecretaryApp.swift` calls `makeRetargetableReauthGate(...)`, `DeviceUnlockOpen.open(...)`, and switches on `DeviceUnlockOpenResult` — all now resolved from the imported `SecretaryKit` module.
 
 **Interfaces:**
-- Produces: `public func makeRetargetableReauthGate(session: VaultSession, vaultPath: Data, biometricUnlock: Bool) -> RetargetableReauthGate` in SecretaryKit. Consumed by iOS `SecretaryApp` + `DeviceUnlockOpen`, and by macOS `MacUnlockView` + `MacDeviceUnlockOpen` (Task 4).
+- Produces (public, in SecretaryKit): `func makeRetargetableReauthGate(session: VaultSession, vaultPath: Data, biometricUnlock: Bool) -> RetargetableReauthGate`; `enum DeviceUnlockOpenResult { case opened(VaultSession, gate: RetargetableReauthGate); case cancelled; case failed(String) }`; `enum DeviceUnlockOpen { static func open(coordinator: DeviceUnlockCoordinator, openPort: VaultOpenPort, vaultPath: Data, reason: String) async -> DeviceUnlockOpenResult }`. Consumed by iOS `SecretaryApp`, and by macOS `MacUnlockView` (Task 4).
 
-- [ ] **Step 1: Create the hoisted factory in SecretaryKit**
+- [ ] **Step 1: Add the SecretaryDeviceUnlockUI dependency to SecretaryKit**
+
+Edit `ios/SecretaryKit/Package.swift` — in the `SecretaryKit` target's `dependencies` array, add alongside the existing products:
+
+```swift
+                .product(name: "SecretaryDeviceUnlockUI", package: "SecretaryDeviceUnlock"),
+```
+
+(The `DeviceUnlockOpen` flow calls `deviceUnlockFailureDisplay`, which lives in `SecretaryDeviceUnlockUI`. No cycle: `SecretaryDeviceUnlockUI` depends only on `SecretaryDeviceUnlock`, never on SecretaryKit.)
+
+- [ ] **Step 2: Create the hoisted gate factory in SecretaryKit**
 
 Create `ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift` with the factory made `public` (verbatim body from the old iOS file, `func` → `public func`):
 
@@ -259,36 +273,125 @@ public func makeRetargetableReauthGate(session: VaultSession,
 
 > Note: `reauthWindowDefaultMs()` was referenced as `SecretaryKit.reauthWindowDefaultMs()` from the iOS app; inside SecretaryKit it is the same module, so `SecretaryKit.` is a redundant-but-valid module qualifier — keep it verbatim, or drop the `SecretaryKit.` prefix if the compiler flags the self-qualification. `reauthInitialAuthAt` and `MonotonicInstant` come from SecretaryVaultAccessUI/SecretaryVaultAccess (already imported).
 
-- [ ] **Step 2: Delete the iOS app-target copy**
+- [ ] **Step 3: Create the hoisted `DeviceUnlockOpen` in SecretaryKit**
+
+Create `ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/DeviceUnlockOpen.swift` — the verbatim body of the old iOS `DeviceUnlockOpen.swift`, with these changes only: (a) drop `import SecretaryKit` (now the same module); (b) make `DeviceUnlockOpenResult` + `DeviceUnlockOpen` + `open(...)` `public`; (c) keep `vaultAccessFailureMessage` `private`.
+
+```swift
+import Foundation
+import SecretaryDeviceUnlock
+import SecretaryDeviceUnlockUI
+import SecretaryVaultAccess
+import SecretaryVaultAccessUI
+
+/// Outcome of a biometric device-unlock open attempt.
+public enum DeviceUnlockOpenResult {
+    /// Opened successfully; `gate` is retargetable and already seeded with the
+    /// unlock instant (#284).
+    case opened(VaultSession, gate: RetargetableReauthGate)
+    /// User cancelled the biometric prompt — return to Unlock quietly (#341).
+    case cancelled
+    /// A real failure — surface this typed message on the Unlock screen (#341).
+    case failed(String)
+}
+
+/// Release the device secret behind a biometric prompt, open the vault with it,
+/// verify the opened vault matches the enrollment, and build a retargetable
+/// re-auth gate seeded at the unlock instant. Hoisted from the iOS app target into
+/// SecretaryKit (D.5.2) so the iOS and macOS apps share one copy of this
+/// security-sensitive flow (device-secret release + zeroize). Pure
+/// Foundation/domain logic — no iOS-only UI API.
+public enum DeviceUnlockOpen {
+    @MainActor
+    public static func open(
+        coordinator: DeviceUnlockCoordinator,
+        openPort: VaultOpenPort,
+        vaultPath: Data,
+        reason: String
+    ) async -> DeviceUnlockOpenResult {
+        do {
+            var cred = try await coordinator.releaseCredential(reason: reason)
+            let session: VaultSession
+            do {
+                session = try await openPort.openWithDeviceSecret(
+                    vaultPath: vaultPath, deviceUuid: cred.deviceUuid, deviceSecret: cred.secret)
+            } catch {
+                zeroize(&cred.secret)
+                let display = (error as? VaultAccessError).map(vaultAccessFailureMessage)
+                    ?? "Couldn’t open the vault. Unlock with your password."
+                return .failed(display)
+            }
+            zeroize(&cred.secret)
+
+            // Defense-in-depth: the opened vault must be the enrolled one.
+            guard session.vaultUuidHex == cred.enrolledVaultId else {
+                session.wipe()
+                return .failed("This device’s biometric enrollment is for a different vault.")
+            }
+
+            let gate = makeRetargetableReauthGate(
+                session: session, vaultPath: vaultPath, biometricUnlock: true)
+            return .opened(session, gate: gate)
+        } catch let e as DeviceUnlockError {
+            switch deviceUnlockFailureDisplay(e) {
+            case .silent:            return .cancelled
+            case .message(let text): return .failed(text)
+            }
+        } catch {
+            return .failed("Biometric unlock failed. Unlock with your password.")
+        }
+    }
+}
+
+/// A short user-facing message for a device-secret open failure (anti-oracle:
+/// wrong-secret and corruption are folded — do not distinguish).
+private func vaultAccessFailureMessage(_ e: VaultAccessError) -> String {
+    switch e {
+    case .wrongDeviceSecretOrCorrupt:
+        return "The device key couldn’t open this vault. Unlock with your password."
+    case .folderInvalid:
+        return "The vault folder is missing or unreadable."
+    default:
+        return "Couldn’t open the vault. Unlock with your password."
+    }
+}
+```
+
+> `zeroize` resolves from `SecretaryDeviceUnlock` (its `Zeroizing.swift`); `deviceUnlockFailureDisplay` + the `.silent`/`.message` enum from `SecretaryDeviceUnlockUI` (Step 1's new dep). If the compiler reports an ambiguous `zeroize` (SecretaryKit also has a `Data`-typed one in `ZeroizingData.swift`), qualify as `SecretaryDeviceUnlock.zeroize(&cred.secret)`. Do not re-implement either helper.
+
+- [ ] **Step 4: Delete the iOS app-target copies**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/d5-macos-readonly-viewer
-git rm ios/SecretaryApp/Sources/RetargetableGateFactory.swift
+git rm ios/SecretaryApp/Sources/RetargetableGateFactory.swift ios/SecretaryApp/Sources/DeviceUnlockOpen.swift
 ```
 
-- [ ] **Step 3: Verify no other change is needed**
+- [ ] **Step 5: Verify no other change is needed**
 
-The iOS call sites (`SecretaryApp.swift`, `DeviceUnlockOpen.swift`) already `import SecretaryKit`, so `makeRetargetableReauthGate(...)` now resolves from SecretaryKit unchanged. Confirm with:
+The iOS call sites in `SecretaryApp.swift` already `import SecretaryKit`, so `makeRetargetableReauthGate(...)`, `DeviceUnlockOpen.open(...)`, and `DeviceUnlockOpenResult` now resolve from SecretaryKit unchanged. Confirm with:
 
-Run: `grep -rn "makeRetargetableReauthGate" ios | grep -v Tests`
-Expected: definition now in `ios/SecretaryKit/.../RetargetableGateFactory.swift`; call sites in `SecretaryApp.swift` + `DeviceUnlockOpen.swift` unchanged.
+Run: `grep -rn "makeRetargetableReauthGate\|DeviceUnlockOpen" ios | grep -v Tests | grep -v SecretaryMacApp`
+Expected: definitions now under `ios/SecretaryKit/Sources/SecretaryKit/`; the only remaining references in `ios/SecretaryApp/` are the call sites in `SecretaryApp.swift` (no local definitions).
 
-- [ ] **Step 4: Compile-prove + host-test via the iOS runner (background + poll)**
+- [ ] **Step 6: Compile-prove + host-test via the iOS runner (background + poll)**
 
 Run in the background (multi-minute xcframework build):
 `bash ios/scripts/run-ios-tests.sh > /tmp/d52-ios.log 2>&1 &`
 Poll `/tmp/d52-ios.log` until it ends. Expected: the iOS app + SecretaryKit build and the XCTest suite pass — the hoist is behavior-preserving.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/d5-macos-readonly-viewer
-git add ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift
-git add -A ios/SecretaryApp/Sources/RetargetableGateFactory.swift
-git commit -m "refactor: hoist makeRetargetableReauthGate into SecretaryKit (D.5.2)
+git add ios/SecretaryKit/Package.swift \
+        ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/RetargetableGateFactory.swift \
+        ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/DeviceUnlockOpen.swift
+git add -A ios/SecretaryApp/Sources/RetargetableGateFactory.swift ios/SecretaryApp/Sources/DeviceUnlockOpen.swift
+git commit -m "refactor: hoist reauth-gate factory + DeviceUnlockOpen into SecretaryKit (D.5.2)
 
-Shared by the iOS app and the new macOS app; removes the app-target copy.
-Behavior-preserving move.
+Shared by the iOS app and the new macOS app; removes the app-target copies of
+both helpers (incl. the security-sensitive device-secret open flow). Adds the
+SecretaryDeviceUnlockUI dep to SecretaryKit. Behavior-preserving move.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -528,98 +631,19 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 4: `MacUnlockView` + ported `MacDeviceUnlockOpen` (unlock route)
+## Task 4: `MacUnlockView` (unlock route)
 
-Password + Touch ID + "Remember this Mac". The view owns gate construction and hands `MacRootView` a fully-opened `(VaultSession, RetargetableReauthGate)`.
+Password + Touch ID + "Remember this Mac". The view owns gate construction and hands `MacRootView` a fully-opened `(VaultSession, RetargetableReauthGate)`. It uses the shared `DeviceUnlockOpen` hoisted into SecretaryKit in Task 2 (no macOS-local copy).
 
 **Files:**
-- Create: `ios/SecretaryMacApp/Sources/MacDeviceUnlockOpen.swift` (ported from iOS `DeviceUnlockOpen.swift`, which is `internal` to `SecretaryApp` and cannot be imported).
 - Create: `ios/SecretaryMacApp/Sources/MacUnlockView.swift`
 - Modify: `ios/SecretaryMacApp/Sources/MacRootView.swift` (replace the unlock stub).
 
 **Interfaces:**
-- Consumes: `UnlockViewModel(port:vaultPath:)`, `.state` (`.idle`/`.busy`/`.unlocked(VaultSession)`/`.failed(VaultAccessError)`), `.mode`, `unlock(secret:[UInt8]) async`; `UniffiVaultOpenPort()`; `makeRetargetableReauthGate` (SecretaryKit, Task 2); `makePerVaultDeviceUnlock(vaultPath:).coordinator` (`isEnrolled`, `enroll(vaultPath:vaultId:password:) throws`); the ported `MacDeviceUnlockOpen.open(...)`.
+- Consumes: `UnlockViewModel(port:vaultPath:)`, `.state` (`.idle`/`.busy`/`.unlocked(VaultSession)`/`.failed(VaultAccessError)`), `.mode`, `unlock(secret:[UInt8]) async`; `UniffiVaultOpenPort()`; `makeRetargetableReauthGate` (SecretaryKit, Task 2); `makePerVaultDeviceUnlock(vaultPath:).coordinator` (`isEnrolled`, `enroll(vaultPath:vaultId:password:) throws`); the shared `DeviceUnlockOpen.open(...) -> DeviceUnlockOpenResult` (SecretaryKit, Task 2).
 - Produces: `MacUnlockView(viewModel:vaultPath:biometricEnrolled:biometricError:rememberDevice:onOpened:)`, where `onOpened: (VaultSession, RetargetableReauthGate) -> Void`.
 
-- [ ] **Step 1: Port the device-unlock flow**
-
-Create `ios/SecretaryMacApp/Sources/MacDeviceUnlockOpen.swift` — copy `ios/SecretaryApp/Sources/DeviceUnlockOpen.swift` verbatim, renaming the enum types to `MacDeviceUnlockOpen` / `MacDeviceUnlockOpenResult` (so there is no confusion with the iOS internal type; the macOS target has no access to the iOS one). Keep every import and every private helper (`vaultAccessFailureMessage`) in the file. Its dependencies resolve on macOS: `makeRetargetableReauthGate` (SecretaryKit, Task 2), `deviceUnlockFailureDisplay` + `zeroize` (from `SecretaryDeviceUnlockUI` / `SecretaryKit`, already macOS deps), `VaultAccessError`, `DeviceUnlockCoordinator`, `VaultOpenPort`.
-
-```swift
-import Foundation
-import SecretaryDeviceUnlock
-import SecretaryDeviceUnlockUI
-import SecretaryVaultAccess
-import SecretaryVaultAccessUI
-import SecretaryKit
-
-enum MacDeviceUnlockOpenResult {
-    case opened(VaultSession, gate: RetargetableReauthGate)
-    case cancelled
-    case failed(String)
-}
-
-/// Release the device secret behind a biometric prompt, open the vault with it,
-/// verify the opened vault matches enrollment, and build a retargetable re-auth
-/// gate seeded at the unlock instant. Ported verbatim from the iOS
-/// `DeviceUnlockOpen` (which is module-internal to `SecretaryApp`); pure
-/// Foundation/domain logic, no iOS-only UI API.
-enum MacDeviceUnlockOpen {
-    @MainActor
-    static func open(
-        coordinator: DeviceUnlockCoordinator,
-        openPort: VaultOpenPort,
-        vaultPath: Data,
-        reason: String
-    ) async -> MacDeviceUnlockOpenResult {
-        do {
-            var cred = try await coordinator.releaseCredential(reason: reason)
-            let session: VaultSession
-            do {
-                session = try await openPort.openWithDeviceSecret(
-                    vaultPath: vaultPath, deviceUuid: cred.deviceUuid, deviceSecret: cred.secret)
-            } catch {
-                zeroize(&cred.secret)
-                let display = (error as? VaultAccessError).map(vaultAccessFailureMessage)
-                    ?? "Couldn’t open the vault. Unlock with your password."
-                return .failed(display)
-            }
-            zeroize(&cred.secret)
-
-            guard session.vaultUuidHex == cred.enrolledVaultId else {
-                session.wipe()
-                return .failed("This device’s biometric enrollment is for a different vault.")
-            }
-
-            let gate = makeRetargetableReauthGate(
-                session: session, vaultPath: vaultPath, biometricUnlock: true)
-            return .opened(session, gate: gate)
-        } catch let e as DeviceUnlockError {
-            switch deviceUnlockFailureDisplay(e) {
-            case .silent:            return .cancelled
-            case .message(let text): return .failed(text)
-            }
-        } catch {
-            return .failed("Biometric unlock failed. Unlock with your password.")
-        }
-    }
-}
-
-private func vaultAccessFailureMessage(_ e: VaultAccessError) -> String {
-    switch e {
-    case .wrongDeviceSecretOrCorrupt:
-        return "The device key couldn’t open this vault. Unlock with your password."
-    case .folderInvalid:
-        return "The vault folder is missing or unreadable."
-    default:
-        return "Couldn’t open the vault. Unlock with your password."
-    }
-}
-```
-
-> If the compiler reports that `zeroize` or `deviceUnlockFailureDisplay` / the `.silent`/`.message` display enum are not visible, `grep -rn "func zeroize\|func deviceUnlockFailureDisplay" ios` to find their module and add the missing `import` (both are used by the iOS `DeviceUnlockOpen`, so they live in already-linked macOS deps). Do not re-implement them.
-
-- [ ] **Step 2: Add the unlock view**
+- [ ] **Step 1: Add the unlock view**
 
 Create `ios/SecretaryMacApp/Sources/MacUnlockView.swift`:
 
@@ -706,7 +730,7 @@ struct MacUnlockView: View {
         biometricError = nil
         let coordinator = makePerVaultDeviceUnlock(vaultPath: vaultPath).coordinator
         Task {
-            let result = await MacDeviceUnlockOpen.open(
+            let result = await DeviceUnlockOpen.open(
                 coordinator: coordinator, openPort: UniffiVaultOpenPort(),
                 vaultPath: vaultPath, reason: "Unlock your Secretary vault")
             switch result {
@@ -741,7 +765,7 @@ struct MacUnlockView: View {
 }
 ```
 
-- [ ] **Step 3: Wire the unlock route in `MacRootView`**
+- [ ] **Step 2: Wire the unlock route in `MacRootView`**
 
 In `ios/SecretaryMacApp/Sources/MacRootView.swift`, replace the `.unlock` stub case with:
 
@@ -770,16 +794,15 @@ and add the `enterBrowse` helper to `MacRootView`:
 
 (The `.browse` stub from Task 3 still renders; it is replaced in Task 5.)
 
-- [ ] **Step 4: Compile-prove the macOS app (background + poll)**
+- [ ] **Step 3: Compile-prove the macOS app (background + poll)**
 
 Run in the background: `bash ios/scripts/build-macos-app.sh > /tmp/d52-mac.log 2>&1 &`; poll. Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/d5-macos-readonly-viewer
-git add ios/SecretaryMacApp/Sources/MacDeviceUnlockOpen.swift \
-        ios/SecretaryMacApp/Sources/MacUnlockView.swift \
+git add ios/SecretaryMacApp/Sources/MacUnlockView.swift \
         ios/SecretaryMacApp/Sources/MacRootView.swift
 git commit -m "feat(macos): password + Touch ID unlock screen (D.5.2)
 
@@ -1050,4 +1073,4 @@ Author the next handoff at `docs/handoffs/2026-07-17-d5-macos-readonly-viewer-sh
 
 **Placeholder scan:** no TBD/TODO; every code step shows complete code; the two "verify the symbol/type at build time" notes (`ImportOutcome` case names, `zeroize`/`deviceUnlockFailureDisplay` visibility, `RevealPolicy.autoHideSeconds` numeric type) are explicit build-time resolutions with the exact grep to run, not hand-waves.
 
-**Type consistency:** `onOpened: (VaultSession, RetargetableReauthGate) -> Void` is consistent between `MacUnlockView` (Task 4) and `MacRootView.enterBrowse` (Task 4). `MacDeviceUnlockOpenResult.opened(VaultSession, gate:)` matches its consumer in `biometricUnlock()`. `selectedBlockHex`/`selectedRecordHex` (String uuidHex) are used consistently as `List` selection + lookup keys. `VaultBrowseViewModel(session:gate:trashPort:settingsPort:)` matches the verbatim init.
+**Type consistency:** `onOpened: (VaultSession, RetargetableReauthGate) -> Void` is consistent between `MacUnlockView` (Task 4) and `MacRootView.enterBrowse` (Task 4). `DeviceUnlockOpenResult.opened(VaultSession, gate:)` (shared, from SecretaryKit Task 2) matches its consumer in `biometricUnlock()`. `selectedBlockHex`/`selectedRecordHex` (String uuidHex) are used consistently as `List` selection + lookup keys. `VaultBrowseViewModel(session:gate:trashPort:settingsPort:)` matches the verbatim init.
