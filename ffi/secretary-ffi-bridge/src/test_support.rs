@@ -11,8 +11,9 @@ use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir};
 
 use crate::{open_vault_with_password, OpenVaultOutput};
 
-/// Pinned password for `golden_vault_001` (kept honest by the fixture
-/// builder's drift-detection assertion).
+/// Pinned password for `golden_vault_001` (kept honest by
+/// [`vault_001_password_matches_inputs_json`] below, which asserts it
+/// against the fixture's inputs JSON on every test run).
 pub(crate) const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 
 /// Path to a committed fixture folder under `core/tests/data/`.
@@ -27,4 +28,17 @@ pub(crate) fn open_writable_golden_001() -> (tempfile::TempDir, OpenVaultOutput)
     let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
         .expect("open writable copy of golden_vault_001");
     (tmp, out)
+}
+
+/// Drift detection for [`VAULT_001_PASSWORD`]: the pinned const must equal
+/// the password recorded in `golden_vault_001_inputs.json` (the fixture's
+/// source of truth). A fixture regeneration that changes the password fails
+/// here with a direct message instead of as N opaque wrong-password errors.
+#[test]
+fn vault_001_password_matches_inputs_json() {
+    assert_eq!(
+        VAULT_001_PASSWORD,
+        secretary_test_utils::golden_vault_001_password().as_slice(),
+        "VAULT_001_PASSWORD drifted from golden_vault_001_inputs.json"
+    );
 }
