@@ -61,6 +61,27 @@ final class VaultAccessErrorTests: XCTestCase {
         }
     }
 
+    // #454 invariant: the carried diagnostic payload (paths, uuids, underlying
+    // reasons) must NEVER be interpolated into the user-facing description — it is
+    // technical detail retained on the typed error for logs/diagnostics only. A
+    // distinctive sentinel payload per carrying case would surface in the copy if a
+    // future edit re-added `\(detail)`; this fails closed on any such regression.
+    // Exhaustive over the payload-carrying cases (the payload-less cases have
+    // nothing to leak).
+    func testCarriedDiagnosticIsNeverInterpolatedIntoCopy() {
+        let sentinel = "diag_sentinel_9f8e7d6c"
+        let carrying: [VaultAccessError] = [
+            .invalidMnemonic(sentinel), .corruptVault(sentinel), .blockNotFound(sentinel),
+            .recordNotFound(sentinel), .invalidArgument(sentinel), .folderInvalid(sentinel),
+            .reauthFailed(sentinel), .other(sentinel),
+        ]
+        for e in carrying {
+            let desc = (e as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertFalse(desc.contains(sentinel),
+                           "case \(e) leaked its diagnostic payload into user-facing copy")
+        }
+    }
+
     // Anti-oracle invariant (crypto-design): the three folded "…OrCorrupt" cases must
     // NEVER present the credential as definitively wrong — the vault-damage possibility
     // stays visible in every one, so the message can never be read as a wrong-credential

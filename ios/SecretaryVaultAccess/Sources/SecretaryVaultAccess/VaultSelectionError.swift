@@ -23,7 +23,8 @@ public enum VaultSelectionError: Error, Equatable {
 extension VaultSelectionError: LocalizedError {
     /// Friendly, user-facing message for each case (#454) — see the matching
     /// note on `VaultAccessError.errorDescription`. The `locationUnavailable`
-    /// diagnostic `String` is kept for logs, not interpolated into the copy.
+    /// diagnostic `String` stays on the typed error's associated value for
+    /// diagnostics; it is never interpolated into the user-facing copy.
     public var errorDescription: String? {
         switch self {
         case .noVaultSelected:

@@ -45,9 +45,11 @@ extension VaultAccessError: LocalizedError {
     /// falling back to Foundation's "The operation couldn't be completed." default.
     ///
     /// The associated diagnostic `String`s are deliberately NOT interpolated into
-    /// the copy — they are technical detail (paths, uuids, underlying reasons) kept
-    /// for logs, not the user. Mirrors the clean-prose approach of
-    /// `settingsErrorMessage`.
+    /// the copy — they are technical detail (paths, uuids, underlying reasons)
+    /// retained on the typed error's associated value for diagnostic inspection,
+    /// never shown to the user (enforced by
+    /// `testCarriedDiagnosticIsNeverInterpolatedIntoCopy`). Mirrors the clean-prose
+    /// approach of `settingsErrorMessage`.
     ///
     /// Anti-oracle: the three folded "…OrCorrupt" cases each keep the
     /// vault-damage possibility explicitly visible, so the message can never be

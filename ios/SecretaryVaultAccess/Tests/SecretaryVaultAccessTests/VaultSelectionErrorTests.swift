@@ -34,4 +34,15 @@ final class VaultSelectionErrorTests: XCTestCase {
                            "localizedDescription must delegate to errorDescription for \(e)")
         }
     }
+
+    // #454 invariant: the carried diagnostic payload is never interpolated into the
+    // user-facing copy — see the matching VaultAccessError test. `noVaultSelected`
+    // carries no payload, so `locationUnavailable` is the only case to check.
+    func testCarriedDiagnosticIsNeverInterpolatedIntoCopy() {
+        let sentinel = "diag_sentinel_9f8e7d6c"
+        let desc = (VaultSelectionError.locationUnavailable(sentinel) as? LocalizedError)?
+            .errorDescription ?? ""
+        XCTAssertFalse(desc.contains(sentinel),
+                       "locationUnavailable leaked its diagnostic payload into user-facing copy")
+    }
 }
