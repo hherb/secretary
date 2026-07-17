@@ -50,6 +50,48 @@ pnpm tauri dev                          # launches Vite dev server + Tauri windo
 # Backend changes (Rust): tauri dev auto-rebuilds + restarts (~5-10 s).
 ```
 
+## macOS signed build (Touch ID)
+
+The write re-auth Touch ID sheet (#277) is presented by `LocalAuthentication`,
+which only serves interactive biometric prompts to properly signed processes.
+Practical consequences, proven on hardware 2026-07-17
+([#442](https://github.com/hherb/secretary/issues/442)):
+
+- **A Developer-ID-signed release build presents the sheet.** Build one with:
+
+  ```bash
+  # Pick an identity from: security find-identity -v -p codesigning
+  cd desktop
+  APPLE_SIGNING_IDENTITY="Developer ID Application: <name> (<team>)" pnpm tauri build
+  # → target/release/bundle/macos/Secretary.app (signed, hardened runtime)
+  ```
+
+  Tauri applies the hardened runtime automatically. **No entitlement and no
+  Info.plist usage-description key is needed** for Touch ID on macOS (unlike
+  Face ID on iOS) — the proof ran with none.
+
+- **Unsigned / `pnpm tauri dev` builds may not present the sheet** — Apple
+  documents unentitled/non-interactive processes failing `evaluatePolicy`
+  (`LAErrorNotInteractive`-class). This is fail-safe by design: every
+  unusable-biometry outcome classifies to `Unavailable` and the write re-auth
+  falls back to the password dialog, so a dev build still works — it just
+  never shows Touch ID. (Documented from Apple's docs; not re-proven
+  empirically.)
+
+- **Watch the presence outcomes live** by launching the bundle with stderr
+  attached: `Secretary.app/Contents/MacOS/secretary-desktop` from a terminal,
+  or `open -a <path/to/Secretary.app> --stderr <logfile>`.
+
+- **Stale-copy gotcha:** Dock/Spotlight/`open -b` resolve the bundle
+  *identifier* (`org.secretary.desktop`), which prefers an installed copy in
+  `/Applications` over the one you just built. If a freshly built feature is
+  mysteriously missing, check which binary is actually running
+  (`ps -o command -p $(pgrep secretary-desktop)`).
+
+- **Reproducing the re-auth prompts:** the gate is silent inside the grace
+  window (seeded at every unlock, default 2 min) — set the Settings grace
+  window to 0 minutes to make every write prompt.
+
 ## Test layers
 
 ```bash

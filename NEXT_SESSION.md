@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-16-desktop-touchid-reauth-277-shipped.md
+docs/handoffs/2026-07-17-touchid-hw-proof-442-shipped.md
