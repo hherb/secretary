@@ -4,7 +4,7 @@
 
 ## (1) What we shipped this session
 
-### #446 — desktop recent-vault unlock pre-fill (TDD throughout; commits `<backend>` → `<frontend>` → `<docs>`)
+### #446 — desktop recent-vault unlock pre-fill (TDD throughout; commits `04a6b3cd` backend → `9c1314b1` frontend → `1e9212f9` docs → `91aa57e` review fixes)
 
 - **Backend (Rust, desktop crate only):**
   - New `desktop/src-tauri/src/recent_vault.rs` — pure/IO-split module mirroring `presence_pref.rs`: `parse_recent`/`serialize_recent` pure, `load_recent_in`/`save_recent_in` the atomic tempfile-persist edge; file lives at `<data_dir>/secretary-desktop/recent.json` (`RECENT_VAULT_FILENAME` in `constants.rs`), sibling of `devices/` + `presence/`. Absent/corrupt/empty-path → `None` (fresh-install behavior). 8 unit tests.
@@ -16,15 +16,21 @@
   - `Unlock.svelte`: `onMount` pre-fill guarded three ways — created-vault banner seeding wins (lookup skipped entirely), a user pick that lands while the lookup is in flight wins over the late result, and a lookup failure just logs + leaves the dialog empty. On pre-fill, focus lands in the password field (`bind:this`).
   - 6 new component tests + 1 ipc wrapper test; every pre-existing Unlock test runs against a default `useRecentVault → null` mock.
 - **Docs:** README status-table row for #446 (after the Touch ID row). ROADMAP unchanged — a small in-phase UX slice, no phase-state change.
+- **Pre-push review round (8-angle finder review, all findings fixed in `91aa57e`):**
+  - *Real race fixed:* a late `use_recent_vault` used to overwrite a fresher picker choice in the single `VaultFolder` slot (frontend guard protected only the display → spurious `PathNotApproved`). Now seeds via new `PathApprovals::approve_if_vacant` / `VaultSession::approve_path_if_vacant` — a user pick always wins, regardless of arrival order.
+  - *Structural guards:* the command is inert against an unlocked session (returns `None` before touching the slot — enforced, not emergent from `AlreadyUnlocked` consumers); session mutex no longer held across the command's filesystem IO (mirrors `unlock_with_password_impl`'s lock scoping — matters on stalled network mounts).
+  - *UX consistency:* created-vault seeding now also focuses the password field.
+  - *Cleanups:* write-side canonicalize dropped (read side re-canonicalizes; recorded-vs-canonical asserted in canonical space in the integration test); `make_vault_shaped` reuses unlock.rs's now-`pub(crate)` canonical filename constants; new `fs_atomic::persist_atomically` collapses the duplicated atomic tempfile-persist blocks in `recent_vault` + `presence_pref` (the settings device-UUID writer keeps its distinct `persist_noclobber` semantics).
+  - *Accepted as designed (documented, not changed):* recording lives in `populate_unlocked` (the intentional "only after a successful open" choke point — a future device-secret unlock SHOULD record); `validate_vault_path` reuse from `commands::unlock` (same predicate as the real unlock = consistency; matches the existing `session.rs → commands::repair` lateral pattern); no dedicated repair-path recording test (the choke point is shared by construction — a repair test would re-test `populate_unlocked`).
 
 ### Acceptance (all green at HEAD)
 ```bash
 cd .worktrees/recent-vault-446
-cargo test --release --workspace                                  # full workspace incl. 2 new integration tests
+cargo test --release --workspace                                  # full workspace; desktop = 225 lib + 74 integration
 cargo clippy --release --workspace --tests -- -D warnings         # clean
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace        # clean (new pub module documented)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace        # clean (new pub modules documented)
 cargo fmt --all --check                                           # clean
-cd desktop && pnpm test                                           # 673/673 (writeGateCoverage picks up the new command)
+cd desktop && pnpm test                                           # 674/674 (writeGateCoverage picks up the new command)
 cd desktop && pnpm svelte-check                                   # 0 errors 0 warnings
 ```
 Issue acceptance boxes: fresh install unchanged ✅ (component test) · prefill + password focus + unlock-without-picker ✅ (component + integration tests) · corrupt/missing recent.json = fresh install ✅ (unit + component tests) · replace-only-after-successful-unlock ✅ (integration test) · same path-auth slot, no bypass ✅ (integration test proves gate-pass; command test proves no-approval on stale).
