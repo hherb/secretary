@@ -32,8 +32,8 @@ use crate::session::VaultSession;
 /// canonical filenames, which is intentional — the desktop crate must NOT
 /// re-export bridge internals, so duplication is the lesser evil compared
 /// to a circular dep.
-const VAULT_TOML_FILENAME: &str = "vault.toml";
-const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
+pub(crate) const VAULT_TOML_FILENAME: &str = "vault.toml";
+pub(crate) const IDENTITY_BUNDLE_FILENAME: &str = "identity.bundle.enc";
 
 /// Tauri-side entry point. Thin delegating shell; logic lives in
 /// [`unlock_with_password_impl`].

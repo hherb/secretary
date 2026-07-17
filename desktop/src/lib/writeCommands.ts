@@ -99,6 +99,13 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     reason:
       'opens a native dialog and records the chosen path in a backend PathPurpose slot (#353); performs no vault mutation',
   },
+  use_recent_vault: {
+    kind: 'write',
+    gate: 'exempt',
+    wrapper: 'useRecentVault',
+    reason:
+      'pre-unlock pre-fill (#446): reads the desktop-local recent-vault record (written only by a successful unlock) and seeds it into the backend VaultFolder PathPurpose slot through the same canonicalize/validate route as pick_vault_folder (#353); performs no vault mutation and there is no unlocked session to protect',
+  },
   repair_vault: {
     kind: 'write',
     gate: 'exempt',

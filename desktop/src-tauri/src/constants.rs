@@ -47,6 +47,17 @@ pub const AUTO_LOCK_TICK_MS: u64 = 5_000;
 pub const ACTIVITY_NOTIFY_MIN_INTERVAL_MS: u64 = 2_000;
 
 // =============================================================================
+// Desktop-local state root
+// =============================================================================
+
+/// Subdirectory under the platform data dir (`dirs::data_dir()`) that roots
+/// ALL desktop-local state: the `devices/` per-vault UUID files, the
+/// `presence/` biometric prefs, and the `recent.json` recent-vault record.
+/// Named after the binary so multiple Secretary installs on the same machine
+/// don't collide.
+pub const SECRETARY_DESKTOP_SUBDIR: &str = "secretary-desktop";
+
+// =============================================================================
 // Desktop-local presence (biometric) preference (#277)
 // =============================================================================
 
@@ -59,6 +70,15 @@ pub const PRESENCE_PREF_SUBDIR: &str = "presence";
 /// vault (no pref file) opts in; the user disables it explicitly (e.g. before
 /// travelling through a high-risk area).
 pub const PRESENCE_BIOMETRIC_ENABLED_DEFAULT: bool = true;
+
+// =============================================================================
+// Desktop-local recent-vault record (#446)
+// =============================================================================
+
+/// Filename of the most-recently-opened-vault record under
+/// `<data_dir>/secretary-desktop/` — a sibling of the `devices/` and
+/// `presence/` subtrees. See `recent_vault`.
+pub const RECENT_VAULT_FILENAME: &str = "recent.json";
 
 #[cfg(test)]
 mod tests {

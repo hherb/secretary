@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   unlockWithPassword,
+  useRecentVault,
   listBlocks,
   getManifest,
   getSettings,
@@ -65,6 +66,15 @@ describe('ipc wrappers — argument shape', () => {
     const dto: SettingsDto = { autoLockTimeoutMs: 60_000, requirePasswordBeforeEdits: false, reauthGraceWindowMs: 120_000, retentionWindowMs: 7_776_000_000 };
     await setSettings(dto);
     expect(invokeMock).toHaveBeenCalledWith('set_settings', { settings: dto });
+  });
+
+  it('useRecentVault sends the bare command and passes the path or null through', async () => {
+    invokeMock.mockResolvedValueOnce('/home/alice/vault');
+    await expect(useRecentVault()).resolves.toBe('/home/alice/vault');
+    expect(invokeMock).toHaveBeenCalledWith('use_recent_vault', {});
+
+    invokeMock.mockResolvedValueOnce(null);
+    await expect(useRecentVault()).resolves.toBeNull();
   });
 
   it('argument-less commands invoke with no args object', async () => {

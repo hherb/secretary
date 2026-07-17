@@ -67,10 +67,10 @@ pub fn save_to_vault(
 // Per-vault device UUID — persisted file under the platform data_dir
 // ============================================================================
 
-/// Subdirectory under `dirs::data_dir()` that holds one `<vault_uuid_hex>.dev`
-/// file per vault. Named after the binary so multiple Secretary installs on
-/// the same machine don't collide.
-const DEVICE_FILES_SUBDIR: &str = "secretary-desktop/devices";
+/// Subdirectory under `<data_dir>/secretary-desktop/` (see
+/// [`crate::constants::SECRETARY_DESKTOP_SUBDIR`]) that holds one
+/// `<vault_uuid_hex>.dev` file per vault.
+const DEVICE_FILES_SUBDIR: &str = "devices";
 
 /// File extension for the per-vault device UUID files. Plain `.dev` so a
 /// user inspecting the data directory recognises them as Secretary device
@@ -89,11 +89,14 @@ const DEVICE_UUID_BYTE_LEN: usize = 16;
 /// Pulled out as a free function (not a method on a Paths struct) so tests
 /// can inject a `TempDir` rather than polluting the actual user data_dir.
 pub fn device_uuid_path_in(data_dir: &Path, vault_uuid: &[u8]) -> PathBuf {
-    data_dir.join(DEVICE_FILES_SUBDIR).join(format!(
-        "{}.{}",
-        hex::encode(vault_uuid),
-        DEVICE_FILE_EXTENSION
-    ))
+    data_dir
+        .join(crate::constants::SECRETARY_DESKTOP_SUBDIR)
+        .join(DEVICE_FILES_SUBDIR)
+        .join(format!(
+            "{}.{}",
+            hex::encode(vault_uuid),
+            DEVICE_FILE_EXTENSION
+        ))
 }
 
 /// Persistent per-vault device UUID accessor. On first call for a given

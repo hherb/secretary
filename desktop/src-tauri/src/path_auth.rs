@@ -48,6 +48,20 @@ impl PathApprovals {
         self.slots.insert(purpose, canonical);
     }
 
+    /// Like [`approve`](Self::approve), but only if `purpose` has no slot yet.
+    /// Returns whether the approval was recorded. For non-gesture seeders
+    /// (#446 `use_recent_vault`): a path the user actually picked must never
+    /// be overwritten by a stored one, regardless of arrival order.
+    pub fn approve_if_vacant(&mut self, purpose: PathPurpose, canonical: PathBuf) -> bool {
+        match self.slots.entry(purpose) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(canonical);
+                true
+            }
+        }
+    }
+
     /// True iff `requested` is authorized for `purpose` under `mode`.
     /// Fail-closed: unknown purpose or a path that cannot be canonicalized
     /// (contains `..`, or its existing prefix fails to resolve) is rejected.
@@ -203,6 +217,23 @@ mod tests {
         // A ContactCard approval must not authorize a VaultFolder command.
         assert!(!approvals.is_authorized(PathPurpose::VaultFolder, dir.path(), MatchMode::Exact));
         assert!(approvals.is_authorized(PathPurpose::ContactCard, dir.path(), MatchMode::Exact));
+    }
+
+    #[test]
+    fn approve_if_vacant_yields_to_an_existing_approval() {
+        let a = tempdir().unwrap();
+        let b = tempdir().unwrap();
+        let canonical_a = canonicalize_for_auth(a.path()).unwrap();
+        let canonical_b = canonicalize_for_auth(b.path()).unwrap();
+
+        let mut approvals = PathApprovals::default();
+        // Vacant slot: the seed lands.
+        assert!(approvals.approve_if_vacant(PathPurpose::VaultFolder, canonical_a));
+        assert!(approvals.is_authorized(PathPurpose::VaultFolder, a.path(), MatchMode::Exact));
+        // Occupied slot: the seed is refused, the prior approval survives.
+        assert!(!approvals.approve_if_vacant(PathPurpose::VaultFolder, canonical_b));
+        assert!(approvals.is_authorized(PathPurpose::VaultFolder, a.path(), MatchMode::Exact));
+        assert!(!approvals.is_authorized(PathPurpose::VaultFolder, b.path(), MatchMode::Exact));
     }
 
     #[test]

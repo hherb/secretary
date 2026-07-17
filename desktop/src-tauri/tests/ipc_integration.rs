@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use secretary_desktop::commands::{
-    browse, create, delete, edit, lock, presence, reauth, settings, sync, unlock, vault,
+    browse, create, delete, edit, lock, presence, reauth, recent, settings, sync, unlock, vault,
 };
 use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
 use secretary_desktop::errors::AppError;
@@ -192,6 +192,105 @@ fn unlock_with_password_wrong_password_collapses_to_wrong_password() {
     let v = to_json(&err);
     assert_eq!(v["code"], "wrong_password");
     assert!(v.get("detail").is_none(), "WrongPassword has no detail");
+}
+
+/// #446 end to end: a successful unlock records the vault folder in the
+/// desktop-local `recent.json`, and a brand-new session (app relaunch) can
+/// pre-fill from it via `use_recent_vault` — which seeds the `VaultFolder`
+/// slot so the follow-up unlock passes the #353 approval gate with no picker
+/// interaction.
+#[test]
+fn successful_unlock_records_recent_vault_and_prefills_next_session() {
+    let (state, device_dir) = unlocked_state();
+    drop(state);
+
+    let canonical_golden = canonicalize_for_auth(&golden_vault_path()).unwrap();
+    let recorded = secretary_desktop::recent_vault::load_recent_in(device_dir.path())
+        .expect("successful unlock records the vault folder");
+    // The record stores the folder as the unlock received it; the pre-fill
+    // side canonicalizes on read — compare in canonical space.
+    assert_eq!(canonicalize_for_auth(&recorded).unwrap(), canonical_golden);
+
+    // Relaunch analogue: fresh session over the same device dir.
+    let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
+    let display = recent::use_recent_vault_impl(&state)
+        .expect("recent lookup is infallible on a readable dir")
+        .expect("recorded vault pre-fills");
+    assert_eq!(display, canonical_golden.to_string_lossy());
+
+    let dto = unlock::unlock_with_password_impl(&state, &display, GOLDEN_VAULT_PASSWORD.as_bytes())
+        .expect("pre-filled path passes the approval gate and unlocks");
+    assert_eq!(dto.vault_uuid_hex.len(), 32);
+}
+
+/// #446 structural guard: against an UNLOCKED session the command is inert —
+/// `Ok(None)`, no slot re-seeded. The slot consumers are all
+/// `AlreadyUnlocked`-guarded anyway, but the guard must be enforced here, not
+/// merely emergent from today's consumer set.
+#[test]
+fn use_recent_vault_is_inert_on_an_unlocked_session() {
+    let (state, _device_dir) = unlocked_state();
+    // recent.json exists at this point (the unlock recorded it) — the guard,
+    // not a missing record, is what yields None.
+    assert_eq!(recent::use_recent_vault_impl(&state).unwrap(), None);
+    let session = state.lock().unwrap();
+    assert!(!session.is_path_approved(
+        PathPurpose::VaultFolder,
+        &golden_vault_path(),
+        secretary_desktop::path_auth::MatchMode::Exact
+    ));
+}
+
+/// #446 TOCTOU arm of the locked-only guard: the check must hold in the SAME
+/// critical section as the slot write. If an unlock completes while the
+/// lookup's first phase is doing filesystem IO (a stalled network mount can
+/// widen that window arbitrarily), the late second-phase seed must be
+/// refused — `populate_unlocked`'s post-unlock approval clear (#353) has
+/// already run, so the slot is vacant and the no-clobber vacancy check alone
+/// would NOT refuse it. This drives the seed phase directly against an
+/// unlocked session, exactly the state the racing unlock leaves behind.
+#[test]
+fn late_seed_after_racing_unlock_is_refused() {
+    let (state, _device_dir) = unlocked_state();
+    let canonical_golden = canonicalize_for_auth(&golden_vault_path()).unwrap();
+
+    assert!(
+        !recent::seed_slot_if_locked_and_vacant(&state, canonical_golden).unwrap(),
+        "a seed landing after an unlock completed must be refused"
+    );
+    let session = state.lock().unwrap();
+    assert!(
+        !session.is_path_approved(
+            PathPurpose::VaultFolder,
+            &golden_vault_path(),
+            secretary_desktop::path_auth::MatchMode::Exact
+        ),
+        "the late seed must not re-establish the approval populate_unlocked cleared"
+    );
+}
+
+/// #446 fail-safe: a FAILED unlock must not update `recent.json` — failed
+/// guesses are never logged.
+#[test]
+fn failed_unlock_does_not_record_recent_vault() {
+    let (state, device_dir) = fresh_state();
+    let golden_vault = golden_vault_path();
+    state.lock().unwrap().approve_path(
+        PathPurpose::VaultFolder,
+        canonicalize_for_auth(&golden_vault).unwrap(),
+    );
+    unlock::unlock_with_password_impl(
+        &state,
+        golden_vault.to_str().expect("utf8 path"),
+        b"definitely not the password",
+    )
+    .expect_err("wrong password must error");
+
+    assert_eq!(
+        secretary_desktop::recent_vault::load_recent_in(device_dir.path()),
+        None,
+        "a failed unlock must leave no recent-vault record"
+    );
 }
 
 #[test]

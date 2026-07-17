@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::constants::{PRESENCE_BIOMETRIC_ENABLED_DEFAULT, PRESENCE_PREF_SUBDIR};
+use crate::constants::{
+    PRESENCE_BIOMETRIC_ENABLED_DEFAULT, PRESENCE_PREF_SUBDIR, SECRETARY_DESKTOP_SUBDIR,
+};
 use crate::errors::AppError;
 
 /// The persisted preference.
@@ -49,7 +51,7 @@ pub fn serialize_pref(pref: &PresencePref) -> Vec<u8> {
 /// Absolute path of the pref file for `vault_uuid_hex` under `data_dir`.
 pub fn pref_path_in(data_dir: &Path, vault_uuid_hex: &str) -> PathBuf {
     data_dir
-        .join("secretary-desktop")
+        .join(SECRETARY_DESKTOP_SUBDIR)
         .join(PRESENCE_PREF_SUBDIR)
         .join(format!("{vault_uuid_hex}.json"))
 }
@@ -65,37 +67,16 @@ pub fn load_pref_in(data_dir: &Path, vault_uuid_hex: &str) -> PresencePref {
 }
 
 /// Atomically persist the pref for `vault_uuid_hex`. Creates the
-/// `secretary-desktop/presence/` subtree on first write. Uses the same
-/// exact-pinned `tempfile` persist as the settings device-UUID path.
+/// `secretary-desktop/presence/` subtree on first write. IO edge.
 pub fn save_pref_in(
     data_dir: &Path,
     vault_uuid_hex: &str,
     pref: &PresencePref,
 ) -> Result<(), AppError> {
-    let path = pref_path_in(data_dir, vault_uuid_hex);
-    let dir = path.parent().expect("pref path has a parent");
-    std::fs::create_dir_all(dir).map_err(|e| AppError::Io {
-        detail: format!("mkdir -p {}: {}", dir.display(), e),
-    })?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| AppError::Io {
-        detail: format!("tempfile new_in {}: {}", dir.display(), e),
-    })?;
-    std::io::Write::write_all(&mut tmp, &serialize_pref(pref)).map_err(|e| AppError::Io {
-        detail: format!(
-            "write {} (tempfile for {}): {}",
-            tmp.path().display(),
-            path.display(),
-            e
-        ),
-    })?;
-    tmp.persist(&path).map_err(|e| AppError::Io {
-        detail: format!(
-            "atomic persist of presence pref file {}: {}",
-            path.display(),
-            e.error
-        ),
-    })?;
-    Ok(())
+    crate::fs_atomic::persist_atomically(
+        &pref_path_in(data_dir, vault_uuid_hex),
+        &serialize_pref(pref),
+    )
 }
 
 #[cfg(test)]

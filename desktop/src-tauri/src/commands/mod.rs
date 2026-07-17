@@ -30,6 +30,7 @@ pub mod lock;
 pub mod pick;
 pub mod presence;
 pub mod reauth;
+pub mod recent;
 pub mod repair;
 pub mod retention;
 pub mod settings;

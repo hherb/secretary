@@ -7,8 +7,8 @@ import {
 } from '../src/lib/writeCommands';
 
 describe('writeCommands registry', () => {
-  it('classifies exactly the 47 registered commands', () => {
-    expect(classifiedCommandNames().size).toBe(47);
+  it('classifies exactly the 48 registered commands', () => {
+    expect(classifiedCommandNames().size).toBe(48);
   });
 
   it('lists the gated write wrappers (17)', () => {
