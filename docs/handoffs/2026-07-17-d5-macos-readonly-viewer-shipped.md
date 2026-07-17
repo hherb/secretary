@@ -32,12 +32,11 @@ Design: `docs/superpowers/specs/2026-07-17-macos-native-readonly-viewer-design.m
 - **D.5.cutover** — retire the Tauri macOS build once native reaches parity + on-device proof.
 - **#447** (decision) / **#443**, **#444** (Linux/Windows presence, not testable on this host) / **#417** (mobile Trash render-test infra — user decision). Verify liveness first ([[project_secretary_stale_but_done_issues]]).
 
-## (3) Open decisions and risks — TWO follow-up issues drafted, awaiting explicit OK to file
-Drafted in `.superpowers/sdd/followups.md` (gitignored working notes; both surfaced by the final review):
-1. **Zeroize the enroll password on iOS + macOS** (memory hygiene). Both apps capture the unlock password as `[UInt8]` into the best-effort device-slot enroll and don't `zeroize` it after `enroll(...)`. Mirrors the existing iOS convention; a macOS-only fix would diverge the platforms, so this is a **cross-platform** follow-up. (Partial by nature — the SwiftUI `@State String` source is un-wipeable; the bytes crossing the FFI are zeroized Rust-side.)
-2. **`LocalizedError` conformance for `VaultSelectionError` / `VaultAccessError`** so user-facing sites can drop `String(describing:)` (raw enum case) for friendly messages across all platforms at once.
+## (3) Open decisions and risks — TWO cross-platform follow-ups FILED (surfaced by the final review)
+1. **[#453](https://github.com/hherb/secretary/issues/453) — zeroize the enroll password on iOS + macOS** (memory hygiene). Both apps capture the unlock password as `[UInt8]` into the best-effort device-slot enroll and don't `zeroize` it after `enroll(...)`. Mirrors the existing iOS convention; needs a **cross-platform** (both-apps) fix. (Partial by nature — the SwiftUI `@State String` source is un-wipeable; the bytes crossing the FFI are zeroized Rust-side.)
+2. **[#454](https://github.com/hherb/secretary/issues/454) — `LocalizedError` conformance for `VaultSelectionError` / `VaultAccessError`** so user-facing sites can drop `String(describing:)` (raw enum case) for friendly messages across all platforms at once.
 
-Neither blocks the PR (both mirror existing iOS behavior). **Ask the user before filing** ([[feedback_issue_filing_needs_explicit_ok]]).
+Neither blocks this PR (both mirror existing iOS behavior).
 
 Other notes: macOS `.privacy` redaction on reveals is defensive/currently-unreachable (commented). No folder-change monitor in this read-only slice (a vault mutated externally while open won't refresh until re-open — acceptable; the sync slice adds it).
 
@@ -65,5 +64,5 @@ git worktree list && git status -s
 ## Closing inventory
 - **State on close:** PR opening on `feature/d5-macos-readonly-viewer` (worktree `.worktrees/d5-macos-readonly-viewer`), shipping **D.5.2**. 15 commits, `a4d3590b..4776d67e`. Net: +1886 / −107 across 15 files (incl. the design + plan docs); all macOS/iOS Swift + docs, no `core`/`ffi`/on-disk change.
 - **Acceptance:** `run-macos-tests.sh` PASS + `run-ios-tests.sh` PASS (both green); final whole-branch review (opus) clean after the wipe-on-close fix.
-- **Next:** D.5.3+ write parity / D.5.N sandbox+notarization / D.5.cutover / user priority. TWO follow-up issues await explicit OK to file (§3).
+- **Next:** D.5.3+ write parity / D.5.N sandbox+notarization / D.5.cutover / user priority. Two cross-platform follow-ups filed ([#453](https://github.com/hherb/secretary/issues/453) enroll-password zeroize, [#454](https://github.com/hherb/secretary/issues/454) LocalizedError) — see §3.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-07-17-d5-macos-readonly-viewer-shipped.md`.
