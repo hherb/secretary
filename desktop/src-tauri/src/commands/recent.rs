@@ -19,12 +19,16 @@
 //!   returns `None` without touching the slot, so it can never re-establish
 //!   the approval that `populate_unlocked`'s post-unlock clear revoked — the
 //!   guard is enforced here, not merely emergent from today's slot consumers
-//!   all rejecting `AlreadyUnlocked`.
+//!   all rejecting `AlreadyUnlocked`. Checked before the filesystem IO (cheap
+//!   early exit) AND re-checked inside the same critical section as the slot
+//!   write ([`seed_slot_if_locked_and_vacant`]), so an unlock completing
+//!   while the IO is in flight cannot be followed by a late seed.
 //! - **Never clobbers a pick.** Seeding uses `approve_path_if_vacant`: if a
 //!   `pick_vault_folder` choice already occupies the slot (the lookup and the
 //!   picker are concurrent by design), the user's pick wins and this returns
 //!   `None`.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use tauri::State;
@@ -77,13 +81,35 @@ pub fn use_recent_vault_impl(state: &Mutex<VaultSession>) -> Result<Option<Strin
         return Ok(None);
     }
 
-    // Re-lock only to seed — and never clobber: if a picker choice landed
-    // while this lookup was doing IO (or before it was even dispatched), the
-    // user's fresher pick wins and the pre-fill is abandoned.
-    if !lock_session(state)?.approve_path_if_vacant(PathPurpose::VaultFolder, canonical) {
+    // Re-lock only to seed. Both structural guards are enforced INSIDE this
+    // second critical section (see `seed_slot_if_locked_and_vacant`): an
+    // unlock that completed during the IO above must not be followed by a
+    // late seed, and a picker choice that landed meanwhile wins over the
+    // stored path.
+    if !seed_slot_if_locked_and_vacant(state, canonical)? {
         return Ok(None);
     }
     Ok(Some(display))
+}
+
+/// Second-phase seed for [`use_recent_vault_impl`], under its own short
+/// lock: enforces **locked-only** and **no-clobber** in the SAME critical
+/// section as the slot write. The re-check of `is_unlocked` is load-bearing,
+/// not redundant with the first-phase check — an unlock can complete while
+/// the first phase's filesystem IO is in flight (a stalled network mount
+/// widens that window arbitrarily), and `populate_unlocked`'s post-unlock
+/// approval clear (#353) leaves the slot vacant, so the vacancy check alone
+/// would let the late seed land. Returns whether the seed was recorded.
+#[doc(hidden)] // pub only for the ipc_integration race-arm test
+pub fn seed_slot_if_locked_and_vacant(
+    state: &Mutex<VaultSession>,
+    canonical: PathBuf,
+) -> Result<bool, AppError> {
+    let mut session = lock_session(state)?;
+    if session.is_unlocked() {
+        return Ok(false);
+    }
+    Ok(session.approve_path_if_vacant(PathPurpose::VaultFolder, canonical))
 }
 
 #[cfg(test)]

@@ -241,6 +241,34 @@ fn use_recent_vault_is_inert_on_an_unlocked_session() {
     ));
 }
 
+/// #446 TOCTOU arm of the locked-only guard: the check must hold in the SAME
+/// critical section as the slot write. If an unlock completes while the
+/// lookup's first phase is doing filesystem IO (a stalled network mount can
+/// widen that window arbitrarily), the late second-phase seed must be
+/// refused — `populate_unlocked`'s post-unlock approval clear (#353) has
+/// already run, so the slot is vacant and the no-clobber vacancy check alone
+/// would NOT refuse it. This drives the seed phase directly against an
+/// unlocked session, exactly the state the racing unlock leaves behind.
+#[test]
+fn late_seed_after_racing_unlock_is_refused() {
+    let (state, _device_dir) = unlocked_state();
+    let canonical_golden = canonicalize_for_auth(&golden_vault_path()).unwrap();
+
+    assert!(
+        !recent::seed_slot_if_locked_and_vacant(&state, canonical_golden).unwrap(),
+        "a seed landing after an unlock completed must be refused"
+    );
+    let session = state.lock().unwrap();
+    assert!(
+        !session.is_path_approved(
+            PathPurpose::VaultFolder,
+            &golden_vault_path(),
+            secretary_desktop::path_auth::MatchMode::Exact
+        ),
+        "the late seed must not re-establish the approval populate_unlocked cleared"
+    );
+}
+
 /// #446 fail-safe: a FAILED unlock must not update `recent.json` — failed
 /// guesses are never logged.
 #[test]
