@@ -57,3 +57,7 @@ serde_json = "1"
 # Property-based tests for save_block round-trip. Match version pinned in
 # core/Cargo.toml so the workspace shares one resolved version.
 proptest = "1"
+# One canonical recursive fixture-copy helper for every test target (#90,
+# #186). Dev-only workspace crate; never on the normal-edge dependency tree
+# that ffi/scripts/check-lean-binding.sh guards.
+secretary-test-utils = { path = "../../test-utils" }

@@ -71,6 +71,9 @@ signal-hook = "0.3"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "=3.27.0"
+# One canonical recursive fixture-copy helper for every test target (#90).
+# Dev-only workspace crate; never on the runtime dependency tree.
+secretary-test-utils = { path = "../test-utils" }
 # `rand` is dev-only and used by `tests/once_integration.rs` to generate
 # password values at test runtime instead of hard-coding string literals.
 # Literal byte arrays / strings flowing into password / nonce / key

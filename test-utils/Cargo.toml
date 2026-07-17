@@ -1,0 +1,18 @@
+[package]
+name = "secretary-test-utils"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Workspace-internal shared test helpers (fixture staging). Consumed exclusively via [dev-dependencies]; never a runtime dependency of any shipping crate."
+
+[lints]
+workspace = true
+
+[dependencies]
+# `copy_dir_to_tempdir` returns the caller's `TempDir` guard, so tempfile is a
+# normal dependency of THIS crate — but this crate itself is only ever consumed
+# via `[dev-dependencies]`, so it never enters a shipping crate's normal-edge
+# dependency tree (the boundary `ffi/scripts/check-lean-binding.sh` guards).
+# The workspace-resolved version is governed by core/Cargo.toml's exact
+# `=3.27.0` pin; the caret range here keeps that pin the single authority.
+tempfile = "3"

@@ -32,6 +32,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rand::RngCore;
+use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -69,37 +70,6 @@ const ONCE_NON_INTERACTIVE_ARGS: &[&str] = &[
     "--non-interactive",
     "--state-dir",
 ];
-
-/// Path to `core/tests/data/` rooted at the workspace root. Reuses the
-/// same trick as `cli/tests/pipeline_integration.rs`: `CARGO_MANIFEST_DIR`
-/// is the `cli/` crate dir; the workspace root is its parent.
-fn core_test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cli crate dir has a parent (workspace root)")
-        .join("core")
-        .join("tests")
-        .join("data")
-}
-
-/// Recursively copy `src` into `dst`. Mirrors the helper in
-/// `cli/tests/pipeline_integration.rs` so each test owns a writable
-/// copy of the golden vault (the binary may persist a fresh manifest /
-/// block during commit paths, so a read-only fixture would be a
-/// footgun even when no mutation is expected).
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).expect("create_dir_all dst");
-    for entry in fs::read_dir(src).expect("read_dir src") {
-        let entry = entry.expect("dir entry");
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type().expect("file_type").is_dir() {
-            copy_dir_recursive(&src_path, &dst_path);
-        } else {
-            fs::copy(&src_path, &dst_path).expect("copy file");
-        }
-    }
-}
 
 /// Stage a writable copy of `golden_vault_001/` under a fresh tempdir
 /// and return both. The returned [`TempDir`] must outlive the test

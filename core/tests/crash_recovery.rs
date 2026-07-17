@@ -10,7 +10,8 @@
 //! a UUID that is live again in `manifest.blocks`.
 //!
 //! Fixture helpers below are copied verbatim from `trash_restore.rs`
-//! per this repo's no-shared-test-crate convention.
+//! (integration-test bins share nothing unless pulled in via a `mod`);
+//! the generic fixture-copy itself comes from `secretary-test-utils`.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +20,7 @@ use std::fs;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use rand_core::RngCore;
+use secretary_test_utils::copy_dir_recursive;
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
@@ -148,8 +150,8 @@ fn format_uuid_hyphenated(uuid: &[u8; 16]) -> String {
 }
 
 /// Build a co-recipient contact card from a freshly-generated identity
-/// bundle. Copied verbatim from `trash_restore.rs::make_signed_card` per
-/// this repo's no-shared-test-crate convention.
+/// bundle. Copied verbatim from `trash_restore.rs::make_signed_card`
+/// (integration-test bins share nothing unless pulled in via a `mod`).
 fn make_signed_card(id: &IdentityBundle) -> ContactCard {
     let pq_sk = MlDsa65Secret::from_bytes(id.ml_dsa_65_sk.expose()).unwrap();
     let mut card = ContactCard {
@@ -1222,21 +1224,6 @@ fn repair_rejects_dominating_clock_recipient_widening() {
 // repair_vault — #350 review-followup gates: rollback, concurrent, missing,
 // idempotence
 // ---------------------------------------------------------------------------
-
-/// Minimal recursive dir copy for vault-state forking (see #186 for the
-/// planned shared helper; kept local per test-crate convention).
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), &target).unwrap();
-        }
-    }
-}
 
 /// #350 gate: a genuinely owner-signed but OLDER block copy planted
 /// over the live file is a rollback, not crash residue — clock

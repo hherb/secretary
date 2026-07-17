@@ -46,6 +46,7 @@ use tempfile::TempDir;
 
 use secretary_cli::state;
 use secretary_core::unlock::vault_toml;
+use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 
 /// Binary name as built by Cargo from `[[bin]] name = "secretary-sync"`
 /// in `cli/Cargo.toml`. Looked up via the `CARGO_BIN_EXE_*` env var
@@ -102,35 +103,6 @@ const SIGTERM_GRACE: Duration = Duration::from_millis(5000);
 
 /// Polling interval while waiting on a child after SIGTERM.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Path to `core/tests/data/` rooted at the workspace root. Same trick
-/// as the sibling integration test files: `CARGO_MANIFEST_DIR` is the
-/// `cli/` crate dir; the workspace root is its parent.
-fn core_test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cli crate dir has a parent (workspace root)")
-        .join("core")
-        .join("tests")
-        .join("data")
-}
-
-/// Recursively copy `src` into `dst`. Mirrors the helper in
-/// `cli/tests/once_integration.rs` + `cli/tests/pipeline_integration.rs`
-/// so each test owns a writable copy of the golden vault.
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).expect("create_dir_all dst");
-    for entry in fs::read_dir(src).expect("read_dir src") {
-        let entry = entry.expect("dir entry");
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type().expect("file_type").is_dir() {
-            copy_dir_recursive(&src_path, &dst_path);
-        } else {
-            fs::copy(&src_path, &dst_path).expect("copy file");
-        }
-    }
-}
 
 /// Stage a writable copy of `golden_vault_001/` under a fresh tempdir.
 /// Both daemons in the convergence test share this same vault folder

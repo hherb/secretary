@@ -18,42 +18,19 @@ use secretary_ffi_bridge::{
     open_vault_with_password, save_block, BlockInput, FieldInput, FieldInputValue,
     OpenVaultManifest, RecordInput, UnlockedIdentity,
 };
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
 /// Path to a fixture vault folder under `core/tests/data/`.
-/// `CARGO_MANIFEST_DIR` is `ffi/secretary-ffi-bridge/`, so we walk up.
 pub fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
-}
-
-/// Pinned password for `golden_vault_001`.
-pub const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
-
-/// Recursive directory copy. Used by `fresh_writable_vault` to clone the
-/// fixture into a writable tempdir before running mutation tests.
-pub fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_recursive(&from, &to);
-        } else {
-            fs::copy(&from, &to).unwrap();
-        }
-    }
+    core_test_data_dir().join(name)
 }
 
 /// Open a writable copy of `golden_vault_001` in a fresh tempdir. Returns
 /// the tempdir guard (drop to clean up) plus the live `UnlockedIdentity`
 /// and `OpenVaultManifest`.
 pub fn fresh_writable_vault() -> (tempfile::TempDir, UnlockedIdentity, OpenVaultManifest) {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::tempdir().expect("tempdir");
-    copy_dir_recursive(&src, tmp.path());
-    let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD)
+    let tmp = copy_dir_to_tempdir(&fixture_folder("golden_vault_001"));
+    let out = open_vault_with_password(tmp.path(), &golden_vault_001_password())
         .expect("open writable copy of golden_vault_001");
     (tmp, out.identity, out.manifest)
 }

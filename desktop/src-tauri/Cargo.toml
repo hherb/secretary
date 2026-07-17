@@ -141,3 +141,6 @@ workspace = true
 # tests; the duplicate pin keeps the version locked even if a future refactor
 # moves the production dep elsewhere.
 tempfile = "=3.27.0"
+# One canonical recursive fixture-copy helper for every test target (#90).
+# Dev-only workspace crate; never on the runtime dependency tree.
+secretary-test-utils = { path = "../../test-utils" }

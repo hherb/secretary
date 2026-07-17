@@ -25,6 +25,10 @@ ffi/secretary-ffi-py, ffi/secretary-ffi-uniffi  — PyO3 / uniffi (Swift + Kotli
 desktop/             — Tauri 2 desktop client (Rust backend + Svelte/TypeScript frontend)
 ios/                 — native SwiftUI app + Swift packages (SecretaryKit / SecretaryVaultAccess / SecretaryDeviceUnlock)
 android/             — native Jetpack Compose app + Gradle modules (:app, :kit, :vault-access, :sync-ui, :browse-ui)
+test-utils/          — dev-only crate `secretary-test-utils`: THE canonical `copy_dir_recursive` /
+                       `copy_dir_to_tempdir` / `core_test_data_dir` / `golden_vault_001_password` (#90) —
+                       consume via [dev-dependencies], never hand-roll another fixture-copy walker,
+                       never make it a runtime dep
 ```
 
 ## Working directory discipline

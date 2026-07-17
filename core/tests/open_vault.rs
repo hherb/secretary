@@ -19,6 +19,7 @@ use std::fs;
 use std::path::Path;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+use secretary_test_utils::copy_dir_recursive;
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
@@ -505,25 +506,5 @@ fn open_vault_rejects_corrupted_block_file() {
             );
         }
         other => panic!("expected BlockFingerprintMismatch, got {other:?}"),
-    }
-}
-
-/// Minimal recursive directory copy. Sufficient for the
-/// golden_vault_001 layout (a folder of regular files plus one
-/// `blocks/` subdirectory). Not symlink-safe; not needed for the
-/// fixture under test.
-fn copy_dir_recursive(src: &Path, dest: &Path) {
-    if !dest.exists() {
-        fs::create_dir_all(dest).expect("create_dir_all dest");
-    }
-    for entry in fs::read_dir(src).expect("read_dir src") {
-        let e = entry.expect("dir entry");
-        let s = e.path();
-        let d = dest.join(e.file_name());
-        if e.file_type().expect("file_type").is_dir() {
-            copy_dir_recursive(&s, &d);
-        } else {
-            fs::copy(&s, &d).expect("copy file");
-        }
     }
 }

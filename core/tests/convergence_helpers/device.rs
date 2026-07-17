@@ -35,7 +35,7 @@ impl Device {
     pub fn fork(baseline: &Baseline, device_uuid: [u8; 16], rng_seed: u8) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let folder = tmp.path().to_path_buf();
-        copy_dir_all(baseline.folder(), &folder).expect("deep-copy baseline");
+        crate::convergence_helpers::copy_dir_recursive(baseline.folder(), &folder);
         Self {
             _tmp: tmp,
             folder,
@@ -188,21 +188,4 @@ impl Device {
     pub fn decrypt_block_records(&self, block_uuid: [u8; 16]) -> Vec<Record> {
         crate::convergence_helpers::decrypt_block_records(&self.folder, &self.password, block_uuid)
     }
-}
-
-/// Recursive directory copy (the cloud-sync layer copies bytes, not
-/// re-encrypts). Mirrors a baseline folder into a device working copy.
-pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let to = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &to)?;
-        } else {
-            std::fs::copy(entry.path(), &to)?;
-        }
-    }
-    Ok(())
 }

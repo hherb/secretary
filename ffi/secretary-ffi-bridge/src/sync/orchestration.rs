@@ -282,38 +282,18 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
+    use secretary_test_utils::copy_dir_to_tempdir;
 
-    fn fixture_folder(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data")
-            .join(name)
-    }
-
-    fn copy_dir_recursive(src: &Path, dst: &Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let from = entry.path();
-            let to = dst.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_dir_recursive(&from, &to);
-            } else {
-                std::fs::copy(&from, &to).unwrap();
-            }
-        }
-    }
+    use crate::test_support::{fixture_folder, VAULT_001_PASSWORD};
 
     /// Stage a writable copy of golden_vault_001, returning the tempdir guard
     /// (keep it alive), the vault folder path, a fresh password `SecretBytes`,
     /// and the vault_uuid read from the manifest.
     fn stage_golden_writable_and_password() -> (TempDir, PathBuf, SecretBytes, [u8; 16]) {
-        let src = fixture_folder("golden_vault_001");
-        let tmp = tempfile::tempdir().expect("tempdir");
-        copy_dir_recursive(&src, tmp.path());
+        let tmp = copy_dir_to_tempdir(&fixture_folder("golden_vault_001"));
         let vault_folder = tmp.path().to_path_buf();
         // open core-side once to read vault_uuid (not exposed via the bridge manifest
         // handle); the second SecretBytes is what the test hands to sync_vault_in.
@@ -380,10 +360,8 @@ mod tests {
         [u8; 16],
     ) {
         let src = fixture_folder("sync_collision_fixture");
-        let vault_tmp = tempfile::tempdir().expect("vault tempdir");
-        let state_tmp = tempfile::tempdir().expect("state tempdir");
-        copy_dir_recursive(&src.join("vault"), vault_tmp.path());
-        copy_dir_recursive(&src.join("state"), state_tmp.path());
+        let vault_tmp = copy_dir_to_tempdir(&src.join("vault"));
+        let state_tmp = copy_dir_to_tempdir(&src.join("state"));
         let vault_folder = vault_tmp.path().to_path_buf();
         let state_dir = state_tmp.path().to_path_buf();
 

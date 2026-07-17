@@ -96,9 +96,8 @@ pub const BLOCK_NONCE_F: [u8; AEAD_NONCE_LEN] = [
 /// Returns the temp folder path; the caller is responsible for keeping
 /// the `tempfile::TempDir` alive for the duration of the test.
 pub fn fresh_vault_with_clock(new_clock: Vec<VectorClockEntry>) -> (PathBuf, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = secretary_test_utils::copy_dir_to_tempdir(Path::new(GOLDEN_VAULT_FOLDER));
     let dest = tmp.path().to_path_buf();
-    recursive_copy(Path::new(GOLDEN_VAULT_FOLDER), &dest);
     write_manifest_at(&dest, MANIFEST_FILENAME, new_clock, &CANONICAL_NONCE_A);
     (dest, tmp)
 }
@@ -138,26 +137,6 @@ pub fn fresh_vault_four_concurrent_manifests(
         write_manifest_at(&dest, filename, clock, nonce);
     }
     (dest, tmp)
-}
-
-/// Recursively copy `src` into `dest`. Creates `dest` if missing. The
-/// implementation mirrors the smoke runners' `recursiveCopy` helpers
-/// (Swift `SmokeHelpers.swift`, Kotlin `SmokeHelpers.kt`).
-fn recursive_copy(src: &Path, dest: &Path) {
-    if !dest.exists() {
-        std::fs::create_dir_all(dest).expect("create_dir_all dest");
-    }
-    for entry in std::fs::read_dir(src).expect("read_dir src") {
-        let entry = entry.expect("dir entry");
-        let file_type = entry.file_type().expect("file type");
-        let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-        if file_type.is_dir() {
-            recursive_copy(&src_path, &dest_path);
-        } else {
-            std::fs::copy(&src_path, &dest_path).expect("copy file");
-        }
-    }
 }
 
 /// Open the vault with the golden password, mutate the manifest body's

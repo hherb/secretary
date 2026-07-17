@@ -272,48 +272,12 @@ pub fn remove_device_slot(folder: &Path, device_uuid: &[u8; 16]) -> Result<(), F
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
     // ── helpers ──────────────────────────────────────────────────────────
 
-    /// Absolute path to the golden_vault_001 directory relative to the
-    /// bridge crate's CARGO_MANIFEST_DIR.
-    fn golden_vault_dir() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core/tests/data/golden_vault_001")
-    }
-
-    fn golden_inputs_path() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001_inputs.json")
-    }
-
-    /// Read the master password from the golden_vault_001_inputs.json fixture.
+    /// Pinned master password for golden_vault_001 (see
+    /// `crate::test_support::VAULT_001_PASSWORD`).
     fn golden_password() -> Vec<u8> {
-        let raw = std::fs::read_to_string(golden_inputs_path())
-            .expect("golden_vault_001_inputs.json must be readable");
-        let v: serde_json::Value =
-            serde_json::from_str(&raw).expect("golden_vault_001_inputs.json must parse");
-        v["password"]
-            .as_str()
-            .expect("password field must be a string")
-            .as_bytes()
-            .to_vec()
-    }
-
-    /// Recursively copy `src` to `dst` (shallow dir + files; no symlinks).
-    fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let ft = entry.file_type()?;
-            let dst_path = dst.join(entry.file_name());
-            if ft.is_dir() {
-                copy_dir_all(&entry.path(), &dst_path)?;
-            } else {
-                std::fs::copy(entry.path(), dst_path)?;
-            }
-        }
-        Ok(())
+        crate::test_support::VAULT_001_PASSWORD.to_vec()
     }
 
     /// Copy the golden vault to a tempdir and return the tempdir + the vault
@@ -321,7 +285,10 @@ mod tests {
     fn tmp_golden_vault() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir must be creatable");
         let vault_dir = tmp.path().join("golden_vault_001");
-        copy_dir_all(&golden_vault_dir(), &vault_dir).expect("golden vault must be copyable");
+        secretary_test_utils::copy_dir_recursive(
+            &crate::test_support::fixture_folder("golden_vault_001"),
+            &vault_dir,
+        );
         (tmp, vault_dir)
     }
 

@@ -122,6 +122,8 @@ pub mod settings;
 pub mod share;
 pub mod sync;
 mod sync_helpers;
+#[cfg(test)]
+mod test_support;
 pub mod trash;
 pub mod unlock;
 pub mod vault;

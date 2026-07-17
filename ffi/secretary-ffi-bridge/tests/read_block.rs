@@ -12,16 +12,12 @@ use std::path::PathBuf;
 use secretary_ffi_bridge::{
     open_vault_with_password, open_vault_with_recovery, read_block, FfiVaultError,
 };
+use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
-/// Path to the golden_vault_NNN folder. CARGO_MANIFEST_DIR is
-/// ffi/secretary-ffi-bridge/, so we walk up to core/tests/data/.
+/// Path to the golden_vault_NNN folder under `core/tests/data/`.
 fn fixture_folder(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../core/tests/data")
-        .join(name)
+    core_test_data_dir().join(name)
 }
-
-const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 
 /// Pinned block UUID for golden_vault_001's single block (matches the
 /// hyphenated on-disk filename `11223344-5566-7788-99aa-bbccddeeff00`).
@@ -49,7 +45,8 @@ const VAULT_001_BLOCK_FILENAME: &str = "11223344-5566-7788-99aa-bbccddeeff00.cbo
 #[test]
 fn read_block_returns_one_record_two_fields_for_golden_vault_001() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).expect("open should succeed");
+    let out = open_vault_with_password(&folder, &golden_vault_001_password())
+        .expect("open should succeed");
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false)
         .expect("read_block should succeed");
     assert_eq!(block.record_count(), 1);
@@ -62,7 +59,7 @@ fn read_block_returns_one_record_two_fields_for_golden_vault_001() {
 #[test]
 fn read_block_record_metadata_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     assert_eq!(record.record_uuid(), VAULT_001_RECORD_UUID);
@@ -76,7 +73,7 @@ fn read_block_record_metadata_matches_pinned_kat() {
 #[test]
 fn read_block_field_names_in_btreemap_order() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     assert_eq!(
@@ -88,7 +85,7 @@ fn read_block_field_names_in_btreemap_order() {
 #[test]
 fn read_block_field_text_payload_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record
@@ -110,7 +107,7 @@ fn read_block_field_text_payload_matches_pinned_kat() {
 #[test]
 fn read_block_field_metadata_matches_pinned_kat() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record.field_by_name("password").unwrap();
@@ -124,7 +121,7 @@ fn read_block_field_metadata_matches_pinned_kat() {
 #[test]
 fn read_block_field_is_text_not_bytes() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let pw_field = record.field_by_name("password").unwrap();
@@ -136,7 +133,7 @@ fn read_block_field_is_text_not_bytes() {
 #[test]
 fn read_block_unknown_uuid_returns_block_not_found() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let unknown = [0u8; 16];
     let err = read_block(&out.identity, &out.manifest, &unknown, false).unwrap_err();
     let FfiVaultError::BlockNotFound { uuid_hex } = err else {
@@ -149,30 +146,7 @@ fn read_block_unknown_uuid_returns_block_not_found() {
 /// the new folder path. Used by the corruption tests below to mutate
 /// the on-disk layout without touching the shared fixture.
 fn copy_golden_to_tempdir() -> tempfile::TempDir {
-    let src = fixture_folder("golden_vault_001");
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    for name in ["vault.toml", "identity.bundle.enc", "manifest.cbor.enc"] {
-        fs::copy(src.join(name), tmp.path().join(name)).unwrap();
-    }
-    fs::create_dir_all(tmp.path().join("contacts")).unwrap();
-    for entry in fs::read_dir(src.join("contacts")).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(
-            entry.path(),
-            tmp.path().join("contacts").join(entry.file_name()),
-        )
-        .unwrap();
-    }
-    fs::create_dir_all(tmp.path().join("blocks")).unwrap();
-    for entry in fs::read_dir(src.join("blocks")).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(
-            entry.path(),
-            tmp.path().join("blocks").join(entry.file_name()),
-        )
-        .unwrap();
-    }
-    tmp
+    copy_dir_to_tempdir(&fixture_folder("golden_vault_001"))
 }
 
 #[test]
@@ -191,7 +165,7 @@ fn open_vault_corrupt_block_file_returns_vault_needs_repair() {
     let mut bytes = fs::read(&block_path).unwrap();
     bytes[0] ^= 0xff;
     fs::write(&block_path, &bytes).unwrap();
-    let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
+    let err = open_vault_with_password(tmp.path(), &golden_vault_001_password()).unwrap_err();
     let FfiVaultError::VaultNeedsRepair { block_uuid_hex } = err else {
         panic!("expected VaultNeedsRepair, got {err:?}");
     };
@@ -212,7 +186,7 @@ fn open_vault_missing_block_file_returns_corrupt_vault() {
     // routing.
     let tmp = copy_golden_to_tempdir();
     fs::remove_file(tmp.path().join("blocks").join(VAULT_001_BLOCK_FILENAME)).unwrap();
-    let err = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap_err();
+    let err = open_vault_with_password(tmp.path(), &golden_vault_001_password()).unwrap_err();
     let FfiVaultError::CorruptVault { detail } = err else {
         panic!("expected CorruptVault, got {err:?}");
     };
@@ -229,7 +203,7 @@ fn open_vault_missing_block_file_returns_corrupt_vault() {
 #[test]
 fn block_read_output_wipe_drops_records() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record_clone = block.record_at(0).expect("record at 0");
     block.wipe();
@@ -244,7 +218,7 @@ fn block_read_output_wipe_drops_records() {
 #[test]
 fn record_wipe_drops_field_handles() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record = block.record_at(0).unwrap();
     let field_clone = record.field_by_name("password").unwrap();
@@ -260,7 +234,7 @@ fn record_wipe_drops_field_handles() {
 #[test]
 fn field_handle_arc_clones_share_wiped_state() {
     let folder = fixture_folder("golden_vault_001");
-    let out = open_vault_with_password(&folder, VAULT_001_PASSWORD).unwrap();
+    let out = open_vault_with_password(&folder, &golden_vault_001_password()).unwrap();
     let block = read_block(&out.identity, &out.manifest, &VAULT_001_BLOCK_UUID, false).unwrap();
     let record_a = block.record_at(0).unwrap();
     let record_b = block.record_at(0).unwrap();

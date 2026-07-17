@@ -493,36 +493,9 @@ pub(crate) fn block_entry_to_summary(b: &secretary_core::vault::BlockEntry) -> B
 #[cfg(test)]
 mod name_cache_tests {
     use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
-
-    use crate::open_vault_with_password;
-
-    const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
-
-    fn fixture_folder(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data")
-            .join(name)
-    }
-
-    fn copy_dir_recursive(src: &Path, dst: &Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let from = entry.path();
-            let to = dst.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_dir_recursive(&from, &to);
-            } else {
-                std::fs::copy(&from, &to).unwrap();
-            }
-        }
-    }
 
     fn open_writable_golden_001() -> (tempfile::TempDir, super::OpenVaultManifest) {
-        let tmp = tempfile::tempdir().unwrap();
-        copy_dir_recursive(&fixture_folder("golden_vault_001"), tmp.path());
-        let out = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).unwrap();
+        let (tmp, out) = crate::test_support::open_writable_golden_001();
         (tmp, out.manifest)
     }
 

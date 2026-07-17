@@ -918,8 +918,7 @@ mod tests {
         // by routing through the real open path against golden_vault_001.
         // BlockReadOutput doesn't implement Debug (it holds zeroize-sensitive
         // wrappers), so we match rather than calling unwrap_err().
-        let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001");
+        let folder_path = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
         let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
         match read_block(out.identity, out.manifest, vec![0u8; 15], false) {
@@ -939,8 +938,7 @@ mod tests {
         // Bounds are validated at this uniffi wrapper (adversarial-IPC guard)
         // BEFORE any vault write, so an out-of-range value rejects without
         // mutating the vault — safe to run against the frozen golden fixture.
-        let folder_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/tests/data/golden_vault_001");
+        let folder_path = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
         let folder_bytes = folder_path.to_str().unwrap().as_bytes().to_vec();
         let out = open_vault_with_password(folder_bytes, b"correct horse battery staple").unwrap();
         // retention_window_ms below the 1-day floor is out of range.

@@ -12,8 +12,11 @@ mod sync_drive;
 
 pub use assert::{assert_converged, decrypt_state, LogicalRecord};
 pub use baseline::Baseline;
-pub use device::{copy_dir_all, Device};
+pub use device::Device;
 pub use reconcile::reconcile;
+/// Re-export of the canonical fixture-copy walker (the cloud-sync layer
+/// copies bytes, not re-encrypts) so convergence helpers share one name.
+pub use secretary_test_utils::copy_dir_recursive;
 pub use sync_drive::sync_as_pure_adopter;
 pub use sync_drive::{is_nothing_to_do, sync_as_adopter, sync_as_merger, VetoPolicy};
 

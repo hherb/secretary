@@ -95,6 +95,9 @@ hex = "0.4"
 # crate directly so the Rust-side replay is structurally identical to the
 # Swift / Kotlin replays. Test-only; excluded from the runtime dependency tree.
 secretary-ffi-bridge = { path = "../ffi/secretary-ffi-bridge" }
+# One canonical recursive fixture-copy helper for every test target (#90).
+# Dev-only workspace crate; never on the runtime dependency tree.
+secretary-test-utils = { path = "../test-utils" }
 
 [lints]
 workspace = true

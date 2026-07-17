@@ -1,6 +1,6 @@
 //! Path resolvers + KAT vector input-resolution helpers.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn kat_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -123,39 +123,12 @@ pub fn resolve_mnemonic(inputs: &serde_json::Value) -> Vec<u8> {
     panic!("open_vault_with_recovery vector missing mnemonic_* input");
 }
 
-use std::path::Path;
-
-/// Recursively copy `src` into `dst`. Mirrors the established pattern
-/// in `ffi/secretary-ffi-bridge/tests/save_block.rs` (`copy_dir_recursive`).
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst)
-        .unwrap_or_else(|e| panic!("failed to create dst dir {}: {e}", dst.display()));
-    for entry in std::fs::read_dir(src)
-        .unwrap_or_else(|e| panic!("failed to read src dir {}: {e}", src.display()))
-    {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let ft = entry.file_type().unwrap();
-        if ft.is_dir() {
-            copy_dir_recursive(&from, &to);
-        } else {
-            std::fs::copy(&from, &to).unwrap_or_else(|e| {
-                panic!("failed to copy {} → {}: {e}", from.display(), to.display())
-            });
-        }
-    }
-}
-
 /// Copy `<fixtures_dir>/<vault_name>/` into a fresh `tempfile::TempDir`
 /// and return the TempDir handle. The caller MUST hold the TempDir for
 /// the duration of any subsequent operations against the copy — dropping
 /// it removes the directory.
 pub fn copy_vault_to_tempdir(vault_name: &str) -> tempfile::TempDir {
-    let src = fixtures_dir().join(vault_name);
-    let tmp = tempfile::tempdir().expect("tempdir for writable vault");
-    copy_dir_recursive(&src, tmp.path());
-    tmp
+    secretary_test_utils::copy_dir_to_tempdir(&fixtures_dir().join(vault_name))
 }
 
 /// Read the canonical-CBOR bytes of a contact card from a vault's
