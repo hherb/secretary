@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::constants::RECENT_VAULT_FILENAME;
+use crate::constants::{RECENT_VAULT_FILENAME, SECRETARY_DESKTOP_SUBDIR};
 use crate::errors::AppError;
 
 /// The persisted record. `vault_folder` is the display/canonical path string
@@ -53,7 +53,7 @@ pub fn serialize_recent(folder: &Path) -> Vec<u8> {
 /// Absolute path of the recent-vault file under `data_dir`.
 pub fn recent_path_in(data_dir: &Path) -> PathBuf {
     data_dir
-        .join("secretary-desktop")
+        .join(SECRETARY_DESKTOP_SUBDIR)
         .join(RECENT_VAULT_FILENAME)
 }
 

@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::constants::{PRESENCE_BIOMETRIC_ENABLED_DEFAULT, PRESENCE_PREF_SUBDIR};
+use crate::constants::{
+    PRESENCE_BIOMETRIC_ENABLED_DEFAULT, PRESENCE_PREF_SUBDIR, SECRETARY_DESKTOP_SUBDIR,
+};
 use crate::errors::AppError;
 
 /// The persisted preference.
@@ -49,7 +51,7 @@ pub fn serialize_pref(pref: &PresencePref) -> Vec<u8> {
 /// Absolute path of the pref file for `vault_uuid_hex` under `data_dir`.
 pub fn pref_path_in(data_dir: &Path, vault_uuid_hex: &str) -> PathBuf {
     data_dir
-        .join("secretary-desktop")
+        .join(SECRETARY_DESKTOP_SUBDIR)
         .join(PRESENCE_PREF_SUBDIR)
         .join(format!("{vault_uuid_hex}.json"))
 }
