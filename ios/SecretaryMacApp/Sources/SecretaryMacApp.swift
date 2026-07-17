@@ -4,7 +4,7 @@ import SwiftUI
 struct SecretaryMacApp: App {
     var body: some Scene {
         WindowGroup {
-            MacDeviceUnlockView()
+            MacRootView()
         }
         .windowResizability(.contentSize)
     }
