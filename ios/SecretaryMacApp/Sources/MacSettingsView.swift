@@ -62,14 +62,19 @@ struct MacSettingsView: View {
                 Section {
                     LabeledContent("Delete trash after") {
                         HStack(spacing: 4) {
-                            // `.labelsHidden()` + `prompt:` because macOS renders a
-                            // TextField's title as an attached LEADING label (iOS
-                            // shows it as in-field placeholder inside a Form). Left
-                            // visible it double-labels the row — "Delete trash after
-                            // | Days | 7 days" — and squeezes the field enough to
-                            // hyphenate "Min-utes" in the row below. The title is
-                            // kept, not blanked, so the accessibility label survives.
-                            TextField("Days", text: $retentionText, prompt: Text("Days"))
+                            // `.labelsHidden()` because macOS renders a TextField's
+                            // title as an attached LEADING label (iOS shows it as
+                            // in-field placeholder inside a Form). Left visible it
+                            // double-labels the row — "Delete trash after | Days |
+                            // 7 days" — and squeezes the field enough to hyphenate
+                            // "Min-utes" in the row below. The title is kept, not
+                            // blanked, so the accessibility label survives.
+                            //
+                            // No `prompt:` either: on an empty field it renders right
+                            // beside the unit suffix, reading "Days days". The row is
+                            // self-describing without it (label + unit + the footer's
+                            // explicit range), and empty is a transient error state.
+                            TextField("Days", text: $retentionText)
                                 .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("days").foregroundStyle(.secondary)
@@ -84,7 +89,7 @@ struct MacSettingsView: View {
                 Section {
                     LabeledContent("Re-auth grace") {
                         HStack(spacing: 4) {
-                            TextField("Minutes", text: $graceText, prompt: Text("Minutes"))
+                            TextField("Minutes", text: $graceText)
                                 .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("min").foregroundStyle(.secondary)
