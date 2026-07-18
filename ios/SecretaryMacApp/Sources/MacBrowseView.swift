@@ -43,6 +43,12 @@ struct MacBrowseView: View {
         let vm: SettingsViewModel
     }
     @State private var settingsSheet: SettingsSheetItem?
+    /// Bridges a freshly-built TrashViewModel to the `.sheet(item:)` Trash sheet.
+    private struct TrashSheetItem: Identifiable {
+        let id = UUID()
+        let vm: TrashViewModel
+    }
+    @State private var trashSheet: TrashSheetItem?
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -179,6 +185,18 @@ struct MacBrowseView: View {
                 .disabled(viewModel.isWriting)
             }
             ToolbarItem(placement: .primaryAction) {
+                // VM built at tap (TrashViewModel.init does an FFI read of the default
+                // retention window); on macOS the session always conforms to TrashPort.
+                Button {
+                    if let vm = viewModel.makeTrashViewModel() {
+                        trashSheet = TrashSheetItem(vm: vm)
+                    }
+                } label: {
+                    Label("Trash", systemImage: "trash")
+                }
+                .disabled(viewModel.isWriting)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 // Build the VM at tap (not per-render): SettingsViewModel.init calls
                 // the FFI `settingsBounds()`, so gating visibility on the factory would
                 // pay that on every render. On macOS the session always conforms to
@@ -268,6 +286,15 @@ struct MacBrowseView: View {
         }
         .sheet(item: $settingsSheet) { item in
             MacSettingsView(viewModel: item.vm, onDone: { settingsSheet = nil })
+        }
+        .sheet(item: $trashSheet) { item in
+            MacTrashView(viewModel: item.vm, onDone: {
+                trashSheet = nil
+                // Restore/purge mutate the block set through a separate VM/port, so
+                // refresh the sidebar on dismiss. loadBlocks() re-reads only `blocks`
+                // — it leaves the current selection + records pane untouched.
+                viewModel.loadBlocks()
+            })
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
