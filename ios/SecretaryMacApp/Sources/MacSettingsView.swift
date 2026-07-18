@@ -62,7 +62,15 @@ struct MacSettingsView: View {
                 Section {
                     LabeledContent("Delete trash after") {
                         HStack(spacing: 4) {
-                            TextField("Days", text: $retentionText)
+                            // `.labelsHidden()` + `prompt:` because macOS renders a
+                            // TextField's title as an attached LEADING label (iOS
+                            // shows it as in-field placeholder inside a Form). Left
+                            // visible it double-labels the row — "Delete trash after
+                            // | Days | 7 days" — and squeezes the field enough to
+                            // hyphenate "Min-utes" in the row below. The title is
+                            // kept, not blanked, so the accessibility label survives.
+                            TextField("Days", text: $retentionText, prompt: Text("Days"))
+                                .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("days").foregroundStyle(.secondary)
                         }
@@ -76,7 +84,8 @@ struct MacSettingsView: View {
                 Section {
                     LabeledContent("Re-auth grace") {
                         HStack(spacing: 4) {
-                            TextField("Minutes", text: $graceText)
+                            TextField("Minutes", text: $graceText, prompt: Text("Minutes"))
+                                .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("min").foregroundStyle(.secondary)
                         }
@@ -113,7 +122,12 @@ struct MacSettingsView: View {
     private func save() {
         inputError = nil
         guard commitEdits() else {
-            inputError = "Both fields need a whole number — settings were not saved."
+            // "Each" not "Both": this fires when EITHER field is unparseable, and
+            // "Both fields need…" reads as a diagnosis that both are wrong, sending
+            // the user hunting at the valid one. Phrased as a requirement instead.
+            // Naming the offending field would be nicer still, but that is extra
+            // branching on a path with no automated coverage — deliberately not done.
+            inputError = "Each field needs a whole number — settings were not saved."
             return
         }
         // Re-seed from the VM so the fields show the CLAMPED values that are about
