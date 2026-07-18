@@ -9,6 +9,11 @@ Equivalent to the iOS #202 proof.
 - `brew install xcodegen`.
 
 ## Steps
+
+> **Shortcut for steps 1–2:** `DEVELOPMENT_TEAM=<YOUR_TEAM_ID> bash ios/scripts/run-macos-app.sh`
+> does steps 1–2 in one command — it builds + stages + generates + compile-proves
+> (via `build-macos-app.sh`) and then opens the project in Xcode.
+
 1. Build the framework + generate the project:
    ```bash
    DEVELOPMENT_TEAM=<YOUR_TEAM_ID> bash ios/scripts/build-macos-app.sh
