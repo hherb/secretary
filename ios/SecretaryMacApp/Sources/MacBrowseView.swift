@@ -49,6 +49,16 @@ struct MacBrowseView: View {
         let vm: TrashViewModel
     }
     @State private var trashSheet: TrashSheetItem?
+    // NOTE — lock interaction: unlike `blockNameDialog` / `movingRecord` (VM state
+    // that `VaultBrowseViewModel.lock()` nils, collapsing those sheets), the three
+    // view-local sheet states above (`editSession`, `settingsSheet`, `trashSheet`)
+    // are invisible to the VM. They survive a lock and are torn down only because
+    // `onLock` flips the root route away, unmounting this whole view. That is safe
+    // today — macOS blocks the parent window's close button while a sheet is
+    // attached and the Lock toolbar button sits behind the sheet, so no wipe can
+    // land under one. If lock ever becomes an in-place overlay instead of a route
+    // change, these must be cleared explicitly or a sheet would stay presented over
+    // a wiped session.
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -287,14 +297,15 @@ struct MacBrowseView: View {
         .sheet(item: $settingsSheet) { item in
             MacSettingsView(viewModel: item.vm, onDone: { settingsSheet = nil })
         }
-        .sheet(item: $trashSheet) { item in
-            MacTrashView(viewModel: item.vm, onDone: {
-                trashSheet = nil
-                // Restore/purge mutate the block set through a separate VM/port, so
-                // refresh the sidebar on dismiss. loadBlocks() re-reads only `blocks`
-                // — it leaves the current selection + records pane untouched.
-                viewModel.loadBlocks()
-            })
+        // Restore/purge mutate the block set through a separate VM/port, so the
+        // sidebar needs a refresh once the sheet goes away. Hung on `onDismiss:`
+        // (as the move picker above does) rather than on the child's Done closure,
+        // so it fires on EVERY dismissal path — a Done-only refresh would leave a
+        // restored block missing from the sidebar if the sheet were ever closed
+        // another way. loadBlocks() re-reads only `blocks`; it leaves the current
+        // selection + records pane untouched.
+        .sheet(item: $trashSheet, onDismiss: { viewModel.loadBlocks() }) { item in
+            MacTrashView(viewModel: item.vm, onDone: { trashSheet = nil })
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
@@ -328,7 +339,10 @@ struct MacBrowseView: View {
             // (or the app quits — AppKit posts willClose for each window during
             // termination too) — deterministic zeroize rather than waiting on ARC.
             // Filtering on window identity stops an unrelated panel (e.g. the
-            // standard About window) closing from wiping a live session. Routed
+            // standard About window) closing from wiping a live session. It is
+            // also load-bearing for the sheets: macOS presents each as its own
+            // NSWindow posting its own willClose, so without this guard merely
+            // closing the Trash or Settings sheet would wipe the session. Routed
             // through `onLock` so the scope is ended too, not just the session
             // wiped. Design §7 "wipe on window close".
             guard let closing = note.object as? NSWindow,
