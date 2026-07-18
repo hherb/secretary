@@ -37,6 +37,12 @@ struct MacBrowseView: View {
     @State private var movingItem: MovingRecordItem?
     /// Editable block-name text shared by the create/rename sheet (`blockNameDialog`).
     @State private var blockNameField = ""
+    /// Bridges a freshly-built SettingsViewModel to the `.sheet(item:)` Settings sheet.
+    private struct SettingsSheetItem: Identifiable {
+        let id = UUID()
+        let vm: SettingsViewModel
+    }
+    @State private var settingsSheet: SettingsSheetItem?
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -173,6 +179,21 @@ struct MacBrowseView: View {
                 .disabled(viewModel.isWriting)
             }
             ToolbarItem(placement: .primaryAction) {
+                // Build the VM at tap (not per-render): SettingsViewModel.init calls
+                // the FFI `settingsBounds()`, so gating visibility on the factory would
+                // pay that on every render. On macOS the session always conforms to
+                // SettingsPort, so the button always shows; the `if let` guards the
+                // production-impossible nil rather than hiding the control.
+                Button {
+                    if let vm = viewModel.makeSettingsViewModel() {
+                        settingsSheet = SettingsSheetItem(vm: vm)
+                    }
+                } label: {
+                    Label("Settings", systemImage: "gear")
+                }
+                .disabled(viewModel.isWriting)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 // `Button(_:systemImage:action:)` is macOS 14+; the app's
                 // deploymentTarget is macOS 13.0, so use the trailing-closure
                 // label form instead (same floor as the onChange note below).
@@ -244,6 +265,9 @@ struct MacBrowseView: View {
             set: { if !$0 { viewModel.cancelBlockNameDialog() } }
         )) {
             MacBlockNameSheet(viewModel: viewModel, name: $blockNameField, title: blockNameSheetTitle)
+        }
+        .sheet(item: $settingsSheet) { item in
+            MacSettingsView(viewModel: item.vm, onDone: { settingsSheet = nil })
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
