@@ -135,7 +135,7 @@ struct MacBrowseView: View {
             }
         } detail: {
             if let record = selectedRecord {
-                fieldList(record)
+                MacFieldDetailView(viewModel: viewModel, record: record, isActive: isActive)
             } else {
                 Text("Select a record").foregroundStyle(.secondary)
             }
@@ -283,95 +283,6 @@ struct MacBrowseView: View {
             guard let closing = note.object as? NSWindow,
                   ObjectIdentifier(closing) == browseWindowID else { return }
             onLock()
-        }
-    }
-
-    @ViewBuilder
-    private func fieldList(_ record: RecordView) -> some View {
-        List {
-            Section("uuid=\(record.uuidHex)") {
-                ForEach(record.fields, id: \.name) { field in
-                    fieldRow(record: record, field: field)
-                }
-            }
-        }
-        .navigationTitle(record.type.isEmpty ? "Record" : record.type)
-    }
-
-    @ViewBuilder
-    private func fieldRow(record: RecordView, field: FieldView) -> some View {
-        let revealed = viewModel.revealedValue(recordUuidHex: record.uuidHex, fieldName: field.name)
-        HStack {
-            Text(field.name)
-            Spacer()
-            if let revealed {
-                Text(display(revealed))
-                    .textSelection(.enabled)
-                    // Defensive / currently unreachable: `hideAll()` runs in the same
-                    // didResignActive handler above, so no revealed value survives into
-                    // an inactive render today. Kept as belt-and-suspenders against a
-                    // future handler reorder.
-                    .redacted(reason: isActive ? [] : .privacy)
-                Button("Copy") { copyToPasteboard(revealed) }
-                Button("Hide") { viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name) }
-                    // Auto-hide after the shared reveal window.
-                    .task(id: "\(record.uuidHex)/\(field.name)") {
-                        try? await Task.sleep(for: .seconds(RevealPolicy.autoHideSeconds))
-                        guard !Task.isCancelled else { return }
-                        viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name)
-                    }
-            } else {
-                Text("••••••").foregroundStyle(.secondary)
-                Button("Reveal") { viewModel.reveal(record: record, field: field) }
-            }
-        }
-    }
-
-    private func display(_ value: RevealedValue) -> String {
-        switch value {
-        case .text(let s): return s
-        case .bytes(let b): return b.map { String(format: "%02x", $0) }.joined()
-        }
-    }
-
-    /// Copy revealed plaintext to the pasteboard, hinting clipboard managers not to
-    /// persist it (macOS `org.nspasteboard.ConcealedType` convention), and clear it
-    /// after the reveal window unless a newer copy has since replaced it.
-    private func copyToPasteboard(_ value: RevealedValue) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.declareTypes([.string, NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")], owner: nil)
-        pb.setString(display(value), forType: .string)
-        let generation = pb.changeCount
-        // RevealPolicy.autoHideSeconds is already a TimeInterval (Double); no
-        // numeric cast needed before adding it to a DispatchTime deadline.
-        DispatchQueue.main.asyncAfter(deadline: .now() + RevealPolicy.autoHideSeconds) {
-            if NSPasteboard.general.changeCount == generation { NSPasteboard.general.clearContents() }
-        }
-    }
-}
-
-/// Resolves the `NSWindow` hosting a SwiftUI view. Used so the browse view can
-/// scope its `willClose` session-wipe to its own window (see `browseWindowID`),
-/// rather than reacting to every window's close. `viewDidMoveToWindow` is the
-/// canonical hook: it fires with a non-nil `window` once the view is attached.
-private struct WindowAccessor: NSViewRepresentable {
-    let onResolve: (NSWindow?) -> Void
-
-    func makeNSView(context: Context) -> NSView { ResolvingView(onResolve: onResolve) }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class ResolvingView: NSView {
-        private let onResolve: (NSWindow?) -> Void
-        init(onResolve: @escaping (NSWindow?) -> Void) {
-            self.onResolve = onResolve
-            super.init(frame: .zero)
-        }
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onResolve(window)
         }
     }
 }
