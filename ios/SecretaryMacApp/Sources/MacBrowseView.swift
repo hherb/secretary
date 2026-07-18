@@ -37,6 +37,28 @@ struct MacBrowseView: View {
     @State private var movingItem: MovingRecordItem?
     /// Editable block-name text shared by the create/rename sheet (`blockNameDialog`).
     @State private var blockNameField = ""
+    /// Bridges a freshly-built SettingsViewModel to the `.sheet(item:)` Settings sheet.
+    private struct SettingsSheetItem: Identifiable {
+        let id = UUID()
+        let vm: SettingsViewModel
+    }
+    @State private var settingsSheet: SettingsSheetItem?
+    /// Bridges a freshly-built TrashViewModel to the `.sheet(item:)` Trash sheet.
+    private struct TrashSheetItem: Identifiable {
+        let id = UUID()
+        let vm: TrashViewModel
+    }
+    @State private var trashSheet: TrashSheetItem?
+    // NOTE — lock interaction: unlike `blockNameDialog` / `movingRecord` (VM state
+    // that `VaultBrowseViewModel.lock()` nils, collapsing those sheets), the three
+    // view-local sheet states above (`editSession`, `settingsSheet`, `trashSheet`)
+    // are invisible to the VM. They survive a lock and are torn down only because
+    // `onLock` flips the root route away, unmounting this whole view. That is safe
+    // today — macOS blocks the parent window's close button while a sheet is
+    // attached and the Lock toolbar button sits behind the sheet, so no wipe can
+    // land under one. If lock ever becomes an in-place overlay instead of a route
+    // change, these must be cleared explicitly or a sheet would stay presented over
+    // a wiped session.
 
     init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -135,7 +157,7 @@ struct MacBrowseView: View {
             }
         } detail: {
             if let record = selectedRecord {
-                fieldList(record)
+                MacFieldDetailView(viewModel: viewModel, record: record, isActive: isActive)
             } else {
                 Text("Select a record").foregroundStyle(.secondary)
             }
@@ -169,6 +191,33 @@ struct MacBrowseView: View {
                     viewModel.startCreateBlock()
                 } label: {
                     Label("New block", systemImage: "folder.badge.plus")
+                }
+                .disabled(viewModel.isWriting)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                // VM built at tap (TrashViewModel.init does an FFI read of the default
+                // retention window); on macOS the session always conforms to TrashPort.
+                Button {
+                    if let vm = viewModel.makeTrashViewModel() {
+                        trashSheet = TrashSheetItem(vm: vm)
+                    }
+                } label: {
+                    Label("Trash", systemImage: "trash")
+                }
+                .disabled(viewModel.isWriting)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                // Build the VM at tap (not per-render): SettingsViewModel.init calls
+                // the FFI `settingsBounds()`, so gating visibility on the factory would
+                // pay that on every render. On macOS the session always conforms to
+                // SettingsPort, so the button always shows; the `if let` guards the
+                // production-impossible nil rather than hiding the control.
+                Button {
+                    if let vm = viewModel.makeSettingsViewModel() {
+                        settingsSheet = SettingsSheetItem(vm: vm)
+                    }
+                } label: {
+                    Label("Settings", systemImage: "gear")
                 }
                 .disabled(viewModel.isWriting)
             }
@@ -245,6 +294,19 @@ struct MacBrowseView: View {
         )) {
             MacBlockNameSheet(viewModel: viewModel, name: $blockNameField, title: blockNameSheetTitle)
         }
+        .sheet(item: $settingsSheet) { item in
+            MacSettingsView(viewModel: item.vm, onDone: { settingsSheet = nil })
+        }
+        // Restore/purge mutate the block set through a separate VM/port, so the
+        // sidebar needs a refresh once the sheet goes away. Hung on `onDismiss:`
+        // (as the move picker above does) rather than on the child's Done closure,
+        // so it fires on EVERY dismissal path — a Done-only refresh would leave a
+        // restored block missing from the sidebar if the sheet were ever closed
+        // another way. loadBlocks() re-reads only `blocks`; it leaves the current
+        // selection + records pane untouched.
+        .sheet(item: $trashSheet, onDismiss: { viewModel.loadBlocks() }) { item in
+            MacTrashView(viewModel: item.vm, onDone: { trashSheet = nil })
+        }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form
         // of `.background` (macOS 12+) to avoid the deprecated positional overload.
@@ -277,101 +339,15 @@ struct MacBrowseView: View {
             // (or the app quits — AppKit posts willClose for each window during
             // termination too) — deterministic zeroize rather than waiting on ARC.
             // Filtering on window identity stops an unrelated panel (e.g. the
-            // standard About window) closing from wiping a live session. Routed
+            // standard About window) closing from wiping a live session. It is
+            // also load-bearing for the sheets: macOS presents each as its own
+            // NSWindow posting its own willClose, so without this guard merely
+            // closing the Trash or Settings sheet would wipe the session. Routed
             // through `onLock` so the scope is ended too, not just the session
             // wiped. Design §7 "wipe on window close".
             guard let closing = note.object as? NSWindow,
                   ObjectIdentifier(closing) == browseWindowID else { return }
             onLock()
-        }
-    }
-
-    @ViewBuilder
-    private func fieldList(_ record: RecordView) -> some View {
-        List {
-            Section("uuid=\(record.uuidHex)") {
-                ForEach(record.fields, id: \.name) { field in
-                    fieldRow(record: record, field: field)
-                }
-            }
-        }
-        .navigationTitle(record.type.isEmpty ? "Record" : record.type)
-    }
-
-    @ViewBuilder
-    private func fieldRow(record: RecordView, field: FieldView) -> some View {
-        let revealed = viewModel.revealedValue(recordUuidHex: record.uuidHex, fieldName: field.name)
-        HStack {
-            Text(field.name)
-            Spacer()
-            if let revealed {
-                Text(display(revealed))
-                    .textSelection(.enabled)
-                    // Defensive / currently unreachable: `hideAll()` runs in the same
-                    // didResignActive handler above, so no revealed value survives into
-                    // an inactive render today. Kept as belt-and-suspenders against a
-                    // future handler reorder.
-                    .redacted(reason: isActive ? [] : .privacy)
-                Button("Copy") { copyToPasteboard(revealed) }
-                Button("Hide") { viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name) }
-                    // Auto-hide after the shared reveal window.
-                    .task(id: "\(record.uuidHex)/\(field.name)") {
-                        try? await Task.sleep(for: .seconds(RevealPolicy.autoHideSeconds))
-                        guard !Task.isCancelled else { return }
-                        viewModel.hide(recordUuidHex: record.uuidHex, fieldName: field.name)
-                    }
-            } else {
-                Text("••••••").foregroundStyle(.secondary)
-                Button("Reveal") { viewModel.reveal(record: record, field: field) }
-            }
-        }
-    }
-
-    private func display(_ value: RevealedValue) -> String {
-        switch value {
-        case .text(let s): return s
-        case .bytes(let b): return b.map { String(format: "%02x", $0) }.joined()
-        }
-    }
-
-    /// Copy revealed plaintext to the pasteboard, hinting clipboard managers not to
-    /// persist it (macOS `org.nspasteboard.ConcealedType` convention), and clear it
-    /// after the reveal window unless a newer copy has since replaced it.
-    private func copyToPasteboard(_ value: RevealedValue) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.declareTypes([.string, NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")], owner: nil)
-        pb.setString(display(value), forType: .string)
-        let generation = pb.changeCount
-        // RevealPolicy.autoHideSeconds is already a TimeInterval (Double); no
-        // numeric cast needed before adding it to a DispatchTime deadline.
-        DispatchQueue.main.asyncAfter(deadline: .now() + RevealPolicy.autoHideSeconds) {
-            if NSPasteboard.general.changeCount == generation { NSPasteboard.general.clearContents() }
-        }
-    }
-}
-
-/// Resolves the `NSWindow` hosting a SwiftUI view. Used so the browse view can
-/// scope its `willClose` session-wipe to its own window (see `browseWindowID`),
-/// rather than reacting to every window's close. `viewDidMoveToWindow` is the
-/// canonical hook: it fires with a non-nil `window` once the view is attached.
-private struct WindowAccessor: NSViewRepresentable {
-    let onResolve: (NSWindow?) -> Void
-
-    func makeNSView(context: Context) -> NSView { ResolvingView(onResolve: onResolve) }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class ResolvingView: NSView {
-        private let onResolve: (NSWindow?) -> Void
-        init(onResolve: @escaping (NSWindow?) -> Void) {
-            self.onResolve = onResolve
-            super.init(frame: .zero)
-        }
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onResolve(window)
         }
     }
 }

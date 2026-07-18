@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-18-d5.3-macos-mutation-ui-shipped.md
+docs/handoffs/2026-07-18-d5.4-macos-trash-settings-shipped.md
