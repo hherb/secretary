@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-18-d5.4-macos-trash-settings-shipped.md
+docs/handoffs/2026-07-19-d5.5-macos-forget-this-mac-shipped.md
