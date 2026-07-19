@@ -20,10 +20,14 @@ import SecretaryVaultAccess
 ///     ungating every later record edit, trash purge, and settings save with no
 ///     user-visible signal.
 ///
-/// Consequence (2) is why `forget()` reaches `.forgotten` ONLY on full success:
-/// the view treats that state as "now lock", so a failed revocation must never
-/// reach it — locking then would strand the user out of a session whose
-/// credential is still valid.
+/// Consequence (2) is why `forget()` reaches `.forgotten` on full success, AND
+/// on a partial failure that already tore down the local credential before
+/// throwing: the view treats that state as "now lock", and `port.isEnrolled`
+/// (re-read, not the init snapshot) discriminates the two failure shapes — a
+/// revocation that changed nothing locally must never reach it, since locking
+/// then would strand the user out of a session whose credential is still
+/// valid, but one that already destroyed the credential must ALWAYS reach it,
+/// since the gate is already a permanent no-op regardless of the throw.
 ///
 /// Platform-neutral by construction (the re-auth reason says "this device", not
 /// "this Mac") so the iOS Settings screen can adopt it unchanged.
@@ -31,7 +35,10 @@ import SecretaryVaultAccess
 public final class DeviceSlotViewModel: ObservableObject {
     public enum State: Equatable {
         case idle
-        /// Revocation completed. The view's contract: dismiss, then lock.
+        /// This device's local credential is gone and the session MUST be locked.
+        /// Reached both on a full successful revocation AND on a partial failure
+        /// that already tore down the enclave key before throwing (see `forget()`).
+        /// The view's contract: dismiss, then lock.
         case forgotten
     }
 
@@ -82,10 +89,21 @@ public final class DeviceSlotViewModel: ObservableObject {
             try port.forgetThisDevice()
         } catch let e as VaultAccessError {
             error = e
-            return                              // failed ⇒ still enrolled, no lock
+            // Local teardown may have partly landed even though the revocation as a
+            // whole failed: `enclave.clear()` deletes the wrapped blob and the SE key,
+            // throwing only after attempting both, and the gate's enrolled-predicate is
+            // blob presence. So if the credential is gone the gate is ALREADY a
+            // permanent no-op and the session must not continue, error or not.
+            // `port.isEnrolled` discriminates exactly: it is false only once local
+            // teardown landed, and stays true when the failure was the slot removal
+            // (where nothing local changed and locking would strand the user in a
+            // still-valid session).
+            if !port.isEnrolled { state = .forgotten }
+            return                              // failed ⇒ check above decides the lock
         } catch {
             self.error = .other(String(describing: error))
-            return
+            if !port.isEnrolled { state = .forgotten }
+            return                              // failed ⇒ check above decides the lock
         }
 
         state = .forgotten

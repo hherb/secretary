@@ -41,12 +41,19 @@ final class DeviceSlotViewModelTests: XCTestCase {
 
     // MARK: port failure
 
-    /// A failed revocation must NOT reach `.forgotten`, because the view locks the
-    /// session on `.forgotten`. Locking after a failed forget would strand the user
-    /// out of a session whose credential is still perfectly valid.
+    /// A failed revocation that changed nothing locally must NOT reach `.forgotten`,
+    /// because the view locks the session on `.forgotten`. Locking here would strand
+    /// the user out of a session whose credential is still perfectly valid.
+    ///
+    /// `port.isEnrolled` is left at its default `true` (not flipped by the fake's
+    /// failure injection) — that is the discriminator `forget()` reads to decide the
+    /// lock, so this test and `testPartialFailureThatTearsDownCredentialStillLocks`
+    /// bracket the two failure shapes the discriminator must tell apart: intact
+    /// credential (here, no lock) vs. torn-down credential (there, lock anyway).
     func testPortFailureDoesNotReachForgotten() async {
         let port = FakeDeviceSlotPort()
         port.forgetError = .other("keychain denied")
+        XCTAssertTrue(port.isEnrolled, "credential must be intact for this case to be meaningful")
         let gate = FakeWriteReauthGate()
         let vm = DeviceSlotViewModel(port: port, gate: gate)
 
@@ -55,6 +62,28 @@ final class DeviceSlotViewModelTests: XCTestCase {
         XCTAssertNotEqual(vm.state, .forgotten)
         XCTAssertEqual(vm.error, .other("keychain denied"))
         XCTAssertEqual(gate.authorizeCount, 1)
+    }
+
+    /// Partial-failure security fix: `disenroll` is not atomic — the enclave key AND
+    /// wrapped blob can be deleted (tearing down the local credential, which is what
+    /// `isEnrolled` reflects) before the slot-removal step throws. If `forget()` did
+    /// not lock here, the session would continue with `authorizeWrite`'s
+    /// `guard authorizer.isEnrolled else { return }` as a silent permanent no-op —
+    /// every later write ungated with no visible signal. So this failure MUST still
+    /// reach `.forgotten` despite the thrown error, which is exactly what makes this
+    /// case the mirror of `testPortFailureDoesNotReachForgotten`: same thrown error
+    /// shape, but `isEnrolled` flipped false to simulate the torn-down credential.
+    func testPartialFailureThatTearsDownCredentialStillLocks() async {
+        let port = FakeDeviceSlotPort()
+        port.forgetError = .other("slot removal failed")
+        port.isEnrolled = false   // local teardown already landed before the throw
+        let gate = FakeWriteReauthGate()
+        let vm = DeviceSlotViewModel(port: port, gate: gate)
+
+        await vm.forget()
+
+        XCTAssertEqual(vm.state, .forgotten, "a torn-down credential must still lock the session")
+        XCTAssertNotNil(vm.error, "the failure is still surfaced to the user")
     }
 
     // MARK: success
