@@ -13,6 +13,10 @@ import SecretaryVaultAccessUI
 struct MacBrowseView: View {
     @StateObject private var viewModel: VaultBrowseViewModel
     let onLock: () -> Void
+    /// This device's slot port, injected from `MacRootView` (which holds the
+    /// `ScopedVaultPath`; this view has no vault path of its own). Typed as the pure
+    /// `DeviceSlotPort` so this file stays free of coordinator/enclave imports.
+    let deviceSlotPort: DeviceSlotPort
 
     @State private var selectedBlockHex: String?
     @State private var selectedRecordHex: String?
@@ -37,10 +41,12 @@ struct MacBrowseView: View {
     @State private var movingItem: MovingRecordItem?
     /// Editable block-name text shared by the create/rename sheet (`blockNameDialog`).
     @State private var blockNameField = ""
-    /// Bridges a freshly-built SettingsViewModel to the `.sheet(item:)` Settings sheet.
+    /// Bridges a freshly-built SettingsViewModel + DeviceSlotViewModel to the
+    /// `.sheet(item:)` Settings sheet.
     private struct SettingsSheetItem: Identifiable {
         let id = UUID()
         let vm: SettingsViewModel
+        let deviceVM: DeviceSlotViewModel
     }
     @State private var settingsSheet: SettingsSheetItem?
     /// Bridges a freshly-built TrashViewModel to the `.sheet(item:)` Trash sheet.
@@ -60,8 +66,11 @@ struct MacBrowseView: View {
     // change, these must be cleared explicitly or a sheet would stay presented over
     // a wiped session.
 
-    init(viewModel: VaultBrowseViewModel, onLock: @escaping () -> Void) {
+    init(viewModel: VaultBrowseViewModel,
+         deviceSlotPort: DeviceSlotPort,
+         onLock: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.deviceSlotPort = deviceSlotPort
         self.onLock = onLock
     }
 
@@ -214,7 +223,12 @@ struct MacBrowseView: View {
                 // production-impossible nil rather than hiding the control.
                 Button {
                     if let vm = viewModel.makeSettingsViewModel() {
-                        settingsSheet = SettingsSheetItem(vm: vm)
+                        // Both VMs are built at tap, not per-render: SettingsViewModel.init
+                        // calls the FFI `settingsBounds()`, and DeviceSlotViewModel.init
+                        // snapshots `port.isEnrolled` (a Keychain read plus an enclave probe).
+                        settingsSheet = SettingsSheetItem(
+                            vm: vm,
+                            deviceVM: viewModel.makeDeviceSlotViewModel(port: deviceSlotPort))
                     }
                 } label: {
                     Label("Settings", systemImage: "gear")
@@ -295,7 +309,22 @@ struct MacBrowseView: View {
             MacBlockNameSheet(viewModel: viewModel, name: $blockNameField, title: blockNameSheetTitle)
         }
         .sheet(item: $settingsSheet) { item in
-            MacSettingsView(viewModel: item.vm, onDone: { settingsSheet = nil })
+            MacSettingsView(
+                viewModel: item.vm,
+                deviceViewModel: item.deviceVM,
+                onDone: { settingsSheet = nil },
+                onForgotten: {
+                    // Dismiss BEFORE locking. `VaultBrowseViewModel.lock()` cannot see
+                    // this view-local `@State` sheet (the interaction documented in the
+                    // NOTE above), so the view must tear its own sheet down; and each
+                    // sheet is its own NSWindow, so dismissing first keeps the
+                    // `willClose` window-identity filter from misattributing the close.
+                    // Ordering also matters for the security-scoped path: `onLock` calls
+                    // `scoped.end()`, and the revocation must already have completed
+                    // while that access was live.
+                    settingsSheet = nil
+                    onLock()
+                })
         }
         // Restore/purge mutate the block set through a separate VM/port, so the
         // sidebar needs a refresh once the sheet goes away. Hung on `onDismiss:`

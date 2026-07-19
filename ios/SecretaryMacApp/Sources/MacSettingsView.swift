@@ -13,7 +13,12 @@ import SecretaryVaultAccessUI
 @MainActor
 struct MacSettingsView: View {
     @StateObject private var viewModel: SettingsViewModel
+    @StateObject private var deviceViewModel: DeviceSlotViewModel
     let onDone: () -> Void
+    /// Called after a successful "Forget This Mac". The parent dismisses this sheet
+    /// and then locks: clearing the enclave key makes the write-reauth gate a
+    /// permanent no-op for the rest of the session, so the session must not continue.
+    let onForgotten: () -> Void
 
     /// Live text for the two numeric inputs, seeded from the VM after `load()`
     /// and pushed back into the VM by `commitEdits()` at Save.
@@ -34,9 +39,17 @@ struct MacSettingsView: View {
     /// surface. Cleared on every Save attempt.
     @State private var inputError: String?
 
-    init(viewModel: SettingsViewModel, onDone: @escaping () -> Void) {
+    /// Drives the "Forget This Mac" confirmation dialog.
+    @State private var confirmForget = false
+
+    init(viewModel: SettingsViewModel,
+         deviceViewModel: DeviceSlotViewModel,
+         onDone: @escaping () -> Void,
+         onForgotten: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        _deviceViewModel = StateObject(wrappedValue: deviceViewModel)
         self.onDone = onDone
+        self.onForgotten = onForgotten
     }
 
     var body: some View {
@@ -102,6 +115,37 @@ struct MacSettingsView: View {
                          + "(\(viewModel.graceMinutesRange.lowerBound)–\(viewModel.graceMinutesRange.upperBound) min; "
                          + "0 re-authenticates every write).")
                 }
+                // Hidden entirely when this Mac is not enrolled: there is nothing to
+                // forget, and a permanently-disabled destructive control is noise.
+                // `isEnrolled` is a snapshot taken in the VM's init (a Keychain read
+                // plus an enclave probe), so consulting it per render is free.
+                if deviceViewModel.isEnrolled {
+                    Section {
+                        // macOS 13 floor: trailing-closure label form, not
+                        // `Button(_:systemImage:action:)` (macOS 14+).
+                        Button(role: .destructive) {
+                            confirmForget = true
+                        } label: {
+                            Text("Forget This Mac")
+                        }
+                        .disabled(deviceViewModel.isBusy || viewModel.isWriting)
+                        // Scoped to this section rather than the Form's shared
+                        // message area at the top: a revocation failure is about a
+                        // different action than a settings save, and keeping it here
+                        // avoids interacting with the banner/inputError precedence
+                        // rules documented above.
+                        if let deviceError = deviceViewModel.error {
+                            Text(settingsErrorMessage(deviceError))
+                                .font(.footnote).foregroundStyle(.red)
+                        }
+                    } header: {
+                        Text("This Mac")
+                    } footer: {
+                        Text("Removes Touch ID unlock for this vault on this Mac. "
+                             + "You'll need your master password to unlock, and can turn "
+                             + "Touch ID back on then. Other devices are unaffected.")
+                    }
+                }
             }
             .formStyle(.grouped)
             Divider()
@@ -116,6 +160,25 @@ struct MacSettingsView: View {
         }
         .frame(minWidth: 460, minHeight: 420)
         .navigationTitle("Settings")
+        .confirmationDialog("Forget this Mac?",
+                            isPresented: $confirmForget,
+                            titleVisibility: .visible) {
+            Button("Forget This Mac", role: .destructive) {
+                Task {
+                    await deviceViewModel.forget()
+                    // Lock ONLY on a confirmed success. `forget()` is non-throwing
+                    // and reaches `.forgotten` only when both the re-auth and the
+                    // revocation succeeded, so a cancelled Touch ID prompt or a
+                    // failed revocation leaves the session untouched and the error
+                    // rendered in the section above.
+                    if deviceViewModel.state == .forgotten { onForgotten() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You'll need your master password to unlock this vault on this Mac. "
+                 + "Other devices are unaffected.")
+        }
         .onAppear {
             viewModel.load()
             syncTextFromViewModel()
