@@ -183,6 +183,29 @@ final class DeviceSlotViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isEnrolled, "isEnrolled must be a snapshot, not a live read")
     }
 
+    // MARK: cross-process no-op
+
+    /// The init-time `isEnrolled` snapshot is deliberately stale-tolerant (see its doc
+    /// comment): if another process clears enrollment while the sheet is open, this
+    /// VM still thinks it's enrolled and lets the user tap Forget. `forgetThisDevice()`
+    /// then finds nothing to revoke. That must still succeed and reach `.forgotten`
+    /// rather than surface an error — the underlying coordinator is idempotent (it
+    /// tolerates an already-gone slot and clears local state unconditionally), so
+    /// nothing is left half-revoked, and locking is correct even though this instance
+    /// never had anything to revoke: the credential is gone by construction, so the
+    /// gate is (or is about to become, via this same clear) a no-op regardless.
+    func testForgetOnAlreadyClearedDeviceStillReachesForgotten() async {
+        let port = FakeDeviceSlotPort(isEnrolled: true)   // stale snapshot: init-time true
+        let gate = FakeWriteReauthGate()
+        let vm = DeviceSlotViewModel(port: port, gate: gate)
+
+        await vm.forget()
+
+        XCTAssertEqual(vm.state, .forgotten)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(port.forgetCallCount, 1)
+    }
+
     // MARK: factory
 
     /// The factory must wire the browse VM's OWN gate, so the forget path shares the
