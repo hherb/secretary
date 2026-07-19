@@ -154,7 +154,11 @@ struct MacSettingsView: View {
                 Spacer()
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(viewModel.isWriting)
+                    // Symmetric with the Forget button's `.disabled` above: both writers
+                    // share the sheet's message area, and letting Save fire while a
+                    // "Forget This Mac" revocation is in flight could clobber that
+                    // banner/error state with a concurrent, unrelated write.
+                    .disabled(viewModel.isWriting || deviceViewModel.isBusy)
             }
             .padding()
         }
