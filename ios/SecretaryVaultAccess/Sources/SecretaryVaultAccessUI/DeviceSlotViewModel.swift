@@ -91,13 +91,23 @@ public final class DeviceSlotViewModel: ObservableObject {
             error = e
             // Local teardown may have partly landed even though the revocation as a
             // whole failed: `enclave.clear()` deletes the wrapped blob and the SE key,
-            // throwing only after attempting both, and the gate's enrolled-predicate is
-            // blob presence. So if the credential is gone the gate is ALREADY a
-            // permanent no-op and the session must not continue, error or not.
-            // `port.isEnrolled` discriminates exactly: it is false only once local
-            // teardown landed, and stays true when the failure was the slot removal
-            // (where nothing local changed and locking would strand the user in a
-            // still-valid session).
+            // throwing only after attempting both. So if the credential is gone the
+            // gate is ALREADY a permanent no-op and the session must not continue,
+            // error or not.
+            //
+            // Why `port.isEnrolled` is a SOUND discriminator — it is an implication
+            // between the two predicates, not a case analysis:
+            //   gate  G = enclave.isEnrolled                     (blob presence alone)
+            //   port  D = enclave.isEnrolled && metadata != nil
+            // so D ⟹ G, and contrapositively ¬G ⟹ ¬D. The gate can therefore never
+            // be dead while `port.isEnrolled` still reads true — there is no false
+            // negative in the dangerous direction, structurally.
+            //
+            // The converse is not tight, and deliberately so: D can be false while
+            // the gate lives (e.g. a transient metadata read error, which
+            // `coordinator.isEnrolled` flattens to nil via `try?`). That over-locks
+            // a session whose credential is intact — fail-safe, costing only a
+            // master-password re-entry. Erring the other way would not be safe.
             if !port.isEnrolled { state = .forgotten }
             return                              // failed ⇒ check above decides the lock
         } catch {

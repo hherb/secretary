@@ -170,11 +170,22 @@ struct MacSettingsView: View {
             Button("Forget This Mac", role: .destructive) {
                 Task {
                     await deviceViewModel.forget()
-                    // Lock ONLY on a confirmed success. `forget()` is non-throwing
-                    // and reaches `.forgotten` only when both the re-auth and the
-                    // revocation succeeded, so a cancelled Touch ID prompt or a
-                    // failed revocation leaves the session untouched and the error
+                    // Lock whenever this device's credential is gone — which is
+                    // exactly what `.forgotten` means, NOT "the revocation
+                    // succeeded". `forget()` is non-throwing and reaches
+                    // `.forgotten` on full success AND on a partial failure that
+                    // already tore down the enclave key, because in that second
+                    // case the write-reauth gate is already a permanent no-op and
+                    // continuing the session would leave every later write
+                    // silently ungated. A cancelled Touch ID prompt (no teardown)
+                    // and a failed slot removal (credential intact) both stay
+                    // `.idle`, leaving the session untouched with the error
                     // rendered in the section above.
+                    //
+                    // Do NOT "simplify" this to lock only on a fully successful
+                    // revocation — that reinstates the ungated-session bug.
+                    // Pinned by testPartialFailureThatTearsDownCredentialStillLocks
+                    // and testPortFailureDoesNotReachForgotten, which bracket it.
                     if deviceViewModel.state == .forgotten { onForgotten() }
                 }
             }
