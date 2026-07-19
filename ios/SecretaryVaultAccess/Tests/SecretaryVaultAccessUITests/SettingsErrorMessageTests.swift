@@ -25,3 +25,25 @@ final class SettingsErrorMessageTests: XCTestCase {
             "Couldn’t update settings. Please try again.")
     }
 }
+
+final class DeviceSlotErrorMessageTests: XCTestCase {
+    // `deviceSlotErrorMessage` is the "Forget this device" sibling of
+    // `settingsErrorMessage` — same shape (a re-auth arm + a neutral fallback), but
+    // worded about forgetting a device rather than saving settings, since
+    // `DeviceSlotViewModel.error` renders inside a "This Mac" / "This device"
+    // section, not the settings-save banner.
+    func testReauthFailedUsesForgetWordedCopy() {
+        XCTAssertEqual(
+            deviceSlotErrorMessage(.reauthFailed("x")),
+            "Re-authentication didn’t complete — this device was not forgotten.")
+    }
+
+    func testGenericRevocationErrorUsesForgetNeutralCopy() {
+        // Exact-string equality against a sentinel-free constant doubles as the
+        // anti-oracle check: if the carried diagnostic ("boom") were interpolated,
+        // this assertion would fail.
+        XCTAssertEqual(
+            deviceSlotErrorMessage(.corruptVault("boom")),
+            "Couldn’t forget this device. Please try again.")
+    }
+}

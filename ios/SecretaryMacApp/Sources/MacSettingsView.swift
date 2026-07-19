@@ -135,7 +135,7 @@ struct MacSettingsView: View {
                         // avoids interacting with the banner/inputError precedence
                         // rules documented above.
                         if let deviceError = deviceViewModel.error {
-                            Text(settingsErrorMessage(deviceError))
+                            Text(deviceSlotErrorMessage(deviceError))
                                 .font(.footnote).foregroundStyle(.red)
                         }
                     } header: {

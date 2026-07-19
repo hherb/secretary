@@ -20,3 +20,21 @@ public func settingsErrorMessage(_ e: VaultAccessError) -> String {
         return "Couldn’t update settings. Please try again."
     }
 }
+
+/// Short user-facing message for a "Forget this device" error, surfaced from
+/// `DeviceSlotViewModel.error`. That error can be set from EITHER the re-auth
+/// gate (`.reauthFailed`) or the revocation itself (any other case) — see
+/// `DeviceSlotViewModel.forget()` — so this needs its own fallback rather than
+/// reusing `settingsErrorMessage`, whose copy names the wrong action ("settings")
+/// inside a section about forgetting a device.
+///
+/// Same anti-oracle discipline as `settingsErrorMessage`: the carried diagnostic
+/// string is never interpolated into user-facing copy.
+public func deviceSlotErrorMessage(_ e: VaultAccessError) -> String {
+    switch e {
+    case .reauthFailed:
+        return "Re-authentication didn’t complete — this device was not forgotten."
+    default:
+        return "Couldn’t forget this device. Please try again."
+    }
+}
