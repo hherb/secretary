@@ -293,4 +293,20 @@ public final class VaultBrowseViewModel: ObservableObject {
         guard let settingsPort, let retargetableGate = gate as? RetargetableReauthGate else { return nil }
         return SettingsViewModel(port: settingsPort, gate: retargetableGate)
     }
+
+    /// Build the device-slot VM sharing this session's re-auth gate. The CALLER
+    /// supplies the port (only the app target can build a `DeviceUnlockCoordinator`
+    /// — `SecretaryVaultAccess` and `SecretaryDeviceUnlock` are disjoint packages);
+    /// this factory supplies the gate, for the same reason `makeSettingsViewModel`
+    /// derives its gate internally rather than accepting one: it guarantees the
+    /// forget path is gated by the *same* instance the record-edit / trash / settings
+    /// writers use, so they cannot drift apart.
+    ///
+    /// Non-optional, unlike the trash/settings factories: it needs no port downcast,
+    /// and a plain `WriteReauthGate` suffices because forgetting never changes the
+    /// grace window and so never retargets. Whether the UI renders the control is
+    /// decided by `DeviceSlotViewModel.isEnrolled`, not by a nil factory result.
+    public func makeDeviceSlotViewModel(port: DeviceSlotPort) -> DeviceSlotViewModel {
+        DeviceSlotViewModel(port: port, gate: gate)
+    }
 }

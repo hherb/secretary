@@ -45,11 +45,20 @@ struct MacRootView: View {
                 rememberDevice: $rememberDevice,
                 onOpened: { session, gate in enterBrowse(session, gate: gate, scoped: scoped) })
         case .browse(let browseVM, let scoped):
-            MacBrowseView(viewModel: browseVM, onLock: {
-                browseVM.lock()
-                scoped.end()
-                route = .select
-            })
+            // The port is built here because this view holds the ScopedVaultPath;
+            // MacBrowseView has no vault path. Construction is cheap — no Keychain
+            // I/O until `isEnrolled` is read or a revocation runs — so building it
+            // per body evaluation is fine.
+            MacBrowseView(
+                viewModel: browseVM,
+                deviceSlotPort: CoordinatorDeviceSlotPort(
+                    coordinator: makePerVaultDeviceUnlock(vaultPath: scoped.pathData).coordinator,
+                    vaultPath: scoped.pathData),
+                onLock: {
+                    browseVM.lock()
+                    scoped.end()
+                    route = .select
+                })
         }
     }
 
