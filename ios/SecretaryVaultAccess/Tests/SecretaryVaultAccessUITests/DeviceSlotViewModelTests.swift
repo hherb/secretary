@@ -154,6 +154,24 @@ final class DeviceSlotViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isEnrolled, "isEnrolled must be a snapshot, not a live read")
     }
 
+    // MARK: factory
+
+    /// The factory must wire the browse VM's OWN gate, so the forget path shares the
+    /// one gate instance every other writer uses and they cannot drift apart. Proven
+    /// by observing the injected gate double's call count after a forget.
+    func testFactoryUsesBrowseViewModelGate() async {
+        let gate = FakeWriteReauthGate()
+        let session = FakeVaultSession(vaultUuidHex: "ab", blocks: [], recordsByBlock: [:])
+        let browse = VaultBrowseViewModel(session: session, gate: gate)
+        let port = FakeDeviceSlotPort()
+
+        let vm = browse.makeDeviceSlotViewModel(port: port)
+        await vm.forget()
+
+        XCTAssertEqual(gate.authorizeCount, 1)
+        XCTAssertEqual(port.forgetCallCount, 1)
+    }
+
     // MARK: - Ordering-test doubles
 
     /// Shared append-only call log so the gate and the port record into ONE
