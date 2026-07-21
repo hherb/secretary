@@ -215,8 +215,25 @@ private struct RootView: View {
                                                                  settingsPort: session as? SettingsPort),
                                             syncVM, monitor, scoped)
                         })
-                case .browse(let browseModel, let syncVM, let monitor, _):
-                    VaultBrowseScreen(viewModel: browseModel, syncModel: syncVM)
+                case .browse(let browseModel, let syncVM, let monitor, let scoped):
+                    VaultBrowseScreen(
+                        viewModel: browseModel, syncModel: syncVM,
+                        // Built here because RootView holds the ScopedVaultPath;
+                        // VaultBrowseScreen has no vault path. Construction is cheap
+                        // — no Keychain I/O until isEnrolled is read or a revocation
+                        // runs — so building it per body evaluation is fine.
+                        deviceSlotPort: CoordinatorDeviceSlotPort(
+                            coordinator: makePerVaultDeviceUnlock(vaultPath: scoped.pathData).coordinator,
+                            vaultPath: scoped.pathData),
+                        // Same lock sequence as the scenePhase == .background handler
+                        // below; monitor.stop() is covered by the .onDisappear. The
+                        // revocation writes devices/<uuid>.wrap in the security-scoped
+                        // vault folder and completes (await) before scoped.end() here.
+                        onLock: {
+                            browseModel.lock()
+                            scoped.end()
+                            route = .select
+                        })
                         .onDisappear { monitor.stop() }
                 }
             }
