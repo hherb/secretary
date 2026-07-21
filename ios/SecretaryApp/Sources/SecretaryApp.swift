@@ -227,7 +227,7 @@ private struct RootView: View {
                             vaultPath: scoped.pathData),
                         // Same lock sequence as the scenePhase == .background handler
                         // below; monitor.stop() is covered by the .onDisappear. The
-                        // revocation writes devices/<uuid>.wrap in the security-scoped
+                        // revocation removes devices/<uuid>.wrap from the security-scoped
                         // vault folder and completes (await) before scoped.end() here.
                         onLock: {
                             browseModel.lock()
