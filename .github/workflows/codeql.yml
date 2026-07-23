@@ -1,0 +1,143 @@
+name: CodeQL
+
+# CodeQL *advanced* setup. This REPLACES the repo's previous "default setup"
+# (configured in Settings, not in-repo) and exists for one reason default setup
+# could not serve: analyzing the Android **Kotlin** app.
+#
+# Why advanced setup at all:
+#   - Kotlin analysis REQUIRES a build (CodeQL cannot extract Kotlin buildlessly;
+#     `build-mode: none` silently skips Kotlin). The Android Kotlin here needs a
+#     Gradle build with JDK 21 + the Android SDK — steps default setup's autobuild
+#     cannot be told to run. Advanced setup lets us drive that build explicitly.
+#   - Default setup and advanced setup are MUTUALLY EXCLUSIVE: while default setup
+#     is enabled, GitHub REJECTS advanced-setup SARIF uploads. So this workflow's
+#     `analyze` steps only succeed once default setup is disabled in
+#     Settings -> Code security -> Code scanning. Until then the upload step fails
+#     red while the build/extract steps above it still prove the config works.
+#
+# Language coverage carried over from default setup (do not silently drop any —
+# that would REDUCE scanning vs. what main had): actions, javascript-typescript,
+# python, rust. NEW: java-kotlin. Swift is deliberately NOT here yet — it needs a
+# macOS xcframework build (the macos-host.yml pattern); tracked separately.
+#
+# Note: rust/python/js-ts/actions use `build-mode: none` (buildless extraction),
+# so this workflow does NOT compile the Rust workspace and therefore needs none of
+# the Tauri GTK/WebKit Linux deps that test.yml / rust-lint.yml install. Only the
+# java-kotlin leg builds anything.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly baseline, matching the cadence the previous default setup ran on.
+    - cron: '25 6 * * 1'
+  # Manual trigger — used to re-scan on demand, e.g. the first run right after
+  # default setup is disabled so the (previously upload-blocked) analysis uploads.
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded PR runs to save CI minutes, but NEVER cancel an in-flight
+  # analysis of `main` — dropping a default-branch scan mid-upload would leave the
+  # security dashboard on a stale result. (GitHub's own advanced-setup template
+  # omits cancel-in-progress entirely for this reason; we keep it for PR refs only,
+  # a deliberate exception to the repo-wide uniform-cancel convention.)
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.runner }}
+    # Uniform runaway cap (repo convention). The buildless legs finish in a few
+    # minutes; the java-kotlin leg is the slow one (cold Gradle + Android SDK
+    # fetch + Kotlin compile + extraction). Provisional — re-tune vs. live CI.
+    timeout-minutes: 45
+    permissions:
+      # Required to upload CodeQL results to the code-scanning API.
+      security-events: write
+      # `actions: read` lets the `actions` language analyze workflow files;
+      # `contents: read` for checkout; `packages: read` for the CodeQL packs.
+      actions: read
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
+          - language: javascript-typescript
+            build-mode: none
+            runner: ubuntu-latest
+          - language: python
+            build-mode: none
+            runner: ubuntu-latest
+          - language: rust
+            build-mode: none
+            runner: ubuntu-latest
+          # Kotlin needs a real build. `manual` (not `autobuild`) because the
+          # Gradle root is the nested `android/` dir, which autobuild would not
+          # reliably discover from the repo root.
+          - language: java-kotlin
+            build-mode: manual
+            runner: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # --- java-kotlin build prerequisites (mirrors test.yml's android-host) ---
+      # JDK 21 matches the modules' jvmToolchain(21). The Android SDK is required
+      # even though :vault-access is pure kotlin(jvm): settings.gradle.kts includes
+      # the AGP modules, which Gradle configures for any task (compileSdk 36) or
+      # fails "SDK location not found". Same rationale as android-host.
+      - name: Install JDK
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Provision Android SDK
+        if: matrix.language == 'java-kotlin'
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Manual build for java-kotlin: compile ALL modules' main Kotlin so the
+      # CodeQL tracer sees every source file.
+      #   - `compileDebugKotlin` (unqualified) runs on the four Android modules
+      #     (:app/:kit/:sync-ui/:browse-ui); `:vault-access:compileKotlin` is the
+      #     pure-jvm module.
+      #   - `--no-daemon` + `kotlin.compiler.execution.strategy=in-process` keep
+      #     the Kotlin compilation IN a process CodeQL can trace — the default
+      #     Gradle/Kotlin daemons run out-of-band and CodeQL would see no source
+      #     ("No source code was seen during the build").
+      #   - `--no-build-cache` is LOAD-BEARING, do not drop it: gradle.properties
+      #     sets `org.gradle.caching=true` and setup-java's `cache: gradle`
+      #     persists `~/.gradle/caches` (which holds `build-cache-1`) across runs.
+      #     Without this flag, a cache-warm run with unchanged Kotlin source would
+      #     resolve `compileDebugKotlin` FROM-CACHE — kotlinc never executes, so
+      #     CodeQL again sees "No source code" and Kotlin silently goes unscanned
+      #     (exactly on the quiet weekly baseline / Kotlin-untouched PRs). Forcing
+      #     the compiler to run is the whole point of this leg, so we pay the
+      #     recompile every time rather than risk a silent coverage hole.
+      #   - The uniffi Kotlin bindings load the native .so at RUNTIME (JNA), so
+      #     compilation needs no cross-compiled library — this is compile-only.
+      - name: Build Kotlin (traced, for CodeQL extraction)
+        if: matrix.language == 'java-kotlin'
+        working-directory: android
+        run: >
+          ./gradlew --no-daemon --no-build-cache
+          -Pkotlin.compiler.execution.strategy=in-process
+          compileDebugKotlin :vault-access:compileKotlin
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          category: /language:${{ matrix.language }}
