@@ -33,106 +33,181 @@ struct VaultBrowseScreen: View {
     // Identifiable wrapper bridging viewModel.movingRecord → .sheet(item:).
     @State private var movingItem: MovingRecordItem?
 
-    init(viewModel: VaultBrowseViewModel, syncModel: VaultSyncViewModel) {
+    /// This device's slot port, injected from `RootView` (which holds the
+    /// `ScopedVaultPath`; this view has no vault path). Typed as the pure
+    /// `DeviceSlotPort` so this file stays free of coordinator/enclave imports.
+    private let deviceSlotPort: DeviceSlotPort
+    /// Locks the session (RootView flips `route = .select`). iOS has no manual-lock
+    /// affordance; this exists for the "Forget This Device" path.
+    private let onLock: () -> Void
+
+    /// Bridges a freshly-built SettingsViewModel + DeviceSlotViewModel to the pushed
+    /// Settings screen. Built at tap (not per render) so `DeviceSlotViewModel.init`'s
+    /// `isEnrolled` snapshot — a Keychain read + enclave probe — runs once, not on
+    /// every toolbar re-render.
+    private struct SettingsRoute: Identifiable, Hashable {
+        let id = UUID()
+        let settingsVM: SettingsViewModel
+        let deviceVM: DeviceSlotViewModel
+
+        // `navigationDestination(item:)` requires Hashable; the payload is view-model
+        // reference types, so hash/compare by the per-instance `id` (each route is
+        // built fresh at tap with a unique UUID, so identity equality is exact).
+        static func == (lhs: SettingsRoute, rhs: SettingsRoute) -> Bool { lhs.id == rhs.id }
+        func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    }
+    @State private var settingsRoute: SettingsRoute?
+
+    init(viewModel: VaultBrowseViewModel, syncModel: VaultSyncViewModel,
+         deviceSlotPort: DeviceSlotPort, onLock: @escaping () -> Void) {
         self._viewModel = StateObject(wrappedValue: viewModel)
         self.syncModel = syncModel
+        self.deviceSlotPort = deviceSlotPort
+        self.onLock = onLock
+    }
+
+    /// Extracted from `body` into its own `@ToolbarContentBuilder` so the main view
+    /// body stays under the Swift type-checker's complexity limit ("unable to
+    /// type-check this expression in reasonable time"). Behaviourally identical to
+    /// an inline `.toolbar { … }`.
+    @ToolbarContentBuilder
+    private var browseToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            SyncBadgeView(state: syncModel.badge,
+                          nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
+                          onTap: { syncModel.beginInteractiveSync() })
+        }
+        // Manual lock: wipe the session, release the scope, and return to the vault
+        // selection screen — the same `onLock` RootView threads for the "Forget This
+        // Device" path (iOS otherwise only locks on scenePhase background). Leading
+        // placement keeps this security control always visible rather than letting a
+        // crowded trailing cluster collapse it into an overflow menu. Mirrors the
+        // macOS `MacBrowseView` Lock toolbar button.
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                onLock()
+            } label: {
+                Label("Lock", systemImage: "lock.fill")
+            }
+            .accessibilityIdentifier("lock-vault")
+        }
+        if selectedBlock != nil {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    guard let vm = viewModel.makeEditViewModel(mode: .add) else { return }
+                    editSession = EditSession(editVM: vm, title: "Add Record")
+                } label: {
+                    Label("Add record", systemImage: "plus")
+                }
+                .disabled(viewModel.isWriting)
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                blockNameField = ""
+                viewModel.startCreateBlock()
+            } label: {
+                Label("New block", systemImage: "folder.badge.plus")
+            }
+            .disabled(viewModel.isWriting)
+            .accessibilityIdentifier("new-block")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            if let trashVM = viewModel.makeTrashViewModel() {
+                NavigationLink {
+                    TrashScreen(viewModel: trashVM)
+                } label: {
+                    Label("Trash", systemImage: "trash")
+                }
+                .disabled(viewModel.isWriting)
+                .accessibilityIdentifier("open-trash")
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                // Build both VMs at tap, not per render: SettingsViewModel.init
+                // calls the FFI settingsBounds(), and DeviceSlotViewModel.init
+                // snapshots port.isEnrolled (a Keychain read + enclave probe).
+                // The `guard` handles the production-impossible nil settings
+                // port rather than hiding the control.
+                guard let settingsVM = viewModel.makeSettingsViewModel() else { return }
+                settingsRoute = SettingsRoute(
+                    settingsVM: settingsVM,
+                    deviceVM: viewModel.makeDeviceSlotViewModel(port: deviceSlotPort))
+            } label: {
+                Label("Settings", systemImage: "gear")
+            }
+            .disabled(viewModel.isWriting)
+            .accessibilityIdentifier("open-settings")
+        }
+    }
+
+    /// Extracted from `body` for the same type-checker-complexity reason as
+    /// `browseToolbar`: the `List` content (nested `ForEach` + `recordView`) plus the
+    /// long modifier chain on the `List` (sheets, dialogs, navigationDestination)
+    /// together exceed the Swift inference budget. Behaviourally identical to inline.
+    @ViewBuilder
+    private var listContent: some View {
+        Section("Vault") {
+            Text("uuid=\(viewModel.vaultUuidHex)").font(.footnote.monospaced())
+        }
+        Section("Blocks") {
+            ForEach(viewModel.blocks, id: \.uuidHex) { block in
+                Button(block.name) {
+                    selectedBlock = block
+                    viewModel.selectBlock(block)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button {
+                        blockNameField = block.name
+                        viewModel.startRenameBlock(block)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(.orange)
+                    .disabled(viewModel.isWriting)
+                    .accessibilityIdentifier("rename-\(block.uuidHex)")
+                }
+            }
+        }
+        if viewModel.records != nil {
+            Section {
+                Toggle("Show deleted", isOn: $viewModel.showDeleted)
+            } header: {
+                Text("Records")
+            }
+            Section {
+                ForEach(viewModel.visibleRecords, id: \.uuidHex) { record in
+                    recordView(record)
+                }
+            }
+        }
+        if let error = viewModel.error {
+            Section("Error") {
+                Text(error.localizedDescription).font(.footnote).foregroundStyle(.red)
+            }
+        }
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Vault") {
-                    Text("uuid=\(viewModel.vaultUuidHex)").font(.footnote.monospaced())
-                }
-                Section("Blocks") {
-                    ForEach(viewModel.blocks, id: \.uuidHex) { block in
-                        Button(block.name) {
-                            selectedBlock = block
-                            viewModel.selectBlock(block)
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button {
-                                blockNameField = block.name
-                                viewModel.startRenameBlock(block)
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            .tint(.orange)
-                            .disabled(viewModel.isWriting)
-                            .accessibilityIdentifier("rename-\(block.uuidHex)")
-                        }
-                    }
-                }
-                if viewModel.records != nil {
-                    Section {
-                        Toggle("Show deleted", isOn: $viewModel.showDeleted)
-                    } header: {
-                        Text("Records")
-                    }
-                    Section {
-                        ForEach(viewModel.visibleRecords, id: \.uuidHex) { record in
-                            recordView(record)
-                        }
-                    }
-                }
-                if let error = viewModel.error {
-                    Section("Error") {
-                        Text(error.localizedDescription).font(.footnote).foregroundStyle(.red)
-                    }
-                }
-            }
+            List { listContent }
             .navigationTitle("Browse")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    SyncBadgeView(state: syncModel.badge,
-                                  nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
-                                  onTap: { syncModel.beginInteractiveSync() })
-                }
-                if selectedBlock != nil {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            guard let vm = viewModel.makeEditViewModel(mode: .add) else { return }
-                            editSession = EditSession(editVM: vm, title: "Add Record")
-                        } label: {
-                            Label("Add record", systemImage: "plus")
-                        }
-                        .disabled(viewModel.isWriting)
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        blockNameField = ""
-                        viewModel.startCreateBlock()
-                    } label: {
-                        Label("New block", systemImage: "folder.badge.plus")
-                    }
-                    .disabled(viewModel.isWriting)
-                    .accessibilityIdentifier("new-block")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if let trashVM = viewModel.makeTrashViewModel() {
-                        NavigationLink {
-                            TrashScreen(viewModel: trashVM)
-                        } label: {
-                            Label("Trash", systemImage: "trash")
-                        }
-                        .disabled(viewModel.isWriting)
-                        .accessibilityIdentifier("open-trash")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if let settingsVM = viewModel.makeSettingsViewModel() {
-                        NavigationLink {
-                            SettingsScreen(viewModel: settingsVM)
-                        } label: {
-                            Label("Settings", systemImage: "gear")
-                        }
-                        .disabled(viewModel.isWriting)
-                        .accessibilityIdentifier("open-settings")
-                    }
-                }
-            }
+            .toolbar { browseToolbar }
             .onAppear { viewModel.loadBlocks() }
+            .navigationDestination(item: $settingsRoute) { route in
+                // On `.forgotten`, SettingsScreen calls onForgotten → RootView sets
+                // route = .select, unmounting this whole NavigationStack (and this
+                // pushed screen). That IS the iOS "dismiss then lock" — no explicit
+                // pop, which would double-animate against the route change. Trash
+                // stays a NavigationLink; only Settings needs build-at-tap because
+                // only it carries the enrollment-probe VM. `settingsRoute` is
+                // view-local @State; it needs no teardown on lock — the route change
+                // unmounts this view and destroys its state.
+                SettingsScreen(viewModel: route.settingsVM,
+                               deviceViewModel: route.deviceVM,
+                               onForgotten: onLock)
+            }
             // Drop any revealed plaintext the moment we leave the foreground.
             .onChange(of: scenePhase) { _, phase in
                 if phase != .active { viewModel.hideAll() }
