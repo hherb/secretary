@@ -77,6 +77,20 @@ struct VaultBrowseScreen: View {
                           nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
                           onTap: { syncModel.beginInteractiveSync() })
         }
+        // Manual lock: wipe the session, release the scope, and return to the vault
+        // selection screen — the same `onLock` RootView threads for the "Forget This
+        // Device" path (iOS otherwise only locks on scenePhase background). Leading
+        // placement keeps this security control always visible rather than letting a
+        // crowded trailing cluster collapse it into an overflow menu. Mirrors the
+        // macOS `MacBrowseView` Lock toolbar button.
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                onLock()
+            } label: {
+                Label("Lock", systemImage: "lock.fill")
+            }
+            .accessibilityIdentifier("lock-vault")
+        }
         if selectedBlock != nil {
             ToolbarItem(placement: .primaryAction) {
                 Button {
