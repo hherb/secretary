@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-19-d5.5-macos-forget-this-mac-shipped.md
+docs/handoffs/2026-07-21-d5.5-ios-forget-this-device-shipped.md
