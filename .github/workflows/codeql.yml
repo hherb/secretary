@@ -38,7 +38,12 @@ on:
 
 concurrency:
   group: codeql-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs to save CI minutes, but NEVER cancel an in-flight
+  # analysis of `main` — dropping a default-branch scan mid-upload would leave the
+  # security dashboard on a stale result. (GitHub's own advanced-setup template
+  # omits cancel-in-progress entirely for this reason; we keep it for PR refs only,
+  # a deliberate exception to the repo-wide uniform-cancel convention.)
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   analyze:
@@ -113,13 +118,22 @@ jobs:
       #     the Kotlin compilation IN a process CodeQL can trace — the default
       #     Gradle/Kotlin daemons run out-of-band and CodeQL would see no source
       #     ("No source code was seen during the build").
+      #   - `--no-build-cache` is LOAD-BEARING, do not drop it: gradle.properties
+      #     sets `org.gradle.caching=true` and setup-java's `cache: gradle`
+      #     persists `~/.gradle/caches` (which holds `build-cache-1`) across runs.
+      #     Without this flag, a cache-warm run with unchanged Kotlin source would
+      #     resolve `compileDebugKotlin` FROM-CACHE — kotlinc never executes, so
+      #     CodeQL again sees "No source code" and Kotlin silently goes unscanned
+      #     (exactly on the quiet weekly baseline / Kotlin-untouched PRs). Forcing
+      #     the compiler to run is the whole point of this leg, so we pay the
+      #     recompile every time rather than risk a silent coverage hole.
       #   - The uniffi Kotlin bindings load the native .so at RUNTIME (JNA), so
       #     compilation needs no cross-compiled library — this is compile-only.
       - name: Build Kotlin (traced, for CodeQL extraction)
         if: matrix.language == 'java-kotlin'
         working-directory: android
         run: >
-          ./gradlew --no-daemon
+          ./gradlew --no-daemon --no-build-cache
           -Pkotlin.compiler.execution.strategy=in-process
           compileDebugKotlin :vault-access:compileKotlin
 
