@@ -79,6 +79,11 @@ differential-replay = []
 [dev-dependencies]
 proptest = "1"
 rand_chacha = "0.3"
+# `rand` (dev-only) supplies per-run random AEAD nonces / rewrite-seeds for the
+# sync fixtures (tests/sync_helpers/mod.rs) instead of hard-coded byte-array
+# literals — see CLAUDE.md memory `feedback_test_crypto_random_not_hardcoded`
+# and the identical dev-dep in cli/Cargo.toml. Test-only; not on the runtime tree.
+rand = "0.9"
 # `preserve_order` keeps serde_json::Value backed by IndexMap instead of
 # BTreeMap so the conformance KAT generator (core/tests/conformance_kat.rs)
 # round-trips the file without alphabetising every key. Without this, every

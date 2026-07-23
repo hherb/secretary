@@ -3959,6 +3959,7 @@ dependencies = [
  "ml-dsa",
  "ml-kem",
  "proptest",
+ "rand",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "secretary-ffi-bridge",
