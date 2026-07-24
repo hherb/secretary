@@ -38,13 +38,19 @@ func foldedErrorDiagnostic(
 
 /// Log, at `.error` level, the underlying error folded at an untyped catch-all site.
 ///
-/// `privacy: .public` is DELIBERATE (#456). The underlying errors folded at the call
-/// sites are, exhaustively today: `FfiVaultError` (uniffi), Foundation file errors,
-/// `DeviceUnlockError`, `VaultSyncError`, and `VaultSelectionError` — carrying
-/// uuids / paths / labels / reasons, never vault plaintext, a password, a mnemonic,
-/// or key bytes. This is the same `String(describing:)` the enum already retains in
-/// memory (#454); logging it only newly exposes it to the unified log store, which is
-/// why "diagnostic-only" must hold before choosing `.public`.
+/// `privacy: .public` is DELIBERATE (#456). By the time an error reaches an *untyped*
+/// catch-all, the adapter has already mapped every FFI `VaultError` to a typed
+/// `VaultAccessError` (caught by the typed `catch let e as VaultAccessError` arm), so
+/// the untyped arms see only the non-mapped remainder — exhaustively today:
+/// `DeviceUuidStoreError` (per-vault device-UUID resolve I/O, thrown before the FFI
+/// mapping in `UniffiVaultSession.write`), `CancellationError` (structured-concurrency
+/// cancellation on the `async` VM methods), `DeviceUnlockError` (biometric gate),
+/// Foundation file errors, and `VaultSelectionError` — carrying uuids / paths / labels
+/// / reasons, never vault plaintext, a password, a mnemonic, or key bytes. (A raw
+/// `VaultError` / `VaultSyncError` reaching here would be a defensive fallthrough past
+/// its typed arm; those, too, carry no secrets.) This is the same `String(describing:)`
+/// the enum already retains in memory (#454); logging it only newly exposes it to the
+/// unified log store, which is why "diagnostic-only" must hold before choosing `.public`.
 ///
 /// If you add a new error source that could carry a secret, sanitize it AT THAT
 /// SOURCE (or drop to `privacy: .private` / `.sensitive` there) — do NOT widen this
