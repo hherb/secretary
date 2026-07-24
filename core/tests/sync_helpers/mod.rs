@@ -5,14 +5,16 @@
 //! each test asserts a specific outcome against the real open_vault
 //! path.
 //!
-//! All multi-manifest helpers use distinct AEAD nonce constants per
+//! All multi-manifest helpers use distinct per-run random AEAD nonces per
 //! envelope so the AEAD uniqueness invariant (never share key + nonce
 //! across rewrites) holds even within a single tempdir. See the
 //! "Atomic-write contract" section of CLAUDE.md for the rationale.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use rand::RngCore;
 use secretary_core::crypto::secret::{SecretString, Sensitive};
 use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::identity::fingerprint::fingerprint;
@@ -28,66 +30,55 @@ const GOLDEN_VAULT_FOLDER: &str = "tests/data/golden_vault_001";
 pub const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 const AEAD_NONCE_LEN: usize = 24;
 
-/// Distinct nonce for the canonical manifest written by helpers in this
-/// module. Tests don't share AEAD key + nonce pairs across rewrites.
-pub const CANONICAL_NONCE_A: [u8; AEAD_NONCE_LEN] = [
-    0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
-    0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x12, 0x34,
-];
+/// Test-only source of a fresh, per-run random 24-byte value used below as an
+/// AEAD nonce or a ChaCha20Rng rewrite-seed. Replaces the former hard-coded
+/// byte-array literals: CodeQL's `rust/hard-coded-cryptographic-value`
+/// (correctly) flags literal nonces, and these fixtures only require each value
+/// to be *valid and mutually distinct* — never a fixed known-answer — which a
+/// CSPRNG draw guarantees (collision probability 2^-192). Per the
+/// `feedback_test_crypto_random_not_hardcoded` convention. Each `LazyLock` below
+/// is drawn once per test process, so every reference to a given name observes
+/// the same bytes within a run (preserving the old `const`'s single-value
+/// semantics) while differing from every other name and from run to run.
+fn rand_nonce() -> [u8; AEAD_NONCE_LEN] {
+    let mut n = [0u8; AEAD_NONCE_LEN];
+    rand::rng().fill_bytes(&mut n);
+    n
+}
 
-/// Distinct nonce for the first sibling manifest. Differs from
-/// [`CANONICAL_NONCE_A`] in every byte to make accidental nonce reuse
-/// obvious in test failures.
-pub const SIBLING_NONCE_B: [u8; AEAD_NONCE_LEN] = [
-    0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66,
-    0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xED, 0xCB,
-];
+/// Nonce for the canonical manifest written by helpers in this module. Tests
+/// don't share AEAD key + nonce pairs across rewrites (see [`rand_nonce`]).
+pub static CANONICAL_NONCE_A: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
-/// Distinct nonce for the second sibling manifest in N-way fixtures.
-/// Consumed by [`fresh_vault_four_concurrent_manifests`] in C.1.1a
-/// integration tests (Task 13). Annotated to suppress clippy
-/// `dead_code` during the per-task TDD commits.
+/// Nonce for the first sibling manifest — distinct from [`CANONICAL_NONCE_A`]
+/// so accidental nonce reuse can't hide in test failures (see [`rand_nonce`]).
+pub static SIBLING_NONCE_B: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
+
+/// Nonce for the second sibling manifest in N-way fixtures. Consumed by
+/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests.
 #[allow(dead_code)]
-pub const SIBLING_NONCE_C: [u8; AEAD_NONCE_LEN] = [
-    0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88,
-    0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
-];
+pub static SIBLING_NONCE_C: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
-/// Distinct nonce for the third sibling manifest in N-way fixtures.
-/// Consumed by [`fresh_vault_four_concurrent_manifests`] in C.1.1a
-/// integration tests (Task 13). Annotated to suppress clippy
-/// `dead_code` during the per-task TDD commits.
+/// Nonce for the third sibling manifest in N-way fixtures. Consumed by
+/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests.
 #[allow(dead_code)]
-pub const SIBLING_NONCE_D: [u8; AEAD_NONCE_LEN] = [
-    0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
-    0x0F, 0xED, 0xCB, 0xA9, 0x87, 0x65, 0x43, 0x21,
-];
+pub static SIBLING_NONCE_D: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
-/// Distinct rewrite-seed for the first block rewrite in C.1.1b fixtures.
-/// Consumed as the seed for a deterministic [`rand_chacha::ChaCha20Rng`]
-/// inside [`rewrite_block_with_records`], which means each rewrite
-/// derives a distinct Block Content Key AND a distinct on-disk AEAD
-/// body nonce — no key+nonce collision when multiple blocks are
-/// rewritten in the same test (see the `AEAD-uniqueness` rationale in
-/// the module-level docstring and CLAUDE.md's atomic-write section).
-/// Annotated `dead_code` because the helper that consumes it lands in
-/// this same Task 1 commit but its first caller in tests appears in
-/// Task 9 (per the C.1.1b plan).
+/// Rewrite-seed for the first block rewrite in C.1.1b fixtures. Consumed as the
+/// seed for a deterministic [`rand_chacha::ChaCha20Rng`] inside
+/// [`rewrite_block_with_records`], so each rewrite derives a distinct Block
+/// Content Key AND a distinct on-disk AEAD body nonce — no key+nonce collision
+/// when multiple blocks are rewritten in the same test (see the
+/// `AEAD-uniqueness` rationale in the module-level docstring and CLAUDE.md's
+/// atomic-write section).
 #[allow(dead_code)]
-pub const BLOCK_NONCE_E: [u8; AEAD_NONCE_LEN] = [
-    0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0,
-    0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-];
+pub static BLOCK_NONCE_E: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
-/// Distinct rewrite-seed for the second block rewrite in C.1.1b
-/// fixtures — used for sibling block envelopes in conflict-copy
-/// ingestion tests. Same ChaCha20Rng-seed semantics as
-/// [`BLOCK_NONCE_E`].
+/// Rewrite-seed for the second block rewrite in C.1.1b fixtures — sibling block
+/// envelopes in conflict-copy ingestion tests. Same ChaCha20Rng-seed semantics
+/// as [`BLOCK_NONCE_E`], and distinct from it (see [`rand_nonce`]).
 #[allow(dead_code)]
-pub const BLOCK_NONCE_F: [u8; AEAD_NONCE_LEN] = [
-    0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F,
-    0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F,
-];
+pub static BLOCK_NONCE_F: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
 /// Recursively copies `golden_vault_001/` into a fresh temp dir, then
 /// rewrites the canonical manifest's vector clock to `new_clock`

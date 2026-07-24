@@ -21,7 +21,9 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use rand::RngCore;
 use secretary_cli::pipeline::{
     sync_pass_commit_decisions, sync_pass_inspect, sync_pass_pause_on_conflict, InspectOutcome,
     SyncPassOutcome,
@@ -151,26 +153,24 @@ const SIBLING_MANIFEST_FILENAME: &str = "manifest.cbor.enc.sync-conflict-from-de
 /// Sibling block suffix — must start with a non-empty separator.
 const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
 
-/// Two distinct 24-byte ChaCha20Rng seeds for the canonical + sibling
-/// block envelopes, and two distinct manifest AEAD nonces. Distinct in
-/// every byte to preserve AEAD key+nonce uniqueness within one tempdir
-/// (see CLAUDE.md "Atomic-write contract").
-const BLOCK_SEED_CANONICAL: [u8; 24] = [
-    0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0,
-    0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-];
-const BLOCK_SEED_SIBLING: [u8; 24] = [
-    0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F,
-    0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F,
-];
-const MANIFEST_NONCE_CANONICAL: [u8; 24] = [
-    0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
-    0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x12, 0x34,
-];
-const MANIFEST_NONCE_SIBLING: [u8; 24] = [
-    0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66,
-    0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xED, 0xCB,
-];
+/// Per-run random 24-byte values: two ChaCha20Rng rewrite-seeds for the
+/// canonical + sibling block envelopes, and two manifest AEAD nonces. Each is a
+/// fresh CSPRNG draw (see [`rand_nonce`]) rather than a hard-coded literal —
+/// these fixtures only need each value valid and mutually distinct (never a
+/// fixed known-answer), which a draw guarantees, and it keeps CodeQL's
+/// `rust/hard-coded-cryptographic-value` from firing on test nonces. Drawn once
+/// per test process (`LazyLock`), preserving AEAD key+nonce uniqueness within one
+/// tempdir (CLAUDE.md "Atomic-write contract";
+/// `feedback_test_crypto_random_not_hardcoded`).
+fn rand_nonce() -> [u8; 24] {
+    let mut n = [0u8; 24];
+    rand::rng().fill_bytes(&mut n);
+    n
+}
+static BLOCK_SEED_CANONICAL: LazyLock<[u8; 24]> = LazyLock::new(rand_nonce);
+static BLOCK_SEED_SIBLING: LazyLock<[u8; 24]> = LazyLock::new(rand_nonce);
+static MANIFEST_NONCE_CANONICAL: LazyLock<[u8; 24]> = LazyLock::new(rand_nonce);
+static MANIFEST_NONCE_SIBLING: LazyLock<[u8; 24]> = LazyLock::new(rand_nonce);
 
 const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
 
