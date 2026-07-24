@@ -75,6 +75,7 @@ public final class VaultBrowseViewModel: ObservableObject {
             records = nil
             error = e
         } catch {
+            logFoldedError(error)
             records = nil
             self.error = .other(String(describing: error))
         }
@@ -134,6 +135,7 @@ public final class VaultBrowseViewModel: ObservableObject {
             error = e
             return false
         } catch {
+            logFoldedError(error)
             self.error = .reauthFailed(String(describing: error))
             return false
         }
@@ -143,6 +145,7 @@ public final class VaultBrowseViewModel: ObservableObject {
             error = e
             return false
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             return false
         }
@@ -168,6 +171,7 @@ public final class VaultBrowseViewModel: ObservableObject {
         } catch let e as VaultAccessError {
             error = e
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
         }
     }

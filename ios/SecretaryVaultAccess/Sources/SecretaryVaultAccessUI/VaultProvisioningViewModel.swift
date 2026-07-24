@@ -83,6 +83,7 @@ public final class VaultProvisioningViewModel: ObservableObject {
         } catch let e as VaultProvisioningError {
             error = e
         } catch {
+            logFoldedError(error)
             self.error = .createFailed(String(describing: error))
         }
     }
