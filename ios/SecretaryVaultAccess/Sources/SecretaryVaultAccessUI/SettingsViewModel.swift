@@ -55,6 +55,7 @@ public final class SettingsViewModel: ObservableObject {
             error = e
             resetControlsToDefault()
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             resetControlsToDefault()
         }
@@ -124,6 +125,7 @@ public final class SettingsViewModel: ObservableObject {
             error = e
             return                              // refused re-auth ⇒ NO write, NO retarget
         } catch {
+            logFoldedError(error)
             self.error = .reauthFailed(String(describing: error))
             return
         }
@@ -137,6 +139,7 @@ public final class SettingsViewModel: ObservableObject {
             error = e
             return
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             return
         }
@@ -154,6 +157,7 @@ public final class SettingsViewModel: ObservableObject {
             error = e
             return
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             return
         }

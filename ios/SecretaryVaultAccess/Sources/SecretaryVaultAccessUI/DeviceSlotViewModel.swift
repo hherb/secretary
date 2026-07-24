@@ -81,6 +81,7 @@ public final class DeviceSlotViewModel: ObservableObject {
             error = e
             return                              // refused ⇒ nothing revoked, no lock
         } catch {
+            logFoldedError(error)
             self.error = .reauthFailed(String(describing: error))
             return
         }
@@ -111,6 +112,7 @@ public final class DeviceSlotViewModel: ObservableObject {
             if !port.isEnrolled { state = .forgotten }
             return                              // failed ⇒ check above decides the lock
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             if !port.isEnrolled { state = .forgotten }
             return                              // failed ⇒ check above decides the lock

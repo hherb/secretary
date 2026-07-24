@@ -81,6 +81,7 @@ public final class RecordEditViewModel: ObservableObject {
             error = e
             loadFailed = true
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             loadFailed = true
         }
@@ -104,6 +105,7 @@ public final class RecordEditViewModel: ObservableObject {
             error = e
             return
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
             return
         }
@@ -119,6 +121,7 @@ public final class RecordEditViewModel: ObservableObject {
             error = e
             return
         } catch {
+            logFoldedError(error)
             self.error = .reauthFailed(String(describing: error))
             return
         }
@@ -134,6 +137,7 @@ public final class RecordEditViewModel: ObservableObject {
         } catch let e as VaultAccessError {
             error = e
         } catch {
+            logFoldedError(error)
             self.error = .other(String(describing: error))
         }
     }

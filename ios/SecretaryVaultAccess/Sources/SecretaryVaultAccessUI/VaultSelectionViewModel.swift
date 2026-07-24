@@ -52,6 +52,7 @@ public final class VaultSelectionViewModel: ObservableObject {
             recordSelection(bookmark: bookmark, displayName: displayName)
             return .opened
         } catch {
+            logFoldedError(error)
             return .unavailable(String(describing: error))
         }
     }
@@ -80,6 +81,7 @@ public final class VaultSelectionViewModel: ObservableObject {
             if case VaultSelectionError.locationUnavailable(let reason) = error {
                 state = .unavailable(reason: reason)
             } else {
+                logFoldedError(error)
                 state = .unavailable(reason: String(describing: error))
             }
             throw error

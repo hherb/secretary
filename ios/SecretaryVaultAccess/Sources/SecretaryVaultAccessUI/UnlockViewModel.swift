@@ -36,6 +36,7 @@ public final class UnlockViewModel: ObservableObject {
         } catch let e as VaultAccessError {
             state = .failed(e)
         } catch {
+            logFoldedError(error)
             state = .failed(.other(String(describing: error)))
         }
     }
