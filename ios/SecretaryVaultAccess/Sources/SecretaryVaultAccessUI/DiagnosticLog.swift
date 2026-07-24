@@ -48,8 +48,10 @@ func foldedErrorDiagnostic(
 ///
 /// If you add a new error source that could carry a secret, sanitize it AT THAT
 /// SOURCE (or drop to `privacy: .private` / `.sensitive` there) — do NOT widen this
-/// seam silently. `os.Logger` is a no-op sink under `swift test`, so calling this from
-/// a fold site keeps the pure view models host-testable.
+/// seam silently. Calling this from a fold site keeps the pure view models
+/// host-testable: it returns `Void`, never throws, and has no observable effect on
+/// view-model state, so a fold's behaviour under `swift test` is unchanged (the
+/// emitted unified-log line, if any, is invisible to the tests).
 func logFoldedError(
     _ underlying: Error,
     fileID: StaticString = #fileID,
