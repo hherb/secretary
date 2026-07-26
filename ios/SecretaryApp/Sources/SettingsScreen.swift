@@ -8,6 +8,7 @@ import SecretaryVaultAccessUI
 /// success, retargets the live gate to the new grace window. Mirrors the macOS
 /// `MacSettingsView`. Render is host-untested (#417); the `accessibilityIdentifier`
 /// hooks back a future instrumented assertion.
+@MainActor
 struct SettingsScreen: View {
     @StateObject private var viewModel: SettingsViewModel
     @StateObject private var deviceViewModel: DeviceSlotViewModel
@@ -19,6 +20,17 @@ struct SettingsScreen: View {
     /// Drives the "Forget This Device" confirmation dialog.
     @State private var confirmForget = false
 
+    /// Live text for the two numeric inputs, seeded from the VM after `load()` and
+    /// pushed back into it by `commitSettingsEdits` at Save. See `SettingsEditBuffer`
+    /// for why these are buffered rather than bound with `TextField(value:format:)`
+    /// (#459 — on iOS the number pad has no Return key, so focus loss is the only
+    /// commit trigger a `value:format:` binding gets).
+    @State private var edits = SettingsEditBuffer()
+    /// Set when a field doesn't hold a whole number at Save time. View-local on
+    /// purpose: unparseable text never reaches the VM, so it has no VM error to
+    /// surface. Cleared on every Save attempt.
+    @State private var inputError: String?
+
     init(viewModel: SettingsViewModel,
          deviceViewModel: DeviceSlotViewModel,
          onForgotten: @escaping () -> Void) {
@@ -27,15 +39,24 @@ struct SettingsScreen: View {
         self.onForgotten = onForgotten
     }
 
-    private var retentionBinding: Binding<Int> {
-        Binding(get: { viewModel.retentionDays }, set: { viewModel.setRetentionDays($0) })
-    }
-    private var graceBinding: Binding<Int> {
-        Binding(get: { viewModel.graceMinutes }, set: { viewModel.setGraceMinutes($0) })
-    }
-
-    var body: some View {
-        Form {
+    /// The Form's shared message area. Extracted from `body` rather than written
+    /// inline: `body` on this screen is already near SwiftUI's expression
+    /// type-check ceiling, where one more nested branch trips "unable to type-check
+    /// in reasonable time" (exit 65).
+    ///
+    /// `inputError` describes the most recent Save attempt, which was refused before
+    /// reaching the VM — so the VM's banner/error still hold the PREVIOUS attempt's
+    /// outcome and are shown only when there is no input error. Without this, a
+    /// bad-input Save after a good one would render "Settings saved" directly above
+    /// "not saved" (the VM clears its own banner inside `save()`, which this path
+    /// never calls, and `banner` is private(set) so the view cannot clear it).
+    /// Mirrors the same precedence rule in `MacSettingsView`.
+    @ViewBuilder private var messages: some View {
+        if let inputError {
+            Text(inputError)
+                .font(.footnote).foregroundStyle(Color.red)
+                .accessibilityIdentifier("settings-input-error")
+        } else {
             if let banner = viewModel.banner {
                 Text(banner.text)
                     .font(.footnote).foregroundStyle(Color.secondary)
@@ -46,11 +67,17 @@ struct SettingsScreen: View {
                     .font(.footnote).foregroundStyle(Color.red)
                     .accessibilityIdentifier("settings-error")
             }
+        }
+    }
+
+    var body: some View {
+        Form {
+            messages
 
             Section {
                 LabeledContent("Delete trash after") {
                     HStack(spacing: 4) {
-                        TextField("Days", value: retentionBinding, format: .number)
+                        TextField("Days", text: $edits.retentionText)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 80)
@@ -68,7 +95,7 @@ struct SettingsScreen: View {
             Section {
                 LabeledContent("Re-auth grace") {
                     HStack(spacing: 4) {
-                        TextField("Minutes", value: graceBinding, format: .number)
+                        TextField("Minutes", text: $edits.graceText)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 80)
@@ -117,7 +144,7 @@ struct SettingsScreen: View {
 
             Section {
                 Button {
-                    Task { await viewModel.save() }
+                    save()
                 } label: {
                     Text("Save")
                 }
@@ -156,6 +183,22 @@ struct SettingsScreen: View {
             Text("You'll need your master password to unlock this vault on this device. "
                  + "Other devices are unaffected.")
         }
-        .onAppear { viewModel.load() }
+        .onAppear {
+            viewModel.load()
+            edits.seed(retentionDays: viewModel.retentionDays, graceMinutes: viewModel.graceMinutes)
+        }
+    }
+
+    /// Commit the typed text into the VM, then save. On unparseable input nothing is
+    /// written — surfacing that beats persisting a value the user never typed.
+    /// `commitSettingsEdits` re-seeds the fields to the clamped values on success, so
+    /// the display and the value being written stay identical.
+    private func save() {
+        inputError = nil
+        guard commitSettingsEdits(&edits, into: viewModel) else {
+            inputError = settingsInputErrorMessage()
+            return
+        }
+        Task { await viewModel.save() }
     }
 }
