@@ -1,5 +1,7 @@
 import XCTest
 @testable import SecretaryVaultAccessUI
+import SecretaryVaultAccess
+import SecretaryVaultAccessTesting
 
 final class SettingsEditBufferTests: XCTestCase {
 
@@ -86,5 +88,79 @@ final class SettingsEditBufferTests: XCTestCase {
         b.retentionText = "-5"
         b.graceText = "+7"
         XCTAssertEqual(b.parsed(), SettingsEdits(retentionDays: -5, graceMinutes: 7))
+    }
+}
+
+@MainActor
+final class CommitSettingsEditsTests: XCTestCase {
+    /// A view model over the standard fakes. `commitSettingsEdits` never touches the
+    /// gate (it runs strictly before any `save()`), so the gate here only has to
+    /// exist — its behaviour is exercised in `SettingsViewModelTests`.
+    private func makeVM() -> SettingsViewModel {
+        let gate = RetargetableReauthGate(
+            window: .seconds(120),
+            initialAuthAt: nil,
+            clock: { MonotonicInstant(nanoseconds: 7_000_000) },
+            makeDelegate: { _, _ in FakeWriteReauthGate() })
+        return SettingsViewModel(port: FakeSettingsPort(), gate: gate)
+    }
+
+    func testCommitPushesTypedValuesIntoViewModel() {
+        let vm = makeVM()
+        var b = SettingsEditBuffer()
+        b.retentionText = "45"
+        b.graceText = "7"
+
+        XCTAssertTrue(commitSettingsEdits(&b, into: vm))
+        XCTAssertEqual(vm.retentionDays, 45)
+        XCTAssertEqual(vm.graceMinutes, 7)
+    }
+
+    func testCommitClampsAndReSeedsBufferToClampedValues() {
+        // Display == what is written. Out-of-range input clamps, and the fields are
+        // rewritten to the CLAMPED values rather than left showing what was typed —
+        // otherwise the screen would claim 9999 days while 3650 was persisted.
+        let vm = makeVM()
+        var b = SettingsEditBuffer()
+        b.retentionText = "9999"
+        b.graceText = "999"
+
+        XCTAssertTrue(commitSettingsEdits(&b, into: vm))
+        XCTAssertEqual(vm.retentionDays, 3650)
+        XCTAssertEqual(vm.graceMinutes, 60)
+        XCTAssertEqual(b.retentionText, "3650")
+        XCTAssertEqual(b.graceText, "60")
+    }
+
+    func testCommitWritesNothingOnUnparseableInput() {
+        // The #459 regression test. A refused commit is all-or-nothing: neither the
+        // view model nor the buffer moves, so the caller cannot go on to save a
+        // value the user never typed.
+        let vm = makeVM()
+        vm.setRetentionDays(45)
+        vm.setGraceMinutes(7)
+        var b = SettingsEditBuffer()
+        b.retentionText = "abc"
+        b.graceText = "30"
+
+        XCTAssertFalse(commitSettingsEdits(&b, into: vm))
+        XCTAssertEqual(vm.retentionDays, 45, "no write on a refused commit")
+        XCTAssertEqual(vm.graceMinutes, 7, "the PARSEABLE field must not be committed either")
+        XCTAssertEqual(b.retentionText, "abc", "buffer left as typed so the user can correct it")
+        XCTAssertEqual(b.graceText, "30")
+    }
+
+    func testCommitOnClearedFieldDoesNotWriteStaleValue() {
+        // The cleared-field hole, end to end: the old value must not be re-written
+        // behind a visibly empty box.
+        let vm = makeVM()
+        vm.setGraceMinutes(30)
+        var b = SettingsEditBuffer()
+        b.seed(retentionDays: vm.retentionDays, graceMinutes: vm.graceMinutes)
+        b.graceText = ""
+
+        XCTAssertFalse(commitSettingsEdits(&b, into: vm))
+        XCTAssertEqual(vm.graceMinutes, 30, "stale value not re-written")
+        XCTAssertEqual(b.graceText, "", "still empty — the view surfaces an input error")
     }
 }

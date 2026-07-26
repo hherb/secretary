@@ -71,3 +71,28 @@ public struct SettingsEditBuffer: Equatable, Sendable {
         return SettingsEdits(retentionDays: days, graceMinutes: minutes)
     }
 }
+
+/// Parse `buffer`, push both values through the view model's clamping setters, then
+/// re-seed `buffer` from the now-CLAMPED view-model values so the fields display
+/// exactly what is about to be written.
+///
+/// Returns `false` — writing nothing, leaving `buffer` untouched — if either field
+/// is unparseable. Callers surface that as an input error and MUST NOT go on to call
+/// `SettingsViewModel.save()`.
+///
+/// The commit is all-or-nothing on purpose: a half-applied edit (one good field
+/// written, one bad field refused) would persist a combination the user never saw.
+///
+/// Deliberately runs BEFORE the re-auth gate at the call site. It can only ever
+/// refuse, and `RetargetableReauthGate` holds its own window rather than reading
+/// `graceMinutes`, so ordering it ahead of the gate cannot affect gate strength —
+/// while it does avoid raising a biometric prompt only to fail on garbage input.
+@MainActor
+public func commitSettingsEdits(_ buffer: inout SettingsEditBuffer,
+                                into vm: SettingsViewModel) -> Bool {
+    guard let edits = buffer.parsed() else { return false }
+    vm.setRetentionDays(edits.retentionDays)
+    vm.setGraceMinutes(edits.graceMinutes)
+    buffer.seed(retentionDays: vm.retentionDays, graceMinutes: vm.graceMinutes)
+    return true
+}
