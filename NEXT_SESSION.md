@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-25-456-fold-site-logging-shipped.md
+docs/handoffs/2026-07-27-459-ios-settings-commit-at-save-shipped.md
