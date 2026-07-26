@@ -8,8 +8,8 @@ import SecretaryVaultAccessUI
 /// entirely in the VM (the view only binds controls and calls `save()`). macOS
 /// diffs from the iOS screen: grouped `Form`, no `.keyboardType` (iOS-only), an
 /// explicit Done button in a bottom bar (iOS pushes onto a NavigationStack) —
-/// matching the D.5.3 sheet idiom (`MacRecordEditView`) — and text-buffered
-/// numeric inputs (see `commitEdits`).
+/// matching the D.5.3 sheet idiom (`MacRecordEditView`). Both screens now share
+/// the text-buffered numeric inputs (see `SettingsEditBuffer`).
 @MainActor
 struct MacSettingsView: View {
     @StateObject private var viewModel: SettingsViewModel
