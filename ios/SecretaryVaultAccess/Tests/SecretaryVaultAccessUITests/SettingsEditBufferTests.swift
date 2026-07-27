@@ -45,6 +45,64 @@ final class SettingsEditBufferTests: XCTestCase {
         XCTAssertEqual(b.parsed(), SettingsEdits(retentionDays: 45, graceMinutes: 7))
     }
 
+    func testTrimsSurroundingNewlines() {
+        // `.whitespaces` alone does NOT cover newlines, so a pasted "45\n" would be
+        // refused on a character the user cannot see.
+        var b = SettingsEditBuffer()
+        b.retentionText = "45\n"
+        b.graceText = "\n7"
+        XCTAssertEqual(b.parsed(), SettingsEdits(retentionDays: 45, graceMinutes: 7))
+    }
+
+    func testFoldsDecimalDigitsFromAnyScript() {
+        // iOS renders `.numberPad` in the ACTIVE KEYBOARD's numeral system, so an
+        // Arabic or Persian keyboard emits non-ASCII digits. Written as escapes
+        // rather than literal glyphs to keep the source unambiguous (and free of
+        // bidirectional text). Without the fold these fields are un-saveable on
+        // those keyboards — the number pad offers no ASCII digit to fall back to.
+        let cases: [(String, Int)] = [
+            ("\u{0664}\u{0665}", 45),          // Arabic-Indic  ٤٥
+            ("\u{06F7}", 7),                   // Extended Arabic-Indic  ۷
+            ("\u{FF14}\u{FF15}", 45),          // Fullwidth  ４５
+            ("\u{0967}\u{0966}", 10),          // Devanagari  १०
+        ]
+        for (text, expected) in cases {
+            var b = SettingsEditBuffer()
+            b.retentionText = text
+            b.graceText = "7"
+            XCTAssertEqual(b.parsed(),
+                           SettingsEdits(retentionDays: expected, graceMinutes: 7),
+                           "\(text.unicodeScalars.map(\.value)) must fold to \(expected)")
+        }
+    }
+
+    func testRejectsNumeralsThatAreNotPositionalDecimalDigits() {
+        // The fold is scoped to Unicode general category Nd. Anything else keeps
+        // failing rather than being coerced — `wholeNumberValue` alone would have
+        // silently turned the Roman numeral into 8 and the Tamil sign into 10.
+        for bad in ["\u{2167}",   // Ⅷ  Roman numeral eight (.numeric)
+                    "\u{2460}",   // ①  circled one          (.digit)
+                    "\u{00BD}",   // ½  vulgar fraction      (.numeric)
+                    "\u{0BF0}"] { // ௰  Tamil ten            (.numeric)
+            var b = SettingsEditBuffer()
+            b.retentionText = bad
+            b.graceText = "7"
+            XCTAssertNil(b.parsed(), "\(bad.unicodeScalars.map(\.value)) must not parse")
+        }
+    }
+
+    func testRejectsGroupedDigitsInEveryScript() {
+        // Folding digits must not fold separators: a hand-typed grouped value stays
+        // a hard reject, which is the whole reason this path avoids `FormatStyle`.
+        for bad in ["3,650",
+                    "\u{0663}\u{066C}\u{0666}\u{0665}\u{0660}"] {  // ٣٬٦٥٠
+            var b = SettingsEditBuffer()
+            b.retentionText = bad
+            b.graceText = "7"
+            XCTAssertNil(b.parsed(), "grouped \(bad.unicodeScalars.map(\.value)) must not parse")
+        }
+    }
+
     func testRejectsClearedField() {
         // The second #459 hole: a cleared field must NOT silently fall back to the
         // previously committed value.

@@ -54,6 +54,9 @@ struct MacSettingsView: View {
                 // and `banner` is private(set) so the view cannot clear it).
                 if let inputError {
                     Text(inputError).font(.footnote).foregroundStyle(.red)
+                        // Same identifier as the iOS screen's input error, so the
+                        // #417 render assertions can be written once for both.
+                        .accessibilityIdentifier("settings-input-error")
                 } else {
                     if let banner = viewModel.banner {
                         Text(banner.text).font(.footnote).foregroundStyle(.secondary)
@@ -187,6 +190,11 @@ struct MacSettingsView: View {
         .onAppear {
             viewModel.load()
             edits.seed(retentionDays: viewModel.retentionDays, graceMinutes: viewModel.graceMinutes)
+            // The fields have just been re-seeded from disk, so a refusal left over
+            // from an earlier Save no longer describes anything on screen. Cleared
+            // unconditionally rather than relying on this view's `@State` being
+            // fresh on every appearance.
+            inputError = nil
         }
     }
 

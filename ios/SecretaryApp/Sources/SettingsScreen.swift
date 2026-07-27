@@ -186,6 +186,11 @@ struct SettingsScreen: View {
         .onAppear {
             viewModel.load()
             edits.seed(retentionDays: viewModel.retentionDays, graceMinutes: viewModel.graceMinutes)
+            // The fields have just been re-seeded from disk, so a refusal left over
+            // from an earlier Save no longer describes anything on screen. Cleared
+            // unconditionally rather than relying on this view's `@State` being
+            // fresh on every appearance.
+            inputError = nil
         }
     }
 
