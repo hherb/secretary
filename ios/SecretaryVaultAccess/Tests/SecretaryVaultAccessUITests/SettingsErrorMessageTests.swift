@@ -24,6 +24,16 @@ final class SettingsErrorMessageTests: XCTestCase {
             settingsErrorMessage(.corruptVault("boom")),
             "Couldn’t update settings. Please try again.")
     }
+
+    // Unparseable input never reaches the view model, so this copy has no
+    // VaultAccessError to map — it is a fixed string, pinned here so both Settings
+    // screens keep saying the same thing. "Each" not "Both": it fires when EITHER
+    // field is bad.
+    func testInputErrorMessageAsksForAWholeNumberAndSaysNotSaved() {
+        XCTAssertEqual(
+            settingsInputErrorMessage(),
+            "Each field needs a whole number — settings were not saved.")
+    }
 }
 
 final class DeviceSlotErrorMessageTests: XCTestCase {

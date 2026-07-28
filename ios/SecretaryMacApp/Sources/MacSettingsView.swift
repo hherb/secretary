@@ -8,8 +8,8 @@ import SecretaryVaultAccessUI
 /// entirely in the VM (the view only binds controls and calls `save()`). macOS
 /// diffs from the iOS screen: grouped `Form`, no `.keyboardType` (iOS-only), an
 /// explicit Done button in a bottom bar (iOS pushes onto a NavigationStack) —
-/// matching the D.5.3 sheet idiom (`MacRecordEditView`) — and text-buffered
-/// numeric inputs (see `commitEdits`).
+/// matching the D.5.3 sheet idiom (`MacRecordEditView`). Both screens now share
+/// the text-buffered numeric inputs (see `SettingsEditBuffer`).
 @MainActor
 struct MacSettingsView: View {
     @StateObject private var viewModel: SettingsViewModel
@@ -20,20 +20,10 @@ struct MacSettingsView: View {
     /// permanent no-op for the rest of the session, so the session must not continue.
     let onForgotten: () -> Void
 
-    /// Live text for the two numeric inputs, seeded from the VM after `load()`
-    /// and pushed back into the VM by `commitEdits()` at Save.
-    ///
-    /// These are deliberately NOT `TextField(value:format:)` bindings. That form
-    /// commits its binding only on Return or focus loss, and an AppKit button
-    /// click does not move first responder — so a typed-then-mouse-clicked Save
-    /// would persist the PREVIOUS value while the field still displayed the new
-    /// one, breaking the WYSIWYG contract `SettingsViewModel.save()` documents
-    /// ("whatever value the screen shows is exactly what is written"). It would
-    /// also silently save the old value when the user cleared the field, since a
-    /// failed parse leaves the bound value untouched. Buffering the raw text and
-    /// committing explicitly at Save makes both paths deterministic.
-    @State private var retentionText = ""
-    @State private var graceText = ""
+    /// Live text for the two numeric inputs, seeded from the VM after `load()` and
+    /// pushed back into it by `commitSettingsEdits` at Save. See `SettingsEditBuffer`
+    /// for why these are buffered rather than bound with `TextField(value:format:)`.
+    @State private var edits = SettingsEditBuffer()
     /// Set when a field doesn't hold a plain integer at Save time. View-local on
     /// purpose: unparseable text never reaches the VM, so it has no VM error to
     /// surface. Cleared on every Save attempt.
@@ -64,6 +54,9 @@ struct MacSettingsView: View {
                 // and `banner` is private(set) so the view cannot clear it).
                 if let inputError {
                     Text(inputError).font(.footnote).foregroundStyle(.red)
+                        // Same identifier as the iOS screen's input error, so the
+                        // #417 render assertions can be written once for both.
+                        .accessibilityIdentifier("settings-input-error")
                 } else {
                     if let banner = viewModel.banner {
                         Text(banner.text).font(.footnote).foregroundStyle(.secondary)
@@ -87,7 +80,7 @@ struct MacSettingsView: View {
                             // beside the unit suffix, reading "Days days". The row is
                             // self-describing without it (label + unit + the footer's
                             // explicit range), and empty is a transient error state.
-                            TextField("Days", text: $retentionText)
+                            TextField("Days", text: $edits.retentionText)
                                 .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("days").foregroundStyle(.secondary)
@@ -102,7 +95,7 @@ struct MacSettingsView: View {
                 Section {
                     LabeledContent("Re-auth grace") {
                         HStack(spacing: 4) {
-                            TextField("Minutes", text: $graceText)
+                            TextField("Minutes", text: $edits.graceText)
                                 .labelsHidden()
                                 .multilineTextAlignment(.trailing).frame(maxWidth: 80)
                             Text("min").foregroundStyle(.secondary)
@@ -196,49 +189,25 @@ struct MacSettingsView: View {
         }
         .onAppear {
             viewModel.load()
-            syncTextFromViewModel()
+            edits.seed(retentionDays: viewModel.retentionDays, graceMinutes: viewModel.graceMinutes)
+            // The fields have just been re-seeded from disk, so a refusal left over
+            // from an earlier Save no longer describes anything on screen. Cleared
+            // unconditionally rather than relying on this view's `@State` being
+            // fresh on every appearance.
+            inputError = nil
         }
     }
 
-    /// Commit the typed text into the VM, then save. On unparseable input nothing
-    /// is written — surfacing that beats persisting a value the user never typed.
+    /// Commit the typed text into the VM, then save. On unparseable input nothing is
+    /// written — surfacing that beats persisting a value the user never typed.
+    /// `commitSettingsEdits` re-seeds the fields to the clamped values on success, so
+    /// the display and the value being written stay identical.
     private func save() {
         inputError = nil
-        guard commitEdits() else {
-            // "Each" not "Both": this fires when EITHER field is unparseable, and
-            // "Both fields need…" reads as a diagnosis that both are wrong, sending
-            // the user hunting at the valid one. Phrased as a requirement instead.
-            // Naming the offending field would be nicer still, but that is extra
-            // branching on a path with no automated coverage — deliberately not done.
-            inputError = "Each field needs a whole number — settings were not saved."
+        guard commitSettingsEdits(&edits, into: viewModel) else {
+            inputError = settingsInputErrorMessage()
             return
         }
-        // Re-seed from the VM so the fields show the CLAMPED values that are about
-        // to be written, keeping the display and the persisted value identical.
-        syncTextFromViewModel()
         Task { await viewModel.save() }
-    }
-
-    /// Parse both fields and push them through the VM's clamping setters.
-    /// Returns false (writing nothing) if either field isn't a whole number.
-    ///
-    /// Plain `Int(_:)` rather than a locale-aware `FormatStyle`: retention tops out
-    /// at 3650 days, so a grouping locale could render/accept "3,650". We emit only
-    /// ungrouped digits (`syncTextFromViewModel`), and a hand-typed grouped value now
-    /// fails loudly with a message instead of being silently coerced — which is the
-    /// point of this whole path. Revisit if these fields ever go properly localized.
-    private func commitEdits() -> Bool {
-        guard let days = Int(retentionText.trimmingCharacters(in: .whitespaces)),
-              let minutes = Int(graceText.trimmingCharacters(in: .whitespaces)) else {
-            return false
-        }
-        viewModel.setRetentionDays(days)
-        viewModel.setGraceMinutes(minutes)
-        return true
-    }
-
-    private func syncTextFromViewModel() {
-        retentionText = String(viewModel.retentionDays)
-        graceText = String(viewModel.graceMinutes)
     }
 }

@@ -21,6 +21,21 @@ public func settingsErrorMessage(_ e: VaultAccessError) -> String {
     }
 }
 
+/// Shown when a Settings numeric field doesn't hold a whole number at Save time.
+///
+/// A free function returning a fixed string rather than an arm of
+/// `settingsErrorMessage`: unparseable text is refused by `commitSettingsEdits`
+/// before it reaches the view model, so there is no `VaultAccessError` to map. The
+/// views hold it in local state and clear it on every Save attempt.
+///
+/// "Each" not "Both": this fires when EITHER field is unparseable, and "Both fields
+/// need…" reads as a diagnosis that both are wrong, sending the user hunting at the
+/// valid one. Naming the offending field would be nicer still, but that is extra
+/// branching on a render-untested path (#417) — deliberately not done.
+public func settingsInputErrorMessage() -> String {
+    "Each field needs a whole number — settings were not saved."
+}
+
 /// Short user-facing message for a "Forget this device" error, surfaced from
 /// `DeviceSlotViewModel.error`. That error can be set from EITHER the re-auth
 /// gate (`.reauthFailed`) or the revocation itself (any other case) — see
