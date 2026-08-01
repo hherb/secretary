@@ -199,7 +199,6 @@ struct SettingsScreen: View {
     /// `commitSettingsEdits` re-seeds the fields to the clamped values on success, so
     /// the display and the value being written stay identical.
     private func save() {
-        _ = deliberatelyUndefinedSymbolForIssue469
         inputError = nil
         guard commitSettingsEdits(&edits, into: viewModel) else {
             inputError = settingsInputErrorMessage()
