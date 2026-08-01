@@ -1,1 +1,1 @@
-docs/handoffs/2026-07-27-459-ios-settings-commit-at-save-shipped.md
+docs/handoffs/2026-08-02-469-ci-ios-app-compile-gate-shipped.md
