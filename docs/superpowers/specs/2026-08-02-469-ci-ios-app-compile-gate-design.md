@@ -109,7 +109,9 @@ So the gate is proven red-before-green, at both the command level and the CI lev
 
 Seeding only (1) fails the build with `cannot find type 'VaultError' / 'OpenVaultOutput' in scope`, because (2) is where those generated types live. All three must be present.
 
-The local artifacts are regenerated from the branch's own commit rather than reused from an older build, so the mutation check in step 2 runs against current bindings. (An earlier draft of this spec asserted the artifacts could be safely reused because changes since they were built were "test-only"; that was wrong — `#449`/`#451` moved test-support code through non-test source files in `ffi/secretary-ffi-bridge` and `ffi/secretary-ffi-uniffi`. The `.udl` was untouched, but that is an argument for the bindings being unchanged, not a verification of it, so they are rebuilt and compared instead.)
+The local artifacts are regenerated from the branch's own commit rather than reused from an older build, so the mutation check in step 2 runs against current bindings.
+
+An earlier draft of this spec asserted the artifacts could safely be reused because every `core/`/`ffi/` change since they were built was "test-only". That was wrong — `#449`/`#451` moved test-support code through **non-test** source files in `ffi/secretary-ffi-bridge` and `ffi/secretary-ffi-uniffi`. The `.udl` was untouched, which is a reason to *expect* stable bindings but not a verification of it. So the bindings were regenerated at `0ecc5db` and byte-compared against the 2026-07-16 copy: **identical**. The reuse would in fact have been harmless — but that is now a checked fact rather than an inference from a false premise.
 
 CI builds all three from cold on every run regardless, and steps 3–4 above are the authoritative proof.
 
