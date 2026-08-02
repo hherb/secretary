@@ -71,8 +71,33 @@ public func diagnosticDetail(_ error: Error) -> String {
 // protocol is ours.
 
 /// Paths, uuids, and short reason labels; never a credential. The three folded
-/// "…OrCorrupt" cases carry nothing at all.
-extension VaultAccessError: SecretFreeError {}
+/// "…OrCorrupt" cases carry nothing at all — EXCEPT `.invalidArgument`, which is
+/// redacted below.
+extension VaultAccessError: SecretFreeError {
+    /// `.invalidArgument` is the one case whose payload is built from VAULT
+    /// PLAINTEXT: `RecordEditViewModel` interpolates a decrypted record's field
+    /// name into it (`"field '<name>' is not valid hex"`,
+    /// `"duplicate field name: <name>"`). A field name is exactly what
+    /// `SecretFreeError` promises never to emit, so it is redacted AT SOURCE —
+    /// the second conformance form the protocol exists to make possible.
+    ///
+    /// Do NOT "fix" this by relying on catch-arm ordering. It is true today that
+    /// every one of the 23 fold sites has a `catch let e as VaultAccessError` arm
+    /// ahead of its catch-all, so a `VaultAccessError` never reaches
+    /// `foldDiagnostic` — but nothing tests or enforces that, and one reordered or
+    /// deleted arm would put a user's field name in the unified log store. The
+    /// redaction holds regardless of which site does the rendering.
+    ///
+    /// Every other case is rendered in full: uuids, paths, and fixed labels.
+    public var diagnosticDescription: String {
+        switch self {
+        case .invalidArgument:
+            return "invalidArgument(<redacted>)"
+        default:
+            return String(describing: self)
+        }
+    }
+}
 
 /// Sync-pass failures: lock state, state-decode reasons, FFI shape errors.
 extension VaultSyncError: SecretFreeError {}

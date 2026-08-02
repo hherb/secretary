@@ -80,7 +80,15 @@ public final class DeviceUnlockViewModel: ObservableObject {
     /// The coordinator surfaces `DeviceUnlockError` for enclave/slot failures and
     /// rethrows the metadata store's untyped error as-is; wrap the latter so the
     /// UI always has a typed case to render.
+    ///
+    /// SECURITY (#467): the fallback carries the surprising error's TYPE NAME, never
+    /// its description. `DeviceUnlockError` is conformed to `SecretFreeError` with the
+    /// default rendering, so anything placed in `.enclave` is printed in full at a
+    /// `privacy: .public` log site — embedding `String(describing: error)` here would
+    /// launder an unreviewed error's content straight past that gate. This package
+    /// cannot call `diagnosticDetail` (it does not depend on `SecretaryVaultAccess`),
+    /// so it applies the same default-deny principle locally.
     private func asDeviceUnlockError(_ error: Error) -> DeviceUnlockError {
-        (error as? DeviceUnlockError) ?? .enclave(String(describing: error))
+        (error as? DeviceUnlockError) ?? .enclave("unexpected \(type(of: error))")
     }
 }

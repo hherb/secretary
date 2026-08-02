@@ -61,6 +61,25 @@ final class SecretFreeErrorTests: XCTestCase {
     /// The five in-package conformances. A conformance silently removed would
     /// degrade every log line for that type to `<undisclosed …>` — safe, but a
     /// diagnostic regression nobody would notice without this test.
+    /// SECURITY (#467): `VaultAccessError.invalidArgument` is the one in-package
+    /// case whose payload is built from VAULT PLAINTEXT — `RecordEditViewModel`
+    /// interpolates a decrypted record's field name into it. It must be redacted
+    /// at source, not merely kept away from log sites by catch-arm ordering.
+    func testVaultAccessErrorRedactsInvalidArgument() {
+        let out = diagnosticDetail(VaultAccessError.invalidArgument("field 'my-bank-pin' is not valid hex"))
+        XCTAssertFalse(out.contains("my-bank-pin"))
+        XCTAssertEqual(out, "invalidArgument(<redacted>)")
+    }
+
+    /// The redaction is surgical: every other case keeps its full detail, which is
+    /// uuids / paths / fixed labels and is what makes the log useful at all.
+    func testVaultAccessErrorKeepsOtherCasesInFull() {
+        XCTAssertEqual(diagnosticDetail(VaultAccessError.blockNotFound("abc123")),
+                       String(describing: VaultAccessError.blockNotFound("abc123")))
+        XCTAssertEqual(diagnosticDetail(VaultAccessError.wrongPasswordOrCorrupt),
+                       String(describing: VaultAccessError.wrongPasswordOrCorrupt))
+    }
+
     func testInPackageConformancesHold() {
         XCTAssertTrue(VaultAccessError.other("x") is SecretFreeError)
         XCTAssertTrue(VaultSyncError.inProgress is SecretFreeError)

@@ -50,6 +50,6 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     // not-found, and no new VaultAccessError case is warranted.
     case .BlockNotInTrash(let detail):      return .blockNotFound(detail)
     case .BlockPurged(let detail):          return .blockNotFound(detail)
-    default:                                return .other(String(describing: e))
+    default:                                return .other(diagnosticDetail(e))
     }
 }

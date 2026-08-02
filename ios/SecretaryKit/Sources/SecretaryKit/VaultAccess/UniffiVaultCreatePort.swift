@@ -28,7 +28,7 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
                 where err.domain == NSCocoaErrorDomain && err.code == NSFileWriteFileExistsError {
                 throw VaultProvisioningError.folderNotEmpty
             } catch {
-                throw VaultProvisioningError.folderInvalid(String(describing: error))
+                throw VaultProvisioningError.folderInvalid(diagnosticDetail(error))
             }
 
             let mnem: MnemonicOutput
@@ -67,7 +67,7 @@ public struct UniffiVaultCreatePort: VaultCreatePort {
                 bookmark = try folder.bookmarkData()
             } catch {
                 throw VaultProvisioningError.folderInvalid(
-                    "vault created but bookmark failed: \(String(describing: error))")
+                    "vault created but bookmark failed: \(diagnosticDetail(error))")
             }
 
             return CreatedVault(

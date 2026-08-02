@@ -29,6 +29,6 @@ internal func mapVaultSyncError(_ e: VaultError) -> VaultSyncError {
     // Any non-sync VaultError variant (vault-access cases) — never expected off
     // the sync surface; carried as a string rather than misattributed. See the
     // doc comment: a new SYNC variant must get its own arm above, not land here.
-    default:                                return .failed(String(describing: e))
+    default:                                return .failed(diagnosticDetail(e))
     }
 }

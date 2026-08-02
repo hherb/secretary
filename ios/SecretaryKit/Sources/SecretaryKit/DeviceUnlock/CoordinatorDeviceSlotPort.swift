@@ -31,7 +31,7 @@ public struct CoordinatorDeviceSlotPort: DeviceSlotPort {
         } catch let e as VaultSlotError {
             throw Self.mapSlotError(e)
         } catch {
-            throw VaultAccessError.other(String(describing: error))
+            throw VaultAccessError.other(diagnosticDetail(error))
         }
     }
 

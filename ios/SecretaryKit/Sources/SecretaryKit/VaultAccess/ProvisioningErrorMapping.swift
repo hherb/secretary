@@ -14,6 +14,6 @@ func mapProvisioningError(_ e: VaultError) -> VaultProvisioningError {
         // A name that passed Swift validation but the bridge rejected.
         return .createFailed("invalid argument: \(detail)")
     default:
-        return .createFailed(String(describing: e))
+        return .createFailed(diagnosticDetail(e))
     }
 }

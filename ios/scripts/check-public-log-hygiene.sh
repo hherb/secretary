@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# check-public-log-hygiene.sh — assert no `privacy: .public` log line renders an
-# error by hand (#467).
+# check-public-log-hygiene.sh — keep secrets out of the unified log store (#467).
 #
 # WHY THIS EXISTS
 # ---------------
@@ -12,76 +11,189 @@
 # instead of hand-rolling `String(describing:)` or `.localizedDescription`. This
 # script is that tripwire; without it #467's acceptance criterion does not hold.
 #
-# THE ONE DELIBERATE EXCEPTION
-# ----------------------------
-# `BookmarkVaultLocationStore` logs `location.displayName` at `.public`. That is
-# the vault FOLDER name from the system picker — not an error, and not a secret:
-# anyone able to read the unified log can read the filesystem. It matches neither
-# forbidden pattern, so it needs no allowlist entry; the reasoning is recorded at
-# the call site.
+# TWO RULES, BOTH FAIL-CLOSED
+# ---------------------------
+# The first version of this script was a two-item DENYLIST ("a `.public` line must
+# not contain `String(describing:` or `.localizedDescription`"). An adversarial
+# review defeated it eight ways, including `privacy:.public` with no space — the
+# same construct as the self-test's positive control, differing only in whitespace.
+# Default-allow was the wrong shape for the one piece of #467 whose whole job is
+# enforcement. Both rules below are now allowlists.
+#
+#   RULE 1 (public-render): every `privacy:<space?>.public` interpolation must
+#     render through `diagnosticDetail(`, unless the line is covered by
+#     public-log-hygiene-allowlist.txt.
+#
+#   RULE 2 (no-launder): `String(describing:)` must not be applied to a caught
+#     error anywhere in ios/ non-test Swift. `diagnosticDetail` denies unreviewed
+#     TYPES, not unreviewed CONTENT — so pre-rendering an unreviewed error into a
+#     String and stashing it in a CONFORMED error's payload launders it straight
+#     through the gate. That was a live hole: four `default: .other(String(
+#     describing: e))` arms in the SecretaryKit error mappers put unreviewed
+#     uniffi `VaultError` detail text onto `.public` lines.
+#
+# A `privacy:` whose value is not a bare `.public` / `.private` / `.sensitive` /
+# `.auto` literal also fails, so hiding `.public` behind a variable does not work.
 #
 # USAGE
 # -----
 #   bash ios/scripts/check-public-log-hygiene.sh              # guard ios/**/*.swift
-#   bash ios/scripts/check-public-log-hygiene.sh --self-test  # prove the matcher works
+#   bash ios/scripts/check-public-log-hygiene.sh --self-test  # prove the matchers work
 #
 # LIMITS (stated, not hidden)
 # ---------------------------
-# The matcher is LINE-BASED: a `.public` interpolation split across two source
-# lines would evade it. Every current site is single-line and swift-format keeps
-# them that way; parsing Swift to close that gap is far out of proportion. The
-# `--self-test` controls document exactly what does and does not trip it.
+# The matchers are LINE-BASED, so a `privacy:` interpolation split across two
+# source lines evades RULE 1. Every current site is single-line, but nothing
+# ENFORCES that — this repo has no swift-format config and no formatter in CI, so
+# do not read the single-line status quo as a guarantee. Parsing Swift to close
+# the gap is out of proportion; the `--self-test` controls document exactly what
+# does and does not trip each rule.
+#
+# Scope is `ios/` only. Android logs raw `Throwable`s to logcat with no equivalent
+# gate — a separate, real exposure, not covered here.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 readonly SCAN_ROOT="$REPO_ROOT/ios"
+readonly ALLOWLIST="$REPO_ROOT/ios/scripts/public-log-hygiene-allowlist.txt"
 
-# A line that emits at `privacy: .public` …
-readonly PUBLIC_RE='privacy: \.public'
-# … must not ALSO render an error by hand. `diagnosticDetail` is the only
-# sanctioned renderer (see SecretFreeError.swift).
-readonly FORBIDDEN_RE='String\(describing:|\.localizedDescription'
+# Tolerant of whitespace: `privacy:.public`, `privacy:  .public`, etc.
+readonly PUBLIC_RE='privacy:[[:space:]]*\.public'
+# Any `privacy:` whose value is not one of the four bare literals.
+readonly PRIVACY_ANY_RE='privacy:[[:space:]]*'
+readonly PRIVACY_LITERAL_RE='privacy:[[:space:]]*\.(public|private|sensitive|auto)\b'
+# The one sanctioned renderer.
+readonly SANCTIONED_RE='diagnosticDetail\('
+# RULE 2: `String(describing:)` applied to a caught-error identifier.
+readonly LAUNDER_RE='String\(describing:[[:space:]]*(error|e|err|nsError|underlying)\)'
 
-# Print every offending `<file>:<line>:<text>`; empty output means clean.
-scan() {
-  grep -rn --include='*.swift' -E "$PUBLIC_RE" "$1" 2>/dev/null \
-    | grep -E "$FORBIDDEN_RE" || true
+# Test sources legitimately construct sentinel errors and assert on their
+# descriptions; they never write to the unified log.
+is_test_path() { [[ "$1" == *"/Tests/"* ]]; }
+
+# Generated + build-artifact Swift. `secretary.swift` is uniffi-bindgen output
+# (regenerated by build-xcframework.sh, gitignored); `.build*` is SwiftPM/Xcode
+# scratch. Neither is hand-written, so neither is reviewable or fixable here.
+is_generated_path() {
+  [[ "$1" == *"/secretary.swift" || "$1" == *"/.build"*"/"* || "$1" == *"/.build-staging/"* ]]
 }
 
-# Two-sided control: the matcher must fire on a known-positive AND stay silent on
-# a known-negative. A check never observed failing is indistinguishable from a
-# no-op; a check that fires on everything is worse than none.
+# A `//`-comment line is prose, not a log call. Without this, the doc comments
+# that EXPLAIN this rule trip it.
+is_comment_line() { [[ "$1" =~ ^[[:space:]]*(///?|\*) ]]; }
+
+# RULE 2 ONLY. The SwiftUI app targets render `String(describing: error)` into
+# on-screen `Text(…)` / `errorText`, not into a log — a different concern (#454
+# says a carried diagnostic is never user-facing copy) tracked separately. RULE 1
+# still covers these files in full, so an actual `.public` log line here is gated.
 #
+# STATED LIMIT: laundering that happens IN an app target and is later logged via
+# `diagnosticDetail` elsewhere is not caught. Closing that needs the app targets
+# cleaned up first, which is the separate issue's job.
+is_app_ui_path() {
+  [[ "$1" == *"/SecretaryApp/Sources/"* || "$1" == *"/SecretaryMacApp/Sources/"* ]]
+}
+
+# Does $2 (a `<file>:<line>:<text>` hit) have an allowlist entry that matches?
+allowlisted() {
+  local hit="$1" path text
+  path="${hit%%:*}"
+  path="${path#"$REPO_ROOT"/}"
+  text="${hit#*:}"; text="${text#*:}"
+  [[ -f "$ALLOWLIST" ]] || return 1
+  while IFS=$'\t' read -r a_path a_needle _reason; do
+    [[ -z "${a_path// }" || "$a_path" == \#* ]] && continue
+    if [[ "$path" == "$a_path" && "$text" == *"$a_needle"* ]]; then return 0; fi
+  done < "$ALLOWLIST"
+  return 1
+}
+
+# RULE 1 + the privacy-literal check. Prints offending hits.
+scan_public() {
+  local root="$1" hit
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    is_test_path "${hit%%:*}" && continue
+    is_generated_path "${hit%%:*}" && continue
+    local text="${hit#*:}"; text="${text#*:}"
+    is_comment_line "$text" && continue
+    # A non-literal `privacy:` value is a fail regardless of RULE 1.
+    if ! grep -Eq "$PRIVACY_LITERAL_RE" <<<"$text"; then
+      echo "$hit"; continue
+    fi
+    grep -Eq "$PUBLIC_RE" <<<"$text" || continue
+    grep -Eq "$SANCTIONED_RE" <<<"$text" && continue
+    allowlisted "$hit" && continue
+    echo "$hit"
+  done < <(grep -rn --include='*.swift' -E "$PRIVACY_ANY_RE" "$root" 2>/dev/null || true)
+}
+
+# RULE 2. Prints offending hits.
+scan_launder() {
+  local root="$1" hit
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    local path="${hit%%:*}" text="${hit#*:}"; text="${text#*:}"
+    is_test_path "$path" && continue
+    is_generated_path "$path" && continue
+    is_comment_line "$text" && continue
+    is_app_ui_path "$path" && continue
+    echo "$hit"
+  done < <(grep -rn --include='*.swift' -E "$LAUNDER_RE" "$root" 2>/dev/null || true)
+}
+
 # `SELF_TEST_TMP` is deliberately script-scoped, NOT `local`: the `EXIT` trap runs
 # after the function's frame is gone, so a `local` would be unset by then and
 # `set -u` would turn the cleanup itself into a non-zero exit — which looked
-# exactly like a self-test failure while the matcher was in fact fine.
+# exactly like a self-test failure while the matchers were in fact fine.
 SELF_TEST_TMP=""
+# shellcheck disable=SC2329  # invoked indirectly, via `trap cleanup_self_test EXIT`
 cleanup_self_test() { [[ -n "$SELF_TEST_TMP" ]] && rm -rf "$SELF_TEST_TMP"; }
 
+# Every control the adversarial review used to defeat the denylist version, so a
+# regression to default-allow cannot pass. A check never observed failing is
+# indistinguishable from a no-op; a check that fires on everything is worse.
 self_test() {
   SELF_TEST_TMP="$(mktemp -d)"
   trap cleanup_self_test EXIT
+  local d="$SELF_TEST_TMP" fails=0
 
-  printf '%s\n' 'log.error("boom: \(String(describing: error), privacy: .public)")' \
-    > "$SELF_TEST_TMP/Positive.swift"
-  printf '%s\n' 'log.error("boom: \(diagnosticDetail(error), privacy: .public)")' \
-    > "$SELF_TEST_TMP/Negative.swift"
+  write_case() { printf '%s\n' "$2" > "$d/$1.swift"; }
+
+  # --- RULE 1 positives (must all be caught) ---
+  write_case P1  'log.error("x: \(String(describing: error), privacy: .public)")'
+  write_case P2  'log.error("x: \(String(describing: error), privacy:.public)")'
+  write_case P3  'log.error("x: \(String(describing:error), privacy:  .public)")'
+  write_case P4  'log.error("x: \(String(reflecting: error), privacy: .public)")'
+  write_case P5  'log.error("x: \(error as NSError, privacy: .public)")'
+  write_case P6  'log.error("x: \((error as? LocalizedError)?.errorDescription ?? "", privacy: .public)")'
+  write_case P7  'log.error("x: \((error as NSError).localizedFailureReason ?? "", privacy: .public)")'
+  write_case P8  'log.error("x: \(describe(error), privacy: .public)")'
+  write_case P9  'log.error("x: \(err.localizedDescription, privacy: .public)")'
+  write_case P10 'log.error("x: \(thing, privacy: p)")'
+  # --- RULE 2 positive ---
+  write_case P11 'return .other(String(describing: e))'
+  # --- negatives (must all pass) ---
+  write_case N1  'log.error("x: \(diagnosticDetail(error), privacy: .public)")'
+  write_case N2  'log.error("x: \(diagnosticDetail(error), privacy:.public)")'
+  write_case N3  'log.debug("x: \(thing, privacy: .private)")'
+  write_case N4  'let s = String(describing: someModel)'
 
   local hits
-  hits="$(scan "$SELF_TEST_TMP")"
+  hits="$(scan_public "$d"; scan_launder "$d")"
 
-  if ! grep -q 'Positive\.swift' <<<"$hits"; then
-    echo "SELF-TEST FAILED: matcher did NOT fire on the known-positive control" >&2
-    return 1
-  fi
-  if grep -q 'Negative\.swift' <<<"$hits"; then
-    echo "SELF-TEST FAILED: matcher fired on the known-negative control" >&2
-    return 1
-  fi
-  echo "self-test OK — matcher fires on the positive control, not on the negative"
+  local p
+  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11; do
+    grep -q "/$p\.swift:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
+  done
+  local n
+  for n in N1 N2 N3 N4; do
+    grep -q "/$n\.swift:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
+  done
+  [[ $fails -eq 0 ]] || return 1
+  echo "self-test OK — 11 positive controls caught, 4 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -89,13 +201,30 @@ if [[ "${1:-}" == "--self-test" ]]; then
   exit 0
 fi
 
-hits="$(scan "$SCAN_ROOT")"
-if [[ -n "$hits" ]]; then
-  echo "ERROR: an Error is rendered into a 'privacy: .public' log line without diagnosticDetail (#467):" >&2
-  echo "$hits" >&2
+public_hits="$(scan_public "$SCAN_ROOT")"
+launder_hits="$(scan_launder "$SCAN_ROOT")"
+status=0
+
+if [[ -n "$public_hits" ]]; then
+  echo "ERROR (#467 rule 1): a 'privacy: .public' line does not render via diagnosticDetail," >&2
+  echo "or uses a non-literal privacy value:" >&2
+  echo "$public_hits" >&2
   echo >&2
-  echo "Fix: render via diagnosticDetail(error). If the type should keep its detail," >&2
-  echo "conform it to SecretFreeError (redacting at source if any case can carry a secret)." >&2
-  exit 1
+  echo "Fix: render via diagnosticDetail(error). If the line is legitimately exempt," >&2
+  echo "add a reviewed entry to ios/scripts/public-log-hygiene-allowlist.txt." >&2
+  status=1
 fi
-echo "OK — no hand-rolled error rendering at a 'privacy: .public' site"
+
+if [[ -n "$launder_hits" ]]; then
+  echo "ERROR (#467 rule 2): String(describing:) applied to a caught error — this LAUNDERS" >&2
+  echo "unreviewed content past the gate if the result is stored in a conformed error:" >&2
+  echo "$launder_hits" >&2
+  echo >&2
+  echo "Fix: use diagnosticDetail(error) instead. It denies unreviewed types; a raw" >&2
+  echo "String(describing:) does not, and a conformed error's default rendering will" >&2
+  echo "then print the laundered content in full at .public." >&2
+  status=1
+fi
+
+[[ $status -eq 0 ]] && echo "OK — .public renders are gated and no caught error is hand-rendered"
+exit $status

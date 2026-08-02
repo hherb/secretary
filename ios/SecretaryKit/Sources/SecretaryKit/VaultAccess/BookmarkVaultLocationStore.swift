@@ -45,7 +45,7 @@ public final class BookmarkVaultLocationStore: VaultLocationStore {
             url = try URL(resolvingBookmarkData: location.bookmark,
                           options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
         } catch {
-            throw VaultSelectionError.locationUnavailable(String(describing: error))
+            throw VaultSelectionError.locationUnavailable(diagnosticDetail(error))
         }
 
         // `false` here is NOT treated as fatal: it is benign for in-sandbox paths,
