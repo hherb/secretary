@@ -22,6 +22,12 @@ name: macOS host + app compile
 # way to scope this without gating test.yml's rust/desktop/conformance/host jobs
 # (which must run on every PR) — same pattern as ios-tsan.yml.
 
+# The two path lists below are duplicated verbatim: GitHub Actions does not
+# expand YAML anchors, so push and pull_request must each spell them out.
+# The root Rust manifests are in the list because this is the ONLY job that
+# builds for the four Apple triples — test.yml runs on every PR but never
+# cross-compiles, so a dependency bump or toolchain-pin change that breaks
+# aarch64-apple-ios would otherwise reach main entirely ungated.
 on:
   push:
     branches: [main]
@@ -29,12 +35,18 @@ on:
       - 'ios/**'
       - 'ffi/**'
       - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - '.github/workflows/macos-host.yml'
   pull_request:
     paths:
       - 'ios/**'
       - 'ffi/**'
       - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - '.github/workflows/macos-host.yml'
 
 concurrency:
