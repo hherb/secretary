@@ -87,5 +87,8 @@ jobs:
       #
       # xcodegen is already provisioned above (build-macos-app.sh needs it);
       # build-app.sh hard-requires the same binary.
-      - name: build-app.sh (iOS app compile proof, #469)
+      # QUOTED deliberately: an unquoted ' #' starts a YAML comment, which would
+      # silently truncate this to 'build-app.sh (iOS app compile proof,' in the
+      # Actions UI — valid YAML, so actionlint stays green and nothing flags it.
+      - name: "build-app.sh (iOS app compile proof, #469)"
         run: bash ios/scripts/build-app.sh
