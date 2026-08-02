@@ -71,6 +71,16 @@ final class SecretFreeErrorTests: XCTestCase {
         XCTAssertEqual(out, "invalidArgument(<redacted>)")
     }
 
+    /// SECURITY (#467): `.corruptVault` carries a Rust-side error string verbatim,
+    /// and `RecordError::DuplicateKey` (core/src/vault/record.rs:660) formats the
+    /// decrypted CBOR field-name into it. We do not author those strings, so their
+    /// content is unreviewable here — redact.
+    func testVaultAccessErrorRedactsCorruptVault() {
+        let out = diagnosticDetail(VaultAccessError.corruptVault("duplicate map key: my-bank-pin"))
+        XCTAssertFalse(out.contains("my-bank-pin"))
+        XCTAssertEqual(out, "corruptVault(<redacted>)")
+    }
+
     /// The redaction is surgical: every other case keeps its full detail, which is
     /// uuids / paths / fixed labels and is what makes the log useful at all.
     func testVaultAccessErrorKeepsOtherCasesInFull() {

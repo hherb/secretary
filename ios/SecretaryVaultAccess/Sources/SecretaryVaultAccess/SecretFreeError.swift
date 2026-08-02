@@ -88,11 +88,29 @@ extension VaultAccessError: SecretFreeError {
     /// deleted arm would put a user's field name in the unified log store. The
     /// redaction holds regardless of which site does the rendering.
     ///
-    /// Every other case is rendered in full: uuids, paths, and fixed labels.
+    /// `.corruptVault` is redacted for the same reason, one layer further down.
+    /// Its payload is a Rust-side error string passed through verbatim by
+    /// `VaultErrorMapping`, and at least one of those strings embeds vault
+    /// plaintext: `RecordError::DuplicateKey { key }`
+    /// (`core/src/vault/record.rs:660`) takes `key` straight from the decrypted
+    /// CBOR field-name and formats it as `"duplicate map key: {key}"`. We do not
+    /// author those strings, so their content cannot be reviewed here — which is
+    /// exactly the "unreviewed content" class this protocol exists to deny.
+    /// (The core has the right pattern elsewhere: `MnemonicError::UnknownWord`
+    /// carries the word's INDEX, never the word. `DuplicateKey` should do the
+    /// same; until it does, the redaction is the fail-closed side.)
+    ///
+    /// Every other case is rendered in full. `.invalidMnemonic` is safe because
+    /// the core emits a word index rather than the word; `.folderInvalid` carries
+    /// filesystem paths, which the threat model already treats as disclosed;
+    /// `.other` / `.reauthFailed` are built either from fixed labels or from
+    /// `diagnosticDetail` itself, so they are already gated at construction.
     public var diagnosticDescription: String {
         switch self {
         case .invalidArgument:
             return "invalidArgument(<redacted>)"
+        case .corruptVault:
+            return "corruptVault(<redacted>)"
         default:
             return String(describing: self)
         }
