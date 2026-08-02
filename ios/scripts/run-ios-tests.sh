@@ -46,5 +46,9 @@ xcodebuild test -scheme SecretaryKit \
     -destination "platform=iOS Simulator,id=$SIM_ID"
 
 # --- Step 5: build the SwiftUI walking-skeleton app ---
+# CI (#469) calls build-app.sh DIRECTLY from .github/workflows/macos-host.yml
+# rather than running this script, because step 4 above needs a booted
+# simulator. So this runner and the CI job are two independent callers of the
+# same script: a step added *here* is not automatically covered by CI.
 echo "==> build the Secretary app (XcodeGen + simulator compile proof)"
 bash "$SCRIPT_DIR/build-app.sh"
