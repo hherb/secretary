@@ -124,7 +124,7 @@ private struct RootView: View {
                                 stateDir = try defaultSyncStateDir()
                             } catch {
                                 stateDir = FileManager.default.temporaryDirectory
-                                appLog.error("sync state dir unavailable, using temp: \(error.localizedDescription, privacy: .public)")
+                                appLog.error("sync state dir unavailable, using temp: \(diagnosticDetail(error), privacy: .public)")
                             }
                             let (syncVM, monitor) = makeVaultSync(
                                 session: session, folder: folder, stateDir: stateDir)
@@ -133,7 +133,7 @@ private struct RootView: View {
                             do {
                                 try monitor.start()
                             } catch {
-                                appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
+                                appLog.error("folder-change monitor failed to start: \(diagnosticDetail(error), privacy: .public)")
                             }
                             if let password {
                                 Task { await syncVM.syncAtUnlock(password: password) }
@@ -200,7 +200,7 @@ private struct RootView: View {
                                             }
                                         }
                                     } catch {
-                                        appLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
+                                        appLog.error("device enroll failed: \(diagnosticDetail(error), privacy: .public)")
                                         await MainActor.run {
                                             biometricUnlockError = "Couldn’t enable biometric unlock. You can try again later."
                                         }
@@ -308,13 +308,13 @@ private struct RootView: View {
                 stateDir = try defaultSyncStateDir()
             } catch {
                 stateDir = FileManager.default.temporaryDirectory
-                appLog.error("sync state dir unavailable, using temp: \(error.localizedDescription, privacy: .public)")
+                appLog.error("sync state dir unavailable, using temp: \(diagnosticDetail(error), privacy: .public)")
             }
             let (syncVM, monitor) = makeVaultSync(session: session, folder: folder, stateDir: stateDir)
             do {
                 try monitor.start()
             } catch {
-                appLog.error("folder-change monitor failed to start: \(error.localizedDescription, privacy: .public)")
+                appLog.error("folder-change monitor failed to start: \(diagnosticDetail(error), privacy: .public)")
             }
             Task { await syncVM.refreshStatus() }    // no sync password on the device path
             route = .browse(VaultBrowseViewModel(session: session, gate: gate,

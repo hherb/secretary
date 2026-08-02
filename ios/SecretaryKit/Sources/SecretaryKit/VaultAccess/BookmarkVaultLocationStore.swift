@@ -61,9 +61,14 @@ public final class BookmarkVaultLocationStore: VaultLocationStore {
             do {
                 let fresh = try url.bookmarkData()
                 persist(VaultLocation(displayName: location.displayName, bookmark: fresh))
+                // `displayName` is the vault FOLDER name from the system picker, not
+                // an error and not a secret: anyone who can read the unified log can
+                // read the filesystem, so this discloses nothing new (and
+                // `VaultLocation`'s own doc records that no key or credential flows
+                // through the type). Deliberately left `.public` — #467.
                 Self.log.notice("Refreshed stale vault bookmark for \(location.displayName, privacy: .public)")
             } catch {
-                Self.log.error("Stale vault bookmark refresh failed (using resolved URL): \(String(describing: error), privacy: .public)")
+                Self.log.error("Stale vault bookmark refresh failed (using resolved URL): \(diagnosticDetail(error), privacy: .public)")
             }
         }
 
