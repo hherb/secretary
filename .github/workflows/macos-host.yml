@@ -54,9 +54,10 @@ jobs:
     # is the same flake risk.
     runs-on: macos-26
     # A cold 4-triple Apple cross-compile + host cdylib + uniffi-bindgen +
-    # 2 xcodebuild runs is heavier than any test.yml leg (30 min) but lighter
-    # than ios-tsan.yml's TSan run (60 min). Provisional; re-tune vs live CI
-    # once first-run duration is known.
+    # 3 xcodebuild runs is heavier than any test.yml leg (30 min) but lighter
+    # than ios-tsan.yml's TSan run (60 min). Kept at 45 even though the first
+    # green #469 run took 5m34s: that run had a WARM rust-cache, and the cold
+    # cross-compile this cap exists to survive is the multi-minute path.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
