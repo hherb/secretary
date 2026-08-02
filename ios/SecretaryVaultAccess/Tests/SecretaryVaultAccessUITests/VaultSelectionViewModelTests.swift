@@ -174,6 +174,27 @@ final class VaultSelectionViewModelTests: XCTestCase {
         if case .unavailable = outcome {} else { XCTFail("expected .unavailable") }
         XCTAssertNil(store.stored)
     }
+
+    /// SECURITY (#467): a fold site's CARRIED PAYLOAD is gated too, not just the
+    /// log line. A non-conforming secret-bearing probe error must reach neither.
+    /// Representative of all 23 fold sites — they share one helper, so one live
+    /// site proving the wiring is enough; `DiagnosticLogTests` proves the policy.
+    func testConsiderImportProbeErrorPayloadIsGated() {
+        struct SecretBearing: Error, CustomStringConvertible {
+            var description: String { "SecretBearing(secret: SECRET-VM-6C21)" }
+        }
+        let store = FakeVaultLocationStore()
+        let probe = FakeVaultShapeProbe(answer: .failure(SecretBearing()))
+        let vm = VaultSelectionViewModel(store: store, probe: probe)
+        let outcome = vm.considerImport(url: URL(fileURLWithPath: "/x"),
+                                        bookmark: Data("bm".utf8),
+                                        displayName: "x")
+        guard case .unavailable(let reason) = outcome else {
+            return XCTFail("expected .unavailable, got \(outcome)")
+        }
+        XCTAssertFalse(reason.contains("SECRET-VM-6C21"))
+        XCTAssertTrue(reason.contains("<undisclosed SecretBearing "))
+    }
 }
 
 /// A store whose `beginAccess` throws a NON-`VaultSelectionError`, to prove the VM

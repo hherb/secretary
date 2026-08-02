@@ -75,8 +75,7 @@ public final class VaultSyncViewModel: ObservableObject {
         } catch let e as VaultSyncError {
             lastError = e
         } catch {
-            logFoldedError(error)
-            lastError = .failed(String(describing: error))
+            lastError = .failed(foldDiagnostic(error))
         }
         isSyncing = false
         recomputeBadge()
@@ -147,8 +146,7 @@ public final class VaultSyncViewModel: ObservableObject {
         } catch let e as VaultSyncError {
             lastError = e
         } catch {
-            logFoldedError(error)
-            lastError = .failed(String(describing: error))
+            lastError = .failed(foldDiagnostic(error))
         }
         isSyncing = false
         recomputeBadge()
