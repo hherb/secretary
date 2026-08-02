@@ -73,6 +73,13 @@ cargo fmt --all
 # on a known-positive control (secretary-cli) so a green guard is never vacuous.
 bash ffi/scripts/check-lean-binding.sh --self-test
 bash ffi/scripts/check-lean-binding.sh
+
+# Assert no `privacy: .public` log line renders an error by hand (#467): the only
+# sanctioned renderer is `diagnosticDetail`. Same `--self-test`-first discipline,
+# two-sided here (must fire on a known-positive AND stay silent on a
+# known-negative). Pure grep — runs on Linux, wired into test.yml.
+bash ios/scripts/check-public-log-hygiene.sh --self-test
+bash ios/scripts/check-public-log-hygiene.sh
 ```
 
 ### Python paths
@@ -165,6 +172,23 @@ When adding any other dependency on a security-critical path, follow the same pa
 - `#![forbid(unsafe_code)]` is set in the root workspace lints — do not introduce `unsafe`. If a primitive truly needs FFI, isolate it in its own crate behind a reviewed boundary.
 - Clippy must stay clean with `-D warnings`. Don't ship a PR with new warnings expecting them to be cleaned up later.
 - KATs in `core/tests/data/*.json` are pinned against published vectors (NIST FIPS 203 / 204, RFC 8032 / 7748 / 5869 / 9106, BIP-39 Trezor canonical). When upgrading a primitive crate, re-run KATs explicitly — a passing test suite is necessary but not sufficient.
+
+### Swift log hygiene: default-deny at `privacy: .public` (#467)
+
+The iOS/macOS tree logs diagnostics at `os.Logger`'s `privacy: .public`, which
+disables the unified log's default redaction so a line survives into a sysdiagnose
+(#456). That is sound only while no error reaching such a site carries a secret —
+and that used to be a doc-comment convention. It is now structural:
+
+- **`SecretFreeError`** ([ios/SecretaryVaultAccess/Sources/SecretaryVaultAccess/SecretFreeError.swift](ios/SecretaryVaultAccess/Sources/SecretaryVaultAccess/SecretFreeError.swift)) is the allowlist. Conforming a type is a **security decision** — a claim that its diagnostic text carries no vault plaintext, password, mnemonic, or key bytes. It is a *rendering* protocol, not a bare marker: a type safe in most cases but secret-bearing in one overrides `diagnosticDescription` and redacts at source rather than being excluded wholesale.
+- **`diagnosticDetail(_:)`** is the only sanctioned renderer, and it **default-denies**: an unconformed type is never described, degrading to `<undisclosed <Type> domain=… code=…>`. `userInfo` is deliberately never read. The `NSError` branch is load-bearing — a Foundation file error arrives in a `catch` with dynamic type `NSError`, so `as? SecretFreeError` fails even when `CocoaError` conforms.
+- **`foldDiagnostic(_:)`** ([DiagnosticLog.swift](ios/SecretaryVaultAccess/Sources/SecretaryVaultAccessUI/DiagnosticLog.swift)) applies the policy once at each of the 23 view-model fold sites: it logs the gated detail *and returns it* for the typed error's carried payload, so the two cannot drift apart and a new fold site cannot set a payload without logging.
+- `DeviceUnlockError`'s conformance lives in `SecretaryKit`, not `SecretaryVaultAccess` — the latter does not depend on `SecretaryDeviceUnlock`. Swift registers conformances process-globally, so the cast still finds it at runtime.
+
+Adding a new `.public` log site means calling `diagnosticDetail`; adding a new error
+type that reaches one means conforming it after review. Forgetting either degrades a
+log line — it never leaks. `ios/scripts/check-public-log-hygiene.sh` enforces the
+first half; nothing but review enforces the second.
 
 ### Memory hygiene: zeroize discipline
 
