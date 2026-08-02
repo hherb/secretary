@@ -159,6 +159,34 @@ jobs:
         run: swift test
         working-directory: ios/SecretaryVaultAccess
 
+  swift-log-hygiene:
+    name: swift .public log hygiene
+    # Asserts no `privacy: .public` log line renders an error by hand — the
+    # tripwire that forces new log sites through `diagnosticDetail` (#467).
+    # `SecretFreeError` makes the RENDERING fail-closed; nothing in the type
+    # system makes a new SITE use it, so without this the guard is bypassable.
+    #
+    # Pure grep over ios/**/*.swift — no Swift toolchain, no Xcode, no macOS
+    # minutes, so it runs on ubuntu in seconds. It lives in test.yml (which has
+    # no path filter) rather than the path-gated macos-host.yml, so a `.public`
+    # log added OUTSIDE ios/** is still gated the day that happens.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # runaway cap (vs the 6h default); real duration ~1s
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # --self-test FIRST: a guard never observed failing is indistinguishable
+      # from a no-op — the same vacuity hazard proven against in #469 and guarded
+      # the same way in ffi/scripts/check-lean-binding.sh. Two-sided: the matcher
+      # must fire on a known-positive AND stay silent on a known-negative.
+      #
+      # The step names are QUOTED: an unquoted ` #` inside a YAML `name:` starts a
+      # comment and silently truncates it — valid YAML, so actionlint stays green.
+      # That trap cost a fixup in #470.
+      - name: 'check-public-log-hygiene.sh --self-test'
+        run: bash ios/scripts/check-public-log-hygiene.sh --self-test
+      - name: 'check-public-log-hygiene.sh'
+        run: bash ios/scripts/check-public-log-hygiene.sh
+
   android-host:
     name: android host (:vault-access:test)
     # `:vault-access` is pure kotlin(jvm), but the root settings.gradle.kts
