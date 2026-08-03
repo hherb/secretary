@@ -12,6 +12,17 @@ import SecretaryVaultAccess
 // `@retroactive` is required and correct: this module owns neither the type nor
 // the protocol. It is also a useful marker — it says out loud that a conformance
 // is being asserted across a boundary the type's own author never saw.
+//
+// CAVEAT — this conformance is LINK-GRAPH DEPENDENT. "Process-globally" means
+// "for every module actually linked into the process", so a future target that
+// links `SecretaryDeviceUnlock` + `SecretaryVaultAccessUI` WITHOUT `SecretaryKit`
+// gets a `DeviceUnlockError` that silently fails the `as? SecretFreeError` cast
+// and degrades every biometric-gate diagnostic to `<undisclosed …>`. That is the
+// safe direction and not a leak, but it is invisible: the test below can only
+// observe the conformance in a process where `SecretaryKit` is already linked,
+// which is every current app target and this test bundle. If you add a target
+// that pulls the device-unlock UI without the Kit, move this file down to a
+// module both sides depend on rather than assuming the cast still lands.
 
 /// Biometric / Secure-Enclave gate failures. No wrapped secret, device secret,
 /// or key material is ever placed in any case — audited across all twelve

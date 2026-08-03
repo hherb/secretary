@@ -11,26 +11,38 @@
 # instead of hand-rolling `String(describing:)` or `.localizedDescription`. This
 # script is that tripwire; without it #467's acceptance criterion does not hold.
 #
-# TWO RULES, BOTH FAIL-CLOSED
-# ---------------------------
+# THREE RULES
+# -----------
 # The first version of this script was a two-item DENYLIST ("a `.public` line must
 # not contain `String(describing:` or `.localizedDescription`"). An adversarial
 # review defeated it eight ways, including `privacy:.public` with no space — the
 # same construct as the self-test's positive control, differing only in whitespace.
-# Default-allow was the wrong shape for the one piece of #467 whose whole job is
-# enforcement. Both rules below are now allowlists.
+# A SECOND review then showed rule 2 was still a denylist wearing an allowlist's
+# label: it matched one function name applied to five hard-coded identifier names,
+# so `String(describing: caught)`, `error.localizedDescription`, `"\(error)"` and
+# `String(reflecting: error)` all walked through. Both rules below now deny by
+# default and are opened only by an exact-line entry in the allowlist file.
 #
-#   RULE 1 (public-render): every `privacy:<space?>.public` interpolation must
-#     render through `diagnosticDetail(`, unless the line is covered by
-#     public-log-hygiene-allowlist.txt.
+#   RULE 1 (public-render): on any line, the number of `privacy:<space?>.public`
+#     interpolations must not exceed the number of `diagnosticDetail(` renders.
+#     Counting rather than "does the line mention diagnosticDetail anywhere"
+#     closes the two-interpolations-one-line bypass (one gated, one raw).
 #
-#   RULE 2 (no-launder): `String(describing:)` must not be applied to a caught
-#     error anywhere in ios/ non-test Swift. `diagnosticDetail` denies unreviewed
-#     TYPES, not unreviewed CONTENT — so pre-rendering an unreviewed error into a
-#     String and stashing it in a CONFORMED error's payload launders it straight
-#     through the gate. That was a live hole: four `default: .other(String(
-#     describing: e))` arms in the SecretaryKit error mappers put unreviewed
-#     uniffi `VaultError` detail text onto `.public` lines.
+#   RULE 2 (no-launder): `String(describing:`, `String(reflecting:` and
+#     `.localizedDescription` may not appear at all in the guarded scope.
+#     `diagnosticDetail` denies unreviewed TYPES, not unreviewed CONTENT — so
+#     pre-rendering ANY value into a String and stashing it in a CONFORMED error's
+#     payload launders it straight through the gate. Naming the identifier was not
+#     a workable filter (a `catch let caught` binding defeats it), so the rule is
+#     construct-based and every legitimate use is a recorded allowlist entry.
+#
+#   RULE 3 (no-interpolate, BEST EFFORT — see LIMITS): `"\(error)"` launders
+#     exactly like RULE 2, because Swift string interpolation of a non-
+#     `CustomStringConvertible` value IS `String(describing:)`. Unlike rules 1
+#     and 2 this one CANNOT be construct-based: `\(x)` is the most common
+#     construct in Swift, so matching it wholesale is unusable. It therefore
+#     matches a fixed list of identifier names conventionally bound in a `catch`.
+#     That is a denylist, and it is labelled as one rather than dressed up.
 #
 # A `privacy:` whose value is not a bare `.public` / `.private` / `.sensitive` /
 # `.auto` literal also fails, so hiding `.public` behind a variable does not work.
@@ -49,6 +61,21 @@
 # the gap is out of proportion; the `--self-test` controls document exactly what
 # does and does not trip each rule.
 #
+# RULE 3 is BEST EFFORT and must not be read as coverage of its class. `catch let
+# problem { … "\(problem)" }` is invisible to it, and no line-based matcher can
+# fix that without either parsing Swift or firing on every interpolation in the
+# tree. It raises the cost of the accident — `"\(error)"` is what a developer
+# reaches for by reflex — without closing the class. RULES 1 and 2 are the
+# load-bearing ones: rule 1 because every log line must pass it whatever the
+# value is named, rule 2 because it is construct-based and therefore name-blind.
+#
+# RULE 2 does not scan the SwiftUI app targets (see `is_app_ui_path`). Their
+# `.localizedDescription` renders are the CORRECT #454 pattern (friendly
+# `LocalizedError` copy into `Text(…)`), and allowlisting all eighteen would bury
+# the five that are genuine #454 violations under thirteen that are not. STATED
+# LIMIT: laundering that happens IN an app target and is later logged elsewhere is
+# not caught. Closing it needs those five sites cleaned up first — a separate issue.
+#
 # Scope is `ios/` only. Android logs raw `Throwable`s to logcat with no equivalent
 # gate — a separate, real exposure, not covered here.
 
@@ -57,7 +84,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 readonly SCAN_ROOT="$REPO_ROOT/ios"
-readonly ALLOWLIST="$REPO_ROOT/ios/scripts/public-log-hygiene-allowlist.txt"
+# NOT readonly: `--self-test` retargets it at a synthetic allowlist so the
+# exact-line matching is itself covered by a control pair (A1/A2 below).
+ALLOWLIST="$REPO_ROOT/ios/scripts/public-log-hygiene-allowlist.txt"
 
 # Tolerant of whitespace: `privacy:.public`, `privacy:  .public`, etc.
 readonly PUBLIC_RE='privacy:[[:space:]]*\.public'
@@ -66,8 +95,12 @@ readonly PRIVACY_ANY_RE='privacy:[[:space:]]*'
 readonly PRIVACY_LITERAL_RE='privacy:[[:space:]]*\.(public|private|sensitive|auto)\b'
 # The one sanctioned renderer.
 readonly SANCTIONED_RE='diagnosticDetail\('
-# RULE 2: `String(describing:)` applied to a caught-error identifier.
-readonly LAUNDER_RE='String\(describing:[[:space:]]*(error|e|err|nsError|underlying)\)'
+# RULE 2: hand-rendering ANY value into a String. Deliberately NOT scoped to
+# identifiers named like errors — that filter was the bypass.
+readonly LAUNDER_RE='String\(describing:|String\(reflecting:|\.localizedDescription'
+# RULE 3: bare interpolation of a value bound under one of the conventional
+# `catch` names. Name-based BY NECESSITY — see the LIMITS block.
+readonly INTERP_RE='\\\((error|e|err|nsError|underlying|caught|failure)\)'
 
 # Test sources legitimately construct sentinel errors and assert on their
 # descriptions; they never write to the unified log.
@@ -84,64 +117,92 @@ is_generated_path() {
 # that EXPLAIN this rule trip it.
 is_comment_line() { [[ "$1" =~ ^[[:space:]]*(///?|\*) ]]; }
 
-# RULE 2 ONLY. The SwiftUI app targets render `String(describing: error)` into
-# on-screen `Text(…)` / `errorText`, not into a log — a different concern (#454
-# says a carried diagnostic is never user-facing copy) tracked separately. RULE 1
-# still covers these files in full, so an actual `.public` log line here is gated.
-#
-# STATED LIMIT: laundering that happens IN an app target and is later logged via
-# `diagnosticDetail` elsewhere is not caught. Closing that needs the app targets
-# cleaned up first, which is the separate issue's job.
+# RULES 2 AND 3 ONLY — see the LIMITS block above for why the app targets are out
+# of scope and what that leaves open. RULE 1 still covers these files in full, so
+# an actual `.public` log line here is gated.
 is_app_ui_path() {
   [[ "$1" == *"/SecretaryApp/Sources/"* || "$1" == *"/SecretaryMacApp/Sources/"* ]]
 }
 
-# Does $2 (a `<file>:<line>:<text>` hit) have an allowlist entry that matches?
+# Strip leading/trailing whitespace so an allowlist entry survives re-indentation
+# but not a content edit.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Count non-overlapping matches of ERE $1 in text $2. `|| true` keeps `pipefail`
+# from turning "zero matches" into a script abort.
+count_matches() {
+  local n
+  n="$( { grep -oE "$1" <<<"$2" || true; } | wc -l)"
+  printf '%s' "${n//[[:space:]]/}"
+}
+
+# Does rule $1's hit $2 (`<file>:<line>:<text>`) have an allowlist entry?
+#
+# The entry must match the file AND the EXACT trimmed source line. An earlier
+# version matched any substring, which meant the entry chosen for
+# BookmarkVaultLocationStore (`location.displayName`) exempted any FUTURE
+# `.public` line in that file that happened to mention the same identifier —
+# demonstrably including one rendering `err.localizedDescription` raw. Exact-line
+# matching costs a re-review whenever an exempted line is edited, which is the
+# correct price for a line that bypasses the only mechanism keeping secrets out
+# of the log store.
 allowlisted() {
-  local hit="$1" path text
+  local rule="$1" hit="$2" path text a_path a_rule a_line _reason
   path="${hit%%:*}"
   path="${path#"$REPO_ROOT"/}"
   text="${hit#*:}"; text="${text#*:}"
+  text="$(trim "$text")"
   [[ -f "$ALLOWLIST" ]] || return 1
-  while IFS=$'\t' read -r a_path a_needle _reason; do
+  while IFS=$'\t' read -r a_path a_rule a_line _reason; do
     [[ -z "${a_path// }" || "$a_path" == \#* ]] && continue
-    if [[ "$path" == "$a_path" && "$text" == *"$a_needle"* ]]; then return 0; fi
+    [[ "$a_rule" == "$rule" && "$path" == "$a_path" && "$text" == "$a_line" ]] && return 0
   done < "$ALLOWLIST"
   return 1
 }
 
 # RULE 1 + the privacy-literal check. Prints offending hits.
 scan_public() {
-  local root="$1" hit
+  local root="$1" hit text n_public n_gated
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
     is_test_path "${hit%%:*}" && continue
     is_generated_path "${hit%%:*}" && continue
-    local text="${hit#*:}"; text="${text#*:}"
+    text="${hit#*:}"; text="${text#*:}"
     is_comment_line "$text" && continue
     # A non-literal `privacy:` value is a fail regardless of RULE 1.
     if ! grep -Eq "$PRIVACY_LITERAL_RE" <<<"$text"; then
       echo "$hit"; continue
     fi
-    grep -Eq "$PUBLIC_RE" <<<"$text" || continue
-    grep -Eq "$SANCTIONED_RE" <<<"$text" && continue
-    allowlisted "$hit" && continue
+    n_public="$(count_matches "$PUBLIC_RE" "$text")"
+    (( n_public == 0 )) && continue
+    # Per-INTERPOLATION, not per-line: a line carrying one gated and one raw
+    # `.public` render must fail even though `diagnosticDetail(` is present.
+    n_gated="$(count_matches "$SANCTIONED_RE" "$text")"
+    (( n_gated >= n_public )) && continue
+    allowlisted 1 "$hit" && continue
     echo "$hit"
   done < <(grep -rn --include='*.swift' -E "$PRIVACY_ANY_RE" "$root" 2>/dev/null || true)
 }
 
-# RULE 2. Prints offending hits.
+# RULES 2 and 3 — same scope and same filters, different matcher and different
+# allowlist rule id. Args: <root> <rule-id> <ERE>. Prints offending hits.
 scan_launder() {
-  local root="$1" hit
+  local root="$1" rule="$2" re="$3" hit path text
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
-    local path="${hit%%:*}" text="${hit#*:}"; text="${text#*:}"
+    path="${hit%%:*}"; text="${hit#*:}"; text="${text#*:}"
     is_test_path "$path" && continue
     is_generated_path "$path" && continue
     is_comment_line "$text" && continue
     is_app_ui_path "$path" && continue
+    allowlisted "$rule" "$hit" && continue
     echo "$hit"
-  done < <(grep -rn --include='*.swift' -E "$LAUNDER_RE" "$root" 2>/dev/null || true)
+  done < <(grep -rn --include='*.swift' -E "$re" "$root" 2>/dev/null || true)
 }
 
 # `SELF_TEST_TMP` is deliberately script-scoped, NOT `local`: the `EXIT` trap runs
@@ -152,7 +213,7 @@ SELF_TEST_TMP=""
 # shellcheck disable=SC2329  # invoked indirectly, via `trap cleanup_self_test EXIT`
 cleanup_self_test() { [[ -n "$SELF_TEST_TMP" ]] && rm -rf "$SELF_TEST_TMP"; }
 
-# Every control the adversarial review used to defeat the denylist version, so a
+# Every control BOTH adversarial reviews used to defeat an earlier version, so a
 # regression to default-allow cannot pass. A check never observed failing is
 # indistinguishable from a no-op; a check that fires on everything is worse.
 self_test() {
@@ -173,27 +234,77 @@ self_test() {
   write_case P8  'log.error("x: \(describe(error), privacy: .public)")'
   write_case P9  'log.error("x: \(err.localizedDescription, privacy: .public)")'
   write_case P10 'log.error("x: \(thing, privacy: p)")'
-  # --- RULE 2 positive ---
-  write_case P11 'return .other(String(describing: e))'
+  # Two interpolations, one gated and one raw. Defeated the "mentions
+  # diagnosticDetail anywhere on the line" form of RULE 1.
+  write_case P11 'log.error("a: \(diagnosticDetail(error), privacy: .public) b: \(raw, privacy: .public)")'
+  # --- RULE 2 positives (must all be caught) ---
+  write_case P12 'return .other(String(describing: e))'
+  # The four that defeated the identifier-named form of RULE 2.
+  write_case P13 'return .other(String(describing: caught))'
+  write_case P14 'return .other(error.localizedDescription)'
+  write_case P15 'return .other(String(reflecting: error))'
+  write_case P16 'errorText = someValue.localizedDescription'
+  # --- RULE 3 positives (must all be caught) ---
+  # Bare interpolation IS String(describing:) — the fifth bypass of the
+  # identifier-named RULE 2, and the one construct RULE 2 cannot see.
+  write_case P17 'return .other("boom: \(error)")'
+  write_case P18 'return .other("boom: \(caught)")'
   # --- negatives (must all pass) ---
   write_case N1  'log.error("x: \(diagnosticDetail(error), privacy: .public)")'
   write_case N2  'log.error("x: \(diagnosticDetail(error), privacy:.public)")'
   write_case N3  'log.debug("x: \(thing, privacy: .private)")'
-  write_case N4  'let s = String(describing: someModel)'
+  write_case N4  'let s = diagnosticDetail(error)'
+  # Both `.public` renders gated — the counting rule must not over-fire.
+  write_case N5  'log.error("a: \(diagnosticDetail(a), privacy: .public) b: \(diagnosticDetail(b), privacy: .public)")'
+  # RULE 3 must anchor on the WHOLE identifier: `\(errorCount)` is not `\(error)`.
+  write_case N6  'label = "\(errorCount) failures, \(errors) total"'
+  # --- allowlist control: exact-line matching, NOT substring ---
+  # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
+  # DIFFERENT line in the SAME file sharing the entry's distinctive substring
+  # (`location.displayName`). They must be one file: with two files the paths
+  # differ and the entry never applies to the second either way, which makes the
+  # control vacuous — an earlier version of this self-test had exactly that bug
+  # and passed happily with substring matching restored.
+  #
+  # Line 2 must trip RULE 1 and ONLY rule 1 — an ungated `.public` render whose
+  # value is named so rules 2 and 3 stay silent. If it also tripped rule 2 it
+  # would be caught no matter what the allowlist did.
+  local a_keep='Self.log.notice("Refreshed for \(location.displayName, privacy: .public)")'
+  local a_catch='Self.log.error("failed for \(location.displayName): \(reason, privacy: .public)")'
+  printf '%s\n%s\n' "$a_keep" "$a_catch" > "$d/A.swift"
+
+  # TWO entries. The first is the real, exact-line exemption for line 1. The
+  # second is a deliberately SHORT needle of the kind the pre-fix allowlist used
+  # — it must be INERT. Under exact-line matching a short needle can never equal
+  # a full source line, so it exempts nothing; under the old substring matching
+  # it exempted every `.public` line in the file that mentioned it, line 2
+  # included. That is what makes this pair detect the regression rather than
+  # merely describe it.
+  ALLOWLIST="$d/allowlist.txt"
+  {
+    printf '%s\t%s\t%s\t%s\n' "$d/A.swift" 1 "$a_keep" 'self-test fixture: legitimate exact-line exemption'
+    printf '%s\t%s\t%s\t%s\n' "$d/A.swift" 1 'location.displayName' 'self-test fixture: short needle, MUST be inert'
+  } > "$ALLOWLIST"
 
   local hits
-  hits="$(scan_public "$d"; scan_launder "$d")"
+  hits="$(scan_public "$d"; scan_launder "$d" 2 "$LAUNDER_RE"; scan_launder "$d" 3 "$INTERP_RE")"
 
   local p
-  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11; do
+  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18; do
     grep -q "/$p\.swift:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4; do
+  for n in N1 N2 N3 N4 N5 N6; do
     grep -q "/$n\.swift:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
+  # The allowlist pair, asserted BY LINE NUMBER — this is what fails if exact-line
+  # matching ever regresses to substring.
+  grep -q "/A\.swift:1:" <<<"$hits" &&
+    { echo "SELF-TEST FAILED: allowlisted line A.swift:1 was reported" >&2; fails=1; }
+  grep -q "/A\.swift:2:" <<<"$hits" ||
+    { echo "SELF-TEST FAILED: A.swift:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 11 positive controls caught, 4 negative controls clean"
+  echo "self-test OK — 19 positive controls caught, 7 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -202,12 +313,13 @@ if [[ "${1:-}" == "--self-test" ]]; then
 fi
 
 public_hits="$(scan_public "$SCAN_ROOT")"
-launder_hits="$(scan_launder "$SCAN_ROOT")"
+launder_hits="$(scan_launder "$SCAN_ROOT" 2 "$LAUNDER_RE")"
+interp_hits="$(scan_launder "$SCAN_ROOT" 3 "$INTERP_RE")"
 status=0
 
 if [[ -n "$public_hits" ]]; then
-  echo "ERROR (#467 rule 1): a 'privacy: .public' line does not render via diagnosticDetail," >&2
-  echo "or uses a non-literal privacy value:" >&2
+  echo "ERROR (#467 rule 1): a 'privacy: .public' interpolation does not render via" >&2
+  echo "diagnosticDetail, or the line uses a non-literal privacy value:" >&2
   echo "$public_hits" >&2
   echo >&2
   echo "Fix: render via diagnosticDetail(error). If the line is legitimately exempt," >&2
@@ -216,15 +328,29 @@ if [[ -n "$public_hits" ]]; then
 fi
 
 if [[ -n "$launder_hits" ]]; then
-  echo "ERROR (#467 rule 2): String(describing:) applied to a caught error — this LAUNDERS" >&2
+  echo "ERROR (#467 rule 2): a value is hand-rendered into a String — this LAUNDERS" >&2
   echo "unreviewed content past the gate if the result is stored in a conformed error:" >&2
   echo "$launder_hits" >&2
   echo >&2
   echo "Fix: use diagnosticDetail(error) instead. It denies unreviewed types; a raw" >&2
-  echo "String(describing:) does not, and a conformed error's default rendering will" >&2
-  echo "then print the laundered content in full at .public." >&2
+  echo "String(describing:) / String(reflecting:) / .localizedDescription does not, and" >&2
+  echo "a conformed error's default rendering will then print it in full at .public." >&2
+  echo "If the use is legitimate, add a reviewed entry to" >&2
+  echo "ios/scripts/public-log-hygiene-allowlist.txt." >&2
   status=1
 fi
 
-[[ $status -eq 0 ]] && echo "OK — .public renders are gated and no caught error is hand-rendered"
+if [[ -n "$interp_hits" ]]; then
+  echo "ERROR (#467 rule 3): a value bound under a conventional catch name is bare-" >&2
+  echo "interpolated. Swift interpolation of a non-CustomStringConvertible value IS" >&2
+  echo "String(describing:), so this launders exactly like rule 2:" >&2
+  echo "$interp_hits" >&2
+  echo >&2
+  echo "Fix: use diagnosticDetail(error) instead. If the string is user-facing copy" >&2
+  echo "rather than a log, add a reviewed entry to" >&2
+  echo "ios/scripts/public-log-hygiene-allowlist.txt." >&2
+  status=1
+fi
+
+[[ $status -eq 0 ]] && echo "OK — .public renders are gated and no value is hand-rendered into a String"
 exit $status

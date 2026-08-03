@@ -190,6 +190,15 @@ type that reaches one means conforming it after review. Forgetting either degrad
 log line — it never leaks. `ios/scripts/check-public-log-hygiene.sh` enforces the
 first half; nothing but review enforces the second.
 
+The guard's exceptions live in `ios/scripts/public-log-hygiene-allowlist.txt`, keyed
+on the **exact trimmed source line** rather than a substring — a substring entry
+exempts every future line in the same file that happens to contain it, which was
+demonstrably exploitable. Re-indenting an exempted line keeps the entry valid;
+editing its content does not, so a bypass line cannot be quietly repurposed. Adding
+an entry is a security decision; rules 1 and 2 deny by default, rule 3 (bare
+`"\(error)"` interpolation) is an explicitly-labelled best-effort denylist because
+no line-based matcher can cover that class without parsing Swift.
+
 ### Memory hygiene: zeroize discipline
 
 Every secret-bearing byte string is wrapped in `Sensitive<T>` or `SecretBytes` ([core/src/crypto/secret.rs](core/src/crypto/secret.rs)) — both derive `Zeroize, ZeroizeOnDrop`. Composite types (`IdentityBundle`, `UnlockedIdentity`, `Mnemonic`) drop their secret fields in source order. Any time you `Sensitive::new(stack_var)` where `stack_var: [u8; N]`, follow with `stack_var.zeroize()` to overwrite the source slot — the move copies (`[u8; N]: Copy`) and the bytes linger otherwise. The pattern lives in `crypto::kem::derive_wrap_key`, `crypto::kdf::derive_master_kek`/`derive_recovery_kek`, `crypto::sig::generate_ed25519`, etc.

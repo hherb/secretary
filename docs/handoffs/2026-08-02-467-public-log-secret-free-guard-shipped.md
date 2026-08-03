@@ -24,7 +24,7 @@ Two findings reshaped the slice before a line was written:
 - **`SecretFreeError`** — a *rendering* protocol, not a bare marker: `var diagnosticDescription: String` defaulted to `String(describing: self)`. Conforming a wholly-safe type is one line; a type safe in most cases and secret-bearing in one overrides and redacts at source. That second form is not decoration — it is used twice (see below).
 - **`diagnosticDetail(_:)`** — the only sanctioned renderer, **default-deny**: an unconformed type is never described, degrading to `<undisclosed <Type> domain=… code=…>`. `userInfo` is never read.
 - **`foldDiagnostic(_:)`** — applies the policy once per fold site: logs the gated detail *and returns it* for the typed error's payload. The 23 sites went from two lines to one.
-- **`ios/scripts/check-public-log-hygiene.sh`** — two fail-closed rules + a two-sided `--self-test`, wired into `test.yml` on ubuntu (~1s, every PR).
+- **`ios/scripts/check-public-log-hygiene.sh`** — three fail-closed rules + a two-sided `--self-test`, wired into `test.yml` on ubuntu (~1s, every PR).
 
 ### Commits
 
@@ -46,7 +46,7 @@ Two read-only agents were dispatched after the code was "done": one adversarial 
 
 **Round 1 (`3327776`):**
 
-1. **The guard was a denylist and was bypassable eight ways** — including `privacy:.public` with no space, because `PUBLIC_RE` hard-coded exactly one. That is the *same construct as the self-test's own positive control*, differing only in whitespace. Default-allow was the wrong shape for the one component whose entire job is enforcement. Both rules are now allowlists; the self-test runs all 11 attack controls plus 4 negatives.
+1. **The guard was a denylist and was bypassable eight ways** — including `privacy:.public` with no space, because `PUBLIC_RE` hard-coded exactly one. That is the *same construct as the self-test's own positive control*, differing only in whitespace. Default-allow was the wrong shape for the one component whose entire job is enforcement. Both rules were relabelled allowlists here; round 3 found rule 2 still was not one. The self-test now runs 19 positive and 7 negative controls.
 2. **Laundering.** `diagnosticDetail` denies unreviewed **types**, not unreviewed **content**. Pre-rendering an unreviewed error into a `String` and stashing it in a **conformed** error's payload walked it straight through the gate. **Nine live sites.** Eight in `SecretaryKit` now call `diagnosticDetail`; the ninth is in `SecretaryDeviceUnlockUI`, which cannot reach it, so it applies default-deny locally (carries the type name, never the description).
 3. **A decrypted record field name inside a conformed error.** `RecordEditViewModel` interpolates `f.name` into `VaultAccessError.invalidArgument`. It was kept out of the log only by catch-arm ordering — true at all 23 sites today, but **untested and unenforced**. Now redacted at source.
 4. **A false claim in a security comment.** The script header justified its multi-line blind spot with "swift-format keeps them single-line". **There is no swift-format config and no formatter in CI anywhere in this repo** — the only file mentioning it was that comment.
@@ -59,6 +59,25 @@ Two read-only agents were dispatched after the code was "done": one adversarial 
 
 The audit also *confirmed* two things and they were deliberately left alone: the `CocoaError`/`NSError` bridging comment is correct (verified by execution, including with the conformance declared), and 6 of 23 fold sites are statically unreachable with the production conformers.
 
+**Round 3 (PR review of #471) — the guard was still bypassable five ways.**
+
+Round 1 relabelled both rules "allowlists". Rule 1 was one; **rule 2 was not** — it matched one function name (`String(describing:`) applied to five hard-coded identifier names. A probe tree (synthetic repo, script copied in, one file per attack) confirmed the documented control fired while all five of these passed:
+
+| Bypass | Now |
+|---|---|
+| `String(describing: caught)` — any other binding name | rule 2 |
+| `error.localizedDescription` into a conformed payload | rule 2 |
+| `String(reflecting: error)` | rule 2 |
+| `"boom: \(error)"` bare interpolation | rule 3 (best effort) |
+| two `.public` interpolations on one line, one gated one raw | rule 1 (counting) |
+
+8. **Rule 2 is now construct-based and name-blind** — `String(describing:|String(reflecting:|.localizedDescription`, denied everywhere in scope, opened only by allowlist entry. Seven legitimate uses became recorded entries, including the four `.enclave(nsError.localizedDescription)` arms whose safety had been argued only in a doc comment. That comment's claim is now machine-visible: edit one of those lines and the guard fails until it is re-reviewed.
+9. **Rule 1 counts per-interpolation, not per-line.** `n(privacy: .public) > n(diagnosticDetail()` fails. The old "does the line mention `diagnosticDetail` anywhere" form passed a line carrying one gated and one raw render.
+10. **The allowlist matched a SUBSTRING, per file.** The entry for `BookmarkVaultLocationStore` (`location.displayName`) exempted *any* future `.public` line in that file mentioning it — proven by probe to include one rendering `err.localizedDescription` raw. Entries now match the **exact trimmed source line**; re-indentation survives, content edits do not. A control pair (A1 exact-match clean / A2 same-file-same-substring caught) pins it.
+11. **Rule 3 is a denylist and says so.** Bare `"\(error)"` is `String(describing:)`, but `\(x)` is the most common construct in Swift — matching it wholesale is unusable, so rule 3 names conventional catch bindings. `catch let problem { "\(problem)" }` evades it. Labelled best-effort in the header rather than dressed up as coverage; rules 1 and 2 remain the load-bearing ones.
+
+Rule 3 immediately caught a real site — `DeviceUnlockFailureDisplay.swift:33`, which renders a `VaultSlotError` into on-screen copy. It is **user-facing copy, not a log sink**, so it is carried as a reviewed rule-3 allowlist entry rather than silently excluded; it is a genuine #454 violation in a *package* (so `is_app_ui_path` never covered it) and is drafted as a follow-up.
+
 ## Acceptance (all run this session)
 
 ```bash
@@ -68,7 +87,7 @@ cd /Users/hherb/src/secretary/.worktrees/467-public-log-secret-free-guard
 (cd ios/SecretaryKit && swift test)             # 54 tests, 0 failures (+2)
 bash ios/scripts/build-app.sh                   # ** BUILD SUCCEEDED **
 bash ios/scripts/build-macos-app.sh             # ** BUILD SUCCEEDED **
-bash ios/scripts/check-public-log-hygiene.sh --self-test   # 11 positive / 4 negative controls
+bash ios/scripts/check-public-log-hygiene.sh --self-test   # 19 positive / 7 negative controls
 bash ios/scripts/check-public-log-hygiene.sh               # exit 0
 shellcheck ios/scripts/check-public-log-hygiene.sh         # clean
 actionlint .github/workflows/test.yml                      # clean
@@ -81,7 +100,7 @@ git diff main... --name-only -- core/ ffi/                 # EMPTY
 
 ## (2) What's next
 
-- **File the three drafted issues** (drafts in the scratchpad, reproduced in the PR body): **Android logs raw `Throwable`s to logcat** with no equivalent gate (`AppRoot.kt:438,572,582`, `CloudVaultOpen.kt:191,298,300`); **iOS app UI renders `String(describing: err)` into on-screen `Text(…)`**, contradicting #454 (5 sites); **`RecordError::DuplicateKey` embeds a decrypted field name** in its message (`core/src/vault/record.rs:661`) where `MnemonicError::UnknownWord` already shows the right pattern (index, not word). **Acceptance:** three issues filed with the `[audit][Sev]` title convention.
+- **File the three drafted issues** (drafts in the scratchpad, reproduced in the PR body): **Android logs raw `Throwable`s to logcat** with no equivalent gate (`AppRoot.kt:438,572,582`, `CloudVaultOpen.kt:191,298,300`); **carried diagnostics rendered as on-screen copy**, contradicting #454 (6 sites — 5 in app targets plus `DeviceUnlockFailureDisplay.swift:33-34` in a *package*, which `is_app_ui_path` never covered and which rule 3 now surfaces as a reviewed allowlist entry); **`RecordError::DuplicateKey` embeds a decrypted field name** in its message (`core/src/vault/record.rs:661`) where `MnemonicError::UnknownWord` already shows the right pattern (index, not word). **Acceptance:** three issues filed with the `[audit][Sev]` title convention.
 - **#459 on-device confirmation** — still outstanding, still why #459 is open. **Acceptance:** install on the iPhone, type a new grace value, tap Save **without** dismissing the number pad, re-open Settings, confirm it persisted; then clear a field, tap Save, confirm the "Each field needs a whole number" refusal rather than a silent old-value write. **Run the repro INSIDE the grace window** — outside it the Face ID prompt dismisses the keyboard, which itself resigns first responder and flushes the old binding, so the old build may not reproduce and the test reads as a false "no bug". Also worth one pass with an **Arabic or Persian keyboard**, since `.numberPad` renders in the active numeral system and the non-ASCII digit fold is host-tested but never device-observed.
 - **#464** — CodeQL Swift analysis. #469 answered its "which targets under the tracer" question and proved the recipe under a pinned toolchain. Still needs the matrix-leg-vs-separate-workflow decision plus triage of the first Swift alert batch. **Acceptance:** `swift` appears in `gh api repos/:owner/:repo/code-scanning/analyses` after it lands on `main`, and the other five languages do not regress.
 - **#417** — mobile Trash purge-notice render test; needs a UI-test target. **Acceptance:** a render assertion on the banner in both Compose and SwiftUI.
@@ -133,7 +152,7 @@ git worktree list && git status -s
 
 - **State on close:** PR on `feature/467-public-log-secret-free-guard` (worktree `.worktrees/467-public-log-secret-free-guard`), shipping **#467**. Net: a new protocol + renderer in `SecretaryVaultAccess`, `foldDiagnostic` replacing `logFoldedError` across 23 sites, 7 app-layer sites gated, 9 laundering sites closed, 2 conformance redactions, a new fail-closed CI guard + allowlist, and docs. **No `core` / `ffi` / `.udl` / `FfiVaultError` / on-disk-format change** — `git diff main... -- core/ ffi/` is empty.
 - **Commits:** `9882b37` (spec) · `10607bd` (plan) · `390ed3d` (policy) · `b2f886d` (fold sites) · `2f3b705` (app layer) · `897619a` (CI guard) · `1014e63` (CLAUDE.md) · `3327776` (**review round 1** — 4 holes) · `cdfa3ca` (**review round 2** — 3 more).
-- **Acceptance:** 356 + 47 + 54 tests **0 failures** · both apps **BUILD SUCCEEDED** · guard self-test **11 positive / 4 negative** · **mutation red → revert green** using the variant that beat the original matcher · `shellcheck` + `actionlint` clean · Rust surface **untouched**.
+- **Acceptance:** 356 + 47 + 54 tests **0 failures** · both apps **BUILD SUCCEEDED** · guard self-test **19 positive / 7 negative** · **mutation red → revert green** using the variant that beat the original matcher · `shellcheck` + `actionlint` clean · Rust surface **untouched**.
 - **Docs:** README unchanged, ROADMAP unchanged — both by precedent-grep (#456/#466 and #189 appear in neither). CLAUDE.md gained the command block + an architecture note.
 - **Next:** file the 3 drafted issues · #459 on-device confirm (INSIDE the grace window; Arabic/Persian keyboard pass) · #464 (CodeQL Swift) · #417 (render tests) · #447 (Tauri biometric decision) · #443/#444 (Linux/Windows presence).
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-08-02-467-public-log-secret-free-guard-shipped.md`.
