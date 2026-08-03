@@ -199,14 +199,17 @@ extension-based conformance
 `VaultBrowseError`, `VaultSyncError`, `DeviceUnlockError`,
 `VaultProvisioningError`, `VaultNameError`.
 
-Two arms are redacted at source, both proven reachable above:
+**Three** arms are redacted at source. The third was found by carrying out the
+payload-origin audit below, and would not have been caught by porting the iOS
+redaction list:
 
 ```kotlin
 sealed class VaultBrowseError(message: String? = null) : Exception(message), SecretFreeThrowable {
     override val diagnosticDescription: String get() = when (this) {
-        is CorruptVault    -> "CorruptVault(<redacted>)"
-        is InvalidArgument -> "InvalidArgument(<redacted>)"
-        else               -> toString()
+        is CorruptVault       -> "CorruptVault(<redacted>)"
+        is InvalidArgument    -> "InvalidArgument(<redacted>)"
+        is SaveCryptoFailure  -> "SaveCryptoFailure(<redacted>)"
+        else                  -> toString()
     }
     // …arms unchanged…
 }
@@ -218,33 +221,58 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
   class the policy exists to deny.
 - `InvalidArgument(detail)` — `RecordEditModel` interpolates a decrypted record
   field name into it.
+- `SaveCryptoFailure(detail)` — **carries the same plaintext as `CorruptVault`,
+  one arm over.** The bridge's `map_core_vault_error_*` folds
+  `VaultError::Record(_)` and `VaultError::Block(_)` into
+  `FfiVaultError::SaveCryptoFailure { detail: format!("{e}") }`
+  (`retention/orchestration.rs:205` and five siblings in `revoke` / `trash` /
+  `purge` / `restore` / `save`). `VaultError::Record(_)` renders as
+  `"record CBOR error: {0}"` over the inner `RecordError`, so
+  `RecordError::DuplicateKey`'s decrypted CBOR field name lands in `detail`
+  exactly as it does in `CorruptVault`'s.
+
+**iOS is not exposed here, and the reason is worth recording.** Its
+`VaultAccessError` has no `.saveCryptoFailure` case at all, so
+`VaultException.SaveCryptoFailure` falls to `VaultErrorMapping.swift:53`'s
+`default: return .other(diagnosticDetail(e))` — gated at construction, because
+uniffi's `VaultException` is not `SecretFreeError`-conformed and therefore
+default-denies. Android's `BrowseMapping.kt:26` instead maps the arm
+**explicitly** and carries the raw `detail`. The divergence is in the mapper, not
+in the policy, which is why an audit of Android's own arms was required rather
+than a port of iOS's redaction list.
 
 **Redacting `diagnosticDescription` does not touch `message`.** `RecordEditForm.kt:62`
 renders `it.message` on screen and still shows the user which field is bad. No
 UX change.
 
-#### Payload-origin obligation
+#### Payload-origin audit
 
-Every arm not listed above renders **in full**. That is a security claim per arm,
-not per type. The implementation must produce a payload-origin table — one row
-per arm of all five types, recording where the payload comes from and why it is
-secret-free — and that table ships as a doc comment beside the conformance. An
-arm whose origin cannot be established is redacted, not assumed safe.
+Every arm not redacted above renders **in full**, which is a security claim per
+arm, not per type. The audit is complete; it ships as a doc comment beside the
+conformance. Arms with no payload (`data object`) are omitted — they are safe by
+construction.
 
-Two rows are already established (the two redactions above). Rows known to need
-tracing before the conformance ships, because their payloads are Rust-authored
-exactly as `CorruptVault`'s is:
+| Arm | Payload origin | Verdict |
+|---|---|---|
+| `VaultBrowseError.CorruptVault` | Rust `VaultError` Display; folds `Record(_)`/`Block(_)` | **REDACT** |
+| `VaultBrowseError.SaveCryptoFailure` | same, via `map_core_vault_error_*` | **REDACT** |
+| `VaultBrowseError.InvalidArgument` | Kotlin-side; `RecordEditModel` interpolates a decrypted field name | **REDACT** |
+| `VaultBrowseError.InvalidRecoveryPhrase` | `MnemonicError` Display: word **index** (`core/src/unlock/mnemonic.rs:54`), word count (`:46`), or the fixed `"BIP-39 checksum failed"` (`:59`) — never the word | render |
+| `VaultBrowseError.FolderInvalid` | `format!("{context}: {source}")` — filesystem path + errno. Paths are disclosed under the threat model | render |
+| `VaultBrowseError.DeviceUuidMismatch` | device UUIDs — a public per-device fingerprint, not key material | render |
+| `VaultBrowseError.BlockNotFound` / `RecordNotFound` | hex-encoded UUIDs. The `BlockNotInTrash` / `BlockPurged` folds also `hex::encode` (`purge/orchestration.rs:153`), so no block *name* reaches them | render |
+| `VaultBrowseError.ReauthFailed` | Android-constructed at the biometric gate from fixed labels | render |
+| `VaultBrowseError.Failed` | gated at construction once §4 lands — payload becomes `diagnosticDetail` output | render |
+| `VaultSyncError.StateCorrupt` | `SyncState` CBOR codec error. Describes the schema's own structure; `SyncState` holds vault UUID, block hashes and clocks, never vault plaintext | render |
+| `VaultSyncError.InvalidArgument` | binding-layer wrong-length UUID/hash — the caller's own input | render |
+| `VaultSyncError.Failed` | gated at construction once §4 lands | render |
+| `VaultProvisioningError.CreateFailed` | gated at construction once §4 lands | render |
+| `DeviceUnlockError.Enclave` | Keystore / BiometricPrompt message about a key operation, never vault content. iOS carries the same four `.enclave` sites as reviewed allowlist entries | render |
+| `VaultNameError.*` | all three arms are `data object` with fixed user-facing copy | render |
 
-- `VaultBrowseError.SaveCryptoFailure(detail)`
-- `VaultBrowseError.FolderInvalid(detail)`
-- `VaultBrowseError.InvalidRecoveryPhrase(detail)`
-- `VaultSyncError.StateCorrupt(detail)`
-- `VaultSyncError.InvalidArgument(detail)`
-- `VaultProvisioningError.CreateFailed(detail)`
-
-`VaultBrowseError.Failed` and `VaultSyncError.Failed` are gated at construction
-once §3 lands (their payload becomes `diagnosticDetail` output), which is the
-same argument #467 records for iOS's `.other`.
+The rule applied throughout: an arm whose origin **cannot be established** is
+redacted, not assumed safe. Three were redacted on that basis; `SaveCryptoFailure`
+is the one that a port of the iOS list would have missed.
 
 ### 3. The sanctioned sink (`:kit`)
 
@@ -502,10 +530,15 @@ the same task as any `:vault-access` sealed-type change.
   to `<undisclosed …>`. Safe by design, but "did anyone conform the new error
   type?" is answered by review, not by the compiler — the same residual risk
   #467 records.
-- **The payload-origin table is a point-in-time claim.** An arm's payload can be
-  changed by an edit in the Rust core with no Kotlin diff at all. `CorruptVault`
-  is redacted precisely because that is unreviewable; the other Rust-authored
-  arms are narrower, but the risk is of the same kind.
+- **The payload-origin table is a point-in-time claim, and it already caught
+  one.** An arm's payload can change from an edit in the Rust core with **no
+  Kotlin diff at all** — which is exactly how `SaveCryptoFailure` came to carry a
+  decrypted field name without anyone deciding it should. `CorruptVault`,
+  `SaveCryptoFailure` and `InvalidArgument` are redacted precisely because their
+  content is unreviewable from here; the remaining Rust-authored arms
+  (`InvalidRecoveryPhrase`, `FolderInvalid`, `StateCorrupt`) are narrow enough to
+  render, but the risk is of the same kind and nothing enforces it. Adding an arm
+  to a Rust umbrella fold is invisible to every gate in this design.
 - **Rule A depends on `SecretaryLog` staying honest.** The guard proves nothing
   else touches `android.util.Log`; it does not prove `SecretaryLog` itself
   renders through `diagnosticDetail`. That is one reviewed file, pinned by rule
