@@ -81,7 +81,11 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../scripts/lib/hygiene-allowlist.sh
+source "$SCRIPT_DIR/../../scripts/lib/hygiene-allowlist.sh"
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 readonly REPO_ROOT
 readonly SCAN_ROOT="$REPO_ROOT/ios"
 # NOT readonly: `--self-test` retargets it at a synthetic allowlist so the
@@ -124,15 +128,6 @@ is_app_ui_path() {
   [[ "$1" == *"/SecretaryApp/Sources/"* || "$1" == *"/SecretaryMacApp/Sources/"* ]]
 }
 
-# Strip leading/trailing whitespace so an allowlist entry survives re-indentation
-# but not a content edit.
-trim() {
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
-}
-
 # Count non-overlapping matches of ERE $1 in text $2. `|| true` keeps `pipefail`
 # from turning "zero matches" into a script abort.
 count_matches() {
@@ -141,29 +136,10 @@ count_matches() {
   printf '%s' "${n//[[:space:]]/}"
 }
 
-# Does rule $1's hit $2 (`<file>:<line>:<text>`) have an allowlist entry?
-#
-# The entry must match the file AND the EXACT trimmed source line. An earlier
-# version matched any substring, which meant the entry chosen for
-# BookmarkVaultLocationStore (`location.displayName`) exempted any FUTURE
-# `.public` line in that file that happened to mention the same identifier —
-# demonstrably including one rendering `err.localizedDescription` raw. Exact-line
-# matching costs a re-review whenever an exempted line is edited, which is the
-# correct price for a line that bypasses the only mechanism keeping secrets out
-# of the log store.
-allowlisted() {
-  local rule="$1" hit="$2" path text a_path a_rule a_line _reason
-  path="${hit%%:*}"
-  path="${path#"$REPO_ROOT"/}"
-  text="${hit#*:}"; text="${text#*:}"
-  text="$(trim "$text")"
-  [[ -f "$ALLOWLIST" ]] || return 1
-  while IFS=$'\t' read -r a_path a_rule a_line _reason; do
-    [[ -z "${a_path// }" || "$a_path" == \#* ]] && continue
-    [[ "$a_rule" == "$rule" && "$path" == "$a_path" && "$text" == "$a_line" ]] && return 0
-  done < "$ALLOWLIST"
-  return 1
-}
+# `trim()` and `allowlisted()` now live in scripts/lib/hygiene-allowlist.sh,
+# sourced above — shared with the Android guard so the exact-line matcher has
+# exactly one copy. See that file's header for the $ALLOWLIST/$REPO_ROOT
+# contract `allowlisted()` depends on.
 
 # RULE 1 + the privacy-literal check. Prints offending hits.
 scan_public() {
@@ -205,13 +181,9 @@ scan_launder() {
   done < <(grep -rn --include='*.swift' -E "$re" "$root" 2>/dev/null || true)
 }
 
-# `SELF_TEST_TMP` is deliberately script-scoped, NOT `local`: the `EXIT` trap runs
-# after the function's frame is gone, so a `local` would be unset by then and
-# `set -u` would turn the cleanup itself into a non-zero exit — which looked
-# exactly like a self-test failure while the matchers were in fact fine.
-SELF_TEST_TMP=""
-# shellcheck disable=SC2329  # invoked indirectly, via `trap cleanup_self_test EXIT`
-cleanup_self_test() { [[ -n "$SELF_TEST_TMP" ]] && rm -rf "$SELF_TEST_TMP"; }
+# `SELF_TEST_TMP` and `cleanup_self_test` now live in
+# scripts/lib/hygiene-allowlist.sh, sourced above (same script-scoped-not-local
+# rationale as documented there).
 
 # Every control BOTH adversarial reviews used to defeat an earlier version, so a
 # regression to default-allow cannot pass. A check never observed failing is

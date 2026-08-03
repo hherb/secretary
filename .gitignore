@@ -23,6 +23,11 @@ lib64/
 # iOS script helpers — same `lib/` exception for the bash shared library.
 !ios/scripts/lib/
 !ios/scripts/lib/**
+# Root shared script helpers — same `lib/` exception, for bash libraries
+# sourced by more than one platform's guard (e.g. the #467/#472 hygiene-
+# allowlist matcher shared by ios/ and android/).
+!scripts/lib/
+!scripts/lib/**
 parts/
 sdist/
 var/
