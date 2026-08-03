@@ -599,7 +599,19 @@ Then write these, which are language-specific and NOT shared with the iOS guard:
 - `REPO_ROOT` / `SCAN_ROOT` (`$REPO_ROOT/android`)
 - `is_test_path()` — `*/src/test/*` or `*/src/androidTest/*`
 - `is_generated_path()` — `*/build/generated/*`, `*/build/*`
-- `is_comment_line()` — Kotlin uses `//` and KDoc `/** … */`, so match `^[[:space:]]*(//|\*|/\*)`
+- `is_comment_line()` — Kotlin uses `//` and KDoc `/** … */`. **Do NOT use the naive `^[[:space:]]*(//|\*|/\*)`.** That was this plan's original text and it is a CRITICAL bypass: it skips any line merely *starting* with `/*` without requiring the comment to close, so `/* */ Log.w(TAG, x.toString())` — a complete no-op comment followed by real code — is silently unscanned by all four rules. (The iOS guard is unaffected; its `^[[:space:]]*(///?|\*)` never matches `/*`.) Skip `//` lines and `*` continuation lines, and skip a `/*`-opening line ONLY when no code follows the comment's close:
+
+```bash
+is_comment_line() {
+  local line="$1"
+  [[ "$line" =~ ^[[:space:]]*(//|\*) ]] && return 0
+  if [[ "$line" =~ ^[[:space:]]*/\* ]]; then
+    [[ "$line" =~ \*/[[:space:]]*[^[:space:]] ]] && return 1
+    return 0
+  fi
+  return 1
+}
+```
 
 Do not port `count_matches()` — it exists for iOS rule 1's per-interpolation counting, and no Android rule counts.
 
@@ -612,10 +624,10 @@ readonly SANCTIONED_LOG_FILE="android/kit/src/main/kotlin/org/secretary/diagnost
 
 # RULE A: any reference to android.util.Log — the import (which also catches
 # `import android.util.Log as L`) or a fully-qualified call.
-readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[a-z]+\('
+readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[A-Za-z_][A-Za-z0-9_]*\('
 
 # RULE B1: throwable-shaped constructs. Name-blind and precise.
-readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\.stackTraceToString\(|\.printStackTrace\('
+readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\bstackTraceToString\(|\bprintStackTrace\('
 
 # RULE B2: the explicit render. Name-blind by design; the name-based form was
 # the demonstrated bypass on iOS.
