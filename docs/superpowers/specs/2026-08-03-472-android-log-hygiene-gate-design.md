@@ -98,6 +98,8 @@ language forces it:
    applied once, at one place.
 3. **Laundering cleanup** — the eighteen sites: fourteen fixed, four recorded as
    reviewed allowlist entries because they are on-screen copy rather than logs.
+   Two *innocent* `.toString()` calls are deleted rather than allowlisted, one of
+   them a duplicated hex encoder that should have been a call to `hexOfBytes`.
 4. **A grep-level guard** — `android/scripts/check-log-hygiene.sh`, fail-closed,
    two-sided `--self-test`, wired into `test.yml`. Ported from #467 including
    the exact-trimmed-line allowlist matching and its A1/A2 regression control.
@@ -309,10 +311,31 @@ decision, exactly as #467 concluded for `DeviceUnlockFailureDisplay`. Recording
 them as allowlist entries rather than excluding their paths is what makes them
 machine-visible.
 
-**Allowlist total: ten entries** — these four on-screen renders under rule B1,
-plus the six innocent `.toString()` calls under rule B2. Rules A and C have none.
-Ten is the number to check the implementation against; a larger one means
-something was allowlisted that should have been fixed.
+#### Two innocent `.toString()` calls are deleted rather than allowlisted
+
+Rule B2 needs an entry per innocent `.toString()`. Two of the six should not
+exist in the first place, and removing them is an improvement on its own merits
+— which is the test for whether a change like this is honest rather than a lint
+dodge:
+
+- `app/…/ProvisioningRouting.kt:30-37` (`cloudVaultKey`) reimplements
+  `HexFormat.hexOfBytes` — same loop, same nibble arithmetic, with the hex-digit
+  string inlined as a literal *twice* instead of using the named constant. `:app`
+  already depends on `:vault-access`, so it calls `hexOfBytes(digest)` instead.
+  Removes an allowlist entry and a copy-paste duplication.
+- `vault-access/…/HexFormat.kt:16` converts to
+  `buildString(bytes.size * 2) { … }`, which preserves the pre-sizing and is the
+  idiomatic form.
+
+The remaining four (`uri.toString()` ×2, a relativized `Path.toString()`, a
+settings `value.toString()`) stay. `Uri.toString()` *is* how an Android `Uri` is
+serialized; replacing them with shims to satisfy a checker would make the code
+worse.
+
+**Allowlist total: eight entries** — the four on-screen renders under rule B1,
+plus the four surviving innocent `.toString()` calls under rule B2. Rules A and
+C have none. Eight is the number to check the implementation against; a larger
+one means something was allowlisted that should have been fixed.
 
 ### 5. The guard (`android/scripts/check-log-hygiene.sh`)
 
@@ -334,9 +357,8 @@ is **name-blind** — the property iOS rule 2 needed two review rounds to reach.
 allowlist entry. `.toString()` is how six of the eighteen sites launder,
 including the FFI else-fold. Unlike Swift's `String(describing:)` it has
 overwhelmingly innocent uses: of the twelve `.toString()` calls in the tree
-today, six are the laundering sites above and six are innocent (`sb.toString()`
-×2, `uri.toString()` ×2, a relativized path, a settings value). Each of the
-latter becomes an entry.
+today, six are the laundering sites above and six are innocent. Two of those six
+are deleted rather than allowlisted (§4), leaving **four** entries.
 
 The alternative considered and rejected was matching `.toString()` only on
 conventional catch-binding names (`e`, `error`, `caught`, …). That has zero
@@ -374,8 +396,25 @@ exactly why those controls have to exist.
 in format and semantics from #467: TSV of
 `<repo-relative-path><TAB><rule><TAB><exact trimmed source line><TAB><reason>`,
 matched on the **exact trimmed line**, never a substring. Re-indenting an
-exempted line keeps the entry valid; editing its content does not. Adding an
-entry is a security decision and the reason field is mandatory.
+exempted line keeps the entry valid; editing its content does not. The reason
+field is mandatory.
+
+**It is split into two sections by review weight**, because a rule-B2 entry and
+a rule-A/B1/C entry are not the same kind of claim:
+
+- **SECURITY DECISIONS** (rules A, B1, C) — each entry asserts that a value which
+  *can* carry a secret is safe to render here. Reviewed like any other security
+  change. Four entries, all on-screen copy.
+- **NON-THROWABLE RECEIVERS** (rule B2 only) — each entry asserts only that the
+  receiver is not a `Throwable`. That is a two-second check against the
+  surrounding code, not a security argument. Four entries.
+
+The split is not cosmetic. The whole file otherwise reads as a list of security
+decisions, and burying four `Uri`/`Path`/`StringBuilder` receivers among them
+trains a reviewer to skim — which is precisely how an allowlist decays into a
+rubber stamp. Keeping the security section short is what keeps its entries
+meaningful. The parser treats both sections identically; only the headings and
+the review bar differ.
 
 **CI.** New `kotlin-log-hygiene` job in `.github/workflows/test.yml` on
 `ubuntu-latest`, alongside `swift-log-hygiene`, running `--self-test` then the
@@ -428,6 +467,19 @@ the same task as any `:vault-access` sealed-type change.
 - **The Android #473 sibling** — the three on-screen sites that render a carried
   diagnostic as copy. Filed, allowlisted with reasons, not rewritten: the copy
   is a UX decision.
+- **A type-aware replacement for the grep rules.** Rules B1, B2 and C all
+  approximate a question only the type system can answer: is this receiver a
+  `Throwable`? A custom **detekt** rule with type resolution answers it exactly —
+  which would let rule B2's innocent allowlist be deleted outright, make B1
+  precise, and close rule C's name-based gap (`problem.toString()` is invisible
+  to a name list but obvious to a type check). Not built here: it needs a new
+  tool, a custom-rule module, and a CI job, and the repo currently has no
+  detekt/ktlint/spotless and runs no Gradle lint task, so there is nothing to
+  piggyback on. Type resolution also needs a compiling classpath — cheap for the
+  pure-JVM `:vault-access`, but it pulls in the Android SDK for the other
+  modules. **Filed as a follow-up issue**; the grep guard ships now and would be
+  retired by it, not layered under it.
+
 - **No on-disk format, `.udl`, `FfiVaultError`, or FFI signature change.**
 - **No new Compose UI, and no instrumented tests.** Everything here is
   host-testable or grep-level.
@@ -436,11 +488,16 @@ the same task as any `:vault-access` sealed-type change.
 
 - **Rule B2 imposes permanent friction.** Every future innocent `.toString()`
   needs an allowlist line. Accepted knowingly: the name-based alternative is the
-  exact shape two iOS reviews rejected. The rule starts with six innocent
-  entries; if that count roughly doubles, the trade should be revisited — but
-  revisited as a decision, not silently loosened. The failure mode to watch for
-  is entries being added by reflex without the reason field being taken
-  seriously, which converts a fail-closed rule into a rubber stamp.
+  exact shape two iOS reviews rejected. The friction exists *only* because grep
+  cannot answer a type question — "is this receiver a `Throwable`?" — which is
+  why the durable fix is a type-aware rule rather than a better regex (filed as
+  a follow-up, see Non-goals). Mitigated three ways here: two of the six innocent
+  calls are deleted rather than allowlisted, the remaining four sit in their own
+  low-weight allowlist section, and the reason field is mandatory. The rule
+  starts at four such entries; if that count roughly doubles, the trade should be
+  revisited — as a decision, not a silent loosening. The failure mode to watch
+  for is entries added by reflex, which converts a fail-closed rule into a rubber
+  stamp.
 - **A missing future conformance is not a build error.** It degrades a log line
   to `<undisclosed …>`. Safe by design, but "did anyone conform the new error
   type?" is answered by review, not by the compiler — the same residual risk
