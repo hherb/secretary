@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# This file writes literal Kotlin `$e` / `${e}` source into single-quoted bash
-# strings throughout (the ERE constants and the self-test's write_case
-# fixtures) — that `$` is Kotlin template syntax being matched / emulated,
-# never intended for shell expansion, so shellcheck's SC2016 ("use double
-# quotes for expansion") does not apply here; disabled file-wide rather than
-# repeated at every one of the dozen call sites below.
-# shellcheck disable=SC2016
 #
 # check-log-hygiene.sh — keep secrets out of Android logcat (#472).
 #
@@ -25,17 +18,23 @@
 # FOUR RULES
 # ----------
 #   RULE A (sink): any reference to `android.util.Log` — the import (which
-#     also catches `import android.util.Log as L`) or a fully-qualified call —
-#     outside the one sanctioned file is a hit. Logging AT ALL outside the
-#     façade is the violation; there is nothing to allowlist here, so rule A
-#     does not consult the allowlist file at all.
+#     also catches `import android.util.Log as L`), a fully-qualified call, or
+#     a bare `Log.<member>(` where `<member>` may be camelCase (e.g.
+#     `Log.getStackTraceString(`, a real Android API that renders a Throwable
+#     to text — an all-lowercase-only member pattern missed it) — outside the
+#     one sanctioned file is a hit. Logging AT ALL outside the façade is the
+#     violation; there is nothing to allowlist here, so rule A does not
+#     consult the allowlist file at all.
 #
 #   RULE B1 (throwable-shaped launder): `.message`, `.localizedMessage`,
-#     `.stackTraceToString(` and `.printStackTrace(` all render a `Throwable`
-#     (or something throwable-shaped) into text that may carry a carried
-#     diagnostic. Name-blind and precise — it matches the CONSTRUCT, not an
-#     identifier named like an error, so a `catch (problem: Exception)`
-#     binding is caught exactly the same as a `catch (e: Exception)` one.
+#     `stackTraceToString(` and `printStackTrace(` (word-boundary anchored,
+#     not dot-anchored, so a no-receiver call under implicit `this` — e.g.
+#     inside a `Throwable.toString()` override — is caught exactly like the
+#     dotted form) all render a `Throwable` (or something throwable-shaped)
+#     into text that may carry a carried diagnostic. Name-blind and precise —
+#     it matches the CONSTRUCT, not an identifier named like an error, so a
+#     `catch (problem: Exception)` binding is caught exactly the same as a
+#     `catch (e: Exception)` one.
 #
 #   RULE B2 (explicit render): `.toString()`. Name-blind by design: the
 #     iOS review found that a name-based version of this rule (matching only
@@ -60,6 +59,27 @@
 # the spec chose to allowlist individual Compose sites instead of excluding a
 # whole app-UI directory, since Android's Compose screens and the FFI/port
 # layer are not as cleanly separated as iOS's SwiftUI app targets.
+#
+# FIX ROUND 1 (adversarial review; brief-specified regexes were wrong)
+# ---------------------------------------------------------------------
+# Three bypasses were found, all traceable to the ORIGINAL BRIEF's regexes,
+# not to an implementation slip — the human ruled the findings govern over
+# the brief:
+#   1. CRITICAL — `is_comment_line` treated ANY line opening with `/*` as
+#      pure prose, never checking whether the comment closed on the same
+#      line. `/* */ Log.w(TAG, secretValue.toString())` is a complete no-op
+#      Kotlin comment followed by live code, and it was silently unscanned
+#      against all four rules. Fixed: a `/*`-opening line is prose only if
+#      no non-whitespace follows its `*/`.
+#   2. Rule A's member pattern (`Log\.[a-z]+\(`) required all-lowercase, so
+#      `Log.getStackTraceString(e)` — a real Android API — was invisible.
+#      Fixed: `Log\.[A-Za-z_][A-Za-z0-9_]*\(`.
+#   3. Rule B1 required a leading dot, so a no-receiver
+#      `stackTraceToString()` / `printStackTrace()` (implicit `this`) evaded
+#      it. Fixed: `\b`-anchored instead of `\.`-anchored (still matches the
+#      dotted forms).
+# See the `A6`/`B1e`/`CM1`/`CM2` self-test positives and the `N7`-`N9`
+# negatives for the controls that pin these.
 #
 # USAGE
 # -----
@@ -96,11 +116,18 @@ ALLOWLIST="$REPO_ROOT/android/scripts/log-hygiene-allowlist.txt"
 readonly SANCTIONED_LOG_FILE="android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt"
 
 # RULE A: any reference to android.util.Log — the import (which also catches
-# `import android.util.Log as L`) or a fully-qualified call.
-readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[a-z]+\('
+# `import android.util.Log as L`) or a fully-qualified call. The member
+# pattern allows camelCase (`[A-Za-z_][A-Za-z0-9_]*`, not `[a-z]+`): an
+# all-lowercase requirement missed `Log.getStackTraceString(e)`, a real
+# Android API that renders a Throwable to text (adversarial review, round 1).
+readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[A-Za-z_][A-Za-z0-9_]*\('
 
-# RULE B1: throwable-shaped constructs. Name-blind and precise.
-readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\.stackTraceToString\(|\.printStackTrace\('
+# RULE B1: throwable-shaped constructs. Name-blind and precise. Word-boundary
+# anchored (`\b`), not dot-anchored: a leading-dot requirement missed a
+# no-receiver call (implicit `this`), e.g. inside a `Throwable.toString()`
+# override calling bare `stackTraceToString()` / `printStackTrace()`
+# (adversarial review, round 1). `\b` still matches the dotted forms.
+readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\bstackTraceToString\(|\bprintStackTrace\('
 
 # RULE B2: the explicit render. Name-blind by design; the name-based form was
 # the demonstrated bypass on iOS.
@@ -110,6 +137,7 @@ readonly TOSTRING_RE='\.toString\(\)'
 # reviewable choice — and is deliberately NOT matched; matching it would fire
 # on seven legitimate user-facing copy sites and drown the rule. iOS rule 3
 # draws the same line by requiring the closing paren immediately.
+# shellcheck disable=SC2016  # single-quoted ERE: the literal `$` is the Kotlin-interpolation pattern being matched, not shell expansion
 readonly INTERP_RE='\$\{(e|err|error|caught|failure|ex|t)\}|\$(e|err|error|caught|failure|ex|t)([^A-Za-z0-9_.]|$)'
 
 # Test sources legitimately construct/assert on Throwable text; they never
@@ -122,10 +150,22 @@ is_generated_path() {
   [[ "$1" == *"/build/generated/"* || "$1" == *"/build/"* ]]
 }
 
-# A `//` or KDoc `*` / `/**` line is prose, not a log call. Without this, the
-# doc comments that EXPLAIN this rule (or mention `android.util.Log` by name,
-# as several do in this tree) would trip it.
-is_comment_line() { [[ "$1" =~ ^[[:space:]]*(//|\*|/\*) ]]; }
+# A `//` line comment, or a block-comment continuation line starting with `*`,
+# is prose, not a log call. A line that OPENS a block comment (`/*`) is prose
+# ONLY if no code follows the close: Kotlin's `/* */` is a complete no-op, so
+# `/* */ Log.w(TAG, secretValue.toString())` is real, live code wearing a
+# no-op comment as camouflage — treating any `/*`-prefixed line as pure
+# comment (an earlier version of this function did exactly that) silently
+# unscanned it against every rule (adversarial review, round 1).
+is_comment_line() {
+  local line="$1"
+  [[ "$line" =~ ^[[:space:]]*(//|\*) ]] && return 0
+  if [[ "$line" =~ ^[[:space:]]*/\* ]]; then
+    [[ "$line" =~ \*/[[:space:]]*[^[:space:]] ]] && return 1
+    return 0
+  fi
+  return 1
+}
 
 # `trim()` and `allowlisted()` live in scripts/lib/hygiene-allowlist.sh,
 # sourced above — shared with the iOS guard so the exact-line matcher has
@@ -186,25 +226,51 @@ self_test() {
   write_case A3 '        android.util.Log.w(TAG, "x", e)'
   write_case A4 '        Log.w(TAG, "x", e)'
   write_case A5 '        Log.i(TAG, msg)'
+  # A6: camelCase member. A `[a-z]+`-only member pattern missed this real
+  # Android API (adversarial review, round 1).
+  write_case A6 'Log.getStackTraceString(e)'
   # --- RULE B1 positives (must all be caught) ---
+  # shellcheck disable=SC2016  # literal Kotlin `${e.message}`, not shell expansion
   write_case B1a 'throw CloudFolderException("op failed: ${e.message}")'
   write_case B1b 'val s = problem.localizedMessage'
   write_case B1c 'val s = e.stackTraceToString()'
   write_case B1d 'e.printStackTrace()'
+  # B1e: no-receiver (implicit `this`) call, e.g. inside a Throwable.toString()
+  # override. A leading-dot-only pattern missed this (adversarial review, round 1).
+  write_case B1e 'val s = stackTraceToString()'
   # --- RULE B2 positives (must all be caught) ---
   # B2b is the name-based bypass that motivated making rule B2 name-blind.
   write_case B2a 'else -> VaultBrowseError.Failed(e.toString())'
   write_case B2b 'else -> VaultBrowseError.Failed(problem.toString())'
+  # --- COMMENT-HOLE positives (must all be caught) ---
+  # `/* */` is a complete Kotlin no-op comment; treating any `/*`-opening line
+  # as pure prose (an earlier version of is_comment_line did) silently
+  # unscanned real code hiding behind it against every rule. CM1 is the
+  # Critical finding's exact shape (rule A); CM2 shows the same hole reaches
+  # rule B2.
+  write_case CM1 '/* */ Log.w(TAG, "x", e)'
+  write_case CM2 '/* */ val s = e.toString()'
   # --- RULE C positives (bare only, must all be caught) ---
+  # shellcheck disable=SC2016  # literal Kotlin `$e`, not shell expansion
   write_case C1 'return Failed("boom: $e")'
+  # shellcheck disable=SC2016  # literal Kotlin `${e}`, not shell expansion
   write_case C2 'return Failed("boom: ${e}")'
   # --- negatives (must all stay silent) ---
   write_case N1 'else -> VaultBrowseError.Failed(diagnosticDetail(e))'
   write_case N2 'SecretaryLog.warn(TAG, "unlock failed", e)'
+  # shellcheck disable=SC2016  # literal Kotlin `${error.detail}`, not shell expansion
   write_case N3 'val s = "Couldn'"'"'t authorize the change: ${error.detail}"'   # typed field, not bare
+  # shellcheck disable=SC2016  # literal Kotlin `${error::class.simpleName}`, not shell expansion
   write_case N4 'val s = "failed: ${error::class.simpleName}"'                    # typed field
+  # shellcheck disable=SC2016  # literal Kotlin `$errorCount`, not shell expansion
   write_case N5 'label = "$errorCount failures"'                                  # whole-identifier anchor
   write_case N6 'val n = counter.toInt()'                                         # not toString
+  # N7-N9: genuine comments that mention a construct the rules would
+  # otherwise catch, proving is_comment_line's fix did not over-correct into
+  # treating live code as a comment.
+  write_case N7 '/** Explains why Log.w(TAG, e) is never called directly. */'   # genuine KDoc one-liner
+  write_case N8 ' * still mentions Log.w(TAG, e) from the bullet above'          # block-comment continuation
+  write_case N9 '// Log.w(TAG, e) is what NOT to do'                             # //-only comment line
 
   # --- allowlist control: exact-line matching, NOT substring ---
   # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
@@ -238,11 +304,11 @@ self_test() {
   hits="$(scan_sink "$d"; scan_launder "$d" B1 "$LAUNDER_RE"; scan_launder "$d" B2 "$TOSTRING_RE"; scan_launder "$d" C "$INTERP_RE")"
 
   local p
-  for p in A1 A2 A3 A4 A5 B1a B1b B1c B1d B2a B2b C1 C2; do
+  for p in A1 A2 A3 A4 A5 A6 B1a B1b B1c B1d B1e B2a B2b CM1 CM2 C1 C2; do
     grep -q "/$p\.kt:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4 N5 N6; do
+  for n in N1 N2 N3 N4 N5 N6 N7 N8 N9; do
     grep -q "/$n\.kt:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
   # The allowlist pair, asserted BY LINE NUMBER — this is what fails if
@@ -252,7 +318,7 @@ self_test() {
   grep -q "/X\.kt:2:" <<<"$hits" ||
     { echo "SELF-TEST FAILED: X.kt:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 13 positive controls caught, 6 negative controls clean"
+  echo "self-test OK — 17 positive controls caught, 9 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
