@@ -20,6 +20,7 @@
 - **Test style:** JUnit 5 — `org.junit.jupiter.api.Test`, backtick-quoted test names, `org.junit.jupiter.api.Assertions.assertX` imported individually. Match `vault-access/src/test/kotlin/org/secretary/browse/BlockNamePolicyTest.kt`.
 - **Commit messages containing backticks must be passed via `git commit -F <file>`,** never `-m "…"` — zsh command-substitutes backticks inside double quotes and silently swallows words.
 - **Sealed-type redaction rule:** an arm whose payload origin cannot be established is redacted, not assumed safe. The completed audit is in the spec; do not re-derive it, but do not extend a `render` verdict to a new arm without doing the same tracing.
+- **The iOS guard is a shipped security control.** Task 3 modifies `ios/scripts/check-public-log-hygiene.sh` to source the extracted library. Its `--self-test` must keep reporting **exactly** `19 positive controls caught, 7 negative controls clean`, and its real run must stay green. A changed count means behaviour changed — fix the extraction, never update the expectation.
 
 ---
 
@@ -31,12 +32,13 @@
 | `vault-access/…/diagnostics/SecretFreeThrowableTest.kt` | `:vault-access` | Policy tests (default-deny, chain, cap, cycle). |
 | `vault-access/…/browse/SecretFreeConformanceTest.kt` | `:vault-access` | Redaction tests + `message`-intact test. |
 | `kit/…/diagnostics/SecretaryLog.kt` | `:kit` | The ONLY file referencing `android.util.Log`. |
+| `scripts/lib/hygiene-allowlist.sh` | — | `trim` + `allowlisted` + self-test temp-dir helpers. Sourced by BOTH platform guards; one copy of the security-critical exact-line matcher. |
 | `android/scripts/check-log-hygiene.sh` | — | Rules A / B1 / B2 / C + `--self-test`. |
 | `android/scripts/log-hygiene-allowlist.txt` | — | Two sections: security decisions, non-throwable receivers. |
 | `.github/workflows/test.yml` | — | New `kotlin-log-hygiene` job. |
 | `CLAUDE.md` | — | Architecture note beside the #467 section. |
 
-Modified: the five sealed error types, 14 laundering sites, 7 log call sites, `HexFormat.kt`, `ProvisioningRouting.kt`.
+Modified: `ios/scripts/check-public-log-hygiene.sh` (sources the extracted lib), the five sealed error types, 14 laundering sites, 7 log call sites, `HexFormat.kt`, `ProvisioningRouting.kt`.
 
 ---
 
@@ -469,28 +471,137 @@ EOF
 
 ---
 
-## Task 3: The guard script (RED against the real tree)
+## Task 3: Extract the shared allowlist library
+
+**Files:**
+- Create: `scripts/lib/hygiene-allowlist.sh`
+- Modify: `ios/scripts/check-public-log-hygiene.sh`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: a sourceable library exporting `trim`, `allowlisted`, and the self-test temp-dir/trap helpers. Task 4's Android guard sources the same file.
+
+**Why this task exists.** `allowlisted()` is the exact-trimmed-line matcher. Its substring predecessor was demonstrably exploitable — an entry chosen for one line exempted every future `.public` line in the same file containing the same needle — and was only fixed in #467's third review round. Two copies of that function can drift, and a fix applied to one would silently not apply to the other. That is precisely the failure class this whole slice exists to prevent, so it gets one copy.
+
+**This task modifies a security control that shipped yesterday.** The bar is therefore *behaviour-identical*, proven by the guard's own two-sided self-test, not by inspection.
+
+- [ ] **Step 1: Capture the baseline**
+
+```bash
+cd /Users/hherb/src/secretary/.worktrees/472-android-log-hygiene-gate
+bash ios/scripts/check-public-log-hygiene.sh --self-test
+bash ios/scripts/check-public-log-hygiene.sh
+```
+
+Expected, verbatim — record it, it is the assertion for Step 4:
+
+```
+self-test OK — 19 positive controls caught, 7 negative controls clean
+OK — .public renders are gated and no value is hand-rendered into a String
+```
+
+- [ ] **Step 2: Create the library**
+
+Create `scripts/lib/hygiene-allowlist.sh`. Move these three helpers out of `ios/scripts/check-public-log-hygiene.sh` **unchanged** — do not "improve" them in this task; a behaviour change here is indistinguishable from a regression:
+
+- `trim()` — strips leading/trailing whitespace so an entry survives re-indentation but not a content edit.
+- `allowlisted()` — the exact-trimmed-line matcher. It reads `$ALLOWLIST` and `$REPO_ROOT` from the sourcing script's scope; keep that contract and document it at the top of the function, since it is the one piece of coupling the extraction introduces.
+- the self-test temp-dir pattern: the script-scoped `SELF_TEST_TMP` declaration and `cleanup_self_test`. Carry the existing comment explaining why `SELF_TEST_TMP` must NOT be `local` — the `EXIT` trap runs after the function frame is gone, so a `local` would be unset by then and `set -u` turns cleanup itself into a non-zero exit that looks exactly like a self-test failure.
+
+Leave `count_matches()` in the iOS script. It exists for iOS rule 1's per-interpolation counting and no Android rule counts, so it is not shared.
+
+Give the library a header stating: what it is, who sources it, the `$ALLOWLIST`/`$REPO_ROOT` contract, and that changing `allowlisted` changes a security control on two platforms at once.
+
+- [ ] **Step 3: Source it from the iOS guard**
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../scripts/lib/hygiene-allowlist.sh
+source "$SCRIPT_DIR/../../scripts/lib/hygiene-allowlist.sh"
+```
+
+Match the `SCRIPT_DIR` pattern already used at `ios/scripts/run-ios-tests.sh:35`. Delete the now-duplicated function bodies from the iOS script.
+
+- [ ] **Step 4: Prove behaviour is identical**
+
+```bash
+cd /Users/hherb/src/secretary/.worktrees/472-android-log-hygiene-gate
+bash ios/scripts/check-public-log-hygiene.sh --self-test
+bash ios/scripts/check-public-log-hygiene.sh
+shellcheck ios/scripts/check-public-log-hygiene.sh scripts/lib/hygiene-allowlist.sh
+```
+
+The two output lines must match Step 1's **byte for byte** — same control counts, same message. A different count means the extraction changed behaviour; fix it rather than updating the expectation.
+
+Then re-prove the matcher is still live, since a sourcing bug could silently make `allowlisted` a no-op that returns success for everything:
+
+```bash
+# Mutate a real site: reintroduce String(describing: error) at MacUnlockView.swift:172
+bash ios/scripts/check-public-log-hygiene.sh; echo "expect exit=1"
+git checkout ios/SecretaryMacApp/Sources/MacUnlockView.swift
+bash ios/scripts/check-public-log-hygiene.sh; echo "expect exit=0"
+```
+
+Confirm `git status` is clean before committing.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /Users/hherb/src/secretary/.worktrees/472-android-log-hygiene-gate
+git add scripts/lib/hygiene-allowlist.sh ios/scripts/check-public-log-hygiene.sh
+git commit -F - <<'EOF'
+refactor(#472): extract the exact-line allowlist matcher to a shared lib
+
+allowlisted() is the matcher whose substring predecessor was exploitable and
+was only fixed in #467's third review round. The Android guard needs the same
+logic, and two copies of a security-critical matcher drift — a fix to one
+would silently not apply to the other.
+
+Behaviour-identical, proven by the iOS guard's own two-sided self-test
+(19 positive / 7 negative, unchanged) plus a mutation cycle on a real site
+to rule out a sourcing bug making the matcher vacuous.
+
+count_matches stays in the iOS script — it serves rule 1's per-interpolation
+counting and no Android rule counts.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+EOF
+```
+
+---
+
+## Task 4: The Android guard script (RED against the real tree)
 
 **Files:**
 - Create: `android/scripts/check-log-hygiene.sh`
 - Create: `android/scripts/log-hygiene-allowlist.txt`
 
 **Interfaces:**
-- Consumes: nothing (pure grep).
-- Produces: `bash android/scripts/check-log-hygiene.sh [--self-test]`, exit 0 clean / 1 with hits on stderr. Task 7 wires it to CI.
+- Consumes: `scripts/lib/hygiene-allowlist.sh` from Task 3 — `trim`, `allowlisted`, and the self-test temp-dir/trap helpers. Do NOT reimplement any of them; the whole point of Task 3 was that there is one copy.
+- Produces: `bash android/scripts/check-log-hygiene.sh [--self-test]`, exit 0 clean / 1 with hits on stderr. Task 8 wires it to CI.
 
 This task deliberately lands the guard **before** the cleanup, so its first real run is a genuine red on live code. A mutation proof alone only ever exercises synthetic files.
 
-- [ ] **Step 1: Port the scaffolding**
+- [ ] **Step 1: Source the shared library and write the Kotlin-specific filters**
 
-Read `ios/scripts/check-public-log-hygiene.sh` first — this script reuses its structure verbatim and diverges only in the rules. Port these unchanged, adjusting `.swift` → `.kt` and the scan root to `$REPO_ROOT/android`:
+Source the library exactly as the iOS guard does (Task 3, Step 3):
 
-- `REPO_ROOT` / `SCAN_ROOT` derivation
-- `trim()`, `count_matches()`, `allowlisted()` (exact-trimmed-line matching, TSV, `#` comments)
-- `is_test_path()` — for Kotlin this is `*/src/test/*` or `*/src/androidTest/*`
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../scripts/lib/hygiene-allowlist.sh
+source "$SCRIPT_DIR/../../scripts/lib/hygiene-allowlist.sh"
+```
+
+`allowlisted()` reads `$ALLOWLIST` and `$REPO_ROOT` from the sourcing script's scope, so both must be set **before** any call. `ALLOWLIST` must NOT be `readonly` — `--self-test` retargets it at a synthetic allowlist so the exact-line matching is itself covered by a control pair.
+
+Then write these, which are language-specific and NOT shared with the iOS guard:
+
+- `REPO_ROOT` / `SCAN_ROOT` (`$REPO_ROOT/android`)
+- `is_test_path()` — `*/src/test/*` or `*/src/androidTest/*`
 - `is_generated_path()` — `*/build/generated/*`, `*/build/*`
-- `is_comment_line()` — Kotlin uses `//` and `/** … */`, so match `^[[:space:]]*(//|\*|/\*)`
-- the `SELF_TEST_TMP` script-scoped variable + `trap cleanup_self_test EXIT` (it must NOT be `local`; the trap runs after the frame is gone and `set -u` then turns cleanup into a spurious failure)
+- `is_comment_line()` — Kotlin uses `//` and KDoc `/** … */`, so match `^[[:space:]]*(//|\*|/\*)`
+
+Do not port `count_matches()` — it exists for iOS rule 1's per-interpolation counting, and no Android rule counts.
 
 - [ ] **Step 2: Write the rules**
 
@@ -593,7 +704,7 @@ Finish with the count message, e.g. `echo "self-test OK — 13 positive controls
 
 - [ ] **Step 4: Write the allowlist with the four rule-B1 entries only**
 
-Create `android/scripts/log-hygiene-allowlist.txt`. Header explains the format, the exact-trimmed-line semantics, and the two sections. Only the SECURITY DECISIONS section is populated now; the NON-THROWABLE RECEIVERS section is added in Task 6 once the cleanup has settled which `.toString()` calls survive.
+Create `android/scripts/log-hygiene-allowlist.txt`. Header explains the format, the exact-trimmed-line semantics, and the two sections. Only the SECURITY DECISIONS section is populated now; the NON-THROWABLE RECEIVERS section is added in Task 7 once the cleanup has settled which `.toString()` calls survive.
 
 ```
 # ---- SECURITY DECISIONS (rules A, B1, C) ----
@@ -617,7 +728,7 @@ shellcheck android/scripts/check-log-hygiene.sh            # expect: clean
 
 The real scan must exit 1 and report, at minimum: the 7 rule-A sites in `AppRoot.kt` / `CloudVaultOpen.kt` (imports included), the 13 rule-B1 sites less the 4 allowlisted, and the 12 rule-B2 sites. Rule C must report **nothing** — it has no hits in the tree today and is purely preventive.
 
-**Capture the exact hit list** — this is the red half of the red→green evidence and Task 6 turns it green:
+**Capture the exact hit list** — this is the red half of the red→green evidence and Task 7 turns it green:
 
 ```bash
 bash android/scripts/check-log-hygiene.sh 2>&1 | sed "s|$PWD/||" > /tmp/472-red.txt
@@ -641,7 +752,7 @@ field and matching it would drown the rule.
 
 Deliberately landed before the cleanup so its first real run is a genuine red
 on live code — a mutation proof alone only exercises synthetic files. Hit list
-recorded below; Task 6 turns it green.
+recorded below; Task 7 turns it green.
 
 <paste the hit list here>
 
@@ -651,7 +762,7 @@ EOF
 
 ---
 
-## Task 4: Laundering cleanup — `:vault-access`
+## Task 5: Laundering cleanup — `:vault-access`
 
 **Files:**
 - Modify: `RecordEditModel.kt:116,161`, `VaultBrowseModel.kt:112`, `VaultProvisioningViewModel.kt:71`, `DeviceUuid.kt:59`, `mirror/VaultMirror.kt:72,74`, `mirror/RetryingCloudFolderPort.kt:102,104` — all under `android/vault-access/src/main/kotlin/org/secretary/`
@@ -739,7 +850,7 @@ EOF
 
 ---
 
-## Task 5: Laundering cleanup — `:kit`
+## Task 6: Laundering cleanup — `:kit`
 
 **Files:**
 - Modify: `android/kit/src/main/kotlin/org/secretary/browse/BrowseMapping.kt:47`
@@ -806,7 +917,7 @@ EOF
 
 ---
 
-## Task 6: The sanctioned sink, the call sites, and GREEN
+## Task 7: The sanctioned sink, the call sites, and GREEN
 
 **Files:**
 - Create: `android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt`
@@ -940,13 +1051,13 @@ EOF
 
 ---
 
-## Task 7: CI wiring and the mutation proof
+## Task 8: CI wiring and the mutation proof
 
 **Files:**
 - Modify: `.github/workflows/test.yml` — new job after `swift-log-hygiene`
 
 **Interfaces:**
-- Consumes: `android/scripts/check-log-hygiene.sh` from Task 3.
+- Consumes: `android/scripts/check-log-hygiene.sh` from Task 4.
 - Produces: a `kotlin-log-hygiene` CI job.
 
 - [ ] **Step 1: Add the job**
@@ -1034,7 +1145,7 @@ EOF
 
 ---
 
-## Task 8: Documentation
+## Task 9: Documentation
 
 **Files:**
 - Modify: `CLAUDE.md` — new section after "Swift log hygiene: default-deny at `privacy: .public` (#467)"
@@ -1122,7 +1233,10 @@ Run all of these before opening the PR:
 cd /Users/hherb/src/secretary/.worktrees/472-android-log-hygiene-gate
 bash android/scripts/check-log-hygiene.sh --self-test
 bash android/scripts/check-log-hygiene.sh
-shellcheck android/scripts/check-log-hygiene.sh
+# The extraction touched a shipped control — re-prove it, byte for byte:
+bash ios/scripts/check-public-log-hygiene.sh --self-test   # 19 positive / 7 negative
+bash ios/scripts/check-public-log-hygiene.sh
+shellcheck android/scripts/check-log-hygiene.sh ios/scripts/check-public-log-hygiene.sh scripts/lib/hygiene-allowlist.sh
 actionlint .github/workflows/test.yml
 cd android && ./gradlew :vault-access:test :app:assembleDebug
 cd /Users/hherb/src/secretary/.worktrees/472-android-log-hygiene-gate
