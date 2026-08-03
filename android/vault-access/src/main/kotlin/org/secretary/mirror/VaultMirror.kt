@@ -3,6 +3,7 @@ package org.secretary.mirror
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import org.secretary.diagnostics.diagnosticDetail
 
 /**
  * What a mirror pass did: the vault-relative paths it [copied] and [deleted] on the
@@ -69,9 +70,9 @@ class VaultMirror(private val cloud: CloudFolderPort) {
     private inline fun runPass(label: String, block: () -> MirrorReport): MirrorReport = try {
         block()
     } catch (e: CloudFolderException) {
-        throw VaultMirrorException("$label failed: ${e.message}")
+        throw VaultMirrorException("$label failed: ${diagnosticDetail(e)}")
     } catch (e: IOException) {
-        throw VaultMirrorException("$label failed: ${e.message}")
+        throw VaultMirrorException("$label failed: ${diagnosticDetail(e)}")
     }
 
     private fun execute(

@@ -4,6 +4,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.secretary.diagnostics.diagnosticDetail
 
 /**
  * One editable field row. [rawText] holds plaintext for [FieldKind.Text] fields and a hex string for
@@ -113,7 +114,7 @@ class RecordEditModel(
             _error.value = e
             _loadFailed.value = true
         } catch (e: Exception) {
-            _error.value = VaultBrowseError.Failed(e.toString())
+            _error.value = VaultBrowseError.Failed(diagnosticDetail(e))
             _loadFailed.value = true
         }
     }
@@ -158,7 +159,7 @@ class RecordEditModel(
                 // Mirror load()/reveal(): an unexpected throwable from the FFI write (e.g. a uniffi
                 // InternalException from a Rust panic — NOT a VaultException, so mapErrors lets it
                 // through) must not escape commit() and crash the launching coroutine. Fold to Failed.
-                _error.value = VaultBrowseError.Failed(e.toString())
+                _error.value = VaultBrowseError.Failed(diagnosticDetail(e))
             }
         } finally {
             _inFlight.value = false

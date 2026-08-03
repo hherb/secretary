@@ -5,6 +5,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.security.SecureRandom
+import org.secretary.diagnostics.diagnosticDetail
 
 /** 16 bytes — a UUID. Named so the length is never a magic literal at call sites. */
 const val DEVICE_UUID_BYTE_LEN = 16
@@ -56,7 +57,7 @@ class FileDeviceUuidStore(private val directory: File) : DeviceUuidProvider {
             // Disk full, permission denied, a non-directory parent, an unreadable file: fold to the
             // typed boundary. UniffiVaultSession maps only DeviceUuidException → VaultBrowseError, so
             // an escaping raw IOException here would crash the write coroutine.
-            throw DeviceUuidException("device-uuid store I/O failed for ${file.name}: ${e.message}")
+            throw DeviceUuidException("device-uuid store I/O failed for ${file.name}: ${diagnosticDetail(e)}")
         }
     }
 
