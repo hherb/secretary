@@ -1,6 +1,7 @@
 package org.secretary.browse
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import uniffi.secretary.BlockSummary
@@ -42,6 +43,22 @@ class BrowseMappingTest {
         val mapped = mapVaultBrowseError(VaultException.RecipientNotPresent())
         assertTrue(mapped is VaultBrowseError.Failed)
         assertTrue((mapped as VaultBrowseError.Failed).detail.contains("RecipientNotPresent"))
+    }
+
+    @Test
+    fun `#472 regression - the else-fold never launders an unmapped arm's raw content`() {
+        // SyncFailed is a real VaultException arm this mapper never names (it is sync-relevant,
+        // not open/browse-relevant) — proof the else-fold is gated for ANY unmapped arm, not just
+        // the no-payload RecipientNotPresent fixture the test above happens to use. Mutation-
+        // proved: reverting BrowseMapping.kt's else-fold to `e.toString()` makes this fail because
+        // `VaultException.SyncFailed.toString()` embeds the raw detail via its generated
+        // `message` override, while `diagnosticDetail` default-denies the unconformed uniffi type.
+        val sentinel = "s3cr3t-sentinel-472"
+        val mapped = mapVaultBrowseError(VaultException.SyncFailed(sentinel))
+        assertTrue(mapped is VaultBrowseError.Failed)
+        val detail = (mapped as VaultBrowseError.Failed).detail
+        assertFalse(detail.contains(sentinel), detail)
+        assertTrue(detail.contains("<undisclosed "), detail)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package org.secretary.sync
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import uniffi.secretary.VaultException
@@ -41,5 +42,22 @@ class VaultSyncErrorMappingTest {
         assertTrue(mappedNoField is VaultSyncError.Failed)
         mappedNoField as VaultSyncError.Failed
         assertTrue(mappedNoField.detail.contains("CannotRevokeOwner"))
+    }
+
+    @Test
+    fun `#472 regression - the else-fold never launders an unmapped arm's raw content`() {
+        // CorruptVault is a real VaultException arm this mapper never names (it is browse-
+        // relevant, not sync-relevant) and is exactly the arm whose Rust-side Display can carry a
+        // decrypted CBOR field name (see BrowseMapping's own audit). Proof the sync else-fold is
+        // gated regardless of which unmapped arm reaches it. Mutation-proved: reverting
+        // VaultSyncErrorMapping.kt's else-fold to `e.toString()` makes this fail because
+        // `VaultException.CorruptVault.toString()` embeds the raw detail via its generated
+        // `message` override, while `diagnosticDetail` default-denies the unconformed uniffi type.
+        val sentinel = "s3cr3t-sentinel-472"
+        val mapped = mapVaultSyncError(VaultException.CorruptVault(sentinel))
+        assertTrue(mapped is VaultSyncError.Failed)
+        val detail = (mapped as VaultSyncError.Failed).detail
+        assertFalse(detail.contains(sentinel), detail)
+        assertTrue(detail.contains("<undisclosed "), detail)
     }
 }

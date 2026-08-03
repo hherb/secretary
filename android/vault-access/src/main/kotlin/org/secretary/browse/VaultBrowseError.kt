@@ -54,7 +54,13 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      * - [ReauthFailed]: built Android-side at the biometric gate from fixed
      *   labels.
      * - [Failed]: gated at construction — every producer passes
-     *   `diagnosticDetail` output.
+     *   `diagnosticDetail` output. Scoped to `VaultBrowseError.Failed` ONLY.
+     *   [org.secretary.sync.VaultSyncError] has its own arm of the same name
+     *   ([org.secretary.sync.VaultSyncError.Failed]) that this verdict does
+     *   NOT cover — one of ITS two producers is a raw, ungated pass-through,
+     *   safe by traced Rust content rather than by construction. See that
+     *   class's own payload-origin audit; a shared arm name across two
+     *   sealed types is not a shared verdict.
      *
      * NOTE: this audit is a point-in-time claim. An arm's payload can change
      * from an edit in the Rust core with NO Kotlin diff at all, which is exactly
