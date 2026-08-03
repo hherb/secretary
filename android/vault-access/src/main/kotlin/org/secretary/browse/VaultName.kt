@@ -1,5 +1,7 @@
 package org.secretary.browse
 
+import org.secretary.diagnostics.SecretFreeThrowable
+
 /** Upper bound on a typed vault name (it becomes a folder name + a display label). */
 const val MAX_VAULT_NAME_LENGTH = 64
 
@@ -13,7 +15,7 @@ sealed interface VaultNameValidation {
  * Why a typed vault name was rejected, with user-safe copy. Throwable to match the other
  * `:vault-access` error families, though it is normally consumed as a value via [VaultNameValidation].
  */
-sealed class VaultNameError(message: String) : Exception(message) {
+sealed class VaultNameError(message: String) : Exception(message), SecretFreeThrowable {
     data object Blank : VaultNameError("Enter a name for the vault.")
     data object TooLong : VaultNameError("That name is too long.")
     data object IllegalCharacters :

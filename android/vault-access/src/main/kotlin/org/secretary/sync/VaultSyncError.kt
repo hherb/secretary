@@ -1,5 +1,7 @@
 package org.secretary.sync
 
+import org.secretary.diagnostics.SecretFreeThrowable
+
 /**
  * Errors raised by the sync surface. Deliberately SEPARATE from any future
  * `VaultAccessError`: the sync FFI returns a different `FfiVaultError`/`VaultException`
@@ -11,7 +13,7 @@ package org.secretary.sync
  * The singleton (`data object`) arms share a single instance and therefore a single captured
  * stack trace; rely on the arm type, not the stack trace, for diagnosis.
  */
-sealed class VaultSyncError(message: String? = null) : Exception(message) {
+sealed class VaultSyncError(message: String? = null) : Exception(message), SecretFreeThrowable {
     /** Re-open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */
     data object WrongPasswordOrCorrupt : VaultSyncError()
 

@@ -1,5 +1,7 @@
 package org.secretary.browse
 
+import org.secretary.diagnostics.SecretFreeThrowable
+
 /**
  * Errors from the device-unlock coordinator + enclave. Throwable so callers can `catch`. The
  * coordinator itself raises [NotEnrolled] / [VaultSlotMismatch]; the remaining arms are raised by a
@@ -9,7 +11,7 @@ package org.secretary.browse
  * shared `openWithCredential` pipeline, NOT here, because the coordinator returns a credential
  * instead of opening.)
  */
-sealed class DeviceUnlockError(message: String? = null) : Exception(message) {
+sealed class DeviceUnlockError(message: String? = null) : Exception(message), SecretFreeThrowable {
     /** No enrollment metadata — the device was never enrolled (or was disenrolled). */
     data object NotEnrolled : DeviceUnlockError()
 

@@ -1,5 +1,7 @@
 package org.secretary.browse
 
+import org.secretary.diagnostics.SecretFreeThrowable
+
 /**
  * Errors raised by the vault open/browse surface. Throwable (mirrors [org.secretary.sync.VaultSyncError])
  * so the coordinator can `catch (e: VaultBrowseError)`. Deliberately SEPARATE from `VaultSyncError`:
@@ -8,7 +10,65 @@ package org.secretary.browse
  * [WrongPasswordOrCorrupt] is intentionally conflated (wrong password vs. corruption) per the threat
  * model's anti-oracle rule (§13). Do NOT split it.
  */
-sealed class VaultBrowseError(message: String? = null) : Exception(message) {
+sealed class VaultBrowseError(message: String? = null) : Exception(message), SecretFreeThrowable {
+    /**
+     * Secret-free rendering for logcat (#472). Three arms are redacted AT SOURCE.
+     *
+     * PAYLOAD-ORIGIN AUDIT — each `render` verdict below is a security claim,
+     * established by tracing the payload to its construction site. An arm whose
+     * origin cannot be established is redacted, not assumed safe.
+     *
+     * REDACTED:
+     * - [CorruptVault]: a Rust-authored `VaultError` Display passed through
+     *   verbatim. Its fold includes `VaultError::Record(_)`, which renders as
+     *   `"record CBOR error: {0}"` over `RecordError::DuplicateKey { key }`
+     *   (`core/src/vault/record.rs:660`) — and `key` is the DECRYPTED CBOR field
+     *   name. We do not author these strings, so their content cannot be
+     *   reviewed here; that is the "unreviewed content" class this interface
+     *   exists to deny. Tracked at the Rust root as #474.
+     * - [SaveCryptoFailure]: the SAME plaintext, one arm over. The bridge's
+     *   `map_core_vault_error_*` folds `VaultError::Record(_)` and
+     *   `VaultError::Block(_)` into `FfiVaultError::SaveCryptoFailure { detail:
+     *   format!("{e}") }` (`ffi/.../retention/orchestration.rs:205` plus five
+     *   siblings in revoke/trash/purge/restore/save). iOS is NOT exposed here
+     *   only because `VaultAccessError` has no `.saveCryptoFailure` case, so the
+     *   arm falls to `VaultErrorMapping.swift:53`'s gated
+     *   `default -> .other(diagnosticDetail(e))`. Our `BrowseMapping.kt` maps it
+     *   EXPLICITLY and carries the raw detail, so the redaction is load-bearing
+     *   here in a way it is not there. Do not "align with iOS" by removing it.
+     * - [InvalidArgument]: Kotlin-side. `RecordEditModel` interpolates a
+     *   decrypted record field name (`"field '<name>' is not valid hex"`,
+     *   `"duplicate field name: <name>"`). Redacted regardless of which site
+     *   renders it — do NOT rely on catch-arm ordering to keep it out of a log.
+     *
+     * RENDERED IN FULL, with the evidence:
+     * - [InvalidRecoveryPhrase]: `MnemonicError` Display emits a word INDEX
+     *   (`core/src/unlock/mnemonic.rs:54`), a word count (`:46`), or the fixed
+     *   `"BIP-39 checksum failed"` (`:59`) — never the word itself.
+     * - [FolderInvalid]: `format!("{context}: {source}")` — a filesystem path
+     *   plus an errno. The threat model already treats paths as disclosed.
+     * - [DeviceUuidMismatch]: device UUIDs, a public per-device fingerprint.
+     * - [BlockNotFound] / [RecordNotFound]: hex-encoded UUIDs. The
+     *   `BlockNotInTrash` / `BlockPurged` folds also `hex::encode`
+     *   (`ffi/.../purge/orchestration.rs:153`), so no block NAME reaches them.
+     * - [ReauthFailed]: built Android-side at the biometric gate from fixed
+     *   labels.
+     * - [Failed]: gated at construction — every producer passes
+     *   `diagnosticDetail` output.
+     *
+     * NOTE: this audit is a point-in-time claim. An arm's payload can change
+     * from an edit in the Rust core with NO Kotlin diff at all, which is exactly
+     * how [SaveCryptoFailure] came to carry plaintext. Re-check when the bridge's
+     * error folds change.
+     */
+    override val diagnosticDescription: String
+        get() = when (this) {
+            is CorruptVault -> "CorruptVault(<redacted>)"
+            is SaveCryptoFailure -> "SaveCryptoFailure(<redacted>)"
+            is InvalidArgument -> "InvalidArgument(<redacted>)"
+            else -> toString()
+        }
+
     /** Open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */
     data object WrongPasswordOrCorrupt : VaultBrowseError()
 
