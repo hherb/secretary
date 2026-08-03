@@ -170,6 +170,23 @@ class VaultBrowseModelTest {
     }
 
     @Test
+    fun `Failed does not carry an unconformed exception's message`() = runTest {
+        // #472 regression: reveal()'s catch (e: Exception) must route through diagnosticDetail, not
+        // e.toString(). IllegalStateException is not SecretFreeThrowable, so its message must never
+        // reach the carried error's detail — only the gated marker may.
+        val model = revealModel()
+        val rec = revealRecs.first()
+        val sentinel = "s3cr3t-sentinel-472"
+        val boom = RevealableField("password", FieldKind.Text) {
+            throw IllegalStateException(sentinel)
+        }
+        model.reveal(rec, boom)
+        val err = model.error.value as VaultBrowseError.Failed
+        assertFalse(err.detail.contains(sentinel), err.detail)
+        assertTrue(err.detail.contains("<undisclosed "), err.detail)
+    }
+
+    @Test
     fun `clearSelection clears any revealed value`() = runTest {
         val model = revealModel()
         model.reveal(revealRecs.first(), pwField)
