@@ -3,6 +3,7 @@ package org.secretary.browse
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.secretary.diagnostics.diagnosticDetail
 import uniffi.secretary.BlockReadOutput
 import uniffi.secretary.FieldHandle
 import uniffi.secretary.OpenVaultManifest
@@ -249,7 +250,7 @@ class UniffiVaultSession(
         val d = try {
             provider.deviceUuid(vaultUuidHex())
         } catch (e: DeviceUuidException) {
-            throw VaultBrowseError.Failed("device-uuid resolve failed: ${e.message}")
+            throw VaultBrowseError.Failed("device-uuid resolve failed: ${diagnosticDetail(e)}")
         }
         cachedDeviceUuid = d
         return d

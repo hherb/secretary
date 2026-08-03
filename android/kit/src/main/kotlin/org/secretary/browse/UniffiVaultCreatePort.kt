@@ -3,6 +3,7 @@ package org.secretary.browse
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.secretary.diagnostics.diagnosticDetail
 import uniffi.secretary.VaultException
 import uniffi.secretary.createVaultInFolder
 
@@ -65,7 +66,7 @@ internal inline fun <T> mapProvisioningErrors(block: () -> T): T =
 internal fun mapVaultProvisioningError(e: VaultException): VaultProvisioningError =
     when (e) {
         is VaultException.VaultFolderNotEmpty -> VaultProvisioningError.FolderNotEmpty
-        else -> VaultProvisioningError.CreateFailed(e.message ?: (e::class.simpleName ?: "create failed"))
+        else -> VaultProvisioningError.CreateFailed(diagnosticDetail(e))
     }
 
 /** Production factory for the real create port (live binding + IO dispatcher). */

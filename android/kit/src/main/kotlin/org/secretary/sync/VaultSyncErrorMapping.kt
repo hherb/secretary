@@ -1,5 +1,6 @@
 package org.secretary.sync
 
+import org.secretary.diagnostics.diagnosticDetail
 import uniffi.secretary.VaultException
 
 /**
@@ -26,5 +27,5 @@ internal fun mapVaultSyncError(e: VaultException): VaultSyncError = when (e) {
     is VaultException.SyncDecisionsIncomplete -> VaultSyncError.DecisionsIncomplete
     is VaultException.InvalidArgument -> VaultSyncError.InvalidArgument(e.detail)
     is VaultException.SyncFailed -> VaultSyncError.Failed(e.detail)
-    else -> VaultSyncError.Failed(e.toString())
+    else -> VaultSyncError.Failed(diagnosticDetail(e))
 }

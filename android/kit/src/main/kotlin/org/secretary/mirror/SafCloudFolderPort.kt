@@ -3,6 +3,7 @@ package org.secretary.mirror
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import org.secretary.diagnostics.diagnosticDetail
 
 /**
  * The real [CloudFolderPort] over a SAF `content://` tree (a cloud-drive folder). Kotlin sibling
@@ -30,7 +31,7 @@ class SafCloudFolderPort(
     } catch (e: CloudFolderException) {
         throw e
     } catch (e: Exception) {
-        throw CloudFolderException("SAF $op failed: ${e.message}")
+        throw CloudFolderException("SAF $op failed: ${diagnosticDetail(e)}")
     }
 }
 
