@@ -1,0 +1,53 @@
+# Allowlist for check-log-hygiene.sh (#472).
+#
+# RULE A: any android.util.Log reference outside the sanctioned façade file.
+#   Not consulted here — logging at all outside the façade is the violation,
+#   not a renderable value that could be reviewed as safe. No entries exist
+#   or ever will for rule A.
+# RULE B1: throwable-shaped constructs (.message / .localizedMessage /
+#   .stackTraceToString() / .printStackTrace()) rendering a value that may
+#   carry a carried diagnostic. Fail-closed and name-blind.
+# RULE B2: no .toString() anywhere in the guarded scope. Fail-closed and
+#   name-blind — the name-based form was the demonstrated bypass on iOS.
+# RULE C: no bare `$e` / `${e}` interpolation for a conventional catch
+#   binding. Best effort — a denylist by necessity, see the script header.
+#
+# These are the reviewed exceptions.
+#
+# Format, one per line:
+#   <repo-relative-path><TAB><rule: B1|B2|C><TAB><exact trimmed source line><TAB><reason>
+#
+# The match is on the EXACT source line with leading/trailing whitespace
+# stripped — NOT a substring. A substring entry exempts every future line in
+# the same file that happens to contain it, which was demonstrably
+# exploitable on the iOS sibling of this guard (#467). Re-indenting an
+# exempted line keeps the entry valid; editing its content does not, which is
+# the correct price for a line that bypasses the only mechanism keeping
+# secrets out of logcat. A short needle is therefore inert rather than
+# over-broad, which the `--self-test` pins by mutation (the X1/X2 pair).
+#
+# Blank lines and `#` comments are ignored.
+#
+# Adding an entry is a SECURITY DECISION. Justify it in the reason field.
+#
+# Two sections:
+#   SECURITY DECISIONS (rules A, B1, C) — a value that CAN carry a secret is
+#     asserted safe to render here. Populated now.
+#   NON-THROWABLE RECEIVERS (rule B2) — a `.toString()` call whose receiver is
+#     not throwable-shaped at all (a StringBuilder, a Uri, a Long). Added in a
+#     later task once the cleanup has settled which `.toString()` calls
+#     survive; populating it now would be guessing at code this task does not
+#     touch.
+
+# ---- SECURITY DECISIONS (rules A, B1, C) ----
+# Each entry asserts that a value which CAN carry a secret is safe to render
+# here. Reviewed like any other security change.
+
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	nameError?.let { Text(it.message ?: "Invalid name", modifier = Modifier.testTag("wizard-name-error")) }	Not a log and not a carried diagnostic: VaultNameError's arms are data objects whose message IS the user-facing copy ("Enter a name for the vault."). #454-compliant.
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Create failed", modifier = Modifier.testTag("wizard-error")) }	On-screen copy, not a log. VaultProvisioningError.CreateFailed IS a carried diagnostic, so this is a #454 violation — Android sibling of #473, filed not fixed (changing the copy is a UX decision). Payload is gated at construction as of this change.
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Error", modifier = Modifier.testTag("wizard-error")) }	Same as the line above — third wizard step, same VaultProvisioningError, same #473 sibling.
+android/browse-ui/src/main/kotlin/org/secretary/browse/ui/RecordEditForm.kt	B1	val detail = it.message?.takeIf(String::isNotBlank) ?: it::class.simpleName	On-screen copy in a PACKAGE module, not a log. Renders a carried VaultBrowseError diagnostic — the clearest #473 sibling. Note the redactions do NOT affect `message`, so the user still sees which field is bad.
+
+# ---- NON-THROWABLE RECEIVERS (rule B2) ----
+# Added in a later task, once the cleanup has settled which `.toString()`
+# calls survive.
