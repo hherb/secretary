@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-02-469-ci-ios-app-compile-gate-shipped.md
+docs/handoffs/2026-08-02-467-public-log-secret-free-guard-shipped.md

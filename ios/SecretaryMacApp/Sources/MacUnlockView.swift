@@ -169,7 +169,7 @@ struct MacUnlockView: View {
                     }
                 }
             } catch {
-                macUnlockLog.error("device enroll failed: \(error.localizedDescription, privacy: .public)")
+                macUnlockLog.error("device enroll failed: \(diagnosticDetail(error), privacy: .public)")
                 await MainActor.run { biometricError = "Couldn’t enable Touch ID unlock. You can try again later." }
             }
         }

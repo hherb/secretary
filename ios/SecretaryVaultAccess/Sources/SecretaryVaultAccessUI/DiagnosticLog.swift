@@ -1,4 +1,5 @@
 import Foundation
+import SecretaryVaultAccess
 import os
 
 // Diagnostic logging seam for `SecretaryVaultAccessUI` view-model fold sites (#456).
@@ -20,51 +21,54 @@ private let vaultAccessUILog = Logger(
 
 /// Build the one-line diagnostic string logged at a fold site.
 ///
-/// Shape: `"[<fileID>:<line> <function>] <String(describing: underlying)>"`.
+/// Shape: `"[<fileID>:<line> <function>] <diagnosticDetail(underlying)>"`.
 ///
-/// The ONLY dynamic component is `String(describing: underlying)`; the site
-/// identifiers are compile-time `StaticString` / `UInt`. Keeping this a pure function
-/// makes the "what content is emitted" decision host-testable in isolation, which is
-/// what proves the logged content stays diagnostic-only — no `.localizedDescription`
-/// or other interpolation can slip in (see `DiagnosticLogTests`).
+/// The ONLY dynamic component is `diagnosticDetail(underlying)`; the site
+/// identifiers are compile-time `StaticString` / `UInt`. Keeping this a pure
+/// function makes the "what content is emitted" decision host-testable in
+/// isolation, which is what proves the logged content stays diagnostic-only — no
+/// `.localizedDescription` or other interpolation can slip in (see
+/// `DiagnosticLogTests`).
 func foldedErrorDiagnostic(
     underlying: Error,
     fileID: StaticString,
     function: StaticString,
     line: UInt
 ) -> String {
-    "[\(fileID):\(line) \(function)] \(String(describing: underlying))"
+    "[\(fileID):\(line) \(function)] \(diagnosticDetail(underlying))"
 }
 
-/// Log, at `.error` level, the underlying error folded at an untyped catch-all site.
+/// Log the underlying error folded at an untyped catch-all site, and return the
+/// same gated detail for the typed error's carried payload.
 ///
-/// `privacy: .public` is DELIBERATE (#456). By the time an error reaches an *untyped*
-/// catch-all, the adapter has already mapped every FFI `VaultError` to a typed
-/// `VaultAccessError` (caught by the typed `catch let e as VaultAccessError` arm), so
-/// the untyped arms see only the non-mapped remainder — exhaustively today:
-/// `DeviceUuidStoreError` (per-vault device-UUID resolve I/O, thrown before the FFI
-/// mapping in `UniffiVaultSession.write`), `CancellationError` (structured-concurrency
-/// cancellation on the `async` VM methods), `DeviceUnlockError` (biometric gate),
-/// Foundation file errors, and `VaultSelectionError` — carrying uuids / paths / labels
-/// / reasons, never vault plaintext, a password, a mnemonic, or key bytes. (A raw
-/// `VaultError` / `VaultSyncError` reaching here would be a defensive fallthrough past
-/// its typed arm; those, too, carry no secrets.) This is the same `String(describing:)`
-/// the enum already retains in memory (#454); logging it only newly exposes it to the
-/// unified log store, which is why "diagnostic-only" must hold before choosing `.public`.
+/// ONE application of ONE policy. Because the caller writes
+/// `self.error = .other(foldDiagnostic(error))`, two things become structurally
+/// true rather than merely conventional:
 ///
-/// If you add a new error source that could carry a secret, sanitize it AT THAT
-/// SOURCE (or drop to `privacy: .private` / `.sensitive` there) — do NOT widen this
-/// seam silently. Calling this from a fold site keeps the pure view models
-/// host-testable: it returns `Void`, never throws, and has no observable effect on
-/// view-model state, so a fold's behaviour under `swift test` is unchanged (the
-/// emitted unified-log line, if any, is invisible to the tests).
-func logFoldedError(
-    _ underlying: Error,
+/// 1. the `.public` log line and the carried payload CANNOT disagree; and
+/// 2. a new fold site cannot set a folded payload without also logging — the gap
+///    that nothing previously forced a new catch-all arm to call the logger at all.
+///
+/// `privacy: .public` is DELIBERATE (#456): it overrides `os.Logger`'s default
+/// redaction so the diagnostic survives into a sysdiagnose (a `.private` value is
+/// not persisted to the log store, defeating the purpose). What makes it SAFE is
+/// no longer an enumeration of today's reachable error types — it is
+/// `diagnosticDetail`'s default-deny (#467): an error type nobody has reviewed and
+/// conformed to `SecretFreeError` is never described. To restore detail for a new
+/// error source, conform it (redacting at source if any case can carry a secret);
+/// do NOT widen this seam.
+///
+/// Returns `String` and never throws, so a fold's behaviour under `swift test` is
+/// unchanged — the emitted unified-log line, if any, is invisible to the tests.
+@discardableResult
+func foldDiagnostic(
+    _ error: Error,
     fileID: StaticString = #fileID,
     function: StaticString = #function,
     line: UInt = #line
-) {
+) -> String {
     vaultAccessUILog.error(
-        "\(foldedErrorDiagnostic(underlying: underlying, fileID: fileID, function: function, line: line), privacy: .public)"
+        "\(foldedErrorDiagnostic(underlying: error, fileID: fileID, function: function, line: line), privacy: .public)"
     )
+    return diagnosticDetail(error)
 }

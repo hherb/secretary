@@ -1,0 +1,44 @@
+# Allowlist for check-public-log-hygiene.sh (#467).
+#
+# RULE 1: every `privacy: .public` interpolation must render through
+#   `diagnosticDetail(` — counted per interpolation, not per line.
+# RULE 2: no `String(describing:` / `String(reflecting:` / `.localizedDescription`
+#   anywhere in the guarded scope. Fail-closed and name-blind.
+# RULE 3: no bare `"\(error)"` interpolation for a conventional catch binding.
+#   Best effort — a denylist by necessity, see the script header.
+#
+# These are the reviewed exceptions.
+#
+# Format, one per line:
+#   <repo-relative-path><TAB><rule: 1|2|3><TAB><exact trimmed source line><TAB><reason>
+#
+# The match is on the EXACT source line with leading/trailing whitespace stripped —
+# NOT a substring. A substring entry exempts every future line in the same file
+# that happens to contain it; the entry below for BookmarkVaultLocationStore was
+# demonstrably able to exempt a line rendering `err.localizedDescription` raw.
+# Re-indenting an exempted line keeps the entry valid; editing its content does
+# not, which is the correct price for a line that bypasses the only mechanism
+# keeping secrets out of the unified log store. A short needle is therefore inert
+# rather than over-broad, which the `--self-test` pins by mutation.
+#
+# Blank lines and `#` comments are ignored.
+#
+# Adding an entry is a SECURITY DECISION. Justify it in the reason field.
+
+# ---- RULE 1: `.public` interpolations not rendered by diagnosticDetail ----
+
+ios/SecretaryVaultAccess/Sources/SecretaryVaultAccessUI/DiagnosticLog.swift	1	"\(foldedErrorDiagnostic(underlying: error, fileID: fileID, function: function, line: line), privacy: .public)"	The fold-site formatter. It calls diagnosticDetail internally, proven byte-exact by DiagnosticLogTests.testDiagnosticIsSiteAndDetailOnly and testFormatterAppliesDefaultDeny — so it IS gated, one level of indirection down.
+ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/BookmarkVaultLocationStore.swift	1	Self.log.notice("Refreshed stale vault bookmark for \(location.displayName, privacy: .public)")	Not an error: the vault FOLDER name from the system picker. Anyone able to read the unified log can read the filesystem, so it discloses nothing new; VaultLocation's own doc records that no key or credential flows through the type.
+
+# ---- RULE 2: reviewed hand-rendering of a value into a String ----
+
+ios/SecretaryVaultAccess/Sources/SecretaryVaultAccess/SecretFreeError.swift	2	var diagnosticDescription: String { String(describing: self) }	The sanctioned renderer's own default. `self` is by definition a reviewed SecretFreeError conformer, so this is the gate, not a bypass of it.
+ios/SecretaryVaultAccess/Sources/SecretaryVaultAccess/SecretFreeError.swift	2	return String(describing: self)	VaultAccessError.diagnosticDescription's default arm, reached only after .invalidArgument and .corruptVault have been redacted above it. Same reasoning as the protocol default.
+ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/SecureEnclaveDeviceSecretStore.swift	2	return .enclave(nsError.localizedDescription) // unknown future LA code	LAError-domain message for an LA code this build does not know. DeviceUnlockError is SecretFreeError-conformed with the DEFAULT rendering, so this string IS printed in full at .public — it is secret-free because LocalAuthentication authors it about a key operation, never from vault content. A new .enclave site interpolating anything else is NOT covered by this entry.
+ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/SecureEnclaveDeviceSecretStore.swift	2	default:                                     return .enclave(nsError.localizedDescription)	Covers BOTH identical default: arms (the LAError switch and the NSOSStatusErrorDomain switch) — same construct, same review. These arms accept ANY code in their domain, so the string is an Apple-framework message of unbounded text but bounded origin: it describes a Security/LocalAuthentication operation, not vault content.
+ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/SecureEnclaveDeviceSecretStore.swift	2	return .enclave(nsError.localizedDescription)	classify()'s final fallthrough, reached for any domain outside LAError / NSOSStatusErrorDomain. Widest of the four, and still an Apple-framework message about a SecKey operation — the store never puts vault plaintext, a device secret, or key bytes into an NSError it classifies.
+ios/SecretaryKit/Sources/SecretaryKit/DeviceUnlock/SecureEnclaveDeviceSecretStore.swift	2	return (cf as Error).localizedDescription	cfErrorString — the CFError message from SecKeyCreate*/SecItem* at :64, :123, :138. Security.framework's own text about a key operation; the CFError is produced by the framework, never constructed here from caller data.
+
+# ---- RULE 3: reviewed bare interpolation ----
+
+ios/SecretaryDeviceUnlock/Sources/SecretaryDeviceUnlockUI/DeviceUnlockFailureDisplay.swift	3	return .message("Couldn't open the vault (\(e)). Unlock with your password.")	Not a log sink: this builds ON-SCREEN copy for the Unlock screen (#341 requires a non-silent message), so it never reaches the unified log store and rule 3's laundering concern does not apply. It IS a #454 violation — a carried diagnostic rendered as user-facing copy — in a package rather than an app target, which is why is_app_ui_path does not cover it. Tracked in #473, NOT fixed here: changing this copy is a UX decision that also touches .enclave(detail) on the next line and DeviceUnlockFailureDisplayTests. The payload itself is gated as of #467 (VaultSlotError.other now carries diagnosticDetail output).

@@ -54,8 +54,7 @@ public final class TrashViewModel: ObservableObject {
         } catch let e as VaultAccessError {
             error = e
         } catch {
-            logFoldedError(error)
-            self.error = .other(String(describing: error))
+            self.error = .other(foldDiagnostic(error))
         }
     }
 
@@ -117,8 +116,7 @@ public final class TrashViewModel: ObservableObject {
             error = e
             return nil
         } catch {
-            logFoldedError(error)
-            self.error = .reauthFailed(String(describing: error))
+            self.error = .reauthFailed(foldDiagnostic(error))
             return nil
         }
         let result: T
@@ -128,8 +126,7 @@ public final class TrashViewModel: ObservableObject {
             error = e
             return nil
         } catch {
-            logFoldedError(error)
-            self.error = .other(String(describing: error))
+            self.error = .other(foldDiagnostic(error))
             return nil
         }
         load()

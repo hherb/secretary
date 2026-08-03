@@ -1,5 +1,6 @@
 import Foundation
 import SecretaryDeviceUnlock
+import SecretaryVaultAccess
 
 /// Real `VaultDeviceSlotPort` over the B.2 uniffi functions. This is the ONLY
 /// place that touches the one-shot `DeviceSecretOutput`.
@@ -65,6 +66,6 @@ private func mapVaultError(_ e: VaultError) -> VaultSlotError {
     case .WrongDeviceSecretOrCorrupt:               return .wrongDeviceSecretOrCorrupt
     case .DeviceUuidMismatch(let detail):           return .deviceUuidMismatch(detail)
     case .InvalidArgument(let detail):              return .invalidArgument(detail)
-    default:                                        return .other(String(describing: e))
+    default:                                        return .other(diagnosticDetail(e))
     }
 }
