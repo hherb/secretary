@@ -2,6 +2,8 @@ package org.secretary.browse
 
 import org.secretary.diagnostics.SecretFreeThrowable
 import org.secretary.diagnostics.diagnosticDetail
+import org.secretary.mirror.CloudFolderException
+import org.secretary.mirror.VaultMirrorException
 import org.secretary.sync.VaultSyncError
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -19,6 +21,28 @@ class SecretFreeConformanceTest {
         assertTrue(DeviceUnlockError.NotEnrolled is SecretFreeThrowable)
         assertTrue(VaultProvisioningError.FolderNotEmpty is SecretFreeThrowable)
         assertTrue(VaultNameError.Blank is SecretFreeThrowable)
+    }
+
+    @Test
+    fun `#475 regression - the wrapper exception types are declared secret-free too`() {
+        // These three carry ONLY Kotlin-authored text (a fixed literal plus a path, a filename,
+        // an op label, or an already-gated diagnosticDetail render), so default-denying them
+        // bought no safety and cost every nested wrap its reason — the whole cloud-sync failure
+        // path collapsed to "<undisclosed …>". See each declaration's payload-origin audit and
+        // CloudFolderExceptionDiagnosticTest for the behaviour.
+        assertTrue(CloudFolderException("x") is SecretFreeThrowable)
+        assertTrue(VaultMirrorException("x") is SecretFreeThrowable)
+        assertTrue(DeviceUuidException("x") is SecretFreeThrowable)
+    }
+
+    @Test
+    fun `#475 regression - a DeviceUuidException renders its reason, not a marker`() {
+        // UniffiVaultSession folds this into VaultBrowseError.Failed via
+        // "device-uuid resolve failed: ${diagnosticDetail(e)}" — an unconformed type made that
+        // prefix the only surviving information.
+        val rendered = diagnosticDetail(DeviceUuidException("device-uuid file d.uuid is 3 bytes, expected 16"))
+        assertFalse(rendered.contains("<undisclosed"), rendered)
+        assertTrue(rendered.contains("is 3 bytes, expected 16"), rendered)
     }
 
     @Test

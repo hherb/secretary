@@ -5,6 +5,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.security.SecureRandom
+import org.secretary.diagnostics.SecretFreeThrowable
 import org.secretary.diagnostics.diagnosticDetail
 
 /** 16 bytes — a UUID. Named so the length is never a magic literal at call sites. */
@@ -13,8 +14,16 @@ const val DEVICE_UUID_BYTE_LEN = 16
 /** Thrown when the device-uuid store cannot resolve a UUID: a persisted file is the wrong length,
  *  or any backing-store I/O fails (disk full, permission denied, unreadable). It is the *only*
  *  checked exception [FileDeviceUuidStore.deviceUuid] lets escape, so callers (e.g.
- *  `UniffiVaultSession`) can fold it to one typed error rather than leaking a raw [IOException]. */
-class DeviceUuidException(message: String) : Exception(message)
+ *  `UniffiVaultSession`) can fold it to one typed error rather than leaking a raw [IOException].
+ *
+ *  PAYLOAD-ORIGIN AUDIT (#472/#475) — declared [SecretFreeThrowable], no redaction. Two
+ *  construction sites, both fixed Kotlin literals over a device-uuid FILE NAME (a public
+ *  per-device fingerprint, never key material) plus either a byte count or an already-gated
+ *  `diagnosticDetail` render of the underlying [IOException]. Leaving it unconformed meant
+ *  `UniffiVaultSession`'s `"device-uuid resolve failed: ${diagnosticDetail(e)}"` rendered
+ *  `<undisclosed org.secretary.browse.DeviceUuidException>` and threw away the reason this
+ *  type exists to carry. */
+class DeviceUuidException(message: String) : Exception(message), SecretFreeThrowable
 
 /**
  * Resolves the 16-byte CRDT modifier UUID for a vault on this device. The edit FFI stamps it onto

@@ -16,15 +16,25 @@ import android.util.Log
  * Not host-tested: `android.util.Log` is a stub that throws in JVM unit tests.
  * Everything it delegates to is tested in `:vault-access`, and rule A plus rule
  * B keep this file itself honest.
+ *
+ * Every member returns `Unit` EXPLICITLY. `android.util.Log`'s methods return an
+ * `Int` (bytes written), and an expression body would infer that straight into
+ * this façade's public signature — leaking the very type the façade exists to
+ * hide, and inviting a call site to branch on it (#475 review).
  */
 object SecretaryLog {
     /** Warn, rendering [error] through the default-deny gate. */
-    fun warn(tag: String, message: String, error: Throwable) =
+    fun warn(tag: String, message: String, error: Throwable) {
         Log.w(tag, "$message: ${diagnosticDetail(error)}")
+    }
 
     /** Warn with no throwable. */
-    fun warn(tag: String, message: String) = Log.w(tag, message)
+    fun warn(tag: String, message: String) {
+        Log.w(tag, message)
+    }
 
     /** Informational, no throwable. */
-    fun info(tag: String, message: String) = Log.i(tag, message)
+    fun info(tag: String, message: String) {
+        Log.i(tag, message)
+    }
 }

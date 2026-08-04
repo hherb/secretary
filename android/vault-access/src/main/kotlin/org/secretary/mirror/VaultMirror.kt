@@ -3,6 +3,7 @@ package org.secretary.mirror
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import org.secretary.diagnostics.SecretFreeThrowable
 import org.secretary.diagnostics.diagnosticDetail
 
 /**
@@ -16,8 +17,15 @@ data class MirrorReport(val copied: List<String>, val deleted: List<String>)
  * Thrown when a mirror pass cannot complete — a working-copy I/O failure or an underlying
  * [CloudFolderException]. One typed boundary so the Slice-5 lifecycle caller folds a single
  * error. Mirrors `org.secretary.browse.DeviceUuidException`.
+ *
+ * PAYLOAD-ORIGIN AUDIT (#472/#475) — declared [SecretFreeThrowable], no redaction. FOUR
+ * construction sites, all fixed Kotlin literals: `"$label failed: ${diagnosticDetail(e)}"`
+ * twice (gated, lines 80 and 82) and the two `resolveInside` path-rejection guards (152,
+ * 158), which quote a cloud-supplied vault-relative path. Same reasoning as
+ * [CloudFolderException] — see its audit for why leaving this unconformed cost diagnostics
+ * without buying any safety.
  */
-class VaultMirrorException(message: String) : Exception(message)
+class VaultMirrorException(message: String) : Exception(message), SecretFreeThrowable
 
 /**
  * Mirrors a vault folder between a real-filesystem working copy and a path-less [cloud] folder
