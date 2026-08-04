@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# hygiene-allowlist.sh — shared exact-line allowlist matcher for the
-# `privacy: .public` log-hygiene guards (#467 iOS, #472 Android).
+# hygiene-allowlist.sh — shared matchers for the log-hygiene guards
+# (#467 iOS, #472 Android).
 #
 # WHAT THIS IS
 # ------------
+# The two functions here decide, for every rule on every platform, whether a
+# grep hit counts as a violation. Both were demonstrably exploitable in an
+# earlier form, and two copies of either could drift — a fix applied to one
+# would silently not apply to the other — so they live here ONCE and every
+# platform's guard sources this file rather than reimplementing them.
+#
 # `allowlisted()` is the exact-trimmed-line matcher that decides whether a
 # would-be violation is a reviewed, recorded exception rather than a bypass.
 # Its substring predecessor was demonstrably exploitable: an allowlist entry
 # chosen to exempt ONE line silently exempted every FUTURE line in the same
 # file that happened to contain the same needle (fixed only in #467's third
-# review round). Two copies of this function could drift — a fix applied to
-# one would silently not apply to the other — so it lives here ONCE and every
-# platform's guard sources this file rather than reimplementing it.
+# review round).
+#
+# `is_comment_line()` decides whether a hit is prose rather than code, and is
+# equally security-critical in the opposite direction: everything it calls
+# prose is unscanned against EVERY rule. Both of its historical failures were
+# of that shape — see the function's own comment.
 #
 # WHO SOURCES THIS
 # ----------------
@@ -42,8 +51,8 @@
 # script's shell options, matching the existing lib/resolve-simulator.sh
 # pattern.
 #
-# CHANGING `allowlisted()` CHANGES A SECURITY CONTROL ON EVERY PLATFORM THAT
-# SOURCES THIS FILE, ALL AT ONCE. Review accordingly.
+# CHANGING EITHER FUNCTION HERE CHANGES A SECURITY CONTROL ON EVERY PLATFORM
+# THAT SOURCES THIS FILE, ALL AT ONCE. Review accordingly.
 
 # Strip leading/trailing whitespace so an allowlist entry survives re-indentation
 # but not a content edit.
@@ -78,6 +87,41 @@ allowlisted() {
     [[ -z "${a_path// }" || "$a_path" == \#* ]] && continue
     [[ "$a_rule" == "$rule" && "$path" == "$a_path" && "$text" == "$a_line" ]] && return 0
   done < "$ALLOWLIST"
+  return 1
+}
+
+# Is source line $1 prose rather than code? Shared by both guards: Kotlin and
+# Swift have identical comment syntax (`//`, `///`, `/* */`), and everything
+# this returns true for is unscanned against EVERY rule — so a bug here is a
+# blanket bypass, not a missed edge case. Both of its historical failures were
+# exactly that, and both are the SAME mistake made on opposite sides of a block
+# comment:
+#
+#   1. (#472 review round 1, CRITICAL) any line OPENING with `/*` was called
+#      prose without checking whether the comment closed on that line. Kotlin's
+#      `/* */` is a complete no-op, so `/* */ Log.w(TAG, secretValue.toString())`
+#      is live code wearing a comment as camouflage.
+#   2. (#475 review) the same hole on the CLOSING side, which the round-1 fix
+#      did not cover: `*/ android.util.Log.w(TAG, "x", e)` is the second line of
+#
+#          /*
+#          */ android.util.Log.w(TAG, "x", e)
+#
+#      — real code, and the `^[[:space:]]*\*` branch (which exists for KDoc/doc
+#      continuation lines) swallowed it against all four Android rules AND the
+#      iOS guard's rules 1-3. Verified by execution before the fix: a file of
+#      exactly that shape passed `check-log-hygiene.sh` with exit 0.
+#
+# The rule that closes both: a `/*`- or `*`-prefixed line is prose ONLY if no
+# non-whitespace follows its `*/`. A `//` line comment needs no such test — it
+# consumes the rest of the line unconditionally.
+is_comment_line() {
+  local line="$1"
+  [[ "$line" =~ ^[[:space:]]*// ]] && return 0
+  if [[ "$line" =~ ^[[:space:]]*(/\*|\*) ]]; then
+    [[ "$line" =~ \*/[[:space:]]*[^[:space:]] ]] && return 1
+    return 0
+  fi
   return 1
 }
 

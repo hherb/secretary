@@ -117,9 +117,17 @@ is_generated_path() {
   [[ "$1" == *"/secretary.swift" || "$1" == *"/.build"*"/"* || "$1" == *"/.build-staging/"* ]]
 }
 
-# A `//`-comment line is prose, not a log call. Without this, the doc comments
-# that EXPLAIN this rule trip it.
-is_comment_line() { [[ "$1" =~ ^[[:space:]]*(///?|\*) ]]; }
+# A comment line is prose, not a log call — without that distinction, the doc
+# comments that EXPLAIN these rules trip them. `is_comment_line()` moved to
+# scripts/lib/hygiene-allowlist.sh (sourced above) in #475, together with the fix
+# for the `*/ <live code>` bypass the version that used to live here had: a line
+# starting `*/` was called prose, so
+#
+#     /*
+#     */ log.error("\(err.localizedDescription, privacy: .public)")
+#
+# was unscanned against rules 1-3. Swift and Kotlin share comment syntax, so the
+# two guards share the matcher rather than keeping two copies that can drift.
 
 # RULES 2 AND 3 ONLY — see the LIMITS block above for why the app targets are out
 # of scope and what that leaves open. RULE 1 still covers these files in full, so
@@ -221,6 +229,15 @@ self_test() {
   # identifier-named RULE 2, and the one construct RULE 2 cannot see.
   write_case P17 'return .other("boom: \(error)")'
   write_case P18 'return .other("boom: \(caught)")'
+  # --- COMMENT-HOLE positives (must all be caught) ---
+  # P19/P20 are line 2 of a two-line `/*` … `*/` comment, i.e. REAL CODE. The
+  # pre-#475 `is_comment_line` called any `*`-prefixed line prose, so both were
+  # unscanned against rules 1-3. Found on Android (#475 review, proven there by
+  # execution) and shared verbatim by Swift, which has the same comment syntax.
+  # These pin the fix on THIS guard, not only on the Android one, because the
+  # matcher now lives in scripts/lib/hygiene-allowlist.sh and serves both.
+  write_case P19 '*/ log.error("x: \(err.localizedDescription, privacy: .public)")'
+  write_case P20 '*/ return .other(String(describing: error))'
   # --- negatives (must all pass) ---
   write_case N1  'log.error("x: \(diagnosticDetail(error), privacy: .public)")'
   write_case N2  'log.error("x: \(diagnosticDetail(error), privacy:.public)")'
@@ -230,6 +247,11 @@ self_test() {
   write_case N5  'log.error("a: \(diagnosticDetail(a), privacy: .public) b: \(diagnosticDetail(b), privacy: .public)")'
   # RULE 3 must anchor on the WHOLE identifier: `\(errorCount)` is not `\(error)`.
   write_case N6  'label = "\(errorCount) failures, \(errors) total"'
+  # N7/N8: genuine prose the P19/P20 fix must NOT over-correct into scanning —
+  # a doc-comment continuation line and a closing line, both mentioning a
+  # construct rule 2 would otherwise catch. Non-vacuous by construction.
+  write_case N7  ' * never call String(describing: error) at a .public site'
+  write_case N8  ' * see String(describing: error) above for why not */'
   # --- allowlist control: exact-line matching, NOT substring ---
   # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
   # DIFFERENT line in the SAME file sharing the entry's distinctive substring
@@ -262,11 +284,11 @@ self_test() {
   hits="$(scan_public "$d"; scan_launder "$d" 2 "$LAUNDER_RE"; scan_launder "$d" 3 "$INTERP_RE")"
 
   local p
-  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18; do
+  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18 P19 P20; do
     grep -q "/$p\.swift:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4 N5 N6; do
+  for n in N1 N2 N3 N4 N5 N6 N7 N8; do
     grep -q "/$n\.swift:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
   # The allowlist pair, asserted BY LINE NUMBER — this is what fails if exact-line
@@ -276,7 +298,7 @@ self_test() {
   grep -q "/A\.swift:2:" <<<"$hits" ||
     { echo "SELF-TEST FAILED: A.swift:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 19 positive controls caught, 7 negative controls clean"
+  echo "self-test OK — 21 positive controls caught, 9 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
