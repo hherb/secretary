@@ -82,8 +82,9 @@ bash ios/scripts/check-public-log-hygiene.sh --self-test
 bash ios/scripts/check-public-log-hygiene.sh
 
 # Assert no raw Throwable reaches logcat (#472). logcat has NO redaction concept,
-# so rule A pins `android.util.Log` to one sanctioned file (SecretaryLog) whose
-# signatures make the unsafe 3-arg call unrepresentable; rules B1/B2/C deny
+# so rule A pins every logcat sink — `android.util.Log` AND the stdout/stderr the
+# runtime redirects into it — to one sanctioned file (SecretaryLog) whose
+# signatures make the unsafe 3-arg call unrepresentable; rules B1/B2/B3/C deny
 # hand-rendering a throwable into a String. Same --self-test-first discipline.
 bash android/scripts/check-log-hygiene.sh --self-test
 bash android/scripts/check-log-hygiene.sh
@@ -218,6 +219,8 @@ The sink itself is therefore what gets guarded, not a marker on it.
 - **`SecretaryLog`** ([android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt](android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt)) is the only file in the tree permitted to reference `android.util.Log`, and it has **no overload that hands a `Throwable` to it**. The three-argument `Log.w(tag, msg, throwable)` form prints `toString()` — class name plus message — for the throwable and every cause, so making it unrepresentable at call sites is the whole mechanism. This is the `foldDiagnostic` analogue: policy applied once, in one place.
 - **`VaultBrowseError.SaveCryptoFailure` must stay redacted**, and iOS is not a precedent for removing it. iOS's `VaultAccessError` has no `.saveCryptoFailure` case at all, so the arm falls to `VaultErrorMapping.swift:53`'s `default -> .other(diagnosticDetail(e))`, which is already gated. Android's `BrowseMapping.kt:27` maps it **explicitly** and carries the raw Rust detail — which, via the bridge's fold of `VaultError::Record(_)`, is `RecordError::DuplicateKey`'s decrypted CBOR field name. The divergence is in the mapper, not the policy. Do not "align the platforms" by deleting the redaction.
 
+- **Conform the wrapper types you own.** `diagnosticDetail` default-denies, so an internally-authored wrapper left unconformed does not merely lose its own text — every nested wrap that renders it through the gate discards the message it was just built to carry. `CloudFolderException` / `VaultMirrorException` / `DeviceUuidException` were missed in #472 and the entire cloud-sync failure path collapsed to `<undisclosed org.secretary.mirror.CloudFolderException>`, throwing away `SafCloudFolderPort`'s own gating one frame later (fixed in #475). Default-deny is the right default for types you did NOT author; for a type whose every construction site is a fixed Kotlin literal, conforming it is the whole point of the interface. Assert on message CONTENT when you do — the pre-existing mirror tests asserted only on exception TYPE, which is why this shipped unnoticed.
+
 Adding a log site means calling `SecretaryLog`; adding an error type that reaches
 one means declaring it `SecretFreeThrowable` after review. Forgetting the second
 degrades a log line to `<undisclosed …>` — it never leaks.
@@ -226,12 +229,22 @@ enforces the second.
 
 The allowlist (`android/scripts/log-hygiene-allowlist.txt`) is keyed on the
 **exact trimmed source line**, never a substring — same semantics and same
-reasoning as #467's. It is split into two sections by review weight: *security
+reasoning as #467's. It is split into three sections by review weight: *security
 decisions* (rules B1/C — a value that can carry a secret; rule A is an
 absolute prohibition enforced by the sanctioned-file constant and never has
-entries) and *non-throwable receivers* (rule B2 only — the receiver simply is
-not a `Throwable`). Keeping the first section short is what keeps its entries
-meaningful.
+entries), *the policy itself* (rule B3 — the two `toString()` self-renders that
+ARE the sanctioned rendering), and *non-throwable receivers* (rule B2 only — the
+receiver simply is not a `Throwable`). Keeping the first section short is what
+keeps its entries meaningful.
+
+**`is_comment_line` is a security control, and it lives in
+`scripts/lib/hygiene-allowlist.sh` beside `allowlisted` because both guards need
+the same copy.** Everything it calls prose is unscanned against *every* rule, so
+its bugs are blanket bypasses. It has had two, and they are the same mistake on
+opposite sides of a block comment: `/* */ <code>` (round 1) and `*/ <code>` on
+the second line of a two-line comment (#475, which affected the iOS guard too).
+Both are pinned by positive controls on both platforms. If you touch it, mutate
+it and watch `CM3`-`CM5` / `P19`-`P20` fail.
 
 ### Memory hygiene: zeroize discipline
 

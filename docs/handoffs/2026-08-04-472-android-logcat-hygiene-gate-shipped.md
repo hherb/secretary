@@ -29,8 +29,17 @@ Three facts reshaped the slice before code was written, none of which the issue 
 - **`SecretFreeThrowable`** + **`diagnosticDetail`** in the pure-JVM `:vault-access` — default-deny, cause chain as type names.
 - **`SecretaryLog`** in `:kit` — the only file permitted to reference `android.util.Log`, with **no overload that hands a `Throwable` to it**, so the stack-trace form is unrepresentable at call sites.
 - **18 laundering sites** cleaned: 14 gated, 4 recorded as reviewed allowlist entries (on-screen copy).
-- **`android/scripts/check-log-hygiene.sh`** — four fail-closed rules, two-sided `--self-test` (18 positive / 11 negative), wired into `test.yml` on ubuntu (~1s, every PR).
-- **`scripts/lib/hygiene-allowlist.sh`** — the exact-line matcher extracted so **both** platform guards share one copy.
+- **`android/scripts/check-log-hygiene.sh`** — five fail-closed rules, two-sided `--self-test` (27 positive / 14 negative), wired into `test.yml` on ubuntu (~1s, every PR).
+- **`scripts/lib/hygiene-allowlist.sh`** — the exact-line matcher **and** `is_comment_line` extracted so **both** platform guards share one copy of each.
+
+### PR-review fix round (#475)
+
+The whole-branch review found four things, three of them the same shape: a hole closed on one side of a construct and left open on the other.
+
+- **CRITICAL, the mirror of round 1's critical.** Round 1 fixed `is_comment_line` for lines that *open* a block comment and left the *closing* side untouched, so `*/ android.util.Log.w(TAG, "x", e)` — line 2 of a two-line `/*` … `*/` comment, i.e. real code — was still prose. Proven by execution: a file with that shape plus `e.toString()`, `e.message` and `println(e)` passed the whole guard with **exit 0**. The same hole was live in the **iOS** guard. `is_comment_line` now lives in the shared lib, fixed once, with positive controls on both platforms (`CM3`-`CM5`, `P19`/`P20`) — each mutation-proven by restoring the old matcher and watching exactly those fail.
+- **Rule B2 was `\.`-anchored** after round 1 `\b`-anchored rule B1 for the identical reason. New **rule B3** covers the no-receiver form; it cannot simply relax B2's anchor because that matches every `override fun toString()` declaration, so B3 skips declaration lines and unconditional B2 keeps `override fun toString() = e.toString()` caught (control `B3c`). B3 fired on two real lines — both the *sanctioned self-render* itself — now a third allowlist section.
+- **Rule A guarded `android.util.Log` only.** Android redirects stdout/stderr into logcat, so `println(e)` reached the log naming no `Log` symbol and evaded all four rules. Rule A widened; controls `A7`-`A9` each pin one alternative and trip no other rule (the obvious `System.out.println("x: " + e)` control would have been masked by rule C).
+- **Three wrapper types were never conformed** — `CloudFolderException`, `VaultMirrorException`, `DeviceUuidException`. Not a leak: a **diagnostic regression**. Because every wrapper renders its cause through the default-denying `diagnosticDetail`, an unconformed type made each nested wrap discard the message it had just been built to carry. Measured: `list failed after 2 attempts: <undisclosed org.secretary.mirror.CloudFolderException>` where it used to say `quota exceeded on drive` — the entire cloud-sync failure path reduced to a type name, and `SafCloudFolderPort`'s own gating work discarded one frame later by the production wrapper. Every construction site of all three is a fixed Kotlin literal plus a path/filename/op-label or an already-gated render, so conforming them is free. Three new tests assert on message *content*; the pre-existing tests asserted only on exception *type*, which is why it shipped unnoticed.
 
 ### Commits
 
@@ -74,7 +83,9 @@ Every task got a fresh implementer and an independent reviewer. **Four fix round
 
 ## (3) Open decisions and risks
 
-- **Rule C is best-effort and name-based, by necessity.** It matches bare `"$e"`/`"${e}"` and `+ e` concatenation for a fixed list of catch-binding names. `catch (problem: Exception) { "$problem" }` evades it. Rules A, B1 and B2 are the load-bearing ones. Labelled as a denylist in the header rather than dressed up.
+- **Rule C is best-effort and name-based, by necessity.** It matches bare `"$e"`/`"${e}"` and `+ e` concatenation for a fixed list of catch-binding names. `catch (problem: Exception) { "$problem" }` evades it. Rules A, B1, B2 and B3 are the load-bearing ones. Labelled as a denylist in the header rather than dressed up.
+- **`VaultSyncError.Failed` is still content-traced, not structurally gated** — the one arm in either sealed type whose safety rests on having read the Rust rather than on construction. A Rust edit can invalidate it with **no Kotlin diff and no failing test on any platform**, which is the same drift class that made `SaveCryptoFailure` unsafe. Neither Kotlin-side "fix" is one: redacting it, or routing it through `diagnosticDetail` (`VaultException` is unconformed), destroys sync diagnostics wholesale without closing the drift — the exact trade #475 had to undo for `CloudFolderException`. The real fix is at the Rust/FFI boundary, out of this branch's scope. A pointer comment now sits on the pinning test; **the follow-up issue is drafted and awaiting an OK to file** (see the #475 fix-round summary in the PR).
+- **Rule A now has no allowlist and a wider net.** `println` / `System.out.` / `System.err.` are absolute prohibitions like `android.util.Log`. There are zero such calls in `android/` today and test paths are excluded, so this costs nothing now — but a future legitimate use has no escape hatch by design, and the fix would be to route it through `SecretaryLog`, not to widen the rule.
 - **`${e.detail}` passed to `SecretaryLog` evades all four rules.** Deliberate: matching typed-field renders would fire on seven legitimate on-screen copy sites and drown the rule. But `.detail` on the three redacted arms is exactly the payload the redaction removes — direct field access walks around `diagnosticDescription`. **Stated in the script's LIMITS block**, not hidden.
 - **The payload-origin audit is a point-in-time claim, and it already caught one.** An arm's payload can change from a Rust edit with **no Kotlin diff at all** — which is exactly how `SaveCryptoFailure` came to carry plaintext. Adding an arm to a Rust umbrella fold is invisible to every gate in this design.
 - **A missing future conformance is not a build error.** It degrades a log line to `<undisclosed …>`. Safe by design, but "did anyone declare the new error type?" is answered by review, not the compiler.
@@ -102,7 +113,9 @@ git worktree list && git status -s
 #   (cd android && ./gradlew :app:assembleDebug)                          # ~10 min, cargo-ndk
 ```
 
-**Acceptance, all run this session:** Android guard **18 positive / 11 negative**, real run exit 0 · iOS guard **19 / 7 unchanged**, exit 0 · `actionlint` clean · `shellcheck` clean at warning+ · `:vault-access:test` + `:kit:testDebugUnitTest` **503 tests, 0 failures** · `:app:assembleDebug` **BUILD SUCCESSFUL** · `git diff main... -- core/ ffi/` **EMPTY**.
+**Acceptance, after the #475 fix round:** Android guard **27 positive / 14 negative**, real run exit 0 · iOS guard **21 / 9** (was 19/7 — the two extra pairs pin the shared `is_comment_line` fix on the iOS side), exit 0 · `actionlint` clean · `shellcheck` clean at warning+ · `:vault-access:test` + `:kit:testDebugUnitTest` **508 tests, 0 failures** · `:app:assembleDebug` **BUILD SUCCESSFUL** · `git diff main... -- core/ ffi/` **EMPTY**.
+
+Mutation-proven in the fix round, each individually: restoring the old `is_comment_line` fails exactly `CM3`-`CM5` and `P19`/`P20`; reverting rule A's widening fails `A7`; dropping rule B3 fails `B3a`/`B3b` while `B3c` stays caught by B2; un-conforming each of the three wrapper types fails its own test. The first pass at the `VaultMirrorException` test was **vacuous** — it asserted on `message`, which already carried the reason via the conformed inner `CloudFolderException`, and only the mutation run exposed it. It now also asserts on `diagnosticDetail` of the outer type, which is the render `SecretaryLog.warn` actually performs.
 
 ## (5) Handoff file model
 
