@@ -63,7 +63,9 @@ Every task got a fresh implementer and an independent reviewer. **Four fix round
 
 ## (2) What's next
 
-- **File the follow-ups** (drafted, awaiting your OK — see §3).
+- ~~File the follow-ups~~ **DONE — filed 2026-08-04 as #476 / #477.**
+  - **#476** — Android sibling of #473: three sites render a carried diagnostic as on-screen copy (`CreateVaultWizardScreen.kt:81,:93`, `RecordEditForm.kt:62`). No leak — payloads are gated as of #472, so the worst case renders `<undisclosed …>` on screen. `CreateVaultWizardScreen.kt:63` is legitimate and must be left alone (`VaultNameError`'s `message` IS the friendly copy). **Acceptance:** the three render friendly copy, their allowlist entries are removed, and the guard still passes.
+  - **#477** — retire the grep rules for a **type-aware detekt rule**. B1/B2/C all approximate "is this receiver a `Throwable`?", which grep structurally cannot answer. Would delete rule B2's four non-throwable allowlist entries, close rule C's name-based gap (`problem.toString()`), and likely close the `${e.detail}` limit. **Acceptance:** catches every `--self-test` positive control *including* the ones rule C cannot, the four entries are deleted, and `check-log-hygiene.sh` is removed in the same change or an explicit decision is recorded for why both remain.
 - **#459 on-device confirmation** — still outstanding. **Acceptance:** install on the iPhone, type a new grace value, tap Save **without** dismissing the number pad, re-open Settings, confirm it persisted; then clear a field, tap Save, confirm the "Each field needs a whole number" refusal. **Run the repro INSIDE the grace window** — outside it the Face ID prompt dismisses the keyboard, which itself flushes the old binding and reads as a false "no bug". Also one pass with an **Arabic or Persian keyboard**.
 - **#464** — CodeQL Swift analysis. #469 proved the recipe. **Acceptance:** `swift` appears in `gh api repos/:owner/:repo/code-scanning/analyses` after it lands on `main`, and the other five languages do not regress.
 - **#417** — mobile Trash purge-notice render test. **Acceptance:** a render assertion on the banner in both Compose and SwiftUI.
@@ -110,5 +112,5 @@ git worktree list && git status -s
 
 - **State on close:** PR on `feature/472-android-log-hygiene-gate`, shipping **#472**. Net: a new policy + renderer in `:vault-access`, five conformances with three redactions, `SecretaryLog` as the sole logcat sink, 18 laundering sites resolved, a new fail-closed CI guard, a shared allowlist library now used by **both** platform guards, 5 new mutation-proven regression tests, and docs. **No `core` / `ffi` / `.udl` / `FfiVaultError` / on-disk-format change.**
 - **Docs:** README and ROADMAP unchanged — by precedent-grep (#467/#456 and #189's `check-lean-binding.sh` appear in neither). CLAUDE.md gained the command pair + an architecture section.
-- **Next:** follow-ups to file · #459 on-device confirm · #464 · #417 · #447 · #443/#444.
+- **Next:** **#476** / **#477** now open · #459 on-device confirm · #464 · #417 · #447 · #443/#444.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-08-04-472-android-logcat-hygiene-gate-shipped.md`.
