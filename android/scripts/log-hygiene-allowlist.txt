@@ -1,21 +1,23 @@
 # Allowlist for check-log-hygiene.sh (#472).
 #
-# RULE A: any android.util.Log reference outside the sanctioned façade file.
-#   Not consulted here — logging at all outside the façade is the violation,
-#   not a renderable value that could be reviewed as safe. No entries exist
-#   or ever will for rule A.
+# RULE A: any logcat sink (android.util.Log, println, System.out/err) outside
+#   the sanctioned façade file. Not consulted here — logging at all outside
+#   the façade is the violation, not a renderable value that could be reviewed
+#   as safe. No entries exist or ever will for rule A.
 # RULE B1: throwable-shaped constructs (.message / .localizedMessage /
 #   .stackTraceToString() / .printStackTrace()) rendering a value that may
 #   carry a carried diagnostic. Fail-closed and name-blind.
 # RULE B2: no .toString() anywhere in the guarded scope. Fail-closed and
 #   name-blind — the name-based form was the demonstrated bypass on iOS.
+# RULE B3: no no-receiver `toString()` (implicit `this`) either. Same rule as
+#   B2 for the form its leading dot could not see (#475).
 # RULE C: no bare `$e` / `${e}` interpolation for a conventional catch
 #   binding. Best effort — a denylist by necessity, see the script header.
 #
 # These are the reviewed exceptions.
 #
 # Format, one per line:
-#   <repo-relative-path><TAB><rule: B1|B2|C><TAB><exact trimmed source line><TAB><reason>
+#   <repo-relative-path><TAB><rule: B1|B2|B3|C><TAB><exact trimmed source line><TAB><reason>
 #
 # The match is on the EXACT source line with leading/trailing whitespace
 # stripped — NOT a substring. A substring entry exempts every future line in
@@ -30,15 +32,15 @@
 #
 # Adding an entry is a SECURITY DECISION. Justify it in the reason field.
 #
-# Two sections:
+# Three sections, ordered by how much review weight an entry carries:
 #   SECURITY DECISIONS (rules B1, C) — a value that CAN carry a secret is
-#     asserted safe to render here. Populated now. (Rule A is an absolute
-#     prohibition with no allowlist entries — see above.)
+#     asserted safe to render here. (Rule A is an absolute prohibition with no
+#     allowlist entries — see above.)
+#   THE POLICY ITSELF (rule B3) — the two self-renders that ARE the sanctioned
+#     rendering. Exempting the renderer from its own rule is not a hole; it is
+#     where the rule bottoms out.
 #   NON-THROWABLE RECEIVERS (rule B2) — a `.toString()` call whose receiver is
-#     not throwable-shaped at all (a StringBuilder, a Uri, a Long). Added in a
-#     later task once the cleanup has settled which `.toString()` calls
-#     survive; populating it now would be guessing at code this task does not
-#     touch.
+#     not throwable-shaped at all (a StringBuilder, a Uri, a Long).
 
 # ---- SECURITY DECISIONS (rules B1, C) ----
 # Each entry asserts that a value which CAN carry a secret is safe to render
@@ -48,6 +50,18 @@ android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	name
 android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Create failed", modifier = Modifier.testTag("wizard-error")) }	On-screen copy, not a log. VaultProvisioningError.CreateFailed IS a carried diagnostic, so this is a #454 violation — Android sibling of #473, filed not fixed (changing the copy is a UX decision). Payload is gated at construction as of this change.
 android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Error", modifier = Modifier.testTag("wizard-error")) }	Same as the line above — third wizard step, same VaultProvisioningError, same #473 sibling.
 android/browse-ui/src/main/kotlin/org/secretary/browse/ui/RecordEditForm.kt	B1	val detail = it.message?.takeIf(String::isNotBlank) ?: it::class.simpleName	On-screen copy in a PACKAGE module, not a log. Renders a carried VaultBrowseError diagnostic — the clearest #473 sibling. Note the redactions do NOT affect `message`, so the user still sees which field is bad.
+
+# ---- THE POLICY ITSELF (rule B3 only) ----
+# Rule B3 denies a no-receiver `toString()` because inside a Throwable that is a
+# self-render of the message the gate withholds. These two lines are where that
+# self-render is the POINT: `diagnosticDetail` has decided the type is conformed
+# and is now asking it to describe itself. Every other conformer's rendering
+# flows through exactly these two lines, so if either is wrong the redactions
+# elsewhere are moot — which is the argument for keeping them visible here
+# rather than excluding the `diagnostics` package by path.
+
+android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt	B3	get() = toString()	The interface's DEFAULT rendering — the single line that defines what "conformed, not redacting" means. Reachable only after `error is SecretFreeThrowable`, i.e. after a declaration-site security decision.
+android/vault-access/src/main/kotlin/org/secretary/browse/VaultBrowseError.kt	B3	else -> toString()	The non-redacted arms of VaultBrowseError's own override. The three arms that CAN carry a decrypted field name (CorruptVault, SaveCryptoFailure, InvalidArgument) are matched ABOVE this line and never reach it; see the payload-origin audit on `diagnosticDescription`.
 
 # ---- NON-THROWABLE RECEIVERS (rule B2 only) ----
 # Each entry asserts ONLY that the receiver is not a Throwable — a two-second

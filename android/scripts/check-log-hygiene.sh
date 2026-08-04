@@ -9,20 +9,25 @@
 # dumps and crash aggregators. #467 gave iOS a structural gate
 # (`SecretFreeError` / `diagnosticDetail`) plus this repo's first hygiene
 # tripwire (`ios/scripts/check-public-log-hygiene.sh`). Android's equivalent
-# structural gate (`SecretFreeThrowable`, a `SecretaryLog` façade at
-# `SANCTIONED_LOG_FILE`) is built in later tasks of this same plan; this
-# script is the enforcement half — the tripwire that keeps every future log
-# site honest once the façade exists, and that proves, by failing red today,
-# that the cleanup it demands is real rather than assumed.
+# structural gate is `SecretFreeThrowable` (the default-deny rendering policy
+# in `:vault-access`) plus the `SecretaryLog` façade at `SANCTIONED_LOG_FILE`,
+# whose signatures make the unsafe `Log.w(tag, msg, throwable)` form
+# unrepresentable at call sites. This script is the enforcement half — the
+# tripwire that keeps every future log site honest now that the façade exists.
 #
-# FOUR RULES
+# FIVE RULES
 # ----------
-#   RULE A (sink): any reference to `android.util.Log` — the import (which
-#     also catches `import android.util.Log as L`), a fully-qualified call, or
-#     a bare `Log.<member>(` where `<member>` may be camelCase (e.g.
+#   RULE A (sink): any reference to a logcat sink outside the one sanctioned
+#     file is a hit — `android.util.Log` via the import (which also catches
+#     `import android.util.Log as L`), a fully-qualified call, or a bare
+#     `Log.<member>(` where `<member>` may be camelCase (e.g.
 #     `Log.getStackTraceString(`, a real Android API that renders a Throwable
-#     to text — an all-lowercase-only member pattern missed it) — outside the
-#     one sanctioned file is a hit. Logging AT ALL outside the façade is the
+#     to text — an all-lowercase-only member pattern missed it) — AND the
+#     stdlib sinks `println(` / `System.out.` / `System.err.`, because the
+#     Android runtime redirects stdout and stderr into logcat under the
+#     `System.out` / `System.err` tags. `println(e)` is therefore a raw
+#     Throwable in logcat that names no `Log` symbol at all, and it evaded
+#     every other rule (#475 review). Logging AT ALL outside the façade is the
 #     violation; there is nothing to allowlist here, so rule A does not
 #     consult the allowlist file at all.
 #
@@ -36,14 +41,27 @@
 #     `catch (problem: Exception)` binding is caught exactly the same as a
 #     `catch (e: Exception)` one.
 #
-#   RULE B2 (explicit render): `.toString()`. Name-blind by design: the
-#     iOS review found that a name-based version of this rule (matching only
-#     `error.toString()` / `e.toString()`) was defeated simply by naming the
-#     catch binding something else, so this one matches the construct with no
-#     receiver filter at all. That is over-inclusive on purpose — plenty of
+#   RULE B2 (explicit render, dotted): `.toString()`. Name-blind by design:
+#     the iOS review found that a name-based version of this rule (matching
+#     only `error.toString()` / `e.toString()`) was defeated simply by naming
+#     the catch binding something else, so this one matches the construct with
+#     no receiver filter at all. That is over-inclusive on purpose — plenty of
 #     `.toString()` calls in this tree are not throwable-shaped at all — and
 #     every legitimate one is a recorded allowlist entry rather than a
 #     silent exclusion.
+#
+#   RULE B3 (explicit render, no receiver): a bare `toString()` under implicit
+#     `this`. Rule B2 is `\.`-anchored, so it never saw this form — the exact
+#     asymmetry rule B1 was fixed for in round 1, left unfixed for B2 (#475
+#     review). It matters because the receiver under implicit `this` is a
+#     `Throwable` precisely when the laundering code sits inside one, e.g. a
+#     `diagnosticDescription` override reaching for its own `toString()`.
+#     B3 cannot simply be folded into B2 by relaxing the anchor: `\btoString\(\)`
+#     also matches every `override fun toString()` DECLARATION. So B3 skips
+#     lines that declare the function — and the dotted rule B2 stays
+#     unconditional, which is what keeps the one line that is both
+#     (`override fun toString() = e.toString()`) caught. See the `B3a`-`B3c`
+#     positives and `N12` negative.
 #
 #   RULE C (bare interpolation + concatenation, BEST EFFORT — see LIMITS):
 #     `"$e"` / `"${e}"` for a fixed list of conventional catch-binding names,
@@ -91,6 +109,30 @@
 # See the `A6`/`B1e`/`CM1`/`CM2` self-test positives and the `N7`-`N9`
 # negatives for the controls that pin these.
 #
+# FIX ROUND 2 (#475 whole-branch review; three of the four were the SAME
+# asymmetry — a hole closed on one side and left open on the other)
+# ---------------------------------------------------------------------
+#   1. CRITICAL, and the exact mirror of round 1's finding 1 — round 1 fixed
+#      the block-comment OPENING side and left the CLOSING side untouched, so
+#      `*/ android.util.Log.w(TAG, "x", e)` (real code, second line of a
+#      two-line `/*` … `*/` comment) was still prose to `is_comment_line` and
+#      still unscanned against all four rules. Proven by execution: a file of
+#      that shape passed with exit 0. Fixed in the now-SHARED
+#      `is_comment_line` (scripts/lib/hygiene-allowlist.sh), which also closes
+#      the same hole in the iOS guard. Controls `CM3`-`CM5` here, `P19`/`P20`
+#      there — both mutation-proven by restoring the old matcher.
+#   2. Rule B2 was left `\.`-anchored after round 1 `\b`-anchored rule B1 for
+#      the identical reason. Fixed by adding rule B3 rather than relaxing B2
+#      — see rule B3's own note. Controls `B3a`-`B3c`, `N12`.
+#   3. Rule A guarded `android.util.Log` only, but Android redirects
+#      stdout/stderr into logcat, so `println(e)` reached the log while
+#      naming no `Log` symbol. Fixed by widening rule A. Controls `A7`-`A9`.
+#   4. Three internally-authored wrapper exception types
+#      (`CloudFolderException`, `VaultMirrorException`, `DeviceUuidException`)
+#      had not been declared `SecretFreeThrowable`, so every nested wrap
+#      rendered `<undisclosed …>` and discarded the message it was built to
+#      carry. Not a guard change — see their declarations.
+#
 # USAGE
 # -----
 #   bash android/scripts/check-log-hygiene.sh              # guard android/**/*.{kt,java}
@@ -103,6 +145,13 @@
 # but nothing enforces that. Rule C is BEST EFFORT and must not be read as
 # coverage of its class — `catch (problem: Exception) { "boom: $problem" }`
 # is invisible to it, exactly like iOS rule 3's `catch let problem` gap.
+#
+# Rule B3 closes the no-receiver `toString()` form but is line-based like
+# everything else: it skips a line that DECLARES `fun toString(`, so a
+# declaration and a bare laundering call sharing one line hide the call. The
+# dotted rule B2 is unconditional and catches the realistic shape of that
+# (`override fun toString() = e.toString()`); a bare `override fun toString() =
+# toString()` is infinite recursion, not a bypass.
 #
 # A typed-field render passed straight to the sanctioned sink is NOT caught by
 # any rule here: `SecretaryLog.warn(TAG, "failed: ${e.detail}")` passes clean.
@@ -131,17 +180,24 @@ readonly SCAN_ROOT="$REPO_ROOT/android"
 ALLOWLIST="$REPO_ROOT/android/scripts/log-hygiene-allowlist.txt"
 
 # The one file permitted to reach logcat. This is the MECHANISM, not an
-# exception, so it is a constant rather than an allowlist entry. It does not
-# exist yet (a later task in this plan creates it) — until then rule A simply
-# never has anything to exempt.
+# exception, so it is a constant rather than an allowlist entry.
 readonly SANCTIONED_LOG_FILE="android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt"
 
-# RULE A: any reference to android.util.Log — the import (which also catches
-# `import android.util.Log as L`) or a fully-qualified call. The member
-# pattern allows camelCase (`[A-Za-z_][A-Za-z0-9_]*`, not `[a-z]+`): an
-# all-lowercase requirement missed `Log.getStackTraceString(e)`, a real
-# Android API that renders a Throwable to text (adversarial review, round 1).
-readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[A-Za-z_][A-Za-z0-9_]*\('
+# RULE A: any reference to a logcat sink — `android.util.Log` via the import
+# (which also catches `import android.util.Log as L`) or a fully-qualified
+# call, plus the stdlib sinks. The `Log.` member pattern allows camelCase
+# (`[A-Za-z_][A-Za-z0-9_]*`, not `[a-z]+`): an all-lowercase requirement missed
+# `Log.getStackTraceString(e)`, a real Android API that renders a Throwable to
+# text (adversarial review, round 1).
+#
+# `println(` / `System.out.` / `System.err.` are here because the Android
+# runtime redirects stdout and stderr into logcat — `println(e)` is a raw
+# Throwable in the log that names no `Log` symbol, and it passed every rule
+# (#475 review). The leading `(^|[^A-Za-z0-9_.])` on `println` is what keeps
+# `foo.println(` (a Writer/PrintStream method, not the stdlib sink) from being
+# swept up by the same alternative; the tree has no such call today, and if one
+# appears the fix is to name the real sink, not to widen the rule.
+readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[A-Za-z_][A-Za-z0-9_]*\(|(^|[^A-Za-z0-9_.])println\(|System\.(out|err)\.'
 
 # RULE B1: throwable-shaped constructs. Name-blind and precise. Word-boundary
 # anchored (`\b`), not dot-anchored: a leading-dot requirement missed a
@@ -150,9 +206,24 @@ readonly LOG_RE='android\.util\.Log|(^|[^A-Za-z0-9_.])Log\.[A-Za-z_][A-Za-z0-9_]
 # (adversarial review, round 1). `\b` still matches the dotted forms.
 readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\bstackTraceToString\(|\bprintStackTrace\('
 
-# RULE B2: the explicit render. Name-blind by design; the name-based form was
-# the demonstrated bypass on iOS.
+# RULE B2: the explicit render, DOTTED form. Name-blind by design; the
+# name-based form was the demonstrated bypass on iOS. Deliberately kept
+# `\.`-anchored and unconditional so that a line which both declares
+# `fun toString()` and launders (`override fun toString() = e.toString()`) is
+# still caught even though rule B3 skips declaration lines.
 readonly TOSTRING_RE='\.toString\(\)'
+
+# RULE B3: the explicit render, NO-RECEIVER form (implicit `this`). Same
+# asymmetry rule B1 was fixed for in round 1; B2 kept the leading dot until
+# #475. Relaxing B2's anchor to `\b` was not an option — that also matches
+# every `override fun toString()` declaration — so this is a separate rule
+# whose scan skips lines declaring the function (DECL_TOSTRING_RE below).
+readonly BARE_TOSTRING_RE='(^|[^A-Za-z0-9_.])toString\(\)'
+
+# Lines rule B3 skips: a `fun toString(` declaration is not a call. Narrow on
+# purpose — it is the ONLY exclusion any rule here applies beyond the shared
+# path/comment filters, and rule B2 still covers such a line's dotted calls.
+readonly DECL_TOSTRING_RE='\bfun[[:space:]]+toString[[:space:]]*\('
 
 # RULE C: BARE interpolation, plus bare concatenation (`+ e`). `${e.detail}`
 # is a named typed field — a reviewable choice — and is deliberately NOT
@@ -180,32 +251,18 @@ is_generated_path() {
   [[ "$1" == *"/build/generated/"* || "$1" == *"/build/"* ]]
 }
 
-# A `//` line comment, or a block-comment continuation line starting with `*`,
-# is prose, not a log call. A line that OPENS a block comment (`/*`) is prose
-# ONLY if no code follows the close: Kotlin's `/* */` is a complete no-op, so
-# `/* */ Log.w(TAG, secretValue.toString())` is real, live code wearing a
-# no-op comment as camouflage — treating any `/*`-prefixed line as pure
-# comment (an earlier version of this function did exactly that) silently
-# unscanned it against every rule (adversarial review, round 1).
-is_comment_line() {
-  local line="$1"
-  [[ "$line" =~ ^[[:space:]]*(//|\*) ]] && return 0
-  if [[ "$line" =~ ^[[:space:]]*/\* ]]; then
-    [[ "$line" =~ \*/[[:space:]]*[^[:space:]] ]] && return 1
-    return 0
-  fi
-  return 1
-}
+# `trim()`, `allowlisted()` and `is_comment_line()` live in
+# scripts/lib/hygiene-allowlist.sh, sourced above — shared with the iOS guard so
+# the two security-critical matchers have exactly one copy each. See that file's
+# header for the $ALLOWLIST/$REPO_ROOT contract `allowlisted()` depends on, and
+# for the two block-comment bypasses `is_comment_line()` closes.
+# `count_matches()` is NOT shared: it exists for iOS rule 1's per-interpolation
+# counting, and no rule here counts.
 
-# `trim()` and `allowlisted()` live in scripts/lib/hygiene-allowlist.sh,
-# sourced above — shared with the iOS guard so the exact-line matcher has
-# exactly one copy. See that file's header for the $ALLOWLIST/$REPO_ROOT
-# contract `allowlisted()` depends on. `count_matches()` is NOT ported: it
-# exists for iOS rule 1's per-interpolation counting, and no rule here counts.
-
-# RULE A. Any android.util.Log reference outside the sanctioned file is a
-# hit. Does NOT consult the allowlist — logging at all outside the façade is
-# the violation, not a renderable value that could be reviewed as safe.
+# RULE A. Any logcat-sink reference outside the sanctioned file is a hit —
+# `android.util.Log` plus the stdout/stderr the runtime redirects into logcat.
+# Does NOT consult the allowlist — logging at all outside the façade is the
+# violation, not a renderable value that could be reviewed as safe.
 scan_sink() {
   local root="$1" hit path text
   while IFS= read -r hit; do
@@ -219,17 +276,23 @@ scan_sink() {
   done < <(grep -rn --include='*.kt' --include='*.java' -E "$LOG_RE" "$root" 2>/dev/null || true)
 }
 
-# RULES B1, B2 and C — same scope and same filters, different matcher and
-# different allowlist rule id. Args: <root> <rule-id> <ERE>. Prints offending
-# hits not covered by a reviewed allowlist entry.
+# RULES B1, B2, B3 and C — same scope and same filters, different matcher and
+# different allowlist rule id. Args: <root> <rule-id> <ERE> [<skip-ERE>].
+# Prints offending hits not covered by a reviewed allowlist entry.
+#
+# <skip-ERE> is optional and used ONLY by rule B3, to drop `fun toString(`
+# declarations. It is a per-rule exclusion, not a general escape hatch: adding
+# one to another rule widens that rule's blind spot by a whole line-shape, so
+# do it only with a control pinning what stays caught (see `N12` vs `B3c`).
 scan_launder() {
-  local root="$1" rule="$2" re="$3" hit path text
+  local root="$1" rule="$2" re="$3" skip_re="${4:-}" hit path text
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
     path="${hit%%:*}"; text="${hit#*:}"; text="${text#*:}"
     is_test_path "$path" && continue
     is_generated_path "$path" && continue
     is_comment_line "$text" && continue
+    [[ -n "$skip_re" ]] && grep -qE "$skip_re" <<<"$text" && continue
     allowlisted "$rule" "$hit" && continue
     echo "$hit"
   done < <(grep -rn --include='*.kt' --include='*.java' -E "$re" "$root" 2>/dev/null || true)
@@ -259,6 +322,15 @@ self_test() {
   # A6: camelCase member. A `[a-z]+`-only member pattern missed this real
   # Android API (adversarial review, round 1).
   write_case A6 'Log.getStackTraceString(e)'
+  # A7-A9: the stdlib sinks. Android redirects stdout/stderr into logcat, so
+  # these reach the log while naming no `Log` symbol — they passed all four
+  # rules before rule A was widened (#475 review). Each pins ONE alternative
+  # and trips NO other rule, so removing that alternative fails this control
+  # rather than being masked: `System.out.println("x: " + e)` would have been
+  # caught by rule C's concatenation clause regardless and proves nothing.
+  write_case A7 '        println(e)'
+  write_case A8 '        System.out.flush()'
+  write_case A9 '        val sink = System.err.bufferedWriter()'
   # --- RULE B1 positives (must all be caught) ---
   # shellcheck disable=SC2016  # literal Kotlin `${e.message}`, not shell expansion
   write_case B1a 'throw CloudFolderException("op failed: ${e.message}")'
@@ -272,6 +344,16 @@ self_test() {
   # B2b is the name-based bypass that motivated making rule B2 name-blind.
   write_case B2a 'else -> VaultBrowseError.Failed(e.toString())'
   write_case B2b 'else -> VaultBrowseError.Failed(problem.toString())'
+  # --- RULE B3 positives (no-receiver render, must all be caught) ---
+  # B3a/B3b: bare `toString()` under implicit `this` — inside a Throwable that
+  # is exactly a self-render of a secret-bearing message. Rule B2's leading dot
+  # never saw these (#475 review).
+  write_case B3a 'val s = toString()'
+  write_case B3b 'SecretaryLog.warn(TAG, "failed: " + toString())'
+  # B3c: a line that BOTH declares toString() and launders. Rule B3 skips it as
+  # a declaration; the dotted rule B2 must still catch it. This is the control
+  # that keeps B3's declaration exclusion from becoming a bypass.
+  write_case B3c 'override fun toString() = e.toString()'
   # --- COMMENT-HOLE positives (must all be caught) ---
   # `/* */` is a complete Kotlin no-op comment; treating any `/*`-opening line
   # as pure prose (an earlier version of is_comment_line did) silently
@@ -280,6 +362,14 @@ self_test() {
   # rule B2.
   write_case CM1 '/* */ Log.w(TAG, "x", e)'
   write_case CM2 '/* */ val s = e.toString()'
+  # CM3-CM5: the CLOSING side of the same hole, which round 1's fix did not
+  # cover — `*/ <code>` is line 2 of a two-line `/*` … `*/` comment, i.e. real
+  # code, and the `*`-prefix branch called it prose. A file of exactly this
+  # shape passed the whole guard with exit 0 (#475 review). CM4 uses the
+  # fully-qualified sink so it needs no import to be a working leak.
+  write_case CM3 '*/ Log.w(TAG, "x", e)'
+  write_case CM4 '*/ android.util.Log.w(TAG, "x", e)'
+  write_case CM5 '*/ val s = e.toString()'
   # --- RULE C positives (bare only, must all be caught) ---
   # shellcheck disable=SC2016  # literal Kotlin `$e`, not shell expansion
   write_case C1 'return Failed("boom: $e")'
@@ -311,6 +401,20 @@ self_test() {
   # the denylisted names. Proves `([^A-Za-z0-9_.(]|$)` — not trusting it.
   write_case N10 'val total = count + errorCount'                                # arithmetic, not throwable concat
   write_case N11 'val s = prefix + "text"'                                       # string concat, not throwable
+  # N12: a plain `toString()` DECLARATION is not a call. Without the exclusion
+  # rule B3 would fire on every override in the tree; with it, B3c above proves
+  # a declaration line that also launders is still caught by rule B2.
+  # shellcheck disable=SC2016  # literal Kotlin `$bar`, not shell expansion
+  write_case N12 'override fun toString() = "Foo(bar=$bar)"'
+  # N14: `println` as a METHOD on some other receiver (a PrintWriter over a
+  # file, say) is not the stdlib logcat sink. Pins the `(^|[^A-Za-z0-9_.])`
+  # prefix on rule A's println alternative.
+  write_case N14 'writer.println(line)'
+  # N13: the CLOSING line of a genuine block comment — mentions a construct
+  # rule A would catch, and closes with nothing after the `*/`. Non-vacuous by
+  # construction: it fires if the CM3-CM5 fix over-corrects into treating every
+  # `*/` line as code. (A bare ` */` would be vacuous — no rule matches it.)
+  write_case N13 ' * @throws when Log.w(TAG, e) would have been called */'
 
   # --- allowlist control: exact-line matching, NOT substring ---
   # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
@@ -341,14 +445,19 @@ self_test() {
   } > "$ALLOWLIST"
 
   local hits
-  hits="$(scan_sink "$d"; scan_launder "$d" B1 "$LAUNDER_RE"; scan_launder "$d" B2 "$TOSTRING_RE"; scan_launder "$d" C "$INTERP_RE")"
+  hits="$(scan_sink "$d"
+          scan_launder "$d" B1 "$LAUNDER_RE"
+          scan_launder "$d" B2 "$TOSTRING_RE"
+          scan_launder "$d" B3 "$BARE_TOSTRING_RE" "$DECL_TOSTRING_RE"
+          scan_launder "$d" C "$INTERP_RE")"
 
   local p
-  for p in A1 A2 A3 A4 A5 A6 B1a B1b B1c B1d B1e B2a B2b CM1 CM2 C1 C2 C3; do
+  for p in A1 A2 A3 A4 A5 A6 A7 A8 A9 B1a B1b B1c B1d B1e B2a B2b B3a B3b B3c \
+           CM1 CM2 CM3 CM4 CM5 C1 C2 C3; do
     grep -q "/$p\.kt:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4 N5 N6 N7 N8 N9 N10 N11; do
+  for n in N1 N2 N3 N4 N5 N6 N7 N8 N9 N10 N11 N12 N13 N14; do
     grep -q "/$n\.kt:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
   # The allowlist pair, asserted BY LINE NUMBER — this is what fails if
@@ -358,7 +467,7 @@ self_test() {
   grep -q "/X\.kt:2:" <<<"$hits" ||
     { echo "SELF-TEST FAILED: X.kt:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 18 positive controls caught, 11 negative controls clean"
+  echo "self-test OK — 27 positive controls caught, 14 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -369,15 +478,17 @@ fi
 sink_hits="$(scan_sink "$SCAN_ROOT")"
 b1_hits="$(scan_launder "$SCAN_ROOT" B1 "$LAUNDER_RE")"
 b2_hits="$(scan_launder "$SCAN_ROOT" B2 "$TOSTRING_RE")"
+b3_hits="$(scan_launder "$SCAN_ROOT" B3 "$BARE_TOSTRING_RE" "$DECL_TOSTRING_RE")"
 c_hits="$(scan_launder "$SCAN_ROOT" C "$INTERP_RE")"
 status=0
 
 if [[ -n "$sink_hits" ]]; then
-  echo "ERROR (#472 rule A): android.util.Log is referenced outside the sanctioned" >&2
-  echo "façade ($SANCTIONED_LOG_FILE):" >&2
+  echo "ERROR (#472 rule A): a logcat sink (android.util.Log, or println/System.out/" >&2
+  echo "System.err — the Android runtime redirects both into logcat) is referenced" >&2
+  echo "outside the sanctioned façade ($SANCTIONED_LOG_FILE):" >&2
   echo "$sink_hits" >&2
   echo >&2
-  echo "Fix: route through SecretaryLog instead of android.util.Log directly." >&2
+  echo "Fix: route through SecretaryLog instead of logging directly." >&2
   status=1
 fi
 
@@ -401,6 +512,19 @@ if [[ -n "$b2_hits" ]]; then
   echo "Fix: use the sanctioned diagnostic path instead. If the use is legitimate" >&2
   echo "(not throwable-shaped, or on-screen copy rather than a log), add a reviewed" >&2
   echo "entry to android/scripts/log-hygiene-allowlist.txt." >&2
+  status=1
+fi
+
+if [[ -n "$b3_hits" ]]; then
+  echo "ERROR (#472 rule B3): a value is hand-rendered via a no-receiver toString()" >&2
+  echo "— under implicit \`this\`, which inside a Throwable is a self-render of the" >&2
+  echo "very message the gate exists to withhold:" >&2
+  echo "$b3_hits" >&2
+  echo >&2
+  echo "Fix: use the sanctioned diagnostic path instead. If the use is legitimate" >&2
+  echo "(the enclosing type is not throwable-shaped, or this IS the sanctioned" >&2
+  echo "rendering), add a reviewed entry to" >&2
+  echo "android/scripts/log-hygiene-allowlist.txt." >&2
   status=1
 fi
 
