@@ -31,15 +31,16 @@
 # Adding an entry is a SECURITY DECISION. Justify it in the reason field.
 #
 # Two sections:
-#   SECURITY DECISIONS (rules A, B1, C) — a value that CAN carry a secret is
-#     asserted safe to render here. Populated now.
+#   SECURITY DECISIONS (rules B1, C) — a value that CAN carry a secret is
+#     asserted safe to render here. Populated now. (Rule A is an absolute
+#     prohibition with no allowlist entries — see above.)
 #   NON-THROWABLE RECEIVERS (rule B2) — a `.toString()` call whose receiver is
 #     not throwable-shaped at all (a StringBuilder, a Uri, a Long). Added in a
 #     later task once the cleanup has settled which `.toString()` calls
 #     survive; populating it now would be guessing at code this task does not
 #     touch.
 
-# ---- SECURITY DECISIONS (rules A, B1, C) ----
+# ---- SECURITY DECISIONS (rules B1, C) ----
 # Each entry asserts that a value which CAN carry a secret is safe to render
 # here. Reviewed like any other security change.
 
