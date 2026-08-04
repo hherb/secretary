@@ -187,6 +187,33 @@ jobs:
       - name: 'check-public-log-hygiene.sh'
         run: bash ios/scripts/check-public-log-hygiene.sh
 
+  kotlin-log-hygiene:
+    name: kotlin logcat hygiene
+    # Asserts no raw Throwable reaches logcat (#472). logcat has NO redaction
+    # concept — every line is the equivalent of iOS's `privacy: .public` — so
+    # rule A pins `android.util.Log` to one sanctioned file whose signatures make
+    # the unsafe call unrepresentable, and rules B1/B2/C deny hand-rendering a
+    # throwable into a String (which launders unreviewed CONTENT past a gate
+    # that only denies unreviewed TYPES).
+    #
+    # Pure grep over android/**/*.kt — no JDK, no Android SDK, no Gradle, so it
+    # runs on ubuntu in seconds rather than in the ~5min android-host job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # runaway cap (vs the 6h default); real duration ~1s
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # --self-test FIRST: a guard never observed failing is indistinguishable
+      # from a no-op. Two-sided — the matchers must fire on known-positives AND
+      # stay silent on known-negatives.
+      #
+      # The step names are QUOTED: an unquoted ` #` inside a YAML `name:` starts
+      # a comment and silently truncates it — valid YAML, so actionlint stays
+      # green. That trap cost a fixup in #470.
+      - name: 'check-log-hygiene.sh --self-test'
+        run: bash android/scripts/check-log-hygiene.sh --self-test
+      - name: 'check-log-hygiene.sh'
+        run: bash android/scripts/check-log-hygiene.sh
+
   android-host:
     name: android host (:vault-access:test)
     # `:vault-access` is pure kotlin(jvm), but the root settings.gradle.kts
