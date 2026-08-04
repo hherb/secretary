@@ -1715,6 +1715,15 @@ mod tests {
             ),
             "expected DuplicateKey {{ field: \"<field>\", index: 1 }}, got {err:?}"
         );
+        // The map key must not survive into the message. At this map level
+        // the keys are normally the fixed constants `value` / `last_mod` /
+        // `device_uuid`, but the `unknown` forward-compat bucket can carry
+        // arbitrary caller-supplied key strings, so this level is a real
+        // leak channel too, not just a theoretical one.
+        assert!(
+            !format!("{err}").contains(KEY_VALUE),
+            "the map key leaked into the message: {err}"
+        );
     }
 
     #[test]
