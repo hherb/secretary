@@ -45,15 +45,25 @@
 #     every legitimate one is a recorded allowlist entry rather than a
 #     silent exclusion.
 #
-#   RULE C (bare interpolation, BEST EFFORT — see LIMITS): `"$e"` / `"${e}"`
-#     for a fixed list of conventional catch-binding names. Like iOS rule 3,
-#     this CANNOT be construct-based — `$x` / `${x}` is ordinary Kotlin string
-#     templating, so matching it wholesale is unusable. It is a denylist by
-#     necessity and is labelled as one. It deliberately does NOT match a named
-#     typed-field render such as `${e.detail}` or `${error::class.simpleName}`
-#     — those are reviewable, user-facing copy choices, and matching them
-#     would produce a pile of allowlist entries that assert nothing and drown
-#     the rule. See the `N3`/`N4` self-test controls for the exact boundary.
+#   RULE C (bare interpolation + concatenation, BEST EFFORT — see LIMITS):
+#     `"$e"` / `"${e}"` for a fixed list of conventional catch-binding names,
+#     PLUS `"..." + e` string concatenation of the same names. In Kotlin
+#     `"str" + throwable` also calls `toString()` — `SecretaryLog.warn(TAG,
+#     "unlock failed: " + e)` passed this rule with exit 0 before the
+#     concatenation clause was added (final whole-branch review, finding 1).
+#     Like iOS rule 3, this CANNOT be construct-based — `$x` / `${x}` is
+#     ordinary Kotlin string templating and `a + b` is ordinary
+#     arithmetic/concatenation, so matching either wholesale is unusable. It
+#     is a denylist by necessity and is labelled as one. It deliberately does
+#     NOT match a named typed-field render such as `${e.detail}` or
+#     `${error::class.simpleName}` — those are reviewable, user-facing copy
+#     choices, and matching them would produce a pile of allowlist entries
+#     that assert nothing and drown the rule (see LIMITS for why this also
+#     means a typed-field render passed straight to the log sink is not
+#     caught). See the `N3`/`N4` self-test controls for the bare-vs-typed-
+#     field boundary, and `C3`/`N10`/`N11` for the concatenation boundary — a
+#     trailing non-identifier character after the name keeps `+ errorCount`
+#     from matching `+ error`.
 #
 # There is no `is_app_ui_path`-style path exclusion (contrast iOS rule 2/3):
 # the spec chose to allowlist individual Compose sites instead of excluding a
@@ -83,7 +93,7 @@
 #
 # USAGE
 # -----
-#   bash android/scripts/check-log-hygiene.sh              # guard android/**/*.kt
+#   bash android/scripts/check-log-hygiene.sh              # guard android/**/*.{kt,java}
 #   bash android/scripts/check-log-hygiene.sh --self-test   # prove the matchers work
 #
 # LIMITS (stated, not hidden)
@@ -93,6 +103,17 @@
 # but nothing enforces that. Rule C is BEST EFFORT and must not be read as
 # coverage of its class — `catch (problem: Exception) { "boom: $problem" }`
 # is invisible to it, exactly like iOS rule 3's `catch let problem` gap.
+#
+# A typed-field render passed straight to the sanctioned sink is NOT caught by
+# any rule here: `SecretaryLog.warn(TAG, "failed: ${e.detail}")` passes clean.
+# Rule C deliberately excludes named typed-field access (`${e.detail}`,
+# `${error::class.simpleName}`) because matching it would fire on seven
+# legitimate user-facing `Text(...)` copy sites — that boundary is correct for
+# on-screen copy. It is NOT correct inside a log call: on VaultBrowseError's
+# three redacted arms (CorruptVault, SaveCryptoFailure, InvalidArgument),
+# `.detail` carries exactly the plaintext `diagnosticDescription`'s redaction
+# exists to remove, and `${e.detail}` walks straight around it. Nothing but
+# review closes this gap.
 #
 # Scope is `android/` only.
 
@@ -133,12 +154,21 @@ readonly LAUNDER_RE='\.message\b|\.localizedMessage\b|\bstackTraceToString\(|\bp
 # the demonstrated bypass on iOS.
 readonly TOSTRING_RE='\.toString\(\)'
 
-# RULE C: BARE interpolation only. `${e.detail}` is a named typed field — a
-# reviewable choice — and is deliberately NOT matched; matching it would fire
-# on seven legitimate user-facing copy sites and drown the rule. iOS rule 3
-# draws the same line by requiring the closing paren immediately.
-# shellcheck disable=SC2016  # single-quoted ERE: the literal `$` is the Kotlin-interpolation pattern being matched, not shell expansion
-readonly INTERP_RE='\$\{(e|err|error|caught|failure|ex|t)\}|\$(e|err|error|caught|failure|ex|t)([^A-Za-z0-9_.]|$)'
+# RULE C: BARE interpolation, plus bare concatenation (`+ e`). `${e.detail}`
+# is a named typed field — a reviewable choice — and is deliberately NOT
+# matched; matching it would fire on seven legitimate user-facing copy sites
+# and drown the rule (see LIMITS for the one place that boundary does NOT
+# hold: a typed-field render passed straight to the log sink). iOS rule 3
+# draws the same interpolation line by requiring the closing paren
+# immediately. The concatenation alternative catches `"str" + e` — Kotlin's
+# `+` on a `String` and a `Throwable` also calls `toString()`, so it launders
+# exactly like interpolation does but was not covered by either the
+# interpolation alternatives above or rule B2 (no `.toString()` appears at the
+# call site). The trailing `([^A-Za-z0-9_.(]|$)` class is what keeps
+# `+ errorCount` from matching `+ error` — see the `C3`/`N10`/`N11` self-test
+# controls.
+# shellcheck disable=SC2016  # single-quoted ERE: the literal `$`/`+` are the Kotlin patterns being matched, not shell expansion
+readonly INTERP_RE='\$\{(e|err|error|caught|failure|ex|t)\}|\$(e|err|error|caught|failure|ex|t)([^A-Za-z0-9_.]|$)|\+[[:space:]]*(e|err|error|caught|failure|ex|t)([^A-Za-z0-9_.(]|$)'
 
 # Test sources legitimately construct/assert on Throwable text; they never
 # write to logcat.
@@ -186,7 +216,7 @@ scan_sink() {
     is_comment_line "$text" && continue
     [[ "${path#"$REPO_ROOT"/}" == "$SANCTIONED_LOG_FILE" ]] && continue
     echo "$hit"
-  done < <(grep -rn --include='*.kt' -E "$LOG_RE" "$root" 2>/dev/null || true)
+  done < <(grep -rn --include='*.kt' --include='*.java' -E "$LOG_RE" "$root" 2>/dev/null || true)
 }
 
 # RULES B1, B2 and C — same scope and same filters, different matcher and
@@ -202,7 +232,7 @@ scan_launder() {
     is_comment_line "$text" && continue
     allowlisted "$rule" "$hit" && continue
     echo "$hit"
-  done < <(grep -rn --include='*.kt' -E "$re" "$root" 2>/dev/null || true)
+  done < <(grep -rn --include='*.kt' --include='*.java' -E "$re" "$root" 2>/dev/null || true)
 }
 
 # `SELF_TEST_TMP` and `cleanup_self_test` live in
@@ -255,6 +285,11 @@ self_test() {
   write_case C1 'return Failed("boom: $e")'
   # shellcheck disable=SC2016  # literal Kotlin `${e}`, not shell expansion
   write_case C2 'return Failed("boom: ${e}")'
+  # C3: string concatenation. `"str" + throwable` also calls toString() in
+  # Kotlin, and this passed rule B2 (no `.toString()` at the call site) and
+  # every interpolation alternative before the concatenation clause was added
+  # (final whole-branch review, finding 1).
+  write_case C3 'SecretaryLog.warn(TAG, "failed: " + e)'
   # --- negatives (must all stay silent) ---
   write_case N1 'else -> VaultBrowseError.Failed(diagnosticDetail(e))'
   write_case N2 'SecretaryLog.warn(TAG, "unlock failed", e)'
@@ -271,6 +306,11 @@ self_test() {
   write_case N7 '/** Explains why Log.w(TAG, e) is never called directly. */'   # genuine KDoc one-liner
   write_case N8 ' * still mentions Log.w(TAG, e) from the bullet above'          # block-comment continuation
   write_case N9 '// Log.w(TAG, e) is what NOT to do'                             # //-only comment line
+  # N10/N11: the concatenation clause's tail character class must not fire on
+  # ordinary arithmetic or string concatenation that merely starts with one of
+  # the denylisted names. Proves `([^A-Za-z0-9_.(]|$)` — not trusting it.
+  write_case N10 'val total = count + errorCount'                                # arithmetic, not throwable concat
+  write_case N11 'val s = prefix + "text"'                                       # string concat, not throwable
 
   # --- allowlist control: exact-line matching, NOT substring ---
   # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
@@ -304,11 +344,11 @@ self_test() {
   hits="$(scan_sink "$d"; scan_launder "$d" B1 "$LAUNDER_RE"; scan_launder "$d" B2 "$TOSTRING_RE"; scan_launder "$d" C "$INTERP_RE")"
 
   local p
-  for p in A1 A2 A3 A4 A5 A6 B1a B1b B1c B1d B1e B2a B2b CM1 CM2 C1 C2; do
+  for p in A1 A2 A3 A4 A5 A6 B1a B1b B1c B1d B1e B2a B2b CM1 CM2 C1 C2 C3; do
     grep -q "/$p\.kt:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4 N5 N6 N7 N8 N9; do
+  for n in N1 N2 N3 N4 N5 N6 N7 N8 N9 N10 N11; do
     grep -q "/$n\.kt:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
   # The allowlist pair, asserted BY LINE NUMBER — this is what fails if
@@ -318,7 +358,7 @@ self_test() {
   grep -q "/X\.kt:2:" <<<"$hits" ||
     { echo "SELF-TEST FAILED: X.kt:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 17 positive controls caught, 9 negative controls clean"
+  echo "self-test OK — 18 positive controls caught, 11 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
