@@ -2,7 +2,6 @@ package org.secretary.app
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,6 +49,7 @@ import org.secretary.browse.uniffiVaultCreatePort
 import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.browse.ui.SettingsScreen
 import org.secretary.browse.ui.TrashScreen
+import org.secretary.diagnostics.SecretaryLog
 import java.io.File
 
 private const val TAG = "AppRoot"
@@ -435,7 +435,7 @@ fun AppRoot() {
                 try {
                     r.session.monitor.start()
                 } catch (e: Exception) {
-                    Log.w(TAG, "folder-change monitor failed to start", e)
+                    SecretaryLog.warn(TAG, "folder-change monitor failed to start", e)
                 }
                 onDispose {
                     r.session.monitor.stop()
@@ -569,7 +569,7 @@ private suspend fun unlockAndOpen(
                 // Common cause is no strong biometric enrolled on the device (Keystore key-gen
                 // rejects auth-required keys then). Surface it so a user who ticked "remember this
                 // device" isn't left silently un-enrolled with no idea why.
-                Log.w(TAG, "device enroll failed; password open still succeeded", e)
+                SecretaryLog.warn(TAG, "device enroll failed; password open still succeeded", e)
                 Toast.makeText(
                     context,
                     "Couldn't enable biometric unlock — check that a fingerprint/face is enrolled.",
@@ -579,7 +579,7 @@ private suspend fun unlockAndOpen(
         }
         return Route.Browse(session, folder)
     } catch (e: Exception) {
-        Log.w(TAG, "unlock/open failed; returning to unlock screen", e)
+        SecretaryLog.warn(TAG, "unlock/open failed; returning to unlock screen", e)
         Toast.makeText(context, unlockFailureMessage(e), Toast.LENGTH_LONG).show()
         return Route.Unlock()
     } finally {

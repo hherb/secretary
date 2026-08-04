@@ -2,7 +2,6 @@ package org.secretary.app
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
 import androidx.fragment.app.FragmentActivity
 import org.secretary.browse.CoordinatorBiometricAuthorizer
 import org.secretary.browse.FileDeviceUuidStore
@@ -17,6 +16,7 @@ import org.secretary.browse.VaultSelectionViewModel
 import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.uniffiVaultOpenPort
+import org.secretary.diagnostics.SecretaryLog
 import org.secretary.mirror.FilePendingFlushMarker
 import org.secretary.mirror.PendingFlushNotPersisted
 import org.secretary.mirror.RetryingCloudFolderPort
@@ -188,7 +188,7 @@ internal suspend fun openCloudBrowse(
                     flushWorkingToCloud = flushWorkingToCloud,
                 )
             } catch (e: Exception) {
-                Log.w(TAG, "cloud device enroll failed; password open still succeeded", e)
+                SecretaryLog.warn(TAG, "cloud device enroll failed; password open still succeeded", e)
                 // Non-fatal: route to Browse regardless (mirrors demo unlockAndOpen).
             }
         }
@@ -253,7 +253,7 @@ internal suspend fun openCloudTarget(
         VaultMirror(
             RetryingCloudFolderPort(
                 safCloudFolderPort(context, location.treeUri),
-                onRetry = { Log.i(TAG, it) },
+                onRetry = { SecretaryLog.info(TAG, it) },
             ),
         ),
         target.workingDir,
@@ -295,9 +295,9 @@ internal suspend fun openCloudTarget(
     } catch (e: Exception) {
         val failure = cloudOpenFailureRoute(e, target)
         if (failure.createdButNotSynced) {
-            Log.w(TAG, "cloud vault CREATED but not synced and not marked for retry — user must not lose it", e)
+            SecretaryLog.warn(TAG, "cloud vault CREATED but not synced and not marked for retry — user must not lose it", e)
         } else {
-            Log.w(TAG, "cloud open/create failed; returning to unlock with same target", e)
+            SecretaryLog.warn(TAG, "cloud open/create failed; returning to unlock with same target", e)
         }
         unsyncedCreateRoute(failure)
     } finally {

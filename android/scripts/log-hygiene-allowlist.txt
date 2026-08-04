@@ -48,6 +48,13 @@ android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	erro
 android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Error", modifier = Modifier.testTag("wizard-error")) }	Same as the line above — third wizard step, same VaultProvisioningError, same #473 sibling.
 android/browse-ui/src/main/kotlin/org/secretary/browse/ui/RecordEditForm.kt	B1	val detail = it.message?.takeIf(String::isNotBlank) ?: it::class.simpleName	On-screen copy in a PACKAGE module, not a log. Renders a carried VaultBrowseError diagnostic — the clearest #473 sibling. Note the redactions do NOT affect `message`, so the user still sees which field is bad.
 
-# ---- NON-THROWABLE RECEIVERS (rule B2) ----
-# Added in a later task, once the cleanup has settled which `.toString()`
-# calls survive.
+# ---- NON-THROWABLE RECEIVERS (rule B2 only) ----
+# Each entry asserts ONLY that the receiver is not a Throwable — a two-second
+# check against the surrounding code, not a security argument. Kept separate so
+# the SECURITY DECISIONS section above stays short enough that its entries keep
+# their weight. The durable fix is a type-aware lint; see the spec's Non-goals.
+
+android/app/src/main/kotlin/org/secretary/app/AppRoot.kt	B2	selectionVm.recordSelection(VaultLocation(label, uri.toString()))	Receiver is an android.net.Uri from the SAF picker.
+android/app/src/main/kotlin/org/secretary/app/AppRoot.kt	B2	pickedTreeUri = uri.toString()	Receiver is an android.net.Uri from the SAF picker.
+android/browse-ui/src/main/kotlin/org/secretary/browse/ui/SettingsScreen.kt	B2	value = value.toString(),	Receiver is a numeric settings value bound to a TextField.
+android/vault-access/src/main/kotlin/org/secretary/mirror/VaultMirror.kt	B2	base.relativize(file.toPath()).toString().replace(File.separatorChar, '/') to file.readBytes()	Receiver is a java.nio.file.Path being normalised to a vault-relative key.
