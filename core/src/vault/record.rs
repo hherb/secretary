@@ -159,8 +159,26 @@ pub enum RecordError {
     /// A duplicate map key appeared. RFC 8949 §5.4 forbids duplicates in
     /// canonical input; the codebase enforces this on every CBOR map we
     /// parse.
-    #[error("duplicate map key: {key}")]
-    DuplicateKey { key: String },
+    ///
+    /// Carries the map LEVEL and the offending entry's ordinal, never the
+    /// key itself: at the `"fields"` level the key is a decrypted user field
+    /// name, which must never reach a log, a crash reporter, or a platform
+    /// UI (#474). Same discipline as
+    /// [`crate::unlock::mnemonic::MnemonicError::UnknownWord`], which
+    /// carries a word index rather than the word.
+    ///
+    /// `field` identifies which map raised it — `"<record>"` (record-level
+    /// map), `"fields"` (the record's field map), or `"<field>"` (a single
+    /// field's map) — following the coarse entry-point-hint convention
+    /// already used by [`Self::FloatRejected`]. `index` is 0-based and
+    /// rendered 1-based.
+    #[error("duplicate map key at entry #{} of {field}", .index + 1)]
+    DuplicateKey {
+        /// Which map level raised the error. A compile-time constant.
+        field: &'static str,
+        /// 0-based ordinal of the duplicate entry within that map.
+        index: usize,
+    },
 
     /// Floats are forbidden in v1 records (canonical CBOR rule, §6.2 #4).
     /// `field` is `"<root>"` for floats found inside a record decoded via
@@ -578,13 +596,16 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     // copies fall into the unknown bucket.
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (k, v) in map {
+    for (index, (k, v)) in map.into_iter().enumerate() {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
-            return Err(RecordError::DuplicateKey { key });
+            return Err(RecordError::DuplicateKey {
+                field: "<record>",
+                index,
+            });
         }
         match key.as_str() {
             KEY_RECORD_UUID => {
@@ -652,13 +673,16 @@ fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordErro
         }
     };
     let mut out: BTreeMap<String, RecordField> = BTreeMap::new();
-    for (k, val) in entries {
+    for (index, (k, val)) in entries.into_iter().enumerate() {
         let fname = match k {
             Value::Text(s) => s,
             _ => return Err(RecordError::NonTextKey),
         };
         if out.contains_key(&fname) {
-            return Err(RecordError::DuplicateKey { key: fname });
+            return Err(RecordError::DuplicateKey {
+                field: "fields",
+                index,
+            });
         }
         let field = parse_field_map(val)?;
         out.insert(fname, field);
@@ -683,13 +707,16 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (k, val) in entries {
+    for (index, (k, val)) in entries.into_iter().enumerate() {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
-            return Err(RecordError::DuplicateKey { key });
+            return Err(RecordError::DuplicateKey {
+                field: "<field>",
+                index,
+            });
         }
         match key.as_str() {
             KEY_VALUE => {
@@ -1592,10 +1619,101 @@ mod tests {
         ));
         let bytes = cbor_map_bytes_unsorted(&entries);
 
+        // `record_entries_canonical` returns the 5 mandatory dummy-record
+        // entries already canonically sorted by key: fields (len 6),
+        // last_mod_ms / record_type / record_uuid (len 11, lexicographic:
+        // 'l' < 'r', then "record_type" < "record_uuid" at the 't'/'u'
+        // byte), created_at_ms (len 13). That's indices 0..4; the
+        // appended duplicate "record_type" copy above lands at index 5,
+        // which is where the second (matching) key is observed and the
+        // error fires — not index 1, which is where the FIRST, legitimate
+        // "record_type" entry sits in the sorted prefix.
         let err = decode(&bytes).expect_err("duplicate key must be rejected");
         assert!(
-            matches!(err, RecordError::DuplicateKey { ref key } if key == KEY_RECORD_TYPE),
-            "expected DuplicateKey {{ key: \"record_type\" }}, got {err:?}"
+            matches!(
+                err,
+                RecordError::DuplicateKey { field: "<record>", index } if index == 5
+            ),
+            "expected DuplicateKey {{ field: \"<record>\", index: 5 }}, got {err:?}"
+        );
+        // The decrypted key name must not survive into the message.
+        assert!(
+            !format!("{err}").contains(KEY_RECORD_TYPE),
+            "the map key leaked into the message: {err}"
+        );
+    }
+
+    /// `record.rs` — the `fields` map. THE site the issue names: `key`
+    /// here is a decrypted user field name, not a spec constant.
+    #[test]
+    fn duplicate_key_in_fields_map_reports_index_not_the_field_name() {
+        const SECRET_FIELD_NAME: &str = "amex-cvv";
+
+        // The `take_fields_map` duplicate check (`out.contains_key`) only
+        // fires once the FIRST occurrence of the field name has been
+        // fully parsed and inserted into `out`, so — unlike the brief's
+        // sketch — the first entry's inner map must be a complete,
+        // well-formed field map (value + last_mod + device_uuid), or
+        // `parse_field_map` rejects it with `MissingField` before the
+        // second occurrence is ever reached. The second (duplicate)
+        // entry's inner map is never parsed, so its contents don't matter.
+        let field_entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(SECRET_FIELD_NAME.into()),
+                Value::Map(vec![
+                    (
+                        Value::Text(KEY_VALUE.into()),
+                        Value::Text("4111111111111111".into()),
+                    ),
+                    (Value::Text(KEY_LAST_MOD.into()), Value::Integer(1.into())),
+                    (
+                        Value::Text(KEY_DEVICE_UUID.into()),
+                        Value::Bytes(vec![0u8; RECORD_UUID_LEN]),
+                    ),
+                ]),
+            ),
+            (
+                Value::Text(SECRET_FIELD_NAME.into()),
+                Value::Map(vec![(
+                    Value::Text(KEY_VALUE.into()),
+                    Value::Text("duplicate".into()),
+                )]),
+            ),
+        ];
+
+        let err = take_fields_map(Value::Map(field_entries))
+            .expect_err("duplicate field name must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                RecordError::DuplicateKey { field: "fields", index } if index == 1
+            ),
+            "expected DuplicateKey {{ field: \"fields\", index: 1 }}, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains(SECRET_FIELD_NAME),
+            "THE #474 leak: decrypted field name in the message: {err}"
+        );
+    }
+
+    /// `record.rs` — the field-level map.
+    #[test]
+    fn duplicate_key_in_field_map_reports_index_and_field_hint() {
+        let entries: Vec<(Value, Value)> = vec![
+            (Value::Text(KEY_VALUE.into()), Value::Text("a".into())),
+            (Value::Text(KEY_VALUE.into()), Value::Text("b".into())),
+        ];
+
+        let err = parse_field_map(Value::Map(entries))
+            .expect_err("duplicate field-level key must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                RecordError::DuplicateKey { field: "<field>", index } if index == 1
+            ),
+            "expected DuplicateKey {{ field: \"<field>\", index: 1 }}, got {err:?}"
         );
     }
 
