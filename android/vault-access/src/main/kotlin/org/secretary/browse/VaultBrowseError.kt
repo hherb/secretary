@@ -53,12 +53,12 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   (`ffi/.../purge/orchestration.rs:153`), so no block NAME reaches them.
      * - [ReauthFailed]: built Android-side at the biometric gate from fixed
      *   labels.
-     * - [Failed]: gated at construction — every producer passes either
-     *   `diagnosticDetail` output or a fixed Kotlin string literal (never a
-     *   raw fold of Rust/JDK content). Four of the eight producers are fixed
-     *   literals, not `diagnosticDetail` calls: `UniffiVaultOpenPort.kt:238,
-     *   249,377` and `UniffiVaultDeviceSlotPort.kt:34`. Scoped to
-     *   `VaultBrowseError.Failed` ONLY.
+     * - [Failed]: gated at construction — every producer passes `diagnosticDetail`
+     *   output, a fixed Kotlin string literal, or both (never raw Rust/JDK content).
+     *   Nine producers: four gated (`BrowseMapping.kt:48, RecordEditModel.kt:117,162,
+     *   VaultBrowseModel.kt:113`); four literals (`UniffiVaultOpenPort.kt:238,249,377,
+     *   UniffiVaultDeviceSlotPort.kt:34`); one hybrid, fixed prefix plus `diagnosticDetail`
+     *   (`UniffiVaultOpenPort.kt:253`). Scoped to `VaultBrowseError.Failed` ONLY.
      *   [org.secretary.sync.VaultSyncError] has its own arm of the same name
      *   ([org.secretary.sync.VaultSyncError.Failed]) that this verdict does
      *   NOT cover — one of ITS two producers is a raw, ungated pass-through,
