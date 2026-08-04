@@ -309,8 +309,17 @@ pub enum BlockError {
 
     /// A plaintext map had a duplicate key. RFC 8949 §5.4 forbids
     /// duplicates; the decoder rejects them.
-    #[error("duplicate map key in block plaintext: {key}")]
-    DuplicateKey { key: String },
+    ///
+    /// Carries the map level and the offending entry's ordinal, never the
+    /// key: this map is DECRYPTED block plaintext, so the key is user
+    /// content (#474). Mirrors [`crate::vault::record::RecordError::DuplicateKey`].
+    #[error("duplicate map key at entry #{} of {field}", .index + 1)]
+    DuplicateKey {
+        /// Which map level raised the error. A compile-time constant.
+        field: &'static str,
+        /// 0-based ordinal of the duplicate entry within that map.
+        index: usize,
+    },
 
     /// Floats are forbidden in v1 block plaintext (canonical CBOR rule,
     /// `docs/crypto-design.md` §6.2 #4). `field` carries the entry-point
@@ -999,13 +1008,16 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (k, v) in map {
+    for (index, (k, v)) in map.into_iter().enumerate() {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(BlockError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
-            return Err(BlockError::DuplicateKey { key });
+            return Err(BlockError::DuplicateKey {
+                field: "<block>",
+                index,
+            });
         }
         match key.as_str() {
             KEY_BLOCK_VERSION => {
@@ -1825,6 +1837,23 @@ mod tests {
     use super::*;
     use crate::vault::record::{RecordField, RecordFieldValue};
 
+    /// Encode a list of `(key, value)` entries as a definite-length CBOR
+    /// map *without* canonical sorting. Length prefix uses ciborium's
+    /// shortest-form rules (so the only non-canonical aspect is key
+    /// order). For maps with up to 23 entries this produces `0xa0 + n`
+    /// followed by entries in the order given.
+    ///
+    /// Mirrors `record.rs`'s private test helper of the same name (no
+    /// shared test-utils home for this one-liner; both modules keep
+    /// their own copy rather than promoting a cross-module dependency
+    /// for a single `ciborium::ser::into_writer` call).
+    fn cbor_map_bytes_unsorted(entries: &[(Value, Value)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries.to_vec()), &mut buf)
+            .expect("ciborium encode of unsorted map");
+        buf
+    }
+
     /// Smoke test: build a minimal [`BlockHeader`] and a minimal
     /// [`BlockPlaintext`] (one record), encode and decode each, assert
     /// equality, and manually cross-check `header.block_uuid ==
@@ -2285,5 +2314,44 @@ mod tests {
             BlockError::Sig(SigError::Ed25519VerifyFailed) => {}
             other => panic!("expected BlockError::Sig(Ed25519VerifyFailed), got {other:?}"),
         }
+    }
+
+    /// The #474 sibling the issue does not name: `block.rs:1008` reads a map
+    /// key from decrypted block plaintext. Unlike `record.rs`'s `<record>`-
+    /// level test, this fixture is a bare 2-entry map (not a full
+    /// canonical-sorted entry list with a duplicate appended), so there is
+    /// no sort to reason about: `cbor_map_bytes_unsorted` serialises the
+    /// two entries in the exact order given and `parse_plaintext_map`
+    /// decodes them in that same order. Entry 0 (`block_name` = "payroll")
+    /// is the first sighting of the key and inserts cleanly; entry 1
+    /// (`block_name` = "payroll-dup") is the duplicate and is where the
+    /// error fires, landing at index 1.
+    #[test]
+    fn duplicate_key_in_block_plaintext_reports_index_not_the_key() {
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("payroll".into()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("payroll-dup".into()),
+            ),
+        ];
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let err = decode_plaintext(&bytes).expect_err("duplicate key must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                BlockError::DuplicateKey { field: "<block>", index } if index == 1
+            ),
+            "expected DuplicateKey {{ field: \"<block>\", index: 1 }}, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains(KEY_BLOCK_NAME),
+            "the map key leaked into the message: {err}"
+        );
     }
 }
