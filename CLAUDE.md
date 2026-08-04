@@ -80,6 +80,13 @@ bash ffi/scripts/check-lean-binding.sh
 # known-negative). Pure grep — runs on Linux, wired into test.yml.
 bash ios/scripts/check-public-log-hygiene.sh --self-test
 bash ios/scripts/check-public-log-hygiene.sh
+
+# Assert no raw Throwable reaches logcat (#472). logcat has NO redaction concept,
+# so rule A pins `android.util.Log` to one sanctioned file (SecretaryLog) whose
+# signatures make the unsafe 3-arg call unrepresentable; rules B1/B2/C deny
+# hand-rendering a throwable into a String. Same --self-test-first discipline.
+bash android/scripts/check-log-hygiene.sh --self-test
+bash android/scripts/check-log-hygiene.sh
 ```
 
 ### Python paths
@@ -198,6 +205,31 @@ editing its content does not, so a bypass line cannot be quietly repurposed. Add
 an entry is a security decision; rules 1 and 2 deny by default, rule 3 (bare
 `"\(error)"` interpolation) is an explicitly-labelled best-effort denylist because
 no line-based matcher can cover that class without parsing Swift.
+
+### Kotlin log hygiene: there is no `.public` to opt into (#472)
+
+logcat has **no redaction concept**. There is no `privacy:` qualifier to set —
+every line is readable via `adb logcat` on a debuggable build and is captured
+into bug reports, so every line is the equivalent of iOS's `privacy: .public`.
+The sink itself is therefore what gets guarded, not a marker on it.
+
+- **`SecretFreeThrowable`** ([android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt](android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt)) is the allowlist, and declaring it is a **security decision** — the same claim `SecretFreeError` makes on iOS. It is a *rendering* interface: an arm that is secret-bearing overrides `diagnosticDescription` and redacts at source instead of the whole type being excluded.
+- **Kotlin has no retroactive conformance.** `extension CocoaError: SecretFreeError {}` has no Kotlin equivalent, so JDK, Android-framework and uniffi-generated throwables can *never* implement the interface — and those are exactly the types that arrive at a `catch (e: Exception)`. The deny path is the **normal** path here, not the degenerate one. That is why `diagnosticDetail` appends the **cause chain as fully-qualified type names**: a class name is a compile-time constant and cannot carry runtime data, so the chain is as fail-closed as a bare marker while recovering most of what the stack trace was worth.
+- **`SecretaryLog`** ([android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt](android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt)) is the only file in the tree permitted to reference `android.util.Log`, and it has **no overload that hands a `Throwable` to it**. The three-argument `Log.w(tag, msg, throwable)` form prints `toString()` — class name plus message — for the throwable and every cause, so making it unrepresentable at call sites is the whole mechanism. This is the `foldDiagnostic` analogue: policy applied once, in one place.
+- **`VaultBrowseError.SaveCryptoFailure` must stay redacted**, and iOS is not a precedent for removing it. iOS's `VaultAccessError` has no `.saveCryptoFailure` case at all, so the arm falls to `VaultErrorMapping.swift:53`'s `default -> .other(diagnosticDetail(e))`, which is already gated. Android's `BrowseMapping.kt:27` maps it **explicitly** and carries the raw Rust detail — which, via the bridge's fold of `VaultError::Record(_)`, is `RecordError::DuplicateKey`'s decrypted CBOR field name. The divergence is in the mapper, not the policy. Do not "align the platforms" by deleting the redaction.
+
+Adding a log site means calling `SecretaryLog`; adding an error type that reaches
+one means declaring it `SecretFreeThrowable` after review. Forgetting the second
+degrades a log line to `<undisclosed …>` — it never leaks.
+`android/scripts/check-log-hygiene.sh` enforces the first; nothing but review
+enforces the second.
+
+The allowlist (`android/scripts/log-hygiene-allowlist.txt`) is keyed on the
+**exact trimmed source line**, never a substring — same semantics and same
+reasoning as #467's. It is split into two sections by review weight: *security
+decisions* (rules A/B1/C — a value that can carry a secret) and *non-throwable
+receivers* (rule B2 only — the receiver simply is not a `Throwable`). Keeping
+the first section short is what keeps its entries meaningful.
 
 ### Memory hygiene: zeroize discipline
 
