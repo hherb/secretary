@@ -1,5 +1,7 @@
 package org.secretary.browse
 
+import org.secretary.diagnostics.diagnosticDetail
+
 /** Plain value compare of the typed password and its confirmation. Not constant-time, and it need
  *  not be: both are caller-owned local buffers (user-typed), neither is compared against a stored
  *  secret. */
@@ -68,7 +70,7 @@ class VaultProvisioningViewModel(
         } catch (e: VaultProvisioningError) {
             error = e
         } catch (e: Exception) {
-            error = VaultProvisioningError.CreateFailed(e.message ?: e.toString())
+            error = VaultProvisioningError.CreateFailed(diagnosticDetail(e))
         } finally {
             isCreating = false
         }

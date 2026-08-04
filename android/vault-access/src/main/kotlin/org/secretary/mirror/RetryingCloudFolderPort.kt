@@ -1,5 +1,7 @@
 package org.secretary.mirror
 
+import org.secretary.diagnostics.diagnosticDetail
+
 /**
  * Backoff schedule + attempt budget for [RetryingCloudFolderPort]. No magic numbers: every value
  * is a named field; [CLOUD_DEFAULT] is the production policy tuned for Google Drive's
@@ -99,9 +101,9 @@ class RetryingCloudFolderPort(
                 return block()
             } catch (e: CloudFolderException) {
                 if (attempt >= policy.maxAttempts) {
-                    throw CloudFolderException("$op failed after ${policy.maxAttempts} attempts: ${e.message}")
+                    throw CloudFolderException("$op failed after ${policy.maxAttempts} attempts: ${diagnosticDetail(e)}")
                 }
-                onRetry("$op attempt $attempt/${policy.maxAttempts} failed: ${e.message}")
+                onRetry("$op attempt $attempt/${policy.maxAttempts} failed: ${diagnosticDetail(e)}")
                 sleep(backoffDelayMs(attempt, policy))
                 attempt++
             }

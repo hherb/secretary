@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-02-467-public-log-secret-free-guard-shipped.md
+docs/handoffs/2026-08-04-472-android-logcat-hygiene-gate-shipped.md

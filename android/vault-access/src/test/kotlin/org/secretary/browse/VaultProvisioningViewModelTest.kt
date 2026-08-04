@@ -80,6 +80,21 @@ class VaultProvisioningViewModelTest {
     }
 
     @Test
+    fun `CreateFailed does not carry an unconformed exception's message`() = runTest {
+        // #472 regression: create()'s catch (e: Exception) must route through diagnosticDetail,
+        // not e.message/e.toString(). A raw (non-VaultProvisioningError) throwable stands in for an
+        // unmapped FFI exception; its message must never reach the carried error's detail.
+        val sentinel = "s3cr3t-sentinel-472"
+        val port = FakeVaultCreatePort(rawError = RuntimeException(sentinel))
+        val m = VaultProvisioningViewModel(port, FakeVaultLocationStore())
+        m.chooseFolder(tree, "My Vault")
+        m.create("/tmp/work", pw("pw"), pw("pw"))
+        val err = m.error as VaultProvisioningError.CreateFailed
+        assertFalse(err.detail.contains(sentinel), err.detail)
+        assertTrue(err.detail.contains("<undisclosed "), err.detail)
+    }
+
+    @Test
     fun `acknowledge zeroizes the phrase and completes with the location`() = runTest {
         val store = FakeVaultLocationStore()
         val port = FakeVaultCreatePort(phrase = "alpha bravo".toByteArray())

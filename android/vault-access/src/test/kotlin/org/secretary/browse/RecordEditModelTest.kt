@@ -165,6 +165,22 @@ class RecordEditModelTest {
     }
 
     @Test
+    fun `Failed does not carry an unconformed exception's message`() = runTest {
+        // #472 regression: commit()'s catch (e: Exception) must route through diagnosticDetail, not
+        // e.toString(). RuntimeException is not SecretFreeThrowable, so its message must never reach
+        // the carried error's detail — only the gated marker may. Proven by mutation: reverting this
+        // catch site to Failed(e.toString()) must make this test fail.
+        val sentinel = "s3cr3t-sentinel-472"
+        val s = session(rawWriteThrowable = RuntimeException(sentinel))
+        val m = addModel(s)
+        m.setRecordType("note")
+        m.commit()
+        val err = m.error.value as VaultBrowseError.Failed
+        assertFalse(err.detail.contains(sentinel), err.detail)
+        assertTrue(err.detail.contains("<undisclosed "), err.detail)
+    }
+
+    @Test
     fun `blank tags are dropped on commit`() = runTest {
         val s = session()
         val m = addModel(s)

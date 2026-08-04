@@ -6,6 +6,9 @@ class FakeVaultCreatePort(
     private val phrase: ByteArray = "alpha bravo charlie".toByteArray(Charsets.UTF_8),
     private val vaultUuid: ByteArray = ByteArray(16),
     private val error: VaultProvisioningError? = null,
+    /** A non-[VaultProvisioningError] throwable to raise raw — models an unmapped FFI/uniffi
+     *  exception, so callers must fold it themselves (mirrors FakeVaultSession.rawWriteThrowable). */
+    private val rawError: Throwable? = null,
 ) : VaultCreatePort {
     data class Call(val folderPath: String, val displayName: String, val passwordSize: Int)
     val calls = mutableListOf<Call>()
@@ -19,6 +22,7 @@ class FakeVaultCreatePort(
     ): CreatedVault {
         calls.add(Call(folderPath, displayName, password.size))
         error?.let { throw it }
+        rawError?.let { throw it }
         val buf = phrase.copyOf()
         lastReturnedPhrase = buf
         return CreatedVault(phrase = buf, vaultUuid = vaultUuid.copyOf())

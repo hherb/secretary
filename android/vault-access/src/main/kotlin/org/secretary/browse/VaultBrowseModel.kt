@@ -3,6 +3,7 @@ package org.secretary.browse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.secretary.diagnostics.diagnosticDetail
 
 /** Presentation state of the single block-name dialog (create OR rename). */
 sealed interface BlockNameDialogState {
@@ -109,7 +110,7 @@ class VaultBrowseModel(
         } catch (e: Exception) {
             // Mirror iOS: an unexpected throwable from a field lambda must not escape reveal()
             // (would crash the UI). Fold to the generic Failed arm rather than propagate.
-            _error.value = VaultBrowseError.Failed(e.toString())
+            _error.value = VaultBrowseError.Failed(diagnosticDetail(e))
         }
     }
 

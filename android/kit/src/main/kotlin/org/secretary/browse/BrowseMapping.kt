@@ -1,5 +1,6 @@
 package org.secretary.browse
 
+import org.secretary.diagnostics.diagnosticDetail
 import uniffi.secretary.BlockSummary
 import uniffi.secretary.VaultException
 
@@ -44,7 +45,7 @@ internal fun mapVaultBrowseError(e: VaultException): VaultBrowseError = when (e)
     // iOS mapping BlockNotInTrash/BlockPurged -> .blockNotFound). e.detail is a free-text identifier.
     is VaultException.BlockNotInTrash -> VaultBrowseError.BlockNotFound(e.detail)
     is VaultException.BlockPurged -> VaultBrowseError.BlockNotFound(e.detail)
-    else -> VaultBrowseError.Failed(e.toString())
+    else -> VaultBrowseError.Failed(diagnosticDetail(e))
 }
 
 /** Pure uniffi `BlockSummary` → [BlockSummaryView] (metadata only; recipient list dropped). */

@@ -81,7 +81,11 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../scripts/lib/hygiene-allowlist.sh
+source "$SCRIPT_DIR/../../scripts/lib/hygiene-allowlist.sh"
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 readonly REPO_ROOT
 readonly SCAN_ROOT="$REPO_ROOT/ios"
 # NOT readonly: `--self-test` retargets it at a synthetic allowlist so the
@@ -113,24 +117,23 @@ is_generated_path() {
   [[ "$1" == *"/secretary.swift" || "$1" == *"/.build"*"/"* || "$1" == *"/.build-staging/"* ]]
 }
 
-# A `//`-comment line is prose, not a log call. Without this, the doc comments
-# that EXPLAIN this rule trip it.
-is_comment_line() { [[ "$1" =~ ^[[:space:]]*(///?|\*) ]]; }
+# A comment line is prose, not a log call — without that distinction, the doc
+# comments that EXPLAIN these rules trip them. `is_comment_line()` moved to
+# scripts/lib/hygiene-allowlist.sh (sourced above) in #475, together with the fix
+# for the `*/ <live code>` bypass the version that used to live here had: a line
+# starting `*/` was called prose, so
+#
+#     /*
+#     */ log.error("\(err.localizedDescription, privacy: .public)")
+#
+# was unscanned against rules 1-3. Swift and Kotlin share comment syntax, so the
+# two guards share the matcher rather than keeping two copies that can drift.
 
 # RULES 2 AND 3 ONLY — see the LIMITS block above for why the app targets are out
 # of scope and what that leaves open. RULE 1 still covers these files in full, so
 # an actual `.public` log line here is gated.
 is_app_ui_path() {
   [[ "$1" == *"/SecretaryApp/Sources/"* || "$1" == *"/SecretaryMacApp/Sources/"* ]]
-}
-
-# Strip leading/trailing whitespace so an allowlist entry survives re-indentation
-# but not a content edit.
-trim() {
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
 }
 
 # Count non-overlapping matches of ERE $1 in text $2. `|| true` keeps `pipefail`
@@ -141,29 +144,10 @@ count_matches() {
   printf '%s' "${n//[[:space:]]/}"
 }
 
-# Does rule $1's hit $2 (`<file>:<line>:<text>`) have an allowlist entry?
-#
-# The entry must match the file AND the EXACT trimmed source line. An earlier
-# version matched any substring, which meant the entry chosen for
-# BookmarkVaultLocationStore (`location.displayName`) exempted any FUTURE
-# `.public` line in that file that happened to mention the same identifier —
-# demonstrably including one rendering `err.localizedDescription` raw. Exact-line
-# matching costs a re-review whenever an exempted line is edited, which is the
-# correct price for a line that bypasses the only mechanism keeping secrets out
-# of the log store.
-allowlisted() {
-  local rule="$1" hit="$2" path text a_path a_rule a_line _reason
-  path="${hit%%:*}"
-  path="${path#"$REPO_ROOT"/}"
-  text="${hit#*:}"; text="${text#*:}"
-  text="$(trim "$text")"
-  [[ -f "$ALLOWLIST" ]] || return 1
-  while IFS=$'\t' read -r a_path a_rule a_line _reason; do
-    [[ -z "${a_path// }" || "$a_path" == \#* ]] && continue
-    [[ "$a_rule" == "$rule" && "$path" == "$a_path" && "$text" == "$a_line" ]] && return 0
-  done < "$ALLOWLIST"
-  return 1
-}
+# `trim()` and `allowlisted()` now live in scripts/lib/hygiene-allowlist.sh,
+# sourced above — shared with the Android guard so the exact-line matcher has
+# exactly one copy. See that file's header for the $ALLOWLIST/$REPO_ROOT
+# contract `allowlisted()` depends on.
 
 # RULE 1 + the privacy-literal check. Prints offending hits.
 scan_public() {
@@ -205,13 +189,9 @@ scan_launder() {
   done < <(grep -rn --include='*.swift' -E "$re" "$root" 2>/dev/null || true)
 }
 
-# `SELF_TEST_TMP` is deliberately script-scoped, NOT `local`: the `EXIT` trap runs
-# after the function's frame is gone, so a `local` would be unset by then and
-# `set -u` would turn the cleanup itself into a non-zero exit — which looked
-# exactly like a self-test failure while the matchers were in fact fine.
-SELF_TEST_TMP=""
-# shellcheck disable=SC2329  # invoked indirectly, via `trap cleanup_self_test EXIT`
-cleanup_self_test() { [[ -n "$SELF_TEST_TMP" ]] && rm -rf "$SELF_TEST_TMP"; }
+# `SELF_TEST_TMP` and `cleanup_self_test` now live in
+# scripts/lib/hygiene-allowlist.sh, sourced above (same script-scoped-not-local
+# rationale as documented there).
 
 # Every control BOTH adversarial reviews used to defeat an earlier version, so a
 # regression to default-allow cannot pass. A check never observed failing is
@@ -249,6 +229,15 @@ self_test() {
   # identifier-named RULE 2, and the one construct RULE 2 cannot see.
   write_case P17 'return .other("boom: \(error)")'
   write_case P18 'return .other("boom: \(caught)")'
+  # --- COMMENT-HOLE positives (must all be caught) ---
+  # P19/P20 are line 2 of a two-line `/*` … `*/` comment, i.e. REAL CODE. The
+  # pre-#475 `is_comment_line` called any `*`-prefixed line prose, so both were
+  # unscanned against rules 1-3. Found on Android (#475 review, proven there by
+  # execution) and shared verbatim by Swift, which has the same comment syntax.
+  # These pin the fix on THIS guard, not only on the Android one, because the
+  # matcher now lives in scripts/lib/hygiene-allowlist.sh and serves both.
+  write_case P19 '*/ log.error("x: \(err.localizedDescription, privacy: .public)")'
+  write_case P20 '*/ return .other(String(describing: error))'
   # --- negatives (must all pass) ---
   write_case N1  'log.error("x: \(diagnosticDetail(error), privacy: .public)")'
   write_case N2  'log.error("x: \(diagnosticDetail(error), privacy:.public)")'
@@ -258,6 +247,11 @@ self_test() {
   write_case N5  'log.error("a: \(diagnosticDetail(a), privacy: .public) b: \(diagnosticDetail(b), privacy: .public)")'
   # RULE 3 must anchor on the WHOLE identifier: `\(errorCount)` is not `\(error)`.
   write_case N6  'label = "\(errorCount) failures, \(errors) total"'
+  # N7/N8: genuine prose the P19/P20 fix must NOT over-correct into scanning —
+  # a doc-comment continuation line and a closing line, both mentioning a
+  # construct rule 2 would otherwise catch. Non-vacuous by construction.
+  write_case N7  ' * never call String(describing: error) at a .public site'
+  write_case N8  ' * see String(describing: error) above for why not */'
   # --- allowlist control: exact-line matching, NOT substring ---
   # ONE file, TWO lines. Line 1 is the allowlist entry verbatim; line 2 is a
   # DIFFERENT line in the SAME file sharing the entry's distinctive substring
@@ -290,11 +284,11 @@ self_test() {
   hits="$(scan_public "$d"; scan_launder "$d" 2 "$LAUNDER_RE"; scan_launder "$d" 3 "$INTERP_RE")"
 
   local p
-  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18; do
+  for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17 P18 P19 P20; do
     grep -q "/$p\.swift:" <<<"$hits" || { echo "SELF-TEST FAILED: no hit on positive control $p" >&2; fails=1; }
   done
   local n
-  for n in N1 N2 N3 N4 N5 N6; do
+  for n in N1 N2 N3 N4 N5 N6 N7 N8; do
     grep -q "/$n\.swift:" <<<"$hits" && { echo "SELF-TEST FAILED: fired on negative control $n" >&2; fails=1; }
   done
   # The allowlist pair, asserted BY LINE NUMBER — this is what fails if exact-line
@@ -304,7 +298,7 @@ self_test() {
   grep -q "/A\.swift:2:" <<<"$hits" ||
     { echo "SELF-TEST FAILED: A.swift:2 escaped via its file's allowlist entry (substring match?)" >&2; fails=1; }
   [[ $fails -eq 0 ]] || return 1
-  echo "self-test OK — 19 positive controls caught, 7 negative controls clean"
+  echo "self-test OK — 21 positive controls caught, 9 negative controls clean"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then

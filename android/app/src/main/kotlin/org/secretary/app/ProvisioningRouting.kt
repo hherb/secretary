@@ -1,5 +1,6 @@
 package org.secretary.app
 
+import org.secretary.browse.hexOfBytes
 import java.io.File
 import java.security.MessageDigest
 
@@ -26,15 +27,8 @@ enum class FolderPickTarget { None, SelectExisting, WizardParent }
  * stays keyed by the real vault UUID (via `syncStateDir` + the manifest's `vault_uuid` passed to
  * `makeVaultSync`) — that keying is unchanged.
  */
-internal fun cloudVaultKey(treeUri: String): String {
-    val digest = MessageDigest.getInstance("SHA-256").digest(treeUri.toByteArray(Charsets.UTF_8))
-    val sb = StringBuilder(digest.size * 2)
-    for (b in digest) {
-        val v = b.toInt() and 0xff
-        sb.append("0123456789abcdef"[v ushr 4]).append("0123456789abcdef"[v and 0x0f])
-    }
-    return sb.toString()
-}
+internal fun cloudVaultKey(treeUri: String): String =
+    hexOfBytes(MessageDigest.getInstance("SHA-256").digest(treeUri.toByteArray(Charsets.UTF_8)))
 
 /**
  * The working directory for a cloud vault identified by its [treeUri], under `filesDir/working/`
