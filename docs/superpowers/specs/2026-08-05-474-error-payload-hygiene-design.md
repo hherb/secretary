@@ -201,6 +201,39 @@ Expected allowlist size: **six entries**, all in one reviewed section. Keeping i
 that small is what keeps each entry meaningful — the same reasoning recorded for
 the two log-hygiene allowlists.
 
+**Post-implementation update (round 2 review, #474 guard PR).** The guard's
+actual RED landing reports **17** violations, not 6, and not all of them are
+Group 3 candidates in the sense above:
+
+- The 9 sites originally scoped here, unchanged.
+- **2 more `String`/nested-third-party sites the original review missed**:
+  `VaultError::Io { source: std::io::Error, .. }` (`vault/mod.rs:157`) and
+  `SyncError::ConflictCopyScanIoFailed { source: std::io::Error }`
+  (`sync/error.rs:35`). Both use `#[source]`, not `#[from]` — the review that
+  produced this doc's Group 1/2/3 split checked `#[from]` sites only, so
+  these were never classified at all. `source: std::io::Error` is squarely
+  "not provably data-free" (a raw OS error can carry a filesystem path); it
+  needs the SAME `&'static str` + `CborFault`-style treatment as Group 1, not
+  a bare allowlist entry, unless review concludes the path text is
+  acceptable to disclose here specifically.
+- **6 `UNPARSED` findings**, a category this doc did not anticipate because
+  the original guard design (below) didn't have a fail-closed answer for "I
+  don't recognise this structure" — see the round-2 addition to §4. All 6 are
+  a placeholder referencing a module-level `pub const NAME: usize = N;` /
+  `pub const NAME: u8 = N;` via Rust's captured-identifier format syntax
+  (`{CARD_VERSION_V1}`, `{MAX_DISPLAY_NAME_BYTES}`, `{ML_KEM_768_CT_LEN}`,
+  `{BLOCK_UUID_LEN}`, `{ED25519_SIG_LEN}`, `{RECORD_UUID_LEN}` — in
+  `identity/card.rs`, `vault/block.rs` x3, `vault/record.rs`). Each is
+  verified data-free by inspection (a numeric compile-time constant, not a
+  field), but the guard has no field-based model for "this identifier
+  resolves to an in-scope `const`, not `self.<field>`" — by design it cannot
+  silently pass an unrecognised construct, so these need a reviewed allowlist
+  entry (or the guard growing a const-aware tier) rather than a code change.
+
+The true count is **17**, and the "six entries, one reviewed section" framing
+above understates both the size AND the composition of what actually needs
+review. Task 9 (allowlist authoring) inherits this as its real scope.
+
 ### 4. The guard — `scripts/check-error-payload-hygiene.py`
 
 Run via `uv` (repo precedent: `core/tests/python/spec_test_name_freshness.py`),
@@ -211,11 +244,63 @@ field types of the variant it is attached to. If the format string interpolates 
 field whose declared type is not in the provably-data-free set, and the
 attribute's exact trimmed source line is not allowlisted, fail.
 
-Provably-data-free types: `&'static str`, all integer primitives, `bool`,
-`[u8; N]`, and `CborFault`. Everything else — `String`, `Vec<u8>`, `PathBuf`,
-`Box<dyn …>`, any unrecognised type — denies. **Default-deny:** an unrecognised
-type name is a failure, not a pass, so a new payload type cannot slip through by
-being unfamiliar to the matcher.
+**Post-implementation update (round 1 + round 2 review).** The rule as actually
+implemented is a THREE-tier data-free test, not the single flat set this section
+originally described — the flat set alone made the real scan report 24
+false-shaped violations that were really just the guard not knowing two
+legitimate patterns:
+
+1. **Literal types**: `&'static str`, all integer primitives, `bool`,
+   `[u8; N]`, `Option<T>` of one of these, and `CborFault`. Everything else —
+   `String`, `Vec<u8>`, `PathBuf`, `Box<dyn …>`, any unrecognised type —
+   denies, as originally specified.
+2. **Recursion**: a field naming a `thiserror`-derived enum THIS SAME GUARD
+   ALSO SCANS somewhere under `core/src/**` is data-free, because the guard
+   already fails at that enum's own definition if any of its variants
+   interpolates a non-data-free field — re-flagging a `#[from]`/`#[source]`
+   forward to it adds no signal, only allowlist noise. **The caveat that
+   matters**: this soundness argument is "the guard fails at that enum's own
+   definition." Once a leaf variant there is ALLOWLISTED — a human decision,
+   made once, that does not automatically re-verify as the type evolves —
+   the honest statement becomes "fails OR IS ALLOWLISTED at that enum's own
+   definition." Concretely: allowlisting the four `VaultTomlError` `String`
+   variants (Group 3, above) means `VaultTomlError` is no longer "safe by an
+   enforced guarantee" so much as "safe by a reviewed exception" — and
+   `VaultError::Unlock(#[from] crate::unlock::UnlockError)` /
+   `UnlockError::MalformedVaultToml(#[from] VaultTomlError)` mean that
+   exception reaches `VaultError`, the type the FFI bridge folds into
+   `FfiVaultError` and projects to both platform UIs. The recursion tier is
+   sound; it is sound *through* an allowlist entry, not despite one, and that
+   is a materially different claim than "provably data-free."
+3. **One-level alias resolution**: a field whose declared type is a
+   `type X = Y;` alias resolves through ONE hop before classification
+   (`pub type Fingerprint = [u8; 16];` is exactly as data-free as the array
+   it names). An alias to something unresolvable, including a second alias
+   hop, still denies. Alias discovery is cross-file (an alias can be declared
+   in a different file than the field that uses it) but explicitly excludes
+   `impl`-block associated types (`type Ek = …;` inside a trait impl is a
+   per-impl binding, not a free-standing alias), and a bare/qualified
+   spelling that resolves to DIFFERENT right-hand sides in different files is
+   dropped from the resolvable set entirely rather than guessed at
+   (last-write-wins across files was proven to silently launder an unsafe
+   alias into a pass depending on file sort order).
+
+**Default-deny covers STRUCTURE, not just TYPE.** The original design left
+silent `continue`s in the scanner for "we couldn't figure out what this
+attribute decorates" and "this placeholder doesn't match any field we
+parsed." Both are now `UNPARSED` findings instead — an unrecognised construct
+fails closed the same way an unrecognised type does, rather than silently
+passing. Review found this had hidden two real classes: an intervening
+attribute between `#[error(...)]` and its variant (`#[cfg(...)]`,
+`#[allow(...)]`) defeated variant-lookup entirely, and `#[error(transparent)]`
+(live at `sync/error.rs:24`) has zero `{...}` placeholders yet delegates
+`Display` wholesale to its sole field. Both are now handled explicitly (skip
+intervening attributes; treat `transparent`'s sole field as interpolated),
+and everything else unrecognised is `UNPARSED` rather than skipped. A
+struct-shaped `thiserror` error (`#[error("...")] pub struct E { .. }`, not
+an enum variant) is also now scanned — not used in `core/src` today, but
+nothing in the language prevented it, and the original scanner only ever
+looked for enum variants.
 
 **Why Python rather than bash.** Associating an attribute with the following
 variant's *field types* requires reading a structure that spans lines. A
@@ -230,23 +315,48 @@ trimmed source line — never a substring, for the reason recorded in CLAUDE.md:
 substring entry exempts every future line in the same file containing it, which
 was demonstrably exploitable.
 
+**Post-implementation update (round 2 review): the key is the whole attribute,
+not one line.** "Exact trimmed source line" turned out not to be unique for a
+multi-line `#[error(...)]` attribute (live at `sync/error.rs:9`): keying on
+just the first physical line gives every such attribute the literal key
+`#[error(`, which any OTHER multi-line attribute in the same file shares —
+proven end-to-end in review, where one allowlist entry silently exempted two
+different, only-one-of-them-reviewed variants. That is the exact "a substring
+exempts every future match" failure the exact-line convention exists to
+prevent, recurring one level up. The key is now the ENTIRE `#[error(...)]`
+attribute's text, whitespace-collapsed to one line (still TAB-safe, still no
+embedded newlines, still matched as an exact string never a substring) —
+unique per attribute regardless of how many source lines it spans.
+
 **Matcher parity.** The two shell guards share one matcher via
 `scripts/lib/hygiene-allowlist.sh`; a Python guard cannot source it. Rather than
-a two-language pipeline, the Python guard implements exact-trimmed-line matching
-itself (strip, skip blanks and `#` comments, set membership) reusing the same
-**file format**, and a test feeds one shared fixture through both the bash and
-the Python parser and asserts identical accept/reject sets. The duplication is
-therefore non-silent. This is a deliberate departure from #475's
+a two-language pipeline, the Python guard implements the same exact-match
+convention itself (strip, skip blanks and `#` comments, set membership) reusing
+the same **file format**, and a test feeds one shared fixture through both the
+bash and the Python parser and asserts identical accept/reject sets. The
+duplication is therefore non-silent. This is a deliberate departure from #475's
 extract-don't-duplicate rule, justified by what that rule was protecting: the
 subtle, twice-buggy control was `is_comment_line`, and it has no counterpart in a
 tokenizing parser.
 
-**`--self-test`.** Two-sided, as on both platforms: positive controls that MUST
-fire (a `String` payload; a `Vec<u8>` payload; an unrecognised type; an
-interpolation inside a multi-line attribute) and negative controls that must stay
-silent (a `&'static str` payload; an integer; a `CborFault`; a non-interpolating
-message; an `#[error]` inside a comment). `--self-test` runs first in CI so a
-green guard is never vacuous.
+**`--self-test`.** Two-sided, as on both platforms, and materially larger than
+first scoped: **17 positive / 11 negative** controls, up from the original
+4-ish sketch. Round 2 review mutation-tested the original set and found three
+were vacuous (didn't actually exercise the mechanism they claimed to — e.g. a
+control for "escaped braces aren't placeholders" whose variant had no fields,
+so removing the escape-handling code couldn't possibly make it fire); those
+were rebuilt so the underlying mechanism is provably load-bearing, not just
+plausible-looking. The added controls cover, per finding: a `#[source]`
+attribute on a STRUCT field (not just a tuple field); a third-party nested
+error (`std::io::Error`) that must still deny through BOTH `#[from]` and
+`#[error(transparent)]`, proving the recursion tier isn't over-relaxed; a
+struct-shaped (non-enum-variant) error; an intervening `#[allow(...)]`
+attribute between `#[error(...)]` and its variant; a triple-brace
+`{{{name}}}` placeholder; and three `UNPARSED`-triggering shapes (an
+unrecognisable construct, an unresolvable placeholder name, an out-of-range
+positional placeholder). `--self-test` runs first in CI so a green guard is
+never vacuous — and now that claim is backed by a mutation pass, not just
+inspection.
 
 ### 5. Platform narrowing
 
