@@ -214,6 +214,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN_ROOT = REPO_ROOT / "core" / "src"
+# #480: the FFI bridge builds its own detail strings with `format!` and was,
+# until rule E2, entirely unscanned (see the module docstring's LIMITS —
+# updated by Task 3, not this comment, since that rewrite is a separate
+# task's job). Bridge files get their OWN discovery pass (`bridge_mode`)
+# rather than being folded into `SCAN_ROOT`'s: a bridge-local alias/const/
+# enum must not vouch for a core field, or vice versa.
+BRIDGE_SCAN_ROOT = REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src"
 ALLOWLIST_PATH = REPO_ROOT / "scripts" / "error-payload-hygiene-allowlist.txt"
 
 # Types whose every value is a compile-time constant or a pure number, and so
@@ -230,6 +237,25 @@ DATA_FREE_TYPES: frozenset[str] = frozenset(
         # The #474 classification type: a fieldless kind plus a byte offset.
         "CborFault",
         "crate::cbor::CborFault",
+    }
+)
+
+# #480/rule E2: field NAMES whose construction site rule E3 (Task 3) will
+# gate. A bridge field under one of these names, declared EXACTLY `String`,
+# is not a structural finding — its VALUE is checked at the construction
+# site instead of being denied outright by TYPE. Pinned to this exact set
+# (spec §3.2): `record_uuid_hex` / `device_uuid_hex` are deliberately NOT
+# members — those are DTO-carrying fields (sync/dto.rs, sync/status.rs), not
+# diagnostic text, and gating them here would launder real payload data
+# through a name that merely LOOKS like the diagnostic-hex convention.
+GATED_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "detail",
+        "uuid_hex",
+        "block_uuid_hex",
+        "recipient_fingerprint_hex",
+        "expected_fingerprint_hex",
+        "got_fingerprint_hex",
     }
 )
 
@@ -424,6 +450,34 @@ def is_data_free(
         if base in aliases:
             return _is_data_free_core(aliases[base], local_error_enums, denied)
     return False
+
+
+def is_bridge_field_safe(
+    name: str,
+    ty: str,
+    local_error_enums: frozenset[str] = frozenset(),
+    aliases: dict[str, str] | None = None,
+    foreign_names: frozenset[str] = frozenset(),
+) -> bool:
+    """True when a BRIDGE field is safe under rule E2's carve-out (#480).
+
+    Either it independently clears `is_data_free` — the ordinary tiers,
+    data-free by TYPE, exactly as core requires — or its declared type is
+    EXACTLY `String` under a name in `GATED_FIELD_NAMES`: data-free by
+    CONSTRUCTION SITE instead, which rule E3 (Task 3) gates. `normalize_type`
+    is applied to `ty` for the exact-`String` comparison so a field-level
+    `#[from]` / visibility prefix does not defeat the match; `Option<String>`,
+    `&str`, or any other near-miss spelling still denies — the carve-out is
+    for the literal named type, not "close enough."
+
+    Shared by BOTH of rule E2's uses: the `bridge_mode` carve-out on the
+    ordinary interpolated-field scan (`scan_source`), and the structural
+    all-fields sweep (`bridge_declaration_findings`) that also checks fields
+    the `#[error(...)]` message never mentions.
+    """
+    if is_data_free(ty, local_error_enums, aliases, foreign_names):
+        return True
+    return normalize_type(ty) == "String" and name in GATED_FIELD_NAMES
 
 
 # `enum Name` — used only to find enum bodies for `discover_declarations`;
@@ -1272,6 +1326,16 @@ class Finding:
     variant: str
     field: str
     field_type: str
+    # The allowlist's rule column. `E1` (interpolated-field scan, `core/src/**`
+    # and — under `bridge_mode` — the FFI bridge) is the default; rule `E2`
+    # (#480: the bridge's structural all-fields declaration sweep) is set
+    # explicitly by its two producers, `bridge_declaration_findings`. The
+    # column exists so the file format is byte-identical to the two shell
+    # guards' allowlists, which lets `scripts/lib/hygiene-allowlist.sh
+    # ::allowlisted` parse this file unchanged —
+    # `core/tests/error_payload_hygiene_parity.rs` exercises exactly that
+    # claim.
+    rule: str = "E1"
 
 
 ERROR_ATTR_RE = re.compile(r"#\[error\(", re.MULTILINE)
@@ -1454,6 +1518,7 @@ def scan_source(
     aliases: dict[str, str] | None = None,
     consts: frozenset[str] = frozenset(),
     foreign_names: frozenset[str] = frozenset(),
+    bridge_mode: bool = False,
 ) -> list[Finding]:
     """Find every `#[error]` variant/struct that interpolates a non-data-free
     field, PLUS every `#[error(...)]` attribute whose structure this guard
@@ -1479,6 +1544,21 @@ def scan_source(
     (`foreign_use_names`); every bare-name credit — tier 2, tier 3 and the
     const tier — is withdrawn for those spellings while this file is
     scanned.
+
+    `bridge_mode` (#480, rule E2) does TWO things, both scoped to
+    `ffi/secretary-ffi-bridge/src/**` — core behaviour (the default,
+    `bridge_mode=False`) is byte-identical to before this parameter existed:
+
+    1. Rule E2's carve-out on the ordinary interpolated-field check below:
+       `is_bridge_field_safe` replaces the bare `is_data_free` call, so a
+       `String` field named in `GATED_FIELD_NAMES` is not a finding here
+       (rule E3, Task 3, gates its construction site instead). Everything
+       else still denies exactly as core's `E1` does.
+    2. A STRUCTURAL sweep (`bridge_declaration_findings`, rule `E2`) over
+       EVERY parsed field of the declaration — interpolated or not — since
+       uniffi/PyO3 project every field regardless of what the `#[error(...)]`
+       message actually renders. This is what catches a platform-projected
+       `String` the `Display` text never mentions.
 
     Note `strip_comments`, NOT `discovery_view`: locating `#[error(`
     attributes and reading their message text needs the strings INTACT.
@@ -1559,6 +1639,26 @@ def scan_source(
             body = ""
         fields = parse_fields(body)
         ordered = list(fields.items())
+
+        # Rule E2, sweep 1 (#480): every PARSED field of a bridge
+        # declaration, interpolated or not — see `bridge_declaration_findings`.
+        # Runs UNCONDITIONALLY once fields are known, independent of whether
+        # the message below interpolates anything, is `transparent`, or is
+        # itself UNPARSED for an unrelated reason.
+        if bridge_mode:
+            decl_text = " ".join(f"{variant} {body}".split())
+            findings.extend(
+                bridge_declaration_findings(
+                    path_label,
+                    attr_line_no,
+                    variant,
+                    decl_text,
+                    fields,
+                    local_error_enums,
+                    aliases,
+                    foreign_names,
+                )
+            )
 
         # `#[error(transparent)]` delegates Display WHOLESALE to its (sole,
         # thiserror-required) field — that field is what gets interpolated
@@ -1662,7 +1762,17 @@ def scan_source(
             if fname in seen_fields:
                 continue
             seen_fields.add(fname)
-            if not is_data_free(ftype, local_error_enums, aliases, foreign_names):
+            # Rule E2 item 1 (#480): in bridge_mode, an interpolated field
+            # gets the SAME carve-out the structural sweep above uses —
+            # `String` under a `GATED_FIELD_NAMES` name is not a finding
+            # HERE (rule E3, Task 3, gates its construction site instead).
+            # Everything else denies exactly as core's E1 does today.
+            field_is_safe = (
+                is_bridge_field_safe(fname, ftype, local_error_enums, aliases, foreign_names)
+                if bridge_mode
+                else is_data_free(ftype, local_error_enums, aliases, foreign_names)
+            )
+            if not field_is_safe:
                 findings.append(
                     Finding(
                         path=path_label,
@@ -1674,6 +1784,200 @@ def scan_source(
                     )
                 )
     return findings
+
+
+def bridge_declaration_findings(
+    path_label: str,
+    line_no: int,
+    variant: str,
+    decl_text: str,
+    fields: dict[str, str],
+    local_error_enums: frozenset[str],
+    aliases: dict[str, str] | None,
+    foreign_names: frozenset[str],
+) -> list[Finding]:
+    """Rule E2's structural sweep (#480): every PARSED field of a bridge
+    declaration — interpolated or not, since uniffi/PyO3 project every field
+    regardless of what `#[error(...)]`'s message actually mentions — must
+    independently satisfy `is_bridge_field_safe`.
+
+    Shared by both of rule E2's producers: `scan_source`'s `bridge_mode`
+    sweep 1 (thiserror-derived declarations, anchored on their own
+    `#[error(` attribute) and `scan_bridge_plain_enums`'s sweep 2
+    (plain-derive `*Error`/`*Warning` enums with no such attribute to anchor
+    on). Both callers precompute `decl_text` — the whitespace-collapsed
+    `"<variant/struct name> <body>"` text — themselves, since sweep 1 has an
+    `#[error(...)]` attribute's surrounding context to draw on and sweep 2
+    does not.
+    """
+    out: list[Finding] = []
+    for fname, ftype in fields.items():
+        if is_bridge_field_safe(fname, ftype, local_error_enums, aliases, foreign_names):
+            continue
+        out.append(
+            Finding(
+                path=path_label,
+                line=line_no,
+                source_line=decl_text,
+                variant=variant,
+                field=fname,
+                field_type=ftype,
+                rule="E2",
+            )
+        )
+    return out
+
+
+# `enum Name` where NAME ends `Error` or `Warning` — rule E2's SECOND sweep
+# target (#480): a bridge enum following this codebase's own error/warning
+# naming convention but carrying NO `#[error(...)]` attribute anywhere in
+# its body — a plain `#[derive(Debug, ...)]`, not thiserror (e.g.
+# `SettingsWarning`, today's `SettingsParseError`). uniffi/PyO3 project
+# every field of such a type regardless of derive shape, so it needs the
+# same all-fields sweep a thiserror declaration gets via `scan_source`'s
+# `#[error(` anchor; this shape has no such anchor, so it is found by NAME
+# instead. A heuristic, not a language guarantee — see the module
+# docstring's LIMITS on pattern-based discovery generally.
+BRIDGE_PLAIN_ENUM_RE = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*(?:Error|Warning))\b")
+
+
+def _parse_enum_variant_fields(body: str) -> list[tuple[str, str, dict[str, str]]]:
+    """`(variant_name, collapsed_declaration_text, fields)` for every variant
+    in an enum BODY (`{...}`, outer braces included).
+
+    Mirrors `scan_source`'s own single-variant parse (`VARIANT_RE` + a
+    balanced field body + `parse_fields`), applied once per TOP-LEVEL
+    comma-separated member instead of once per `#[error(...)]` attribute:
+    `scan_bridge_plain_enums`'s target has no attribute to anchor on (that is
+    the whole reason it needed its own discovery pass), so it must walk
+    every variant in the body itself. `skip_attributes` handles a variant
+    carrying its own attribute (e.g. `#[non_exhaustive]`) the same way
+    `scan_source` does.
+    """
+    inner = body[1 : body.rindex("}")] if "}" in body else body[1:]
+    out: list[tuple[str, str, dict[str, str]]] = []
+    for part in split_top_level(inner):
+        text = skip_attributes(part.strip())
+        if not text:
+            continue
+        vm = VARIANT_RE.match(text)
+        if not vm:
+            continue
+        name = vm.group(1)
+        rest = text[len(name) :].lstrip()
+        if rest.startswith("{"):
+            fbody, _ = balanced_braces(rest)
+        elif rest.startswith("("):
+            fbody, _ = balanced_slice(rest, 0)
+        else:
+            fbody = ""
+        decl_text = " ".join(f"{name} {fbody}".split())
+        out.append((name, decl_text, parse_fields(fbody)))
+    return out
+
+
+def bridge_cfg_test_spans(raw: str) -> list[tuple[int, int]]:
+    r"""`cfg_test_spans`, computed over the DISCOVERY VIEW rather than
+    `strip_comments`.
+
+    `CFG_TEST_RE`'s own docstring states its `\btest\b` match is safe "on
+    the DISCOVERY VIEW specifically: string literals are blanked there" —
+    over `strip_comments` alone, a hypothetical
+    `#[cfg(feature = "test-utils")]` would false-positive-match and exclude
+    a SHIPPED declaration from the sweep, which is the fail-OPEN direction
+    for a discovery pass that only ever REMOVES a candidate from being
+    checked. `scan_bridge_plain_enums` locates its `enum` candidates on
+    `strip_comments` (matching the module docstring's "comments-blanked
+    view" — the same view `scan_source` itself uses to locate `#[error(`),
+    but every span this module computes preserves LENGTH and LINE COUNT
+    (`check_view_invariants` pins that), so an offset valid against ONE view
+    is valid against ANY of them; there is no need to re-derive the enum
+    match itself against `discovery_view`, only to compute the EXCLUSION
+    spans against it.
+    """
+    return cfg_test_spans(discovery_view(raw))
+
+
+def scan_bridge_plain_enums(
+    path_label: str,
+    raw: str,
+    local_error_enums: frozenset[str] = frozenset(),
+    aliases: dict[str, str] | None = None,
+    foreign_names: frozenset[str] = frozenset(),
+) -> list[Finding]:
+    """Rule E2's second sweep (#480) — see `BRIDGE_PLAIN_ENUM_RE`.
+
+    Skips any candidate whose body contains `#[error(` at all
+    (thiserror-derived; already swept by `scan_source`'s `bridge_mode` sweep
+    1, so re-sweeping here would double-report the same field under the same
+    rule) and any candidate starting inside a `#[cfg(test)]`-gated item
+    (`bridge_cfg_test_spans`) — a test-only declaration is not part of the
+    shipped crate and must not be swept, mirroring
+    `discover_declarations`'s identical exclusion for the E1 tiers.
+    """
+    src = strip_comments(raw)
+    excluded = bridge_cfg_test_spans(raw)
+    findings: list[Finding] = []
+    for m in BRIDGE_PLAIN_ENUM_RE.finditer(src):
+        if _inside(m.start(), excluded):
+            continue
+        brace = src.find("{", m.end())
+        if brace == -1:
+            continue
+        body, _ = balanced_braces(src[brace:])
+        if "#[error(" in body:
+            continue
+        line_no = src.count("\n", 0, m.start()) + 1
+        for variant, decl_text, fields in _parse_enum_variant_fields(body):
+            findings.extend(
+                bridge_declaration_findings(
+                    path_label,
+                    line_no,
+                    variant,
+                    decl_text,
+                    fields,
+                    local_error_enums,
+                    aliases,
+                    foreign_names,
+                )
+            )
+    return findings
+
+
+def discover_error_struct_names(raw: str) -> frozenset[str]:
+    """Bare names of every `#[error("...")]`-decorated STRUCT (thiserror's
+    other error shape — the attribute decorates the struct declaration
+    ITSELF, not a variant inside a body) in `raw`.
+
+    `discover_declarations`'s `local_error_enums` tier does not see these —
+    it only walks `ENUM_RE` bodies. This is a second, narrow pass reusing
+    the exact `#[error(` + `STRUCT_RE` recognition `scan_source` itself
+    performs, on the SAME comments-blanked view, so a struct this guard
+    scans is found the same way `scan_source` finds it rather than by a
+    second, potentially-divergent rule.
+
+    Feeds `scanned_error_type_names` (Task 3's E4 registry — see
+    `discover_scanned_error_type_names`) alongside the bare spellings of
+    `local_error_enums`.
+    """
+    src = strip_comments(raw)
+    names: set[str] = set()
+    for m in ERROR_ATTR_RE.finditer(src):
+        _, after = balanced_slice(src, m.end() - 1)
+        tail_raw = src[after:]
+        tail = (
+            tail_raw[tail_raw.find("]") + 1 :]
+            if tail_raw.lstrip().startswith("]")
+            else tail_raw
+        )
+        tail = skip_attributes(tail)
+        for line in tail.splitlines():
+            if line.strip():
+                sm = STRUCT_RE.match(line)
+                if sm:
+                    names.add(sm.group(1))
+                break
+    return frozenset(names)
 
 
 def balanced_braces(src: str) -> tuple[str, int]:
@@ -1697,17 +2001,6 @@ def balanced_braces(src: str) -> tuple[str, int]:
                 return src[: i + 1], i + 1
         i += 1
     return src, len(src)
-
-
-# This guard has exactly one rule. The column exists so the file format is
-# byte-identical to the two shell guards' allowlists, which lets
-# `scripts/lib/hygiene-allowlist.sh::allowlisted` parse this file unchanged —
-# the INTENT is a parity test in `core/tests/` exercising all three guards'
-# allowlists identically. That test does not exist yet (Task 9 territory);
-# nothing today actually proves the claim, so treat it as design intent, not
-# a checked guarantee — asserting otherwise would be exactly the kind of
-# false confidence this guard exists to avoid.
-RULE = "E1"
 
 
 def load_allowlist(path: Path) -> set[str]:
@@ -1745,50 +2038,52 @@ def load_allowlist(path: Path) -> set[str]:
     return entries
 
 
-def run_real_scan() -> int:
-    allowlist = load_allowlist(ALLOWLIST_PATH)
-    sources = [
-        (str(rs.relative_to(REPO_ROOT)), rs.read_text(encoding="utf-8"))
-        for rs in sorted(SCAN_ROOT.rglob("*.rs"))
-    ]
+def _discover_tier_inputs(
+    sources: list[tuple[str, str]],
+) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+    """`run_real_scan`'s Pass 1, factored out so it can run ONCE PER SCAN
+    ROOT (#480): discover every thiserror enum, type alias, and const across
+    THE WHOLE `sources` list before classifying anything — a field in
+    vault/mod.rs can reference an enum defined in vault/record.rs, and a
+    format string in vault/block.rs can capture a const imported from
+    crypto/kem.rs, so a per-file-only discovery pass would miss the
+    cross-file case entirely.
 
-    # Pass 1: discover every core-local thiserror enum, type alias, and
-    # const across THE WHOLE TREE before classifying anything — a field in
-    # vault/mod.rs can reference an enum defined in vault/record.rs, and a
-    # format string in vault/block.rs can capture a const imported from
-    # crypto/kem.rs, so a per-file-only discovery pass would miss the
-    # cross-file case entirely.
-    #
-    # Aliases are aggregated defensively: a bare (or qualified) spelling that
-    # resolves to DIFFERENT right-hand sides in different files is a name
-    # COLLISION, not one alias, and a plain last-write-wins dict.update
-    # merge means an unrelated, later-sorted file adding e.g.
-    # `type Foo = [u8; 16];` can silently launder an EXISTING, unsafe
-    # `type Foo = String;` defined elsewhere into a pass — proven live in
-    # review. A colliding spelling is dropped from the resolvable set
-    # entirely, so a lookup against it default-denies instead of guessing
-    # which definition was "real."
-    #
-    # `const` names get the SAME collision-drop, applied by `resolve_consts`
-    # over the flat cross-file declaration list: a bare spelling this guard
-    # saw declared more than once, or saw disqualified by a `static` /
-    # excluded-scope declaration anywhere, is not credited. An earlier round
-    # unioned them instead, on the argument that "a const's safety comes from
-    # the compiler, not its value." The premise is true; the conclusion does
-    # not follow, because the guard's operative claim is not "consts are
-    # safe" but "this placeholder RESOLVES TO a const" — a name-resolution
-    # claim a bare-name union does not establish. `static` is the concrete
-    # counter-witness (`find_const_shadows`), and it was reproduced
-    # end-to-end: a `static LEAKY_NAME: LazyLock<String>` capture that
-    # correctly denied on its own went silent the moment an unrelated,
-    # later-sorted file added `pub const LEAKY_NAME: usize = 16;`.
-    #
-    # `local_error_enums` still does NOT get the treatment, for the reason
-    # the LIMITS block records: it is a pure membership set, and any enum
-    # registered in it is by construction a real thiserror enum this guard
-    # scans, so two same-named local enums are both soundly "safe by
-    # recursion." Its bare-name risk is a FOREIGN collision, and that is
-    # handled per-file by `foreign_use_names` in pass 2.
+    Aliases are aggregated defensively: a bare (or qualified) spelling that
+    resolves to DIFFERENT right-hand sides in different files is a name
+    COLLISION, not one alias, and a plain last-write-wins dict.update merge
+    means an unrelated, later-sorted file adding e.g. `type Foo = [u8; 16];`
+    can silently launder an EXISTING, unsafe `type Foo = String;` defined
+    elsewhere into a pass — proven live in review. A colliding spelling is
+    dropped from the resolvable set entirely, so a lookup against it
+    default-denies instead of guessing which definition was "real."
+
+    `const` names get the SAME collision-drop, applied by `resolve_consts`
+    over the flat cross-file declaration list: a bare spelling this guard
+    saw declared more than once, or saw disqualified by a `static` /
+    excluded-scope declaration anywhere, is not credited. An earlier round
+    unioned them instead, on the argument that "a const's safety comes from
+    the compiler, not its value." The premise is true; the conclusion does
+    not follow, because the guard's operative claim is not "consts are
+    safe" but "this placeholder RESOLVES TO a const" — a name-resolution
+    claim a bare-name union does not establish. `static` is the concrete
+    counter-witness (`find_const_shadows`), and it was reproduced
+    end-to-end: a `static LEAKY_NAME: LazyLock<String>` capture that
+    correctly denied on its own went silent the moment an unrelated,
+    later-sorted file added `pub const LEAKY_NAME: usize = 16;`.
+
+    `local_error_enums` still does NOT get the treatment, for the reason
+    the LIMITS block records: it is a pure membership set, and any enum
+    registered in it is by construction a real thiserror enum this guard
+    scans, so two same-named local enums are both soundly "safe by
+    recursion." Its bare-name risk is a FOREIGN collision, and that is
+    handled per-file by `foreign_use_names` in Pass 2.
+
+    CALLED ONCE PER ROOT (core, bridge) — never merged: a bridge-local alias
+    or const must not vouch for a core field, or vice versa. Core's own
+    call site passes exactly the same `sources` list it always has, so core
+    findings stay byte-identical to before this function existed.
+    """
     local_error_enum_names: set[str] = set()
     alias_candidates: dict[str, set[str]] = {}
     declared_consts: list[str] = []
@@ -1809,15 +2104,102 @@ def run_real_scan() -> int:
         if len(rhs_set) == 1
     }
     consts = resolve_consts(declared_consts, frozenset(const_shadow_names))
+    return local_error_enums, aliases, consts
+
+
+def discover_scanned_error_type_names(
+    core_sources: list[tuple[str, str]],
+    bridge_sources: list[tuple[str, str]],
+    core_enums: frozenset[str],
+    bridge_enums: frozenset[str],
+) -> frozenset[str]:
+    """Every `#[error]`-bearing ENUM or STRUCT name this guard scans, under
+    EITHER root (#480) — the registry Task 3's rule E4 will use to verify
+    that an `impl GatedDetail for X` in `error/detail.rs` names a type this
+    guard itself independently checks (X's last path segment must be a
+    member): the same "safe by recursion" argument tier 2 of `is_data_free`
+    already makes for a FIELD reference to a local error enum.
+
+    ENUM names come from `core_enums` / `bridge_enums` — already computed by
+    `_discover_tier_inputs` (`discover_declarations`'s `local_error_enums`
+    tier) — filtered down to BARE spellings only: a qualified spelling like
+    `crate::vault::VaultError` names the SAME type as `VaultError`, and this
+    registry is meant to be checked against a bare LAST PATH SEGMENT, so the
+    qualified duplicates add nothing. STRUCT names are NOT part of that
+    tier at all (`discover_declarations` only walks `ENUM_RE` bodies) and
+    come from `discover_error_struct_names` instead, run over every file
+    under both roots.
+
+    Not consumed by rules E1/E2 — computed here, in `run_real_scan`'s own
+    discovery phase, so Task 3 only has to ADD a consumer rather than build
+    the cross-root discovery plumbing this function already does.
+    """
+    names = {n for n in core_enums if "::" not in n}
+    names |= {n for n in bridge_enums if "::" not in n}
+    for _, raw in core_sources:
+        names |= discover_error_struct_names(raw)
+    for _, raw in bridge_sources:
+        names |= discover_error_struct_names(raw)
+    return frozenset(names)
+
+
+def run_real_scan() -> int:
+    allowlist = load_allowlist(ALLOWLIST_PATH)
+    core_sources = [
+        (str(rs.relative_to(REPO_ROOT)), rs.read_text(encoding="utf-8"))
+        for rs in sorted(SCAN_ROOT.rglob("*.rs"))
+    ]
+    bridge_sources = [
+        (str(rs.relative_to(REPO_ROOT)), rs.read_text(encoding="utf-8"))
+        for rs in sorted(BRIDGE_SCAN_ROOT.rglob("*.rs"))
+    ]
+
+    # Pass 1, once per root — core's tier inputs come from ONLY core
+    # sources, bridge's from ONLY bridge sources; see `_discover_tier_inputs`.
+    core_enums, core_aliases, core_consts = _discover_tier_inputs(core_sources)
+    bridge_enums, bridge_aliases, bridge_consts = _discover_tier_inputs(bridge_sources)
+
+    # Task 3's E4 registry (#480): not consumed by E1/E2 — computing it on
+    # every real-scan run proves the cross-root discovery plumbing Task 3
+    # will build its rule on actually runs clean, rather than being an
+    # unexercised, unproven claim. Task 3's E4 reads `scanned_error_type_names`
+    # here once it has a consumer; unused until then.
+    scanned_error_type_names = discover_scanned_error_type_names(
+        core_sources, bridge_sources, core_enums, bridge_enums
+    )
 
     # Pass 2: the actual scan, now with tiers 2, 3, and 4 available — each
     # file's own foreign `use` bindings withdrawing the bare-name credits
-    # that file's namespace contradicts.
+    # that file's namespace contradicts. Core files scan EXACTLY as before
+    # this function grew a bridge half: same sources, same discovery inputs,
+    # same `scan_source` call (`bridge_mode` defaults False).
     violations: list[Finding] = []
-    for label, raw in sources:
+    for label, raw in core_sources:
         foreign = foreign_use_names(raw)
-        for f in scan_source(label, raw, local_error_enums, aliases, consts, foreign):
-            if f"{f.path}\t{RULE}\t{f.source_line}" in allowlist:
+        for f in scan_source(label, raw, core_enums, core_aliases, core_consts, foreign):
+            if f"{f.path}\t{f.rule}\t{f.source_line}" in allowlist:
+                continue
+            violations.append(f)
+
+    # Bridge files: rule E1's interpolated-field scan runs in `bridge_mode`
+    # (the carve-out — item 1), PLUS rule E2's two structural sweeps (items
+    # 2 and 3) — `scan_source` itself (sweep 1, thiserror-derived
+    # declarations) and `scan_bridge_plain_enums` (sweep 2, plain-derive
+    # `*Error`/`*Warning` enums with no `#[error(...)]` attribute at all).
+    for label, raw in bridge_sources:
+        foreign = foreign_use_names(raw)
+        findings = scan_source(
+            label,
+            raw,
+            bridge_enums,
+            bridge_aliases,
+            bridge_consts,
+            foreign,
+            bridge_mode=True,
+        )
+        findings += scan_bridge_plain_enums(label, raw, bridge_enums, bridge_aliases, foreign)
+        for f in findings:
+            if f"{f.path}\t{f.rule}\t{f.source_line}" in allowlist:
                 continue
             violations.append(f)
 
@@ -1826,6 +2208,13 @@ def run_real_scan() -> int:
         for v in violations:
             if v.field_type.startswith("UNPARSED:"):
                 detail = f"{v.field_type} (variant hint: {v.variant}, field hint: {v.field})"
+            elif v.rule == "E2":
+                # Rule E2 findings come from the STRUCTURAL sweep
+                # (`bridge_declaration_findings`) — the field need not be
+                # interpolated into any message at all (uniffi/PyO3 project
+                # every field regardless of `Display`), so "interpolates"
+                # would misdescribe it.
+                detail = f"variant {v.variant} declares `{v.field}: {v.field_type}` (not gated)"
             else:
                 detail = f"variant {v.variant} interpolates `{v.field}: {v.field_type}`"
             print(
@@ -1835,10 +2224,11 @@ def run_real_scan() -> int:
                 file=sys.stderr,
             )
         print(
-            f"\n{len(violations)} violation(s). A `core` error message must not "
-            "interpolate a runtime String — it reaches both platform UIs and "
-            "their logs (#474). Carry a &'static str hint plus an ordinal, or "
-            "record a reviewed exception in\n  "
+            f"\n{len(violations)} violation(s). A `core` or bridge error "
+            "declaration must not carry an ungated runtime String — it "
+            "reaches both platform UIs and their logs (#474/#480). Carry a "
+            "&'static str hint plus an ordinal, or record a reviewed "
+            "exception in\n  "
             f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)}",
             file=sys.stderr,
         )
@@ -2783,6 +3173,88 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
 ]
 
 
+# Rule E2 (#480) — mirrors `POSITIVE_CONTROLS` / `NEGATIVE_CONTROLS`, run
+# through `scan_bridge_control` (`bridge_mode=True` + `scan_bridge_plain_enums`)
+# instead of `scan_control`. Same `(label, source)` / `(label, source,
+# expectation)` tuple shape.
+BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
+    (
+        "BP1 String field under an unsanctioned name in a thiserror enum",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("bad version")]
+            UnknownVersion { version: String },
+        }
+        ''',
+    ),
+    (
+        "BP2 String field under an unsanctioned name, interpolated (E1 path "
+        "still denies in bridge_mode)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("bad: {version}")]
+            UnknownVersion { version: String },
+        }
+        ''',
+    ),
+    (
+        "BP3 non-thiserror *Error enum with a stray String field",
+        '''
+        pub enum SettingsParseError {
+            UnknownVersion { version: String },
+        }
+        ''',
+    ),
+    (
+        "BP4 Vec<u8> under a gated name still denies (type must be exactly "
+        "String)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("x")]
+            V { detail: Vec<u8> },
+        }
+        ''',
+    ),
+]
+
+BRIDGE_NEGATIVE_CONTROLS: list[tuple[str, str]] = [
+    (
+        "BN1 detail: String under a gated name passes the declaration scan",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("sync failed: {detail}")]
+            SyncFailed { detail: String },
+        }
+        ''',
+    ),
+    (
+        "BN2 data-free payloads pass untouched",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("at #{index}")]
+            V { index: usize },
+        }
+        ''',
+    ),
+    (
+        "BN3 *Error enum inside cfg(test) is not swept",
+        '''
+        #[cfg(test)]
+        mod tests {
+            pub enum FakeError {
+                V { leak: String },
+            }
+        }
+        ''',
+    ),
+]
+
+
 # `(variant, field, field_type)` claims a POSITIVE control makes about the
 # finding it expects, beyond "something fired". `unparsed` asserts the
 # finding IS (or is not) the default-deny-on-structure kind.
@@ -2852,6 +3324,8 @@ def check_view_invariants() -> list[str]:
     """
     samples = [src for _, src, *_ in POSITIVE_CONTROLS]
     samples += [src for _, src in NEGATIVE_CONTROLS]
+    samples += [src for _, src, *_ in BRIDGE_POSITIVE_CONTROLS]
+    samples += [src for _, src in BRIDGE_NEGATIVE_CONTROLS]
     samples.append(LEXER_SAMPLE)
     failures: list[str] = []
     for i, src in enumerate(samples):
@@ -2923,6 +3397,26 @@ def scan_control(src: str) -> list[Finding]:
     )
 
 
+def scan_bridge_control(src: str) -> list[Finding]:
+    """`scan_control`, run in `bridge_mode` PLUS rule E2's second sweep
+    (#480) — mirrors `scan_control`'s self-contained-fixture design (no real
+    file path, hence no qualified spellings; see `module_path_segments`).
+
+    Runs BOTH of rule E2's producers, exactly as `run_real_scan` does for a
+    real bridge file: `scan_source(..., bridge_mode=True)` (sweep 1,
+    thiserror-derived declarations) and `scan_bridge_plain_enums` (sweep 2,
+    plain-derive `*Error`/`*Warning` enums).
+    """
+    enums, aliases, declared_consts, shadows = discover_declarations(src)
+    consts = resolve_consts(declared_consts, shadows)
+    foreign = foreign_use_names(src)
+    found = scan_source(
+        "<self-test-bridge>", src, enums, aliases, consts, foreign, bridge_mode=True
+    )
+    found += scan_bridge_plain_enums("<self-test-bridge>", src, enums, aliases, foreign)
+    return found
+
+
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     for entry in POSITIVE_CONTROLS:
@@ -2945,6 +3439,26 @@ def run_self_test() -> int:
                 f"NEGATIVE control fired: {label} -> "
                 f"{[(f.variant, f.field, f.field_type) for f in found]}"
             )
+    for entry in BRIDGE_POSITIVE_CONTROLS:
+        label, src = entry[0], entry[1]
+        bridge_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None
+        found = scan_bridge_control(src)
+        failures += check_key_shape(label, found)
+        if not found:
+            failures.append(f"POSITIVE control did not fire: {label}")
+        elif bridge_expect and not any(_finding_matches(f, bridge_expect) for f in found):
+            failures.append(
+                f"POSITIVE control fired for the WRONG REASON: {label} -> "
+                f"expected {bridge_expect}, got "
+                f"{[(f.variant, f.field, f.field_type) for f in found]}"
+            )
+    for label, src in BRIDGE_NEGATIVE_CONTROLS:
+        found = scan_bridge_control(src)
+        if found:
+            failures.append(
+                f"NEGATIVE control fired: {label} -> "
+                f"{[(f.variant, f.field, f.field_type) for f in found]}"
+            )
     if failures:
         print("self-test: FAIL", file=sys.stderr)
         for f in failures:
@@ -2952,7 +3466,9 @@ def run_self_test() -> int:
         return 1
     print(
         f"self-test: OK ({len(POSITIVE_CONTROLS)} positive / "
-        f"{len(NEGATIVE_CONTROLS)} negative)"
+        f"{len(NEGATIVE_CONTROLS)} negative / "
+        f"{len(BRIDGE_POSITIVE_CONTROLS)} bridge positive / "
+        f"{len(BRIDGE_NEGATIVE_CONTROLS)} bridge negative)"
     )
     return 0
 
