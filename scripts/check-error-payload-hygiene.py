@@ -1580,6 +1580,27 @@ def scan_source(
                 )
                 continue
         else:
+            # A non-transparent `#[error(...)]` is only understood when its
+            # body is a STRING-LITERAL format ( `"..."` / `r"..."` / `r#"..."#`
+            # ). thiserror 2.x also accepts `#[error(fmt = <path>)]`, whose
+            # named formatter is handed EVERY field and can render any of them
+            # — there is no format string to extract placeholders from, so the
+            # `if not names: continue` skip below would wave it through as
+            # "nothing interpolated" (it is not: the formatter sees the whole
+            # variant). Default-deny on STRUCTURE, per the module docstring:
+            # a body this guard cannot model as a format string fails closed as
+            # UNPARSED, forcing a human (and an allowlist entry) rather than a
+            # silent pass. Covers `fmt = ...` and any future `key = value` form.
+            inner = attr_text[1:-1].strip() if len(attr_text) >= 2 else ""
+            if not (inner.startswith('"') or re.match(r'r#*"', inner)):
+                emit_unparsed(
+                    f"{variant} has an #[error(...)] body this guard cannot "
+                    "model as a string-literal format — e.g. thiserror's "
+                    "`fmt = <path>` custom-formatter form, whose formatter can "
+                    "render any field. Deny by default; allowlist after review",
+                    variant=variant,
+                )
+                continue
             # Every placeholder name in the format string, plus every
             # `.field` referenced by a trailing format argument (the
             # mnemonic.rs shape).
@@ -2472,6 +2493,26 @@ POSITIVE_CONTROLS: list[tuple] = [
             "field": "0",
             "field_type": "#[from] ZzRenamedError",
         },
+    ),
+    (
+        "P40 thiserror 2.x `#[error(fmt = <path>)]` — a custom formatter is "
+        "handed EVERY field and can render a `String` into `Display`, but the "
+        "attribute has no format string, so placeholder extraction yields "
+        "nothing and the `if not names` skip once waved it through (#485). It "
+        "compiles clean and passes clippy, so nothing else catches it. Must "
+        "now fail closed as UNPARSED — an #[error(...)] body this guard cannot "
+        "model as a string-literal format",
+        '''
+        fn render(_detail: &String, _f: &mut std::fmt::Formatter<'_>)
+            -> std::fmt::Result { Ok(()) }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error(fmt = render)]
+            Leak(String),
+        }
+        ''',
+        {"unparsed": True, "variant": "Leak"},
     ),
 ]
 
