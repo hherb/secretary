@@ -52,11 +52,13 @@
 
 use ciborium::Value;
 
+use crate::cbor::{classify_de, classify_ser, CborFault};
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
     MlDsa65Sig, SigError, SigRole, ED25519_PK_LEN, ED25519_SIG_LEN, ML_DSA_65_PK_LEN,
     ML_DSA_65_SIG_LEN,
 };
+use crate::vault::canonical::CanonicalError;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,17 +110,51 @@ const KEY_SELF_SIG_PQ: &str = "self_sig_pq";
 /// Errors from card encode, parse, sign, and verify.
 #[derive(Debug, thiserror::Error)]
 pub enum CardError {
-    /// CBOR encoding produced an I/O or serialization error from `ciborium`.
-    /// In practice this only fires on encoder bugs — the in-memory writer
-    /// can't run out of space.
-    #[error("CBOR encode failure: {0}")]
-    CborEncode(String),
+    /// `ciborium` failed to serialise the card. Carries a classified fault,
+    /// never the upstream message (#474 — see [`crate::cbor`]).
+    #[error("CBOR encode error: {0}")]
+    CborEncode(CborFault),
 
-    /// CBOR decoding produced an I/O or deserialization error from
-    /// `ciborium`, or the byte stream did not contain a top-level map, or
-    /// trailing bytes followed the map.
-    #[error("CBOR decode failure: {0}")]
-    CborDecode(String),
+    /// `ciborium` failed to parse the input as CBOR at the byte level.
+    #[error("CBOR decode error: {0}")]
+    CborDecode(CborFault),
+
+    /// The bytes parsed as CBOR but did not match the §6 card shape — wrong
+    /// CBOR major type in a known position, a non-text map key, an integer
+    /// outside range. The payload is a fixed structural description chosen
+    /// from a closed set of literals in this module; it is `&'static str` so
+    /// it provably cannot carry card content.
+    #[error("malformed contact card: {0}")]
+    Malformed(&'static str),
+
+    /// A required §6 field was absent. `field` is the spec CBOR key name, a
+    /// compile-time constant.
+    #[error("missing required card field: {field}")]
+    MissingField {
+        /// The §6 CBOR key name.
+        field: &'static str,
+    },
+
+    /// A known §6 field appeared more than once. `field` is a spec key name:
+    /// this is raised from `set_once`, reached only after the unknown-key arm
+    /// has rejected anything not in the §6 set.
+    #[error("duplicate card field: {field}")]
+    DuplicateField {
+        /// The §6 CBOR key name.
+        field: &'static str,
+    },
+
+    /// A map key was present that the §6 card schema does not define.
+    ///
+    /// Carries the entry's 0-based ordinal, never the key. A Contact Card is
+    /// public by design, so this is not vault plaintext — but the key is
+    /// arbitrary text from an untrusted party, and formatting untrusted text
+    /// into a diagnostic that reaches a log is its own hazard (#474).
+    #[error("unknown card field at entry #{}", .index + 1)]
+    UnknownField {
+        /// 0-based ordinal of the offending entry.
+        index: usize,
+    },
 
     /// Input parsed but was not in the RFC 8949 §4.2.1 canonical form (e.g.
     /// keys not in bytewise lexicographic order, non-shortest length
@@ -269,7 +305,7 @@ impl ContactCard {
             ),
         ];
         crate::vault::canonical::encode_canonical_map(&entries)
-            .map_err(|e| CardError::CborEncode(e.to_string()))
+            .map_err(canonical_error_to_card_error)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that `card_version == 1`
@@ -281,10 +317,10 @@ impl ContactCard {
     /// Does **not** verify signatures. Call [`Self::verify_self`] for that.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, CardError> {
         let value: Value =
-            ciborium::de::from_reader(bytes).map_err(|e| CardError::CborDecode(e.to_string()))?;
+            ciborium::de::from_reader(bytes).map_err(|e| CardError::CborDecode(classify_de(&e)))?;
         let map = match value {
             Value::Map(m) => m,
-            _ => return Err(CardError::CborDecode("expected top-level CBOR map".into())),
+            _ => return Err(CardError::Malformed("expected top-level CBOR map")),
         };
 
         let mut card_version: Option<u8> = None;
@@ -298,91 +334,115 @@ impl ContactCard {
         let mut self_sig_ed: Option<[u8; ED25519_SIG_LEN]> = None;
         let mut self_sig_pq: Option<Vec<u8>> = None;
 
-        for (k, v) in map {
+        for (index, (k, v)) in map.into_iter().enumerate() {
             let Value::Text(key) = k else {
-                return Err(CardError::CborDecode("non-string map key".into()));
+                return Err(CardError::Malformed("non-string map key"));
             };
             match key.as_str() {
-                KEY_CARD_VERSION => set_once(&mut card_version, take_u8(v)?, &key)?,
-                KEY_CONTACT_UUID => set_once(
-                    &mut contact_uuid,
-                    take_fixed_bytes::<CONTACT_UUID_LEN>(v)?,
-                    &key,
-                )?,
+                KEY_CARD_VERSION => {
+                    set_once(&mut card_version, take_u8(v)?, KEY_CARD_VERSION)?;
+                }
+                KEY_CONTACT_UUID => {
+                    set_once(
+                        &mut contact_uuid,
+                        take_fixed_bytes::<CONTACT_UUID_LEN>(v)?,
+                        KEY_CONTACT_UUID,
+                    )?;
+                }
                 KEY_DISPLAY_NAME => {
                     let s = take_text(v)?;
                     if s.len() > MAX_DISPLAY_NAME_BYTES {
                         return Err(CardError::DisplayNameTooLong);
                     }
-                    set_once(&mut display_name, s, &key)?;
+                    set_once(&mut display_name, s, KEY_DISPLAY_NAME)?;
                 }
                 KEY_X25519_PK => {
-                    set_once(&mut x25519_pk, take_fixed_bytes::<X25519_PK_LEN>(v)?, &key)?
+                    set_once(
+                        &mut x25519_pk,
+                        take_fixed_bytes::<X25519_PK_LEN>(v)?,
+                        KEY_X25519_PK,
+                    )?;
                 }
-                KEY_ML_KEM_768_PK => set_once(
-                    &mut ml_kem_768_pk,
-                    take_sized_bytes(v, ML_KEM_768_PK_LEN)?,
-                    &key,
-                )?,
-                KEY_ED25519_PK => set_once(
-                    &mut ed25519_pk,
-                    take_fixed_bytes::<ED25519_PK_LEN>(v)?,
-                    &key,
-                )?,
-                KEY_ML_DSA_65_PK => set_once(
-                    &mut ml_dsa_65_pk,
-                    take_sized_bytes(v, ML_DSA_65_PK_LEN)?,
-                    &key,
-                )?,
-                KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, &key)?,
-                KEY_SELF_SIG_ED => set_once(
-                    &mut self_sig_ed,
-                    take_fixed_bytes::<ED25519_SIG_LEN>(v)?,
-                    &key,
-                )?,
-                KEY_SELF_SIG_PQ => set_once(
-                    &mut self_sig_pq,
-                    take_sized_bytes(v, ML_DSA_65_SIG_LEN)?,
-                    &key,
-                )?,
-                other => {
-                    return Err(CardError::CborDecode(format!(
-                        "unknown card field: {other}"
-                    )));
+                KEY_ML_KEM_768_PK => {
+                    set_once(
+                        &mut ml_kem_768_pk,
+                        take_sized_bytes(v, ML_KEM_768_PK_LEN)?,
+                        KEY_ML_KEM_768_PK,
+                    )?;
+                }
+                KEY_ED25519_PK => {
+                    set_once(
+                        &mut ed25519_pk,
+                        take_fixed_bytes::<ED25519_PK_LEN>(v)?,
+                        KEY_ED25519_PK,
+                    )?;
+                }
+                KEY_ML_DSA_65_PK => {
+                    set_once(
+                        &mut ml_dsa_65_pk,
+                        take_sized_bytes(v, ML_DSA_65_PK_LEN)?,
+                        KEY_ML_DSA_65_PK,
+                    )?;
+                }
+                KEY_CREATED_AT => {
+                    set_once(&mut created_at_ms, take_u64(v)?, KEY_CREATED_AT)?;
+                }
+                KEY_SELF_SIG_ED => {
+                    set_once(
+                        &mut self_sig_ed,
+                        take_fixed_bytes::<ED25519_SIG_LEN>(v)?,
+                        KEY_SELF_SIG_ED,
+                    )?;
+                }
+                KEY_SELF_SIG_PQ => {
+                    set_once(
+                        &mut self_sig_pq,
+                        take_sized_bytes(v, ML_DSA_65_SIG_LEN)?,
+                        KEY_SELF_SIG_PQ,
+                    )?;
+                }
+                _ => {
+                    return Err(CardError::UnknownField { index });
                 }
             }
         }
 
-        let card_version = card_version
-            .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_CARD_VERSION}")))?;
+        let card_version = card_version.ok_or(CardError::MissingField {
+            field: KEY_CARD_VERSION,
+        })?;
         if card_version != CARD_VERSION_V1 {
             return Err(CardError::InvalidVersion);
         }
 
         let card = ContactCard {
             card_version,
-            contact_uuid: contact_uuid.ok_or_else(|| {
-                CardError::CborDecode(format!("missing field {KEY_CONTACT_UUID}"))
+            contact_uuid: contact_uuid.ok_or(CardError::MissingField {
+                field: KEY_CONTACT_UUID,
             })?,
-            display_name: display_name.ok_or_else(|| {
-                CardError::CborDecode(format!("missing field {KEY_DISPLAY_NAME}"))
+            display_name: display_name.ok_or(CardError::MissingField {
+                field: KEY_DISPLAY_NAME,
             })?,
-            x25519_pk: x25519_pk
-                .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_X25519_PK}")))?,
-            ml_kem_768_pk: ml_kem_768_pk.ok_or_else(|| {
-                CardError::CborDecode(format!("missing field {KEY_ML_KEM_768_PK}"))
+            x25519_pk: x25519_pk.ok_or(CardError::MissingField {
+                field: KEY_X25519_PK,
             })?,
-            ed25519_pk: ed25519_pk
-                .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_ED25519_PK}")))?,
-            ml_dsa_65_pk: ml_dsa_65_pk.ok_or_else(|| {
-                CardError::CborDecode(format!("missing field {KEY_ML_DSA_65_PK}"))
+            ml_kem_768_pk: ml_kem_768_pk.ok_or(CardError::MissingField {
+                field: KEY_ML_KEM_768_PK,
             })?,
-            created_at_ms: created_at_ms
-                .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_CREATED_AT}")))?,
-            self_sig_ed: self_sig_ed
-                .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_SELF_SIG_ED}")))?,
-            self_sig_pq: self_sig_pq
-                .ok_or_else(|| CardError::CborDecode(format!("missing field {KEY_SELF_SIG_PQ}")))?,
+            ed25519_pk: ed25519_pk.ok_or(CardError::MissingField {
+                field: KEY_ED25519_PK,
+            })?,
+            ml_dsa_65_pk: ml_dsa_65_pk.ok_or(CardError::MissingField {
+                field: KEY_ML_DSA_65_PK,
+            })?,
+            created_at_ms: created_at_ms.ok_or(CardError::MissingField {
+                field: KEY_CREATED_AT,
+            })?,
+            self_sig_ed: self_sig_ed.ok_or(CardError::MissingField {
+                field: KEY_SELF_SIG_ED,
+            })?,
+            self_sig_pq: self_sig_pq.ok_or(CardError::MissingField {
+                field: KEY_SELF_SIG_PQ,
+            })?,
         };
 
         // Reject non-canonical input. The §6.1 fingerprint contract is over
@@ -498,7 +558,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
         .map(|pair| {
             let mut key_bytes = Vec::new();
             ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| CardError::CborEncode(e.to_string()))?;
+                .map_err(|e| CardError::CborEncode(classify_ser(&e)))?;
             Ok((key_bytes, pair.clone()))
         })
         .collect::<Result<_, CardError>>()?;
@@ -507,13 +567,42 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
     let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&value, &mut buf)
-        .map_err(|e| CardError::CborEncode(e.to_string()))?;
+        .map_err(|e| CardError::CborEncode(classify_ser(&e)))?;
     Ok(buf)
 }
 
-fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), CardError> {
+/// Convert a [`CanonicalError`] (from `crate::vault::canonical`) into a
+/// [`CardError`]. Only [`Self::pk_bundle_bytes`] routes through
+/// `encode_canonical_map`, and that call site can only ever produce
+/// [`CanonicalError::CborEncode`] — the four `Value`s it hands in are all
+/// `Value::Bytes`/`Value::Text` built from already-validated card fields, so
+/// [`CanonicalError::FloatRejected`] / [`CanonicalError::TagRejected`] are
+/// structurally unreachable here. The match is still exhaustive (no `_ =>`)
+/// so a change to `CanonicalError`'s variant set forces a conscious decision
+/// at this call site rather than silently falling through a wildcard.
+fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
+    match e {
+        CanonicalError::CborEncode(fault) => CardError::CborEncode(fault),
+        CanonicalError::FloatRejected { .. } => {
+            CardError::Malformed("float values are not permitted in canonical CBOR")
+        }
+        CanonicalError::TagRejected { .. } => {
+            CardError::Malformed("CBOR tags are not permitted in canonical CBOR")
+        }
+    }
+}
+
+/// Record a §6 field's value, rejecting a second occurrence of the same key.
+///
+/// `key` is `&'static str` because every call site passes the `KEY_*`
+/// constant from the match arm that dispatched here — reachable only for
+/// keys the §6 schema recognises, since the unknown-key arm in
+/// [`ContactCard::from_canonical_cbor`] returns before any `set_once` call
+/// (#474: this is what lets [`CardError::DuplicateField`] carry the key as
+/// a compile-time constant rather than parsed text).
+fn set_once<T>(slot: &mut Option<T>, v: T, key: &'static str) -> Result<(), CardError> {
     if slot.is_some() {
-        return Err(CardError::CborDecode(format!("duplicate field: {key}")));
+        return Err(CardError::DuplicateField { field: key });
     }
     *slot = Some(v);
     Ok(())
@@ -522,34 +611,34 @@ fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), CardError> {
 fn take_u8(v: Value) -> Result<u8, CardError> {
     let i = match v {
         Value::Integer(i) => i,
-        _ => return Err(CardError::CborDecode("expected unsigned integer".into())),
+        _ => return Err(CardError::Malformed("expected unsigned integer")),
     };
     let n: u64 = i
         .try_into()
-        .map_err(|_| CardError::CborDecode("expected non-negative integer".into()))?;
+        .map_err(|_| CardError::Malformed("expected non-negative integer"))?;
     u8::try_from(n).map_err(|_| CardError::InvalidFieldLength)
 }
 
 fn take_u64(v: Value) -> Result<u64, CardError> {
     let i = match v {
         Value::Integer(i) => i,
-        _ => return Err(CardError::CborDecode("expected unsigned integer".into())),
+        _ => return Err(CardError::Malformed("expected unsigned integer")),
     };
     i.try_into()
-        .map_err(|_| CardError::CborDecode("integer outside u64 range".into()))
+        .map_err(|_| CardError::Malformed("integer outside u64 range"))
 }
 
 fn take_text(v: Value) -> Result<String, CardError> {
     match v {
         Value::Text(s) => Ok(s),
-        _ => Err(CardError::CborDecode("expected text string".into())),
+        _ => Err(CardError::Malformed("expected text string")),
     }
 }
 
 fn take_fixed_bytes<const N: usize>(v: Value) -> Result<[u8; N], CardError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(CardError::CborDecode("expected byte string".into())),
+        _ => return Err(CardError::Malformed("expected byte string")),
     };
     bytes
         .try_into()
@@ -559,7 +648,7 @@ fn take_fixed_bytes<const N: usize>(v: Value) -> Result<[u8; N], CardError> {
 fn take_sized_bytes(v: Value, expected: usize) -> Result<Vec<u8>, CardError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(CardError::CborDecode("expected byte string".into())),
+        _ => return Err(CardError::Malformed("expected byte string")),
     };
     if bytes.len() != expected {
         return Err(CardError::InvalidFieldLength);
@@ -827,6 +916,119 @@ mod tests {
         assert!(
             matches!(err, CardError::DisplayNameTooLong),
             "expected DisplayNameTooLong, got {err:?}"
+        );
+    }
+
+    /// Build canonical-CBOR bytes for a fully valid card plus one extra map
+    /// entry under `rogue_key` — models a peer's card carrying a field the
+    /// §6 schema does not define. Appended last, so its 0-based ordinal is
+    /// the entry count of a well-formed card (10).
+    fn card_bytes_with_extra_field(rogue_key: &str) -> Vec<u8> {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        entries.push((
+            Value::Text(KEY_SELF_SIG_ED.into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_SELF_SIG_PQ.into()),
+            Value::Bytes(card.self_sig_pq.clone()),
+        ));
+        entries.push((
+            Value::Text(rogue_key.to_string()),
+            Value::Text("payload".into()),
+        ));
+        encode_map(&entries).expect("hostile-peer bytes must encode with the extra field")
+    }
+
+    /// Build canonical-CBOR bytes for an otherwise-valid card with
+    /// `missing_key`'s entry removed — models a peer's card omitting a
+    /// required §6 field.
+    fn card_bytes_missing(missing_key: &str) -> Vec<u8> {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        entries.push((
+            Value::Text(KEY_SELF_SIG_ED.into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_SELF_SIG_PQ.into()),
+            Value::Bytes(card.self_sig_pq.clone()),
+        ));
+        entries.retain(|(k, _)| !matches!(k, Value::Text(s) if s == missing_key));
+        encode_map(&entries).expect("card bytes missing a field must still encode")
+    }
+
+    /// The unknown-field branch must carry only the entry's ordinal, never
+    /// the offending key text — a Contact Card is public by design, but
+    /// formatting arbitrary peer-supplied text into a diagnostic that
+    /// reaches a log is its own hazard (#474). Asserts BOTH the typed shape
+    /// AND that the attacker-controlled key never reaches the rendered
+    /// message; a shape-only assertion would pass even if the key leaked.
+    #[test]
+    fn unknown_card_field_reports_an_index_not_the_key() {
+        const ROGUE: &str = "attacker-controlled-\u{1b}[2Kfield";
+        let bytes = card_bytes_with_extra_field(ROGUE);
+
+        let err =
+            ContactCard::from_canonical_cbor(&bytes).expect_err("unknown field must be rejected");
+
+        assert!(
+            matches!(err, CardError::UnknownField { .. }),
+            "expected UnknownField, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains("attacker-controlled"),
+            "attacker-controlled text reached the message: {err}"
+        );
+    }
+
+    /// A required field's absence must name the spec key as a compile-time
+    /// constant, not a copy of parsed input.
+    #[test]
+    fn missing_field_names_the_spec_key_as_a_static_str() {
+        let bytes = card_bytes_missing(KEY_CONTACT_UUID);
+
+        let err =
+            ContactCard::from_canonical_cbor(&bytes).expect_err("missing field must be rejected");
+
+        assert!(
+            matches!(err, CardError::MissingField { field } if field == KEY_CONTACT_UUID),
+            "expected MissingField {{ field: contact_uuid }}, got {err:?}"
+        );
+    }
+
+    /// A known §6 field appearing twice must be reported by its spec key
+    /// name, not the loop-local parsed `String`.
+    #[test]
+    fn duplicate_field_names_the_spec_key_as_a_static_str() {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        entries.push((
+            Value::Text(KEY_SELF_SIG_ED.into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_SELF_SIG_PQ.into()),
+            Value::Bytes(card.self_sig_pq.clone()),
+        ));
+        // Duplicate the display_name entry; the parser's set_once guard
+        // must fire on the second occurrence.
+        entries.push((
+            Value::Text(KEY_DISPLAY_NAME.into()),
+            Value::Text("second-copy".into()),
+        ));
+        let bytes = encode_map(&entries).expect("hostile-peer bytes must encode with a duplicate");
+
+        let err =
+            ContactCard::from_canonical_cbor(&bytes).expect_err("duplicate field must be rejected");
+
+        assert!(
+            matches!(err, CardError::DuplicateField { field } if field == KEY_DISPLAY_NAME),
+            "expected DuplicateField {{ field: display_name }}, got {err:?}"
         );
     }
 
