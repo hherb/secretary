@@ -77,7 +77,15 @@ Every task got a fresh implementer and an independent reviewer, and the reviewer
 
 ## (2) What's next
 
-- **#478 is scoped narrower than the gap it is cited for.** It covers `VaultSyncError.Failed`; three sites cited it as owning the whole "guard scans `core/src/**` only, the FFI bridge is unscanned" gap. Those citations are now honest, but **if #478 closes the narrow way, the `CorruptVault`/`SaveCryptoFailure` bridge-authored details become unowned** — the very arms this branch un-redacted. **Acceptance:** either file a dedicated bridge-scan issue and re-point the citations, or amend #478's acceptance to make the broad reading mandatory. *(An issue is drafted in the fix-wave report; it was not filed because issue creation needs your sign-off.)*
+### Filed this session — everything found but not fixed in scope
+
+| # | What | Weight |
+|---|---|---|
+| **#480** | The guard scans `core/src/**` only; the FFI bridge builds the platform-visible detail strings and is unscanned. **#478 covers only the `VaultSyncError.Failed` slice** — if it closes narrowly, the `CorruptVault`/`SaveCryptoFailure` bridge details become unowned, i.e. the very arms this branch un-redacted. | Important |
+| **#481** | `SettingsWarning::Corrupt` interpolates a **decrypted settings field name** (`orchestration.rs:70`, `parse.rs:114`). Same class #474 eliminated from `core`. Desktop-only, not an `FfiVaultError`, so it reaches no mobile log sink — but it is the live proof #480's gap is real. | Low |
+| **#482** | The **raw** half of `foreign_use_names`' union is unpinned: dropping it leaves the self-test green at exit 0. Fail-open direction, in the one pass where hiding text *grants* trust. Plus two doc companions. | Low |
+| **#483** | `cbor_map_bytes_unsorted` duplicated into `block.rs`'s test module; wants a `#[cfg(test)] pub(crate) mod test_support` under `core/src/vault/`. (`test-utils` is the wrong tool — it is for cross-*crate* sharing.) | Low |
+| **#484** | Four deferred cosmetic items from the per-task reviews, collected rather than spread. | Low |
 - **#476** — Android sibling of #473: three sites render a carried diagnostic as on-screen copy. **Acceptance:** the three render friendly copy, their allowlist entries go, guard still passes. `CreateVaultWizardScreen.kt:63` is legitimate and must be left alone.
 - **#477** — retire the Kotlin grep rules for a type-aware detekt rule. **Acceptance:** catches every `--self-test` positive control including the ones rule C cannot; the four non-throwable entries are deleted; `check-log-hygiene.sh` is removed in the same change or a decision recorded for why both remain.
 - **#474 follow-up (small):** add control **P40** for the symmetric half of `foreign_use_names`' union — see risks below.
@@ -136,5 +144,5 @@ git worktree list && git status -s
 
 - **State on close:** PR on `feature/474-error-payload-hygiene`, shipping **#474**. Net: `core/src/cbor.rs`; three error enums' plaintext payloads restructured; two enums split by shape; six CBOR variants declassified; a new fail-closed CI guard with an 11-entry reviewed allowlist and a Python↔bash parity test; both platform redactions removed; docs. **No on-disk format change, no `FfiVaultError` variant change, no `.udl` change.**
 - **Docs:** README and ROADMAP **unchanged by precedent** — verified by grep that `#189`, `#467` and `#472`'s guards appear in neither. CLAUDE.md gained the command pair, an architecture section, and a **replacement** for the now-obsolete instruction that said `SaveCryptoFailure` must stay redacted.
-- **Next:** **#478 scope** · #476 · #477 · guard control P40 · #459 on-device · #464 · #417 · #447 · #443/#444.
+- **Next:** **#480** (bridge scan gap — highest weight) · #481 · #482 · #483 · #484 — all filed this session · then #476 · #477 · #459 on-device · #464 · #417 · #447 · #443/#444.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-08-05-474-error-payload-hygiene-shipped.md`.
