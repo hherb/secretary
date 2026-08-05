@@ -262,7 +262,7 @@ field types of the variant it is attached to. If the format string interpolates 
 field whose declared type is not in the provably-data-free set, and the
 attribute's exact trimmed source line is not allowlisted, fail.
 
-**Post-implementation update (rounds 1–3 review).** The rule as actually
+**Post-implementation update (rounds 1–4 review).** The rule as actually
 implemented resolves a placeholder through up to FOUR recognised-safe
 categories, not the single flat type set this section originally described —
 the flat set alone made the real scan report 24 false-shaped violations that
@@ -298,13 +298,14 @@ fourth (round 3) is answered BEFORE type classification ever runs, because a
    (`pub type Fingerprint = [u8; 16];` is exactly as data-free as the array
    it names). An alias to something unresolvable, including a second alias
    hop, still denies. Alias discovery is cross-file (an alias can be declared
-   in a different file than the field that uses it) but explicitly excludes
-   `impl`-block associated types (`type Ek = …;` inside a trait impl is a
-   per-impl binding, not a free-standing alias), and a bare/qualified
-   spelling that resolves to DIFFERENT right-hand sides in different files is
-   dropped from the resolvable set entirely rather than guessed at
-   (last-write-wins across files was proven to silently launder an unsafe
-   alias into a pass depending on file sort order).
+   in a different file than the field that uses it) but is restricted to
+   MODULE SCOPE, which excludes a trait's or an `impl`'s associated type
+   (`type Ek = …;` inside a trait impl is a per-impl binding, not a
+   free-standing alias) and anything local to a `fn` body; and a
+   bare/qualified spelling that resolves to DIFFERENT right-hand sides in
+   different files is dropped from the resolvable set entirely rather than
+   guessed at (last-write-wins across files was proven to silently launder an
+   unsafe alias into a pass depending on file sort order).
 4. **`const` capture (round 3).** A NAMED placeholder that does not match any
    parsed field is checked against every bare `const NAME: Type = value;`
    declared under `core/src/**` (`find_consts`) before falling through to
@@ -320,16 +321,25 @@ fourth (round 3) is answered BEFORE type classification ever runs, because a
    Deliberately **excludes `static`** (even an immutable one is a different
    guarantee — Rust does not require a `static`'s initializer to be free of
    interior mutability or runtime-observable identity the way it does for
-   `const`) and excludes associated consts declared inside `impl ... { }`
-   blocks, the same way tier 3 excludes associated types. Discovery is
-   cross-file (the live shape: `crypto/kem.rs`'s `ML_KEM_768_CT_LEN` captured
-   in `vault/block.rs`'s format string) but, unlike tier 3's aliases, does
-   NOT need the same collision-drops-to-deny treatment: an alias's safety
-   depends on its right-hand-side VALUE, which genuinely can conflict between
-   two same-named aliases in different files, but a `const`'s safety is the
-   compiler's guarantee alone — two different files each declaring their own
-   `const LEN: usize = ...;` are both still soundly "compile-time constant,"
-   with no "wrong value" to collide on.
+   `const`), restricted to MODULE SCOPE the same way tier 3 is, and further
+   excluding `#[cfg(test)]`-gated declarations: a test-only const is not part
+   of the shipped crate and must not vouch for a shipped message. Discovery
+   is cross-file (the live shape: `crypto/kem.rs`'s `ML_KEM_768_CT_LEN`
+   captured in `vault/block.rs`'s format string), and — **corrected in round
+   4** — it carries the SAME collision-drops-to-deny treatment as tier 3's
+   aliases. Round 3 argued it did not need to, on the grounds that a
+   `const`'s safety comes from the compiler rather than its value. That
+   premise is true, but the conclusion does not follow: the claim the guard
+   actually makes is *"this placeholder RESOLVES TO a const"*, which is a
+   name-resolution claim, and a bare-name union over the whole tree does not
+   establish it. `static` is the counter-witness — it shares the
+   SCREAMING_SNAKE_CASE convention, it is the other thing a bare captured
+   identifier resolves to, and the guard deliberately denies it — so a union
+   silently converted that correct deny into a pass as soon as any unrelated
+   file declared a same-named const. A spelling is therefore credited only
+   when the guard saw exactly one module-scope `const` declaration of it and
+   saw nothing (a `static`, or a `const` in an excluded scope) that
+   contradicts the reading.
 
 **Default-deny covers STRUCTURE, not just TYPE.** The original design left
 silent `continue`s in the scanner for "we couldn't figure out what this
@@ -347,6 +357,51 @@ struct-shaped `thiserror` error (`#[error("...")] pub struct E { .. }`, not
 an enum variant) is also now scanned — not used in `core/src` today, but
 nothing in the language prevented it, and the original scanner only ever
 looked for enum variants.
+
+**Post-implementation update (round 4 review): declarations are read from a
+view with STRING LITERALS blanked, and bare names are resolved per-file.**
+Rounds 1–3 built three cross-file "recognised-safe" registries (local error
+enums, type aliases, consts) by pattern-matching over comment-stripped
+source. Two structural holes followed from that, both proven by execution:
+
+1. **String-literal injection self-authorised a placeholder.** Comment
+   stripping does not blank string CONTENTS, so text inside an `#[error]`
+   *message* registered as a declaration. A single line —
+   `#[error("leaked field name: {SELF_AUTH} const SELF_AUTH: usize = 1;")]` —
+   passed silently, in one file, with no collision and no file-ordering
+   dependence, authored by exactly the person whose code the guard checks.
+   The same trick reached the alias tier (a `type … = usize;` written into
+   the message, plus a field of that type) and the recursion tier (a
+   `enum … { #[error("x")] A }` written into the message). Declaration
+   discovery now runs over `discovery_view` — comments blanked, then string
+   literal contents blanked, both length- and line-preserving. Locating the
+   `#[error(` attributes themselves deliberately still uses the un-blanked
+   text: blanking can only ever HIDE, which costs a credit (fail-closed)
+   during discovery, but would cost a whole attribute (fail-open) if the
+   string scanner ever desynced.
+2. **A bare name is a claim about resolution, and a `use` can refute it.**
+   `core/src/error.rs` declares `pub enum Error`, so the bare spelling
+   `Error` was trusted tree-wide; `use std::io::Error; … K1BareIoError(#[from]
+   Error)` therefore passed, and `std::io::Error` renders a filesystem path.
+   Each file's own `use` statements are now read (`foreign_use_names`), and
+   every name a file binds from OUTSIDE the crate is withdrawn from that
+   file's bare-name credits across all three registries. Roots `crate` /
+   `super` / `self`, and Rust-2018 uniform-path roots naming a module
+   declared in the same file (`pub use block::{…};` beside `pub mod block;`,
+   which `core/src/vault/mod.rs` really writes), stay intra-crate. This is
+   evidence-based rather than a resolver: it reacts to `use` statements it
+   can read, and a foreign GLOB import would still be invisible.
+
+Declaration discovery is also now restricted to MODULE SCOPE generally — a
+single brace-nesting pass replaces the earlier impl-block-only exclusion and
+covers `fn` bodies, `trait` bodies, `struct`/`enum` bodies and blocks — and
+`const` discovery additionally skips `#[cfg(test)]` items. Of the 136 bare
+const names the previous round harvested tree-wide, 6 came from test modules,
+one named `SECRET_FIELD_NAME`; the credited set is now 109.
+
+None of this changed the real scan's verdict: still exactly the same 11
+sites. That is the intended result — these fixes close paths that only a
+deliberately-crafted declaration could have walked.
 
 **Why Python rather than bash.** Associating an attribute with the following
 variant's *field types* requires reading a structure that spans lines. A
@@ -386,7 +441,7 @@ subtle, twice-buggy control was `is_comment_line`, and it has no counterpart in 
 tokenizing parser.
 
 **`--self-test`.** Two-sided, as on both platforms, and materially larger than
-first scoped: **19 positive / 12 negative** controls, up from the original
+first scoped: **28 positive / 15 negative** controls, up from the original
 4-ish sketch. Round 2 review mutation-tested the original set and found three
 were vacuous (didn't actually exercise the mechanism they claimed to — e.g. a
 control for "escaped braces aren't placeholders" whose variant had no fields,
@@ -410,9 +465,33 @@ hand beyond the normal `--self-test` run: disabling the const tier entirely
 breaks EXACTLY the negative control (nothing else), and making the const
 check accept any unknown name breaks the "neither field nor const" positive
 control (along with two others that share its shape) — proof the tier is
-additive, not a laundering fallback. `--self-test` runs first in CI so a
-green guard is never vacuous — and now that claim is backed by a mutation
-pass, not just inspection.
+additive, not a laundering fallback.
+
+Round 4 added nine positive controls (string-literal injection of a `const`,
+of a `type` alias and of a thiserror `enum`; a `static` disqualifying a const
+spelling; two same-named module-scope consts colliding; a `#[cfg(test)]`
+const; a `fn`-body const; a trait associated const; and a foreign `use`
+shadowing a core-local enum name) and three negative ones (an intra-crate
+`use`, a Rust-2018 uniform-path re-export, and a const declared inside a
+`mod` block, which must all still be credited). Two structural checks run
+alongside the controls: the comment- and string-blanking views must preserve
+both length and line count over every control plus a synthetic sample, and no
+finding's allowlist key may contain a TAB or a newline.
+
+Round 4 also found that two controls **no longer pinned their own
+mechanisms**. Once an unresolvable construct became an `UNPARSED` finding
+rather than a silent skip, reverting the fix a control was written for still
+produced *a* finding, so an assertion of "the scan returned something" stayed
+green. Positive controls may therefore now carry an expectation naming the
+variant, field and field type (or asserting the finding is/is not `UNPARSED`)
+that the control must produce; the two affected controls assert on the
+verdict, and reverting either fix now breaks its own control.
+
+Every round-4 fix was mutation-proven the same way: each mechanism was
+disabled in turn and the controls re-run, with each mutation breaking exactly
+the control(s) written for it and nothing else. `--self-test` runs first in
+CI so a green guard is never vacuous — and now that claim is backed by a
+mutation pass, not just inspection.
 
 ### 5. Platform narrowing
 

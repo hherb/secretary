@@ -74,13 +74,17 @@ LIMITS (stated, not hidden)
   be invisible. `--self-test` pins the shapes that do occur.
 - The local-error-enum and type-alias recognition in `discover_declarations`
   matches by NAME (bare, `<parent-module>::Name`, or `crate::<path>::Name`),
-  not by real `use`-import / path resolution. A bare, unqualified reference to
-  a type from OUTSIDE `core/src/**` whose name collides with a `core`-local
-  enum or alias (e.g. `use std::io::Error; ... Io(#[from] Error)`, colliding
-  with `crate::error::Error`) would be misclassified as data-free. Nothing in
-  this codebase currently does that; `--self-test` cannot pin the absence of a
-  pattern, only its presence, so this is a standing risk for future code, not
-  a closed gap.
+  not by real `use`-import / path resolution. A BARE spelling is therefore a
+  tree-global claim, and `foreign_use_names` withdraws it per-file for every
+  name that file `use`s from outside the crate — which is what stops
+  `use std::io::Error; ... Io(#[from] Error)` from riding on
+  `core/src/error.rs`'s local `pub enum Error` (it did, silently, until this
+  was added). That is evidence-based, not a resolver: it can only react to a
+  `use` statement it can read. A GLOB (`use some_crate::*;`) binds names it
+  cannot enumerate, and a name that reaches a file some other way is
+  likewise invisible. Every glob under `core/src/**` today is an intra-crate
+  `use super::*;` inside `#[cfg(test)] mod tests`, plus
+  `use proptest::prelude::*;`.
 - Name resolution stops at the type name as written. `type usize = String;`
   shadowing a `DATA_FREE_TYPES` primitive with an actual `String`, and then
   using that shadowed name as a field's declared type, is invisible to a
@@ -91,13 +95,21 @@ LIMITS (stated, not hidden)
   shape that could be contrived to evade it.
 - `find_type_aliases` drops any spelling that resolves to DIFFERENT
   right-hand sides across files rather than guessing which one is "real" —
-  see `run_real_scan`. `local_error_enums` does not need the same treatment:
-  it is a pure membership set, not a name -> value map, and any enum whose
-  name is registered is, by construction, a real `thiserror`-derived enum
-  this guard independently scans somewhere under `core/src/**` — two
-  DIFFERENT local enums sharing a bare name are both still soundly "safe by
-  recursion," regardless of which one a given reference textually resolves
-  to; there is no analogous "which value is real" ambiguity to collide on.
+  see `run_real_scan`. `resolve_consts` drops a `const` spelling on the same
+  discipline: more than one module-scope declaration, or any `static` /
+  excluded-scope declaration of that name, and the spelling is not credited.
+  An earlier round unioned const names tree-wide on the argument that "a
+  const's safety comes from the compiler, not its value"; the premise is
+  true but the conclusion does not follow, because the claim being made is
+  "this placeholder RESOLVES TO a const", and `static` is exactly the
+  same-convention collision partner that breaks it.
+  `local_error_enums` still does NOT get the collision-drop: it is a pure
+  membership set, not a name -> value map, and any enum whose name is
+  registered is by construction a real `thiserror`-derived enum this guard
+  independently scans somewhere under `core/src/**` — two DIFFERENT local
+  enums sharing a bare name are both still soundly "safe by recursion."
+  Its bare-name exposure is to a FOREIGN collision, which is what
+  `foreign_use_names` addresses instead.
 - `strip_comments` does not special-case RAW string literals (`r"..."`,
   `r#"..."#`). A raw string ending in a literal backslash immediately before
   its closing quote (`r"...\"`) is misread as an escaped quote, and the
@@ -106,11 +118,27 @@ LIMITS (stated, not hidden)
   attribute under `core/src/**` uses a raw string today; a correct fix needs
   variable-length `#`-run tracking (`r#"..."#`, `r##"..."##`, ...), which is
   out of scope for now.
-- `discover_declarations` excludes `type X = Y;` declarations found inside
-  `impl ... { }` blocks (a trait's ASSOCIATED type, e.g. `type Ek = ...;` in
-  a KEM trait impl) from alias discovery — an associated type is a per-impl
-  binding, not a free-standing alias any field elsewhere could legitimately
-  reference by that name.
+- `discover_declarations` credits only MODULE-SCOPE declarations: anything
+  inside a brace block that is not a `mod name { ... }` block is skipped
+  (`non_module_block_spans`), which covers a trait's or an `impl`'s
+  ASSOCIATED `type` / `const` (a per-impl binding, e.g. `type Ek = ...;` in a
+  KEM trait impl), and anything local to a `fn` body. `const` discovery
+  additionally skips `#[cfg(test)]`-gated items (`cfg_test_spans`): six of
+  the 136 bare const names this guard harvested tree-wide came from test
+  modules, one of them named `SECRET_FIELD_NAME`. Block kind is decided from
+  the item's header text, so a `mod` declared through a macro would not be
+  recognised as one — the fail-CLOSED direction (its contents lose credit).
+- Declaration discovery runs over `discovery_view` — comments AND string
+  literal contents blanked. Without the second half, text inside an
+  `#[error("...")]` message registered as a declaration, letting an author
+  self-authorise the very placeholder under test
+  (`#[error("... {SELF_AUTH} const SELF_AUTH: usize = 1;")]` passed
+  silently). Locating `#[error(` attributes still uses the un-blanked text,
+  deliberately: blanking can only HIDE, which loses a credit (fail-closed)
+  during discovery but would lose a whole ATTRIBUTE (fail-open) if the
+  string scanner ever desynced. A `#[error(` written inside another
+  attribute's message text is therefore still visited as if it were an
+  attribute; that produces noise or nothing, never a missed real attribute.
 - The recursion tier's soundness claim is "this guard fails at that enum's
   own definition." Once a leaf variant there is ALLOWLISTED — a human
   decision, not this guard's — the honest statement becomes "fails OR IS
@@ -197,21 +225,32 @@ def strip_field_attrs(text: str) -> str:
         text = text[m.end() :].strip()
 
 
-def _is_data_free_core(ty: str, local_error_enums: frozenset[str]) -> bool:
+def _is_data_free_core(
+    ty: str,
+    local_error_enums: frozenset[str],
+    foreign_names: frozenset[str] = frozenset(),
+) -> bool:
     """Tiers 1 and 2 only: literal data-free types, and `core`-local error
     enums this guard itself scans. Deliberately excludes tier 3 (alias
     resolution) — it is the target `is_data_free` calls an alias's
     right-hand side through, so an alias chain (`type A = B; type B = C;`)
     gets exactly one hop of credit, not an unbounded one.
+
+    `foreign_names` is checked FIRST and denies unconditionally: a bare
+    spelling this file `use`s from outside the crate is not the local type
+    that happens to share its name, whatever tier that local type sits in.
+    See `foreign_use_names`.
     """
     ty = normalize_type(ty)
+    if ty in foreign_names:
+        return False
     if ty in DATA_FREE_TYPES:
         return True
     if ARRAY_RE.match(ty.replace(" ", "")):
         return True
     inner = OPTION_RE.match(ty)
     if inner:
-        return _is_data_free_core(inner.group(1), local_error_enums)
+        return _is_data_free_core(inner.group(1), local_error_enums, foreign_names)
     return ty in local_error_enums
 
 
@@ -219,6 +258,7 @@ def is_data_free(
     ty: str,
     local_error_enums: frozenset[str] = frozenset(),
     aliases: dict[str, str] | None = None,
+    foreign_names: frozenset[str] = frozenset(),
 ) -> bool:
     """True when a value of `ty` provably cannot carry runtime content.
 
@@ -233,13 +273,22 @@ def is_data_free(
     3. A one-level `type X = Y;` alias whose RHS clears tier 1 or 2. An alias
        to something unresolvable — including a chain through a SECOND alias
        — still denies; see `_is_data_free_core`'s docstring.
+
+    Tiers 2 and 3 recognise BARE spellings tree-globally, so they are gated
+    by `foreign_names`: any bare name the SCANNED FILE imports from outside
+    the crate denies outright, whichever tier would otherwise have credited
+    it (`foreign_use_names`).
     """
-    if _is_data_free_core(ty, local_error_enums):
+    if _is_data_free_core(ty, local_error_enums, foreign_names):
         return True
     if aliases:
         base = normalize_type(ty)
+        if base in foreign_names:
+            return False
         if base in aliases:
-            return _is_data_free_core(aliases[base], local_error_enums)
+            return _is_data_free_core(
+                aliases[base], local_error_enums, foreign_names
+            )
     return False
 
 
@@ -253,22 +302,104 @@ ENUM_RE = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)")
 # naive "stop at the first semicolon" regex truncates the RHS to `[u8`. See
 # `find_type_aliases`, which tracks bracket depth instead.
 TYPE_ALIAS_HEAD_RE = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*")
-# `impl ... {` — used only to find impl-block bodies so a `type X = Y;`
-# ASSOCIATED type (a trait's per-impl binding, e.g. `type Ek = ...;` inside
-# `impl Kem for X25519Kem { ... }`) is excluded from alias discovery: it is
-# not a free-standing alias any field elsewhere could reference by that name.
-IMPL_RE = re.compile(r"\bimpl\b[^{;]*\{")
+# A `mod name {` block header, anchored at the END of the text preceding a
+# `{`. `non_module_block_spans` uses it to tell the ONE kind of brace block
+# that does not change an item's "is this declared at module scope?" status
+# from every other kind (fn body, impl body, trait body, struct/enum body,
+# match arm, closure, ...).
+MOD_HEADER_RE = re.compile(r"(?:^|[^A-Za-z0-9_])mod\s+[A-Za-z_][A-Za-z0-9_]*\s*$")
+# `#[cfg(test)]` and friends (`#[cfg(all(test, ...))]`, `#[cfg_attr(test, ...)]`).
+# Matching on `\btest\b` inside the attribute's parentheses is safe on the
+# DISCOVERY VIEW specifically: string literals are blanked there, so a
+# `#[cfg(feature = "test-utils")]` does not match. There is no
+# `#[cfg(not(test))]` under `core/src/**` today; were one added, this would
+# over-match it and drop a declaration — the fail-CLOSED direction.
+CFG_TEST_RE = re.compile(r"#\[cfg(?:_attr)?\s*\([^\]]*\btest\b[^\]]*\)\s*\]")
 
 
-def impl_block_spans(src: str) -> list[tuple[int, int]]:
-    """Character-offset `[start, end)` ranges of every `impl ... { ... }`
-    body in (comment-stripped) `src` — see `IMPL_RE`.
+def non_module_block_spans(src: str) -> list[tuple[int, int]]:
+    """Character-offset `[start, end)` ranges of every brace block in the
+    DISCOVERY VIEW that is NOT a `mod name { ... }` block.
+
+    A declaration is at MODULE SCOPE — the only scope from which a bare name
+    can be referenced by a sibling item, and the only scope a `{NAME}` format
+    capture in a `thiserror`-generated `Display` impl can reach — exactly
+    when it sits inside no such span. One mechanism therefore excludes every
+    non-module scope at once: `fn` bodies, `trait` bodies, `impl` bodies
+    (this subsumes and replaces the earlier impl-block-only exclusion),
+    `struct`/`enum` bodies, blocks, closures and `match` arms.
+
+    Block kind is decided by the text between the previous `{`/`}`/`;` and
+    the opening brace — the item's header — matched against `MOD_HEADER_RE`.
     """
     spans: list[tuple[int, int]] = []
-    for m in IMPL_RE.finditer(src):
-        brace = m.end() - 1  # m.end() lands just past the matched '{'.
-        body, _ = balanced_braces(src[brace:])
-        spans.append((brace, brace + len(body)))
+    stack: list[tuple[int, bool]] = []
+    header_start = 0
+    for i, ch in enumerate(src):
+        if ch == "{":
+            stack.append((i, bool(MOD_HEADER_RE.search(src[header_start:i]))))
+            header_start = i + 1
+        elif ch == "}":
+            if stack:
+                start, is_mod = stack.pop()
+                if not is_mod:
+                    spans.append((start, i + 1))
+            header_start = i + 1
+        elif ch == ";":
+            header_start = i + 1
+    return spans
+
+
+def cfg_test_spans(src: str) -> list[tuple[int, int]]:
+    """Character-offset `[start, end)` ranges of every `#[cfg(test)]`-gated
+    item in the DISCOVERY VIEW, attribute included.
+
+    A test-only declaration is not part of the shipped crate and must not
+    vouch for a name a shipped `#[error("...")]` message captures. Six of the
+    136 bare `const` names this guard harvested tree-wide came from
+    `#[cfg(test)] mod tests { ... }` blocks — one of them literally named
+    `SECRET_FIELD_NAME`.
+    """
+    spans: list[tuple[int, int]] = []
+    n = len(src)
+    for m in CFG_TEST_RE.finditer(src):
+        i = m.end()
+        # Skip whitespace and any further attributes stacked on the item.
+        while i < n:
+            while i < n and src[i] in " \t\r\n":
+                i += 1
+            if i + 1 < n and src[i] == "#" and src[i + 1] == "[":
+                depth, j = 0, i + 1
+                while j < n:
+                    if src[j] == "[":
+                        depth += 1
+                    elif src[j] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            j += 1
+                            break
+                    j += 1
+                i = j
+                continue
+            break
+        # The gated item runs to its balanced `{...}` body, or to the `;`
+        # that ends a body-less item (`#[cfg(test)] mod tests;`).
+        depth, j, end = 0, i, n
+        while j < n:
+            c = src[j]
+            if c in "([":
+                depth += 1
+            elif c in ")]":
+                depth -= 1
+            elif depth == 0 and c == "{":
+                body, _ = balanced_braces(src[j:])
+                end = j + len(body)
+                break
+            elif depth == 0 and c == ";":
+                end = j + 1
+                break
+            j += 1
+        spans.append((m.start(), end))
     return spans
 
 
@@ -277,18 +408,20 @@ def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
 
 
 def find_type_aliases(
-    src: str, impl_spans: list[tuple[int, int]] | None = None
+    src: str, excluded_spans: list[tuple[int, int]] | None = None
 ) -> dict[str, str]:
-    """Map alias name -> right-hand-side text for every top-level `type X =
-    Y;` in (comment-stripped) `src`, respecting `[`/`(`/`{`/`<` nesting so a
-    `;` inside e.g. `[u8; 16]` doesn't end the match early. A `type X = Y;`
-    whose match START falls inside an `impl` block (`impl_spans`) is an
-    ASSOCIATED type, not a free-standing alias, and is skipped.
+    """Map alias name -> right-hand-side text for every module-scope `type X
+    = Y;` in the DISCOVERY VIEW, respecting `[`/`(`/`{`/`<` nesting so a `;`
+    inside e.g. `[u8; 16]` doesn't end the match early. A `type X = Y;` whose
+    match START falls inside `excluded_spans` — most importantly a trait's or
+    an `impl`'s ASSOCIATED type, which is a per-impl binding rather than a
+    free-standing alias any field elsewhere could reference by that name — is
+    skipped.
     """
-    impl_spans = impl_spans or []
+    excluded_spans = excluded_spans or []
     aliases: dict[str, str] = {}
     for m in TYPE_ALIAS_HEAD_RE.finditer(src):
-        if _inside(m.start(), impl_spans):
+        if _inside(m.start(), excluded_spans):
             continue
         i, n = m.end(), len(src)
         depth = 0
@@ -311,44 +444,225 @@ def find_type_aliases(
 # name (never matches `const fn name(...)`, since `fn` there is followed by
 # an argument list, not a colon).
 CONST_RE = re.compile(r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=;]+=")
+# `static NAME:` / `static mut NAME:` — never a credit, always a SHADOW; see
+# `find_const_shadows`.
+STATIC_RE = re.compile(r"\bstatic\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
 
-def find_consts(src: str, impl_spans: list[tuple[int, int]] | None = None) -> set[str]:
-    """Bare names of every top-level `const NAME: Type = value;` in
-    (comment-stripped) `src`.
+def find_consts(
+    src: str, excluded_spans: list[tuple[int, int]] | None = None
+) -> list[str]:
+    """Bare names of every MODULE-SCOPE `const NAME: Type = value;` in the
+    DISCOVERY VIEW, one entry per declaration (repeats are meaningful — see
+    `resolve_consts`).
 
     Only `const`, never `static` — a Rust `const` is required by the
     compiler to be evaluable at COMPILE TIME (a non-const-evaluable
     initializer is a compile error), so it cannot carry runtime content
     regardless of its declared type: that guarantee is stronger than, and
     independent of, `DATA_FREE_TYPES`. A `static` (even an immutable one, let
-    alone `static mut`) does not carry the same guarantee — Rust does not
-    require a `static`'s initializer to be free of interior mutability or
-    runtime-observable identity the way it does for `const` — so `CONST_RE`
-    is deliberately anchored on the literal `const` keyword and nothing about
-    this function widens that to `static`. `const fn name(...)` (a function,
-    not a value) is also excluded: the regex requires a `:` immediately after
-    the captured name, which a function's argument list never has.
+    alone `static mut`) does not carry the same guarantee — a
+    `static X: LazyLock<String>` is a perfectly ordinary way to hold runtime
+    data behind a SCREAMING_SNAKE_CASE name — so `CONST_RE` is deliberately
+    anchored on the literal `const` keyword, and `find_const_shadows` treats
+    every `static` as actively DISQUALIFYING the name. `const fn name(...)`
+    (a function, not a value) is also excluded: the regex requires a `:`
+    immediately after the captured name, which a function's argument list
+    never has.
 
-    A `const` declared inside an `impl ... { }` block is an ASSOCIATED
-    const — like an associated `type` (see `find_type_aliases`), it is a
-    per-impl binding, not a bare name Rust's captured-identifier format
-    syntax could reach unless explicitly imported — so it is excluded the
-    same way.
+    `excluded_spans` carries every scope a bare `{NAME}` capture cannot
+    reach — non-module blocks (`fn` bodies, `trait` bodies, `impl` bodies:
+    an ASSOCIATED const is a per-impl binding, not a free name) and
+    `#[cfg(test)]`-gated items (not part of the shipped crate). See
+    `non_module_block_spans` / `cfg_test_spans`.
+
+    The anonymous `const _: () = ...;` form is dropped: `_` is not a name any
+    placeholder can capture.
 
     Unlike `find_type_aliases` / the enum spellings in `discover_declarations`,
     only the BARE name is ever registered: a format-string placeholder
     `{NAME}` can only capture a bare, unqualified identifier — Rust's
     captured-identifier syntax does not accept a path — so a qualified
-    spelling would never be looked up.
+    spelling would never be looked up. That is also why consts get
+    `resolve_consts`'s collision-drop instead: with no qualified spelling to
+    disambiguate on, a bare name is all there is.
     """
-    impl_spans = impl_spans or []
-    names: set[str] = set()
+    excluded_spans = excluded_spans or []
+    names: list[str] = []
     for m in CONST_RE.finditer(src):
-        if _inside(m.start(), impl_spans):
+        if _inside(m.start(), excluded_spans):
             continue
-        names.add(m.group(1))
+        if m.group(1) == "_":
+            continue
+        names.append(m.group(1))
     return names
+
+
+def find_const_shadows(
+    src: str, excluded_spans: list[tuple[int, int]] | None = None
+) -> set[str]:
+    """Bare names that DISQUALIFY themselves from the const tier.
+
+    Two kinds, both of which mean "a `{NAME}` capture of this spelling is not
+    demonstrably a module-scope `const`":
+
+    1. Every `static NAME: ...` — anywhere, at any scope. `static` is the
+       other thing a bare SCREAMING_SNAKE_CASE identifier commonly resolves
+       to, and it carries no compile-time-evaluation guarantee. This is the
+       concrete counter-witness that killed the previous round's tree-global
+       bare-name const union: a file declaring
+       `pub static LEAKY_NAME: LazyLock<String> = ...` and capturing
+       `{LEAKY_NAME}` correctly denied ON ITS OWN, but an unrelated,
+       later-sorted file adding `pub const LEAKY_NAME: usize = 16;` made the
+       finding DISAPPEAR. The guard's claim is "this placeholder RESOLVES TO
+       a const", which is a name-resolution claim; a union over bare names
+       does not establish it, and `static` is exactly the collision partner
+       that proves so.
+    2. Every `const NAME: ...` declared inside `excluded_spans` — a `fn`
+       body, a `trait` body, an `impl` body, or a `#[cfg(test)]` item. Such a
+       declaration is not a credit (see `find_consts`), and its EXISTENCE is
+       evidence that this spelling means more than one thing in this tree.
+    """
+    excluded_spans = excluded_spans or []
+    names: set[str] = set()
+    for m in STATIC_RE.finditer(src):
+        names.add(m.group(1))
+    for m in CONST_RE.finditer(src):
+        if m.group(1) != "_" and _inside(m.start(), excluded_spans):
+            names.add(m.group(1))
+    return names
+
+
+def resolve_consts(declared: list[str], shadows: frozenset[str]) -> frozenset[str]:
+    """The const tier's credited name set: a bare name is credited only when
+    the guard saw EXACTLY ONE module-scope `const` declaration of it across
+    everything it scanned, and saw nothing that disqualifies the spelling.
+
+    This is the same collision-drop discipline `find_type_aliases` already
+    gets in `run_real_scan`, for the same reason: a spelling that resolves to
+    more than one declaration has not been RESOLVED, and a guard that guesses
+    which one is "real" is a guard that can be aimed. Dropping costs nothing
+    but a fail-closed `UNPARSED` finding a human then reads; guessing costs a
+    silent pass.
+    """
+    counts: dict[str, int] = {}
+    for name in declared:
+        counts[name] = counts.get(name, 0) + 1
+    return frozenset(
+        name for name, count in counts.items() if count == 1 and name not in shadows
+    )
+
+
+# `use ...;` — the per-file name bindings that make a BARE spelling mean
+# something other than what tree-global discovery assumed. Roots that stay
+# inside this crate; anything else (`std`, `core`, a third-party crate) binds
+# a name this guard does not scan and therefore cannot vouch for.
+LOCAL_USE_ROOTS: frozenset[str] = frozenset({"crate", "super", "self"})
+USE_HEAD_RE = re.compile(r"\buse\s+")
+# `mod name;` / `mod name { ... }`. Rust 2018 UNIFORM PATHS let a `use` start
+# at a module declared in the CURRENT module, with no `crate::`/`self::`
+# prefix — `core/src/vault/mod.rs` really does write `pub use block::{...};`
+# beside its `pub mod block;`. Such a root is intra-crate, so it must not be
+# mistaken for a third-party crate name.
+MOD_DECL_RE = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]")
+
+
+def _use_bound_names(tree: str, parent_last: str | None = None) -> set[str]:
+    """Every name a `use` tree binds into its file's namespace.
+
+    Handles `a::b::C`, `a::b::C as D`, `a::{B, c::{D, self}}` and `a::*`
+    (which binds nothing this function can enumerate — see
+    `foreign_use_names`).
+    """
+    tree = tree.strip()
+    if not tree:
+        return set()
+    brace = tree.find("{")
+    if brace != -1:
+        prefix = tree[:brace].strip().rstrip(":").strip()
+        close = tree.rfind("}")
+        inner = tree[brace + 1 : close if close > brace else len(tree)]
+        segs = [s.strip() for s in prefix.split("::") if s.strip()]
+        last = segs[-1] if segs else parent_last
+        out: set[str] = set()
+        for part in split_top_level(inner):
+            out |= _use_bound_names(part, last)
+        return out
+    if " as " in tree:
+        alias = tree.split(" as ")[-1].strip()
+        return {alias} if alias and alias != "_" else set()
+    segs = [s.strip() for s in tree.split("::") if s.strip()]
+    if not segs:
+        return set()
+    leaf = segs[-1]
+    if leaf == "*":
+        return set()
+    if leaf == "self":
+        if len(segs) >= 2:
+            return {segs[-2]}
+        return {parent_last} if parent_last else set()
+    return {leaf}
+
+
+def foreign_use_names(raw: str) -> frozenset[str]:
+    """Bare names this FILE binds to something OUTSIDE the crate.
+
+    Tree-global discovery registers a BARE spelling for every `core`-local
+    thiserror enum, type alias and const it finds, and `is_data_free` then
+    credits that spelling anywhere in the tree. That is a name-resolution
+    claim, and a `use` statement is the one piece of evidence a
+    pattern-matcher can actually read that CONTRADICTS it:
+
+        use std::io::Error;          // in this file, `Error` is std's
+        ...
+        K1BareIoError(#[from] Error) // NOT crate::error::Error
+
+    `core/src/error.rs` declares `pub enum Error` with `#[error(` in its
+    body, so the bare spelling `Error` is registered tree-wide — which made
+    that variant pass silently even though `std::io::Error` renders a
+    filesystem path. Every name bound here is removed from the BARE-name
+    credits when this file is scanned; qualified spellings
+    (`crate::unlock::UnlockError`, `device_file::DeviceFileError`) are
+    untouched, since a path cannot be shadowed by a `use`.
+
+    Roots `crate` / `super` / `self` are intra-crate and are skipped: those
+    resolve to items this guard does scan. So is a root naming a module
+    DECLARED IN THE SAME FILE (`MOD_DECL_RE`) — Rust 2018 uniform paths make
+    `pub use block::{BlockError, ...};` beside `pub mod block;` an ordinary
+    intra-crate re-export, and treating it as a third-party crate named
+    `block` produced four spurious findings in `core/src/vault/mod.rs` on
+    the first run of this fix.
+
+    LIMIT: a glob (`use some_crate::*;`) binds names this function cannot
+    enumerate. Every glob under `core/src/**` today is an intra-crate
+    `use super::*;` inside a `#[cfg(test)] mod tests`, plus
+    `use proptest::prelude::*;`. A future foreign glob would leave the
+    bare-name credit in place — the same residual "not a real import
+    resolver" risk the module docstring's LIMITS already records.
+    """
+    src = discovery_view(raw)
+    local_roots = LOCAL_USE_ROOTS | {m.group(1) for m in MOD_DECL_RE.finditer(src)}
+    names: set[str] = set()
+    n = len(src)
+    for m in USE_HEAD_RE.finditer(src):
+        depth, j = 0, m.end()
+        while j < n:
+            c = src[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth < 0:
+                    break
+            elif c == ";" and depth == 0:
+                break
+            j += 1
+        tree = src[m.end() : j]
+        root = tree.lstrip().lstrip(":").split("::")[0].split("{")[0].strip()
+        if not root or root in local_roots:
+            continue
+        names |= _use_bound_names(tree)
+    return frozenset(names)
 
 
 def module_path_segments(path_label: str) -> list[str]:
@@ -373,8 +687,8 @@ def module_path_segments(path_label: str) -> list[str]:
 
 def discover_declarations(
     raw: str, path_label: str | None = None
-) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
-    """Three textual facts this guard can prove about a chunk of Rust source
+) -> tuple[frozenset[str], dict[str, str], list[str], frozenset[str]]:
+    """Four textual facts this guard can prove about a chunk of Rust source
     without a real parser — the tier-2/3/4 inputs `is_data_free` and
     `scan_source`'s placeholder resolution need.
 
@@ -385,13 +699,23 @@ def discover_declarations(
        own definition if any of ITS variants interpolates a non-data-free
        field, so re-flagging the forward adds no signal, only allowlist
        noise the approved design explicitly wants to avoid.
-    2. Which `type X = Y;` aliases it declares, one level deep. `type X = Y;`
-       declarations found INSIDE an `impl ... { }` block (a trait's
-       associated type, not a free-standing alias) are excluded — see
-       `find_type_aliases`.
-    3. Which `const NAME: Type = value;` declarations it has — see
-       `find_consts` for why `static` is deliberately excluded and why only
-       `const` gets this treatment.
+    2. Which `type X = Y;` aliases it declares, one level deep. Declarations
+       found inside a NON-MODULE block (a trait's or an `impl`'s associated
+       type, an alias local to a `fn` body) are excluded — see
+       `find_type_aliases` / `non_module_block_spans`.
+    3. Which module-scope `const NAME: Type = value;` declarations it has,
+       one entry per declaration — see `find_consts` for why `static` is
+       deliberately excluded, why non-module scopes and `#[cfg(test)]` items
+       are excluded, and `resolve_consts` for the collision-drop the repeats
+       feed.
+    4. Which bare names DISQUALIFY themselves from (3) — every `static`, and
+       every `const` in an excluded scope. See `find_const_shadows`.
+
+    EVERY one of these runs over `discovery_view(raw)`, in which string
+    literal CONTENTS are blanked as well as comments. Text inside an
+    `#[error("...")]` message is not a declaration, and treating it as one
+    let an author self-authorise their own placeholder from inside the very
+    message under test — see `blank_string_literals`.
 
     For each discovered enum/alias name, three spellings are registered so a
     reference site is recognised regardless of how it's qualified: the bare
@@ -413,13 +737,16 @@ def discover_declarations(
     qualified.
 
     `run_real_scan` aggregates the RESULT of this function across every file
-    under `core/src/**` — see that function's docstring for why a bare-name
-    alias COLLISION across files is dropped rather than resolved, and why
-    `const` names (and `local_error_enums`) do not need the same treatment.
+    under `core/src/**` — see that function's docstring for how a bare-name
+    alias or `const` COLLISION across files is dropped rather than resolved,
+    and why `local_error_enums` does not need the same treatment. Per-file
+    `use`-shadowing is applied separately, at scan time — see
+    `foreign_use_names`.
     """
-    src = strip_comments(raw)
+    src = discovery_view(raw)
     segments = module_path_segments(path_label) if path_label else []
-    impl_spans = impl_block_spans(src)
+    excluded = non_module_block_spans(src)
+    test_spans = cfg_test_spans(src)
 
     def spellings(name: str) -> list[str]:
         out = [name]
@@ -430,7 +757,7 @@ def discover_declarations(
 
     local_error_enums: set[str] = set()
     for m in ENUM_RE.finditer(src):
-        if _inside(m.start(), impl_spans):
+        if _inside(m.start(), excluded):
             continue
         name = m.group(1)
         brace = src.find("{", m.end())
@@ -441,13 +768,15 @@ def discover_declarations(
             local_error_enums.update(spellings(name))
 
     aliases: dict[str, str] = {}
-    for alias_name, rhs in find_type_aliases(src, impl_spans).items():
+    for alias_name, rhs in find_type_aliases(src, excluded).items():
         for spelling in spellings(alias_name):
             aliases[spelling] = rhs
 
-    consts = find_consts(src, impl_spans)
+    const_excluded = excluded + test_spans
+    consts = find_consts(src, const_excluded)
+    const_shadows = find_const_shadows(src, const_excluded)
 
-    return frozenset(local_error_enums), aliases, frozenset(consts)
+    return frozenset(local_error_enums), aliases, consts, frozenset(const_shadows)
 
 
 def strip_comments(src: str) -> str:
@@ -515,6 +844,82 @@ def strip_comments(src: str) -> str:
             out.append(ch)
             i += 1
     return "".join(out)
+
+
+def blank_string_literals(src: str) -> str:
+    """Blank the CONTENTS of every string literal, preserving length AND line
+    structure (a newline stays a newline; everything else becomes a space).
+
+    This is the DECLARATION-DISCOVERY view, and it is a security control.
+    `find_consts`, `find_type_aliases` and `ENUM_RE` all answer the question
+    "what names is this file allowed to vouch for?" — and text inside an
+    `#[error("...")]` MESSAGE is not a declaration of anything. Running
+    discovery over comment-stripped-but-string-intact source let an author
+    self-authorise their own placeholder from inside the very message the
+    guard is checking:
+
+        #[error("leaked field name: {SELF_AUTH} const SELF_AUTH: usize = 1;")]
+        SelfAuthorised,
+
+    passed silently, because `CONST_RE` matched the `const SELF_AUTH: usize =`
+    text sitting inside the message string and registered `SELF_AUTH` as a
+    discovered const. One line, one file, no cross-file collision and no
+    file-ordering dependence — authored by exactly the person whose code the
+    guard exists to check. The same trick reached the alias tier
+    (`"... type ZzFakeAlias = usize; ..."` + a field typed `ZzFakeAlias`) and
+    the recursion tier (`"... enum ZzFakeEnum { #[error(\\"x\\")] A } ..."` +
+    a field typed `ZzFakeEnum`).
+
+    Blanking is length- and line-preserving because the reported `line`, the
+    `_inside(...)` span checks and the raw-text allowlist key all index by
+    character offset into a view derived from the same source. An earlier
+    round shipped exactly that bug in `strip_comments`: a `\\` + newline
+    string continuation emitted a space for the newline, desyncing every
+    subsequent line number in the file. The `\\` + newline case below emits a
+    newline for the same reason.
+
+    NOT used for locating `#[error(` attributes themselves (`scan_source`
+    still scans the un-blanked, comment-stripped text). Blanking can only ever
+    HIDE text, so using it for discovery is fail-closed — a hidden declaration
+    means a lost credit, i.e. a finding — whereas using it to locate
+    attributes would be fail-open if the string scanner ever desynced.
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+    in_string = False
+    while i < n:
+        ch = src[i]
+        if in_string:
+            if ch == "\\":
+                nxt = src[i + 1] if i + 1 < n else ""
+                if nxt == "":
+                    out.append(" ")
+                    i += 1
+                    continue
+                out.append("\n" if nxt == "\n" else " ")
+                out.append(" ")
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+            else:
+                out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def discovery_view(raw: str) -> str:
+    """The single view every declaration-discovery pass runs over: comments
+    blanked, then string-literal CONTENTS blanked, length and line structure
+    preserved by both. See `blank_string_literals`.
+    """
+    return blank_string_literals(strip_comments(raw))
 
 
 @dataclass(frozen=True)
@@ -704,6 +1109,7 @@ def scan_source(
     local_error_enums: frozenset[str] = frozenset(),
     aliases: dict[str, str] | None = None,
     consts: frozenset[str] = frozenset(),
+    foreign_names: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Find every `#[error]` variant/struct that interpolates a non-data-free
     field, PLUS every `#[error(...)]` attribute whose structure this guard
@@ -724,6 +1130,16 @@ def scan_source(
     still produces an `UNPARSED` finding — the const tier is an ADDITIONAL
     way to be recognised safe, never a fallback that accepts an unknown
     name. See `find_consts` for why only `const` (never `static`) qualifies.
+
+    `foreign_names` is this FILE's `use`-bound foreign spellings
+    (`foreign_use_names`); every bare-name credit — tier 2, tier 3 and the
+    const tier — is withdrawn for those spellings while this file is
+    scanned.
+
+    Note `strip_comments`, NOT `discovery_view`: locating `#[error(`
+    attributes and reading their message text needs the strings INTACT.
+    Blanking is used only where it can only ever hide a credit, which is the
+    fail-closed direction — see `blank_string_literals`.
     """
     src = strip_comments(raw)
     findings: list[Finding] = []
@@ -861,11 +1277,13 @@ def scan_source(
                     continue
             elif name in fields:
                 fname, ftype = name, fields[name]
-            elif name in consts:
+            elif name in consts and name not in foreign_names:
                 # A `const` capture, not a field — Rust requires a `const`'s
                 # initializer to be compile-time evaluable, so it cannot
                 # carry runtime content regardless of its declared type.
                 # Nothing further to classify; this is not a field lookup.
+                # `foreign_names` withdraws the credit when THIS file binds
+                # the spelling to something outside the crate.
                 continue
             else:
                 emit_unparsed(
@@ -879,7 +1297,7 @@ def scan_source(
             if fname in seen_fields:
                 continue
             seen_fields.add(fname)
-            if not is_data_free(ftype, local_error_enums, aliases):
+            if not is_data_free(ftype, local_error_enums, aliases, foreign_names):
                 findings.append(
                     Finding(
                         path=path_label,
@@ -986,40 +1404,54 @@ def run_real_scan() -> int:
     # entirely, so a lookup against it default-denies instead of guessing
     # which definition was "real."
     #
-    # `const` names are aggregated as a plain union, NOT with the same
-    # collision-drops-to-deny treatment as aliases — deliberately, not by
-    # oversight. The alias mechanism needed it because an alias's SAFETY
-    # depends on its right-hand-side VALUE, which genuinely can differ (and
-    # conflict) between two same-named aliases in different files. A `const`
-    # has no analogous "wrong value" to collide on: Rust requires EVERY
-    # `const`'s initializer to be compile-time evaluable, so ANY declaration
-    # `find_consts` matches is safe by that guarantee alone, regardless of
-    # which file it came from or what its actual value is. Two different
-    # files each declaring their own `const LEN: usize = ...;` are both
-    # still soundly "a compile-time constant, can't carry runtime content" —
-    # there is no "real" one to pick between, unlike an alias where one
-    # side's RHS could genuinely be unsafe.
+    # `const` names get the SAME collision-drop, applied by `resolve_consts`
+    # over the flat cross-file declaration list: a bare spelling this guard
+    # saw declared more than once, or saw disqualified by a `static` /
+    # excluded-scope declaration anywhere, is not credited. An earlier round
+    # unioned them instead, on the argument that "a const's safety comes from
+    # the compiler, not its value." The premise is true; the conclusion does
+    # not follow, because the guard's operative claim is not "consts are
+    # safe" but "this placeholder RESOLVES TO a const" — a name-resolution
+    # claim a bare-name union does not establish. `static` is the concrete
+    # counter-witness (`find_const_shadows`), and it was reproduced
+    # end-to-end: a `static LEAKY_NAME: LazyLock<String>` capture that
+    # correctly denied on its own went silent the moment an unrelated,
+    # later-sorted file added `pub const LEAKY_NAME: usize = 16;`.
+    #
+    # `local_error_enums` still does NOT get the treatment, for the reason
+    # the LIMITS block records: it is a pure membership set, and any enum
+    # registered in it is by construction a real thiserror enum this guard
+    # scans, so two same-named local enums are both soundly "safe by
+    # recursion." Its bare-name risk is a FOREIGN collision, and that is
+    # handled per-file by `foreign_use_names` in pass 2.
     local_error_enum_names: set[str] = set()
     alias_candidates: dict[str, set[str]] = {}
-    const_names: set[str] = set()
+    declared_consts: list[str] = []
+    const_shadow_names: set[str] = set()
     for label, raw in sources:
-        enums, file_aliases, file_consts = discover_declarations(raw, label)
+        enums, file_aliases, file_consts, file_shadows = discover_declarations(
+            raw, label
+        )
         local_error_enum_names.update(enums)
         for spelling, rhs in file_aliases.items():
             alias_candidates.setdefault(spelling, set()).add(rhs)
-        const_names.update(file_consts)
+        declared_consts.extend(file_consts)
+        const_shadow_names.update(file_shadows)
     local_error_enums: frozenset[str] = frozenset(local_error_enum_names)
     aliases = {
         spelling: next(iter(rhs_set))
         for spelling, rhs_set in alias_candidates.items()
         if len(rhs_set) == 1
     }
-    consts: frozenset[str] = frozenset(const_names)
+    consts = resolve_consts(declared_consts, frozenset(const_shadow_names))
 
-    # Pass 2: the actual scan, now with tiers 2, 3, and 4 available.
+    # Pass 2: the actual scan, now with tiers 2, 3, and 4 available — each
+    # file's own foreign `use` bindings withdrawing the bare-name credits
+    # that file's namespace contradicts.
     violations: list[Finding] = []
     for label, raw in sources:
-        for f in scan_source(label, raw, local_error_enums, aliases, consts):
+        foreign = foreign_use_names(raw)
+        for f in scan_source(label, raw, local_error_enums, aliases, consts, foreign):
             if f"{f.path}\t{RULE}\t{f.source_line}" in allowlist:
                 continue
             violations.append(f)
@@ -1050,7 +1482,11 @@ def run_real_scan() -> int:
     return 0
 
 
-POSITIVE_CONTROLS: list[tuple[str, str]] = [
+# `(label, source)` or `(label, source, expectation)`. The optional third
+# element is a `ControlExpectation` (below) asserting WHICH finding the
+# control must produce — see its comment for why "something fired" is not a
+# strong enough assertion for a control that pins a parser fix.
+POSITIVE_CONTROLS: list[tuple] = [
     (
         "P1 struct variant with a String payload",
         '''
@@ -1136,6 +1572,10 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
             Io(#[from] std::io::Error),
         }
         ''',
+        # Not merely "something fired": the finding must be the TYPE verdict
+        # on the io field. An UNPARSED here would mean the guard lost track
+        # of the structure and passed the control for the wrong reason.
+        {"field": "0", "field_type": "#[from] std::io::Error"},
     ),
     (
         "P9 alias to String is not data-free (aliasing doesn't launder a "
@@ -1187,6 +1627,15 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
             },
         }
         ''',
+        # THE control for `strip_field_attrs`, so it must assert on the
+        # RESULT, not on non-emptiness. Reverting that fix (dropping back to
+        # a bare `.strip()` on the name side) leaves the field named
+        # `#[source] source`, `{source}` matches nothing, and the attribute
+        # falls through to UNPARSED — which is still a finding, so a
+        # non-emptiness assertion stayed green and the control stopped
+        # pinning its own mechanism. Naming the field and type here is what
+        # makes reverting the fix break THIS control.
+        {"variant": "Wrapped", "field": "source", "field_type": "std::io::Error"},
     ),
     (
         "P13 #[error(transparent)] over a third-party source must still "
@@ -1198,6 +1647,7 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
             Wrapped(#[from] std::io::Error),
         }
         ''',
+        {"variant": "Wrapped", "field": "0", "field_type": "#[from] std::io::Error"},
     ),
     (
         "P14 an intervening #[allow(...)] attribute between #[error] and "
@@ -1210,6 +1660,12 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
             Leaky { detail: String },
         }
         ''',
+        # THE control for `skip_attributes`, so — exactly as with P12 — it
+        # asserts on the verdict. Reverting that fix (making
+        # `skip_attributes` the identity) leaves the guard unable to locate
+        # the variant at all, which now emits UNPARSED rather than silently
+        # passing; a non-emptiness assertion could not tell the two apart.
+        {"variant": "Leaky", "field": "detail", "field_type": "String"},
     ),
     (
         "P15 an unrecognisable construct after #[error(...)] must fail "
@@ -1273,6 +1729,164 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
             Leaky { detail: String },
         }
         ''',
+        {"unparsed": True, "field": "NOT_A_CONST"},
+    ),
+    # P20-P22 are deliberately STRUCT-shaped errors at module scope, not
+    # enum variants. In an enum, the injected text lands inside the enum's
+    # own braces, which `non_module_block_spans` already excludes — so an
+    # enum-shaped control fires whether or not string blanking works, and
+    # pins nothing. Mutating `discovery_view` back to `strip_comments`
+    # (no blanking) must break exactly these three.
+    (
+        "P20 a `const` declaration written INSIDE the #[error] message text "
+        "must not self-authorise its own placeholder — declaration "
+        "discovery runs over a view with string literals blanked",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        #[error("leaked field name: {SELF_AUTH} const SELF_AUTH: usize = 1;")]
+        pub struct SelfAuthorised;
+        ''',
+        {"unparsed": True, "field": "SELF_AUTH"},
+    ),
+    (
+        "P21 a `type` alias written INSIDE the #[error] message text must "
+        "not launder the field it names (same root cause as P20, tier 3)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        #[error("x type ZzFakeAlias = usize; leak {detail}")]
+        pub struct AliasInjected {
+            detail: ZzFakeAlias,
+        }
+        ''',
+        {"variant": "AliasInjected", "field": "detail", "field_type": "ZzFakeAlias"},
+    ),
+    (
+        "P22 a thiserror-shaped `enum` written INSIDE the #[error] message "
+        "text must not earn the recursion tier (same root cause as P20, "
+        "tier 2)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        #[error("x enum ZzFakeEnum { #[error(\\"y\\")] Aaa, } leak {0}")]
+        pub struct EnumInjected(ZzFakeEnum);
+        ''',
+        {"variant": "EnumInjected", "field": "0", "field_type": "ZzFakeEnum"},
+    ),
+    (
+        "P23 a `static` of the same name DISQUALIFIES a const spelling — the "
+        "cross-module shape that made a real `static LazyLock<String>` "
+        "capture go silent once an unrelated const of that name existed",
+        '''
+        mod a {
+            pub static LEAKY_NAME: LazyLock<String> =
+                LazyLock::new(|| std::env::var("SECRET_FIELD").unwrap_or_default());
+        }
+
+        mod b {
+            pub const LEAKY_NAME: usize = 16;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("duplicate key: {LEAKY_NAME}")]
+            LeakViaStatic,
+        }
+        ''',
+        {"unparsed": True, "field": "LEAKY_NAME"},
+    ),
+    (
+        "P24 two module-scope consts of the same bare name are a COLLISION, "
+        "not a resolution — the spelling is dropped, same discipline as a "
+        "colliding type alias",
+        '''
+        mod a {
+            pub const DUP_LEN: usize = 16;
+        }
+
+        mod b {
+            pub const DUP_LEN: usize = 32;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {DUP_LEN} bytes")]
+            Bad,
+        }
+        ''',
+        {"unparsed": True, "field": "DUP_LEN"},
+    ),
+    (
+        "P25 a #[cfg(test)] const does not vouch for a shipped message — "
+        "six of the tree's 136 harvested const names came from test "
+        "modules, one literally named SECRET_FIELD_NAME",
+        '''
+        #[cfg(test)]
+        mod tests {
+            pub const SECRET_FIELD_NAME: usize = 16;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {SECRET_FIELD_NAME} bytes")]
+            Bad,
+        }
+        ''',
+        {"unparsed": True, "field": "SECRET_FIELD_NAME"},
+    ),
+    (
+        "P26 a const declared inside a fn body is not a module-scope name a "
+        "format capture could reach",
+        '''
+        fn helper() {
+            const INNER_LEN: usize = 16;
+            let _ = INNER_LEN;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {INNER_LEN} bytes")]
+            Bad,
+        }
+        ''',
+        {"unparsed": True, "field": "INNER_LEN"},
+    ),
+    (
+        "P27 a trait's associated const is a per-impl binding, not a free "
+        "name (the associated-`type` exclusion, applied to consts)",
+        '''
+        pub trait Sized2 {
+            const TRAIT_LEN: usize = 16;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {TRAIT_LEN} bytes")]
+            Bad,
+        }
+        ''',
+        {"unparsed": True, "field": "TRAIT_LEN"},
+    ),
+    (
+        "P28 a bare name this file `use`s from OUTSIDE the crate is not the "
+        "core-local enum that shares its spelling — core/src/error.rs's "
+        "`pub enum Error` made `use std::io::Error;` pass silently",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        use std::io::Error;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] Error),
+        }
+        ''',
+        {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
     ),
 ]
 
@@ -1428,22 +2042,188 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "N13 an INTRA-crate `use` of a core-local error type keeps the "
+        "recursion tier — P28's foreign-import drop must be about the "
+        "import's ROOT, not about `use` statements in general",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        use crate::local::Error;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("wrapped: {0}")]
+            Wrapped(#[from] Error),
+        }
+        ''',
+    ),
+    (
+        "N14 a const declared at module scope INSIDE a `mod` block is still "
+        "module scope — the non-module-block exclusion must exempt exactly "
+        "`mod { }` and nothing else, or every const in the tree vanishes",
+        '''
+        mod inner {
+            pub const INNER_CONST: usize = 16;
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {INNER_CONST} bytes, got {length}")]
+            Bad { length: usize },
+        }
+        ''',
+    ),
+    (
+        "N15 a Rust-2018 UNIFORM-PATH re-export (`use inner::X;` beside "
+        "`mod inner;`, no crate:: prefix) is intra-crate — the live "
+        "core/src/vault/mod.rs shape; misreading `inner` as a third-party "
+        "crate name produced four spurious findings there",
+        '''
+        mod inner {
+            #[derive(thiserror::Error, Debug)]
+            pub enum InnerError {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        pub use inner::InnerError;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("wrapped: {0}")]
+            Wrapped(#[from] InnerError),
+        }
+        ''',
+    ),
 ]
 
 
-def run_self_test() -> int:
+# `(variant, field, field_type)` claims a POSITIVE control makes about the
+# finding it expects, beyond "something fired". `unparsed` asserts the
+# finding IS (or is not) the default-deny-on-structure kind.
+#
+# Non-emptiness alone is not enough for a control that pins a PARSER fix:
+# once an unresolvable construct became an `UNPARSED` finding rather than a
+# silent skip, reverting such a fix left the control green — the guard still
+# reported something, just not the thing the control existed to prove. P12
+# and P14 were both in that state.
+ControlExpectation = dict[str, object]
+
+
+def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
+    is_unparsed = f.field_type.startswith("UNPARSED:")
+    if "unparsed" in expect and bool(expect["unparsed"]) is not is_unparsed:
+        return False
+    if "variant" in expect and f.variant != expect["variant"]:
+        return False
+    if "field" in expect and f.field != expect["field"]:
+        return False
+    if "field_type" in expect and f.field_type != expect["field_type"]:
+        return False
+    return True
+
+
+def check_view_invariants() -> list[str]:
+    """`strip_comments` and `blank_string_literals` are indexed into by
+    character offset — the reported line number, every `_inside(...)` span
+    check and the raw-text allowlist key all assume the views line up with
+    the source byte-for-byte and line-for-line.
+
+    An earlier round shipped a violation of exactly this: a `\\` + newline
+    string continuation emitted a space for the newline, so every subsequent
+    line number in the file was reported low. These checks pin the invariant
+    over every self-test control plus a synthetic source that deliberately
+    contains the shapes most likely to break it.
+    """
+    samples = [src for _, src, *_ in POSITIVE_CONTROLS]
+    samples += [src for _, src in NEGATIVE_CONTROLS]
+    samples.append(
+        '#[error("continued \\\n        message: {a}")]\n'
+        '/* block\n   comment */ const A: usize = 1;\n'
+        '// line comment\nlet s = "quote \\" inside";\n'
+    )
     failures: list[str] = []
-    for label, src in POSITIVE_CONTROLS:
-        # Each control is self-contained (defines any nested enum/alias/const
-        # it references in the same string), so a per-control discovery
-        # pass — no real file path, hence no path_label — exercises the real
-        # discovery path rather than a hardcoded name list.
-        enums, aliases, consts = discover_declarations(src)
-        if not scan_source("<self-test>", src, enums, aliases, consts):
+    for i, src in enumerate(samples):
+        for name, view in (
+            ("strip_comments", strip_comments(src)),
+            ("discovery_view", discovery_view(src)),
+        ):
+            if len(view) != len(src):
+                failures.append(
+                    f"VIEW INVARIANT: {name} changed length on sample #{i} "
+                    f"({len(view)} != {len(src)})"
+                )
+            if view.count("\n") != src.count("\n"):
+                failures.append(
+                    f"VIEW INVARIANT: {name} changed line count on sample "
+                    f"#{i} ({view.count(chr(10))} != {src.count(chr(10))})"
+                )
+    return failures
+
+
+def check_key_shape(label: str, findings: list[Finding]) -> list[str]:
+    """The allowlist key (`Finding.source_line`) must contain no TAB and no
+    newline.
+
+    `scripts/lib/hygiene-allowlist.sh::allowlisted` — the shared parser this
+    file's allowlist format exists to stay compatible with — splits entries
+    on TAB, and reads them one line at a time. A key carrying either
+    character could not be written as an entry at all, or worse could be
+    written in a way that silently truncates and matches more than it names.
+    `scan_source` builds the key with `" ".join(text.split())`, which
+    collapses both; this asserts the property rather than trusting it.
+    """
+    failures: list[str] = []
+    for f in findings:
+        if "\t" in f.source_line or "\n" in f.source_line:
+            failures.append(
+                f"ALLOWLIST KEY SHAPE: {label} produced a key containing a "
+                f"TAB or newline: {f.source_line!r}"
+            )
+    return failures
+
+
+def scan_control(src: str) -> list[Finding]:
+    """Run the FULL pipeline over a self-test control string.
+
+    Each control is self-contained (it declares any nested enum / alias /
+    const / `use` it references in the same string), so a per-control
+    discovery pass — no real file path, hence no `path_label` — exercises the
+    real discovery, collision-drop and import-shadow code paths rather than a
+    hardcoded name list.
+    """
+    enums, aliases, declared_consts, shadows = discover_declarations(src)
+    consts = resolve_consts(declared_consts, shadows)
+    return scan_source(
+        "<self-test>", src, enums, aliases, consts, foreign_use_names(src)
+    )
+
+
+def run_self_test() -> int:
+    failures: list[str] = check_view_invariants()
+    for entry in POSITIVE_CONTROLS:
+        label, src = entry[0], entry[1]
+        expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None
+        found = scan_control(src)
+        failures += check_key_shape(label, found)
+        if not found:
             failures.append(f"POSITIVE control did not fire: {label}")
+        elif expect and not any(_finding_matches(f, expect) for f in found):
+            failures.append(
+                f"POSITIVE control fired for the WRONG REASON: {label} -> "
+                f"expected {expect}, got "
+                f"{[(f.variant, f.field, f.field_type) for f in found]}"
+            )
     for label, src in NEGATIVE_CONTROLS:
-        enums, aliases, consts = discover_declarations(src)
-        found = scan_source("<self-test>", src, enums, aliases, consts)
+        found = scan_control(src)
         if found:
             failures.append(
                 f"NEGATIVE control fired: {label} -> "
