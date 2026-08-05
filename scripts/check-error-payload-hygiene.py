@@ -26,6 +26,24 @@ of the variant it is attached to. If the message (or a trailing format argument)
 interpolates a field whose declared type is not provably data-free, fail —
 unless the attribute's exact trimmed source line is allowlisted.
 
+A field type is data-free when it is one of three things: a literal type in
+`DATA_FREE_TYPES` (or a fixed-size numeric array / `Option<T>` of one); a
+`thiserror`-derived enum THIS GUARD ITSELF SCANS somewhere under `core/src/**`
+(see `discover_declarations`) — forwarding such an enum's `Display` via `{0}`
+adds no new leak surface, because this same guard already fails at THAT enum's
+own definition if any of its variants interpolates a non-data-free field; or a
+one-level `type X = Y;` alias whose right-hand side clears one of the first two
+checks (`pub type Fingerprint = [u8; 16];` is exactly as data-free as the array
+it names).
+
+The recursion argument is deliberately narrow: a nested error type from OUTSIDE
+`core/src/**` — `std::io::Error`, `toml::de::Error`, any third-party crate's
+error type — is NOT scanned by this guard, so it is NOT covered by the
+recursion argument and MUST still deny. `std::io::Error` renders a filesystem
+path; that is exactly the kind of payload a human should sign off on via the
+allowlist, not something this guard should wave through because a same-named
+local type happens to be safe.
+
 DEFAULT-DENY: an unrecognised type name is a FAILURE, not a pass. A new payload
 type cannot slip through by being unfamiliar to this matcher.
 
@@ -40,6 +58,23 @@ LIMITS (stated, not hidden)
 - Rust is parsed by pattern, not by a real parser. The shapes in this codebase
   are regular (thiserror derives); an exotic macro-generated error enum would
   be invisible. `--self-test` pins the shapes that do occur.
+- The local-error-enum and type-alias recognition in `discover_declarations`
+  matches by NAME (bare, `<parent-module>::Name`, or `crate::<path>::Name`),
+  not by real `use`-import / path resolution. A bare, unqualified reference to
+  a type from OUTSIDE `core/src/**` whose name collides with a `core`-local
+  enum or alias (e.g. `use std::io::Error; ... Io(#[from] Error)`, colliding
+  with `crate::error::Error`) would be misclassified as data-free. Nothing in
+  this codebase currently does that; `--self-test` cannot pin the absence of a
+  pattern, only its presence, so this is a standing risk for future code, not
+  a closed gap.
+- Name resolution stops at the type name as written. `type usize = String;`
+  shadowing a `DATA_FREE_TYPES` primitive with an actual `String`, and then
+  using that shadowed name as a field's declared type, is invisible to a
+  matcher that only ever asks "does this token equal a known-safe name?" — it
+  has no notion of scope, so it cannot tell the shadow from the primitive.
+  Closing this requires a real type resolver, which is out of scope for a
+  pattern-based guard; `--self-test` pins the shapes that DO occur, not every
+  shape that could be contrived to evade it.
 """
 
 from __future__ import annotations
@@ -74,19 +109,187 @@ DATA_FREE_TYPES: frozenset[str] = frozenset(
 ARRAY_RE = re.compile(r"^\[[ui](?:8|16|32|64|128|size);[^\]]+\]$")
 # `Option<T>` is data-free exactly when `T` is.
 OPTION_RE = re.compile(r"^Option<(.+)>$")
+# A field-level attribute prefix (`#[from]`, `#[source]`) glued onto the raw
+# type text by `parse_fields`, which does not separate attributes from types.
+FIELD_ATTR_RE = re.compile(r"^#\[[^\]]*\]\s*")
 
 
-def is_data_free(ty: str) -> bool:
-    """True when a value of `ty` provably cannot carry runtime content."""
+def normalize_type(ty: str) -> str:
+    """Collapse whitespace and strip a leading field-level attribute.
+
+    `parse_fields` hands back the raw text after the field's `:` — for
+    `Record(#[from] RecordError)` that is `"#[from] RecordError"`, not
+    `"RecordError"`. Path qualification (`crate::unlock::UnlockError`,
+    `device_file::DeviceFileError`) is deliberately left untouched: it is
+    exactly the signal `discover_declarations`'s spellings rely on to tell a
+    `core`-local reference from a foreign one (`std::io::Error`) apart —
+    collapsing to the bare final segment would make the two indistinguishable
+    and let a foreign type piggyback on a same-named local one.
+    """
     ty = " ".join(ty.split())
+    m = FIELD_ATTR_RE.match(ty)
+    if m:
+        ty = ty[m.end() :]
+    return ty.strip()
+
+
+def _is_data_free_core(ty: str, local_error_enums: frozenset[str]) -> bool:
+    """Tiers 1 and 2 only: literal data-free types, and `core`-local error
+    enums this guard itself scans. Deliberately excludes tier 3 (alias
+    resolution) — it is the target `is_data_free` calls an alias's
+    right-hand side through, so an alias chain (`type A = B; type B = C;`)
+    gets exactly one hop of credit, not an unbounded one.
+    """
+    ty = normalize_type(ty)
     if ty in DATA_FREE_TYPES:
         return True
     if ARRAY_RE.match(ty.replace(" ", "")):
         return True
     inner = OPTION_RE.match(ty)
     if inner:
-        return is_data_free(inner.group(1))
+        return _is_data_free_core(inner.group(1), local_error_enums)
+    return ty in local_error_enums
+
+
+def is_data_free(
+    ty: str,
+    local_error_enums: frozenset[str] = frozenset(),
+    aliases: dict[str, str] | None = None,
+) -> bool:
+    """True when a value of `ty` provably cannot carry runtime content.
+
+    Three tiers, all fail-closed — see the module docstring's THE RULE
+    section for the design rationale:
+
+    1. A literal entry in `DATA_FREE_TYPES`, a fixed-size numeric array, or
+       an `Option<T>` of one.
+    2. A `thiserror`-derived enum this guard itself scans somewhere under
+       `core/src/**` (recognised by name via `discover_declarations` —
+       bare, `<parent-module>::Name`, or `crate::<path>::Name`).
+    3. A one-level `type X = Y;` alias whose RHS clears tier 1 or 2. An alias
+       to something unresolvable — including a chain through a SECOND alias
+       — still denies; see `_is_data_free_core`'s docstring.
+    """
+    if _is_data_free_core(ty, local_error_enums):
+        return True
+    if aliases:
+        base = normalize_type(ty)
+        if base in aliases:
+            return _is_data_free_core(aliases[base], local_error_enums)
     return False
+
+
+# `enum Name` — used only to find enum bodies for `discover_declarations`;
+# whether it's actually thiserror-derived is decided by whether its body
+# contains `#[error(`, not by this regex.
+ENUM_RE = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)")
+# `type Name = ` — only the head. The right-hand side is NOT `[^;]+` up to
+# the next `;`: a fixed-size array alias like `type Fingerprint = [u8; 16];`
+# has a `;` INSIDE the brackets (separating element type from length), so a
+# naive "stop at the first semicolon" regex truncates the RHS to `[u8`. See
+# `find_type_aliases`, which tracks bracket depth instead.
+TYPE_ALIAS_HEAD_RE = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*")
+
+
+def find_type_aliases(src: str) -> dict[str, str]:
+    """Map alias name -> right-hand-side text for every `type X = Y;` in
+    (comment-stripped) `src`, respecting `[`/`(`/`{`/`<` nesting so a `;`
+    inside e.g. `[u8; 16]` doesn't end the match early.
+    """
+    aliases: dict[str, str] = {}
+    for m in TYPE_ALIAS_HEAD_RE.finditer(src):
+        i, n = m.end(), len(src)
+        depth = 0
+        start = i
+        while i < n:
+            ch = src[i]
+            if ch in "([{<":
+                depth += 1
+            elif ch in ")]}>":
+                depth -= 1
+            elif ch == ";" and depth == 0:
+                break
+            i += 1
+        aliases[m.group(1)] = " ".join(src[start:i].split())
+    return aliases
+
+
+def module_path_segments(path_label: str) -> list[str]:
+    """The Rust module path implied by a file's location under `core/src/`.
+
+    `core/src/unlock/device_file.rs` -> `["unlock", "device_file"]`;
+    `core/src/unlock/mod.rs` -> `["unlock"]` (a `mod.rs` names its PARENT
+    module, not a `mod` submodule of itself); `core/src/error.rs` ->
+    `["error"]`. Returns `[]` for anything outside `core/src/` (e.g. a
+    `--self-test` control, which has no real file path at all).
+    """
+    p = Path(path_label)
+    try:
+        rel = p.relative_to(Path("core") / "src")
+    except ValueError:
+        return []
+    parts = list(rel.with_suffix("").parts)
+    if parts and parts[-1] == "mod":
+        parts = parts[:-1]
+    return parts
+
+
+def discover_declarations(
+    raw: str, path_label: str | None = None
+) -> tuple[frozenset[str], dict[str, str]]:
+    """Two textual facts this guard can prove about a chunk of Rust source
+    without a real parser — the tier-2 and tier-3 inputs `is_data_free` needs.
+
+    1. Which `enum`s it defines that are THEMSELVES scanned by this guard,
+       i.e. contain at least one `#[error(...)]` attribute in their body. A
+       field naming one of these is data-free BY RECURSION (see THE RULE in
+       the module docstring) — this guard will already fail at that enum's
+       own definition if any of ITS variants interpolates a non-data-free
+       field, so re-flagging the forward adds no signal, only allowlist
+       noise the approved design explicitly wants to avoid.
+    2. Which `type X = Y;` aliases it declares, one level deep.
+
+    For each discovered enum/alias name, three spellings are registered so a
+    reference site is recognised regardless of how it's qualified: the bare
+    name (works for a same-module or `use`-imported reference, and is the
+    ONLY spelling available when `path_label` is `None`, e.g. a self-test
+    control that defines-and-uses a nested type in one string); the
+    immediate parent module segment (`device_file::DeviceFileError` — the
+    relative sibling-module spelling this codebase actually uses); and the
+    full `crate::`-rooted path (`crate::unlock::UnlockError`). This is NOT a
+    `use`-import resolver (see LIMITS): a bare or aliased reference to a
+    type from OUTSIDE `core/src/**` is never registered here, so
+    `std::io::Error` cannot collide with a same-named local type UNLESS the
+    reference site itself drops the `std::` qualification down to a bare
+    name that happens to match a local one — an acknowledged, narrow
+    residual risk, not something this function tries to close.
+    """
+    src = strip_comments(raw)
+    segments = module_path_segments(path_label) if path_label else []
+
+    def spellings(name: str) -> list[str]:
+        out = [name]
+        if segments:
+            out.append(f"{segments[-1]}::{name}")
+            out.append("crate::" + "::".join(segments) + f"::{name}")
+        return out
+
+    local_error_enums: set[str] = set()
+    for m in ENUM_RE.finditer(src):
+        name = m.group(1)
+        brace = src.find("{", m.end())
+        if brace == -1:
+            continue
+        body, _ = balanced_braces(src[brace:])
+        if "#[error(" in body:
+            local_error_enums.update(spellings(name))
+
+    aliases: dict[str, str] = {}
+    for alias_name, rhs in find_type_aliases(src).items():
+        for spelling in spellings(alias_name):
+            aliases[spelling] = rhs
+
+    return frozenset(local_error_enums), aliases
 
 
 def strip_comments(src: str) -> str:
@@ -238,8 +441,20 @@ def split_top_level(text: str) -> list[str]:
     return parts
 
 
-def scan_source(path_label: str, raw: str) -> list[Finding]:
-    """Find every `#[error]` variant that interpolates a non-data-free field."""
+def scan_source(
+    path_label: str,
+    raw: str,
+    local_error_enums: frozenset[str] = frozenset(),
+    aliases: dict[str, str] | None = None,
+) -> list[Finding]:
+    """Find every `#[error]` variant that interpolates a non-data-free field.
+
+    `local_error_enums` / `aliases` are the tier-2 / tier-3 inputs to
+    `is_data_free` (see `discover_declarations`) — callers that skip real
+    cross-file discovery (i.e. pass nothing) still get tier 1 (literal
+    `DATA_FREE_TYPES` / arrays / `Option<T>`), just not the recursion or
+    alias tiers.
+    """
     src = strip_comments(raw)
     raw_lines = raw.splitlines()
     findings: list[Finding] = []
@@ -303,7 +518,7 @@ def scan_source(path_label: str, raw: str) -> list[Finding]:
                 fname, ftype = name, fields[name]
             else:
                 continue
-            if not is_data_free(ftype):
+            if not is_data_free(ftype, local_error_enums, aliases):
                 findings.append(
                     Finding(
                         path=path_label,
@@ -377,10 +592,27 @@ def load_allowlist(path: Path) -> set[str]:
 
 def run_real_scan() -> int:
     allowlist = load_allowlist(ALLOWLIST_PATH)
+    sources = [
+        (str(rs.relative_to(REPO_ROOT)), rs.read_text(encoding="utf-8"))
+        for rs in sorted(SCAN_ROOT.rglob("*.rs"))
+    ]
+
+    # Pass 1: discover every core-local thiserror enum and type alias across
+    # THE WHOLE TREE before classifying anything — a field in vault/mod.rs
+    # can reference an enum defined in vault/record.rs, so a per-file-only
+    # discovery pass would miss the cross-file case entirely.
+    local_error_enums: set[str] = set()
+    aliases: dict[str, str] = {}
+    for label, raw in sources:
+        enums, file_aliases = discover_declarations(raw, label)
+        local_error_enums.update(enums)
+        aliases.update(file_aliases)
+    local_error_enums = frozenset(local_error_enums)
+
+    # Pass 2: the actual scan, now with tiers 2 and 3 available.
     violations: list[Finding] = []
-    for rs in sorted(SCAN_ROOT.rglob("*.rs")):
-        label = str(rs.relative_to(REPO_ROOT))
-        for f in scan_source(label, rs.read_text(encoding="utf-8")):
+    for label, raw in sources:
+        for f in scan_source(label, raw, local_error_enums, aliases):
             if f"{f.path}\t{RULE}\t{f.source_line}" in allowlist:
                 continue
             violations.append(f)
@@ -480,6 +712,31 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "P8 third-party nested error must still deny (proves the recursion "
+        "tier isn't over-relaxed — std::io::Error is not scanned by this "
+        "guard, so it gets no credit from being a nested #[from] error)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io failure: {0}")]
+            Io(#[from] std::io::Error),
+        }
+        ''',
+    ),
+    (
+        "P9 alias to String is not data-free (aliasing doesn't launder a "
+        "runtime string into something the guard trusts)",
+        '''
+        type DetailText = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("leak: {detail}")]
+            Leaky { detail: DetailText },
+        }
+        ''',
+    ),
 ]
 
 NEGATIVE_CONTROLS: list[tuple[str, str]] = [
@@ -567,16 +824,52 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "N9 nested core-local error type is data-free by recursion (this "
+        "guard already scans InnerError's own definition below, so the "
+        "forward through Wrapped's {0} adds no new leak surface)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum InnerError {
+            #[error("inner failure code {code}")]
+            Failure { code: u32 },
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("outer: {0}")]
+            Wrapped(#[from] InnerError),
+        }
+        ''',
+    ),
+    (
+        "N10 alias to a fixed-size byte array resolves data-free",
+        '''
+        type BlockUuid = [u8; 16];
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("block {block_uuid:02x?} failed")]
+            Failed { block_uuid: BlockUuid },
+        }
+        ''',
+    ),
 ]
 
 
 def run_self_test() -> int:
     failures: list[str] = []
     for label, src in POSITIVE_CONTROLS:
-        if not scan_source("<self-test>", src):
+        # Each control is self-contained (defines any nested enum/alias it
+        # references in the same string), so a per-control discovery pass —
+        # no real file path, hence no path_label — exercises the real
+        # discovery path rather than a hardcoded name list.
+        enums, aliases = discover_declarations(src)
+        if not scan_source("<self-test>", src, enums, aliases):
             failures.append(f"POSITIVE control did not fire: {label}")
     for label, src in NEGATIVE_CONTROLS:
-        found = scan_source("<self-test>", src)
+        enums, aliases = discover_declarations(src)
+        found = scan_source("<self-test>", src, enums, aliases)
         if found:
             failures.append(
                 f"NEGATIVE control fired: {label} -> "
