@@ -45,20 +45,20 @@ class SecretFreeConformanceTest {
         assertTrue(rendered.contains("is 3 bytes, expected 16"), rendered)
     }
 
+    /** #474: `core` error payloads are data-free by construction, so the detail must survive. */
     @Test
-    fun `CorruptVault is redacted - it carries a Rust-authored string`() {
-        val rendered = diagnosticDetail(VaultBrowseError.CorruptVault("duplicate map key: $SECRET"))
-        assertFalse(rendered.contains(SECRET), rendered)
-        assertEquals("CorruptVault(<redacted>)", rendered)
+    fun `CorruptVault detail survives rendering`() {
+        val rendered = diagnosticDetail(VaultBrowseError.CorruptVault("manifest fingerprint mismatch"))
+        assertTrue(rendered.contains("manifest fingerprint mismatch"), rendered)
     }
 
+    /** #474: same guarantee, the SaveCryptoFailure arm — kept as a SEPARATE assertion from
+     *  CorruptVault's (not combined) so a regression in only one arm cannot hide behind the
+     *  other still passing (the #475 vacuity trap). */
     @Test
-    fun `SaveCryptoFailure is redacted - same Rust fold as CorruptVault`() {
-        val rendered = diagnosticDetail(
-            VaultBrowseError.SaveCryptoFailure("record CBOR error: duplicate map key: $SECRET"),
-        )
-        assertFalse(rendered.contains(SECRET), rendered)
-        assertEquals("SaveCryptoFailure(<redacted>)", rendered)
+    fun `SaveCryptoFailure detail survives rendering`() {
+        val rendered = diagnosticDetail(VaultBrowseError.SaveCryptoFailure("AEAD tag mismatch on block write"))
+        assertTrue(rendered.contains("AEAD tag mismatch on block write"), rendered)
     }
 
     @Test
