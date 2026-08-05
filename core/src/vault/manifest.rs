@@ -650,10 +650,27 @@ fn kdf_params_to_value(k: &KdfParamsRef) -> Result<Value, ManifestError> {
 /// variant is itself data-free (§474), so no branch here can leak content;
 /// this only narrows the *type* to match `ManifestError`'s classified
 /// payload.
+///
+/// The second arm is spelled out variant by variant rather than as a `_ =>`
+/// wildcard, on the same exhaustive-match discipline the rest of #474
+/// follows: a wildcard would silently classify a NEW `RecordError` variant
+/// as [`CborErrorKind::Semantic`], which is a correctness question a human
+/// should answer once rather than a default that answers itself. Nothing
+/// here reads a variant's fields, so this is a diagnostics-accuracy gate,
+/// not a leak gate.
 fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
     match e {
         RecordError::CborEncode(fault) | RecordError::CborDecode(fault) => fault,
-        _ => CborFault {
+        RecordError::NotAMap
+        | RecordError::NonTextKey
+        | RecordError::MissingField { .. }
+        | RecordError::WrongType { .. }
+        | RecordError::InvalidUuid { .. }
+        | RecordError::IntegerOverflow { .. }
+        | RecordError::DuplicateKey { .. }
+        | RecordError::FloatRejected { .. }
+        | RecordError::TagRejected
+        | RecordError::NonCanonicalEncoding => CborFault {
             kind: CborErrorKind::Semantic,
             offset: None,
         },
