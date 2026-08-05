@@ -10,7 +10,10 @@
 data-free by construction — and stops exactly there. The FFI bridge
 (`ffi/secretary-ffi-bridge/`) builds the strings the platforms actually see:
 16 `detail: String` fields across `FfiUnlockError` (2), `FfiVaultError` (12),
-`SettingsWarning` and `SettingsParseError` (1 each), filled at ~60 construction sites
+`SettingsWarning` and `SettingsParseError` (1 each) — plus 9 further `String`
+fields carrying hex renderings of UUIDs and public-key fingerprints under the
+names `uuid_hex` / `block_uuid_hex` / `recipient_fingerprint_hex` /
+`expected_fingerprint_hex` / `got_fingerprint_hex` — filled at ~60 construction sites
 (`detail: format!(...)` / `e.to_string()` folds) across ~25 files. Those sites are
 gated by review alone. #474 removed both platforms' wholesale redactions on the
 strength of the `core` guarantee; the bridge is where that guarantee currently ends.
@@ -104,16 +107,22 @@ normalized text; `--self-test`-first discipline with mutation-verified controls.
 - **G1 — declaration rule.** Bridge `#[error]` enums are scanned with the
   existing core rule. A `String`-typed payload field in a bridge error/warning
   enum is *not* an automatic denial (the construction gate is what makes it
-  safe), **provided it is named `detail`** — a `String` field under any other
-  name denies at the declaration. This is what turns
+  safe), **provided its name is in the pinned gated-field set** — `detail`,
+  `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
+  `expected_fingerprint_hex`, `got_fingerprint_hex` (the existing FFI
+  surface's `String` fields; renaming them would change the platform-visible
+  field names, which §3.3 forbids). A `String` field under any other name
+  denies at the declaration. This is what turns
   `UnknownVersion { version: String }` into a build-time finding rather than a
   code-review hope. Enums without `#[error]` (e.g. `SettingsWarning`,
   `SettingsParseError` — plain derives) are covered by the same declaration
   sweep over `pub enum` items whose name ends in `Error` or `Warning`
   (a stated-limit heuristic; see §6).
-- **G2 — construction gate.** Every `detail:` field initializer in bridge
-  non-test code (test spans skipped via the existing `cfg_test_spans`
-  machinery) must be one of:
+- **G2 — construction gate.** Every field initializer for a gated-field name
+  (`detail:`, `uuid_hex:`, `block_uuid_hex:`, `recipient_fingerprint_hex:`,
+  `expected_fingerprint_hex:`, `got_fingerprint_hex:`) in bridge non-test code
+  (test spans skipped via the existing `cfg_test_spans` machinery) must be one
+  of:
   1. a string literal, optionally followed by `.into()` / `.to_string()`;
   2. a call to a sanctioned constructor (path ending in one of the
      `detail.rs` function names, which the guard reads from `detail.rs`
@@ -218,9 +227,9 @@ resolution with the documented shadow hazards. New, bridge-specific:
   convention, carrying a `String` field not named `detail`, initialized without a
   `detail:` key, is invisible to all three rules. Review owns naming; the limit
   is stated in the guard's docstring.
-- **G2 gates the field name `detail`, not the type `String`.** A bridge author
-  who adds a `String` payload under another name is caught by G1 at the
-  declaration — but only inside G1's discovery set (above).
+- **G2 gates the pinned field-name set, not the type `String`.** A bridge
+  author who adds a `String` payload under a name outside the set is caught by
+  G1 at the declaration — but only inside G1's discovery set (above).
 - **G3 verifies the impl list, not the impl's soundness.** `std::io::Error`'s
   entry is a reviewed claim exactly like core's Section-3 entries; the honest
   statement for a `GatedDetail` type is "fails or is allowlisted at its own
