@@ -74,15 +74,19 @@ final class SecretFreeErrorTests: XCTestCase {
     /// #474: the Rust payload is now gated at source, so a corruption
     /// diagnostic must keep its detail. Before #474 this arm was redacted
     /// wholesale because `RecordError::DuplicateKey` embedded a decrypted
-    /// field name.
+    /// field name. Asserts through `diagnosticDetail` — the sanctioned
+    /// renderer whose conformance lookup (and load-bearing `NSError`
+    /// dynamic-type branch) is what a real `.public` log site actually calls;
+    /// reading `diagnosticDescription` directly would skip that gate.
     func testCorruptVaultDetailSurvivesRendering() {
         let error = VaultAccessError.corruptVault("manifest fingerprint mismatch")
+        let out = diagnosticDetail(error)
         XCTAssertTrue(
-            error.diagnosticDescription.contains("manifest fingerprint mismatch"),
-            "the corruption detail must survive: \(error.diagnosticDescription)"
+            out.contains("manifest fingerprint mismatch"),
+            "the corruption detail must survive: \(out)"
         )
         XCTAssertFalse(
-            error.diagnosticDescription.contains("<redacted>"),
+            out.contains("<redacted>"),
             "corruptVault should no longer be redacted"
         )
     }
@@ -92,11 +96,13 @@ final class SecretFreeErrorTests: XCTestCase {
     /// field name into it — so it is a different class from the Rust-authored
     /// payloads #474 gated. No issue tracks that payload class itself; #473
     /// tracks the separate question of these carried diagnostics being
-    /// rendered as on-screen copy.
+    /// rendered as on-screen copy. Asserts through `diagnosticDetail` for the
+    /// same reason as the sibling above.
     func testInvalidArgumentStaysRedacted() {
         let error = VaultAccessError.invalidArgument("field 'amex-cvv' is not valid hex")
-        XCTAssertEqual(error.diagnosticDescription, "invalidArgument(<redacted>)")
-        XCTAssertFalse(error.diagnosticDescription.contains("amex-cvv"))
+        let out = diagnosticDetail(error)
+        XCTAssertEqual(out, "invalidArgument(<redacted>)")
+        XCTAssertFalse(out.contains("amex-cvv"))
     }
 
     /// The redaction is surgical: every other case keeps its full detail, which is
