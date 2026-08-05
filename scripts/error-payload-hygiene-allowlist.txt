@@ -102,43 +102,82 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 # not something this guard can re-check as the code evolves. HIGHEST review
 # weight in this file — re-verify on every edit that touches a producer.
 #
-# sync/error.rs — StateDecodeFailed / StateEncodeFailed:
-#   Every producer lives inside SyncState::to_canonical_cbor /
-#   from_canonical_cbor / decode_vector_clock_entry (core/src/sync/state.rs).
-#   SyncState (core/src/sync/state.rs:17-20) holds only a
-#   vault_uuid: [u8; 16] and highest_vector_clock_seen: Vec<VectorClockEntry>
-#   (device UUIDs and counters) — there is no vault plaintext in scope for
-#   these functions to leak. Producers pass fixed string literals, integer
-#   lengths, or `crate::cbor::classify_de(&e)` (an explicitly CLASSIFIED,
-#   data-free `CborFault` — see state.rs:136-139's comment: "Classified, not
-#   stringified: ciborium's Display is its Debug form... (#474)") for decode,
-#   and fixed literals or `format!("{err}")` over `CanonicalError`
-#   (core/src/vault/canonical.rs) for encode — CanonicalError's own variants
-#   carry only a `CborFault` or a `&'static str` field hint, and this same
-#   guard scans and passes it cleanly today.
+# Every producer count below was verified by `grep -rn` for the variant's
+# construction syntax (`Variant::Name {`), not carried over from an earlier
+# draft or a reviewer's tally — this plan has had stale producer counts more
+# than once, and a re-reviewer should be able to reproduce every number here
+# with the same grep. Test-only constructions (inside `#[cfg(test)] mod
+# tests` / `mod cbor_tests`, always fixed literals pinning `Display`) are
+# named but not treated as load-bearing, since they never run outside `cargo
+# test`. `matches!(err, Variant { .. })` pattern matches are NOT producers
+# and are excluded from every count.
 #
-# sync/error.rs — InvalidArgument:
-#   Producers are core/src/sync/prepare.rs:238,296,396,450,
-#   core/src/sync/state.rs:56,61, and a literal in sync/error.rs's own test.
-#   Every one passes a fixed string literal, a `&'static str` context hint, a
-#   `[u8; 16]` block_uuid rendered via `{:02x?}`, or `format!("merge_block:
-#   {e}")` where `e: ConflictError` (core/src/vault/conflict.rs) — a
-#   core-gated enum with exactly two variants (BlockUuidMismatch,
-#   ClockOverflow), both carrying only `[u8; 16]` fields, that this same
-#   guard scans and passes cleanly today. No vault plaintext (record field
-#   values, block contents) is in scope at any of these call sites.
+# sync/error.rs — StateDecodeFailed (14 constructions: sync/error.rs:88
+# test, sync/state.rs:136,144,163,169,184,199,217,236,242,256,261,273,276 —
+# 13 sites, one file):
+#   Every producer lives inside SyncState::from_canonical_cbor /
+#   decode_vector_clock_entry (core/src/sync/state.rs). SyncState
+#   (core/src/sync/state.rs:17-20) holds only a vault_uuid: [u8; 16] and
+#   highest_vector_clock_seen: Vec<VectorClockEntry> (device UUIDs and
+#   counters) — there is no vault plaintext in scope for this function to
+#   leak. Every site passes a fixed string literal, a `format!` of two
+#   integer lengths (state.rs:170-173, :244-246 — "must be N bytes, got M"),
+#   or `crate::cbor::classify_de(&e)` (an explicitly CLASSIFIED, data-free
+#   `CborFault` — see state.rs:136-139's comment: "Classified, not
+#   stringified: ciborium's Display is its Debug form... (#474)").
 #
-# vault/mod.rs — RestoreVerificationFailed / RepairRejected:
-#   Producers are core/src/vault/orchestrators.rs:2510-2565 and
-#   core/src/vault/repair/classify.rs (both `restore_block` and
-#   `repair_vault`'s per-block gate checks). Every producer passes a fixed
-#   string literal, a `{:?}`/`{:02x?}`-rendered `[u8; N]` (block_uuid,
-#   header block_uuid, clock relation enum), or `format!("...: {e}")` over
-#   another `core`-local error this guard already scans (`BlockError` from
-#   `block::decode_block_file` / `block::decrypt_block`, `VaultError` from
-#   `resolve_recipient_uuids`) — all of which this same guard gates at their
-#   own definitions, so a leak reaching one of THOSE types would already be
-#   a separate, un-allowlisted violation of its own.
+# sync/error.rs — StateEncodeFailed (4 constructions: sync/error.rs:99 test,
+# sync/state.rs:107,125 — 2 sites, one file):
+#   Both real producers live inside SyncState::to_canonical_cbor
+#   (core/src/sync/state.rs), same vault_uuid + vector-clock-only scope as
+#   StateDecodeFailed above. Both pass `format!("{err}")` over
+#   `CanonicalError` (core/src/vault/canonical.rs) — a core-gated enum whose
+#   own variants carry only a `CborFault` or a `&'static str` field hint, and
+#   that this same guard scans and passes cleanly today.
+#
+# sync/error.rs — InvalidArgument (10 constructions across FOUR files:
+# sync/error.rs:110 test, sync/prepare.rs:237,294,394,449 — 4 sites,
+# sync/state.rs:55,60 — 2 sites, sync/commit/write.rs:311,318,333 — 3
+# sites):
+#   Every real producer passes a fixed string literal, a `&'static str`
+#   context hint, or a `[u8; 16]` block_uuid rendered via `{:02x?}`
+#   (prepare.rs:237,294,394 and all three commit/write.rs sites), EXCEPT
+#   prepare.rs:449, which passes `format!("merge_block: {e}")` where
+#   `e: ConflictError` (core/src/vault/conflict.rs) — a core-gated enum with
+#   exactly two variants (BlockUuidMismatch, ClockOverflow), both carrying
+#   only `[u8; 16]` fields, that this same guard scans and passes cleanly
+#   today. No vault plaintext (record field values, block contents) is in
+#   scope at any of these ten call sites.
+#
+# vault/mod.rs — RestoreVerificationFailed (4 constructions, one file:
+# core/src/vault/orchestrators.rs:2510,2520,2551,2559; no test
+# construction):
+#   All four sites are inside `restore_block`. Each passes a fixed string
+#   literal, a `{:?}`-rendered `[u8; 16]` block_uuid, or `format!("...: {e}")`
+#   over `BlockError` (from `block::decode_block_file` at :2520 /
+#   `block::decrypt_block` at :2551) — a core-gated error this same guard
+#   already scans, so a leak reaching BlockError's own Display would already
+#   be a separate, un-allowlisted violation of its own.
+#
+# vault/mod.rs — RepairRejected (12 constructions across THREE files:
+# vault/mod.rs:450 test, vault/repair/classify.rs:120,126,132,159,179,193,
+# 247,300 — 8 sites, vault/repair/orchestration.rs:260,275,458 — 3 sites):
+#   classify.rs's 8 sites (repair_vault's per-block gate checks), by
+#   pattern: :126,132,300 pass a fixed string literal; :159 passes
+#   `format!("clock relation {relation:?}: ...")` where `relation:
+#   ClockRelation` is a FIELDLESS enum (core/src/vault/conflict.rs:69) whose
+#   `{:?}` renders only a bare variant name; :120 and :179 pass
+#   `format!("...: {e}")` over `BlockError` (from `block::decode_block_file`
+#   / `block::decrypt_block` respectively); :193 passes the same over
+#   `VaultError` (remapping `MissingRecipientCard`) — all three core-gated,
+#   already scanned by this same guard; :247 passes a `Vec<String>` built by
+#   mapping `[u8; 16]` recipient UUIDs through `format_uuid_hyphenated`
+#   (core/src/vault/orchestrators.rs:114 — hex digits and hyphens only, no
+#   lookup into any secret or plaintext table). orchestration.rs's 3 sites —
+#   MISSING from this file's account until this correction — pass a fixed
+#   string literal (:458) or the same `format_uuid_hyphenated`-mapped
+#   `Vec<String>` pattern as classify.rs:247, at :260 and :275. No vault
+#   plaintext reaches any of the 11 non-test sites.
 # =============================================================================
 
 core/src/sync/error.rs	E1	#[error("SyncState CBOR decode failed: {detail}")]	SyncState holds only vault_uuid + vector-clock entries; producers pass literals or the classified CborFault
