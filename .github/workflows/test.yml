@@ -46,9 +46,18 @@ jobs:
         run: bash .github/scripts/install-tauri-linux-deps.sh
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # `error_payload_hygiene_parity` (core/tests/) shells out to `uv run
+      # python` to exercise the Python allowlist parser in
+      # scripts/check-error-payload-hygiene.py and prove it agrees with the
+      # bash parser on one fixture (#474). That test is unconditional — not
+      # behind the differential-replay feature below — so `uv` must be on
+      # PATH here or the whole workspace run panics on `.expect("run python
+      # probe")` before a single assertion runs.
+      - name: 'install uv'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
       # Mirrors the documented local command in CLAUDE.md. The
-      # differential-replay tests (which shell out to `uv`) are behind an
-      # opt-in Cargo feature and stay off here, so the suite is Rust-only.
+      # differential-replay tests (which also shell out to `uv`) are behind an
+      # opt-in Cargo feature and stay off here.
       - name: cargo test --release --workspace
         run: cargo test --release --workspace
 
@@ -233,9 +242,9 @@ jobs:
     timeout-minutes: 10   # runaway cap (vs the 6h default); real duration ~1s
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      # No job in this workflow installs `uv` yet (grepped test.yml + audit.yml),
-      # so this is pinned by commit SHA the same way actions/checkout is above,
-      # rather than the floating `@v5` form astral-sh's own docs show.
+      # Pinned by commit SHA the same way actions/checkout is above, rather
+      # than the floating `@v5` form astral-sh's own docs show. `rust-test`
+      # pins the identical SHA for the same reason.
       - name: 'install uv'
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
       # --self-test FIRST: a guard never observed failing is indistinguishable
