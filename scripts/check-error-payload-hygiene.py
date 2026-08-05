@@ -1929,29 +1929,71 @@ def _bridge_plain_enum_variant_findings(
     body itself. `skip_attributes` handles a variant carrying its own
     attribute (e.g. `#[non_exhaustive]`) the same way `scan_source` does.
 
-    Two outcomes per part, both fail-closed on STRUCTURE the same way
-    `scan_source`'s own attribute walk is:
+    Three outcomes per part, all fail-closed on STRUCTURE the same way
+    `scan_source`'s own attribute walk is — and two of the three were
+    proven reachable BY EXECUTION during review round 2, not merely
+    reasoned about, after an earlier version of this comment claimed (by
+    reasoning alone) that only the harmless case could occur:
 
-    - A part that is EMPTY once attributes/whitespace are stripped is
-      `split_top_level`'s trailing tail after a body's closing (near-
-      universal, rustfmt-default) trailing comma — Rust does not allow two
-      consecutive top-level commas in COMPILING source, so an empty part
-      can only ever be that harmless tail, never a dropped declaration.
-      Skipped silently, mirroring `scan_source`'s OWN identical "nothing is
-      interpolated — provably nothing to check, not a parse failure"
-      distinction (see its `if not names: continue`, comment tag N4).
-    - A NON-empty part `VARIANT_RE` still cannot match — e.g. a raw-
-      identifier variant name (`r#Match { leak: String }`) — IS a genuine
-      parse failure and must not silently drop whatever fields that variant
-      carries: emits an `UNPARSED` finding instead, exactly like
-      `scan_source`'s own "could not locate the variant/struct declaration"
-      case.
+    - The RAW part (before `skip_attributes` even runs) is EMPTY once
+      whitespace is stripped: `split_top_level`'s trailing tail after a
+      body's closing (near-universal, rustfmt-default) trailing comma —
+      Rust does not allow two consecutive top-level commas in COMPILING
+      source, so an empty RAW part can only ever be that harmless tail,
+      never a dropped declaration. Skipped silently, mirroring
+      `scan_source`'s OWN identical "nothing is interpolated — provably
+      nothing to check, not a parse failure" distinction (see its `if not
+      names: continue`, comment tag N4).
+    - The RAW part is non-empty, but `skip_attributes` reduces it to
+      nothing anyway: `skip_attributes` has no raw-string awareness — a
+      raw string inside a field-level attribute
+      (`#[doc = r#"a " b"#]`) desyncs its naive quote-toggle, which
+      swallows the attribute's closing `]` and everything after it,
+      including the variant it was meant to skip PAST. Rustc-verified
+      witness (`--crate-type lib --edition 2021`):
+      `pub enum FooError { #[doc = r#"a " b"#] Leaky { leak: String }, }`
+      — `leak: String` was dropped with ZERO findings before this branch
+      existed. `scan_source` itself has no equivalent silent branch (an
+      empty `tail` there just fails to match `VARIANT_RE`/`STRUCT_RE`,
+      which its EXISTING `if not vm: emit_unparsed(...)` already catches
+      unconditionally) — this branch restores that same coverage here.
+    - A non-empty, successfully-`skip_attributes`d part still does not
+      match `VARIANT_RE` — e.g. a raw-identifier variant name
+      (`r#Match { leak: String }`) — IS a genuine parse failure.
+    - AFTER a field body is extracted (`balanced_braces`/`balanced_slice`),
+      anything left over in `rest` is a sign `split_top_level` itself
+      mis-split: it has no string-literal awareness, so a `}` inside a
+      field-level attribute's string content (`#[doc = "}"]`) drives its
+      bracket-depth tracking negative, which suppresses the NEXT real
+      top-level comma from splitting — merging TWO variants into one
+      `part` and silently discarding the second. Rustc-verified witness:
+      `pub enum BazError { #[doc = "}"] A { x: usize }, B { leak: String },
+      }` — `B`'s `leak: String` was dropped with ZERO findings (only `A`,
+      data-free, was ever seen) before this check existed.
     """
     inner = body[1 : body.rindex("}")] if "}" in body else body[1:]
     findings: list[Finding] = []
     for part in split_top_level(inner):
+        if not part.strip():
+            continue
         text = skip_attributes(part.strip())
         if not text:
+            findings.append(
+                Finding(
+                    path=path_label,
+                    line=line_no,
+                    source_line=f"{owner_name} {{ {' '.join(part.strip().split())} }}",
+                    variant="<unparsed>",
+                    field="<unparsed>",
+                    field_type=(
+                        "UNPARSED: skip_attributes could not locate content "
+                        f"past this part's attributes in {owner_name}'s body "
+                        "(e.g. a raw string inside an attribute desyncing "
+                        "the naive #[...] scanner)"
+                    ),
+                    rule="E2",
+                )
+            )
             continue
         vm = VARIANT_RE.match(text)
         if not vm:
@@ -1979,6 +2021,23 @@ def _bridge_plain_enum_variant_findings(
             fbody, _ = balanced_slice(rest, 0)
         else:
             fbody = ""
+        remainder = rest[len(fbody) :]
+        if remainder.strip():
+            findings.append(
+                Finding(
+                    path=path_label,
+                    line=line_no,
+                    source_line=f"{owner_name} {{ {' '.join(remainder.split())} }}",
+                    variant="<unparsed>",
+                    field="<unparsed>",
+                    field_type=(
+                        f"UNPARSED: unconsumed content after {owner_name}::"
+                        f"{name}'s declaration — split_top_level likely "
+                        "mis-split on a string-embedded bracket character"
+                    ),
+                    rule="E2",
+                )
+            )
         decl_text = " ".join(f"{owner_name}::{name} {fbody}".split())
         findings.extend(
             bridge_declaration_findings(
@@ -2118,13 +2177,20 @@ def scan_bridge_plain_declarations(
             )
         )
 
-    already_swept_structs = discover_error_struct_names(raw)
+    # POSITION-keyed, not name-keyed (#480 review round 2, NEW-1): a
+    # bare-name check here is fail-open to a same-named sibling struct in a
+    # different module AND to a self-authorised fake occurrence inside a
+    # string literal — see `discover_error_struct_declarations`'s
+    # docstring for both rustc-verified witnesses.
+    already_swept_struct_spans = [
+        (start, end) for _, start, end in discover_error_struct_declarations(raw)
+    ]
     for m in BRIDGE_PLAIN_STRUCT_RE.finditer(src):
         if _inside(m.start(), excluded):
             continue
-        name = m.group(1)
-        if name in already_swept_structs:
+        if _inside(m.start(), already_swept_struct_spans):
             continue  # thiserror-decorated; already swept by scan_source's sweep 1
+        name = m.group(1)
         line_no = src.count("\n", 0, m.start()) + 1
         tail = src[m.end() :].lstrip()
         if tail.startswith("{"):
@@ -2157,10 +2223,13 @@ def scan_bridge_plain_declarations(
     return findings
 
 
-def discover_error_struct_names(raw: str) -> frozenset[str]:
-    """Bare names of every `#[error("...")]`-decorated STRUCT (thiserror's
-    other error shape — the attribute decorates the struct declaration
-    ITSELF, not a variant inside a body) in `raw`.
+def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
+    """`[(name, attr_start, decl_line_end)]` for every `#[error("...")]`-
+    decorated STRUCT (thiserror's other error shape — the attribute
+    decorates the struct declaration ITSELF, not a variant inside a body)
+    in `raw`. `attr_start`/`decl_line_end` are character offsets into
+    `strip_comments(raw)`, spanning from the `#[error(` attribute through
+    the end of the line the struct's `STRUCT_RE` match was found on.
 
     `discover_declarations`'s `local_error_enums` tier does not see these —
     it only walks `ENUM_RE` bodies. This is a second, narrow pass reusing
@@ -2170,37 +2239,77 @@ def discover_error_struct_names(raw: str) -> frozenset[str]:
     second, potentially-divergent rule. `discovery_cfg_test_spans` excludes
     a match starting inside a `#[cfg(test)]`-gated item — a test-only
     thiserror struct must not vouch for a SHIPPED plain struct sharing its
-    name (this registry now also gates
-    `scan_bridge_plain_declarations`'s "already swept" struct check, not
-    only `scanned_error_type_names`, so a false credit here would silently
-    unsweep a real declaration rather than merely mis-populate an
-    unconsumed set).
+    name.
 
-    Feeds `scanned_error_type_names` (Task 3's E4 registry — see
-    `discover_scanned_error_type_names`) alongside the bare spellings of
-    `local_error_enums`.
+    ONE walk feeds TWO consumers with DIFFERENT keying needs (#480 review
+    round 2, NEW-1): `scanned_error_type_names` (Task 3's E4, via
+    `discover_error_struct_names` below) wants bare NAMES;
+    `scan_bridge_plain_declarations`'s "already swept" struct check wants
+    POSITIONS. A bare-name registry there was proven fail-open by TWO
+    rustc-verified witnesses: (a) two DIFFERENT structs sharing a bare
+    name in different modules — `mod a`'s real thiserror `DupError`
+    incorrectly vouched for `mod b`'s real, DIFFERENT, plain `DupError`,
+    letting its `leak: String` field escape; (b) self-authorisation — an
+    `#[error("x")] pub struct LeakError {}` written INSIDE a raw-string
+    `const`'s VALUE registered `LeakError` (this walk runs over
+    `strip_comments`, which leaves string CONTENTS intact), suppressing
+    the sweep of a real, separate `pub struct LeakError { pub leak: String
+    }` elsewhere in the same file. Positions close BOTH: a same-named
+    sibling declaration sits at a DIFFERENT offset, so it is never
+    (wrongly) treated as the SAME declaration; and text inside a string
+    literal sits at a position no REAL declaration can ever occupy, so a
+    fake occurrence there can never suppress a real one — regardless of
+    which view discovers it, which is why this walk did not also need to
+    move to `discovery_view` to close witness (b): a same-position check
+    is inherently immune to a same-NAME collision from ANY source, string
+    literal or otherwise.
+
+    One walk means both consumers see the identical set of REAL
+    declarations, rather than two independently-maintained (and
+    independently-buggable) scans of the same shape — the #475 lesson
+    this file's own docstring already cites for `is_comment_line`.
     """
     src = strip_comments(raw)
     excluded = discovery_cfg_test_spans(raw)
-    names: set[str] = set()
+    out: list[tuple[str, int, int]] = []
     for m in ERROR_ATTR_RE.finditer(src):
         if _inside(m.start(), excluded):
             continue
         _, after = balanced_slice(src, m.end() - 1)
         tail_raw = src[after:]
-        tail = (
-            tail_raw[tail_raw.find("]") + 1 :]
-            if tail_raw.lstrip().startswith("]")
-            else tail_raw
-        )
-        tail = skip_attributes(tail)
-        for line in tail.splitlines():
+        if tail_raw.lstrip().startswith("]"):
+            close_off = tail_raw.find("]") + 1
+            tail = tail_raw[close_off:]
+            tail_start = after + close_off
+        else:
+            tail = tail_raw
+            tail_start = after
+        skipped = skip_attributes(tail)
+        skipped_start = tail_start + (len(tail) - len(skipped))
+        line_start = 0
+        for line in skipped.splitlines(keepends=True):
             if line.strip():
                 sm = STRUCT_RE.match(line)
                 if sm:
-                    names.add(sm.group(1))
+                    line_abs_start = skipped_start + line_start
+                    out.append((sm.group(1), m.start(), line_abs_start + len(line)))
                 break
-    return frozenset(names)
+            line_start += len(line)
+    return out
+
+
+def discover_error_struct_names(raw: str) -> frozenset[str]:
+    """Bare names of every `#[error("...")]`-decorated STRUCT in `raw` —
+    feeds `scanned_error_type_names` (Task 3's E4 registry — see
+    `discover_scanned_error_type_names`) alongside the bare spellings of
+    `local_error_enums`. See `discover_error_struct_declarations`, this
+    function's shared producer, for the position-vs-name keying rationale;
+    this NAME-only projection is unconsumed by anything security-relevant
+    today (Task 3 territory), so it carries `discover_error_struct_declarations`'s
+    residual bare-name self-authorisation exposure forward unresolved —
+    flagged for Task 3's review once E4 has a real consumer.
+    """
+    return frozenset(name for name, _, _ in discover_error_struct_declarations(raw))
 
 
 def balanced_braces(src: str) -> tuple[str, int]:
@@ -3460,6 +3569,63 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         '''
         pub struct FooError { pub leak: String }
         ''',
+    ),
+    (
+        "BP7 a raw string inside a #[doc = ...] attribute desyncs the naive "
+        "attribute scanner (skip_attributes has no raw-string awareness) "
+        "and must fail closed as UNPARSED rather than silently drop the "
+        "field — rustc-verified witness W1 (#480 review round 2, finding 1)",
+        '''
+        pub enum FooError {
+            #[doc = r#"a " b"#]
+            Leaky { leak: String },
+        }
+        ''',
+        {"unparsed": True},
+    ),
+    (
+        "BP8 a } inside a #[doc = ...] string desyncs split_top_level's "
+        "bracket-depth tracking, merging two variants into one part and "
+        "discarding the second — must fail closed as UNPARSED rather than "
+        "silently drop the field — rustc-verified witness W2 (#480 review "
+        "round 2, finding 1)",
+        '''
+        pub enum BazError {
+            #[doc = "}"]
+            A { x: usize },
+            B { leak: String },
+        }
+        ''',
+        {"unparsed": True},
+    ),
+    (
+        "BP9 a same-named sibling struct in a DIFFERENT module must not be "
+        "treated as the SAME already-swept declaration — a bare-NAME "
+        "'already swept' check is fail-open here — rustc-verified witness "
+        "(#480 review round 2, NEW-1a)",
+        '''
+        mod a {
+            #[derive(thiserror::Error)]
+            #[error("x")]
+            pub struct DupError { pub detail: String }
+        }
+        mod b {
+            #[derive(Debug)]
+            pub struct DupError { pub leak: String }
+        }
+        ''',
+        {"variant": "DupError", "field": "leak"},
+    ),
+    (
+        "BP10 self-authorisation: a fake #[error(...)] struct written "
+        "INSIDE a raw-string const's value must not suppress the sweep of "
+        "a real, separate struct of the same name elsewhere in the file — "
+        "rustc-verified witness (#480 review round 2, NEW-1b)",
+        '''
+        const FAKE: &str = r#"#[error("x")] pub struct LeakError {}"#;
+        pub struct LeakError { pub leak: String }
+        ''',
+        {"variant": "LeakError", "field": "leak"},
     ),
 ]
 
