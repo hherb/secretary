@@ -53,6 +53,15 @@ The issue names one site. A sweep of every `#[error(...)]` in `core/src/**` foun
 | `13a8069` `b932ae7` | iOS and Android redactions removed |
 | `7191185` `b3f4243` | docs; the `#473`/`#476` citation correction |
 | `0e8f551` `e4dfda2` `df01a0c` | final fix wave |
+| `ac8f95c` `fccc506` | this baton; CI fix — `uv` in `rust-test` |
+
+### The one thing local verification structurally could not catch
+
+`cargo test --release --workspace` passed locally through all twelve task reviews and the whole-branch review, then **failed on both runners** on first push. `core/tests/error_payload_hygiene_parity.rs` shells out to `uv` to exercise the Python allowlist parser, and the `rust-test` job never installed `uv` — it was only added to the new hygiene job. `uv` is on the dev PATH, so the gap was invisible here by construction.
+
+Fixed in `fccc506` by installing `uv` in `rust-test` (same pinned SHA), and the diagnosis was *proven* rather than assumed: stripping `uv` from PATH locally reproduced the identical panic at `:95`.
+
+Worth noting **why this was a good failure**: the parity test was deliberately written to be unskippable so it could not silently pass. That is exactly why it failed loudly in the one environment that differed. A test that degraded gracefully when `uv` was absent would have gone green in CI while proving nothing — the vacuity this branch spent five fix rounds hunting.
 
 ### The reviews are the story of this session
 
@@ -115,7 +124,9 @@ git worktree list && git status -s
 
 **Acceptance, verified at `df01a0c`:** `cargo test --release --workspace` **96 suites, 0 failures** · clippy `-D warnings` **clean** · rustdoc `-D warnings` **clean** · `conformance.py` **pass** · `spec_test_name_freshness.py` **116 resolved / 0 unresolved** · error-payload guard **39 positive / 18 negative**, real scan **exit 0** · iOS log guard **21/9** · Android log guard **27/14** · lean-binding guard **pass** · both uniffi conformance runners **38/38** · `swift test` **357/357** · `:vault-access:test` **442 tests, 0 failures** · `git diff main... -- ffi/secretary-ffi-uniffi/src/secretary.udl` **EMPTY** · **all 26 commits carry the trailer**.
 
-**Not verified locally:** the new CI job on a real runner (no workflow in this repo has installed `uv` before — `astral-sh/setup-uv` is SHA-pinned and the SHA was confirmed to be a real commit that `v9.0.0` resolves to, but it has never executed); branch-protection required-checks config; `core/fuzz` compilation (grep-verified only — it is workspace-excluded and needs nightly); `:app:assembleDebug` (~10 min, four ABIs); the iOS `SecretaryKit` / `SecretaryApp` targets.
+**CI on PR #479: all 25 checks PASS** at `fccc506`, including the new `rust error payload hygiene` job (9s) and `cargo test` on both ubuntu-latest and macos-26. The `astral-sh/setup-uv` pin is now proven on real runners, on both OSes.
+
+**Still not verified:** branch-protection required-checks config (out of band from the repo); `core/fuzz` compilation (grep-verified only — workspace-excluded, needs nightly); `:app:assembleDebug` (~10 min, four ABIs — `:vault-access:test` and `:kit:compileDebugKotlin` do run in CI and pass).
 
 ## (5) Handoff file model
 
