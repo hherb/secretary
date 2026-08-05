@@ -176,8 +176,9 @@ mod tests {
 
     #[test]
     fn malformed_bundle_collapses_to_corrupt_vault() {
-        // BundleError has no MalformedCbor variant; use CborError(String).
-        let inner = BundleError::CborError("bad header".to_string());
+        // BundleError::Malformed carries a fixed structural literal (#474);
+        // any literal exercises the same fold-to-CorruptVault path.
+        let inner = BundleError::Malformed("bad header");
         let core_err = UnlockError::MalformedBundle(inner);
         let ffi: FfiUnlockError = core_err.into();
         assert!(matches!(ffi, FfiUnlockError::CorruptVault { .. }));
