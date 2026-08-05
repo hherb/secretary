@@ -202,8 +202,8 @@ that small is what keeps each entry meaningful — the same reasoning recorded f
 the two log-hygiene allowlists.
 
 **Post-implementation update (round 2 review, #474 guard PR).** The guard's
-actual RED landing reports **17** violations, not 6, and not all of them are
-Group 3 candidates in the sense above:
+RED landing after round 2's fixes reported **17** violations, not 6, and not
+all of them were Group 3 candidates in the sense above:
 
 - The 9 sites originally scoped here, unchanged.
 - **2 more `String`/nested-third-party sites the original review missed**:
@@ -216,23 +216,41 @@ Group 3 candidates in the sense above:
   needs the SAME `&'static str` + `CborFault`-style treatment as Group 1, not
   a bare allowlist entry, unless review concludes the path text is
   acceptable to disclose here specifically.
-- **6 `UNPARSED` findings**, a category this doc did not anticipate because
-  the original guard design (below) didn't have a fail-closed answer for "I
-  don't recognise this structure" — see the round-2 addition to §4. All 6 are
-  a placeholder referencing a module-level `pub const NAME: usize = N;` /
-  `pub const NAME: u8 = N;` via Rust's captured-identifier format syntax
-  (`{CARD_VERSION_V1}`, `{MAX_DISPLAY_NAME_BYTES}`, `{ML_KEM_768_CT_LEN}`,
-  `{BLOCK_UUID_LEN}`, `{ED25519_SIG_LEN}`, `{RECORD_UUID_LEN}` — in
-  `identity/card.rs`, `vault/block.rs` x3, `vault/record.rs`). Each is
-  verified data-free by inspection (a numeric compile-time constant, not a
-  field), but the guard has no field-based model for "this identifier
-  resolves to an in-scope `const`, not `self.<field>`" — by design it cannot
-  silently pass an unrecognised construct, so these need a reviewed allowlist
-  entry (or the guard growing a const-aware tier) rather than a code change.
+- **6 `UNPARSED` findings** — a placeholder referencing a module-level
+  `pub const NAME: usize = N;` / `pub const NAME: u8 = N;` via Rust's
+  captured-identifier format syntax (`{CARD_VERSION_V1}`,
+  `{MAX_DISPLAY_NAME_BYTES}`, `{ML_KEM_768_CT_LEN}`, `{BLOCK_UUID_LEN}`,
+  `{ED25519_SIG_LEN}`, `{RECORD_UUID_LEN}` — in `identity/card.rs`,
+  `vault/block.rs` x3, `vault/record.rs`). Each was verified data-free by
+  inspection (a numeric compile-time constant, not a field), and round 2 left
+  these as a real gap: the guard had no field-based model for "this
+  identifier resolves to an in-scope `const`, not `self.<field>`."
 
-The true count is **17**, and the "six entries, one reviewed section" framing
-above understates both the size AND the composition of what actually needs
-review. Task 9 (allowlist authoring) inherits this as its real scope.
+**Post-implementation update (round 3 review): a fourth tier, not six more
+allowlist entries.** Round 2's own reasoning already established that
+allowlisting a whole CLASS of provably-safe finding is worse than teaching the
+guard to recognise the class: 6 entries all reading "this is a const" is
+exactly the noise that erodes a reviewer's attention on the entries that
+matter. And the const argument is, if anything, STRONGER than the recursion
+or alias tiers it sits alongside: a Rust `const`'s initializer is REQUIRED by
+the compiler to be evaluable at compile time — a non-const-evaluable
+initializer is a compile error — so a `const` capture cannot carry runtime
+content for ANY declared type, not just the numeric ones this codebase
+happens to use today. `discover_declarations` now also harvests bare `const`
+names (`find_consts`, §4), and a placeholder resolving to one of them is
+treated as data-free without going through `is_data_free` at all — it isn't
+a field-type question, it's "does this name resolve to a field, or to a
+const," and a const answers it before any type ever enters the picture.
+
+With the const tier in place, the true violation count is **11**: the 9
+original Group 3 sites plus the 2 `#[source] std::io::Error` sites. All 6
+`UNPARSED` const-capture findings are gone — resolved by a rule addition, not
+by 6 allowlist entries. The "six entries, one reviewed section" framing above
+is now much closer to accurate again: **9 of the 11** are still genuinely
+Group-3-shaped (a `&'static str`/ordinal rewrite or a reviewed allowlist
+entry), and the 2 `std::io::Error` sites need the Group 1 treatment described
+above, not an allowlist entry. Task 9 inherits an 11-site review — 9 in the
+original spirit of this section, 2 that need a code change first.
 
 ### 4. The guard — `scripts/check-error-payload-hygiene.py`
 
@@ -244,11 +262,14 @@ field types of the variant it is attached to. If the format string interpolates 
 field whose declared type is not in the provably-data-free set, and the
 attribute's exact trimmed source line is not allowlisted, fail.
 
-**Post-implementation update (round 1 + round 2 review).** The rule as actually
-implemented is a THREE-tier data-free test, not the single flat set this section
-originally described — the flat set alone made the real scan report 24
-false-shaped violations that were really just the guard not knowing two
-legitimate patterns:
+**Post-implementation update (rounds 1–3 review).** The rule as actually
+implemented resolves a placeholder through up to FOUR recognised-safe
+categories, not the single flat type set this section originally described —
+the flat set alone made the real scan report 24 false-shaped violations that
+were really just the guard not knowing three legitimate patterns. The first
+three are genuinely tiers of `is_data_free` (a field-TYPE question); the
+fourth (round 3) is answered BEFORE type classification ever runs, because a
+`const` capture isn't a field at all — see its own entry below.
 
 1. **Literal types**: `&'static str`, all integer primitives, `bool`,
    `[u8; N]`, `Option<T>` of one of these, and `CborFault`. Everything else —
@@ -284,6 +305,31 @@ legitimate patterns:
    dropped from the resolvable set entirely rather than guessed at
    (last-write-wins across files was proven to silently launder an unsafe
    alias into a pass depending on file sort order).
+4. **`const` capture (round 3).** A NAMED placeholder that does not match any
+   parsed field is checked against every bare `const NAME: Type = value;`
+   declared under `core/src/**` (`find_consts`) before falling through to
+   `UNPARSED`. This is not a type-tier at all — a `const` capture is
+   resolved at the NAME level, before `is_data_free` is ever called, because
+   there is no field to look a type up for. The soundness argument is
+   STRONGER than tiers 2 and 3: Rust requires a `const`'s initializer to be
+   compile-time evaluable (a non-const-evaluable initializer is a compiler
+   error), so the guarantee holds for ANY declared type, not just the
+   `usize`/`u8` ones this codebase happens to use today — unlike the
+   recursion tier, there is no "sound through an allowlist entry" caveat,
+   because nothing about a `const` can ever be allowlisted into unsoundness.
+   Deliberately **excludes `static`** (even an immutable one is a different
+   guarantee — Rust does not require a `static`'s initializer to be free of
+   interior mutability or runtime-observable identity the way it does for
+   `const`) and excludes associated consts declared inside `impl ... { }`
+   blocks, the same way tier 3 excludes associated types. Discovery is
+   cross-file (the live shape: `crypto/kem.rs`'s `ML_KEM_768_CT_LEN` captured
+   in `vault/block.rs`'s format string) but, unlike tier 3's aliases, does
+   NOT need the same collision-drops-to-deny treatment: an alias's safety
+   depends on its right-hand-side VALUE, which genuinely can conflict between
+   two same-named aliases in different files, but a `const`'s safety is the
+   compiler's guarantee alone — two different files each declaring their own
+   `const LEN: usize = ...;` are both still soundly "compile-time constant,"
+   with no "wrong value" to collide on.
 
 **Default-deny covers STRUCTURE, not just TYPE.** The original design left
 silent `continue`s in the scanner for "we couldn't figure out what this
@@ -340,13 +386,13 @@ subtle, twice-buggy control was `is_comment_line`, and it has no counterpart in 
 tokenizing parser.
 
 **`--self-test`.** Two-sided, as on both platforms, and materially larger than
-first scoped: **17 positive / 11 negative** controls, up from the original
+first scoped: **19 positive / 12 negative** controls, up from the original
 4-ish sketch. Round 2 review mutation-tested the original set and found three
 were vacuous (didn't actually exercise the mechanism they claimed to — e.g. a
 control for "escaped braces aren't placeholders" whose variant had no fields,
 so removing the escape-handling code couldn't possibly make it fire); those
 were rebuilt so the underlying mechanism is provably load-bearing, not just
-plausible-looking. The added controls cover, per finding: a `#[source]`
+plausible-looking. The round-2 controls cover, per finding: a `#[source]`
 attribute on a STRUCT field (not just a tuple field); a third-party nested
 error (`std::io::Error`) that must still deny through BOTH `#[from]` and
 `#[error(transparent)]`, proving the recursion tier isn't over-relaxed; a
@@ -354,9 +400,19 @@ struct-shaped (non-enum-variant) error; an intervening `#[allow(...)]`
 attribute between `#[error(...)]` and its variant; a triple-brace
 `{{{name}}}` placeholder; and three `UNPARSED`-triggering shapes (an
 unrecognisable construct, an unresolvable placeholder name, an out-of-range
-positional placeholder). `--self-test` runs first in CI so a green guard is
-never vacuous — and now that claim is backed by a mutation pass, not just
-inspection.
+positional placeholder). Round 3 added: a negative control for a genuine
+`const` capture; a positive control for a placeholder that is neither a
+field NOR a discovered const (proving the const tier is an ADDITIONAL
+recognised-safe category, not a fallback that accepts any unknown name); and
+a positive control for a `static` capture (proving requirement 3 — `static`
+is never treated as `const`). Both round-3 additions were mutation-tested by
+hand beyond the normal `--self-test` run: disabling the const tier entirely
+breaks EXACTLY the negative control (nothing else), and making the const
+check accept any unknown name breaks the "neither field nor const" positive
+control (along with two others that share its shape) — proof the tier is
+additive, not a laundering fallback. `--self-test` runs first in CI so a
+green guard is never vacuous — and now that claim is backed by a mutation
+pass, not just inspection.
 
 ### 5. Platform narrowing
 

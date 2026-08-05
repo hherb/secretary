@@ -306,6 +306,51 @@ def find_type_aliases(
     return aliases
 
 
+# `const NAME: Type = ` — requires the literal `const` keyword (never matches
+# `static`, on purpose — see `find_consts`) and a `:` immediately after the
+# name (never matches `const fn name(...)`, since `fn` there is followed by
+# an argument list, not a colon).
+CONST_RE = re.compile(r"\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=;]+=")
+
+
+def find_consts(src: str, impl_spans: list[tuple[int, int]] | None = None) -> set[str]:
+    """Bare names of every top-level `const NAME: Type = value;` in
+    (comment-stripped) `src`.
+
+    Only `const`, never `static` — a Rust `const` is required by the
+    compiler to be evaluable at COMPILE TIME (a non-const-evaluable
+    initializer is a compile error), so it cannot carry runtime content
+    regardless of its declared type: that guarantee is stronger than, and
+    independent of, `DATA_FREE_TYPES`. A `static` (even an immutable one, let
+    alone `static mut`) does not carry the same guarantee — Rust does not
+    require a `static`'s initializer to be free of interior mutability or
+    runtime-observable identity the way it does for `const` — so `CONST_RE`
+    is deliberately anchored on the literal `const` keyword and nothing about
+    this function widens that to `static`. `const fn name(...)` (a function,
+    not a value) is also excluded: the regex requires a `:` immediately after
+    the captured name, which a function's argument list never has.
+
+    A `const` declared inside an `impl ... { }` block is an ASSOCIATED
+    const — like an associated `type` (see `find_type_aliases`), it is a
+    per-impl binding, not a bare name Rust's captured-identifier format
+    syntax could reach unless explicitly imported — so it is excluded the
+    same way.
+
+    Unlike `find_type_aliases` / the enum spellings in `discover_declarations`,
+    only the BARE name is ever registered: a format-string placeholder
+    `{NAME}` can only capture a bare, unqualified identifier — Rust's
+    captured-identifier syntax does not accept a path — so a qualified
+    spelling would never be looked up.
+    """
+    impl_spans = impl_spans or []
+    names: set[str] = set()
+    for m in CONST_RE.finditer(src):
+        if _inside(m.start(), impl_spans):
+            continue
+        names.add(m.group(1))
+    return names
+
+
 def module_path_segments(path_label: str) -> list[str]:
     """The Rust module path implied by a file's location under `core/src/`.
 
@@ -328,9 +373,10 @@ def module_path_segments(path_label: str) -> list[str]:
 
 def discover_declarations(
     raw: str, path_label: str | None = None
-) -> tuple[frozenset[str], dict[str, str]]:
-    """Two textual facts this guard can prove about a chunk of Rust source
-    without a real parser — the tier-2 and tier-3 inputs `is_data_free` needs.
+) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+    """Three textual facts this guard can prove about a chunk of Rust source
+    without a real parser — the tier-2/3/4 inputs `is_data_free` and
+    `scan_source`'s placeholder resolution need.
 
     1. Which `enum`s it defines that are THEMSELVES scanned by this guard,
        i.e. contain at least one `#[error(...)]` attribute in their body. A
@@ -343,6 +389,9 @@ def discover_declarations(
        declarations found INSIDE an `impl ... { }` block (a trait's
        associated type, not a free-standing alias) are excluded — see
        `find_type_aliases`.
+    3. Which `const NAME: Type = value;` declarations it has — see
+       `find_consts` for why `static` is deliberately excluded and why only
+       `const` gets this treatment.
 
     For each discovered enum/alias name, three spellings are registered so a
     reference site is recognised regardless of how it's qualified: the bare
@@ -359,9 +408,14 @@ def discover_declarations(
     name that happens to match a local one — an acknowledged, narrow
     residual risk, not something this function tries to close.
 
+    `const` names are registered BARE ONLY (see `find_consts`) — no
+    qualified spellings, since a format-string capture can never be
+    qualified.
+
     `run_real_scan` aggregates the RESULT of this function across every file
     under `core/src/**` — see that function's docstring for why a bare-name
-    alias COLLISION across files is dropped rather than resolved.
+    alias COLLISION across files is dropped rather than resolved, and why
+    `const` names (and `local_error_enums`) do not need the same treatment.
     """
     src = strip_comments(raw)
     segments = module_path_segments(path_label) if path_label else []
@@ -391,7 +445,9 @@ def discover_declarations(
         for spelling in spellings(alias_name):
             aliases[spelling] = rhs
 
-    return frozenset(local_error_enums), aliases
+    consts = find_consts(src, impl_spans)
+
+    return frozenset(local_error_enums), aliases, frozenset(consts)
 
 
 def strip_comments(src: str) -> str:
@@ -647,6 +703,7 @@ def scan_source(
     raw: str,
     local_error_enums: frozenset[str] = frozenset(),
     aliases: dict[str, str] | None = None,
+    consts: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     """Find every `#[error]` variant/struct that interpolates a non-data-free
     field, PLUS every `#[error(...)]` attribute whose structure this guard
@@ -659,6 +716,14 @@ def scan_source(
     cross-file discovery (i.e. pass nothing) still get tier 1 (literal
     `DATA_FREE_TYPES` / arrays / `Option<T>`), just not the recursion or
     alias tiers.
+
+    `consts` is a DIFFERENT kind of input: it is not a field TYPE tier at
+    all (nothing goes through `is_data_free` for it), because a `const`
+    capture is not a field in the first place. A NAMED placeholder that
+    resolves to neither a parsed field name NOR a discovered `const` name
+    still produces an `UNPARSED` finding — the const tier is an ADDITIONAL
+    way to be recognised safe, never a fallback that accepts an unknown
+    name. See `find_consts` for why only `const` (never `static`) qualifies.
     """
     src = strip_comments(raw)
     findings: list[Finding] = []
@@ -796,11 +861,17 @@ def scan_source(
                     continue
             elif name in fields:
                 fname, ftype = name, fields[name]
+            elif name in consts:
+                # A `const` capture, not a field — Rust requires a `const`'s
+                # initializer to be compile-time evaluable, so it cannot
+                # carry runtime content regardless of its declared type.
+                # Nothing further to classify; this is not a field lookup.
+                continue
             else:
                 emit_unparsed(
                     f"{variant} interpolates `{{{name}}}`, which does not "
-                    "match any field this guard could parse — it cannot "
-                    "verify what is being rendered",
+                    "match any field or discovered const this guard could "
+                    "parse — it cannot verify what is being rendered",
                     variant=variant,
                     field=name,
                 )
@@ -898,10 +969,12 @@ def run_real_scan() -> int:
         for rs in sorted(SCAN_ROOT.rglob("*.rs"))
     ]
 
-    # Pass 1: discover every core-local thiserror enum and type alias across
-    # THE WHOLE TREE before classifying anything — a field in vault/mod.rs
-    # can reference an enum defined in vault/record.rs, so a per-file-only
-    # discovery pass would miss the cross-file case entirely.
+    # Pass 1: discover every core-local thiserror enum, type alias, and
+    # const across THE WHOLE TREE before classifying anything — a field in
+    # vault/mod.rs can reference an enum defined in vault/record.rs, and a
+    # format string in vault/block.rs can capture a const imported from
+    # crypto/kem.rs, so a per-file-only discovery pass would miss the
+    # cross-file case entirely.
     #
     # Aliases are aggregated defensively: a bare (or qualified) spelling that
     # resolves to DIFFERENT right-hand sides in different files is a name
@@ -912,24 +985,41 @@ def run_real_scan() -> int:
     # review. A colliding spelling is dropped from the resolvable set
     # entirely, so a lookup against it default-denies instead of guessing
     # which definition was "real."
+    #
+    # `const` names are aggregated as a plain union, NOT with the same
+    # collision-drops-to-deny treatment as aliases — deliberately, not by
+    # oversight. The alias mechanism needed it because an alias's SAFETY
+    # depends on its right-hand-side VALUE, which genuinely can differ (and
+    # conflict) between two same-named aliases in different files. A `const`
+    # has no analogous "wrong value" to collide on: Rust requires EVERY
+    # `const`'s initializer to be compile-time evaluable, so ANY declaration
+    # `find_consts` matches is safe by that guarantee alone, regardless of
+    # which file it came from or what its actual value is. Two different
+    # files each declaring their own `const LEN: usize = ...;` are both
+    # still soundly "a compile-time constant, can't carry runtime content" —
+    # there is no "real" one to pick between, unlike an alias where one
+    # side's RHS could genuinely be unsafe.
     local_error_enum_names: set[str] = set()
     alias_candidates: dict[str, set[str]] = {}
+    const_names: set[str] = set()
     for label, raw in sources:
-        enums, file_aliases = discover_declarations(raw, label)
+        enums, file_aliases, file_consts = discover_declarations(raw, label)
         local_error_enum_names.update(enums)
         for spelling, rhs in file_aliases.items():
             alias_candidates.setdefault(spelling, set()).add(rhs)
+        const_names.update(file_consts)
     local_error_enums: frozenset[str] = frozenset(local_error_enum_names)
     aliases = {
         spelling: next(iter(rhs_set))
         for spelling, rhs_set in alias_candidates.items()
         if len(rhs_set) == 1
     }
+    consts: frozenset[str] = frozenset(const_names)
 
-    # Pass 2: the actual scan, now with tiers 2 and 3 available.
+    # Pass 2: the actual scan, now with tiers 2, 3, and 4 available.
     violations: list[Finding] = []
     for label, raw in sources:
-        for f in scan_source(label, raw, local_error_enums, aliases):
+        for f in scan_source(label, raw, local_error_enums, aliases, consts):
             if f"{f.path}\t{RULE}\t{f.source_line}" in allowlist:
                 continue
             violations.append(f)
@@ -1154,6 +1244,36 @@ POSITIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "P18 a placeholder naming something that is neither a parsed field "
+        "NOR a discovered const must still fail closed as UNPARSED — proves "
+        "the const tier is an ADDITIONAL recognised-safe category, not a "
+        "fallback that accepts any unknown name (a real const is present "
+        "in this same snippet, so discovery genuinely ran)",
+        '''
+        pub const KNOWN_CONST: usize = 16;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("leak: {totally_unknown_name}")]
+            Leaky { detail: String },
+        }
+        ''',
+    ),
+    (
+        "P19 a placeholder naming a `static`, not a `const`, must still "
+        "fail closed as UNPARSED — a static (even immutable) does not "
+        "carry the same compile-time-evaluated guarantee",
+        '''
+        pub static NOT_A_CONST: usize = 16;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("leak: {NOT_A_CONST}")]
+            Leaky { detail: String },
+        }
+        ''',
+    ),
 ]
 
 NEGATIVE_CONTROLS: list[tuple[str, str]] = [
@@ -1292,22 +1412,38 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "N12 a placeholder capturing a real module-level `const` is "
+        "data-free by definition — compile-time evaluated, so it cannot "
+        "carry runtime content regardless of its declared type (the live "
+        "vault/record.rs:155 shape: one placeholder is a genuine field, "
+        "the other is a const)",
+        '''
+        pub const RECORD_UUID_LEN: usize = 16;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("invalid UUID: expected {RECORD_UUID_LEN} bytes, got {length}")]
+            InvalidUuid { length: usize },
+        }
+        ''',
+    ),
 ]
 
 
 def run_self_test() -> int:
     failures: list[str] = []
     for label, src in POSITIVE_CONTROLS:
-        # Each control is self-contained (defines any nested enum/alias it
-        # references in the same string), so a per-control discovery pass —
-        # no real file path, hence no path_label — exercises the real
+        # Each control is self-contained (defines any nested enum/alias/const
+        # it references in the same string), so a per-control discovery
+        # pass — no real file path, hence no path_label — exercises the real
         # discovery path rather than a hardcoded name list.
-        enums, aliases = discover_declarations(src)
-        if not scan_source("<self-test>", src, enums, aliases):
+        enums, aliases, consts = discover_declarations(src)
+        if not scan_source("<self-test>", src, enums, aliases, consts):
             failures.append(f"POSITIVE control did not fire: {label}")
     for label, src in NEGATIVE_CONTROLS:
-        enums, aliases = discover_declarations(src)
-        found = scan_source("<self-test>", src, enums, aliases)
+        enums, aliases, consts = discover_declarations(src)
+        found = scan_source("<self-test>", src, enums, aliases, consts)
         if found:
             failures.append(
                 f"NEGATIVE control fired: {label} -> "
