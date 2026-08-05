@@ -1,0 +1,187 @@
+# Allowlist for check-error-payload-hygiene.sh's Python sibling,
+# scripts/check-error-payload-hygiene.py (#474).
+#
+# THE RULE: a `core` error variant must not interpolate a runtime String into
+# its #[error] message. These are the reviewed exceptions.
+#
+# Format, one per line, TAB-separated — IDENTICAL to the two shell log-hygiene
+# guards' allowlists, so that scripts/lib/hygiene-allowlist.sh::allowlisted
+# parses this file unchanged (core/tests/error_payload_hygiene_parity.rs
+# exercises exactly that claim, rather than leaving it asserted-but-unchecked):
+#
+#   <repo-relative-path><TAB><rule><TAB><whole collapsed #[error(...)] attribute text><TAB><reason>
+#
+# This guard has exactly ONE rule, `E1`. The column exists for format parity
+# with the shell guards' three/four-rule allowlists, not because a second
+# rule is planned here.
+#
+# THE KEY is the ENTIRE `#[error(...)]` attribute, not just its first source
+# line: for a multi-line attribute (e.g. sync/error.rs's
+# ConflictCopyScanIoFailed), keying on the first line alone would produce the
+# literal key `#[error(`, which is NOT unique — a second multi-line attribute
+# in the same file collides on it, so an entry reviewed to exempt ONE variant
+# would silently also exempt an UNREVIEWED one. That is exactly the class of
+# bug this format replaces: an earlier draft of this guard keyed on the
+# attribute's first line only, and was found bypassable on exactly this
+# shape before it ever shipped. The key is whitespace-collapsed to one
+# line (internal runs of whitespace become a single space) so it is
+# insensitive to re-wrapping and carries no TAB or newline of its own — the
+# guard's `check_key_shape` self-test control asserts that property, which is
+# what makes it safe for `allowlisted()`'s TAB-column split.
+#
+# The match is on the EXACT collapsed attribute text with leading/trailing
+# whitespace additionally stripped by `allowlisted()` — NEVER a substring. A
+# substring entry exempts every future occurrence of the same needle anywhere
+# in the same file, which was demonstrably exploitable on both log-hygiene
+# guards (#467 / #475: an entry meant for one BookmarkVaultLocationStore line
+# silently exempted an unrelated later line that raw-rendered
+# `err.localizedDescription`). Re-indenting an exempted line, or reflowing a
+# multi-line attribute onto a different number of physical lines, keeps an
+# entry valid (whitespace-collapse absorbs it); editing its message text does
+# not, so a bypass line cannot be quietly repurposed to cover something else.
+#
+# Blank lines and `#` comments are ignored.
+#
+# ADDING AN ENTRY IS A SECURITY DECISION — it is a claim, made by a human
+# reviewer, that no runtime value reaching this exact message can carry vault
+# plaintext, a password, a mnemonic, or key bytes. Justify it in the reason
+# field, and re-review whenever the entry's producers change.
+#
+# Sectioned by review weight, lowest first: content already disclosed by the
+# threat model needs the least scrutiny; a site whose safety depends on every
+# current producer staying well-behaved (something this guard structurally
+# cannot verify — see its LIMITS docstring: "it sees DECLARATIONS, not
+# construction sites") needs the most.
+
+# =============================================================================
+# SECTION 1 — ALREADY-DISCLOSED CONTENT
+#
+# `vault.toml` is UNENCRYPTED on disk: docs/vault-format.md §2 is titled
+# "`vault.toml` — cleartext metadata", and core/src/unlock/vault_toml.rs's own
+# header comment reads "This file holds non-secret bootstrap metadata... It is
+# parsed at vault open time". Anyone who can read the vault folder can already
+# read vault.toml's bytes directly, so a parse-error message that echoes a
+# fragment of it discloses nothing an attacker with folder access doesn't
+# already have. `MalformedToml` additionally needs the underlying `toml`
+# crate's message to be debuggable at all — without it, a malformed-file
+# report degrades to "some byte somewhere is wrong."
+# =============================================================================
+
+core/src/unlock/vault_toml.rs	E1	#[error("malformed TOML: {0}")]	vault.toml is cleartext on disk (vault-format §2); needed for the toml crate's parse message to be debuggable at all
+core/src/unlock/vault_toml.rs	E1	#[error("unknown key in [kdf] section: {0}")]	vault.toml is cleartext on disk (vault-format §2)
+core/src/unlock/vault_toml.rs	E1	#[error("unsupported KDF algorithm: {0}")]	vault.toml is cleartext on disk (vault-format §2)
+core/src/unlock/vault_toml.rs	E1	#[error("unsupported KDF version: {0}")]	vault.toml is cleartext on disk (vault-format §2)
+
+# =============================================================================
+# SECTION 2 — THIRD-PARTY ERROR PAYLOADS
+#
+# Both entries carry a `std::io::Error` `#[source]` field. `std::io::Error`'s
+# `Display` renders an OS errno message and, depending on the originating
+# call, a filesystem path. This repo's threat model already treats vault file
+# paths as disclosed: an attacker with read access to the vault folder can
+# enumerate every path directly, and #472's review of the Android sync
+# surface reached and recorded the identical verdict ("io::Error (path +
+# errno — already disclosed per the threat model)"). These are deliberate,
+# reviewed exceptions to the rule, not something a future patch should try to
+# make `is_data_free` recognise structurally — `std::io::Error` is exactly
+# the class of foreign type the guard's recursion argument is scoped to
+# exclude (see the module docstring: "a nested error type from OUTSIDE
+# core/src/** ... is NOT scanned by this guard ... and MUST still deny").
+# =============================================================================
+
+core/src/sync/error.rs	E1	#[error("conflict-copy scan failed: failed to enumerate folder: {source}")]	io::Error (path + errno — already disclosed per the threat model, per #472's identical verdict)
+core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::Error (path + errno — already disclosed per the threat model, per #472's identical verdict)
+
+# =============================================================================
+# SECTION 3 — SAFE BY CONSTRUCTION SITE, NOT BY TYPE
+#
+# This guard sees DECLARATIONS, not producers: a `detail: String` field is
+# denied unconditionally because `String` cannot be proven data-free, whoever
+# builds it. Every entry below is therefore a POINT-IN-TIME claim about every
+# current call site that constructs the variant, verified by reading them,
+# not something this guard can re-check as the code evolves. HIGHEST review
+# weight in this file — re-verify on every edit that touches a producer.
+#
+# Every producer count below was verified by `grep -rn` for the variant's
+# construction syntax (`Variant::Name {`), not carried over from an earlier
+# draft or a reviewer's tally — this plan has had stale producer counts more
+# than once, and a re-reviewer should be able to reproduce every number here
+# with the same grep. Test-only constructions (inside `#[cfg(test)] mod
+# tests` / `mod cbor_tests`, always fixed literals pinning `Display`) are
+# named but not treated as load-bearing, since they never run outside `cargo
+# test`. `matches!(err, Variant { .. })` pattern matches are NOT producers
+# and are excluded from every count.
+#
+# sync/error.rs — StateDecodeFailed (14 constructions: sync/error.rs:88
+# test, sync/state.rs:136,144,163,169,184,199,217,236,242,256,261,273,276 —
+# 13 sites, one file):
+#   Every producer lives inside SyncState::from_canonical_cbor /
+#   decode_vector_clock_entry (core/src/sync/state.rs). SyncState
+#   (core/src/sync/state.rs:17-20) holds only a vault_uuid: [u8; 16] and
+#   highest_vector_clock_seen: Vec<VectorClockEntry> (device UUIDs and
+#   counters) — there is no vault plaintext in scope for this function to
+#   leak. Every site passes a fixed string literal, a `format!` of two
+#   integer lengths (state.rs:170-173, :244-246 — "must be N bytes, got M"),
+#   or `crate::cbor::classify_de(&e)` (an explicitly CLASSIFIED, data-free
+#   `CborFault` — see state.rs:136-139's comment: "Classified, not
+#   stringified: ciborium's Display is its Debug form... (#474)").
+#
+# sync/error.rs — StateEncodeFailed (4 constructions: sync/error.rs:99 test,
+# sync/state.rs:107,125 — 2 sites, one file):
+#   Both real producers live inside SyncState::to_canonical_cbor
+#   (core/src/sync/state.rs), same vault_uuid + vector-clock-only scope as
+#   StateDecodeFailed above. Both pass `format!("{err}")` over
+#   `CanonicalError` (core/src/vault/canonical.rs) — a core-gated enum whose
+#   own variants carry only a `CborFault` or a `&'static str` field hint, and
+#   that this same guard scans and passes cleanly today.
+#
+# sync/error.rs — InvalidArgument (10 constructions across FOUR files:
+# sync/error.rs:110 test, sync/prepare.rs:237,294,394,449 — 4 sites,
+# sync/state.rs:55,60 — 2 sites, sync/commit/write.rs:311,318,333 — 3
+# sites):
+#   Every real producer passes a fixed string literal, a `&'static str`
+#   context hint, or a `[u8; 16]` block_uuid rendered via `{:02x?}`
+#   (prepare.rs:237,294,394 and all three commit/write.rs sites), EXCEPT
+#   prepare.rs:449, which passes `format!("merge_block: {e}")` where
+#   `e: ConflictError` (core/src/vault/conflict.rs) — a core-gated enum with
+#   exactly two variants (BlockUuidMismatch, ClockOverflow), both carrying
+#   only `[u8; 16]` fields, that this same guard scans and passes cleanly
+#   today. No vault plaintext (record field values, block contents) is in
+#   scope at any of these ten call sites.
+#
+# vault/mod.rs — RestoreVerificationFailed (4 constructions, one file:
+# core/src/vault/orchestrators.rs:2510,2520,2551,2559; no test
+# construction):
+#   All four sites are inside `restore_block`. Each passes a fixed string
+#   literal, a `{:?}`-rendered `[u8; 16]` block_uuid, or `format!("...: {e}")`
+#   over `BlockError` (from `block::decode_block_file` at :2520 /
+#   `block::decrypt_block` at :2551) — a core-gated error this same guard
+#   already scans, so a leak reaching BlockError's own Display would already
+#   be a separate, un-allowlisted violation of its own.
+#
+# vault/mod.rs — RepairRejected (12 constructions across THREE files:
+# vault/mod.rs:450 test, vault/repair/classify.rs:120,126,132,159,179,193,
+# 247,300 — 8 sites, vault/repair/orchestration.rs:260,275,458 — 3 sites):
+#   classify.rs's 8 sites (repair_vault's per-block gate checks), by
+#   pattern: :126,132,300 pass a fixed string literal; :159 passes
+#   `format!("clock relation {relation:?}: ...")` where `relation:
+#   ClockRelation` is a FIELDLESS enum (core/src/vault/conflict.rs:69) whose
+#   `{:?}` renders only a bare variant name; :120 and :179 pass
+#   `format!("...: {e}")` over `BlockError` (from `block::decode_block_file`
+#   / `block::decrypt_block` respectively); :193 passes the same over
+#   `VaultError` (remapping `MissingRecipientCard`) — all three core-gated,
+#   already scanned by this same guard; :247 passes a `Vec<String>` built by
+#   mapping `[u8; 16]` recipient UUIDs through `format_uuid_hyphenated`
+#   (core/src/vault/orchestrators.rs:114 — hex digits and hyphens only, no
+#   lookup into any secret or plaintext table). orchestration.rs's 3 sites —
+#   MISSING from this file's account until this correction — pass a fixed
+#   string literal (:458) or the same `format_uuid_hyphenated`-mapped
+#   `Vec<String>` pattern as classify.rs:247, at :260 and :275. No vault
+#   plaintext reaches any of the 11 non-test sites.
+# =============================================================================
+
+core/src/sync/error.rs	E1	#[error("SyncState CBOR decode failed: {detail}")]	SyncState holds only vault_uuid + vector-clock entries; producers pass literals or the classified CborFault
+core/src/sync/error.rs	E1	#[error("SyncState CBOR encode failed: {detail}")]	SyncState holds only vault_uuid + vector-clock entries; producers pass literals or format!({err}) over the core-gated, clean CanonicalError
+core/src/sync/error.rs	E1	#[error("invalid argument: {detail}")]	producers pass literals, block_uuid arrays, or format!({e}) over the core-gated, clean ConflictError
+core/src/vault/mod.rs	E1	#[error("trashed block {block_uuid:?} failed verification: {detail}")]	producers pass literals plus format!({e}) over other core-gated, already-scanned errors
+core/src/vault/mod.rs	E1	#[error("repair rejected for block {block_uuid:02x?}: {detail}")]	producers pass literals plus format!({e}) over other core-gated, already-scanned errors

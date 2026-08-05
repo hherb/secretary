@@ -134,7 +134,9 @@ impl SyncState {
 
         let value: Value =
             ciborium::de::from_reader(bytes).map_err(|e| SyncError::StateDecodeFailed {
-                detail: format!("CBOR parse: {e}"),
+                // Classified, not stringified: ciborium's Display is its Debug
+                // form, which prints `Semantic(_, String)` verbatim (#474).
+                detail: format!("CBOR parse: {}", crate::cbor::classify_de(&e)),
             })?;
         let map = match value {
             Value::Map(m) => m,
@@ -463,6 +465,40 @@ mod cbor_tests {
         let err = SyncState::from_canonical_cbor(&bytes).unwrap_err();
         assert!(matches!(err, SyncError::StateDecodeFailed { .. }));
         assert!(format!("{err}").contains("missing vault_uuid"));
+    }
+
+    /// The ciborium message must not be interpolated into the detail string.
+    /// Everything else in this enum is a fixed literal; this was the one
+    /// producer carrying third-party text (#474).
+    ///
+    /// Input choice: a lone CBOR "break" code (0xFF) with no preceding
+    /// indefinite-length item. `&[0xA2]` (a truncated 2-entry map header,
+    /// suggested as the first candidate) classifies as `ciborium::de::Error::Io`
+    /// (`UnexpectedEof`), whose Debug text contains none of the tokens this
+    /// test checks for — that input was tried first and confirmed vacuous
+    /// (see task-7 report). `0xFF` instead provokes `Error::Semantic(None,
+    /// "invalid type: break, expected non-break")`, so the assertion actually
+    /// exercises the passthrough this fix removes.
+    #[test]
+    fn state_decode_does_not_interpolate_raw_ciborium_text() {
+        let lone_break: &[u8] = &[0xFF];
+
+        let err = SyncState::from_canonical_cbor(lone_break)
+            .expect_err("a lone CBOR break code must be rejected");
+
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("CBOR"),
+            "the message should still say what failed: {rendered}"
+        );
+        // ciborium's Display is its Debug form, so a passthrough renders the
+        // upstream variant name. Its absence is what proves the fix.
+        assert!(
+            !rendered.contains("Semantic")
+                && !rendered.contains("Syntax(")
+                && !rendered.contains("RecursionLimitExceeded"),
+            "raw ciborium Debug text survived into the detail: {rendered}"
+        );
     }
 
     #[test]

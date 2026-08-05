@@ -88,17 +88,41 @@ extension VaultAccessError: SecretFreeError {
     /// deleted arm would put a user's field name in the unified log store. The
     /// redaction holds regardless of which site does the rendering.
     ///
-    /// `.corruptVault` is redacted for the same reason, one layer further down.
-    /// Its payload is a Rust-side error string passed through verbatim by
-    /// `VaultErrorMapping`, and at least one of those strings embeds vault
-    /// plaintext: `RecordError::DuplicateKey { key }`
-    /// (`core/src/vault/record.rs:660`) takes `key` straight from the decrypted
-    /// CBOR field-name and formats it as `"duplicate map key: {key}"`. We do not
-    /// author those strings, so their content cannot be reviewed here — which is
-    /// exactly the "unreviewed content" class this protocol exists to deny.
-    /// (The core has the right pattern elsewhere: `MnemonicError::UnknownWord`
-    /// carries the word's INDEX, never the word. `DuplicateKey` should do the
-    /// same; until it does, the redaction is the fail-closed side.)
+    /// `.corruptVault` is NO LONGER redacted. Its payload is a Rust-side error
+    /// string passed through by `VaultErrorMapping`, and until #474 at least one
+    /// of those strings embedded vault plaintext: `RecordError::DuplicateKey`
+    /// formatted the decrypted CBOR field name into its message. #474 made every
+    /// `core` error payload data-free by construction — plaintext-bearing
+    /// payloads carry a `&'static str` hint plus an ordinal, and the `ciborium`
+    /// message is discarded at the boundary — and
+    /// `scripts/check-error-payload-hygiene.py` fails CI if a new variant
+    /// reintroduces a runtime `String`. Restoring this redaction would throw
+    /// away every corruption diagnostic for no remaining benefit.
+    ///
+    /// The precise guard invariant is "data-free by construction OR a reviewed
+    /// allowlist exception", not "data-free" flat: a malformed `vault.toml`
+    /// still renders the `toml` crate's parse message, and a filesystem
+    /// `io::Error` its path + errno, into this arm. Both are deliberate
+    /// `scripts/error-payload-hygiene-allowlist.txt` entries — `vault.toml` is
+    /// cleartext on disk (vault-format §2) and an `io::Error` path is content
+    /// an attacker with folder access already has — so neither is vault
+    /// plaintext, a password, a mnemonic, or key bytes. What is structurally
+    /// impossible is a NEW runtime `String` slipping in unreviewed.
+    ///
+    /// That guard scans `core/src/**` ONLY, and `.corruptVault`'s payload is not
+    /// wholly a `core` payload: `SecretaryKit`'s `VaultErrorMapping.swift:21`
+    /// passes `FfiVaultError.CorruptVault.detail` through verbatim, and the
+    /// bridge (`ffi/secretary-ffi-bridge/**`) builds part of that string with its
+    /// own `format!`. The bridge half is gated by review alone. #478 covers only
+    /// the `VaultSyncError.Failed` / `FfiVaultError::SyncFailed` slice of that
+    /// gap, and only one of the two alternatives its acceptance offers
+    /// (extending the guard's scope to `ffi/secretary-ffi-bridge/src/**`) would
+    /// reach this arm; the other would leave it unowned. Cite it as partial.
+    ///
+    /// `.invalidArgument` above is NOT covered by that guarantee and must stay
+    /// redacted: its payload is SWIFT-authored, not Rust-authored. No issue
+    /// tracks that payload class itself; #473 tracks the separate question of
+    /// these carried diagnostics being rendered as on-screen copy.
     ///
     /// Every other case is rendered in full. `.invalidMnemonic` is safe because
     /// the core emits a word index rather than the word; `.folderInvalid` carries
@@ -109,8 +133,6 @@ extension VaultAccessError: SecretFreeError {
         switch self {
         case .invalidArgument:
             return "invalidArgument(<redacted>)"
-        case .corruptVault:
-            return "corruptVault(<redacted>)"
         default:
             return String(describing: self)
         }

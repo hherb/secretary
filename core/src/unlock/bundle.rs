@@ -49,6 +49,7 @@ use core::fmt;
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
+use crate::cbor::{classify_de, classify_ser, CborFault};
 use crate::crypto::kem::{
     generate_ml_kem_768, generate_x25519, ML_KEM_768_PK_LEN, ML_KEM_768_SK_LEN, X25519_PK_LEN,
     X25519_SK_LEN,
@@ -97,10 +98,15 @@ const KEY_CREATED_AT: &str = "created_at";
 /// Errors from bundle CBOR encode and decode.
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
-    /// CBOR encoding produced an I/O or serialization error from `ciborium`,
-    /// or the byte stream did not contain a top-level map.
-    #[error("CBOR encode/decode error: {0}")]
-    CborError(String),
+    /// `ciborium` failed at the byte level. Carries a classified fault, never
+    /// the upstream message (#474 — see [`crate::cbor`]).
+    #[error("CBOR error: {0}")]
+    CborFault(CborFault),
+
+    /// The bytes parsed as CBOR but did not match the §5 bundle shape.
+    /// A fixed structural description from a closed set of literals.
+    #[error("malformed identity bundle: {0}")]
+    Malformed(&'static str),
 
     /// Input parsed but was not in RFC 8949 §4.2.1 canonical form (e.g. keys
     /// not in bytewise lexicographic order, non-shortest length prefixes,
@@ -112,13 +118,22 @@ pub enum BundleError {
 
     /// A map key was present that the v1 spec does not define. The bundle is
     /// fully-specified; an unknown field signals suite drift and is rejected.
-    #[error("unknown bundle field: {0}")]
-    UnknownField(String),
+    ///
+    /// Carries the entry's 0-based ordinal, never the key: this map is the
+    /// DECRYPTED identity bundle, so an unrecognised key is unreviewed
+    /// plaintext (#474).
+    #[error("unknown bundle field at entry #{}", .index + 1)]
+    UnknownField {
+        /// 0-based ordinal of the offending entry.
+        index: usize,
+    },
 
-    /// A map key appeared more than once. RFC 8949 §5.4 forbids duplicates
-    /// in canonical input.
-    #[error("duplicate field: {0}")]
-    DuplicateField(String),
+    /// A known §5 field appeared more than once. RFC 8949 §5.4 forbids
+    /// duplicates in canonical input. `field` is a spec key name — this is
+    /// raised from `set_once`, reached only after the unknown-key arm has
+    /// rejected anything not in the §5 set.
+    #[error("duplicate bundle field: {0}")]
+    DuplicateField(&'static str),
 
     /// A required field was absent from the parsed top-level CBOR map. The
     /// payload is the §5 CBOR key name (e.g. "user_uuid", "x25519_pk") to keep
@@ -335,11 +350,11 @@ impl IdentityBundle {
     /// reader must recognise v1 inputs only, so a future v2 writer (or a
     /// tampered file) is rejected loudly rather than silently accepted.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
-        let value: Value =
-            ciborium::de::from_reader(bytes).map_err(|e| BundleError::CborError(e.to_string()))?;
+        let value: Value = ciborium::de::from_reader(bytes)
+            .map_err(|e| BundleError::CborFault(classify_de(&e)))?;
         let map = match value {
             Value::Map(m) => m,
-            _ => return Err(BundleError::CborError("expected top-level CBOR map".into())),
+            _ => return Err(BundleError::Malformed("expected top-level CBOR map")),
         };
 
         let mut user_uuid: Option<[u8; USER_UUID_LEN]> = None;
@@ -354,56 +369,56 @@ impl IdentityBundle {
         let mut ml_dsa_65_pk: Option<Vec<u8>> = None;
         let mut created_at_ms: Option<u64> = None;
 
-        for (k, v) in map {
+        for (index, (k, v)) in map.into_iter().enumerate() {
             let Value::Text(key) = k else {
-                return Err(BundleError::CborError("non-string map key".into()));
+                return Err(BundleError::Malformed("non-string map key"));
             };
             match key.as_str() {
-                KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, &key)?,
-                KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, &key)?,
+                KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, KEY_USER_UUID)?,
+                KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, KEY_DISPLAY_NAME)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
                     take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?,
-                    &key,
+                    KEY_X25519_SK,
                 )?,
                 KEY_X25519_PK => set_once(
                     &mut x25519_pk,
                     take_fixed_bytes::<X25519_PK_LEN>(v, KEY_X25519_PK)?,
-                    &key,
+                    KEY_X25519_PK,
                 )?,
                 KEY_ML_KEM_768_SK => set_once(
                     &mut ml_kem_768_sk_bytes,
                     take_sized_bytes(v, KEY_ML_KEM_768_SK, ML_KEM_768_SK_LEN)?,
-                    &key,
+                    KEY_ML_KEM_768_SK,
                 )?,
                 KEY_ML_KEM_768_PK => set_once(
                     &mut ml_kem_768_pk,
                     take_sized_bytes(v, KEY_ML_KEM_768_PK, ML_KEM_768_PK_LEN)?,
-                    &key,
+                    KEY_ML_KEM_768_PK,
                 )?,
                 KEY_ED25519_SK => set_once(
                     &mut ed25519_sk_bytes,
                     take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?,
-                    &key,
+                    KEY_ED25519_SK,
                 )?,
                 KEY_ED25519_PK => set_once(
                     &mut ed25519_pk,
                     take_fixed_bytes::<ED25519_PK_LEN>(v, KEY_ED25519_PK)?,
-                    &key,
+                    KEY_ED25519_PK,
                 )?,
                 KEY_ML_DSA_65_SK => set_once(
                     &mut ml_dsa_65_sk_bytes,
                     take_sized_bytes(v, KEY_ML_DSA_65_SK, ML_DSA_65_SEED_LEN)?,
-                    &key,
+                    KEY_ML_DSA_65_SK,
                 )?,
                 KEY_ML_DSA_65_PK => set_once(
                     &mut ml_dsa_65_pk,
                     take_sized_bytes(v, KEY_ML_DSA_65_PK, ML_DSA_65_PK_LEN)?,
-                    &key,
+                    KEY_ML_DSA_65_PK,
                 )?,
-                KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, &key)?,
-                other => {
-                    return Err(BundleError::UnknownField(other.to_string()));
+                KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, KEY_CREATED_AT)?,
+                _ => {
+                    return Err(BundleError::UnknownField { index });
                 }
             }
         }
@@ -471,7 +486,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
         .map(|pair| {
             let mut key_bytes = Vec::new();
             ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| BundleError::CborError(e.to_string()))?;
+                .map_err(|e| BundleError::CborFault(classify_ser(&e)))?;
             Ok((key_bytes, pair.clone()))
         })
         .collect::<Result<_, BundleError>>()?;
@@ -480,7 +495,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
     let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&value, &mut buf)
-        .map_err(|e| BundleError::CborError(e.to_string()))?;
+        .map_err(|e| BundleError::CborFault(classify_ser(&e)))?;
     Ok(buf)
 }
 
@@ -498,9 +513,9 @@ pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     a_buf.cmp(&b_buf)
 }
 
-fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), BundleError> {
+fn set_once<T>(slot: &mut Option<T>, v: T, key: &'static str) -> Result<(), BundleError> {
     if slot.is_some() {
-        return Err(BundleError::DuplicateField(key.to_string()));
+        return Err(BundleError::DuplicateField(key));
     }
     *slot = Some(v);
     Ok(())
@@ -509,18 +524,18 @@ fn set_once<T>(slot: &mut Option<T>, v: T, key: &str) -> Result<(), BundleError>
 fn take_text(v: Value) -> Result<String, BundleError> {
     match v {
         Value::Text(s) => Ok(s),
-        _ => Err(BundleError::CborError("expected text string".into())),
+        _ => Err(BundleError::Malformed("expected text string")),
     }
 }
 
 fn take_u64(v: Value) -> Result<u64, BundleError> {
     // Mirror `card.rs::take_u64`'s split: a non-integer value is a type
-    // error (CborError), while an integer that doesn't fit `u64` is a
+    // error (Malformed), while an integer that doesn't fit `u64` is a
     // value error (InvalidTimestamp — `created_at` is the only u64 field
     // in the §5 record, so the variant name still describes the failure).
     let i = match v {
         Value::Integer(i) => i,
-        _ => return Err(BundleError::CborError("expected unsigned integer".into())),
+        _ => return Err(BundleError::Malformed("expected unsigned integer")),
     };
     i.try_into().map_err(|_| BundleError::InvalidTimestamp)
 }
@@ -538,7 +553,7 @@ fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
 fn take_fixed_bytes<const N: usize>(v: Value, field: &'static str) -> Result<[u8; N], BundleError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(BundleError::CborError("expected byte string".into())),
+        _ => return Err(BundleError::Malformed("expected byte string")),
     };
     let got = bytes.len();
     bytes
@@ -557,7 +572,7 @@ fn take_sized_bytes(
 ) -> Result<Vec<u8>, BundleError> {
     let bytes = match v {
         Value::Bytes(b) => b,
-        _ => return Err(BundleError::CborError("expected byte string".into())),
+        _ => return Err(BundleError::Malformed("expected byte string")),
     };
     if bytes.len() != expected {
         return Err(BundleError::WrongKeySize {
@@ -627,25 +642,61 @@ mod tests {
         assert_eq!(bytes_1, bytes_2, "canonical encoding must be deterministic");
     }
 
-    #[test]
-    fn parse_rejects_unknown_field() {
-        // Build a minimal map that is canonical-shaped (keys sorted) but
-        // contains a key the spec doesn't define. The decoder must reject
-        // before the missing-field check has a chance to fire.
+    /// Build a minimal, canonical-shaped CBOR bundle map containing exactly
+    /// the required `user_uuid` field plus an out-of-spec key `extra_key`.
+    /// Shared by both unknown-field tests below: the fixture shape is
+    /// identical, only the offending key text differs, which is exactly the
+    /// axis `unknown_bundle_field_reports_an_index_not_the_key` (#474)
+    /// exercises.
+    fn bundle_bytes_with_extra_field(extra_key: &str) -> Vec<u8> {
         let mut entries = vec![
             (
                 Value::Text(KEY_USER_UUID.into()),
                 Value::Bytes(vec![0u8; 16]),
             ),
-            (Value::Text("rogue".into()), Value::Text("payload".into())),
+            (Value::Text(extra_key.into()), Value::Text("payload".into())),
         ];
         entries.sort_by(|a, b| super::canonical_key_cmp(&a.0, &b.0));
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
-        let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
+        buf
+    }
+
+    #[test]
+    fn parse_rejects_unknown_field() {
+        // Contains a key the spec doesn't define. The decoder must reject
+        // before the missing-field check has a chance to fire. `"rogue"`
+        // (5 bytes) sorts before `"user_uuid"` (9 bytes) under canonical
+        // CBOR key order, so the offending entry is index 0 — stronger than
+        // the pre-#474 assertion (which matched the key text itself) since
+        // it pins the reported ordinal to the fixture's actual layout rather
+        // than merely checking the variant shape.
+        let bytes = bundle_bytes_with_extra_field("rogue");
+        let err = IdentityBundle::from_canonical_cbor(&bytes).unwrap_err();
         assert!(
-            matches!(err, BundleError::UnknownField(ref s) if s == "rogue"),
+            matches!(err, BundleError::UnknownField { index: 0 }),
             "unexpected error: {err:?}"
+        );
+    }
+
+    /// `bundle.rs:406` carries an arbitrary map key from the DECRYPTED
+    /// identity bundle. It must become an ordinal (#474).
+    #[test]
+    fn unknown_bundle_field_reports_an_index_not_the_key() {
+        const ROGUE: &str = "rogue-secret-looking-key";
+        // Reuse the shared fixture builder from `parse_rejects_unknown_field`.
+        let bytes = bundle_bytes_with_extra_field(ROGUE);
+
+        let err = IdentityBundle::from_canonical_cbor(&bytes)
+            .expect_err("unknown field must be rejected");
+
+        assert!(
+            matches!(err, BundleError::UnknownField { .. }),
+            "expected UnknownField, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains(ROGUE),
+            "the decrypted bundle key leaked into the message: {err}"
         );
     }
 
@@ -668,7 +719,7 @@ mod tests {
         ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
         let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
         assert!(
-            matches!(err, BundleError::DuplicateField(ref s) if s == "display_name"),
+            matches!(err, BundleError::DuplicateField(s) if s == "display_name"),
             "unexpected error: {err:?}"
         );
     }
@@ -711,9 +762,10 @@ mod tests {
 
     #[test]
     fn parse_distinguishes_created_at_type_mismatch_from_range() {
-        // A `created_at` set to a text string must report a CBOR type
-        // error, not the misleading `InvalidTimestamp` (which is reserved
-        // for "is an integer but doesn't fit u64").
+        // A `created_at` set to a text string must report a structural
+        // Malformed literal ("expected unsigned integer"), not the
+        // misleading `InvalidTimestamp` (which is reserved for "is an
+        // integer but doesn't fit u64").
         let mut rng = ChaCha20Rng::from_seed([10u8; 32]);
         let b = generate("X", 0, &mut rng);
         let bytes = b.to_canonical_cbor().unwrap();
@@ -732,8 +784,8 @@ mod tests {
         ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
         let err = IdentityBundle::from_canonical_cbor(&buf).unwrap_err();
         assert!(
-            matches!(err, BundleError::CborError(_)),
-            "expected CborError for non-integer created_at, got: {err:?}"
+            matches!(err, BundleError::Malformed("expected unsigned integer")),
+            "expected Malformed(\"expected unsigned integer\") for non-integer created_at, got: {err:?}"
         );
     }
 

@@ -32,6 +32,8 @@
 
 use ciborium::Value;
 
+use crate::cbor::{classify_ser, CborFault};
+
 /// Errors emitted by the three canonical-CBOR helpers in this module.
 ///
 /// The variant set is the union of what the existing `block.rs` and
@@ -40,11 +42,14 @@ use ciborium::Value;
 ///
 /// - [`Self::CborEncode`] — emitted by [`canonical_sort_entries`] (per-key
 ///   `ciborium::ser::into_writer` failure) and [`encode_canonical_map`]
-///   (top-level `ciborium::ser::into_writer` failure). Same string-payload
-///   shape as `RecordError::CborEncode` and `BlockError::CborEncode` for
-///   the same generic-source justification (`ciborium::ser::Error<E>` is
-///   generic over the writer's I/O error and so cannot be uniformly
-///   captured as a `#[from]` source).
+///   (top-level `ciborium::ser::into_writer` failure). Carries a
+///   classified [`CborFault`] rather than the upstream message: `ciborium`'s
+///   `Display` is its `Debug` form, so stringifying it copies
+///   `ser::Error::Value(String)` verbatim — a `serde` custom message that
+///   can embed the offending value (#474). [`crate::cbor::classify_ser`]
+///   projects the generic `ciborium::ser::Error<E>` (generic over the
+///   writer's I/O error, so `#[from]` does not apply) to a non-generic,
+///   data-free type instead.
 ///
 /// - [`Self::FloatRejected`] / [`Self::TagRejected`] — emitted by
 ///   [`reject_floats_and_tags`] when it walks into a `Value::Float(_)` or
@@ -58,10 +63,11 @@ use ciborium::Value;
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalError {
     /// `ciborium::ser::into_writer` returned an I/O or serialisation error.
-    /// Carries the formatted error message — see variant doc for why
-    /// `#[from]` doesn't work for `ciborium::ser::Error<E>`.
+    /// Carries a classified [`CborFault`] rather than the upstream message —
+    /// see the variant doc above for why, and why `#[from]` doesn't work
+    /// for `ciborium::ser::Error<E>`.
     #[error("CBOR encode error: {0}")]
-    CborEncode(String),
+    CborEncode(CborFault),
 
     /// A CBOR float was found in a position the canonical CBOR profile
     /// (`docs/crypto-design.md` §6.2 #4) forbids. `field` is the
@@ -105,7 +111,7 @@ pub fn canonical_sort_entries(
         .map(|pair| {
             let mut key_bytes = Vec::new();
             ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| CanonicalError::CborEncode(e.to_string()))?;
+                .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
             Ok((key_bytes, pair.clone()))
         })
         .collect::<Result<_, CanonicalError>>()?;
@@ -122,7 +128,7 @@ pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, Canon
     let sorted = canonical_sort_entries(entries)?;
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
-        .map_err(|e| CanonicalError::CborEncode(e.to_string()))?;
+        .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
     Ok(buf)
 }
 

@@ -270,8 +270,8 @@ fn card_parse_rejects_duplicate_keys() {
 
     let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
     assert!(
-        matches!(err, CardError::CborDecode(ref s) if s.contains("duplicate")),
-        "expected duplicate-field decode error, got {err:?}",
+        matches!(err, CardError::DuplicateField { field } if field == "display_name"),
+        "expected DuplicateField {{ field: display_name }}, got {err:?}",
     );
 }
 
@@ -288,8 +288,8 @@ fn card_parse_rejects_wrong_field_type() {
 
     let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
     assert!(
-        matches!(err, CardError::CborDecode(ref s) if s.contains("unsigned integer")),
-        "expected wrong-type decode error, got {err:?}",
+        matches!(err, CardError::Malformed("expected unsigned integer")),
+        "expected Malformed(\"expected unsigned integer\"), got {err:?}",
     );
 }
 
@@ -315,8 +315,12 @@ fn card_parse_rejects_unknown_field() {
 
     let err = ContactCard::from_canonical_cbor(&buf).expect_err("must reject");
     assert!(
-        matches!(err, CardError::CborDecode(ref s) if s.contains("unknown card field")),
-        "expected unknown-field decode error, got {err:?}",
+        matches!(err, CardError::UnknownField { index: 1 }),
+        "expected UnknownField {{ index: 1 }}, got {err:?}",
+    );
+    assert!(
+        !format!("{err}").contains("rogue_field"),
+        "attacker-controlled field name reached the message: {err}",
     );
 }
 

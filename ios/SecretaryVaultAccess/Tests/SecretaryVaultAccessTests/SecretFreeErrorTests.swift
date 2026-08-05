@@ -71,14 +71,38 @@ final class SecretFreeErrorTests: XCTestCase {
         XCTAssertEqual(out, "invalidArgument(<redacted>)")
     }
 
-    /// SECURITY (#467): `.corruptVault` carries a Rust-side error string verbatim,
-    /// and `RecordError::DuplicateKey` (core/src/vault/record.rs:660) formats the
-    /// decrypted CBOR field-name into it. We do not author those strings, so their
-    /// content is unreviewable here — redact.
-    func testVaultAccessErrorRedactsCorruptVault() {
-        let out = diagnosticDetail(VaultAccessError.corruptVault("duplicate map key: my-bank-pin"))
-        XCTAssertFalse(out.contains("my-bank-pin"))
-        XCTAssertEqual(out, "corruptVault(<redacted>)")
+    /// #474: the Rust payload is now gated at source, so a corruption
+    /// diagnostic must keep its detail. Before #474 this arm was redacted
+    /// wholesale because `RecordError::DuplicateKey` embedded a decrypted
+    /// field name. Asserts through `diagnosticDetail` — the sanctioned
+    /// renderer whose conformance lookup (and load-bearing `NSError`
+    /// dynamic-type branch) is what a real `.public` log site actually calls;
+    /// reading `diagnosticDescription` directly would skip that gate.
+    func testCorruptVaultDetailSurvivesRendering() {
+        let error = VaultAccessError.corruptVault("manifest fingerprint mismatch")
+        let out = diagnosticDetail(error)
+        XCTAssertTrue(
+            out.contains("manifest fingerprint mismatch"),
+            "the corruption detail must survive: \(out)"
+        )
+        XCTAssertFalse(
+            out.contains("<redacted>"),
+            "corruptVault should no longer be redacted"
+        )
+    }
+
+    /// The sibling that must NOT change. `.invalidArgument`'s payload is
+    /// SWIFT-authored — `RecordEditViewModel` interpolates a decrypted record
+    /// field name into it — so it is a different class from the Rust-authored
+    /// payloads #474 gated. No issue tracks that payload class itself; #473
+    /// tracks the separate question of these carried diagnostics being
+    /// rendered as on-screen copy. Asserts through `diagnosticDetail` for the
+    /// same reason as the sibling above.
+    func testInvalidArgumentStaysRedacted() {
+        let error = VaultAccessError.invalidArgument("field 'amex-cvv' is not valid hex")
+        let out = diagnosticDetail(error)
+        XCTAssertEqual(out, "invalidArgument(<redacted>)")
+        XCTAssertFalse(out.contains("amex-cvv"))
     }
 
     /// The redaction is surgical: every other case keeps its full detail, which is

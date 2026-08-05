@@ -88,6 +88,15 @@ bash ios/scripts/check-public-log-hygiene.sh
 # hand-rendering a throwable into a String. Same --self-test-first discipline.
 bash android/scripts/check-log-hygiene.sh --self-test
 bash android/scripts/check-log-hygiene.sh
+
+# Assert no `core` error variant interpolates a runtime String into its
+# #[error] message (#474). RecordError::DuplicateKey formatted a decrypted CBOR
+# field name, which is why both platforms once redacted whole error arms. The
+# payload types are now data-free by construction; this keeps them that way, and
+# fails in the Rust author's own PR rather than degrading a platform two layers
+# away. Default-deny: an unrecognised payload type is a FAILURE, not a pass.
+uv run scripts/check-error-payload-hygiene.py --self-test
+uv run scripts/check-error-payload-hygiene.py
 ```
 
 ### Python paths
@@ -217,7 +226,22 @@ The sink itself is therefore what gets guarded, not a marker on it.
 - **`SecretFreeThrowable`** ([android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt](android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt)) is the allowlist, and declaring it is a **security decision** — the same claim `SecretFreeError` makes on iOS. It is a *rendering* interface: an arm that is secret-bearing overrides `diagnosticDescription` and redacts at source instead of the whole type being excluded.
 - **Kotlin has no retroactive conformance.** iOS's one real retroactive conformance — [`extension DeviceUnlockError: @retroactive SecretFreeError {}`](ios/SecretaryKit/Sources/SecretaryKit/VaultAccess/SecretFreeErrorConformances.swift) (`SecretFreeErrorConformances.swift:47`) — has no Kotlin equivalent, so JDK, Android-framework and uniffi-generated throwables can *never* implement the interface — and those are exactly the types that arrive at a `catch (e: Exception)`. The deny path is the **normal** path here, not the degenerate one. That is why `diagnosticDetail` appends the **cause chain as fully-qualified type names**: a class name is a compile-time constant and cannot carry runtime data, so the chain is as fail-closed as a bare marker while recovering most of what the stack trace was worth.
 - **`SecretaryLog`** ([android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt](android/kit/src/main/kotlin/org/secretary/diagnostics/SecretaryLog.kt)) is the only file in the tree permitted to reference `android.util.Log`, and it has **no overload that hands a `Throwable` to it**. The three-argument `Log.w(tag, msg, throwable)` form prints `toString()` — class name plus message — for the throwable and every cause, so making it unrepresentable at call sites is the whole mechanism. This is the `foldDiagnostic` analogue: policy applied once, in one place.
-- **`VaultBrowseError.SaveCryptoFailure` must stay redacted**, and iOS is not a precedent for removing it. iOS's `VaultAccessError` has no `.saveCryptoFailure` case at all, so the arm falls to `VaultErrorMapping.swift:53`'s `default -> .other(diagnosticDetail(e))`, which is already gated. Android's `BrowseMapping.kt:27` maps it **explicitly** and carries the raw Rust detail — which, via the bridge's fold of `VaultError::Record(_)`, is `RecordError::DuplicateKey`'s decrypted CBOR field name. The divergence is in the mapper, not the policy. Do not "align the platforms" by deleting the redaction.
+- **`SaveCryptoFailure` / `CorruptVault` are no longer redacted — and the reason
+  they once were is the reason #474 exists.** `BrowseMapping.kt:27` maps
+  `SaveCryptoFailure` explicitly and carries the raw Rust detail, which via the
+  bridge's fold of `VaultError::Record(_)` was `RecordError::DuplicateKey`'s
+  decrypted CBOR field name. Both platforms redacted the arm wholesale, losing
+  the detail for every corruption diagnostic rather than just the leaking one.
+  #474 fixed it at the source instead: plaintext-bearing `core` error payloads
+  carry a `&'static str` map-level hint plus an ordinal, never the key, and the
+  `ciborium` message — whose `Display` is its `Debug` form — is discarded at the
+  boundary by `core/src/cbor.rs`. **`InvalidArgument` stays redacted on both
+  platforms**: its payload is platform-authored — `RecordEditModel.kt:179`/`:193`
+  (Kotlin) and `RecordEditViewModel` (Swift) each interpolate a decrypted
+  record's field name into it — so #474's data-free-by-construction guarantee
+  does not reach it. No issue tracks that payload class itself; #473 / #476
+  track the separate question of these carried diagnostics being rendered as
+  on-screen copy. Do not sweep it into "align the platforms".
 
 - **Conform the wrapper types you own.** `diagnosticDetail` default-denies, so an internally-authored wrapper left unconformed does not merely lose its own text — every nested wrap that renders it through the gate discards the message it was just built to carry. `CloudFolderException` / `VaultMirrorException` / `DeviceUuidException` were missed in #472 and the entire cloud-sync failure path collapsed to `<undisclosed org.secretary.mirror.CloudFolderException>`, throwing away `SafCloudFolderPort`'s own gating one frame later (fixed in #475). Default-deny is the right default for types you did NOT author; for a type whose every construction site is a fixed Kotlin literal, conforming it is the whole point of the interface. Assert on message CONTENT when you do — the pre-existing mirror tests asserted only on exception TYPE, which is why this shipped unnoticed.
 
@@ -245,6 +269,56 @@ opposite sides of a block comment: `/* */ <code>` (round 1) and `*/ <code>` on
 the second line of a two-line comment (#475, which affected the iOS guard too).
 Both are pinned by positive controls on both platforms. If you touch it, mutate
 it and watch `CM3`-`CM5` / `P19`-`P20` fail.
+
+### Rust error payloads: data-free by construction (#474)
+
+`RecordError::DuplicateKey` used to format a decrypted CBOR field name into its
+`#[error]` message. That string reached iOS as `VaultAccessError.corruptVault`
+and Android as `VaultBrowseError.SaveCryptoFailure`, and because Rust owned the
+only copy of the leak, both platforms had no cheaper fix than redacting those
+arms wholesale — losing the detail for every corruption diagnostic, not just
+the leaking one. #474 fixed it at the source: every `core` error payload is now
+one of three reviewed shapes.
+
+- **Plaintext-bearing.** A field or key name that could echo decrypted content
+  is replaced by a `&'static str` map-level hint plus an ordinal (e.g.
+  `RecordError::DuplicateKey { field: &'static str, index: usize }`,
+  mirrored by `BlockError::DuplicateKey`) — compile-time constants standing in
+  for the runtime value, never the value itself.
+- **`ciborium` passthrough.** `ciborium`'s `Display` is its `Debug` form, and
+  `Error::Semantic` / `Error::Value` each carry a `serde::de::Error::custom`
+  message that can embed the offending value. [`core/src/cbor.rs`](core/src/cbor.rs)
+  is the **only** place in the tree that ever sees that upstream message —
+  `classify_de` / `classify_ser` discard it and project onto a fieldless
+  `CborErrorKind` plus an optional byte offset (`CborFault`), so the message
+  cannot reach an error variant regardless of what a future `ciborium` version
+  does.
+- **Already-disclosed.** A handful of variants carry content the threat model
+  already treats as public — `vault.toml` is cleartext on disk (vault-format
+  §2), and `std::io::Error`'s path + errno is visible to anyone who can read
+  the vault folder. These are reviewed, individually justified allowlist
+  entries, not a structural exemption.
+
+The guard is [`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py)
+(see the Commands block above), and it fails closed: an unrecognised payload
+type is a FAILURE, not a pass. Its allowlist
+([`scripts/error-payload-hygiene-allowlist.txt`](scripts/error-payload-hygiene-allowlist.txt))
+is sectioned by review weight; the highest-weight section (Section 3) holds
+**construction-site claims the guard structurally cannot verify** — it sees
+DECLARATIONS (a field's type), not producers (what every call site actually
+passes into that field), so an entry there is a point-in-time claim, verified
+by reading every current constructor, that no producer interpolates vault
+plaintext. Re-verify it whenever a producer changes. The guard scans
+everything under `core/src/` only — the FFI bridge builds its own `format!`
+detail strings (`ffi/secretary-ffi-bridge/**`) and is **not** scanned. That gap
+is real and only PARTLY owned: #478 is scoped to `VaultSyncError.Failed` /
+`FfiVaultError::SyncFailed`, and its acceptance offers two alternatives —
+extending this guard to `ffi/secretary-ffi-bridge/src/**` (which would close
+the gap broadly) or gating that one fold's producers individually (which
+would not). If #478 closes the narrow way, the bridge-authored `detail`
+strings behind `CorruptVault` / `SaveCryptoFailure` — the very arms #474
+un-redacted on both platforms — are owned by nobody. Cite #478 for the slice
+it covers; do not cite it as though the whole gap were tracked.
 
 ### Memory hygiene: zeroize discipline
 

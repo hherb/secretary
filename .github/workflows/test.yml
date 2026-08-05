@@ -46,9 +46,18 @@ jobs:
         run: bash .github/scripts/install-tauri-linux-deps.sh
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # `error_payload_hygiene_parity` (core/tests/) shells out to `uv run
+      # python` to exercise the Python allowlist parser in
+      # scripts/check-error-payload-hygiene.py and prove it agrees with the
+      # bash parser on one fixture (#474). That test is unconditional — not
+      # behind the differential-replay feature below — so `uv` must be on
+      # PATH here or the whole workspace run panics on `.expect("run python
+      # probe")` before a single assertion runs.
+      - name: 'install uv'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
       # Mirrors the documented local command in CLAUDE.md. The
-      # differential-replay tests (which shell out to `uv`) are behind an
-      # opt-in Cargo feature and stay off here, so the suite is Rust-only.
+      # differential-replay tests (which also shell out to `uv`) are behind an
+      # opt-in Cargo feature and stay off here.
       - name: cargo test --release --workspace
         run: cargo test --release --workspace
 
@@ -213,6 +222,42 @@ jobs:
         run: bash android/scripts/check-log-hygiene.sh --self-test
       - name: 'check-log-hygiene.sh'
         run: bash android/scripts/check-log-hygiene.sh
+
+  rust-error-payload-hygiene:
+    name: rust error payload hygiene
+    # Asserts no `core` error variant interpolates a runtime String into its
+    # #[error] message (#474). RecordError::DuplicateKey formatted a decrypted
+    # CBOR field name, which reached iOS as .corruptVault and Android as
+    # SaveCryptoFailure — and is why both platforms redacted those arms
+    # WHOLESALE, losing the detail for every corruption diagnostic.
+    #
+    # The payload types are now data-free by construction. This keeps them that
+    # way: a regression fails in the Rust author's own PR instead of silently
+    # degrading a platform two layers away. That drift — a Rust edit with no
+    # platform diff and no failing test anywhere — is how the original shipped.
+    #
+    # Pure text analysis over core/src/**, no Rust toolchain, so it runs on
+    # ubuntu in seconds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # runaway cap (vs the 6h default); real duration ~1s
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # Pinned by commit SHA the same way actions/checkout is above, rather
+      # than the floating `@v5` form astral-sh's own docs show. `rust-test`
+      # pins the identical SHA for the same reason.
+      - name: 'install uv'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+      # --self-test FIRST: a guard never observed failing is indistinguishable
+      # from a no-op. Two-sided — the matcher must fire on a known-positive AND
+      # stay silent on a known-negative.
+      #
+      # The step names are QUOTED: an unquoted ` #` inside a YAML `name:` starts
+      # a comment and silently truncates it — valid YAML, so actionlint stays
+      # green. That trap cost a fixup in #470.
+      - name: 'check-error-payload-hygiene.py --self-test'
+        run: uv run scripts/check-error-payload-hygiene.py --self-test
+      - name: 'check-error-payload-hygiene.py'
+        run: uv run scripts/check-error-payload-hygiene.py
 
   android-host:
     name: android host (:vault-access:test)

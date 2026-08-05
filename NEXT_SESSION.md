@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-04-472-android-logcat-hygiene-gate-shipped.md
+docs/handoffs/2026-08-05-474-error-payload-hygiene-shipped.md

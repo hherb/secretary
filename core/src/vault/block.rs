@@ -68,6 +68,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
+use crate::cbor::{classify_de, classify_ser, CborFault};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::Sensitive;
@@ -135,18 +136,23 @@ pub enum BlockError {
     Record(#[from] RecordError),
 
     /// `ciborium` returned an I/O or serialisation error during plaintext
-    /// encode. Carries the formatted error message because the underlying
-    /// `ciborium::ser::Error<E>` is generic over the writer's I/O error
-    /// (`std::io::Error` / `core::convert::Infallible`) and so cannot be
-    /// uniformly captured as a `#[from]` source. Same justification as
-    /// [`RecordError::CborEncode`].
+    /// encode.
+    ///
+    /// Carries a classified [`CborFault`] rather than the upstream message:
+    /// `ciborium`'s `Display` is its `Debug` form, so stringifying it copies
+    /// `ser::Error::Value(String)` verbatim — a `serde` custom message that can
+    /// embed the offending value (#474). The generic-source problem that
+    /// originally forced a `String` (`ciborium::ser::Error<E>` is generic over
+    /// the writer's I/O error, so `#[from]` does not apply) is solved by
+    /// [`crate::cbor::classify_ser`] projecting to a non-generic type. Same
+    /// justification as [`RecordError::CborEncode`].
     #[error("CBOR encode error: {0}")]
-    CborEncode(String),
+    CborEncode(CborFault),
 
-    /// `ciborium` returned a parse error during plaintext decode. Same
-    /// generic-source justification as [`Self::CborEncode`].
+    /// `ciborium` returned a parse error during plaintext decode. Carries a
+    /// classified [`CborFault`] for the same reason as [`Self::CborEncode`].
     #[error("CBOR decode error: {0}")]
-    CborDecode(String),
+    CborDecode(CborFault),
 
     /// File magic did not match `MAGIC` (`"SECR"` big-endian, see
     /// [`crate::version::MAGIC`]).
@@ -309,8 +315,17 @@ pub enum BlockError {
 
     /// A plaintext map had a duplicate key. RFC 8949 §5.4 forbids
     /// duplicates; the decoder rejects them.
-    #[error("duplicate map key in block plaintext: {key}")]
-    DuplicateKey { key: String },
+    ///
+    /// Carries the map level and the offending entry's ordinal, never the
+    /// key: this map is DECRYPTED block plaintext, so the key is user
+    /// content (#474). Mirrors [`crate::vault::record::RecordError::DuplicateKey`].
+    #[error("duplicate map key at entry #{} of {field}", .index + 1)]
+    DuplicateKey {
+        /// Which map level raised the error. A compile-time constant.
+        field: &'static str,
+        /// 0-based ordinal of the duplicate entry within that map.
+        index: usize,
+    },
 
     /// Floats are forbidden in v1 block plaintext (canonical CBOR rule,
     /// `docs/crypto-design.md` §6.2 #4). `field` carries the entry-point
@@ -408,7 +423,7 @@ pub enum BlockError {
 impl From<CanonicalError> for BlockError {
     fn from(e: CanonicalError) -> Self {
         match e {
-            CanonicalError::CborEncode(s) => BlockError::CborEncode(s),
+            CanonicalError::CborEncode(fault) => BlockError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => BlockError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => BlockError::TagRejected,
         }
@@ -912,7 +927,7 @@ fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
     for r in records {
         let bytes = record::encode(r)?;
         let val: Value = ciborium::de::from_reader(bytes.as_slice())
-            .map_err(|e| BlockError::CborDecode(e.to_string()))?;
+            .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
         items.push(val);
     }
     Ok(Value::Array(items))
@@ -925,7 +940,7 @@ fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
 fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
     let bytes = u.to_canonical_cbor()?;
     let val: Value = ciborium::de::from_reader(bytes.as_slice())
-        .map_err(|e| BlockError::CborDecode(e.to_string()))?;
+        .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
     Ok(val)
 }
 
@@ -960,7 +975,7 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(e.to_string()))?;
+        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
 
     // Walk the tree to enforce no-float / no-tag everywhere (including
     // forward-compat unknowns and inside record maps). Doing this once
@@ -999,13 +1014,16 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (k, v) in map {
+    for (index, (k, v)) in map.into_iter().enumerate() {
         let key = match k {
             Value::Text(s) => s,
             _ => return Err(BlockError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
-            return Err(BlockError::DuplicateKey { key });
+            return Err(BlockError::DuplicateKey {
+                field: "<block>",
+                index,
+            });
         }
         match key.as_str() {
             KEY_BLOCK_VERSION => {
@@ -1069,7 +1087,7 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
     for item in items {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&item, &mut buf)
-            .map_err(|e| BlockError::CborEncode(e.to_string()))?;
+            .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
         let r = record::decode(&buf)?;
         out.push(r);
     }
@@ -1082,7 +1100,8 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
 /// through canonical CBOR — which also re-validates no-float / no-tag.
 fn value_to_unknown(v: Value) -> Result<UnknownValue, BlockError> {
     let mut buf = Vec::new();
-    ciborium::ser::into_writer(&v, &mut buf).map_err(|e| BlockError::CborEncode(e.to_string()))?;
+    ciborium::ser::into_writer(&v, &mut buf)
+        .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
     let u = UnknownValue::from_canonical_cbor(&buf)?;
     Ok(u)
 }
@@ -1825,6 +1844,23 @@ mod tests {
     use super::*;
     use crate::vault::record::{RecordField, RecordFieldValue};
 
+    /// Encode a list of `(key, value)` entries as a definite-length CBOR
+    /// map *without* canonical sorting. Length prefix uses ciborium's
+    /// shortest-form rules (so the only non-canonical aspect is key
+    /// order). For maps with up to 23 entries this produces `0xa0 + n`
+    /// followed by entries in the order given.
+    ///
+    /// Mirrors `record.rs`'s private test helper of the same name (no
+    /// shared test-utils home for this one-liner; both modules keep
+    /// their own copy rather than promoting a cross-module dependency
+    /// for a single `ciborium::ser::into_writer` call).
+    fn cbor_map_bytes_unsorted(entries: &[(Value, Value)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries.to_vec()), &mut buf)
+            .expect("ciborium encode of unsorted map");
+        buf
+    }
+
     /// Smoke test: build a minimal [`BlockHeader`] and a minimal
     /// [`BlockPlaintext`] (one record), encode and decode each, assert
     /// equality, and manually cross-check `header.block_uuid ==
@@ -2285,5 +2321,44 @@ mod tests {
             BlockError::Sig(SigError::Ed25519VerifyFailed) => {}
             other => panic!("expected BlockError::Sig(Ed25519VerifyFailed), got {other:?}"),
         }
+    }
+
+    /// The #474 sibling the issue does not name: `block.rs:1008` reads a map
+    /// key from decrypted block plaintext. Unlike `record.rs`'s `<record>`-
+    /// level test, this fixture is a bare 2-entry map (not a full
+    /// canonical-sorted entry list with a duplicate appended), so there is
+    /// no sort to reason about: `cbor_map_bytes_unsorted` serialises the
+    /// two entries in the exact order given and `parse_plaintext_map`
+    /// decodes them in that same order. Entry 0 (`block_name` = "payroll")
+    /// is the first sighting of the key and inserts cleanly; entry 1
+    /// (`block_name` = "payroll-dup") is the duplicate and is where the
+    /// error fires, landing at index 1.
+    #[test]
+    fn duplicate_key_in_block_plaintext_reports_index_not_the_key() {
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("payroll".into()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("payroll-dup".into()),
+            ),
+        ];
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let err = decode_plaintext(&bytes).expect_err("duplicate key must be rejected");
+
+        assert!(
+            matches!(
+                err,
+                BlockError::DuplicateKey { field: "<block>", index } if index == 1
+            ),
+            "expected DuplicateKey {{ field: \"<block>\", index: 1 }}, got {err:?}"
+        );
+        assert!(
+            !format!("{err}").contains(KEY_BLOCK_NAME),
+            "the map key leaked into the message: {err}"
+        );
     }
 }

@@ -61,7 +61,7 @@ android/browse-ui/src/main/kotlin/org/secretary/browse/ui/RecordEditForm.kt	B1	v
 # rather than excluding the `diagnostics` package by path.
 
 android/vault-access/src/main/kotlin/org/secretary/diagnostics/SecretFreeThrowable.kt	B3	get() = toString()	The interface's DEFAULT rendering — the single line that defines what "conformed, not redacting" means. Reachable only after `error is SecretFreeThrowable`, i.e. after a declaration-site security decision.
-android/vault-access/src/main/kotlin/org/secretary/browse/VaultBrowseError.kt	B3	else -> toString()	The non-redacted arms of VaultBrowseError's own override. The three arms that CAN carry a decrypted field name (CorruptVault, SaveCryptoFailure, InvalidArgument) are matched ABOVE this line and never reach it; see the payload-origin audit on `diagnosticDescription`.
+android/vault-access/src/main/kotlin/org/secretary/browse/VaultBrowseError.kt	B3	else -> toString()	The non-redacted arms of VaultBrowseError's own override. Only InvalidArgument (Kotlin-authored, still able to carry a decrypted field name) is matched ABOVE this line and never reaches it; CorruptVault / SaveCryptoFailure now fall through here safely because #474 made every core error payload data-free by construction — see the payload-origin audit on `diagnosticDescription`.
 
 # ---- NON-THROWABLE RECEIVERS (rule B2 only) ----
 # Each entry asserts ONLY that the receiver is not a Throwable — a two-second
