@@ -68,7 +68,15 @@ LIMITS (stated, not hidden)
   all pass literals" is a point-in-time claim this guard cannot verify. Those
   entries say so in the allowlist.
 - It covers `core/src/**` only. The FFI bridge builds its own detail strings
-  (`ffi/secretary-ffi-bridge/**`) and is NOT scanned — see issue #478.
+  with `format!` (`ffi/secretary-ffi-bridge/**`) and is NOT scanned, so a
+  bridge-authored `detail` reaching a platform is gated by review alone.
+  #478 covers only the `VaultSyncError.Failed` / `FfiVaultError::SyncFailed`
+  slice of that gap, and even there its acceptance offers two alternatives:
+  extending THIS guard's scope to `ffi/secretary-ffi-bridge/src/**` (which
+  would close the gap broadly) or gating the `SyncFailed` producers
+  individually (which would not). Nothing tracks the rest — including the
+  `CorruptVault` / `SaveCryptoFailure` folds whose platform-side redactions
+  #474 removed. Do not read "#478" as "this gap is owned."
 - Rust is parsed by pattern, not by a real parser. The shapes in this codebase
   are regular (thiserror derives); an exotic macro-generated error enum would
   be invisible. `--self-test` pins the shapes that do occur.
@@ -85,14 +93,36 @@ LIMITS (stated, not hidden)
   likewise invisible. Every glob under `core/src/**` today is an intra-crate
   `use super::*;` inside `#[cfg(test)] mod tests`, plus
   `use proptest::prelude::*;`.
-- Name resolution stops at the type name as written. `type usize = String;`
-  shadowing a `DATA_FREE_TYPES` primitive with an actual `String`, and then
-  using that shadowed name as a field's declared type, is invisible to a
-  matcher that only ever asks "does this token equal a known-safe name?" — it
-  has no notion of scope, so it cannot tell the shadow from the primitive.
-  Closing this requires a real type resolver, which is out of scope for a
-  pattern-based guard; `--self-test` pins the shapes that DO occur, not every
-  shape that could be contrived to evade it.
+- Name resolution stops at the type name as written, so a `type X = Y;`
+  alias that SHADOWS a name some other tier already trusts is a real hazard.
+  One half of it is closed, one half is not, and the difference is worth
+  stating precisely.
+    CLOSED: a shadow whose name IS in a trusted set. `type CborFault =
+  String;` (tier 1) or `type RecordError = String;` beside another module's
+  real `enum RecordError` (tier 2) used to be a one-line, single-file,
+  lint-clean pass — the tier-1/2 lookup answered "safe" before the alias
+  table was ever consulted, and the guard reported ZERO findings.
+  `alias_shadowed_names` now DROPS any spelling a discovered alias shadows
+  out of tier 1 or tier 2, on `run_real_scan`'s existing collision-drop
+  discipline. Note that rustc closed only the `type usize = String;` costume
+  of this (`non_camel_case_types`, a `-D warnings` error here); `CborFault`
+  is already CamelCase and compiled clean. P34-P36 pin all three.
+    STILL OPEN: a shadow whose name is in NO trusted set, i.e. one that gets
+  its credit from the alias tier itself. Such a name is believed at its
+  single declaration, because one-level alias resolution IS tier 3, and this
+  guard has no notion of the SCOPE that declaration is visible in — an alias
+  declared inside `mod inner { }` registers its bare spelling tree-globally,
+  so a field written `x: Fingerprint` in a DIFFERENT file rides on it even
+  though `Fingerprint` means something else there. The partial mitigation is
+  `run_real_scan`'s cross-file drop: two files declaring the same spelling
+  with DIFFERENT right-hand sides (`type Fingerprint = [u8; 16];` in
+  `identity/fingerprint.rs` and `type Fingerprint = String;` elsewhere)
+  collide and are dropped rather than guessed. What is left — telling a
+  single-declaration shadow apart from the thing it shadows, in the scope
+  the reference site actually sits in — is name resolution, and closing it
+  requires a real type resolver, which is out of scope for a pattern-based
+  guard. `--self-test` pins the shapes that DO occur, not every shape that
+  could be contrived to evade it.
 - `find_type_aliases` drops any spelling that resolves to DIFFERENT
   right-hand sides across files rather than guessing which one is "real" —
   see `run_real_scan`. `resolve_consts` drops a `const` spelling on the same
@@ -210,14 +240,40 @@ OPTION_RE = re.compile(r"^Option<(.+)>$")
 # A field-level attribute prefix (`#[from]`, `#[source]`) glued onto the raw
 # type text by `parse_fields`, which does not separate attributes from types.
 FIELD_ATTR_RE = re.compile(r"^#\[[^\]]*\]\s*")
+# A field-level VISIBILITY modifier: `pub`, `pub(crate)`, `pub(super)`,
+# `pub(self)`, `pub(in some::path)`. Requires either a parenthesised
+# restriction or trailing whitespace, so it never bites an identifier that
+# merely STARTS with `pub` (`pub_key`, `published`).
+VISIBILITY_RE = re.compile(r"^pub(?:\s*\([^)]*\))?(?:\s+|(?=\s*$))")
+
+
+def strip_visibility(text: str) -> str:
+    """Strip a leading field-level visibility modifier.
+
+    A `thiserror` error's fields may be `pub` — nothing in the language or
+    in `thiserror` forbids it, and a struct-shaped error whose fields the
+    crate exposes is ordinary Rust. `parse_fields` split on the first `:`
+    and took the name side verbatim, so `pub struct X { pub index: usize }`
+    produced a field literally named `"pub index"`; the `{index}` capture
+    then matched nothing and the attribute fell through to a spurious
+    `UNPARSED`. Fail-closed, so not a leak — but a guard that cries wolf on
+    valid code is a guard whose findings get waved through.
+    """
+    text = text.strip()
+    m = VISIBILITY_RE.match(text)
+    return text[m.end() :].strip() if m else text
 
 
 def normalize_type(ty: str) -> str:
-    """Collapse whitespace and strip a leading field-level attribute.
+    """Collapse whitespace and strip a leading field-level attribute, then a
+    leading visibility modifier.
 
     `parse_fields` hands back the raw text after the field's `:` — for
     `Record(#[from] RecordError)` that is `"#[from] RecordError"`, not
-    `"RecordError"`. Path qualification (`crate::unlock::UnlockError`,
+    `"RecordError"`. A TUPLE field's visibility lands on the same side
+    (`pub struct E(pub String)` -> `"pub String"`), so it is stripped here;
+    a STRUCT field's lands on the name side and is stripped by `parse_fields`
+    instead. Path qualification (`crate::unlock::UnlockError`,
     `device_file::DeviceFileError`) is deliberately left untouched: it is
     exactly the signal `discover_declarations`'s spellings rely on to tell a
     `core`-local reference from a foreign one (`std::io::Error`) apart —
@@ -228,7 +284,7 @@ def normalize_type(ty: str) -> str:
     m = FIELD_ATTR_RE.match(ty)
     if m:
         ty = ty[m.end() :]
-    return ty.strip()
+    return strip_visibility(ty)
 
 
 def strip_field_attrs(text: str) -> str:
@@ -256,7 +312,7 @@ def strip_field_attrs(text: str) -> str:
 def _is_data_free_core(
     ty: str,
     local_error_enums: frozenset[str],
-    foreign_names: frozenset[str] = frozenset(),
+    denied: frozenset[str] = frozenset(),
 ) -> bool:
     """Tiers 1 and 2 only: literal data-free types, and `core`-local error
     enums this guard itself scans. Deliberately excludes tier 3 (alias
@@ -264,13 +320,18 @@ def _is_data_free_core(
     right-hand side through, so an alias chain (`type A = B; type B = C;`)
     gets exactly one hop of credit, not an unbounded one.
 
-    `foreign_names` is checked FIRST and denies unconditionally: a bare
-    spelling this file `use`s from outside the crate is not the local type
-    that happens to share its name, whatever tier that local type sits in.
-    See `foreign_use_names`.
+    `denied` is checked FIRST and denies unconditionally, at EVERY tier and
+    through the `Option<T>` recursion. Two independent sources feed it, both
+    of which mean "this spelling does not resolve to the thing the tier
+    below assumes":
+
+    1. `foreign_use_names` — a bare spelling this file `use`s from outside
+       the crate is not the local type that happens to share its name.
+    2. `alias_shadowed_names` — a spelling a discovered `type X = Y;` alias
+       shadows out of tier 1 or tier 2.
     """
     ty = normalize_type(ty)
-    if ty in foreign_names:
+    if ty in denied:
         return False
     if ty in DATA_FREE_TYPES:
         return True
@@ -278,8 +339,47 @@ def _is_data_free_core(
         return True
     inner = OPTION_RE.match(ty)
     if inner:
-        return _is_data_free_core(inner.group(1), local_error_enums, foreign_names)
+        return _is_data_free_core(inner.group(1), local_error_enums, denied)
     return ty in local_error_enums
+
+
+def alias_shadowed_names(
+    aliases: dict[str, str] | None, local_error_enums: frozenset[str]
+) -> frozenset[str]:
+    """Spellings that a discovered `type X = Y;` alias SHADOWS out of an
+    independent credit tier, and which must therefore stop being trusted.
+
+    `DATA_FREE_TYPES` (tier 1) and `local_error_enums` (tier 2) are keyed on
+    the type name AS WRITTEN. `is_data_free` consults them BEFORE the alias
+    table, so a `type` alias that reuses one of their names was — until this
+    drop existed — invisible: the tier-1/2 hit answered "safe" and the alias
+    was never looked up.
+
+        type CborFault = String;          // one file, no collision, no
+        ...                               // ordering dependence
+        Bad { fault: CborFault },         // credited by tier 1. Zero findings.
+
+    That is a one-line, single-file, lint-clean bypass of the whole guard.
+    `type usize = String;` is the same shape, and it is the ONLY half rustc
+    happens to catch for us (`non_camel_case_types`, a `-D warnings` error in
+    this workspace); `CborFault` is already CamelCase and compiles silently.
+    Tier 2 has the identical hole (`type RecordError = String;` beside some
+    other module's real `enum RecordError`), so both sets are intersected.
+
+    Dropping — rather than resolving through the alias — is the same
+    collision-drop discipline `run_real_scan` applies to a spelling with two
+    different right-hand sides and `resolve_consts` applies to a colliding
+    `const`: a name that means two things has not been RESOLVED, and a guard
+    that guesses which meaning is "real" is a guard that can be aimed.
+    Dropping costs a fail-closed finding a human then reads.
+    """
+    if not aliases:
+        return frozenset()
+    return frozenset(
+        name
+        for name in aliases
+        if name in DATA_FREE_TYPES or name in local_error_enums
+    )
 
 
 def is_data_free(
@@ -302,21 +402,27 @@ def is_data_free(
        to something unresolvable — including a chain through a SECOND alias
        — still denies; see `_is_data_free_core`'s docstring.
 
-    Tiers 2 and 3 recognise BARE spellings tree-globally, so they are gated
-    by `foreign_names`: any bare name the SCANNED FILE imports from outside
-    the crate denies outright, whichever tier would otherwise have credited
-    it (`foreign_use_names`).
+    Two independent DENY sets are unioned and applied before any tier:
+
+    - `foreign_names` — tiers 2 and 3 recognise BARE spellings tree-globally,
+      so any bare name the SCANNED FILE imports from outside the crate denies
+      outright, whichever tier would otherwise have credited it
+      (`foreign_use_names`).
+    - `alias_shadowed_names` — a name in tier 1's or tier 2's set that a
+      discovered `type` alias also declares is a SHADOW, and is dropped
+      rather than resolved. Note this denies even when the alias's own RHS
+      would have cleared a tier: the claim being made is a name-resolution
+      claim, and the shadow is the evidence that it does not hold.
     """
-    if _is_data_free_core(ty, local_error_enums, foreign_names):
+    denied = foreign_names | alias_shadowed_names(aliases, local_error_enums)
+    if _is_data_free_core(ty, local_error_enums, denied):
         return True
     if aliases:
         base = normalize_type(ty)
-        if base in foreign_names:
+        if base in denied:
             return False
         if base in aliases:
-            return _is_data_free_core(
-                aliases[base], local_error_enums, foreign_names
-            )
+            return _is_data_free_core(aliases[base], local_error_enums, denied)
     return False
 
 
@@ -737,7 +843,11 @@ def foreign_use_names(raw: str) -> frozenset[str]:
 # A `use` tree is punctuation and identifiers, never prose. Both checks are
 # needed: the character class alone still admits "the manifest", and the
 # adjacency check alone still admits "`Foo` here".
-USE_TREE_CHARS_RE = re.compile(r"^[A-Za-z0-9_:{}*,\s]+$")
+#
+# `|` is in the class ONLY because `_looks_like_use_tree` substitutes it for
+# the ` as ` renaming keyword before matching. Omitting it made the
+# normalisation defeat the very check it exists to enable — see there.
+USE_TREE_CHARS_RE = re.compile(r"^[A-Za-z0-9_:{}*,|\s]+$")
 USE_TREE_PROSE_RE = re.compile(r"[A-Za-z0-9_]\s+[A-Za-z0-9_]")
 
 
@@ -748,6 +858,18 @@ def _looks_like_use_tree(tree: str) -> bool:
     tree — except across the ` as ` renaming keyword, which is normalised
     away first. `use std :: io :: Error;` (spaces around `::`) is valid Rust
     and still passes, because a colon is not an identifier character.
+
+    The `|` substituted for ` as ` MUST be a member of `USE_TREE_CHARS_RE`,
+    or the normalisation inverts its own purpose: it was not, so EVERY
+    `use foo::Bar as Baz;` failed the character-class check and this
+    function returned False — the exact opposite of what the paragraph above
+    claims. Measured over `core/src/**`, that left the raw read withdrawing
+    52 names against the blanked read's 61 (union 67), so 15 withdrawals —
+    every `use ... as ...` in the tree — rested on the blanked read ALONE.
+    That read is the one a lexer desync can silently disarm, and the whole
+    point of the union in `foreign_use_names` is that no single read is
+    trusted. With `|` in the class the raw read withdraws all 67, a strict
+    superset of the union, and the real scan's verdict is unchanged.
     """
     collapsed = " ".join(tree.split()).replace(" as ", "|")
     if not collapsed or not USE_TREE_CHARS_RE.match(collapsed):
@@ -1242,8 +1364,10 @@ def parse_fields(body: str) -> dict[str, str]:
     `#[from]`/`#[source]` attribute precedes its NAME
     (`#[source]\\n source: T`), so the name side is run through
     `strip_field_attrs` — see that function's docstring for the bug this
-    fixes. The type side (tuple fields: `#[from] T`) is left as-is here;
-    `normalize_type` strips it later, at classification time.
+    fixes — and then through `strip_visibility`, since a struct field's
+    `pub` / `pub(crate)` lands on the name side too. The type side (tuple
+    fields: `#[from] T`, `pub T`) is left as-is here; `normalize_type`
+    strips both later, at classification time.
     """
     body = body.strip()
     fields: dict[str, str] = {}
@@ -1253,7 +1377,7 @@ def parse_fields(body: str) -> dict[str, str]:
             if ":" not in part:
                 continue
             name, ty = part.split(":", 1)
-            name = strip_field_attrs(name)
+            name = strip_visibility(strip_field_attrs(name))
             if name.startswith("///") or not name:
                 continue
             fields[name] = " ".join(ty.split())
@@ -2215,6 +2339,140 @@ POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"variant": "Wrapped", "field": "0", "field_type": "ZzShared"},
     ),
+    # P34-P36 pin `alias_shadowed_names`. Before it existed, EVERY one of
+    # these reported ZERO findings: `is_data_free` consulted tier 1 (a name
+    # match against `DATA_FREE_TYPES`) before it ever looked at the alias
+    # table, so a `type` alias that reused a trusted name was invisible. One
+    # file, no collision, no ordering dependence, no `#[allow]` — the same
+    # reachability as the round-4 string-literal self-authorisation CRITICAL.
+    (
+        "P34 `type CborFault = String;` must not launder a String through "
+        "tier 1 — the shape rustc does NOT catch (already CamelCase, so "
+        "`non_camel_case_types` never fires) and the reason this drop is a "
+        "CRITICAL rather than a tidy-up",
+        '''
+        type CborFault = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("CBOR fault: {fault}")]
+            Bad { fault: CborFault },
+        }
+        ''',
+        {"variant": "Bad", "field": "fault", "field_type": "CborFault"},
+    ),
+    (
+        "P35 `type usize = String;` must not launder a String through tier 1 "
+        "— the shape the module docstring used to name as the WHOLE limit, "
+        "and the only one this repo's -D warnings gate happens to reject on "
+        "its own",
+        '''
+        type usize = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("length {length}")]
+            Bad { length: usize },
+        }
+        ''',
+        {"variant": "Bad", "field": "length", "field_type": "usize"},
+    ),
+    (
+        "P36 `type bool = String;` — the shadow must deny through the "
+        "`Option<T>` recursion too, not only at the top level",
+        '''
+        type bool = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("flag {flag:?}")]
+            Bad { flag: Option<bool> },
+        }
+        ''',
+        {"variant": "Bad", "field": "flag", "field_type": "Option<bool>"},
+    ),
+    (
+        "P37 Rust block comments NEST — `/* a /* b */ const … */` is comment "
+        "all the way to the LAST `*/`, so the const inside it declares "
+        "nothing. A C-style (non-nesting) scanner ends the comment at the "
+        "FIRST `*/`, promotes the const to code, and hands back the round-4 "
+        "self-authorisation CRITICAL in a new costume. `LEXER_SAMPLE` "
+        "carries a nested comment but only feeds the length/line invariants, "
+        "which C semantics preserve — nothing pinned the SEMANTICS until "
+        "this control",
+        '''
+        /* outer /* inner */ pub const NESTED_INJECTED: usize = 1; */
+
+        #[derive(thiserror::Error, Debug)]
+        #[error("expected {NESTED_INJECTED} bytes")]
+        pub struct Bad;
+        ''',
+        {"unparsed": True, "field": "NESTED_INJECTED"},
+    ),
+    (
+        "P38 an UNTERMINATED block comment must not hide a `use` from the "
+        "withdrawal pass — `lex_spans` deliberately runs such a construct to "
+        "end-of-input, which is fail-CLOSED for the credit registries and "
+        "fail-OPEN for `foreign_use_names`. THE control for round 5's "
+        "headline fix (that pass reading RAW, unioned with the blanked "
+        "read): pointing it at the blanked view alone leaves P31 green, "
+        "because the lexer handles `'\\\"'` correctly today, and leaves this "
+        "one RED",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] Error),
+        }
+
+        /* this block comment is never closed, so every view derived from the
+           lexer blanks the `use` below — but the raw text still carries it
+        use std::io::Error;
+        ''',
+        {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
+    ),
+    (
+        "P39 P38's shape written as a RENAMING import. This is the control "
+        "`_looks_like_use_tree`'s ` as ` -> `|` normalisation has to survive: "
+        "with `|` absent from USE_TREE_CHARS_RE every `use … as …;` failed "
+        "the raw read's prose filter, so all 15 renaming imports under "
+        "core/src/** rested on the blanked read alone — and the blanked read "
+        "is exactly what an unterminated comment disarms. Breaks under "
+        "EITHER mutation (drop `|` from the class, or point the withdrawal "
+        "pass back at the blanked view); P38 breaks only under the second, "
+        "which is what separates the two",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum ZzRenamedError {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] ZzRenamedError),
+        }
+
+        /* never closed, so the blanked view cannot see the rename below
+        use std::io::Error as ZzRenamedError;
+        ''',
+        {
+            "variant": "BareIoError",
+            "field": "0",
+            "field_type": "#[from] ZzRenamedError",
+        },
+    ),
 ]
 
 NEGATIVE_CONTROLS: list[tuple[str, str]] = [
@@ -2457,6 +2715,28 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
 
         pub const LIFE_LEN: usize = 16;
+        ''',
+    ),
+    (
+        "N18 a field-level VISIBILITY modifier is not part of the field's "
+        "name (or of its type) — `parse_fields` split on the first `:` and "
+        "took the name side verbatim, so `pub index: usize` became a field "
+        "literally named `pub index`, `{index}` matched nothing, and valid "
+        "code produced a spurious UNPARSED. Covers all three shapes: a `pub` "
+        "struct field, a `pub(crate)` one, and a `pub` TUPLE field (whose "
+        "modifier lands on the TYPE side instead, hence a second strip in "
+        "`normalize_type`)",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("entry #{index} of {field}")]
+            Bad {
+                pub field: &'static str,
+                pub(crate) index: usize,
+            },
+            #[error("length {0}")]
+            Len(pub usize),
+        }
         ''',
     ),
 ]
