@@ -3,10 +3,11 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-r"""Fail-closed guard: no `core` error variant may interpolate a runtime String.
+r"""Fail-closed guard: no error payload crossing the FFI may carry a runtime
+String that nobody has vouched for — in `core/src/**` OR in the FFI bridge.
 
-WHY THIS EXISTS (#474)
-----------------------
+WHY THIS EXISTS (#474, extended by #480)
+----------------------------------------
 `RecordError::DuplicateKey` formatted a decrypted CBOR field name into its
 message. That string reached iOS as `VaultAccessError.corruptVault` and Android
 as `VaultBrowseError.SaveCryptoFailure`, which is why both platforms redacted
@@ -18,6 +19,22 @@ way: a new variant carrying a runtime `String` into its `#[error]` message fails
 CI in the Rust author's own pull request, rather than silently degrading a
 platform two layers away. That drift — a Rust edit with no platform diff and no
 failing test anywhere — is exactly how the original leak shipped.
+
+#480 closes the other half. `core` being data-free is worthless if the FFI
+bridge is free to hand-roll `format!("{e}")` into a `detail` field at ~110 call
+sites, because the platforms cannot tell a core-authored payload from a
+bridge-authored one — both arrive as the same `String` on the same error arm.
+The bridge's error types genuinely NEED prose (`detail`, `uuid_hex`, ...), so
+denying them by TYPE the way `core` is denied would be unimplementable. Instead
+the bridge's `String` payloads are allowed under a PINNED SET OF FIELD NAMES
+(rule E2) and their CONSTRUCTION SITES are gated instead (rule E3): every one
+must be a literal, or a call into `ffi/secretary-ffi-bridge/src/error/detail.rs`.
+That module's constructors take `&impl GatedDetail`, and rule E4 pins every
+`impl GatedDetail for X` to that one file — so THE SET OF TYPES A DETAIL STRING
+CAN BE BUILT FROM IS EXACTLY THE SET OF IMPLS IN ONE REVIEWED FILE. That is the
+same sink-pinning move `SecretaryLog` makes for Android's logcat (#472): do not
+try to police ~110 call sites, make the unsafe call unrepresentable at all of
+them and review the one file that defines what "safe" means.
 
 THE RULE
 --------
@@ -61,22 +78,80 @@ that doesn't match any parsed field, produces an `UNPARSED` finding rather
 than being silently skipped. If the guard cannot understand a construct, a
 human must look at it; "we didn't understand this" is not a pass.
 
+THE BRIDGE RULES (#480: E2, E3, E4)
+-----------------------------------
+Everything above is rule `E1`, and it applies to BOTH scan roots. Three more
+rules apply to `ffi/secretary-ffi-bridge/src/**` only. The rule id is the
+allowlist's second column, so an exception is scoped to the rule that raised
+it.
+
+`E2` — DECLARATIONS. Every field of a bridge error declaration must be
+data-free by `E1`'s tiers, OR be declared EXACTLY `String` under one of the
+six names in `GATED_FIELD_NAMES`. The sweep covers EVERY field, not just the
+interpolated ones, because uniffi and PyO3 project every field regardless of
+what `Display` renders — a `String` the message never mentions still crosses
+to the platform. It also covers PLAIN-derive `enum`/`struct` declarations
+whose name ends `Error`/`Warning`, found by naming convention because such a
+type has no `#[error(` attribute to anchor on. That convention is a
+HEURISTIC, and the only one in this file: a plain-derive error type named
+against the convention is not swept at all. (`SettingsWarning`,
+`SettingsParseError` and `SettingsBoundsError` are why it exists.)
+
+The six gated names are PINNED (see `GATED_FIELD_NAMES`), not inferred from a
+suffix pattern: `record_uuid_hex` / `device_uuid_hex` are deliberately NOT
+members, because those are DTO payload fields that merely LOOK like the
+diagnostic-hex convention, and admitting them by pattern would launder real
+record data through a name.
+
+`E3` — CONSTRUCTION SITES, the other half of E2's carve-out. Wherever a gated
+name appears in initializer position (`detail: <expr>`), the expression must
+be a string LITERAL (optionally `.into()` / `.to_string()`), a call into
+`detail::*`, the exact token `String`, or the field's own name. The
+`String`-token acceptance is what keeps a DECLARATION (`detail: String` in an
+enum body, or a function parameter) from being read as a construction: E2
+already decides whether that declaration is acceptable, and a declaration
+declares no value. `String::new()` is NOT that shape and denies.
+
+`E4` — THE IMPL ALLOWLIST. `impl GatedDetail for X` is a security decision:
+it claims `X`'s `Display` output carries no secret. Every such impl must live
+in `DETAIL_MODULE_REL`, and inside it must name a path rooted in a crate this
+guard scans whose last segment is a type this guard scans. Anything else is
+an allowlist entry a human signed.
+
 LIMITS (stated, not hidden)
 ---------------------------
-- It sees DECLARATIONS, not construction sites. A variant whose payload is
-  `&'static str` is provably safe; a variant allowlisted because "its producers
-  all pass literals" is a point-in-time claim this guard cannot verify. Those
-  entries say so in the allowlist.
-- It covers `core/src/**` only. The FFI bridge builds its own detail strings
-  with `format!` (`ffi/secretary-ffi-bridge/**`) and is NOT scanned, so a
-  bridge-authored `detail` reaching a platform is gated by review alone.
-  #478 covers only the `VaultSyncError.Failed` / `FfiVaultError::SyncFailed`
-  slice of that gap, and even there its acceptance offers two alternatives:
-  extending THIS guard's scope to `ffi/secretary-ffi-bridge/src/**` (which
-  would close the gap broadly) or gating the `SyncFailed` producers
-  individually (which would not). Nothing tracks the rest — including the
-  `CorruptVault` / `SaveCryptoFailure` folds whose platform-side redactions
-  #474 removed. Do not read "#478" as "this gap is owned."
+- Rule E1 sees DECLARATIONS, not construction sites, and under `core/src/**`
+  that is all it sees. A variant whose payload is `&'static str` is provably
+  safe; a `core` variant allowlisted because "its producers all pass
+  literals" is a point-in-time claim this guard cannot verify. Those entries
+  say so in the allowlist. Rule E3 DOES read construction sites, but only
+  under `ffi/secretary-ffi-bridge/src/**` and only for the six gated field
+  names.
+- It covers `core/src/**` AND `ffi/secretary-ffi-bridge/src/**` (#480), with
+  separate discovery per root — a bridge-local alias/const/enum must not
+  vouch for a `core` field, or vice versa. Nothing ELSE is scanned: the
+  uniffi and PyO3 binding crates each build their own error values from the
+  bridge's, and `secretary-cli` / `desktop/src-tauri` build theirs
+  independently. A `String` authored in one of those and handed to a
+  platform is gated by review alone.
+- RULE E3 IS A SYNTACTIC MATCH ON INITIALIZER POSITION, so a value that
+  reaches a gated field WITHOUT passing through one is invisible to it. Two
+  shapes do exactly that, and both are real Rust anyone could write:
+  a POST-CONSTRUCTION ASSIGNMENT (`e.detail = format!("{x}");`) is a write,
+  not an initializer; and a LOCAL BINDING PLUS FIELD SHORTHAND
+  (`let detail = format!("{x}"); E::V { detail }`) never produces a
+  `detail:` token at all. Shorthand is deliberately not a candidate — the
+  three shorthand sites in the tree today are re-wraps of an
+  already-gated payload, the same case as the `detail: detail` acceptance —
+  but "shorthand is a re-wrap" is a convention, not something this guard
+  establishes. Closing either shape needs dataflow, which is a different
+  kind of tool.
+- `#[cfg(test)]` exclusion is PER FILE. A module whose `mod` declaration is
+  gated in its PARENT (`#[cfg(test)] mod tests;` in `error/vault/mod.rs`)
+  is a whole test-only FILE this guard has no way to recognise from inside,
+  so its construction sites are scanned like shipped ones. That is the
+  fail-closed direction — findings in test code, never a missed shipped
+  one — and the remedy is an allowlist entry naming the parent's gate.
 - Rust is parsed by pattern, not by a real parser. The shapes in this codebase
   are regular (thiserror derives); an exotic macro-generated error enum would
   be invisible. `--self-test` pins the shapes that do occur.
@@ -171,7 +246,12 @@ LIMITS (stated, not hidden)
   extra finding with its own (different) allowlist key. That is noise in the
   safe direction: it can never hide a real attribute, and the spurious key
   does not match the real one, so allowlisting one does not silence the
-  other.
+  other. Rules E3 and E4 locate their candidates the same way and inherit
+  the same trade: three of the current findings are `detail:` /
+  `uuid_hex:` sequences written inside `assert!` message strings in
+  `error/vault/tests.rs`. Their EXPRESSION extraction, by contrast, reads
+  the discovery view, where blanking can only ever make an expression
+  LONGER and so harder to accept — see `initializer_end`.
 - `discover_declarations` credits only MODULE-SCOPE declarations: anything
   inside a brace block that is not a `mod name { ... }` block is skipped
   (`non_module_block_spans`), which covers a trait's or an `impl`'s
@@ -215,12 +295,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN_ROOT = REPO_ROOT / "core" / "src"
 # #480: the FFI bridge builds its own detail strings with `format!` and was,
-# until rule E2, entirely unscanned (see the module docstring's LIMITS —
-# updated by Task 3, not this comment, since that rewrite is a separate
-# task's job). Bridge files get their OWN discovery pass (`bridge_mode`)
-# rather than being folded into `SCAN_ROOT`'s: a bridge-local alias/const/
-# enum must not vouch for a core field, or vice versa.
+# until rules E2/E3/E4, entirely unscanned. Bridge files get their OWN
+# discovery pass (`bridge_mode`) rather than being folded into `SCAN_ROOT`'s:
+# a bridge-local alias/const/enum must not vouch for a core field, or vice
+# versa.
 BRIDGE_SCAN_ROOT = REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src"
+# #480 rule E4: the ONE file permitted to declare `impl GatedDetail for X`.
+# Repo-relative and POSIX-spelled, matching `run_real_scan`'s `path_label`
+# (`str(path.relative_to(REPO_ROOT))`); compared via `is_detail_module`.
+DETAIL_MODULE_REL = "ffi/secretary-ffi-bridge/src/error/detail.rs"
 ALLOWLIST_PATH = REPO_ROOT / "scripts" / "error-payload-hygiene-allowlist.txt"
 
 # Types whose every value is a compile-time constant or a pure number, and so
@@ -240,8 +323,8 @@ DATA_FREE_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# #480/rule E2: field NAMES whose construction site rule E3 (Task 3) will
-# gate. A bridge field under one of these names, declared EXACTLY `String`,
+# #480/rule E2: field NAMES whose construction site rule E3 gates. A bridge
+# field under one of these names, declared EXACTLY `String`,
 # is not a structural finding — its VALUE is checked at the construction
 # site instead of being denied outright by TYPE. Pinned to this exact set
 # (spec §3.2): `record_uuid_hex` / `device_uuid_hex` are deliberately NOT
@@ -464,7 +547,7 @@ def is_bridge_field_safe(
     Either it independently clears `is_data_free` — the ordinary tiers,
     data-free by TYPE, exactly as core requires — or its declared type is
     EXACTLY `String` under a name in `GATED_FIELD_NAMES`: data-free by
-    CONSTRUCTION SITE instead, which rule E3 (Task 3) gates. `normalize_type`
+    CONSTRUCTION SITE instead, which rule E3 gates. `normalize_type`
     is applied to `ty` for the exact-`String` comparison so a field-level
     `#[from]` / visibility prefix does not defeat the match; `Option<String>`,
     `&str`, or any other near-miss spelling still denies — the carve-out is
@@ -1552,7 +1635,7 @@ def scan_source(
     1. Rule E2's carve-out on the ordinary interpolated-field check below:
        `is_bridge_field_safe` replaces the bare `is_data_free` call, so a
        `String` field named in `GATED_FIELD_NAMES` is not a finding here
-       (rule E3, Task 3, gates its construction site instead). Everything
+       (rule E3 gates its construction site instead). Everything
        else still denies exactly as core's `E1` does.
     2. A STRUCTURAL sweep (`bridge_declaration_findings`, rule `E2`) over
        EVERY parsed field of the declaration — interpolated or not — since
@@ -1779,7 +1862,7 @@ def scan_source(
             # Rule E2 item 1 (#480): in bridge_mode, an interpolated field
             # gets the SAME carve-out the structural sweep above uses —
             # `String` under a `GATED_FIELD_NAMES` name is not a finding
-            # HERE (rule E3, Task 3, gates its construction site instead).
+            # HERE (rule E3 gates its construction site instead).
             # Everything else denies exactly as core's E1 does today.
             field_is_safe = (
                 is_bridge_field_safe(fname, ftype, local_error_enums, aliases, foreign_names)
@@ -2131,9 +2214,11 @@ def scan_bridge_plain_declarations(
     under the same rule) when `#[error(` appears ANYWHERE in its body
     (decorating a variant). A STRUCT's `#[error(...)]`, if any, decorates
     the STRUCT ITSELF — preceding it, not living inside a body — so the
-    equivalent check instead consults `discover_error_struct_names`, the
-    SAME thiserror-struct discovery `scanned_error_type_names` (Task 3's
-    E4) already needs.
+    equivalent check instead consults the POSITIONS reported by
+    `discover_error_struct_declarations`, the same walk
+    `scanned_error_type_names` (rule E4) takes its names from. Position, not
+    name: see that function's docstring for the two rustc-verified witnesses
+    a bare-name check was fail-open to.
 
     Both candidate kinds skip a match starting inside a `#[cfg(test)]`-
     gated item (`discovery_cfg_test_spans`) — a test-only declaration is
@@ -2223,53 +2308,434 @@ def scan_bridge_plain_declarations(
     return findings
 
 
+# `pub(crate) fn name(` in `error/detail.rs` — the sanctioned detail
+# constructors rule E3 accepts a call to. Private-to-the-crate by design: a
+# `pub fn` would be callable from outside the bridge, and a bare `fn` is not
+# reachable from the call sites this rule gates.
+SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)")
+
+
+def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
+    """The set of `detail::<name>(...)` constructors rule E3 accepts a call
+    to — every `pub(crate) fn` declared in `error/detail.rs` (#480).
+
+    A MISSING file (or an empty/unreadable one) yields the EMPTY set, which
+    denies every constructor call rather than accepting any: if the one file
+    that defines what "sanctioned" means cannot be read, nothing is
+    sanctioned. That is the whole rule's fail-closed hinge — the alternative
+    (treat "no constructor list" as "no restriction") would silently disable
+    E3 the moment someone moved or renamed the module.
+
+    Read from the DISCOVERY VIEW (comments AND string CONTENTS blanked), not
+    `strip_comments`. This registry GRANTS acceptance, so its fail-closed
+    direction is to find FEWER names: a `pub(crate) fn evil(` written inside
+    a string literal in `detail.rs` must not sanction `detail::evil(...)` at
+    a call site, which is the same self-authorisation class
+    `discovery_view`'s own docstring records for `#[error("...")]` messages.
+    A lexer desync that HID a real constructor would instead cost a
+    fail-closed E3 finding at each of its call sites.
+    """
+    if not detail_src:
+        return frozenset()
+    view = discovery_view(detail_src)
+    return frozenset(m.group(1) for m in SANCTIONED_CTOR_RE.finditer(view))
+
+
+# A gated field name in INITIALIZER position: `<name>:` not followed by a
+# second `:`. The negative lookahead excludes the MODULE PATH `detail::` (as
+# in `detail::gated(...)`, which is a call, not a field), and `\b` excludes a
+# gated name that is merely the TAIL of a longer field name — `record_uuid_hex:`
+# must not match on `uuid_hex:`, since the DTO-carrying names are deliberately
+# NOT members of `GATED_FIELD_NAMES` (see there).
+GATED_INIT_RE = re.compile(
+    r"\b(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*:(?!:)"
+)
+# A call whose path ENDS in `detail::<name>(`. The leading segments are
+# unconstrained so both the in-module spelling (`detail::gated(`) and the
+# fully-qualified one (`crate::error::detail::gated(`) match; what is pinned
+# is that the immediately-enclosing module segment is literally `detail`, so
+# a same-named local function (`gated(&e)`) does not pass.
+DETAIL_CALL_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*detail\s*::\s*([a-z_][a-z0-9_]*)\s*\("
+)
+
+
+def string_literal_token_ends(raw: str) -> dict[int, int]:
+    r"""Map the START offset of every complete STRING literal token in `raw`
+    to the offset just past its closing delimiter.
+
+    Built from `lex_spans`, which emits a terminated literal as exactly three
+    contiguous spans — opening `KIND_DELIM`, `KIND_LITERAL` content, closing
+    `KIND_DELIM`. Three properties are load-bearing for rule E3:
+
+    - An UNTERMINATED literal emits no closing delimiter span, so it is
+      absent from this map and every acceptance test against it fails
+      closed.
+    - A CHAR literal (`'x'`) has the same three-span shape, so the opening
+      delimiter's text must END in `"` — that admits `"`, `r#"`, `b"`,
+      `br##"` and rejects `'`.
+    - The map is keyed on the literal's own start, so "the expression IS a
+      single string literal" is decided by an EXACT offset match, not by a
+      prefix test. If a lexer desync ever swallowed half a file into one
+      "literal", the expression span would not coincide with that token's
+      span and the acceptance would fail rather than widen.
+    """
+    ends: dict[int, int] = {}
+    spans = lex_spans(raw)
+    for i in range(len(spans) - 2):
+        (s0, e0, k0) = spans[i]
+        (s1, e1, k1) = spans[i + 1]
+        (s2, e2, k2) = spans[i + 2]
+        if (k0, k1, k2) != (KIND_DELIM, KIND_LITERAL, KIND_DELIM):
+            continue
+        if e0 != s1 or e1 != s2:
+            continue
+        if not raw[s0:e0].endswith('"'):
+            continue
+        ends[s0] = e2
+    return ends
+
+
+def initializer_end(view: str, start: int) -> int:
+    """The offset at which the initializer expression beginning at `start`
+    ends: the first `,` at top-level nesting, or the first `)`, `]` or `}`
+    that CLOSES the construct the initializer sits in (i.e. appears at depth
+    zero). `(`, `[` and `{` open a nesting level.
+
+    `view` must be the DISCOVERY VIEW: with string contents blanked, a comma
+    or brace inside a literal (`format!("a, b")`, `"}"`) cannot end the
+    expression early. That choice is fail-closed in both directions — every
+    view here only ever BLANKS, and blanking can neither introduce a `,` that
+    truncates an expression nor remove one in a way that shortens it, so a
+    lexer desync can only ever make the extracted expression LONGER, which
+    makes it LESS likely to match one of the narrow accepted shapes.
+
+    Closing delimiters at depth zero are genuine terminators, not a
+    heuristic: they are the `)` of `fn f(detail: String)`, the `}` of
+    `E::V { detail: x }`. Without them a function parameter's type would run
+    on into the function BODY and every such parameter would produce a
+    spurious finding.
+    """
+    depth = 0
+    i, n = start, len(view)
+    while i < n:
+        ch = view[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            break
+        i += 1
+    return i
+
+
+def initializer_is_gated(
+    view: str,
+    start: int,
+    end: int,
+    name: str,
+    literal_ends: dict[int, int],
+    sanctioned: frozenset[str],
+) -> bool:
+    """Rule E3's ACCEPT test for the (already whitespace-trimmed) expression
+    `view[start:end]` assigned to gated field `name` (#480).
+
+    FOUR shapes are accepted, and nothing else — this is a default-DENY
+    predicate, so a construct this function does not recognise is a finding:
+
+    1. A single STRING LITERAL, optionally followed by exactly `.into()` or
+       `.to_string()`. The literal is identified by an exact offset match
+       against `string_literal_token_ends` (see there), not by a `"` prefix
+       test, so a desynced lexer widens rather than admits. The `.into()` /
+       `.to_string()` tail is matched with ALL whitespace removed, so
+       `"x" . into ()` passes and `"x".into().unwrap()` does not — the point
+       is that the value is still exactly the literal.
+    2. A call whose path ends `detail::<name>(`, with `<name>` in the
+       `sanctioned` set (`sanctioned_constructor_names`) AND the call
+       consuming the WHOLE expression. Requiring the whole expression is
+       deliberately stricter than "starts with a sanctioned call":
+       `detail::gated(&e) + leak()` starts with one too.
+    3. The exact token `String` — a DECLARATION's type position (a struct
+       field, an enum variant field, a function parameter), not a value.
+       Rule E2 already decides whether a `String` DECLARATION under a gated
+       name is acceptable; E3 is about construction, and a declaration is
+       not a construction. `String::new()` is NOT this shape and denies,
+       which is what keeps the acceptance from becoming "any expression
+       starting with String".
+    4. The exact same identifier as the field name — a `detail: detail`
+       re-wrap, which passes an ALREADY-gated value straight through (the
+       value's own construction site is gated where it was built). Field
+       shorthand (`E::V { detail }`) has no `:` at all and never becomes a
+       candidate in the first place.
+
+    Note what is NOT covered, and cannot be by a construction-site matcher:
+    a field assigned AFTER construction (`x.detail = format!(...)`) is a
+    write this rule never sees. That is a real blind spot, recorded in the
+    module docstring's LIMITS.
+    """
+    if start >= end:
+        return False
+    stripped = view[start:end].strip()
+    # (3) declaration type position, and (4) the same-name re-wrap.
+    if stripped == "String" or stripped == name:
+        return True
+    # (1) a single string literal, optionally `.into()` / `.to_string()`.
+    lit_end = literal_ends.get(start)
+    if lit_end is not None and lit_end <= end:
+        tail = "".join(view[lit_end:end].split())
+        if tail in ("", ".into()", ".to_string()"):
+            return True
+    # (2) a sanctioned `detail::<name>(...)` call consuming the expression.
+    cm = DETAIL_CALL_RE.match(view, start)
+    if cm and cm.end() <= end and cm.group(1) in sanctioned:
+        _, after = balanced_slice(view, cm.end() - 1)
+        if after <= end and not view[after:end].strip():
+            return True
+    return False
+
+
+def scan_bridge_construction_sites(
+    path_label: str, raw: str, sanctioned: frozenset[str]
+) -> list[Finding]:
+    """Rule E3 (#480): every CONSTRUCTION SITE of a gated field must build
+    its value from a sanctioned source.
+
+    Rule E2 lets a bridge error carry a `String` under one of the six
+    `GATED_FIELD_NAMES` instead of denying it by TYPE. That carve-out is only
+    sound if something checks what those fields are actually SET TO — which
+    is what this rule does, and why E2 without E3 would be a hole rather than
+    a design.
+
+    Candidates are located on the COMMENTS-BLANKED view, with string contents
+    INTACT, for the same reason `scan_source` locates `#[error(` there:
+    hiding a construction site would be fail-OPEN, so this pass does not
+    trust the lexer's literal classification to decide what is code. The
+    price is that a `detail:` written inside a string literal is visited as
+    though it were a construction site and may produce a finding with its own
+    (different) allowlist key — noise in the safe direction, exactly as the
+    module docstring records for the `#[error(` scan.
+
+    `#[cfg(test)]`-gated items are skipped (`discovery_cfg_test_spans`): a
+    detail string built by a test never reaches a platform.
+
+    Like rule E1's, an E3 allowlist key is the normalized text of the site,
+    so two textually IDENTICAL construction sites in one file share a key.
+    That is the same characteristic the two shell guards' exact-trimmed-line
+    keys have, and it is why the intended remedy for an E3 finding is to
+    rewrite the site through `detail::*` (Tasks 4-7), not to allowlist it.
+    """
+    src = strip_comments(raw)
+    depth_view = discovery_view(raw)
+    excluded = discovery_cfg_test_spans(raw)
+    literal_ends = string_literal_token_ends(raw)
+    findings: list[Finding] = []
+    for m in GATED_INIT_RE.finditer(src):
+        if _inside(m.start(), excluded):
+            continue
+        name = m.group(1)
+        start, end = m.end(), initializer_end(depth_view, m.end())
+        while start < end and src[start] in " \t\r\n":
+            start += 1
+        while end > start and src[end - 1] in " \t\r\n":
+            end -= 1
+        if initializer_is_gated(src, start, end, name, literal_ends, sanctioned):
+            continue
+        expr = " ".join(src[start:end].split()) or "<empty>"
+        findings.append(
+            Finding(
+                path=path_label,
+                line=src.count("\n", 0, m.start()) + 1,
+                source_line=" ".join(f"{name}: {expr}".split()),
+                variant="<construction site>",
+                field=name,
+                field_type=expr,
+                rule="E3",
+            )
+        )
+    return findings
+
+
+# `impl GatedDetail for X` — rule E4's target. Deliberately NOT anchored on a
+# word boundary or a line start: this regex looks for VIOLATIONS, so matching
+# more text than strictly necessary is the fail-closed direction.
+IMPL_GATED_RE = re.compile(r"impl\s+GatedDetail\s+for\s+([A-Za-z0-9_:<>]+)")
+# The path roots that name a crate THIS GUARD SCANS. `crate` / `self` /
+# `super` resolve inside `secretary-ffi-bridge` itself (BRIDGE_SCAN_ROOT),
+# `secretary_core` is SCAN_ROOT's crate, and `secretary_ffi_bridge` is the
+# bridge spelled by its own crate name. Anything else — `std`, `secretary_cli`,
+# any third-party crate — names a type no registry here has scanned.
+SCANNED_IMPL_ROOTS: frozenset[str] = frozenset(
+    {"crate", "self", "super", "secretary_core", "secretary_ffi_bridge"}
+)
+# Short, stable REASON CODES prefixing each of rule E4's four denial arms.
+# Their purpose is mutation-verifiability, not display: three of the four
+# arms deny the SAME impls as a neighbouring arm would if it were deleted
+# (a bare target also fails the root check; an impl outside detail.rs would
+# also fail the bare/root checks), so a control asserting only "a finding
+# fired" cannot tell an arm's removal from its presence. Controls assert
+# `field_type_prefix` against these codes, which makes each arm
+# independently mutatable — three mutation checks came back GREEN before
+# they existed.
+E4_OUTSIDE = "outside-detail-module: "
+E4_BARE = "bare-target: "
+E4_ROOT = "foreign-crate-root: "
+E4_UNSCANNED = "unscanned-type: "
+
+
+def is_detail_module(path_label: str) -> bool:
+    """Whether `path_label` names the one file permitted to declare an
+    `impl GatedDetail` (`DETAIL_MODULE_REL`). Separator-normalized so a
+    Windows-spelled `path_label` compares equal."""
+    return path_label.replace("\\", "/") == DETAIL_MODULE_REL
+
+
+def scan_bridge_gated_detail_impls(
+    path_label: str, raw: str, scanned_error_type_names: frozenset[str]
+) -> list[Finding]:
+    """Rule E4 (#480): `impl GatedDetail for X` is a SECURITY DECISION — a
+    claim that `X`'s `Display` output carries no vault plaintext, password,
+    mnemonic or key bytes — so every one of them must sit in the single
+    reviewed file `error/detail.rs`, and each must name a type whose payloads
+    something has actually checked.
+
+    This is the Rust analogue of iOS's `SecretFreeError` conformance and
+    Android's `SecretFreeThrowable` declaration (#467/#472), with one
+    difference the two platforms could not have: because the trait is
+    `pub(crate)` and its constructors take `&impl GatedDetail`, the set of
+    types a detail string can be built from is exactly the set of impls —
+    so PINNING THE IMPLS TO ONE FILE pins the whole allowlist to one review.
+
+    Two checks, in order:
+
+    1. Any impl in a file OTHER than `DETAIL_MODULE_REL` is a finding, full
+       stop. There is no allowlist story for this arm — move the impl.
+    2. Inside `detail.rs`, the target must be a PATH ROOTED IN A SCANNED
+       CRATE (`SCANNED_IMPL_ROOTS`) whose LAST SEGMENT is a type this guard
+       itself scans (`scanned_error_type_names`) — the same "safe by
+       recursion" argument tier 2 of `is_data_free` makes for a field
+       referencing a local error enum: this guard already fails at that
+       type's own definition if one of its payloads is not data-free.
+       Anything else is a finding, and THAT arm is allowlistable after human
+       review (`std::io::Error`'s path + errno is already-disclosed under
+       the threat model, and so on).
+
+    THE ROOT CHECK IS LOAD-BEARING AND IS NOT REDUNDANT WITH THE REGISTRY
+    CHECK. `scanned_error_type_names` holds BARE names, and `core/src/error.rs`
+    declares a `thiserror` enum literally called `Error` — so a last-segment-
+    only test accepts `impl GatedDetail for std::io::Error {}`, crediting a
+    FOREIGN type for a same-named local one. That is the exact collision
+    `foreign_use_names` exists to withdraw for field references, arriving
+    here by a different door; it is live in the tree today, and `BP20` pins
+    it. A BARE (single-segment) target denies for the same reason from the
+    other side: a bare name states no crate at all, so it cannot be told
+    apart from a `use`-imported foreign type — write the path.
+    """
+    src = strip_comments(raw)
+    in_detail = is_detail_module(path_label)
+    findings: list[Finding] = []
+    for m in IMPL_GATED_RE.finditer(src):
+        target = " ".join(m.group(1).split())
+        segments = [seg for seg in target.split("::") if seg]
+        reason: str | None = None
+        if not in_detail:
+            reason = (
+                f"{E4_OUTSIDE}declared outside {DETAIL_MODULE_REL} — every "
+                "impl of this trait is a secret-freedom claim and must sit "
+                "in that one reviewed file"
+            )
+        elif len(segments) < 2:
+            reason = (
+                f"{E4_BARE}target is a BARE name, which states no crate and "
+                "so cannot be distinguished from a use-imported foreign type "
+                "of the same name — write the full path"
+            )
+        elif segments[0] not in SCANNED_IMPL_ROOTS:
+            reason = (
+                f"{E4_ROOT}target is rooted at `{segments[0]}`, a crate this "
+                "guard does not scan, so its payloads are not checked "
+                "anywhere — allowlist after review"
+            )
+        elif segments[-1] not in scanned_error_type_names:
+            reason = (
+                f"{E4_UNSCANNED}target's last path segment `{segments[-1]}` "
+                "is not an error type this guard scans, so the "
+                "safe-by-recursion argument does not cover it — allowlist "
+                "after review"
+            )
+        if reason is None:
+            continue
+        findings.append(
+            Finding(
+                path=path_label,
+                line=src.count("\n", 0, m.start()) + 1,
+                source_line=" ".join(m.group(0).split()),
+                variant="<impl GatedDetail>",
+                field=target,
+                field_type=reason,
+                rule="E4",
+            )
+        )
+    return findings
+
+
 def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
-    """`[(name, attr_start, decl_line_end)]` for every `#[error("...")]`-
+    """`[(name, attr_start, decl_end)]` for every `#[error("...")]`-
     decorated STRUCT (thiserror's other error shape — the attribute
     decorates the struct declaration ITSELF, not a variant inside a body)
-    in `raw`. `attr_start`/`decl_line_end` are character offsets into
-    `strip_comments(raw)`, spanning from the `#[error(` attribute through
-    the end of the line the struct's `STRUCT_RE` match was found on.
+    in `raw`. `attr_start`/`decl_end` are character offsets spanning from
+    the `#[error(` attribute through the END OF THE STRUCT'S NAME.
 
     `discover_declarations`'s `local_error_enums` tier does not see these —
     it only walks `ENUM_RE` bodies. This is a second, narrow pass reusing
     the exact `#[error(` + `STRUCT_RE` recognition `scan_source` itself
-    performs, on the SAME comments-blanked view, so a struct this guard
-    scans is found the same way `scan_source` finds it rather than by a
-    second, potentially-divergent rule. `discovery_cfg_test_spans` excludes
-    a match starting inside a `#[cfg(test)]`-gated item — a test-only
-    thiserror struct must not vouch for a SHIPPED plain struct sharing its
-    name.
+    performs. `discovery_cfg_test_spans` excludes a match starting inside a
+    `#[cfg(test)]`-gated item — a test-only thiserror struct must not vouch
+    for a SHIPPED plain struct sharing its name.
 
+    RUNS OVER THE DISCOVERY VIEW (comments AND string contents blanked).
     ONE walk feeds TWO consumers with DIFFERENT keying needs (#480 review
-    round 2, NEW-1): `scanned_error_type_names` (Task 3's E4, via
-    `discover_error_struct_names` below) wants bare NAMES;
-    `scan_bridge_plain_declarations`'s "already swept" struct check wants
-    POSITIONS. A bare-name registry there was proven fail-open by TWO
-    rustc-verified witnesses: (a) two DIFFERENT structs sharing a bare
-    name in different modules — `mod a`'s real thiserror `DupError`
-    incorrectly vouched for `mod b`'s real, DIFFERENT, plain `DupError`,
-    letting its `leak: String` field escape; (b) self-authorisation — an
-    `#[error("x")] pub struct LeakError {}` written INSIDE a raw-string
-    `const`'s VALUE registered `LeakError` (this walk runs over
-    `strip_comments`, which leaves string CONTENTS intact), suppressing
-    the sweep of a real, separate `pub struct LeakError { pub leak: String
-    }` elsewhere in the same file. Positions close BOTH: a same-named
-    sibling declaration sits at a DIFFERENT offset, so it is never
-    (wrongly) treated as the SAME declaration; and text inside a string
-    literal sits at a position no REAL declaration can ever occupy, so a
-    fake occurrence there can never suppress a real one — regardless of
-    which view discovers it, which is why this walk did not also need to
-    move to `discovery_view` to close witness (b): a same-position check
-    is inherently immune to a same-NAME collision from ANY source, string
-    literal or otherwise.
+    round 2, NEW-1), and the two need different things from the view:
+
+    - `scan_bridge_plain_declarations`'s "already swept" struct check wants
+      POSITIONS. A bare-name registry there was proven fail-open by two
+      rustc-verified witnesses: (a) two DIFFERENT structs sharing a bare
+      name in different modules — `mod a`'s real thiserror `DupError`
+      incorrectly vouched for `mod b`'s real, DIFFERENT, plain `DupError`,
+      letting its `leak: String` field escape; (b) self-authorisation — an
+      `#[error("x")] pub struct LeakError {}` written INSIDE a raw-string
+      `const`'s VALUE. Positions alone close BOTH, so this consumer does
+      not depend on which view discovers the declaration.
+    - `scanned_error_type_names` (rule E4, via `discover_error_struct_names`
+      below) wants bare NAMES, and a name registry IS spoofable by witness
+      (b): the fake declaration's NAME is indistinguishable from a real
+      one's once the position is discarded, so an author could authorise
+      `impl GatedDetail for crate::x::LeakError` from inside a string
+      literal. Task 2 flagged this as an inert residual because E4 had no
+      consumer yet; E4 now has one, so the walk moved to `discovery_view`,
+      where a declaration written inside a literal simply is not there.
+      `BP19` pins it.
+
+    Blanking string contents can only ever REMOVE a declaration from this
+    registry, and both consumers fail closed on a missing entry: the sweep
+    consumer double-reports a struct (noise), and E4 denies an impl
+    (finding). There is no direction in which the narrower view grants
+    anything.
 
     One walk means both consumers see the identical set of REAL
     declarations, rather than two independently-maintained (and
     independently-buggable) scans of the same shape — the #475 lesson
     this file's own docstring already cites for `is_comment_line`.
+
+    The span ENDS AT THE STRUCT NAME, not at end-of-line: two declarations
+    written on ONE line (`#[error("x")] pub struct AError { .. } pub struct
+    BError { .. }`) would otherwise put the SECOND one inside the FIRST's
+    "already swept" span, silently exempting it from the sweep. `BP22`
+    pins it.
     """
-    src = strip_comments(raw)
+    src = discovery_view(raw)
     excluded = discovery_cfg_test_spans(raw)
     out: list[tuple[str, int, int]] = []
     for m in ERROR_ATTR_RE.finditer(src):
@@ -2292,7 +2758,7 @@ def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
                 sm = STRUCT_RE.match(line)
                 if sm:
                     line_abs_start = skipped_start + line_start
-                    out.append((sm.group(1), m.start(), line_abs_start + len(line)))
+                    out.append((sm.group(1), m.start(), line_abs_start + sm.end()))
                 break
             line_start += len(line)
     return out
@@ -2300,14 +2766,12 @@ def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
 
 def discover_error_struct_names(raw: str) -> frozenset[str]:
     """Bare names of every `#[error("...")]`-decorated STRUCT in `raw` —
-    feeds `scanned_error_type_names` (Task 3's E4 registry — see
+    feeds `scanned_error_type_names` (rule E4's registry — see
     `discover_scanned_error_type_names`) alongside the bare spellings of
     `local_error_enums`. See `discover_error_struct_declarations`, this
-    function's shared producer, for the position-vs-name keying rationale;
-    this NAME-only projection is unconsumed by anything security-relevant
-    today (Task 3 territory), so it carries `discover_error_struct_declarations`'s
-    residual bare-name self-authorisation exposure forward unresolved —
-    flagged for Task 3's review once E4 has a real consumer.
+    function's shared producer, for the position-vs-name keying rationale
+    and for why that producer moved to the DISCOVERY VIEW once this
+    NAME-only projection acquired a security-relevant consumer.
     """
     return frozenset(name for name, _, _ in discover_error_struct_declarations(raw))
 
@@ -2446,7 +2910,7 @@ def discover_scanned_error_type_names(
     bridge_enums: frozenset[str],
 ) -> frozenset[str]:
     """Every `#[error]`-bearing ENUM or STRUCT name this guard scans, under
-    EITHER root (#480) — the registry Task 3's rule E4 will use to verify
+    EITHER root (#480) — the registry rule E4 uses to verify
     that an `impl GatedDetail for X` in `error/detail.rs` names a type this
     guard itself independently checks (X's last path segment must be a
     member): the same "safe by recursion" argument tier 2 of `is_data_free`
@@ -2462,9 +2926,9 @@ def discover_scanned_error_type_names(
     come from `discover_error_struct_names` instead, run over every file
     under both roots.
 
-    Not consumed by rules E1/E2 — computed here, in `run_real_scan`'s own
-    discovery phase, so Task 3 only has to ADD a consumer rather than build
-    the cross-root discovery plumbing this function already does.
+    Consumed by rule E4 only (`scan_bridge_gated_detail_impls`), never by
+    E1/E2/E3 — an impl's target is a TYPE, not a field, so none of the
+    field-classification tiers ever look here.
     """
     names = {n for n in core_enums if "::" not in n}
     names |= {n for n in bridge_enums if "::" not in n}
@@ -2491,14 +2955,21 @@ def run_real_scan() -> int:
     core_enums, core_aliases, core_consts = _discover_tier_inputs(core_sources)
     bridge_enums, bridge_aliases, bridge_consts = _discover_tier_inputs(bridge_sources)
 
-    # Task 3's E4 registry (#480): not consumed by E1/E2 — computing it on
-    # every real-scan run proves the cross-root discovery plumbing Task 3
-    # will build its rule on actually runs clean, rather than being an
-    # unexercised, unproven claim. Task 3's E4 reads `scanned_error_type_names`
-    # here once it has a consumer; unused until then.
+    # Rule E4's registry (#480): every `#[error]`-bearing enum/struct name
+    # this guard scans under EITHER root. Cross-root on purpose — the impls
+    # in `error/detail.rs` name core types (`secretary_core::vault::VaultError`)
+    # far more often than bridge-local ones.
     scanned_error_type_names = discover_scanned_error_type_names(
         core_sources, bridge_sources, core_enums, bridge_enums
     )
+
+    # Rule E3's sanctioned-constructor set, read from the ONE detail module.
+    # If that file is missing from the scanned sources the set is EMPTY and
+    # every `detail::*` call denies — see `sanctioned_constructor_names`.
+    detail_src = next(
+        (raw for label, raw in bridge_sources if is_detail_module(label)), None
+    )
+    sanctioned = sanctioned_constructor_names(detail_src)
 
     # Pass 2: the actual scan, now with tiers 2, 3, and 4 available — each
     # file's own foreign `use` bindings withdrawing the bare-name credits
@@ -2517,7 +2988,9 @@ def run_real_scan() -> int:
     # (the carve-out — item 1), PLUS rule E2's two structural sweeps (items
     # 2 and 3) — `scan_source` itself (sweep 1, thiserror-derived
     # declarations) and `scan_bridge_plain_declarations` (sweep 2, plain-derive
-    # `*Error`/`*Warning` enums with no `#[error(...)]` attribute at all).
+    # `*Error`/`*Warning` enums with no `#[error(...)]` attribute at all) —
+    # PLUS rule E3 (the construction sites E2's gated-name carve-out defers
+    # to) and rule E4 (the `impl GatedDetail` allowlist itself).
     for label, raw in bridge_sources:
         foreign = foreign_use_names(raw)
         findings = scan_source(
@@ -2531,6 +3004,10 @@ def run_real_scan() -> int:
         )
         findings += scan_bridge_plain_declarations(
             label, raw, bridge_enums, bridge_aliases, foreign
+        )
+        findings += scan_bridge_construction_sites(label, raw, sanctioned)
+        findings += scan_bridge_gated_detail_impls(
+            label, raw, scanned_error_type_names
         )
         for f in findings:
             if f"{f.path}\t{f.rule}\t{f.source_line}" in allowlist:
@@ -2549,6 +3026,13 @@ def run_real_scan() -> int:
                 # every field regardless of `Display`), so "interpolates"
                 # would misdescribe it.
                 detail = f"variant {v.variant} declares `{v.field}: {v.field_type}` (not gated)"
+            elif v.rule == "E3":
+                detail = (
+                    f"gated field `{v.field}` is built from an unsanctioned "
+                    f"expression: {v.field_type}"
+                )
+            elif v.rule == "E4":
+                detail = f"impl GatedDetail for `{v.field}`: {v.field_type}"
             else:
                 detail = f"variant {v.variant} interpolates `{v.field}: {v.field_type}`"
             print(
@@ -2559,10 +3043,12 @@ def run_real_scan() -> int:
             )
         print(
             f"\n{len(violations)} violation(s). A `core` or bridge error "
-            "declaration must not carry an ungated runtime String — it "
-            "reaches both platform UIs and their logs (#474/#480). Carry a "
-            "&'static str hint plus an ordinal, or record a reviewed "
-            "exception in\n  "
+            "payload must not carry an ungated runtime String — it reaches "
+            "both platform UIs and their logs (#474/#480). Carry a "
+            "&'static str hint plus an ordinal (E1/E2), build the value "
+            "through a `detail::*` constructor (E3), move the impl into "
+            f"{DETAIL_MODULE_REL} (E4), or record a reviewed exception in"
+            "\n  "
             f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)}",
             file=sys.stderr,
         )
@@ -3507,10 +3993,18 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
 ]
 
 
-# Rule E2 (#480) — mirrors `POSITIVE_CONTROLS` / `NEGATIVE_CONTROLS`, run
-# through `scan_bridge_control` (`bridge_mode=True` + `scan_bridge_plain_declarations`)
-# instead of `scan_control`. Same `(label, source)` / `(label, source,
-# expectation)` tuple shape.
+# Rules E2/E3/E4 (#480) — mirrors `POSITIVE_CONTROLS` / `NEGATIVE_CONTROLS`,
+# run through `scan_bridge_control` (every bridge producer) instead of
+# `scan_control`.
+#
+# POSITIVE entries are `(label, source)`, `(label, source, expectation)`, or
+# `(label, source, expectation, options)`; NEGATIVE entries are
+# `(label, source)` or `(label, source, options)`. `options` is passed as
+# **kwargs to `scan_bridge_control` — today only `path_label`, which rule E4
+# needs because its verdict DEPENDS on whether the file being scanned is
+# `detail.rs` (the one file permitted to declare an impl) or any other.
+# A positive entry needing options but making no finding-shape claim passes
+# `None` for the expectation.
 BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
     (
         "BP1 String field under an unsanctioned name in a thiserror enum",
@@ -3627,9 +4121,115 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"variant": "LeakError", "field": "leak"},
     ),
+    (
+        "BP11 format! initializer on a gated field (brief BP5)",
+        ''' fn f() -> E { E::V { detail: format!("x: {}", leak()) } } ''',
+        {"field": "detail"},
+    ),
+    (
+        "BP12 method-call initializer (e.to_string()) denies (brief BP6)",
+        ''' fn f(e: X) -> E { E::V { detail: e.to_string() } } ''',
+        {"field": "detail"},
+    ),
+    (
+        "BP13 hex::encode initializer denies — only detail::uuid_hex is "
+        "sanctioned (brief BP7)",
+        ''' fn f(u: [u8; 16]) -> E { E::V { uuid_hex: hex::encode(u) } } ''',
+        {"field": "uuid_hex"},
+    ),
+    (
+        "BP14 unqualified constructor call denies — must be detail::-qualified "
+        "(brief BP8)",
+        ''' fn f(e: X) -> E { E::V { detail: gated(&e) } } ''',
+        {"field": "detail"},
+    ),
+    (
+        "BP15 String::new() denies — only the bare declaration token String "
+        "passes (brief BP9)",
+        ''' fn f() -> E { E::V { detail: String::new() } } ''',
+        {"field": "detail"},
+    ),
+    (
+        "BP16 impl GatedDetail outside detail.rs (brief BP10)",
+        ''' impl GatedDetail for SomeType {} ''',
+        {"field": "SomeType", "field_type_prefix": E4_OUTSIDE},
+    ),
+    (
+        "BP17 impl GatedDetail in detail.rs for an unregistered type "
+        "(brief BP11; the brief's `totally::ForeignType` is rooted at an "
+        "unscanned crate, so it can never REACH the registry check — the "
+        "root is `crate` here so the registry check is the only arm left)",
+        ''' impl GatedDetail for crate::totally::ForeignType {} ''',
+        {"field": "crate::totally::ForeignType", "field_type_prefix": E4_UNSCANNED},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP18 identifier passthrough under a DIFFERENT name denies "
+        "(brief BP12)",
+        ''' fn f(s: String) -> E { E::V { detail: s } } ''',
+        {"field": "detail"},
+    ),
+    (
+        "BP19 self-authorisation: a fake #[error(...)] struct written INSIDE "
+        "a raw-string const's value must not register its name in "
+        "scanned_error_type_names and thereby authorise an E4 impl for a "
+        "same-named type (Task 3's mandated registry hardening)",
+        '''
+        const FAKE: &str = r#"#[error("x")] pub struct LeakError {}"#;
+        impl GatedDetail for crate::x::LeakError {}
+        ''',
+        {"field": "crate::x::LeakError", "field_type_prefix": E4_UNSCANNED},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP20 a FOREIGN-rooted impl target must deny even when some scanned "
+        "crate declares a same-named error type — the LIVE std::io::Error vs "
+        "core/src/error.rs `pub enum Error` witness",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum Error {
+            #[error("x")]
+            V,
+        }
+        impl GatedDetail for std::io::Error {}
+        ''',
+        {"field": "std::io::Error", "field_type_prefix": E4_ROOT},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP21 a BARE impl target denies even when registered — a bare name "
+        "names no crate, so it cannot be told apart from a use-imported "
+        "foreign type of the same name",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FfiVaultError {
+            #[error("x")]
+            V,
+        }
+        impl GatedDetail for FfiVaultError {}
+        ''',
+        {"field": "FfiVaultError", "field_type_prefix": E4_BARE},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP22 two struct declarations on ONE line: the already-swept span of "
+        "the first must not swallow the second (deferred minor from Task 2's "
+        "review — the span ended at end-of-line)",
+        '''
+#[derive(thiserror::Error, Debug)]
+#[error("x")] pub struct AError { detail: String } pub struct BError { leak: String }
+''',
+        {"variant": "BError", "field": "leak"},
+    ),
+    (
+        "BP23 a sanctioned call must consume the WHOLE expression — "
+        "`detail::gated(&e) + <anything>` starts with one too",
+        ''' fn f(e: X) -> E { E::V { detail: detail::gated(&e) + &leak() } } ''',
+        {"field": "detail"},
+    ),
 ]
 
-BRIDGE_NEGATIVE_CONTROLS: list[tuple[str, str]] = [
+BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
     (
         "BN1 detail: String under a gated name passes the declaration scan",
         '''
@@ -3673,12 +4273,87 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "BN5 literal initializer (brief BN4)",
+        ''' fn f() -> E { E::V { detail: "fixed" } } ''',
+    ),
+    (
+        "BN6 literal .into() (brief BN5)",
+        ''' fn f() -> E { E::V { detail: "fixed".into() } } ''',
+    ),
+    (
+        "BN7 literal .to_string() (brief BN6)",
+        ''' fn f() -> E { E::V { detail: "fixed".to_string() } } ''',
+    ),
+    (
+        "BN8 sanctioned qualified call (brief BN7)",
+        ''' fn f(e: X) -> E { E::V { detail: detail::gated(&e) } } ''',
+    ),
+    (
+        "BN9 declaration shape `detail: String` is not an E3 finding — E2 "
+        "owns declarations (brief BN8)",
+        ''' pub enum E { #[error("x: {detail}")] V { detail: String } } ''',
+    ),
+    (
+        "BN10 detail: detail passthrough (brief BN9)",
+        ''' fn f(detail: String) -> E { E::V { detail: detail } } ''',
+    ),
+    (
+        "BN11 module path detail::x( is not an initializer (brief BN10)",
+        ''' fn f() -> String { detail::uuid_hex(&[0u8; 16]) } ''',
+    ),
+    (
+        "BN12 record_uuid_hex is NOT a gated name (brief BN11)",
+        ''' fn f(u: [u8; 16]) -> D { D { record_uuid_hex: hex::encode(u) } } ''',
+    ),
+    (
+        "BN13 cfg(test) construction is skipped (brief BN12)",
+        ''' #[cfg(test)] mod tests { fn f() -> E { E::V { detail: format!("{}", x()) } } } ''',
+    ),
+    (
+        "BN14 fully-qualified crate::error::detail::gated( passes "
+        "(brief BN13)",
+        ''' fn f(e: X) -> E { E::V { detail: crate::error::detail::gated(&e) } } ''',
+    ),
+    (
+        "BN15 a crate-rooted impl target whose last segment is a scanned "
+        "error type passes inside detail.rs",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FfiVaultError {
+            #[error("x")]
+            V,
+        }
+        impl GatedDetail for crate::error::FfiVaultError {}
+        ''',
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BN16 a secretary_core-rooted impl target whose last segment is a "
+        "scanned error type passes inside detail.rs",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum VaultError {
+            #[error("x")]
+            V,
+        }
+        impl GatedDetail for secretary_core::vault::VaultError {}
+        ''',
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BN17 a COMMA inside the literal must not truncate the expression — "
+        "this is what pins `initializer_end` to the DISCOVERY view",
+        ''' fn f() -> E { E::V { detail: "fixed, with a comma" } } ''',
+    ),
 ]
 
 
-# `(variant, field, field_type)` claims a POSITIVE control makes about the
-# finding it expects, beyond "something fired". `unparsed` asserts the
-# finding IS (or is not) the default-deny-on-structure kind.
+# `(variant, field, field_type, field_type_prefix)` claims a POSITIVE control
+# makes about the finding it expects, beyond "something fired". `unparsed`
+# asserts the finding IS (or is not) the default-deny-on-structure kind;
+# `field_type_prefix` asserts WHICH denial arm produced it (rule E4's reason
+# codes).
 #
 # Non-emptiness alone is not enough for a control that pins a PARSER fix:
 # once an unresolvable construct became an `UNPARSED` finding rather than a
@@ -3697,6 +4372,13 @@ def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
     if "field" in expect and f.field != expect["field"]:
         return False
     if "field_type" in expect and f.field_type != expect["field_type"]:
+        return False
+    # `field_type_prefix` exists for rule E4's reason codes (see `E4_OUTSIDE`
+    # and friends): an exact `field_type` match would pin a whole paragraph
+    # of prose, so editing the wording would break the control rather than
+    # the logic it guards.
+    prefix = expect.get("field_type_prefix")
+    if prefix is not None and not f.field_type.startswith(str(prefix)):
         return False
     return True
 
@@ -3746,7 +4428,8 @@ def check_view_invariants() -> list[str]:
     samples = [src for _, src, *_ in POSITIVE_CONTROLS]
     samples += [src for _, src in NEGATIVE_CONTROLS]
     samples += [src for _, src, *_ in BRIDGE_POSITIVE_CONTROLS]
-    samples += [src for _, src in BRIDGE_NEGATIVE_CONTROLS]
+    samples += [src for _, src, *_ in BRIDGE_NEGATIVE_CONTROLS]
+    samples.append(SELF_TEST_DETAIL_SRC)
     samples.append(LEXER_SAMPLE)
     failures: list[str] = []
     for i, src in enumerate(samples):
@@ -3818,23 +4501,66 @@ def scan_control(src: str) -> list[Finding]:
     )
 
 
-def scan_bridge_control(src: str) -> list[Finding]:
-    """`scan_control`, run in `bridge_mode` PLUS rule E2's second sweep
-    (#480) — mirrors `scan_control`'s self-contained-fixture design (no real
-    file path, hence no qualified spellings; see `module_path_segments`).
+# The `detail.rs` stand-in every self-test control's rule-E3 sanctioned-
+# constructor lookup resolves against. Deliberately a SEPARATE fixture from
+# the real file: a control asserting "only `detail::gated` / `detail::uuid_hex`
+# are sanctioned" must not silently change meaning when someone adds a
+# constructor to the real `error/detail.rs`.
+SELF_TEST_DETAIL_SRC = '''
+pub(crate) trait GatedDetail: std::fmt::Display {}
 
-    Runs BOTH of rule E2's producers, exactly as `run_real_scan` does for a
-    real bridge file: `scan_source(..., bridge_mode=True)` (sweep 1,
-    thiserror-derived declarations) and `scan_bridge_plain_declarations` (sweep 2,
-    plain-derive `*Error`/`*Warning` enums).
+pub(crate) fn gated(e: &impl GatedDetail) -> String {
+    e.to_string()
+}
+
+pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> String {
+    hex::encode(uuid)
+}
+'''
+
+
+def scan_bridge_control(
+    src: str,
+    path_label: str = "<self-test-bridge>",
+    detail_src: str = SELF_TEST_DETAIL_SRC,
+) -> list[Finding]:
+    """`scan_control`, run in `bridge_mode` PLUS rules E2/E3/E4 (#480) —
+    mirrors `scan_control`'s self-contained-fixture design (no real file path,
+    hence no qualified spellings; see `module_path_segments`).
+
+    Runs EVERY bridge producer, exactly as `run_real_scan` does for a real
+    bridge file: `scan_source(..., bridge_mode=True)` (rule E2 sweep 1,
+    thiserror-derived declarations), `scan_bridge_plain_declarations` (rule E2
+    sweep 2, plain-derive `*Error`/`*Warning` declarations),
+    `scan_bridge_construction_sites` (rule E3) and
+    `scan_bridge_gated_detail_impls` (rule E4).
+
+    `path_label` defaults to a label that is NOT the detail module, so a
+    control exercises rule E4's "impl outside detail.rs" arm by default; a
+    control that needs the OTHER arm (an impl INSIDE detail.rs, checked
+    against the scanned-type registry) passes `path_label=DETAIL_MODULE_REL`
+    via its options dict.
+
+    `scanned_error_type_names` is derived from the CONTROL ITSELF (both the
+    "core" and "bridge" halves collapse to this one source), so a control
+    that wants a name registered declares the `#[error]`-bearing type in the
+    same string — the same self-contained design every other control uses.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
     found = scan_source(
-        "<self-test-bridge>", src, enums, aliases, consts, foreign, bridge_mode=True
+        path_label, src, enums, aliases, consts, foreign, bridge_mode=True
     )
-    found += scan_bridge_plain_declarations("<self-test-bridge>", src, enums, aliases, foreign)
+    found += scan_bridge_plain_declarations(path_label, src, enums, aliases, foreign)
+    found += scan_bridge_construction_sites(
+        path_label, src, sanctioned_constructor_names(detail_src)
+    )
+    found += scan_bridge_gated_detail_impls(
+        path_label,
+        src,
+        discover_scanned_error_type_names([], [(path_label, src)], enums, enums),
+    )
     return found
 
 
@@ -3942,7 +4668,8 @@ def run_self_test() -> int:
     for entry in BRIDGE_POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         bridge_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None
-        found = scan_bridge_control(src)
+        opts: dict = entry[3] if len(entry) > 3 else {}
+        found = scan_bridge_control(src, **opts)
         failures += check_key_shape(label, found)
         if not found:
             failures.append(f"POSITIVE control did not fire: {label}")
@@ -3952,8 +4679,10 @@ def run_self_test() -> int:
                 f"expected {bridge_expect}, got "
                 f"{[(f.variant, f.field, f.field_type) for f in found]}"
             )
-    for label, src in BRIDGE_NEGATIVE_CONTROLS:
-        found = scan_bridge_control(src)
+    for entry in BRIDGE_NEGATIVE_CONTROLS:
+        label, src = entry[0], entry[1]
+        neg_opts: dict = entry[2] if len(entry) > 2 else {}
+        found = scan_bridge_control(src, **neg_opts)
         if found:
             failures.append(
                 f"NEGATIVE control fired: {label} -> "
