@@ -310,8 +310,15 @@ passes into that field), so an entry there is a point-in-time claim, verified
 by reading every current constructor, that no producer interpolates vault
 plaintext. Re-verify it whenever a producer changes. The guard scans
 everything under `core/src/` only — the FFI bridge builds its own `format!`
-detail strings (`ffi/secretary-ffi-bridge/**`) and is **not** scanned; that gap
-is tracked as #478, not silently assumed closed.
+detail strings (`ffi/secretary-ffi-bridge/**`) and is **not** scanned. That gap
+is real and only PARTLY owned: #478 is scoped to `VaultSyncError.Failed` /
+`FfiVaultError::SyncFailed`, and its acceptance offers two alternatives —
+extending this guard to `ffi/secretary-ffi-bridge/src/**` (which would close
+the gap broadly) or gating that one fold's producers individually (which
+would not). If #478 closes the narrow way, the bridge-authored `detail`
+strings behind `CorruptVault` / `SaveCryptoFailure` — the very arms #474
+un-redacted on both platforms — are owned by nobody. Cite #478 for the slice
+it covers; do not cite it as though the whole gap were tracked.
 
 ### Memory hygiene: zeroize discipline
 

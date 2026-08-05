@@ -42,8 +42,14 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   `String` into an `#[error(...)]` message, so this is enforced, not just
      *   claimed. Both arms are therefore no longer redacted here.
      *   The guard scans everything under `core/src/` ONLY — `ffi/secretary-ffi-bridge`
-     *   builds its own `format!` detail strings for [SaveCryptoFailure] and is
-     *   NOT scanned; see #478.
+     *   builds its own `format!` detail strings for [CorruptVault] and
+     *   [SaveCryptoFailure] and is NOT scanned, so THAT half is gated by review
+     *   alone. #478 covers only the `VaultSyncError.Failed` /
+     *   `FfiVaultError::SyncFailed` slice of the gap, and only ONE of the two
+     *   alternatives its acceptance offers (extending the guard's scope over all
+     *   of `ffi/secretary-ffi-bridge`) would reach these two arms; the other
+     *   (gating that one fold's producers) would leave them unowned. Read it as a
+     *   partial citation, not as "the bridge is covered."
      * - [InvalidRecoveryPhrase]: `MnemonicError` Display emits a word INDEX
      *   (`core/src/unlock/mnemonic.rs:54`), a word count (`:46`), or the fixed
      *   `"BIP-39 checksum failed"` (`:59`) — never the word itself.

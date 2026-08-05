@@ -99,6 +99,16 @@ extension VaultAccessError: SecretFreeError {
     /// reintroduces a runtime `String`. Restoring this redaction would throw
     /// away every corruption diagnostic for no remaining benefit.
     ///
+    /// That guard scans `core/src/**` ONLY, and `.corruptVault`'s payload is not
+    /// wholly a `core` payload: `SecretaryKit`'s `VaultErrorMapping.swift:21`
+    /// passes `FfiVaultError.CorruptVault.detail` through verbatim, and the
+    /// bridge (`ffi/secretary-ffi-bridge/**`) builds part of that string with its
+    /// own `format!`. The bridge half is gated by review alone. #478 covers only
+    /// the `VaultSyncError.Failed` / `FfiVaultError::SyncFailed` slice of that
+    /// gap, and only one of the two alternatives its acceptance offers
+    /// (extending the guard's scope to `ffi/secretary-ffi-bridge/src/**`) would
+    /// reach this arm; the other would leave it unowned. Cite it as partial.
+    ///
     /// `.invalidArgument` above is NOT covered by that guarantee and must stay
     /// redacted: its payload is SWIFT-authored, not Rust-authored. No issue
     /// tracks that payload class itself; #473 tracks the separate question of

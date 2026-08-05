@@ -108,6 +108,29 @@ confidence.
 | `BlockError::DuplicateKey` (`block.rs:313`) | `{ key: String }` | `{ field: &'static str, index: usize }` |
 | `BundleError::UnknownField` (`bundle.rs:116`) | `(String)` | `{ index: usize }` |
 
+**Addition (final review): two `CardError` changes this section omitted.**
+Task 5 shipped them and they are Group-1-class, not Group-2 — this section
+previously mentioned `CardError` only for its `CborEncode` / `CborDecode`
+arms, so a reader working from this doc alone would not know they exist.
+
+| Variant | Today | Becomes |
+|---|---|---|
+| `CardError::UnknownField` | folded into `CborDecode(format!("unknown card field: {other}"))` (`card.rs:349-351` on `main`) | `{ index: usize }` |
+| `CardError::DuplicateField` | *(did not exist — `set_once` had no dedicated arm)* | `{ field: &'static str }` |
+
+`UnknownField` is the sharper of the two: a Contact Card is public by design,
+so its keys are not vault plaintext, but the key is arbitrary text from an
+**untrusted party**, and formatting untrusted text into a diagnostic that
+reaches a log is its own hazard. It carries the entry's 0-based ordinal
+instead, rendered 1-based — the same shape as `RecordError::DuplicateKey`.
+`DuplicateField` is raised from `set_once`, reached only after the
+unknown-key arm has rejected everything outside the §6 set, so its payload is
+always one of the fixed `KEY_*` constants: `&'static str`, no information
+lost. (Note the shape asymmetry with `BundleError::DuplicateField(&'static str)`,
+which is a tuple: `CardError`'s is a named-field struct. Deliberately left
+alone — the two enums are independent surfaces and churning one to match the
+other buys nothing.)
+
 New message: `"duplicate map key at entry #3 of fields"`.
 
 `field` is a `&'static str` naming the map level, taken from the convention
@@ -166,24 +189,60 @@ Six variants change payload type from `String` to `CborFault`:
 - `CanonicalError::CborEncode`
 - `BundleError::CborError`
 
-`SyncError::StateDecodeFailed` / `StateEncodeFailed` join this group — their
-`detail: String` is built from `ciborium` at `sync/state.rs:136`.
+**Correction (final review).** An earlier revision of this paragraph read
+"`SyncError::StateDecodeFailed` / `StateEncodeFailed` join this group — their
+`detail: String` is built from `ciborium` at `sync/state.rs:136`." They did
+**not** join it. Both still carry `detail: String` (`sync/error.rs:19`, `:22`)
+and both are Section-3 **allowlist entries**, not payload-type changes. What
+DID change is one layer down: `sync/state.rs:136` no longer stringifies the
+`ciborium` error, it passes `format!("CBOR parse: {}", crate::cbor::classify_de(&e))`
+— the classified, data-free `CborFault`. So the leak is closed at the producer
+while the declared field type stayed `String`, which is exactly why the guard
+(which sees declarations, not producers) still reports these two and a human
+had to sign the allowlist entry.
 
 The generic `E` parameter is why these were stringified originally: the doc
 comment at `record.rs:110` explains that `ciborium::ser::Error<E>` is generic over
 the writer's I/O error and so cannot be captured uniformly as a `#[from]` source.
 `classify_ser<E>` sidesteps that by projecting to a non-generic type.
 
-#### The one deliberate residual disclosure
+#### The deliberate residual disclosures
 
-`CborFault.offset` is a byte offset into decrypted plaintext. It is positional
-metadata, not content, but it is a weak length oracle: "duplicate at offset 41"
-narrows the possible lengths of preceding field names.
+An earlier revision of this section was headed "The **one** deliberate residual
+disclosure." There are at least **five**, all of the same kind — a position or a
+length measured over decrypted plaintext — and two of them are introduced by this
+work. Listing them all is the point of the section; naming only one made the
+accepted trade look narrower than it is.
 
-It is kept. Vault file sizes are already visible on disk to anyone who can read
-the folder, so the threat model already treats plaintext *size* as disclosed, and
-the offset is the single most useful datum when debugging a genuinely corrupt
-vault. Recorded here so the decision is explicit rather than assumed away.
+Introduced here:
+
+- **`CborFault.offset`** — a byte offset into decrypted plaintext.
+- **`RecordError::DuplicateKey.index` / `BlockError::DuplicateKey.index`** — the
+  ordinal of the offending entry within its map. Strictly less than the key it
+  replaces, but it is still positional metadata over plaintext.
+
+Pre-existing, and reaching a log for the first time BECAUSE of this branch —
+these three have been in `core` all along, but iOS's `.corruptVault` and
+Android's `CorruptVault` / `SaveCryptoFailure` arms were redacted wholesale, so
+nothing carrying them ever reached the unified log or logcat. §5 removes those
+redactions, so they are now in scope and belong here:
+
+- **`RecordError::InvalidUuid { length }`** (`record.rs:155`) — a byte count from
+  decrypted record plaintext.
+- **`BlockError::InvalidUuid { length }`** (`block.rs:307`) — the same, from
+  decrypted block plaintext.
+- **`ManifestError::InvalidByteLength { length }`** (`manifest.rs:170`) — the
+  same, from the decrypted manifest body (`manifest.cbor.enc` is encrypted per
+  vault-format §4).
+
+All five are kept, on one argument. Vault file sizes are already visible on disk
+to anyone who can read the folder, so the threat model already treats plaintext
+*size* as disclosed; an offset, an ordinal, or a field's byte length is a weaker
+signal than the file length an attacker with folder access reads for free. And
+each is the single most useful datum when debugging a genuinely corrupt vault —
+"duplicate at entry #3 of `fields`" is actionable in a way that "some map has a
+duplicate" is not. Recorded so the decision is explicit rather than assumed away,
+and so a future reviewer weighing a sixth has the list to weigh it against.
 
 ### 3. Group 3 — reviewed allowlist, no code change
 
@@ -192,10 +251,21 @@ vault. Recorded here so the decision is explicit rather than assumed away.
 | `VaultTomlError::MalformedToml` / `UnknownKdfKey` / `UnsupportedKdfAlgorithm` / `UnsupportedKdfVersion` | `vault.toml` is **unencrypted on disk** — `docs/vault-format.md` §2 is titled "`vault.toml` — cleartext metadata" and the file's own header comment reads "cleartext; not secret". Its bytes are disclosed to anyone with the vault folder; the threat model treats them as public. `MalformedToml` needs the `toml` crate's message to be debuggable at all. |
 | `VaultError::RestoreVerificationFailed { detail }` / `RepairRejected { detail }` | `detail` is built only from fixed string literals (`orchestrators.rs:2512`) and `format!("{e}")` over other `core` errors (`:2522`, `:2553`) — all of which this work gates. |
 
-`SyncError::InvalidArgument { detail: String }` gets a free structural win rather
-than an allowlist entry: all three producers (`sync/error.rs:111`,
+**Correction (final review).** An earlier revision of this paragraph read
+"`SyncError::InvalidArgument { detail: String }` gets a free structural win
+rather than an allowlist entry: all three producers (`sync/error.rs:111`,
 `sync/state.rs:56`, `:61`) pass fixed literals, so it becomes
-`{ detail: &'static str }`.
+`{ detail: &'static str }`." That is wrong on every count, and the producer
+survey behind it was not exhaustive. As shipped, `InvalidArgument` is still
+`{ detail: String }` (`sync/error.rs:28`) and **is** a Section-3 allowlist
+entry. It has **ten** construction sites across **four** files
+(`sync/error.rs:110` test, `sync/prepare.rs:237,294,394,449`,
+`sync/state.rs:55,60`, `sync/commit/write.rs:311,318,333`), and
+`prepare.rs:449` passes `format!("merge_block: {e}")` over a `ConflictError`
+— not a literal, so the `&'static str` rewrite was never available. The
+allowlist entry carries the full survey and the reasoning for why that
+`ConflictError` fold is safe (both of its variants carry only `[u8; 16]`
+fields, and this same guard scans it).
 
 Expected allowlist size: **six entries**, all in one reviewed section. Keeping it
 that small is what keeps each entry meaningful — the same reasoning recorded for
@@ -578,14 +648,41 @@ plus the ones it has not — nested block comments, `r##"…"##`, `b"…"`,
 
 Every round-4 and round-5 fix is mutation-proven the same way: each mechanism
 is disabled in turn and the controls re-run, with each mutation breaking
-exactly the control(s) written for it and nothing else. One pair is worth
-reading as a designed experiment rather than a checkbox: crippling char-literal
-lexing alone breaks the brace control but NOT the `use`-desync control,
-because the withdrawal pass reads raw and never saw the blanked view; crippling
+exactly the control(s) written for it and nothing else.
+
+**Correction (final review): the round-5 headline fix had NO control until
+now.** An earlier revision of this paragraph offered a designed experiment —
+"crippling char-literal lexing alone breaks the brace control but NOT the
+`use`-desync control, because the withdrawal pass reads raw; crippling
 char-literal lexing *and* pointing that pass back at the blanked view breaks
-both. That is the defence-in-depth claim, demonstrated rather than asserted.
+both. That is the defence-in-depth claim, demonstrated rather than asserted."
+The second half of that sentence was false as written. The single mutation
+that matters — pointing `foreign_use_names` at the blanked view **instead of**
+the raw ∪ blanked union, i.e. reverting round 5's headline fix on its own —
+left BOTH `--self-test` and the real scan at exit 0. P31 could not catch it,
+because the lexer handles `'"'` correctly *today*: the desync P31 is named
+after no longer happens, so the blanked view still shows P31's `use`. The
+claim was demonstrated only in combination with a second, independent break.
+
+Two controls now pin it individually, using the shape that defeats the blanked
+view under a **correct** lexer — an unterminated block comment, which
+`lex_spans` deliberately runs to end-of-input (fail-closed for the credit
+registries, fail-OPEN for the withdrawal pass):
+
+- **P38** — a plain `use std::io::Error;` below an unterminated comment.
+- **P39** — the same as a renaming import (`use std::io::Error as …;`). This
+  one also pins `_looks_like_use_tree`'s ` as ` → `|` normalisation, which was
+  substituting a character absent from `USE_TREE_CHARS_RE` and so made the raw
+  read reject **every** renaming import in the tree: 52 names withdrawn by the
+  raw read against the blanked read's 61 (union 67), leaving all 15 renames
+  resting on the single read a lexer desync disarms. Fixed; the raw read now
+  withdraws all 67, a strict superset of the union, real-scan verdict unchanged.
+
+Verified: the blanked-view-only mutation breaks exactly P38 and P39 and leaves
+P28 / P31 / P32 green; the `|`-removal mutation breaks exactly P39.
 `--self-test` runs first in CI so a green guard is never vacuous — and that
-claim is backed by a mutation pass, not inspection.
+claim is now backed by a mutation pass over each mechanism individually, not
+by inspection and not only in combination.
 
 ### 5. Platform narrowing
 
@@ -594,8 +691,14 @@ claim is backed by a mutation pass, not inspection.
   (`SecretFreeError.swift:112`). Rewrite the doc comment: its stated
   justification, quoting `record.rs:660` by line, ceases to exist.
 - **Android** — delete the `CorruptVault` and `SaveCryptoFailure` arms from
-  `VaultBrowseError.diagnosticDescription` (`VaultBrowseError.kt:76-79`), and
-  drop `BrowseMapping.kt`'s explicit redaction of the same.
+  `VaultBrowseError.diagnosticDescription` (`VaultBrowseError.kt:76-79`).
+  *(Correction, final review: an earlier revision added "and drop
+  `BrowseMapping.kt`'s explicit redaction of the same." There is no such
+  redaction and there never was. `BrowseMapping.kt` — which lives in
+  `android/kit/`, not `android/vault-access/` — MAPS both arms verbatim
+  (`CorruptVault(e.detail)`, `SaveCryptoFailure(e.detail)`); the redaction was
+  only ever in `diagnosticDescription`. The file is untouched on this branch,
+  and diffing it against `main` is the check.)*
 - **`CLAUDE.md`** — the *"`VaultBrowseError.SaveCryptoFailure` must stay
   redacted … Do not 'align the platforms' by deleting the redaction"* section is
   replaced by the new invariant. That instruction was correct when written and
@@ -605,8 +708,13 @@ claim is backed by a mutation pass, not inspection.
 platforms.** Their payloads are platform-authored, not Rust-authored:
 `RecordEditModel.kt:179` builds `"field '${f.name}' is not valid hex"` and `:193`
 builds `"duplicate field name: ${v.name}"` from a decrypted record, and iOS's
-`RecordEditViewModel` does the same in Swift. Different class, different fix
-(#473 / #476 territory). This must not be swept into "align the platforms".
+`RecordEditViewModel` does the same in Swift. Different class, different fix.
+**No issue tracks that platform-authored payload class itself**; #473 / #476
+track the separate question of these carried diagnostics being rendered as
+on-screen copy. (An earlier revision called this "#473 / #476 territory," which
+reads as though the class were owned. Commit `b3f4243` corrected exactly that
+wording at four other sites; this was the missed fifth.) This must not be swept
+into "align the platforms".
 
 ## What does not change
 
@@ -669,7 +777,11 @@ One branch, ordered so it is coherent if the session ends early:
 1. `core/src/cbor.rs` + tests (self-contained, no callers yet).
 2. Group 1 variant changes + call sites + tests.
 3. Group 2 variant changes + call sites + tests.
-4. `SyncError::InvalidArgument` / `BundleError::DuplicateField` static-str wins.
+4. `BundleError::DuplicateField` static-str win. *(Correction, final review:
+   this step also listed `SyncError::InvalidArgument`. That win never
+   happened and was never available — see §3's correction: it has ten
+   producers across four files, one of which passes `format!("merge_block:
+   {e}")`. It shipped as a Section-3 allowlist entry instead.)*
 5. The guard, landed RED, then the allowlist, then GREEN. CI wiring.
 6. **← natural stop point. The branch is shippable here.**
 7. iOS narrowing + tests.
@@ -701,8 +813,16 @@ One branch, ordered so it is coherent if the session ends early:
 
 ## Non-goals
 
-- `.invalidArgument` / `InvalidArgument` on either platform (see §5) — #473/#476.
+- `.invalidArgument` / `InvalidArgument` on either platform (see §5). No issue
+  tracks that platform-authored payload class itself; #473 / #476 track only
+  the separate on-screen-copy question.
 - `VaultSyncError.Failed`'s content-traced safety claim — a separate Rust/FFI
-  boundary issue, filed separately this session.
+  boundary issue, filed separately this session as #478. Note #478 is scoped
+  to `VaultSyncError.Failed` / `FfiVaultError::SyncFailed`, NOT to the whole
+  "the bridge builds its own `format!` detail strings and this guard does not
+  scan them" gap: only one of the two alternatives its acceptance offers
+  (extending the guard to `ffi/secretary-ffi-bridge/src/**`) would close that
+  broadly. If it closes the other way, the bridge half of `CorruptVault` /
+  `SaveCryptoFailure` — the arms §5 un-redacts — is owned by nobody.
 - Retiring the Kotlin grep rules for a type-aware detekt rule — #477.
 - Any change to the on-disk vault format, the FFI surface, or the CRDT merge.
