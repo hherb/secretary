@@ -90,7 +90,9 @@ final class SecretFreeErrorTests: XCTestCase {
     /// The sibling that must NOT change. `.invalidArgument`'s payload is
     /// SWIFT-authored — `RecordEditViewModel` interpolates a decrypted record
     /// field name into it — so it is a different class from the Rust-authored
-    /// payloads #474 gated. Tracked as #473.
+    /// payloads #474 gated. No issue tracks that payload class itself; #473
+    /// tracks the separate question of these carried diagnostics being
+    /// rendered as on-screen copy.
     func testInvalidArgumentStaysRedacted() {
         let error = VaultAccessError.invalidArgument("field 'amex-cvv' is not valid hex")
         XCTAssertEqual(error.diagnosticDescription, "invalidArgument(<redacted>)")

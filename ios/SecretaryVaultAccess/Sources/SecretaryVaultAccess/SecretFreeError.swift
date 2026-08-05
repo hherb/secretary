@@ -100,7 +100,9 @@ extension VaultAccessError: SecretFreeError {
     /// away every corruption diagnostic for no remaining benefit.
     ///
     /// `.invalidArgument` above is NOT covered by that guarantee and must stay
-    /// redacted: its payload is SWIFT-authored, not Rust-authored — see #473.
+    /// redacted: its payload is SWIFT-authored, not Rust-authored. No issue
+    /// tracks that payload class itself; #473 tracks the separate question of
+    /// these carried diagnostics being rendered as on-screen copy.
     ///
     /// Every other case is rendered in full. `.invalidMnemonic` is safe because
     /// the core emits a word index rather than the word; `.folderInvalid` carries

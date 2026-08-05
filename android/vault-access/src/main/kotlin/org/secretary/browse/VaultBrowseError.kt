@@ -24,8 +24,10 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   `"duplicate field name: <name>"`). Redacted regardless of which site
      *   renders it — do NOT rely on catch-arm ordering to keep it out of a log.
      *   This is NOT covered by the #474 guarantee below: its payload is
-     *   Kotlin-authored, not `core`-authored, a different class entirely.
-     *   Tracked as #476.
+     *   Kotlin-authored, not `core`-authored, a different class entirely. No
+     *   issue tracks that payload class itself; #476 tracks the separate
+     *   question of these carried diagnostics being rendered as on-screen
+     *   copy.
      *
      * RENDERED IN FULL, with the evidence:
      * - [CorruptVault] / [SaveCryptoFailure]: as of #474, every plaintext-bearing

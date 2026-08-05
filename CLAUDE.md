@@ -236,9 +236,12 @@ The sink itself is therefore what gets guarded, not a marker on it.
   carry a `&'static str` map-level hint plus an ordinal, never the key, and the
   `ciborium` message — whose `Display` is its `Debug` form — is discarded at the
   boundary by `core/src/cbor.rs`. **`InvalidArgument` stays redacted on both
-  platforms**: its payload is platform-authored (`RecordEditModel.kt:179`/`:193`
-  in Kotlin, `RecordEditViewModel` in Swift), a different class entirely
-  (#473 / #476). Do not sweep it into "align the platforms".
+  platforms**: its payload is platform-authored — `RecordEditModel.kt:179`/`:193`
+  (Kotlin) and `RecordEditViewModel` (Swift) each interpolate a decrypted
+  record's field name into it — so #474's data-free-by-construction guarantee
+  does not reach it. No issue tracks that payload class itself; #473 / #476
+  track the separate question of these carried diagnostics being rendered as
+  on-screen copy. Do not sweep it into "align the platforms".
 
 - **Conform the wrapper types you own.** `diagnosticDetail` default-denies, so an internally-authored wrapper left unconformed does not merely lose its own text — every nested wrap that renders it through the gate discards the message it was just built to carry. `CloudFolderException` / `VaultMirrorException` / `DeviceUuidException` were missed in #472 and the entire cloud-sync failure path collapsed to `<undisclosed org.secretary.mirror.CloudFolderException>`, throwing away `SafCloudFolderPort`'s own gating one frame later (fixed in #475). Default-deny is the right default for types you did NOT author; for a type whose every construction site is a fixed Kotlin literal, conforming it is the whole point of the interface. Assert on message CONTENT when you do — the pre-existing mirror tests asserted only on exception TYPE, which is why this shipped unnoticed.
 
