@@ -69,6 +69,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
+use crate::cbor::{classify_de, classify_ser, CborFault};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -107,19 +108,22 @@ pub const RECORD_UUID_LEN: usize = 16;
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     /// `ciborium` returned an I/O or serialisation error during encode.
-    /// Carries the formatted error message because the underlying
-    /// `ciborium::ser::Error<E>` is generic over the writer's I/O error
-    /// (`std::io::Error` / `core::convert::Infallible`) and so cannot be
-    /// uniformly captured as a `#[from]` source.
+    ///
+    /// Carries a classified [`CborFault`] rather than the upstream message:
+    /// `ciborium`'s `Display` is its `Debug` form, so stringifying it copies
+    /// `ser::Error::Value(String)` verbatim — a `serde` custom message that can
+    /// embed the offending value (#474). The generic-source problem that
+    /// originally forced a `String` (`ciborium::ser::Error<E>` is generic over
+    /// the writer's I/O error, so `#[from]` does not apply) is solved by
+    /// [`crate::cbor::classify_ser`] projecting to a non-generic type.
     #[error("CBOR encode error: {0}")]
-    CborEncode(String),
+    CborEncode(CborFault),
 
     /// `ciborium` returned a parse error during decode (e.g. truncated
-    /// input, type mismatch at the byte level). Carries the formatted
-    /// error message for the same generic-source reason as
-    /// [`Self::CborEncode`].
+    /// input, type mismatch at the byte level). Carries a classified
+    /// [`CborFault`] for the same reason as [`Self::CborEncode`].
     #[error("CBOR decode error: {0}")]
-    CborDecode(String),
+    CborDecode(CborFault),
 
     /// Top-level CBOR item was not a map. Records and field values are
     /// always maps in §6.3.
@@ -226,7 +230,7 @@ pub enum RecordError {
 impl From<CanonicalError> for RecordError {
     fn from(e: CanonicalError) -> Self {
         match e {
-            CanonicalError::CborEncode(s) => RecordError::CborEncode(s),
+            CanonicalError::CborEncode(fault) => RecordError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => RecordError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => RecordError::TagRejected,
         }
@@ -264,8 +268,8 @@ impl UnknownValue {
     /// individual unknown values constructed in isolation are validated
     /// only for the no-float / no-tag rules.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecordError> {
-        let parsed: Value =
-            ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(e.to_string()))?;
+        let parsed: Value = ciborium::de::from_reader(bytes)
+            .map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
         reject_floats_and_tags(&parsed, "<unknown>")?;
         Ok(UnknownValue(parsed))
     }
@@ -274,7 +278,7 @@ impl UnknownValue {
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, RecordError> {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&self.0, &mut buf)
-            .map_err(|e| RecordError::CborEncode(e.to_string()))?;
+            .map_err(|e| RecordError::CborEncode(classify_ser(&e)))?;
         Ok(buf)
     }
 }
@@ -546,7 +550,7 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(e.to_string()))?;
+        ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
 
     // Walk the tree to enforce the no-float and no-tag rules everywhere
     // (including inside forward-compat unknown values). Doing this once
@@ -1882,5 +1886,51 @@ mod tests {
             matches!(err, RecordError::TagRejected),
             "expected TagRejected, got {err:?}"
         );
+    }
+
+    /// The ciborium message must not survive into a core error. Today it does:
+    /// ciborium's Display is its Debug form, so `Semantic(_, msg)` prints `msg`.
+    #[test]
+    fn cbor_decode_error_carries_a_classified_fault_not_upstream_text() {
+        // Truncated CBOR: a map header promising two entries, with none.
+        let truncated: &[u8] = &[0xA2];
+
+        let err = decode(truncated).expect_err("truncated CBOR must be rejected");
+
+        let RecordError::CborDecode(fault) = err else {
+            panic!("expected CborDecode, got {err:?}");
+        };
+        // A syntax/EOF failure classifies as Io or Syntax depending on how
+        // ciborium surfaces a short read; both are data-free. Assert the
+        // property that matters rather than pinning the arm.
+        assert!(
+            matches!(
+                fault.kind,
+                crate::cbor::CborErrorKind::Io | crate::cbor::CborErrorKind::Syntax
+            ),
+            "unexpected kind {:?}",
+            fault.kind
+        );
+
+        // Shape alone (a `CborFault` payload) does not prove the upstream
+        // message was discarded — a `CborFault` could theoretically be
+        // built from a stringified source elsewhere. Assert on rendered
+        // content: neither Display nor Debug of the resulting `RecordError`
+        // may contain ciborium's Debug-form variant names, which is the
+        // observable signature of a passthrough (`ciborium`'s `Display` is
+        // its `Debug` form, so a leaked message would show up as one of
+        // these substrings).
+        let rendered_display = format!("{err}");
+        let rendered_debug = format!("{err:?}");
+        for leak_marker in ["Semantic(", "Syntax(", "RecursionLimitExceeded", "Io("] {
+            assert!(
+                !rendered_display.contains(leak_marker),
+                "Display leaked ciborium's Debug-form marker {leak_marker:?}: {rendered_display}"
+            );
+            assert!(
+                !rendered_debug.contains(leak_marker),
+                "Debug leaked ciborium's Debug-form marker {leak_marker:?}: {rendered_debug}"
+            );
+        }
     }
 }

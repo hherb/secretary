@@ -68,6 +68,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
+use crate::cbor::{classify_de, classify_ser, CborFault};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::Sensitive;
@@ -135,18 +136,23 @@ pub enum BlockError {
     Record(#[from] RecordError),
 
     /// `ciborium` returned an I/O or serialisation error during plaintext
-    /// encode. Carries the formatted error message because the underlying
-    /// `ciborium::ser::Error<E>` is generic over the writer's I/O error
-    /// (`std::io::Error` / `core::convert::Infallible`) and so cannot be
-    /// uniformly captured as a `#[from]` source. Same justification as
-    /// [`RecordError::CborEncode`].
+    /// encode.
+    ///
+    /// Carries a classified [`CborFault`] rather than the upstream message:
+    /// `ciborium`'s `Display` is its `Debug` form, so stringifying it copies
+    /// `ser::Error::Value(String)` verbatim — a `serde` custom message that can
+    /// embed the offending value (#474). The generic-source problem that
+    /// originally forced a `String` (`ciborium::ser::Error<E>` is generic over
+    /// the writer's I/O error, so `#[from]` does not apply) is solved by
+    /// [`crate::cbor::classify_ser`] projecting to a non-generic type. Same
+    /// justification as [`RecordError::CborEncode`].
     #[error("CBOR encode error: {0}")]
-    CborEncode(String),
+    CborEncode(CborFault),
 
-    /// `ciborium` returned a parse error during plaintext decode. Same
-    /// generic-source justification as [`Self::CborEncode`].
+    /// `ciborium` returned a parse error during plaintext decode. Carries a
+    /// classified [`CborFault`] for the same reason as [`Self::CborEncode`].
     #[error("CBOR decode error: {0}")]
-    CborDecode(String),
+    CborDecode(CborFault),
 
     /// File magic did not match `MAGIC` (`"SECR"` big-endian, see
     /// [`crate::version::MAGIC`]).
@@ -417,7 +423,7 @@ pub enum BlockError {
 impl From<CanonicalError> for BlockError {
     fn from(e: CanonicalError) -> Self {
         match e {
-            CanonicalError::CborEncode(s) => BlockError::CborEncode(s),
+            CanonicalError::CborEncode(fault) => BlockError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => BlockError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => BlockError::TagRejected,
         }
@@ -921,7 +927,7 @@ fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
     for r in records {
         let bytes = record::encode(r)?;
         let val: Value = ciborium::de::from_reader(bytes.as_slice())
-            .map_err(|e| BlockError::CborDecode(e.to_string()))?;
+            .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
         items.push(val);
     }
     Ok(Value::Array(items))
@@ -934,7 +940,7 @@ fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
 fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
     let bytes = u.to_canonical_cbor()?;
     let val: Value = ciborium::de::from_reader(bytes.as_slice())
-        .map_err(|e| BlockError::CborDecode(e.to_string()))?;
+        .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
     Ok(val)
 }
 
@@ -969,7 +975,7 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(e.to_string()))?;
+        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
 
     // Walk the tree to enforce no-float / no-tag everywhere (including
     // forward-compat unknowns and inside record maps). Doing this once
@@ -1081,7 +1087,7 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
     for item in items {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&item, &mut buf)
-            .map_err(|e| BlockError::CborEncode(e.to_string()))?;
+            .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
         let r = record::decode(&buf)?;
         out.push(r);
     }
@@ -1094,7 +1100,8 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
 /// through canonical CBOR — which also re-validates no-float / no-tag.
 fn value_to_unknown(v: Value) -> Result<UnknownValue, BlockError> {
     let mut buf = Vec::new();
-    ciborium::ser::into_writer(&v, &mut buf).map_err(|e| BlockError::CborEncode(e.to_string()))?;
+    ciborium::ser::into_writer(&v, &mut buf)
+        .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
     let u = UnknownValue::from_canonical_cbor(&buf)?;
     Ok(u)
 }

@@ -51,6 +51,7 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
+use crate::cbor::{classify_de, classify_ser, CborErrorKind, CborFault};
 use crate::crypto::aead::{self, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
@@ -62,7 +63,7 @@ use crate::version::{FILE_KIND_MANIFEST, FORMAT_VERSION, MAGIC, SUITE_ID};
 use super::canonical::{
     canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
 };
-use super::record::UnknownValue;
+use super::record::{RecordError, UnknownValue};
 
 // Re-use the block-layer VectorClockEntry: §4.2's vector_clock entries are
 // byte-identical in shape and purpose to a block's vector_clock entries.
@@ -127,15 +128,22 @@ const SUITE_ID_V1: u16 = crate::version::SUITE_ID;
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
     /// `ciborium` returned an I/O or serialisation error during encode.
-    /// String payload because `ciborium::ser::Error<E>` is generic over
-    /// the writer's I/O error and so cannot be uniformly captured as a
-    /// `#[from]` source. Same justification as `RecordError::CborEncode`.
+    ///
+    /// Carries a classified [`CborFault`] rather than the upstream message:
+    /// `ciborium`'s `Display` is its `Debug` form, so stringifying it copies
+    /// `ser::Error::Value(String)` verbatim — a `serde` custom message that can
+    /// embed the offending value (#474). The generic-source problem that
+    /// originally forced a `String` (`ciborium::ser::Error<E>` is generic over
+    /// the writer's I/O error, so `#[from]` does not apply) is solved by
+    /// [`crate::cbor::classify_ser`] projecting to a non-generic type. Same
+    /// justification as `RecordError::CborEncode`.
     #[error("CBOR encode error: {0}")]
-    CborEncode(String),
+    CborEncode(CborFault),
 
-    /// `ciborium` returned a parse error during decode.
+    /// `ciborium` returned a parse error during decode. Carries a classified
+    /// [`CborFault`] for the same reason as [`Self::CborEncode`].
     #[error("CBOR decode error: {0}")]
-    CborDecode(String),
+    CborDecode(CborFault),
 
     /// Top-level CBOR item was not a map.
     #[error("manifest body must be a CBOR map")]
@@ -622,15 +630,45 @@ fn kdf_params_to_value(k: &KdfParamsRef) -> Result<Value, ManifestError> {
     Ok(Value::Map(sorted))
 }
 
+/// Collapse a [`RecordError`] raised by [`UnknownValue::to_canonical_cbor`]
+/// / [`UnknownValue::from_canonical_cbor`] into a [`CborFault`].
+///
+/// Those two calls are the only place `ManifestError`'s CBOR variants are
+/// sourced from a lower-layer `RecordError` rather than a raw
+/// `ciborium::{de,ser}::Error` directly — `RecordError` itself has no
+/// `#[from]`-worthy conversion to `ManifestError` (unlike `BlockError`,
+/// which has a dedicated `Record(#[from] RecordError)` variant), so there is
+/// no raw ciborium error left to hand to [`classify_de`] / [`classify_ser`]
+/// at this call site.
+///
+/// `RecordError::CborEncode` / `CborDecode` already carry a `CborFault`
+/// (post-#474), so those two arms just unwrap it losslessly. The other
+/// `RecordError` arms reachable here are `FloatRejected` / `TagRejected`
+/// (raised by `reject_floats_and_tags` inside `from_canonical_cbor`) — a
+/// well-formed CBOR item rejected on semantic (policy) grounds, which is
+/// exactly what [`CborErrorKind::Semantic`] denotes. Every `RecordError`
+/// variant is itself data-free (§474), so no branch here can leak content;
+/// this only narrows the *type* to match `ManifestError`'s classified
+/// payload.
+fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
+    match e {
+        RecordError::CborEncode(fault) | RecordError::CborDecode(fault) => fault,
+        _ => CborFault {
+            kind: CborErrorKind::Semantic,
+            offset: None,
+        },
+    }
+}
+
 /// Extract the underlying CBOR `Value` from an [`UnknownValue`] for
 /// splicing into a parent map. We round-trip via canonical CBOR bytes so
 /// the call site does not need access to `UnknownValue`'s inner field.
 fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
     let bytes = u
         .to_canonical_cbor()
-        .map_err(|e| ManifestError::CborEncode(e.to_string()))?;
+        .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?;
     let v: Value = ciborium::de::from_reader(bytes.as_slice())
-        .map_err(|e| ManifestError::CborDecode(e.to_string()))?;
+        .map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
     Ok(v)
 }
 
@@ -659,7 +697,7 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// bag verbatim.
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| ManifestError::CborDecode(e.to_string()))?;
+        ciborium::de::from_reader(bytes).map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
 
     // Walk the tree once up front to enforce no-float / no-tag everywhere
     // (including inside forward-compat unknown values).
@@ -1184,8 +1222,9 @@ fn take_integer_i128(v: Value, field: &'static str) -> Result<i128, ManifestErro
 fn value_to_unknown(v: Value) -> Result<UnknownValue, ManifestError> {
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&v, &mut buf)
-        .map_err(|e| ManifestError::CborEncode(e.to_string()))?;
-    UnknownValue::from_canonical_cbor(&buf).map_err(|e| ManifestError::CborDecode(e.to_string()))
+        .map_err(|e| ManifestError::CborEncode(classify_ser(&e)))?;
+    UnknownValue::from_canonical_cbor(&buf)
+        .map_err(|e| ManifestError::CborDecode(record_error_to_cbor_fault(e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2698,11 +2737,12 @@ mod tests {
     }
 
     /// Regression: ensures `decode_manifest` surfaces a typed `CborDecode`
-    /// error (with String payload) when `ciborium` itself can't parse the
-    /// input bytes. Pins that the `ciborium::de::Error → ManifestError`
-    /// adaptation at the top of `decode_manifest` is wired correctly —
-    /// without this, a parse error inside the manifest layer could collapse
-    /// into a panic or a different error variant on a future refactor.
+    /// error (with a classified [`CborFault`] payload, #474) when `ciborium`
+    /// itself can't parse the input bytes. Pins that the
+    /// `ciborium::de::Error → ManifestError` adaptation at the top of
+    /// `decode_manifest` is wired correctly — without this, a parse error
+    /// inside the manifest layer could collapse into a panic or a different
+    /// error variant on a future refactor.
     #[test]
     fn rejects_cbor_garbage() {
         // 16 bytes of 0xff — not a valid CBOR head byte for any major
@@ -2710,7 +2750,9 @@ mod tests {
         // length break, illegal at the top level).
         let bytes = [0xffu8; 16];
         let err = decode_manifest(&bytes).expect_err("garbage bytes must fail to parse");
-        // CborDecode carries a String, so use a wildcard match.
+        // CborDecode carries a data-free CborFault (not the upstream ciborium
+        // message, #474), so a wildcard match is still the right granularity
+        // here — this test pins the variant, not the classification.
         assert!(
             matches!(err, ManifestError::CborDecode(_)),
             "expected CborDecode(_), got {err:?}"
