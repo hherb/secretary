@@ -159,7 +159,8 @@
 # `${error::class.simpleName}`) because matching it would fire on seven
 # legitimate user-facing `Text(...)` copy sites — that boundary is correct for
 # on-screen copy. It is NOT correct inside a log call: on VaultBrowseError's
-# three redacted arms (CorruptVault, SaveCryptoFailure, InvalidArgument),
+# one remaining redacted arm (InvalidArgument — #474 made CorruptVault /
+# SaveCryptoFailure data-free by construction, so they no longer need this),
 # `.detail` carries exactly the plaintext `diagnosticDescription`'s redaction
 # exists to remove, and `${e.detail}` walks straight around it. Nothing but
 # review closes this gap.
