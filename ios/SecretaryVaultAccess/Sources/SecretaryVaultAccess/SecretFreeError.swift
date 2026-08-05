@@ -99,6 +99,16 @@ extension VaultAccessError: SecretFreeError {
     /// reintroduces a runtime `String`. Restoring this redaction would throw
     /// away every corruption diagnostic for no remaining benefit.
     ///
+    /// The precise guard invariant is "data-free by construction OR a reviewed
+    /// allowlist exception", not "data-free" flat: a malformed `vault.toml`
+    /// still renders the `toml` crate's parse message, and a filesystem
+    /// `io::Error` its path + errno, into this arm. Both are deliberate
+    /// `scripts/error-payload-hygiene-allowlist.txt` entries — `vault.toml` is
+    /// cleartext on disk (vault-format §2) and an `io::Error` path is content
+    /// an attacker with folder access already has — so neither is vault
+    /// plaintext, a password, a mnemonic, or key bytes. What is structurally
+    /// impossible is a NEW runtime `String` slipping in unreviewed.
+    ///
     /// That guard scans `core/src/**` ONLY, and `.corruptVault`'s payload is not
     /// wholly a `core` payload: `SecretaryKit`'s `VaultErrorMapping.swift:21`
     /// passes `FfiVaultError.CorruptVault.detail` through verbatim, and the

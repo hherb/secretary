@@ -40,7 +40,16 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   `CborErrorKind` instead of stringifying it. `scripts/check-error-payload-
      *   hygiene.py` fails CI if a future `core` variant reintroduces a runtime
      *   `String` into an `#[error(...)]` message, so this is enforced, not just
-     *   claimed. Both arms are therefore no longer redacted here.
+     *   claimed. The precise guard invariant is "data-free by construction OR a
+     *   reviewed allowlist exception": a malformed `vault.toml` still renders
+     *   the `toml` crate's parse message into `CorruptVault`, and a filesystem
+     *   `io::Error` its path + errno — both deliberate
+     *   `scripts/error-payload-hygiene-allowlist.txt` entries, since `vault.toml`
+     *   is cleartext on disk (vault-format §2) and an `io::Error` path is
+     *   content an attacker with folder access already has. Neither is vault
+     *   plaintext, a password, a mnemonic, or key bytes; what is structurally
+     *   impossible is a NEW runtime `String` slipping in unreviewed. Both arms
+     *   are therefore no longer redacted here.
      *   The guard scans everything under `core/src/` ONLY — `ffi/secretary-ffi-bridge`
      *   builds its own `format!` detail strings for [CorruptVault] and
      *   [SaveCryptoFailure] and is NOT scanned, so THAT half is gated by review
