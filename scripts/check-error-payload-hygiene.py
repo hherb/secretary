@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Fail-closed guard: no `core` error variant may interpolate a runtime String.
+r"""Fail-closed guard: no `core` error variant may interpolate a runtime String.
 
 WHY THIS EXISTS (#474)
 ----------------------
@@ -110,22 +110,49 @@ LIMITS (stated, not hidden)
   enums sharing a bare name are both still soundly "safe by recursion."
   Its bare-name exposure is to a FOREIGN collision, which is what
   `foreign_use_names` addresses instead.
-- `strip_comments` does not special-case RAW string literals (`r"..."`,
-  `r#"..."#`). A raw string ending in a literal backslash immediately before
-  its closing quote (`r"...\"`) is misread as an escaped quote, and the
-  scanner stays "in a string" past the raw string's true end, leaving
-  everything after it unstripped until the next real `"`. No `#[error(...)]`
-  attribute under `core/src/**` uses a raw string today; a correct fix needs
-  variable-length `#`-run tracking (`r#"..."#`, `r##"..."##`, ...), which is
-  out of scope for now.
+- Every view comes from ONE lexical pass (`lex_spans`), which handles line
+  comments, NESTED block comments, ordinary and byte strings with escapes and
+  `\` + newline continuations, RAW strings with a variable `#` run, char and
+  byte-char literals, and the lifetime-vs-char ambiguity. It is a LEXER, not
+  a parser: it knows where literals and comments are, and nothing else. It
+  does not expand macros, so a `#[error(...)]` produced by a macro — or a
+  declaration produced by one — is invisible to every registry here.
+- `lex_spans` treats an UNTERMINATED literal or block comment as running to
+  end-of-input. That is the conservative reading for the credit registries
+  (the tail stops being code, so declarations in it stop being credited) and
+  it is why `foreign_use_names` does not read those views — see the next
+  point.
+- THE FAIL-CLOSED ARGUMENT IS PER-PASS, NOT GLOBAL, and stating it globally
+  was itself a defect. "Blanking can only HIDE text, so a view bug loses a
+  credit and therefore only produces findings" is true for the three
+  CREDIT-GRANTING registries (local error enums, type aliases, consts) and
+  false for the two CREDIT-WITHDRAWING passes: hiding a `use` in
+  `foreign_use_names`, or revealing an extra `mod` in `top_level_mod_names`,
+  RESTORES a credit. Those two are wired to read the views whose failure
+  direction matches their own polarity (raw + comments-blanked for the
+  withdrawal; the fully blanked discovery view for the local-root grant).
+  A correctness claim that does not hold for every consumer is worse than
+  none, because it stops the next reader from checking.
+- `scan_source` locates `#[error(` on the comments-blanked view, with string
+  contents INTACT, deliberately. Hiding an attribute would be fail-open, so
+  that pass does not trust the lexer's literal classification at all. The
+  price is that an `#[error(` sequence written INSIDE another attribute's
+  message text is visited as though it were an attribute, and may produce an
+  extra finding with its own (different) allowlist key. That is noise in the
+  safe direction: it can never hide a real attribute, and the spurious key
+  does not match the real one, so allowlisting one does not silence the
+  other.
 - `discover_declarations` credits only MODULE-SCOPE declarations: anything
   inside a brace block that is not a `mod name { ... }` block is skipped
   (`non_module_block_spans`), which covers a trait's or an `impl`'s
   ASSOCIATED `type` / `const` (a per-impl binding, e.g. `type Ek = ...;` in a
   KEM trait impl), and anything local to a `fn` body. `const` discovery
   additionally skips `#[cfg(test)]`-gated items (`cfg_test_spans`): six of
-  the 136 bare const names this guard harvested tree-wide came from test
-  modules, one of them named `SECRET_FIELD_NAME`. Block kind is decided from
+  the 134 bare const names the round-3 rule harvested tree-wide came from
+  test modules, one of them named `SECRET_FIELD_NAME`. (An earlier draft
+  of this comment said 136; that measurement was taken with two of the
+  measuring session's own throwaway attack files still in the tree. 134
+  is the clean-tree figure.) Block kind is decided from
   the item's header text, so a `mod` declared through a macro would not be
   recognised as one — the fail-CLOSED direction (its contents lose credit).
 - Declaration discovery runs over `discovery_view` — comments AND string
@@ -149,6 +176,7 @@ LIMITS (stated, not hidden)
 
 from __future__ import annotations
 
+import bisect
 import re
 import sys
 from dataclasses import dataclass
@@ -356,7 +384,7 @@ def cfg_test_spans(src: str) -> list[tuple[int, int]]:
 
     A test-only declaration is not part of the shipped crate and must not
     vouch for a name a shipped `#[error("...")]` message captures. Six of the
-    136 bare `const` names this guard harvested tree-wide came from
+    134 bare `const` names the round-3 rule harvested tree-wide came from
     `#[cfg(test)] mod tests { ... }` blocks — one of them literally named
     `SECRET_FIELD_NAME`.
     """
@@ -567,6 +595,35 @@ USE_HEAD_RE = re.compile(r"\buse\s+")
 MOD_DECL_RE = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]")
 
 
+def top_level_mod_names(view: str) -> set[str]:
+    """Names of the modules this file declares AT ITS TOP LEVEL (brace depth
+    0 in the discovery view).
+
+    Only a top-level `mod name;` / `mod name { }` puts `name` in scope as the
+    first segment of a uniform-path `use`. A NESTED one does not, and treating
+    it as though it did is a bypass rather than a nicety:
+    `mod outer { pub mod std { } }` compiles happily alongside
+    `use std::io::Error;` (no E0659 — the nested `std` is not in scope here),
+    and an unscoped harvest would then read that `use` as intra-crate and stop
+    withdrawing the bare `Error` credit. `mod thiserror;` and a `mod std;`
+    written textually AFTER the `use` are the same class.
+
+    Reads the DISCOVERY VIEW, not raw: this function GRANTS local-ness, i.e.
+    it suppresses a withdrawal, so its failure mode must be to find FEWER
+    modules, not more. See `foreign_use_names`.
+    """
+    opens = [i for i, c in enumerate(view) if c == "{"]
+    closes = [i for i, c in enumerate(view) if c == "}"]
+    names: set[str] = set()
+    for m in MOD_DECL_RE.finditer(view):
+        depth = bisect.bisect_left(opens, m.start()) - bisect.bisect_left(
+            closes, m.start()
+        )
+        if depth == 0:
+            names.add(m.group(1))
+    return names
+
+
 def _use_bound_names(tree: str, parent_last: str | None = None) -> set[str]:
     """Every name a `use` tree binds into its file's namespace.
 
@@ -626,12 +683,31 @@ def foreign_use_names(raw: str) -> frozenset[str]:
     untouched, since a path cannot be shadowed by a `use`.
 
     Roots `crate` / `super` / `self` are intra-crate and are skipped: those
-    resolve to items this guard does scan. So is a root naming a module
-    DECLARED IN THE SAME FILE (`MOD_DECL_RE`) — Rust 2018 uniform paths make
-    `pub use block::{BlockError, ...};` beside `pub mod block;` an ordinary
-    intra-crate re-export, and treating it as a third-party crate named
-    `block` produced four spurious findings in `core/src/vault/mod.rs` on
-    the first run of this fix.
+    resolve to items this guard does scan. So is a root naming a TOP-LEVEL
+    module of the same file (`top_level_mod_names`) — Rust 2018 uniform paths
+    make `pub use block::{BlockError, ...};` beside `pub mod block;` an
+    ordinary intra-crate re-export, and treating it as a third-party crate
+    named `block` produced four spurious findings in `core/src/vault/mod.rs`.
+    TOP-LEVEL is load-bearing and was not always so: harvesting every
+    `mod NAME` at any depth meant `mod outer { pub mod std { } }` — which
+    compiles, because the nested `mod std` is not in scope at file top level —
+    silently reclassified `use std::io::Error;` as intra-crate and handed the
+    bypass back. Nothing under `core/src/**` collides today; the narrowing is
+    for the code that has not been written yet.
+
+    THIS PASS DELIBERATELY READS THE RAW SOURCE, not `discovery_view`.
+    Everywhere else, a lexer bug that HIDES text loses a credit and so
+    produces a finding — the fail-closed direction. This pass is the
+    inversion: it WITHDRAWS credits, so hiding a `use` here would RESTORE
+    one. Round 5's review demonstrated exactly that against the round-4
+    scanner — `fn zz_q() -> char { '"' }` desynced the string state across the
+    following `use std::io::Error;`, the `use` was blanked, the withdrawal
+    never happened, and the bypass round 4 closed came back. Reading raw means
+    the failure mode is OVER-withdrawal (a `use` written inside a comment or a
+    string costs that file a bare-name credit it may not have needed), which
+    is noise in the safe direction and cannot resurrect a credit. The
+    `local_roots` half — which RESTORES credit — reads `discovery_view`
+    instead, for the mirror-image reason.
 
     LIMIT: a glob (`use some_crate::*;`) binds names this function cannot
     enumerate. Every glob under `core/src/**` today is an intra-crate
@@ -640,8 +716,49 @@ def foreign_use_names(raw: str) -> frozenset[str]:
     bare-name credit in place — the same residual "not a real import
     resolver" risk the module docstring's LIMITS already records.
     """
-    src = discovery_view(raw)
-    local_roots = LOCAL_USE_ROOTS | {m.group(1) for m in MOD_DECL_RE.finditer(src)}
+    local_roots = LOCAL_USE_ROOTS | top_level_mod_names(discovery_view(raw))
+    # Two independent reads, unioned. Neither is trusted alone:
+    #   RAW  — nothing can hide a `use` from it, which is the property this
+    #          pass needs; but `use` is also an ordinary English word, so
+    #          every doc comment saying "we use the manifest" would bind
+    #          nonsense. `_looks_like_use_tree` filters those out. It is a
+    #          NOISE filter, not a security control: everything it rejects is
+    #          recovered by the second read whenever it was really code.
+    #   COMMENTS-BLANKED — no prose, so no filter needed. Catches the shapes
+    #          the filter rejects, e.g. `use std::/*why*/io::Error;`.
+    # Union, so a `use` has to escape BOTH to escape the withdrawal.
+    names = _scan_use_bindings(raw, local_roots, require_use_tree=True)
+    names |= _scan_use_bindings(
+        strip_comments(raw), local_roots, require_use_tree=False
+    )
+    return frozenset(names)
+
+
+# A `use` tree is punctuation and identifiers, never prose. Both checks are
+# needed: the character class alone still admits "the manifest", and the
+# adjacency check alone still admits "`Foo` here".
+USE_TREE_CHARS_RE = re.compile(r"^[A-Za-z0-9_:{}*,\s]+$")
+USE_TREE_PROSE_RE = re.compile(r"[A-Za-z0-9_]\s+[A-Za-z0-9_]")
+
+
+def _looks_like_use_tree(tree: str) -> bool:
+    """Whether `tree` could be a Rust use tree rather than English prose.
+
+    Two identifier-ish words separated by whitespace never occur in a use
+    tree — except across the ` as ` renaming keyword, which is normalised
+    away first. `use std :: io :: Error;` (spaces around `::`) is valid Rust
+    and still passes, because a colon is not an identifier character.
+    """
+    collapsed = " ".join(tree.split()).replace(" as ", "|")
+    if not collapsed or not USE_TREE_CHARS_RE.match(collapsed):
+        return False
+    return not USE_TREE_PROSE_RE.search(collapsed)
+
+
+def _scan_use_bindings(
+    src: str, local_roots: frozenset[str], require_use_tree: bool
+) -> set[str]:
+    """Every foreign name bound by a `use` in `src` — see `foreign_use_names`."""
     names: set[str] = set()
     n = len(src)
     for m in USE_HEAD_RE.finditer(src):
@@ -658,11 +775,13 @@ def foreign_use_names(raw: str) -> frozenset[str]:
                 break
             j += 1
         tree = src[m.end() : j]
+        if require_use_tree and not _looks_like_use_tree(tree):
+            continue
         root = tree.lstrip().lstrip(":").split("::")[0].split("{")[0].strip()
         if not root or root in local_roots:
             continue
         names |= _use_bound_names(tree)
-    return frozenset(names)
+    return names
 
 
 def module_path_segments(path_label: str) -> list[str]:
@@ -715,7 +834,7 @@ def discover_declarations(
     literal CONTENTS are blanked as well as comments. Text inside an
     `#[error("...")]` message is not a declaration, and treating it as one
     let an author self-authorise their own placeholder from inside the very
-    message under test — see `blank_string_literals`.
+    message under test — see `discovery_view` and `lex_spans`.
 
     For each discovered enum/alias name, three spellings are registered so a
     reference site is recognised regardless of how it's qualified: the bare
@@ -745,8 +864,16 @@ def discover_declarations(
     """
     src = discovery_view(raw)
     segments = module_path_segments(path_label) if path_label else []
-    excluded = non_module_block_spans(src)
-    test_spans = cfg_test_spans(src)
+    # ONE exclusion set for ALL THREE registries. Round 4 applied the
+    # `#[cfg(test)]` half to consts only, which left the enum and alias
+    # registries able to be vouched for by test-only code: a
+    # `#[cfg(test)] mod tests { enum ZzShared { #[error("code {0}")] A(u32) } }`
+    # registered `ZzShared` tree-wide, and a SHIPPED `pub struct ZzShared {
+    # pub raw: String }` in another file then rode on it. A test-only
+    # declaration is not part of the shipped crate and must not vouch for
+    # anything a shipped `#[error("...")]` renders — that is a property of the
+    # DECLARATION, not of which registry happens to hold it.
+    excluded = non_module_block_spans(src) + cfg_test_spans(src)
 
     def spellings(name: str) -> list[str]:
         out = [name]
@@ -772,154 +899,247 @@ def discover_declarations(
         for spelling in spellings(alias_name):
             aliases[spelling] = rhs
 
-    const_excluded = excluded + test_spans
-    consts = find_consts(src, const_excluded)
-    const_shadows = find_const_shadows(src, const_excluded)
+    consts = find_consts(src, excluded)
+    const_shadows = find_const_shadows(src, excluded)
 
     return frozenset(local_error_enums), aliases, consts, frozenset(const_shadows)
 
 
-def strip_comments(src: str) -> str:
-    """Blank out `//` and `/* */` comments, preserving line structure.
+# ---------------------------------------------------------------------------
+# ONE lexical pass. Every view below is derived from it.
+# ---------------------------------------------------------------------------
+#
+# Rounds 1-4 grew a family of hand-rolled scanners, each patched for the shape
+# that had just defeated it. Round 5's review broke four of them at once, and
+# every break was the same bug in a different costume: the scanner did not
+# actually know where Rust literals begin and end.
+#
+#   - `r#"a" const ZZ: usize = 1; "b"#` -- a raw string with an odd number of
+#     internal quotes re-exposed its own contents as code, so an author could
+#     self-authorise a placeholder from inside a message again (the CRITICAL
+#     this branch supposedly closed in round 4).
+#   - `let c = '}';` inside a `fn` popped the function's own brace, promoting
+#     every following declaration in that body to "module scope".
+#   - `fn q() -> char { '"' }` desynced the string scanner across the next
+#     `use` statement, which RESTORED a withdrawn credit (see
+#     `foreign_use_names` for why that direction is the dangerous one).
+#
+# So: classify every byte ONCE, correctly, and derive the views from that.
+# Anything a future round needs is a new view over the same classification,
+# never a fifth bespoke scanner.
 
-    Replaces comment bytes with spaces rather than deleting them so that line
-    numbers and column offsets stay exact. String literals are respected, so a
-    `//` inside `"..."` is not treated as a comment.
+KIND_COMMENT = "#"
+KIND_DELIM = "d"  # a literal's delimiter bytes (quotes, `r##` prefix, ...)
+KIND_LITERAL = "s"  # a literal's CONTENT bytes
 
-    LIMIT: does not special-case raw string literals (`r"..."`, `r#"..."#`)
-    — see the module docstring's LIMITS section.
+# `r"`, `r#"`, `r##"`, and the byte-string forms `br"`, `br#"`, ...
+RAW_STRING_START_RE = re.compile(r"(?:b?r)(?P<hashes>#*)\"")
+# `'x'`, `'\n'`, `'\''`, `'\\'`, `'\u{1F600}'`, and the byte forms `b'x'`.
+# Deliberately NOT matched: `'static` / `'a` / `'outer` -- a `'` that is not
+# closed by a matching `'` two-ish characters later is a LIFETIME or a loop
+# label, not a char literal. `&'static str` is the shape that makes this
+# ambiguity unavoidable, and it is everywhere in this codebase.
+CHAR_LITERAL_RE = re.compile(r"b?'(?:\\u\{[0-9a-fA-F_]{1,6}\}|\\.|[^\\'\n])'")
+
+
+def _ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def lex_spans(src: str) -> list[tuple[int, int, str]]:
+    r"""Classify `src` into ordered, non-overlapping, non-CODE spans.
+
+    Returns `(start, end, kind)` for every comment and every string / char
+    literal, in source order; anything not covered is code. Handles:
+
+    - line comments, and block comments WITH NESTING (Rust's `/* /* */ */`
+      nests, unlike C's -- an inner `/*` that a non-nesting scanner ignores
+      makes the outer comment end early);
+    - ordinary and byte strings with escapes, including the `\` + newline
+      line continuation;
+    - RAW strings with a variable `#` run (`r"..."`, `r#"..."#`, `r##"..."##`,
+      `br#"..."#`), where `"` inside the body is an ordinary character;
+    - char and byte-char literals, including `'"'`, `'{'`, `'}'`, `'\''`,
+      `'\\'`;
+    - the lifetime-vs-char ambiguity (`&'static str` is code, not a literal).
+
+    Unterminated constructs run to end-of-input, which is the conservative
+    reading: the tail is classified as literal/comment rather than code, so
+    discovery loses credits (a finding) rather than gaining them.
     """
-    out: list[str] = []
-    i, n = 0, len(src)
-    in_line_comment = in_block_comment = in_string = False
+    spans: list[tuple[int, int, str]] = []
+    n = len(src)
+    i = 0
     while i < n:
         ch = src[i]
         nxt = src[i + 1] if i + 1 < n else ""
-        if in_line_comment:
-            if ch == "\n":
-                in_line_comment = False
-                out.append(ch)
-            else:
-                out.append(" ")
-            i += 1
-        elif in_block_comment:
-            if ch == "*" and nxt == "/":
-                in_block_comment = False
-                out.append("  ")
-                i += 2
-            else:
-                out.append("\n" if ch == "\n" else " ")
-                i += 1
-        elif in_string:
-            if ch == "\\":
-                # A backslash escape consumes 2 source characters (`\` plus
-                # whatever follows). Emitting two spaces is right for an
-                # ordinary escape like `\"`, but Rust also allows a bare
-                # `\` + newline as a string line-continuation. Blanking
-                # THAT newline to a space would silently drop it from the
-                # line count, desynchronizing every subsequent line number
-                # (and hence every subsequent Finding.source_line) for the
-                # rest of the file from a single continued string upstream.
-                out.append("\n" if nxt == "\n" else " ")
-                out.append(" ")
-                i += 2
+
+        if ch == "/" and nxt == "/":
+            end = src.find("\n", i)
+            end = n if end == -1 else end
+            spans.append((i, end, KIND_COMMENT))
+            i = end
+            continue
+
+        if ch == "/" and nxt == "*":
+            depth, j = 0, i
+            while j < n:
+                if src[j] == "/" and j + 1 < n and src[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                    continue
+                if src[j] == "*" and j + 1 < n and src[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                    if depth == 0:
+                        break
+                    continue
+                j += 1
+            j = min(j, n)
+            spans.append((i, j, KIND_COMMENT))
+            i = j
+            continue
+
+        # `r` / `b` / `br` are literal prefixes only when they are not the
+        # tail of a longer identifier (`membr"` is not a thing in valid Rust,
+        # but refusing to guess costs nothing).
+        if ch in "rb" and (i == 0 or not _ident_char(src[i - 1])):
+            m = RAW_STRING_START_RE.match(src, i)
+            if m:
+                closer = '"' + m.group("hashes")
+                body = m.end()
+                j = src.find(closer, body)
+                if j == -1:
+                    spans.append((i, body, KIND_DELIM))
+                    spans.append((body, n, KIND_LITERAL))
+                    i = n
+                    continue
+                spans.append((i, body, KIND_DELIM))
+                spans.append((body, j, KIND_LITERAL))
+                spans.append((j, j + len(closer), KIND_DELIM))
+                i = j + len(closer)
                 continue
-            if ch == '"':
-                in_string = False
-            out.append(ch)
-            i += 1
-        elif ch == "/" and nxt == "/":
-            in_line_comment = True
-            out.append("  ")
-            i += 2
-        elif ch == "/" and nxt == "*":
-            in_block_comment = True
-            out.append("  ")
-            i += 2
-        elif ch == '"':
-            in_string = True
-            out.append(ch)
-            i += 1
-        else:
-            out.append(ch)
-            i += 1
+            if ch == "b":
+                m = CHAR_LITERAL_RE.match(src, i)
+                if m:
+                    spans.append((i, i + 2, KIND_DELIM))
+                    spans.append((i + 2, m.end() - 1, KIND_LITERAL))
+                    spans.append((m.end() - 1, m.end(), KIND_DELIM))
+                    i = m.end()
+                    continue
+                if nxt == '"':
+                    i, added = _lex_quoted(src, i, 2, spans)
+                    if added:
+                        continue
+
+        if ch == '"':
+            i, added = _lex_quoted(src, i, 1, spans)
+            if added:
+                continue
+
+        if ch == "'":
+            m = CHAR_LITERAL_RE.match(src, i)
+            if m:
+                spans.append((i, i + 1, KIND_DELIM))
+                spans.append((i + 1, m.end() - 1, KIND_LITERAL))
+                spans.append((m.end() - 1, m.end(), KIND_DELIM))
+                i = m.end()
+                continue
+            # A lifetime or a loop label. Code.
+
+        i += 1
+    return spans
+
+
+def _lex_quoted(
+    src: str, start: int, prefix_len: int, spans: list[tuple[int, int, str]]
+) -> tuple[int, bool]:
+    r"""Lex an ordinary (or byte) string literal at `src[start]`, appending its
+    spans. `\` consumes the next character whatever it is, which is what makes
+    both `\"` and the `\` + newline continuation come out right.
+    """
+    n = len(src)
+    body = start + prefix_len
+    j = body
+    while j < n:
+        if src[j] == "\\":
+            j += 2
+            continue
+        if src[j] == '"':
+            break
+        j += 1
+    body_end = min(j, n)
+    spans.append((start, body, KIND_DELIM))
+    spans.append((body, body_end, KIND_LITERAL))
+    if body_end < n:
+        spans.append((body_end, body_end + 1, KIND_DELIM))
+        return body_end + 1, True
+    return n, True
+
+
+def render_view(src: str, blank_kinds: str) -> str:
+    r"""Blank the requested span kinds, preserving LENGTH and LINE COUNT.
+
+    Every blanked byte becomes a space, except a newline which stays a
+    newline. Both invariants are structural here rather than a special case
+    that has to be remembered -- an earlier round shipped a `\` + newline
+    continuation that emitted a space for the newline and silently shifted
+    every subsequent reported line number in the file.
+    """
+    out: list[str] = []
+    pos = 0
+    for start, end, kind in lex_spans(src):
+        if kind not in blank_kinds:
+            continue
+        out.append(src[pos:start])
+        out.append("".join("\n" if c == "\n" else " " for c in src[start:end]))
+        pos = end
+    out.append(src[pos:])
     return "".join(out)
 
 
-def blank_string_literals(src: str) -> str:
-    """Blank the CONTENTS of every string literal, preserving length AND line
-    structure (a newline stays a newline; everything else becomes a space).
+def strip_comments(src: str) -> str:
+    """Blank `//` and `/* */` comments; leave literals verbatim.
 
-    This is the DECLARATION-DISCOVERY view, and it is a security control.
-    `find_consts`, `find_type_aliases` and `ENUM_RE` all answer the question
-    "what names is this file allowed to vouch for?" — and text inside an
-    `#[error("...")]` MESSAGE is not a declaration of anything. Running
-    discovery over comment-stripped-but-string-intact source let an author
-    self-authorise their own placeholder from inside the very message the
-    guard is checking:
+    This is the view `scan_source` reads: locating `#[error(` attributes and
+    extracting their message text needs the strings INTACT.
+    """
+    return render_view(src, KIND_COMMENT)
+
+
+def discovery_view(raw: str) -> str:
+    """The DECLARATION-DISCOVERY view: comments AND literal contents blanked,
+    delimiters left in place.
+
+    This is a security control. `find_consts`, `find_type_aliases` and
+    `ENUM_RE` all answer "what names may this file vouch for?", and text
+    inside an `#[error("...")]` MESSAGE declares nothing. Reading declarations
+    from a view with string contents intact let an author self-authorise the
+    very placeholder under test:
 
         #[error("leaked field name: {SELF_AUTH} const SELF_AUTH: usize = 1;")]
         SelfAuthorised,
 
-    passed silently, because `CONST_RE` matched the `const SELF_AUTH: usize =`
-    text sitting inside the message string and registered `SELF_AUTH` as a
-    discovered const. One line, one file, no cross-file collision and no
-    file-ordering dependence — authored by exactly the person whose code the
-    guard exists to check. The same trick reached the alias tier
-    (`"... type ZzFakeAlias = usize; ..."` + a field typed `ZzFakeAlias`) and
-    the recursion tier (`"... enum ZzFakeEnum { #[error(\\"x\\")] A } ..."` +
-    a field typed `ZzFakeEnum`).
+    passed silently, in one file, with no collision and no file-ordering
+    dependence. So did the raw-string form `r#"a" const ... "b"#`, which
+    survived round 4 because that round blanked strings with a scanner that
+    did not know what a raw string was.
 
-    Blanking is length- and line-preserving because the reported `line`, the
-    `_inside(...)` span checks and the raw-text allowlist key all index by
-    character offset into a view derived from the same source. An earlier
-    round shipped exactly that bug in `strip_comments`: a `\\` + newline
-    string continuation emitted a space for the newline, desyncing every
-    subsequent line number in the file. The `\\` + newline case below emits a
-    newline for the same reason.
+    Char literal CONTENTS are blanked for the same reason braces matter:
+    `let c = '}';` inside a `fn` body used to pop that function's own brace in
+    `non_module_block_spans`, promoting the rest of the body to module scope.
 
-    NOT used for locating `#[error(` attributes themselves (`scan_source`
-    still scans the un-blanked, comment-stripped text). Blanking can only ever
-    HIDE text, so using it for discovery is fail-closed — a hidden declaration
-    means a lost credit, i.e. a finding — whereas using it to locate
-    attributes would be fail-open if the string scanner ever desynced.
+    FAIL-CLOSED ONLY FOR CREDIT-GRANTING PASSES. Blanking can only ever HIDE
+    text. For the three registries this view feeds -- local error enums, type
+    aliases, consts -- hiding a declaration LOSES a credit, which produces a
+    finding, so a lexer bug there degrades toward noise. That argument does
+    NOT transfer to a WITHDRAWAL pass: `foreign_use_names` removes credits, so
+    hiding a `use` there would RESTORE one. It therefore does not read this
+    view at all -- see its docstring. Getting this backwards is exactly the
+    kind of unchecked correctness claim this guard exists to eliminate.
     """
-    out: list[str] = []
-    i, n = 0, len(src)
-    in_string = False
-    while i < n:
-        ch = src[i]
-        if in_string:
-            if ch == "\\":
-                nxt = src[i + 1] if i + 1 < n else ""
-                if nxt == "":
-                    out.append(" ")
-                    i += 1
-                    continue
-                out.append("\n" if nxt == "\n" else " ")
-                out.append(" ")
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-                out.append(ch)
-            else:
-                out.append("\n" if ch == "\n" else " ")
-            i += 1
-            continue
-        if ch == '"':
-            in_string = True
-        out.append(ch)
-        i += 1
-    return "".join(out)
+    return render_view(raw, KIND_COMMENT + KIND_LITERAL)
 
-
-def discovery_view(raw: str) -> str:
-    """The single view every declaration-discovery pass runs over: comments
-    blanked, then string-literal CONTENTS blanked, length and line structure
-    preserved by both. See `blank_string_literals`.
-    """
-    return blank_string_literals(strip_comments(raw))
 
 
 @dataclass(frozen=True)
@@ -1139,7 +1359,7 @@ def scan_source(
     Note `strip_comments`, NOT `discovery_view`: locating `#[error(`
     attributes and reading their message text needs the strings INTACT.
     Blanking is used only where it can only ever hide a credit, which is the
-    fail-closed direction — see `blank_string_literals`.
+    fail-closed direction — see `discovery_view`.
     """
     src = strip_comments(raw)
     findings: list[Finding] = []
@@ -1816,7 +2036,7 @@ POSITIVE_CONTROLS: list[tuple] = [
     ),
     (
         "P25 a #[cfg(test)] const does not vouch for a shipped message — "
-        "six of the tree's 136 harvested const names came from test "
+        "six of the tree's 134 harvested const names came from test "
         "modules, one literally named SECRET_FIELD_NAME",
         '''
         #[cfg(test)]
@@ -1887,6 +2107,113 @@ POSITIVE_CONTROLS: list[tuple] = [
         }
         ''',
         {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
+    ),
+    (
+        "P29 a RAW string with an odd number of internal quotes must not "
+        "re-expose its contents as code — the round-4 blanker had no notion "
+        "of `r#\"...\"#`, so this walked straight through the fix that was "
+        "supposed to have closed self-authorisation",
+        '''
+        const ZZ_HELP: &str = r#"a" const RAW_INJECTED: usize = 1; "b"#;
+
+        #[derive(thiserror::Error, Debug)]
+        #[error("expected {RAW_INJECTED} bytes")]
+        pub struct Bad;
+        ''',
+        {"unparsed": True, "field": "RAW_INJECTED"},
+    ),
+    (
+        "P30 a char literal holding a brace must not move the braces — "
+        "`let c = '}';` in a fn body popped that function's own block and "
+        "promoted every following declaration to module scope",
+        '''
+        fn zz_helper() -> char {
+            let c = '}';
+            const FN_LOCAL_LEN: usize = 1;
+            let _ = FN_LOCAL_LEN;
+            c
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {FN_LOCAL_LEN} bytes")]
+            Bad,
+        }
+        ''',
+        {"unparsed": True, "field": "FN_LOCAL_LEN"},
+    ),
+    (
+        "P31 a char literal holding a QUOTE must not desync the string "
+        "state across the following `use` — that inverted the withdrawal "
+        "pass and handed back the bare-name enum bypass",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        fn zz_q() -> char { '"' }
+
+        use std::io::Error;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] Error),
+        }
+        ''',
+        {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
+    ),
+    (
+        "P32 a NESTED `mod std` must not make `use std::…` look intra-crate "
+        "— `mod outer { pub mod std { } }` compiles beside the import, so an "
+        "unscoped harvest of every `mod NAME` reopened the bypass",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        mod outer { pub mod std { } }
+
+        use std::io::Error;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] Error),
+        }
+        ''',
+        {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
+    ),
+    (
+        "P33 a #[cfg(test)] ENUM must not vouch for a shipped message "
+        "either — round 4 applied the test exclusion to consts only, so a "
+        "test-only error enum still registered its bare name tree-wide and "
+        "a shipped struct of the same name rode on it",
+        '''
+        #[cfg(test)]
+        mod tests {
+            #[derive(thiserror::Error, Debug)]
+            pub enum ZzShared {
+                #[error("code {0}")]
+                A(u32),
+            }
+        }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("shared: {0}")]
+            Wrapped(ZzShared),
+        }
+        ''',
+        {"variant": "Wrapped", "field": "0", "field_type": "ZzShared"},
     ),
 ]
 
@@ -2103,6 +2430,35 @@ NEGATIVE_CONTROLS: list[tuple[str, str]] = [
         }
         ''',
     ),
+    (
+        "N16 a raw string must END where Rust says it ends — a scanner that "
+        "over-consumes hides every declaration after it, so the const "
+        "DELIBERATELY sits below the raw string",
+        '''
+        pub const HELP: &str = r#"usage: thing "quoted" here"#;
+        pub const REAL_LEN: usize = 16;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("expected {REAL_LEN} bytes, got {length}")]
+            Bad { length: usize },
+        }
+        ''',
+    ),
+    (
+        "N17 a LIFETIME is not a char literal — `&'static str` is the shape "
+        "that makes the apostrophe ambiguous, and a scanner that opens a "
+        "char literal there runs to end-of-file swallowing the const below",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("field {field}: expected {LIFE_LEN}")]
+            Bad { field: &'static str, length: usize },
+        }
+
+        pub const LIFE_LEN: usize = 16;
+        ''',
+    ),
 ]
 
 
@@ -2131,27 +2487,66 @@ def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
     return True
 
 
-def check_view_invariants() -> list[str]:
-    """`strip_comments` and `blank_string_literals` are indexed into by
-    character offset — the reported line number, every `_inside(...)` span
-    check and the raw-text allowlist key all assume the views line up with
-    the source byte-for-byte and line-for-line.
+#  A synthetic source carrying every lexical shape the guard has ever been
+#  broken by, plus the ones it has not: nested block comments, a `\` + newline
+#  continuation, raw strings with a `#` run and internal quotes, byte and raw
+#  byte strings, char literals holding a quote / a brace / an escaped quote,
+#  and a lifetime. Used by `check_view_invariants` — see there.
+LEXER_SAMPLE = (
+    '#[error("continued \\\n        message: {a}")]\n'
+    "/* block\n   comment /* nested */ still comment */ const A: usize = 1;\n"
+    "// line comment\n"
+    'let s = "quote \\" inside";\n'
+    'let r = r#"raw " with quote and /* not a comment */"#;\n'
+    'let r2 = r##"raw "# inner"##;\n'
+    'let b = b"bytes \\x00";\n'
+    'let br = br#"raw " bytes"#;\n'
+    "let q = '\"';\n"
+    "let ob = '{';\n"
+    "let cb = '}';\n"
+    "let esc = '\\'';\n"
+    "let bs = '\\\\';\n"
+    "let bc = b'x';\n"
+    "fn f<'a>(x: &'a str) -> &'static str { x }\n"
+)
 
-    An earlier round shipped a violation of exactly this: a `\\` + newline
+
+def check_view_invariants() -> list[str]:
+    r"""The lexer and both views it feeds are indexed into by CHARACTER
+    OFFSET — the reported line number, every `_inside(...)` span check and the
+    raw-text allowlist key all assume a view lines up with its source
+    byte-for-byte and line-for-line.
+
+    An earlier round shipped a violation of exactly this: a `\` + newline
     string continuation emitted a space for the newline, so every subsequent
-    line number in the file was reported low. These checks pin the invariant
-    over every self-test control plus a synthetic source that deliberately
-    contains the shapes most likely to break it.
+    line number in the file was reported low. Three properties are asserted
+    over every self-test control plus `LEXER_SAMPLE`:
+
+    1. `lex_spans` returns spans that are ordered, non-overlapping and inside
+       the source. A classification that overlaps itself is a classification
+       that has lost track of where it is, which is the single root cause
+       behind every view bug this guard has had.
+    2. Both views preserve LENGTH.
+    3. Both views preserve LINE COUNT.
     """
     samples = [src for _, src, *_ in POSITIVE_CONTROLS]
     samples += [src for _, src in NEGATIVE_CONTROLS]
-    samples.append(
-        '#[error("continued \\\n        message: {a}")]\n'
-        '/* block\n   comment */ const A: usize = 1;\n'
-        '// line comment\nlet s = "quote \\" inside";\n'
-    )
+    samples.append(LEXER_SAMPLE)
     failures: list[str] = []
     for i, src in enumerate(samples):
+        prev_end = 0
+        for start, end, kind in lex_spans(src):
+            if not (0 <= start <= end <= len(src)):
+                failures.append(
+                    f"LEXER INVARIANT: span ({start},{end},{kind}) out of "
+                    f"range on sample #{i} (len {len(src)})"
+                )
+            if start < prev_end:
+                failures.append(
+                    f"LEXER INVARIANT: span ({start},{end},{kind}) overlaps "
+                    f"the previous span on sample #{i}"
+                )
+            prev_end = max(prev_end, end)
         for name, view in (
             ("strip_comments", strip_comments(src)),
             ("discovery_view", discovery_view(src)),

@@ -395,13 +395,91 @@ source. Two structural holes followed from that, both proven by execution:
 Declaration discovery is also now restricted to MODULE SCOPE generally — a
 single brace-nesting pass replaces the earlier impl-block-only exclusion and
 covers `fn` bodies, `trait` bodies, `struct`/`enum` bodies and blocks — and
-`const` discovery additionally skips `#[cfg(test)]` items. Of the 136 bare
-const names the previous round harvested tree-wide, 6 came from test modules,
-one named `SECRET_FIELD_NAME`; the credited set is now 109.
+discovery skips `#[cfg(test)]` items. Of the **134** bare const names the
+round-3 rule harvested tree-wide, 6 came from test modules, one named
+`SECRET_FIELD_NAME`; the credited set is now 109. (A round-4 draft of this
+paragraph said 136. That measurement was taken with two of the measuring
+session's own throwaway attack files still in the tree; 134 is the clean-tree
+figure.)
 
 None of this changed the real scan's verdict: still exactly the same 11
 sites. That is the intended result — these fixes close paths that only a
 deliberately-crafted declaration could have walked.
+
+**Post-implementation update (round 5 review): one lexer, and the fail-closed
+argument is per-pass.** Round 5 broke four of the round-4 views at once, and
+every break was the same defect wearing a different shape: the scanners were
+patched per-shape and did not actually know where Rust literals begin and end.
+
+- `r#"a" const ZZ: usize = 1; "b"#` — a RAW string with an odd number of
+  internal quotes re-exposed its own contents as code, so the round-4 CRITICAL
+  (self-authorising a placeholder from inside a message) was only partially
+  closed. All three tiers were reachable this way.
+- `let c = '}';` inside a `fn` body popped that function's own brace, so every
+  declaration after it in the body was credited as module scope — defeating
+  exactly what the new scope restriction was for.
+- `fn q() -> char { '"' }` desynced the string scanner across the following
+  `use std::io::Error;`, blanking the `use` — which RESTORED the bare-name
+  enum credit and handed back the bypass round 4 had just closed.
+- `mod outer { pub mod std { } }` beside `use std::io::Error;` compiles (the
+  nested `mod std` is not in scope at file top level), and the uniform-path
+  fix harvested `mod NAME` at any depth, so the import was misread as
+  intra-crate.
+- The `#[cfg(test)]` exclusion had been wired to the const registry only, so a
+  test-only `enum` still registered its bare name tree-wide and a shipped type
+  of the same name rode on it.
+
+The fix is a single lexical pass (`lex_spans`) classifying every byte as code,
+comment, literal-delimiter or literal-content — line comments, NESTED block
+comments (Rust's nest, unlike C's), ordinary and byte strings with escapes and
+`\` + newline continuations, raw strings with a variable `#` run
+(`r"…"` / `r#"…"#` / `r##"…"##` / `br#"…"#`), char and byte-char literals
+including `'"'` `'{'` `'}'` `'\''` `'\\'`, and the lifetime-vs-char ambiguity
+that `&'static str` forces. Every view is `render_view` over that one
+classification; length and line-count preservation are structural rather than
+remembered, and both — plus span ordering and non-overlap — are asserted in
+`--self-test`.
+
+**The fail-closed argument is now stated per-pass, because stating it globally
+was itself a defect.** "Blanking can only HIDE text, so a view bug loses a
+credit and therefore only produces findings" is true for the three
+CREDIT-GRANTING registries and **false** for the two CREDIT-WITHDRAWING
+passes: hiding a `use` in `foreign_use_names`, or revealing an extra `mod` in
+`top_level_mod_names`, restores a credit. Each pass is therefore wired to the
+view whose failure direction matches its own polarity — `foreign_use_names`
+reads the RAW source (unioned with the comments-blanked view, so a `use` must
+escape both), `top_level_mod_names` reads the fully blanked discovery view.
+A claim that does not hold for every consumer is worse than no claim, because
+it stops the next reader from checking.
+
+Reading raw for the withdrawal pass has one cost worth recording: `use` is
+also an ordinary English word, and an unfiltered raw scan bound nonsense from
+every doc comment saying "we use the manifest", which surfaced as **9 spurious
+findings** on the first run. A use-tree shape filter (identifier/punctuation
+characters only, and no two identifier words separated by whitespace outside
+` as `) removes the prose without weakening the pass: anything it rejects is
+recovered by the comments-blanked read whenever it was really code.
+
+**What round 5 deliberately did NOT close**, stated rather than papered over:
+
+- **`lex_spans` is a lexer, not a parser, and expands no macros.** An
+  `#[error(...)]` attribute — or a `const` / `type` / `enum` declaration —
+  produced by a macro is invisible to every registry. Closing this needs a
+  real Rust front end; a lexical guard cannot.
+- **`scan_source` locates `#[error(` with string contents INTACT, on purpose.**
+  Hiding an attribute is the one fail-OPEN direction available, so that pass
+  does not trust the lexer's literal classification at all. The price is that
+  an `#[error(` sequence written inside another attribute's *message* is
+  visited as though it were an attribute and may produce an extra finding
+  under its own, different allowlist key. It cannot hide a real attribute, and
+  allowlisting the real one does not silence the spurious one.
+- **A foreign GLOB import (`use some_crate::*;`) still binds names the
+  withdrawal pass cannot enumerate.** Every glob under `core/src/**` today is
+  an intra-crate `use super::*;` inside `#[cfg(test)] mod tests`, plus
+  `use proptest::prelude::*;`.
+- **`type usize = String;`-style shadowing of a `DATA_FREE_TYPES` primitive**
+  remains open, unchanged since round 1, for the same reason: it needs a type
+  resolver, not a lexer.
 
 **Why Python rather than bash.** Associating an attribute with the following
 variant's *field types* requires reading a structure that spans lines. A
@@ -441,7 +519,7 @@ subtle, twice-buggy control was `is_comment_line`, and it has no counterpart in 
 tokenizing parser.
 
 **`--self-test`.** Two-sided, as on both platforms, and materially larger than
-first scoped: **28 positive / 15 negative** controls, up from the original
+first scoped: **33 positive / 17 negative** controls, up from the original
 4-ish sketch. Round 2 review mutation-tested the original set and found three
 were vacuous (didn't actually exercise the mechanism they claimed to — e.g. a
 control for "escaped braces aren't placeholders" whose variant had no fields,
@@ -487,11 +565,27 @@ variant, field and field type (or asserting the finding is/is not `UNPARSED`)
 that the control must produce; the two affected controls assert on the
 verdict, and reverting either fix now breaks its own control.
 
-Every round-4 fix was mutation-proven the same way: each mechanism was
-disabled in turn and the controls re-run, with each mutation breaking exactly
-the control(s) written for it and nothing else. `--self-test` runs first in
-CI so a green guard is never vacuous — and now that claim is backed by a
-mutation pass, not just inspection.
+Round 5 added five positive controls (a raw string self-authorising a const; a
+char literal holding a brace inside a `fn` body; a char literal holding a
+quote across a following `use`; a nested `mod std` beside `use std::…`; a
+`#[cfg(test)]` error enum vouching for a shipped type) and two negative ones
+(a raw string must END where Rust says it does, with the const it could
+swallow placed deliberately below it; and `&'static str` must lex as a
+lifetime, not as a char literal that runs to end-of-file). The lexer sample
+used by the invariant checks carries every shape the guard has been broken by
+plus the ones it has not — nested block comments, `r##"…"##`, `b"…"`,
+`br#"…"#`, `'\''`, `'\\'`, `b'x'`.
+
+Every round-4 and round-5 fix is mutation-proven the same way: each mechanism
+is disabled in turn and the controls re-run, with each mutation breaking
+exactly the control(s) written for it and nothing else. One pair is worth
+reading as a designed experiment rather than a checkbox: crippling char-literal
+lexing alone breaks the brace control but NOT the `use`-desync control,
+because the withdrawal pass reads raw and never saw the blanked view; crippling
+char-literal lexing *and* pointing that pass back at the blanked view breaks
+both. That is the defence-in-depth claim, demonstrated rather than asserted.
+`--self-test` runs first in CI so a green guard is never vacuous — and that
+claim is backed by a mutation pass, not inspection.
 
 ### 5. Platform narrowing
 
