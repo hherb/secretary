@@ -460,21 +460,14 @@ impl OpenVaultManifest {
 /// with a non-misleading detail string via `Display`. Single-variant
 /// for now; new variants belong here rather than being multiplexed onto
 /// `HandleWiped`'s detail string.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ReplaceManifestError {
     /// The manifest handle was wiped between snapshot acquisition and
     /// write-back (concurrent-wipe race). The on-disk write may have
     /// already succeeded; the bridge's in-memory state is no longer
     /// authoritative.
+    #[error("vault manifest handle has been closed during save")]
     HandleWiped,
-}
-
-impl std::fmt::Display for ReplaceManifestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::HandleWiped => f.write_str("vault manifest handle has been closed during save"),
-        }
-    }
 }
 
 /// Internal projection: `core::BlockEntry` → [`BlockSummary`] (drops

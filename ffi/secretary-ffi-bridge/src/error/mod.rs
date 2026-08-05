@@ -63,8 +63,15 @@
 //! - [`vault`] — [`FfiVaultError`] + `From<core::VaultError>`.
 //! - [`conversions`] — `From<FfiUnlockError> for FfiVaultError` + the
 //!   byte-identical-mirror tripwire test.
+//! - `detail` (bridge-private, #480) — the ONLY place in the bridge
+//!   permitted to build a detail string: `GatedDetail` trait + the
+//!   sanctioned `gated*`/`uuid_*`/`counted` constructors that every
+//!   `detail: String` payload above must be built through.
 
 pub mod conversions;
+// TODO(#480 Task 7): remove once call sites land
+#[allow(dead_code)]
+pub(crate) mod detail;
 pub mod unlock;
 pub mod vault;
 
