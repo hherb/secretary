@@ -71,14 +71,30 @@ final class SecretFreeErrorTests: XCTestCase {
         XCTAssertEqual(out, "invalidArgument(<redacted>)")
     }
 
-    /// SECURITY (#467): `.corruptVault` carries a Rust-side error string verbatim,
-    /// and `RecordError::DuplicateKey` (core/src/vault/record.rs:660) formats the
-    /// decrypted CBOR field-name into it. We do not author those strings, so their
-    /// content is unreviewable here — redact.
-    func testVaultAccessErrorRedactsCorruptVault() {
-        let out = diagnosticDetail(VaultAccessError.corruptVault("duplicate map key: my-bank-pin"))
-        XCTAssertFalse(out.contains("my-bank-pin"))
-        XCTAssertEqual(out, "corruptVault(<redacted>)")
+    /// #474: the Rust payload is now gated at source, so a corruption
+    /// diagnostic must keep its detail. Before #474 this arm was redacted
+    /// wholesale because `RecordError::DuplicateKey` embedded a decrypted
+    /// field name.
+    func testCorruptVaultDetailSurvivesRendering() {
+        let error = VaultAccessError.corruptVault("manifest fingerprint mismatch")
+        XCTAssertTrue(
+            error.diagnosticDescription.contains("manifest fingerprint mismatch"),
+            "the corruption detail must survive: \(error.diagnosticDescription)"
+        )
+        XCTAssertFalse(
+            error.diagnosticDescription.contains("<redacted>"),
+            "corruptVault should no longer be redacted"
+        )
+    }
+
+    /// The sibling that must NOT change. `.invalidArgument`'s payload is
+    /// SWIFT-authored — `RecordEditViewModel` interpolates a decrypted record
+    /// field name into it — so it is a different class from the Rust-authored
+    /// payloads #474 gated. Tracked as #473.
+    func testInvalidArgumentStaysRedacted() {
+        let error = VaultAccessError.invalidArgument("field 'amex-cvv' is not valid hex")
+        XCTAssertEqual(error.diagnosticDescription, "invalidArgument(<redacted>)")
+        XCTAssertFalse(error.diagnosticDescription.contains("amex-cvv"))
     }
 
     /// The redaction is surgical: every other case keeps its full detail, which is

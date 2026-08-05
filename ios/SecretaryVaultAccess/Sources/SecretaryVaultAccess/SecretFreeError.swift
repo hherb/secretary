@@ -88,17 +88,19 @@ extension VaultAccessError: SecretFreeError {
     /// deleted arm would put a user's field name in the unified log store. The
     /// redaction holds regardless of which site does the rendering.
     ///
-    /// `.corruptVault` is redacted for the same reason, one layer further down.
-    /// Its payload is a Rust-side error string passed through verbatim by
-    /// `VaultErrorMapping`, and at least one of those strings embeds vault
-    /// plaintext: `RecordError::DuplicateKey { key }`
-    /// (`core/src/vault/record.rs:660`) takes `key` straight from the decrypted
-    /// CBOR field-name and formats it as `"duplicate map key: {key}"`. We do not
-    /// author those strings, so their content cannot be reviewed here — which is
-    /// exactly the "unreviewed content" class this protocol exists to deny.
-    /// (The core has the right pattern elsewhere: `MnemonicError::UnknownWord`
-    /// carries the word's INDEX, never the word. `DuplicateKey` should do the
-    /// same; until it does, the redaction is the fail-closed side.)
+    /// `.corruptVault` is NO LONGER redacted. Its payload is a Rust-side error
+    /// string passed through by `VaultErrorMapping`, and until #474 at least one
+    /// of those strings embedded vault plaintext: `RecordError::DuplicateKey`
+    /// formatted the decrypted CBOR field name into its message. #474 made every
+    /// `core` error payload data-free by construction — plaintext-bearing
+    /// payloads carry a `&'static str` hint plus an ordinal, and the `ciborium`
+    /// message is discarded at the boundary — and
+    /// `scripts/check-error-payload-hygiene.py` fails CI if a new variant
+    /// reintroduces a runtime `String`. Restoring this redaction would throw
+    /// away every corruption diagnostic for no remaining benefit.
+    ///
+    /// `.invalidArgument` above is NOT covered by that guarantee and must stay
+    /// redacted: its payload is SWIFT-authored, not Rust-authored — see #473.
     ///
     /// Every other case is rendered in full. `.invalidMnemonic` is safe because
     /// the core emits a word index rather than the word; `.folderInvalid` carries
@@ -109,8 +111,6 @@ extension VaultAccessError: SecretFreeError {
         switch self {
         case .invalidArgument:
             return "invalidArgument(<redacted>)"
-        case .corruptVault:
-            return "corruptVault(<redacted>)"
         default:
             return String(describing: self)
         }
