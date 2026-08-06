@@ -8,6 +8,7 @@ use secretary_core::crypto::secret::Sensitive;
 use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::{Manifest, ManifestFile};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::sync_helpers::lock_or_recover;
 
@@ -348,7 +349,7 @@ impl OpenVaultManifest {
             .to_canonical_cbor()
             .map(Some)
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: format!("owner card re-encode failed: {e}"),
+                detail: detail::gated_with_context("owner card re-encode failed", &e),
             })
     }
 

@@ -304,8 +304,8 @@ fn vault_error_block_not_found_carries_uuid_hex_field() {
 #[test]
 fn vault_error_not_author_display_pins_string() {
     let e = FfiVaultError::NotAuthor {
-        expected_fingerprint_hex: "aa".repeat(16),
-        got_fingerprint_hex: "bb".repeat(16),
+        expected_fingerprint_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        got_fingerprint_hex: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
     };
     assert_eq!(e.to_string(), "only the block author can share this block");
 }
@@ -359,7 +359,7 @@ fn vault_error_cannot_revoke_owner_from_core_preserves_variant() {
 #[test]
 fn vault_error_missing_recipient_card_display_pins_hex() {
     let e = FfiVaultError::MissingRecipientCard {
-        recipient_fingerprint_hex: "cc".repeat(16),
+        recipient_fingerprint_hex: "cccccccccccccccccccccccccccccccc".to_string(),
     };
     let rendered = e.to_string();
     assert!(

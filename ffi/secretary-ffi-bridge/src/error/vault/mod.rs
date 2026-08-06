@@ -4,6 +4,8 @@
 
 use thiserror::Error;
 
+use crate::error::detail;
+
 /// FFI-friendly thinned error type for the **folder-in** vault entry points
 /// (`open_vault_with_password` and `open_vault_with_recovery`). Mirrors
 /// [`super::FfiUnlockError`]'s 5 unlock-class variants byte-identically
@@ -385,7 +387,6 @@ pub enum FfiVaultError {
 impl From<secretary_core::vault::VaultError> for FfiVaultError {
     fn from(e: secretary_core::vault::VaultError) -> Self {
         use secretary_core::unlock::UnlockError as UE;
-        use secretary_core::vault::format_uuid_hyphenated;
         use secretary_core::vault::VaultError as VE;
 
         match e {
@@ -412,7 +413,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // Any other IO error kind (e.g. interrupted, broken pipe) falls
             // through to CorruptVault since it's neither user-actionable nor
             // data-integrity-clean.
-            VE::Io { context, source }
+            ref e @ VE::Io { ref source, .. }
                 if matches!(
                     source.kind(),
                     std::io::ErrorKind::NotFound
@@ -421,7 +422,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
                 ) =>
             {
                 FfiVaultError::FolderInvalid {
-                    detail: format!("{context}: {source}"),
+                    detail: detail::gated(e),
                 }
             }
 
@@ -449,7 +450,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // "stale UUID" / "trashed block" caller mistake as a data-
             // integrity failure.
             VE::BlockNotFound { block_uuid } => FfiVaultError::BlockNotFound {
-                uuid_hex: hex::encode(block_uuid),
+                uuid_hex: detail::uuid_hex(&block_uuid),
             },
 
             // Block-share authorization failure: caller's identity is not
@@ -457,8 +458,8 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // a non-secret contact card); rendering as hex preserves the
             // foreign-side debugging affordance without leaking secrets.
             VE::NotAuthor { expected, got } => FfiVaultError::NotAuthor {
-                expected_fingerprint_hex: hex::encode(expected),
-                got_fingerprint_hex: hex::encode(got),
+                expected_fingerprint_hex: detail::fingerprint_hex(&expected),
+                got_fingerprint_hex: detail::fingerprint_hex(&got),
             },
 
             // Block-share dedup failure: caller is trying to add a recipient
@@ -482,7 +483,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // variant's field is `fingerprint`; the FFI variant adds the
             // `recipient_` prefix for clarity at the foreign-API boundary.
             VE::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {
-                recipient_fingerprint_hex: hex::encode(fingerprint),
+                recipient_fingerprint_hex: detail::fingerprint_hex(&fingerprint),
             },
 
             // trash/restore precondition: caller asked to restore a UUID
@@ -490,7 +491,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // can recover by trashing the live copy first. Hex-encoded
             // for parity with `BlockNotFound { uuid_hex }`.
             VE::BlockUuidAlreadyLive { block_uuid } => FfiVaultError::BlockUuidAlreadyLive {
-                detail: hex::encode(block_uuid),
+                detail: detail::uuid_hex(&block_uuid),
             },
 
             // trash/restore precondition: caller asked to restore a UUID
@@ -498,18 +499,15 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // can distinguish "already restored" from "data corruption".
             // Hex-encoded for parity with `BlockNotFound { uuid_hex }`.
             VE::BlockNotInTrash { block_uuid } => FfiVaultError::BlockNotInTrash {
-                detail: hex::encode(block_uuid),
+                detail: detail::uuid_hex(&block_uuid),
             },
 
             // restore_block: the trashed file failed hybrid sig / AEAD
             // verification — exactly the "data on disk doesn't match what
             // we signed" contract, so fold to CorruptVault. Hex-encoded
             // for parity with the other UUID renderings.
-            VE::RestoreVerificationFailed { block_uuid, detail } => FfiVaultError::CorruptVault {
-                detail: format!(
-                    "trashed block {} failed verification: {detail}",
-                    hex::encode(block_uuid),
-                ),
+            e @ VE::RestoreVerificationFailed { .. } => FfiVaultError::CorruptVault {
+                detail: detail::gated(&e),
             },
 
             // restore_block (#205): the file whose suffix equals the signed
@@ -517,14 +515,8 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // integrity failure, folded to CorruptVault exactly like
             // RestoreVerificationFailed (no dedicated FFI variant; the §13
             // anti-oracle policy conflates integrity failures here).
-            VE::RestoreTargetMissing {
-                block_uuid,
-                expected_tombstoned_at_ms,
-            } => FfiVaultError::CorruptVault {
-                detail: format!(
-                    "restore target for block {} is missing (expected tombstoned_at_ms {expected_tombstoned_at_ms})",
-                    hex::encode(block_uuid),
-                ),
+            e @ VE::RestoreTargetMissing { .. } => FfiVaultError::CorruptVault {
+                detail: detail::gated(&e),
             },
 
             // #399 Task 8: the block's TrashEntry is marked purged. This is
@@ -538,7 +530,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // Minor #2) — but it's mapped correctly here for exhaustiveness
             // and any future caller of this generic conversion.
             VE::BlockPurged { block_uuid } => FfiVaultError::BlockPurged {
-                detail: hex::encode(block_uuid),
+                detail: detail::uuid_hex(&block_uuid),
             },
 
             // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault
@@ -553,7 +545,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // signal to offer "Repair now?" rather than a generic
             // corruption message.
             VE::BlockFingerprintMismatch { block_uuid, .. } => FfiVaultError::VaultNeedsRepair {
-                block_uuid_hex: format_uuid_hyphenated(&block_uuid),
+                block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
             },
 
             // #350/#374: repair_vault was attempted and refused to adopt a
@@ -562,7 +554,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // Promoted OUT of the CorruptVault fold so the foreign side can
             // surface `detail` instead of a generic corruption message.
             VE::RepairRejected { block_uuid, detail } => FfiVaultError::RepairRejected {
-                block_uuid_hex: format_uuid_hyphenated(&block_uuid),
+                block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
                 detail,
             },
 
@@ -601,7 +593,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // repairable by repair_vault (it cannot invent bytes), so unlike
             // BlockFingerprintMismatch this stays folded.
             | VE::BlockFileMissing { .. }) => FfiVaultError::CorruptVault {
-                detail: format!("{e}"),
+                detail: detail::gated(&e),
             },
         }
     }

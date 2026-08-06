@@ -3,6 +3,8 @@
 
 use thiserror::Error;
 
+use crate::error::detail;
+
 /// FFI-friendly thinned error type for the unlock entry points
 /// (`open_with_password` and `open_with_recovery`). See the parent
 /// [`error`](super) module's docs for the rationale.
@@ -73,7 +75,7 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             E::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
             E::WrongMnemonicOrCorrupt => Self::WrongMnemonicOrCorrupt,
             E::InvalidMnemonic(inner) => Self::InvalidMnemonic {
-                detail: inner.to_string(),
+                detail: detail::gated(&inner),
             },
             E::VaultMismatch => Self::VaultMismatch,
 
@@ -82,7 +84,7 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             | E::MalformedBundleFile(_)
             | E::MalformedBundle(_)
             | E::KdfFailure(_) => Self::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             },
 
             // SECURITY: defensive forward-compat for a structurally-
@@ -100,7 +102,7 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             // ever lands, re-validate whether `WeakKdfParams` should be
             // exposed as its own variant or stay folded.
             E::WeakKdfParams { .. } => Self::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             },
 
             // SECURITY: the FfiUnlockError-layer fold to CorruptVault is
@@ -115,7 +117,7 @@ impl From<secretary_core::unlock::UnlockError> for FfiUnlockError {
             | E::MalformedDeviceFile(_)
             | E::MalformedDeviceSecret { .. }
             | E::DeviceUuidMismatch => Self::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             },
         }
     }

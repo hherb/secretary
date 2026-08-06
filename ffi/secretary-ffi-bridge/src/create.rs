@@ -57,6 +57,7 @@ use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::unlock::{self, mnemonic::Mnemonic};
 
+use crate::error::detail;
 use crate::error::{FfiUnlockError, FfiVaultError};
 use crate::identity::UnlockedIdentity;
 use crate::sync_helpers::lock_or_recover;
@@ -344,12 +345,12 @@ pub fn create_vault_in_folder(
     // a user-facing folder error.
     let toml = std::fs::read_to_string(folder.join("vault.toml")).map_err(|e| {
         FfiVaultError::CorruptVault {
-            detail: format!("vault.toml unreadable post-create: {e}"),
+            detail: detail::gated_with_context("vault.toml unreadable post-create", &e),
         }
     })?;
     let vt = secretary_core::unlock::vault_toml::decode(&toml).map_err(|e| {
         FfiVaultError::CorruptVault {
-            detail: format!("vault.toml undecodable post-create: {e}"),
+            detail: detail::gated_with_context("vault.toml undecodable post-create", &e),
         }
     })?;
 
