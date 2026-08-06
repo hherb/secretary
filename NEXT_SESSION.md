@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-05-474-error-payload-hygiene-shipped.md
+docs/handoffs/2026-08-06-480-bridge-error-payload-hygiene-shipped.md
