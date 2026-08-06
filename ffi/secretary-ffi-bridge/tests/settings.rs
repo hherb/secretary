@@ -110,6 +110,17 @@ fn read_unknown_version_record_falls_back_to_defaults_with_warning() {
             .any(|w| matches!(w, SettingsWarning::Corrupt { .. })),
         "expected a Corrupt warning, got {warnings:?}"
     );
+    let SettingsWarning::Corrupt { detail } = warnings
+        .iter()
+        .find(|w| matches!(w, SettingsWarning::Corrupt { .. }))
+        .expect("Corrupt warning present (checked above)")
+    else {
+        unreachable!("filtered to Corrupt above");
+    };
+    assert!(
+        !detail.contains("secretary.settings.v99"),
+        "decrypted record_type leaked into warning detail: {detail}"
+    );
 }
 
 /// #481/#480 mutation-proof: plant a settings block whose sole field is

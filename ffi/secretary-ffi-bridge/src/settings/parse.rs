@@ -449,6 +449,10 @@ mod tests {
             !rendered.contains("secret.record.type.v9"),
             "decrypted record_type leaked: {rendered}"
         );
+        assert!(
+            rendered.contains("record_type is not secretary.settings.v1"),
+            "fixed-phrase detail missing: {rendered}"
+        );
     }
 
     // =========================================================================

@@ -38,17 +38,23 @@ import org.secretary.diagnostics.SecretFreeThrowable
  *   CI-enforced, #480): `ffi/secretary-ffi-bridge/src/sync/status.rs:86` (wraps
  *   `StateError::Decode`/`Encode`) and `.../sync/orchestration.rs:249-254` (`map_sync_error`,
  *   wraps `SyncError::StateDecodeFailed`/`StateEncodeFailed`). Both ultimately trace back to
- *   `cli/src/state.rs`'s CBOR (de)serialization over the LOCAL sync-state cache — vector
- *   clocks and device UUIDs only, never vault plaintext.
+ *   `core/src/sync/state.rs`'s CBOR (de)serialization over the LOCAL sync-state cache — vector
+ *   clocks and device UUIDs only, never vault plaintext. `cli/src/state.rs`'s `StateError` is
+ *   a thin wrapper: it carries the core `SyncError` unchanged and adds the file-I/O side (the
+ *   `<state-dir>/<vault_uuid_hex>.state.cbor` read/write), not any of the CBOR codec itself.
  * - [InvalidArgument] is NOT #480-gated. Rules E2/E3/E4 stop at everything under
  *   `ffi/secretary-ffi-bridge/src/`; this arm's sole producer,
  *   `ffi/secretary-ffi-uniffi/src/namespace/sync.rs:22`, calls the WRAPPER crate's own
  *   `uuid_from_vec` helper (`namespace/mod.rs:672-675`), which builds `detail` with
  *   `format!("{field} must be 16 bytes, got {}", bytes.len())` — a hand-rolled `format!` in a
  *   crate this guard does not scan at all (#486). It is safe TODAY by PRODUCER TRACE, not by
- *   construction: `field` is always a fixed parameter-name literal (`"vault_uuid"`, never
- *   decrypted content) and `bytes.len()` is a length, never content — but nothing enforces
- *   that a future producer keeps it that way, unlike [Failed]/[StateCorrupt] above.
+ *   construction: THIS arm's sole call site passes `uuid_from_vec` the fixed literal
+ *   `"vault_uuid"` as `field` (never decrypted content), and `bytes.len()` is a length, never
+ *   content. That is a claim about `sync.rs:22` specifically, not about `uuid_from_vec` in
+ *   general — `field` is NOT always a literal across its callers: `namespace/repair.rs:52,65`
+ *   pass `format!("approvals[{idx}].block_uuid")` (a safe loop index, not a fixed literal),
+ *   though that is a different arm's producer, not this one's. Nothing enforces that a future
+ *   producer of THIS arm keeps `field` a literal, unlike [Failed]/[StateCorrupt] above.
  *   `VaultSyncErrorMapping.kt`'s Kotlin side adds no further risk on top: exactly ONE
  *   producer, no Kotlin-side interpolation. Unlike its browse-surface namesake
  *   ([org.secretary.browse.VaultBrowseError.InvalidArgument], REDACTED because
