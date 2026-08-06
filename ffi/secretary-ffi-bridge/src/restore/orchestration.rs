@@ -229,6 +229,44 @@ mod tests {
         };
         assert!(detail.contains("sig mismatch"));
         assert!(detail.contains("verification"));
+        // #480: the fold renders core's own Display, whose `{block_uuid:?}`
+        // is a Debug byte array — pin the shape so a drift back to the
+        // pre-#480 hand-rolled hex rendering is caught.
+        assert!(
+            detail.contains("[204, 204,"),
+            "Debug-array uuid rendering missing: {detail}"
+        );
+        assert!(
+            !detail.contains("cccc"),
+            "unexpected hex uuid rendering: {detail}"
+        );
+    }
+
+    #[test]
+    fn map_core_restore_target_missing_folds_to_corrupt_vault() {
+        // #205: the file whose suffix equals the signed tombstoned_at_ms is
+        // absent. Same CorruptVault fold as RestoreVerificationFailed;
+        // asserted on content, not just shape (#475 discipline).
+        let core_err = VaultError::RestoreTargetMissing {
+            block_uuid: [0x11; 16],
+            expected_tombstoned_at_ms: 1_714_060_900_000,
+        };
+        let ffi = map_core_vault_error_restore(core_err);
+        let FfiVaultError::CorruptVault { detail } = ffi else {
+            panic!("expected CorruptVault, got {ffi:?}");
+        };
+        assert!(
+            detail.contains("restore target for block"),
+            "context phrase missing: {detail}"
+        );
+        assert!(
+            detail.contains("[17, 17,"),
+            "Debug-array uuid rendering missing: {detail}"
+        );
+        assert!(
+            detail.contains("1714060900000"),
+            "signed tombstoned_at_ms missing: {detail}"
+        );
     }
 
     #[test]

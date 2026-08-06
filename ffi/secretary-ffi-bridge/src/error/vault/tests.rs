@@ -458,6 +458,17 @@ fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
     };
     assert!(detail.contains("sig mismatch"));
     assert!(detail.contains("verification"));
+    // #480: the fold renders core's own Display, whose `{block_uuid:?}` is
+    // a Debug byte array — pin the shape so a drift back to the pre-#480
+    // hand-rolled hex rendering is caught, not silently shipped.
+    assert!(
+        detail.contains("[204, 204,"),
+        "Debug-array uuid rendering missing: {detail}"
+    );
+    assert!(
+        !detail.contains("cccc"),
+        "unexpected hex uuid rendering: {detail}"
+    );
 }
 
 #[test]
@@ -489,7 +500,24 @@ fn from_core_vault_error_restore_target_missing_maps_to_corrupt_vault() {
         expected_tombstoned_at_ms: 1_714_060_900_000,
     };
     let ffi: FfiVaultError = core_err.into();
-    assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    let FfiVaultError::CorruptVault { detail } = ffi else {
+        panic!("expected CorruptVault, got {ffi:?}");
+    };
+    // #480: content, not just shape — the fold renders core's own Display
+    // (`{block_uuid:?}` Debug byte array + the signed timestamp), and a
+    // type-only assertion here is the exact #475 anti-pattern.
+    assert!(
+        detail.contains("restore target for block"),
+        "context phrase missing: {detail}"
+    );
+    assert!(
+        detail.contains("[17, 17,"),
+        "Debug-array uuid rendering missing: {detail}"
+    );
+    assert!(
+        detail.contains("1714060900000"),
+        "signed tombstoned_at_ms missing: {detail}"
+    );
 }
 
 // =============================================================================

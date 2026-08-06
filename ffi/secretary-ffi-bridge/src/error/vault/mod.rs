@@ -504,8 +504,10 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
 
             // restore_block: the trashed file failed hybrid sig / AEAD
             // verification — exactly the "data on disk doesn't match what
-            // we signed" contract, so fold to CorruptVault. Hex-encoded
-            // for parity with the other UUID renderings.
+            // we signed" contract, so fold to CorruptVault. Rendered via
+            // core's own Display (#480), whose `{block_uuid:?}` is a Debug
+            // byte array — deliberately NOT the hex parity of
+            // `BlockNotFound { uuid_hex }`.
             e @ VE::RestoreVerificationFailed { .. } => FfiVaultError::CorruptVault {
                 detail: detail::gated(&e),
             },
