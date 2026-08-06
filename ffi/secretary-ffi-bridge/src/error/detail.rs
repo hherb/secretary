@@ -34,11 +34,12 @@ impl GatedDetail for crate::vault::manifest::ReplaceManifestError {}
 impl GatedDetail for crate::settings::parse::SettingsParseError {}
 
 // Reviewed claims OUTSIDE the guard's registries — each is an E4 allowlist
-// entry (Task 8) and the claim lives in the allowlist reason column:
-impl GatedDetail for std::io::Error {} // path + errno: already disclosed
+// entry (#480, scripts/error-payload-hygiene-allowlist.txt) and the claim
+// lives in that file's reason column:
+impl GatedDetail for std::io::Error {} // CARRIER, not fixed-format: safe only while every construction site's payload is — see allowlist entry
 impl GatedDetail for std::num::ParseIntError {} // fixed std phrases, no input echo
 impl GatedDetail for std::str::ParseBoolError {} // fixed std phrase, no input echo
-impl GatedDetail for secretary_cli::state::StateError {} // folds io::Error / core-gated SyncError
+impl GatedDetail for secretary_cli::state::StateError {} // all 5 arms secret-free: errno / core-gated SyncError / disclosed lock path / disclosed vault-UUID hex — see allowlist entry
 
 pub(crate) fn gated(e: &impl GatedDetail) -> String {
     e.to_string()

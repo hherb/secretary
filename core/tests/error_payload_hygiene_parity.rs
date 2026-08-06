@@ -20,6 +20,11 @@ const FIXTURE: &str = concat!(
     "\n",
     "core/src/a.rs\tE1\t#[error(\"x: {0}\")]\treason one\n",
     "core/src/b.rs\tE1\t#[error(\"y: {detail}\")]\treason two\n",
+    // This E4 line's trailing " {}" is synthetic test data for the
+    // rule-column plumbing only — it deliberately does NOT need to match
+    // the real guard's E4 key shape (which excludes the impl body braces;
+    // see check-error-payload-hygiene.py's `impl_target_text`). The FIXTURE
+    // and the probes below only need to agree with EACH OTHER.
     "ffi/x/detail.rs\tE4\timpl GatedDetail for std::io::Error {}\treason three\n",
 );
 
@@ -41,7 +46,12 @@ fn python_and_bash_allowlist_parsers_agree() {
         // Leading/trailing whitespace is trimmed on both sides, so an
         // indentation change must NOT break a valid entry.
         ("core/src/a.rs", "E1", "    #[error(\"x: {0}\")]   ", true),
-        ("core/src/a.rs", "E1", "# a comment line, ignored by both", false),
+        (
+            "core/src/a.rs",
+            "E1",
+            "# a comment line, ignored by both",
+            false,
+        ),
         // The rule column must be honored, not just the path+line: the
         // E4 entry matches under its own rule ...
         (

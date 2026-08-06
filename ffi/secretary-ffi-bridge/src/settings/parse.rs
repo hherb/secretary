@@ -435,7 +435,10 @@ mod tests {
             !detail.contains("secret_field_name_xyz"),
             "decrypted field name leaked into warning detail: {detail}"
         );
-        assert!(detail.contains("field index"), "ordinal hint missing: {detail}");
+        assert!(
+            detail.contains("field index"),
+            "ordinal hint missing: {detail}"
+        );
     }
 
     #[test]

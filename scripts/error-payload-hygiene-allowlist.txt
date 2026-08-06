@@ -1,8 +1,13 @@
 # Allowlist for check-error-payload-hygiene.sh's Python sibling,
 # scripts/check-error-payload-hygiene.py (#474).
 #
-# THE RULE: a `core` error variant must not interpolate a runtime String into
-# its #[error] message. These are the reviewed exceptions.
+# THE RULE: an error payload — a `core` variant under core/src/**, OR
+# anything under ffi/secretary-ffi-bridge/src/** (#480 adds this second
+# root) — must not carry a runtime String nobody has vouched for. `E1`
+# covers interpolation in BOTH roots; `E2`/`E3`/`E4` are bridge-only rules
+# covering declaration, construction site, and `impl GatedDetail`
+# respectively — see the four-rule paragraph below for the full definitions.
+# These are the reviewed exceptions.
 #
 # Format, one per line, TAB-separated — IDENTICAL to the two shell log-hygiene
 # guards' allowlists, so that scripts/lib/hygiene-allowlist.sh::allowlisted
@@ -24,8 +29,10 @@
 # every `impl GatedDetail for X` to live in
 # ffi/secretary-ffi-bridge/src/error/detail.rs and name a type this guard
 # itself scans. The column exists for format parity with the shell guards'
-# three/four-rule allowlists AND because a second rule really is present
-# here now.
+# three/four-rule allowlists — and, now that this guard genuinely has four
+# rules of its own, for the identical load-bearing reason those guards have
+# it: telling readers and `allowlisted()` alike which rule a given entry
+# exempts.
 #
 # THE KEY is the ENTIRE `#[error(...)]` attribute, not just its first source
 # line: for a multi-line attribute (e.g. sync/error.rs's
@@ -40,6 +47,14 @@
 # insensitive to re-wrapping and carries no TAB or newline of its own — the
 # guard's `check_key_shape` self-test control asserts that property, which is
 # what makes it safe for `allowlisted()`'s TAB-column split.
+#
+# For an `E4` row the key is NOT a `#[error(...)]` attribute at all — E4
+# rows exempt an `impl GatedDetail for X` line, not a variant. The key there
+# is the impl header collapsed to one line, from the `impl` keyword up to
+# but EXCLUDING the opening body brace (a `where` clause or a bare `;`
+# terminates it the same way — see `impl_target_text`); the impl's `{}`
+# body is never part of the key, so an E4 entry's third column ends at the
+# type name, with no trailing `{}`.
 #
 # The match is on the EXACT collapsed attribute text with leading/trailing
 # whitespace additionally stripped by `allowlisted()` — NEVER a substring. A
@@ -110,13 +125,27 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 # Rule E4 verifies that every `impl GatedDetail for X` in the bridge's
 # error/detail.rs names a type this guard itself scans. These four types are
 # NOT scanned, so each impl is a reviewed claim about what the type's Display
-# renders. Re-review on any dependency bump that touches them.
+# renders. "Re-review on any dependency bump" is NOT one trigger for all
+# four — the four entries below split into three different re-review
+# triggers, stated per entry/here rather than lumped together:
+#   - `std::io::Error` is a CARRIER, not a fixed-format type: its Display
+#     renders whatever it was constructed with, so its safety is a
+#     PRODUCER-DEPENDENT claim (like Section 3's) about every current
+#     construction site in this repo, not a type-level guarantee. Re-review
+#     on any NEW `std::io::Error` construction site anywhere in the tree —
+#     see its entry below for the one that exists today.
+#   - `ParseIntError` / `ParseBoolError` render std-fixed phrases with no
+#     runtime input echoed, but `IntErrorKind` is `#[non_exhaustive]`, so
+#     that claim is scoped to the std library version in use. Re-review on
+#     any `rust-toolchain.toml` version bump.
+#   - `secretary_cli::state::StateError`'s trigger ("re-verify if cli adds
+#     variants") is stated in its own entry below.
 # =============================================================================
 
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	path + errno — already disclosed per the threat model (same verdict as core Section 2)
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	Display folds a fixed prefix over io::Error (disclosed) or core-gated SyncError (cli/src/state.rs:51-62); re-verify if cli adds variants
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are all OS-returned (path + errno, disclosed); the bridge can also synthesize one via std::io::Error::new(kind, format!(...)). The one such site today is ffi/secretary-ffi-bridge/src/repair/orchestration.rs:137-147, whose format! embeds StateError's Display (E4-gated below) plus the state-dir file path (disclosed, same class as core Section 2) — currently safe, but producer-dependent like Section 3, not type-safe. Re-review on any NEW io::Error construction site in this repo
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed. IntErrorKind is #[non_exhaustive]; re-review on a rust-toolchain.toml bump
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed; re-review on a rust-toolchain.toml bump
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	all 5 arms are secret-free: Io renders an OS errno (state.rs mints no custom io::Error); Decode/Encode render core-gated SyncError; LockfileHeld renders a host-local <state-dir>/<hex>.lock path (disclosed class, per core Section 2); VaultUuidMismatch renders two vault-UUID hex strings (vault.toml is cleartext, vault-format §2). Re-verify if cli adds variants
 
 # =============================================================================
 # SECTION 3 — SAFE BY CONSTRUCTION SITE, NOT BY TYPE
