@@ -114,9 +114,15 @@ declares no value. `String::new()` is NOT that shape and denies.
 
 `E4` — THE IMPL ALLOWLIST. `impl GatedDetail for X` is a security decision:
 it claims `X`'s `Display` output carries no secret. Every such impl must live
-in `DETAIL_MODULE_REL`, and inside it must name a path rooted in a crate this
-guard scans whose last segment is a type this guard scans. Anything else is
-an allowlist entry a human signed.
+in `DETAIL_MODULE_REL`, must be NON-GENERIC, and must name a plain type path
+rooted in a crate this guard scans whose last segment is a type this guard
+scans. Anything else is an allowlist entry a human signed. The generic and
+non-path arms are not fussiness: `impl<T: Display> GatedDetail for T {}` is
+one line, compiles beside the real impls, and hands the trait to every
+`Display` type — after which E3 accepts `detail::gated(&anything)` and both
+rules mean nothing. Like E1, this reads TEXT: a `macro_rules!`-generated
+impl is invisible, so "every impl must live in that file" is a claim about
+impls this guard can SEE.
 
 LIMITS (stated, not hidden)
 ---------------------------
@@ -134,18 +140,27 @@ LIMITS (stated, not hidden)
   bridge's, and `secretary-cli` / `desktop/src-tauri` build theirs
   independently. A `String` authored in one of those and handed to a
   platform is gated by review alone.
-- RULE E3 IS A SYNTACTIC MATCH ON INITIALIZER POSITION, so a value that
-  reaches a gated field WITHOUT passing through one is invisible to it. Two
-  shapes do exactly that, and both are real Rust anyone could write:
-  a POST-CONSTRUCTION ASSIGNMENT (`e.detail = format!("{x}");`) is a write,
-  not an initializer; and a LOCAL BINDING PLUS FIELD SHORTHAND
-  (`let detail = format!("{x}"); E::V { detail }`) never produces a
-  `detail:` token at all. Shorthand is deliberately not a candidate — the
-  three shorthand sites in the tree today are re-wraps of an
-  already-gated payload, the same case as the `detail: detail` acceptance —
-  but "shorthand is a re-wrap" is a convention, not something this guard
-  establishes. Closing either shape needs dataflow, which is a different
-  kind of tool.
+- RULE E3 IS A SYNTACTIC MATCH ON INITIALIZER POSITION AND ON THE FIELD'S
+  NAME, so a value that reaches a gated field without passing through an
+  initializer — or that passes through one under the right name — is not
+  checked. THREE shapes do exactly that, all of them ordinary Rust, and all
+  three were verified by execution rather than assumed:
+    1. POST-CONSTRUCTION ASSIGNMENT. `e.detail = format!("{x}");` is a
+       write, not an initializer, and this rule never sees a write.
+    2. LOCAL BINDING PLUS FIELD SHORTHAND.
+       `let detail = format!("{x}"); E::V { detail }` never produces a
+       `detail:` token at all.
+    3. LOCAL BINDING PLUS THE `detail: detail` ACCEPT. E3 accepts an
+       initializer that is the field's own name, so
+       `let detail = format!("{x}"); E::V { detail: detail }` passes — as
+       does a function parameter of the same name. That arm trusts the NAME,
+       not where the value came from; it exists because the approved design
+       mandates the re-wrap form, and its gap is stated here rather than
+       dressed up as a provenance argument (see `initializer_is_gated`).
+  The three re-wrap sites in the tree today ARE re-wraps of an already-gated
+  payload, but "a value named `detail` was gated where it was built" is a
+  convention this guard does not establish. Closing any of the three needs
+  dataflow, which is a different kind of tool.
 - `#[cfg(test)]` exclusion is PER FILE. A module whose `mod` declaration is
   gated in its PARENT (`#[cfg(test)] mod tests;` in `error/vault/mod.rs`)
   is a whole test-only FILE this guard has no way to recognise from inside,
@@ -246,12 +261,18 @@ LIMITS (stated, not hidden)
   extra finding with its own (different) allowlist key. That is noise in the
   safe direction: it can never hide a real attribute, and the spurious key
   does not match the real one, so allowlisting one does not silence the
-  other. Rules E3 and E4 locate their candidates the same way and inherit
-  the same trade: three of the current findings are `detail:` /
-  `uuid_hex:` sequences written inside `assert!` message strings in
-  `error/vault/tests.rs`. Their EXPRESSION extraction, by contrast, reads
-  the discovery view, where blanking can only ever make an expression
-  LONGER and so harder to accept — see `initializer_end`.
+  other. Rule E4 locates its anchors the same way and inherits the same
+  trade. RULE E3 IS THE ONE EXCEPTION IN THIS FILE, and it is a deliberate,
+  adjudicated one: it DETECTS candidates on the literal-blanked discovery
+  view, so a `detail:` written inside an `assert!` message is not a
+  construction site (it removed three such false positives in
+  `error/vault/tests.rs`). That makes E3 detection the single pass here
+  where a lexer desync is fail-OPEN rather than fail-closed, which is why
+  `BP30`-`BP33` pin a real `detail: leak()` still firing immediately after
+  a raw string with a `#` run, an escaped quote, a byte string, and a
+  lifetime. E3's CLASSIFICATION still reads the literal-intact view, since
+  "is this expression a string literal" is undecidable on a view where the
+  literal has been blanked.
 - `discover_declarations` credits only MODULE-SCOPE declarations: anything
   inside a brace block that is not a `mod name { ... }` block is skipped
   (`non_module_block_spans`), which covers a trait's or an `impl`'s
@@ -2334,11 +2355,25 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
     `discovery_view`'s own docstring records for `#[error("...")]` messages.
     A lexer desync that HID a real constructor would instead cost a
     fail-closed E3 finding at each of its call sites.
+
+    `#[cfg(test)]`-gated declarations are excluded, like every other
+    discovery walk in this file. This one was missed on the first pass, and
+    it is a GRANT: a `#[cfg(test)] pub(crate) fn evil_toplevel(...)` added to
+    `detail.rs` registered as sanctioned and authorised `detail::evil_toplevel(..)`
+    at SHIPPED call sites — verified by execution. A test-only declaration is
+    not part of the shipped crate and must not vouch for shipped code, which
+    is the same rule `discover_declarations` applies to its own three
+    registries.
     """
     if not detail_src:
         return frozenset()
     view = discovery_view(detail_src)
-    return frozenset(m.group(1) for m in SANCTIONED_CTOR_RE.finditer(view))
+    excluded = discovery_cfg_test_spans(detail_src)
+    return frozenset(
+        m.group(1)
+        for m in SANCTIONED_CTOR_RE.finditer(view)
+        if not _inside(m.start(), excluded)
+    )
 
 
 # A gated field name in INITIALIZER position: `<name>:` not followed by a
@@ -2465,11 +2500,25 @@ def initializer_is_gated(
        not a construction. `String::new()` is NOT this shape and denies,
        which is what keeps the acceptance from becoming "any expression
        starting with String".
-    4. The exact same identifier as the field name — a `detail: detail`
-       re-wrap, which passes an ALREADY-gated value straight through (the
-       value's own construction site is gated where it was built). Field
-       shorthand (`E::V { detail }`) has no `:` at all and never becomes a
-       candidate in the first place.
+    4. The exact same identifier as the field name — the `detail: detail`
+       re-wrap. THIS ARM TRUSTS THE NAME, NOT THE VALUE'S PROVENANCE, and
+       saying otherwise would be a false claim about a security control. An
+       earlier version of this docstring asserted the value "is gated where
+       it was built"; that is only true for the shape this arm exists to
+       serve (re-wrapping a field of an already-gated error), and it is
+       FALSE in general — verified by execution:
+
+           fn f() -> E { let detail = format!("{}", leak());
+                         E::V { detail: detail } }      // zero findings
+
+       A local binding (or a function parameter) named `detail` launders any
+       expression through this arm. The rule keeps the form because the
+       approved plan mandates it and because the alternative — denying every
+       re-wrap — would flag the legitimate sites and teach reviewers to wave
+       E3 findings through. It is an explicit, named ACCEPT with a stated
+       gap, recorded in the module docstring's LIMITS beside the other two.
+       Field shorthand (`E::V { detail }`) has no `:` at all and never
+       becomes a candidate in the first place — same gap, different door.
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
     a field assigned AFTER construction (`x.detail = format!(...)`) is a
@@ -2509,14 +2558,24 @@ def scan_bridge_construction_sites(
     is what this rule does, and why E2 without E3 would be a hole rather than
     a design.
 
-    Candidates are located on the COMMENTS-BLANKED view, with string contents
-    INTACT, for the same reason `scan_source` locates `#[error(` there:
-    hiding a construction site would be fail-OPEN, so this pass does not
-    trust the lexer's literal classification to decide what is code. The
-    price is that a `detail:` written inside a string literal is visited as
-    though it were a construction site and may produce a finding with its own
-    (different) allowlist key — noise in the safe direction, exactly as the
-    module docstring records for the `#[error(` scan.
+    Candidates are DETECTED on the DISCOVERY view (comments and string
+    CONTENTS blanked) and CLASSIFIED against the comments-blanked view, where
+    literals are intact. The split is deliberate and the two halves have
+    opposite needs:
+
+    - DETECTION on the discovery view means a `detail:` sequence written
+      inside a string — `assert!(ok, "Display did not include detail: {r}")`
+      — is not a construction site and does not produce a finding. Three
+      such false positives existed in `error/vault/tests.rs` before this.
+      The cost is real and is stated plainly: this is the ONE place in this
+      file where a lexer desync is fail-OPEN, because text the lexer
+      wrongly calls a literal stops being a candidate. `BP30`-`BP33` are the
+      negative-direction controls for exactly that — a real `detail: leak()`
+      placed immediately after a raw string with a `#` run, an escaped
+      quote, a byte string, and a lifetime/loop-label shape must still fire.
+    - CLASSIFICATION reads the literal-intact view, because deciding whether
+      an expression IS a string literal is impossible on a view where the
+      literal has been blanked to spaces.
 
     `#[cfg(test)]`-gated items are skipped (`discovery_cfg_test_spans`): a
     detail string built by a test never reaches a platform.
@@ -2532,7 +2591,7 @@ def scan_bridge_construction_sites(
     excluded = discovery_cfg_test_spans(raw)
     literal_ends = string_literal_token_ends(raw)
     findings: list[Finding] = []
-    for m in GATED_INIT_RE.finditer(src):
+    for m in GATED_INIT_RE.finditer(depth_view):
         if _inside(m.start(), excluded):
             continue
         name = m.group(1)
@@ -2558,10 +2617,39 @@ def scan_bridge_construction_sites(
     return findings
 
 
-# `impl GatedDetail for X` — rule E4's target. Deliberately NOT anchored on a
-# word boundary or a line start: this regex looks for VIOLATIONS, so matching
-# more text than strictly necessary is the fail-closed direction.
-IMPL_GATED_RE = re.compile(r"impl\s+GatedDetail\s+for\s+([A-Za-z0-9_:<>]+)")
+# Rule E4's anchor: the TRAIT NAME plus `for`, and nothing else.
+#
+# FOR A VIOLATION-FINDING REGEX, MATCHING LESS IS FAIL-OPEN. The first version
+# of this rule spelled it `impl\s+GatedDetail\s+for\s+([A-Za-z0-9_:<>]+)` and
+# called matching more text "the fail-closed direction" — the claim was right
+# and the regex did the opposite of it. `impl\s+` REQUIRES whitespace after
+# `impl`, so `impl<T: Display> GatedDetail for T {}` — a one-line blanket impl
+# that hands the trait to EVERY `Display` type and collapses the premise both
+# E3 and E4 rest on — never matched, in `detail.rs` or anywhere else. Neither
+# did `impl crate::error::detail::GatedDetail for X {}`, and the target class
+# excluded `&`, `(`, `[` and `'`, so `impl<'a> GatedDetail for &'a str {}` and
+# `impl GatedDetail for &Plain {}` were invisible too. All six shapes were
+# rustc-compiled and confirmed to produce ZERO findings, with E3 then happily
+# accepting `detail: detail::gated(&Wrap(decrypted_key))`.
+#
+# Anchoring on `GatedDetail for` alone removes every one of those degrees of
+# freedom: whatever precedes the trait name (generic parameters, a qualified
+# trait path, line breaks) cannot hide the anchor, because the anchor does not
+# look at it. The `impl` header is then recovered BACKWARDS, and failing to
+# recover it is an `UNPARSED` finding rather than a skip.
+IMPL_GATED_ANCHOR_RE = re.compile(r"\bGatedDetail\s+for\b")
+IMPL_KW_RE = re.compile(r"\bimpl\b")
+# How far back to look for the `impl` keyword introducing an anchor. Generic
+# parameter lists in this codebase are a few dozen characters; 512 is slack.
+# Coming up empty is a FINDING (`UNPARSED`), not a skip, so the bound cannot
+# hide an impl — only mislabel one.
+IMPL_HEADER_WINDOW = 512
+# A plain type PATH: `::`-separated plain identifiers, nothing else. Rule E4
+# accepts no other target shape. A reference (`&Plain`), a lifetime-bearing
+# type (`&'a str`), a tuple, an array, `dyn Trait`, a generic application
+# (`Wrap<T>`) and `()` all fail this and DENY, because each is a claim about
+# something other than one named type this guard can look up.
+PLAIN_TYPE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$")
 # The path roots that name a crate THIS GUARD SCANS. `crate` / `self` /
 # `super` resolve inside `secretary-ffi-bridge` itself (BRIDGE_SCAN_ROOT),
 # `secretary_core` is SCAN_ROOT's crate, and `secretary_ffi_bridge` is the
@@ -2570,16 +2658,17 @@ IMPL_GATED_RE = re.compile(r"impl\s+GatedDetail\s+for\s+([A-Za-z0-9_:<>]+)")
 SCANNED_IMPL_ROOTS: frozenset[str] = frozenset(
     {"crate", "self", "super", "secretary_core", "secretary_ffi_bridge"}
 )
-# Short, stable REASON CODES prefixing each of rule E4's four denial arms.
-# Their purpose is mutation-verifiability, not display: three of the four
-# arms deny the SAME impls as a neighbouring arm would if it were deleted
-# (a bare target also fails the root check; an impl outside detail.rs would
-# also fail the bare/root checks), so a control asserting only "a finding
-# fired" cannot tell an arm's removal from its presence. Controls assert
-# `field_type_prefix` against these codes, which makes each arm
-# independently mutatable — three mutation checks came back GREEN before
-# they existed.
+# Short, stable REASON CODES prefixing each of rule E4's six denial arms.
+# Their purpose is mutation-verifiability, not display: the arms OVERLAP —
+# a bare target also fails the root check, a blanket `impl<T> ... for T` also
+# has a bare target, an impl outside detail.rs would also fail several of the
+# in-file checks — so a control asserting only "a finding fired" cannot tell
+# an arm's removal from its presence. Controls assert `field_type_prefix`
+# against these codes, which makes each arm independently mutatable; three
+# mutation checks came back GREEN before they existed.
 E4_OUTSIDE = "outside-detail-module: "
+E4_GENERIC = "generic-impl: "
+E4_NONPATH = "non-path-target: "
 E4_BARE = "bare-target: "
 E4_ROOT = "foreign-crate-root: "
 E4_UNSCANNED = "unscanned-type: "
@@ -2590,6 +2679,56 @@ def is_detail_module(path_label: str) -> bool:
     `impl GatedDetail` (`DETAIL_MODULE_REL`). Separator-normalized so a
     Windows-spelled `path_label` compares equal."""
     return path_label.replace("\\", "/") == DETAIL_MODULE_REL
+
+
+def impl_header_before(src: str, anchor_start: int) -> tuple[int, str] | None:
+    """`(impl_keyword_start, text between `impl` and the anchor)` for the
+    nearest `impl` keyword preceding a `GatedDetail for` anchor, or `None`.
+
+    The between-text is what tells a GENERIC impl from a plain one: it holds
+    the generic parameter list (`<T: Display>`) and/or a qualified trait path
+    prefix (`crate::error::detail::`). Searching BACKWARDS from the anchor —
+    rather than matching the header forwards — is the whole point: a forward
+    match has to model everything that may sit between `impl` and the trait
+    name, and every one of those things was a bypass (see
+    `IMPL_GATED_ANCHOR_RE`).
+    """
+    matches = list(
+        IMPL_KW_RE.finditer(src, max(0, anchor_start - IMPL_HEADER_WINDOW), anchor_start)
+    )
+    if not matches:
+        return None
+    m = matches[-1]
+    return m.start(), src[m.end() : anchor_start]
+
+
+def impl_target_text(src: str, start: int) -> tuple[str, int]:
+    """`(whitespace-collapsed self type, end offset)` for the impl target
+    beginning at `start` (just past a `GatedDetail for` anchor).
+
+    Ends at the first `{` or `;` outside `()`/`<>`/`[]` nesting, or at a
+    `where` clause, whichever comes first. Nesting is tracked so
+    `Wrap<Vec<u8>>` and `(u8, u8)` come out whole — this function does not
+    judge the shape, it only delimits it; `PLAIN_TYPE_PATH_RE` judges.
+    """
+    depth = 0
+    i, n = start, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "(<[":
+            depth += 1
+        elif ch in ")>]":
+            if depth > 0:
+                depth -= 1
+        elif depth == 0 and ch in "{;":
+            break
+        i += 1
+    text = src[start:i]
+    wm = re.search(r"\bwhere\b", text)
+    if wm:
+        i = start + wm.start()
+        text = text[: wm.start()]
+    return " ".join(text.split()), i
 
 
 def scan_bridge_gated_detail_impls(
@@ -2608,19 +2747,32 @@ def scan_bridge_gated_detail_impls(
     types a detail string can be built from is exactly the set of impls —
     so PINNING THE IMPLS TO ONE FILE pins the whole allowlist to one review.
 
-    Two checks, in order:
+    SIX checks, in order — each with its own reason code so a control can
+    pin WHICH one fired (they overlap heavily; see the reason-code comment):
 
-    1. Any impl in a file OTHER than `DETAIL_MODULE_REL` is a finding, full
-       stop. There is no allowlist story for this arm — move the impl.
-    2. Inside `detail.rs`, the target must be a PATH ROOTED IN A SCANNED
-       CRATE (`SCANNED_IMPL_ROOTS`) whose LAST SEGMENT is a type this guard
-       itself scans (`scanned_error_type_names`) — the same "safe by
-       recursion" argument tier 2 of `is_data_free` makes for a field
-       referencing a local error enum: this guard already fails at that
-       type's own definition if one of its payloads is not data-free.
-       Anything else is a finding, and THAT arm is allowlistable after human
-       review (`std::io::Error`'s path + errno is already-disclosed under
-       the threat model, and so on).
+    1. Any impl in a file OTHER than `DETAIL_MODULE_REL` is a finding. There
+       is no allowlist story for this arm — move the impl.
+    2. A GENERIC impl (`impl<...>`) is a finding. Generic parameters are how
+       a claim gets made about types the author has not enumerated, and
+       enumerability is the entire premise: `impl<T: Display> GatedDetail
+       for T {}` would hand the trait to every `Display` type in one line.
+       This arm has no allowlist story either.
+    3. A target that is not a plain `::`-separated type path is a finding
+       (`&Plain`, `&'a str`, `(u8, u8)`, `[u8; 4]`, `dyn Foo`, `Wrap<T>`,
+       `()`): each is a claim about something other than one named type this
+       guard can look up.
+    4. A BARE (single-segment) target is a finding: a bare name states no
+       crate, so it cannot be told apart from a `use`-imported foreign type
+       of the same name — write the path.
+    5. The path must be ROOTED IN A SCANNED CRATE (`SCANNED_IMPL_ROOTS`).
+    6. Its LAST SEGMENT must be a type this guard itself scans
+       (`scanned_error_type_names`) — the same "safe by recursion" argument
+       tier 2 of `is_data_free` makes for a field referencing a local error
+       enum: this guard already fails at that type's own definition if one
+       of its payloads is not data-free.
+
+    Arms 5 and 6 are allowlistable after human review (`std::io::Error`'s
+    path + errno is already-disclosed under the threat model, and so on).
 
     THE ROOT CHECK IS LOAD-BEARING AND IS NOT REDUNDANT WITH THE REGISTRY
     CHECK. `scanned_error_type_names` holds BARE names, and `core/src/error.rs`
@@ -2629,15 +2781,44 @@ def scan_bridge_gated_detail_impls(
     FOREIGN type for a same-named local one. That is the exact collision
     `foreign_use_names` exists to withdraw for field references, arriving
     here by a different door; it is live in the tree today, and `BP20` pins
-    it. A BARE (single-segment) target denies for the same reason from the
-    other side: a bare name states no crate at all, so it cannot be told
-    apart from a `use`-imported foreign type — write the path.
+    it.
+
+    LIMIT, same class as E1's: this reads TEXT, not expanded macros. An
+    `impl GatedDetail for ...` produced by a `macro_rules!` expansion is
+    invisible here, exactly as a macro-generated `#[error(...)]` is invisible
+    to `scan_source` — the module docstring's LIMITS records the general
+    form. "Any impl outside detail.rs is a finding" is therefore a claim
+    about impls this guard can SEE, and the honest scope of arm 1.
     """
     src = strip_comments(raw)
     in_detail = is_detail_module(path_label)
     findings: list[Finding] = []
-    for m in IMPL_GATED_RE.finditer(src):
-        target = " ".join(m.group(1).split())
+    for m in IMPL_GATED_ANCHOR_RE.finditer(src):
+        header = impl_header_before(src, m.start())
+        target, target_end = impl_target_text(src, m.end())
+        if header is None:
+            # A `GatedDetail for` anchor with no `impl` keyword in front of
+            # it is a construct this guard does not model. Fail closed on
+            # STRUCTURE, exactly as `scan_source` does for an attribute whose
+            # variant it cannot locate.
+            findings.append(
+                Finding(
+                    path=path_label,
+                    line=src.count("\n", 0, m.start()) + 1,
+                    source_line=" ".join(src[m.start() : target_end].split()),
+                    variant="<impl GatedDetail>",
+                    field=target or "<unparsed>",
+                    field_type=(
+                        "UNPARSED: found a `GatedDetail for` anchor with no "
+                        "`impl` keyword in front of it — this guard cannot "
+                        "tell what declares it"
+                    ),
+                    rule="E4",
+                )
+            )
+            continue
+        impl_start, between = header
+        has_generics = between.lstrip().startswith("<")
         segments = [seg for seg in target.split("::") if seg]
         reason: str | None = None
         if not in_detail:
@@ -2645,6 +2826,20 @@ def scan_bridge_gated_detail_impls(
                 f"{E4_OUTSIDE}declared outside {DETAIL_MODULE_REL} — every "
                 "impl of this trait is a secret-freedom claim and must sit "
                 "in that one reviewed file"
+            )
+        elif has_generics:
+            reason = (
+                f"{E4_GENERIC}the impl declares generic parameters, so it "
+                "claims secret-freedom for a FAMILY of types rather than one "
+                "named type — the set of impls would stop being enumerable, "
+                "which is the premise rules E3 and E4 rest on"
+            )
+        elif not PLAIN_TYPE_PATH_RE.match(target):
+            reason = (
+                f"{E4_NONPATH}target `{target or '<empty>'}` is not a plain "
+                "type path (reference, lifetime, tuple, array, `dyn`, "
+                "generic application or unit), so there is no single named "
+                "type to look up"
             )
         elif len(segments) < 2:
             reason = (
@@ -2670,8 +2865,8 @@ def scan_bridge_gated_detail_impls(
         findings.append(
             Finding(
                 path=path_label,
-                line=src.count("\n", 0, m.start()) + 1,
-                source_line=" ".join(m.group(0).split()),
+                line=src.count("\n", 0, impl_start) + 1,
+                source_line=" ".join(src[impl_start:target_end].split()),
                 variant="<impl GatedDetail>",
                 field=target,
                 field_type=reason,
@@ -4227,6 +4422,111 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: X) -> E { E::V { detail: detail::gated(&e) + &leak() } } ''',
         {"field": "detail"},
     ),
+    # ---- CRITICAL 1 (#480 task-3 review): the impl-matching regex missed
+    # every generic impl, every non-path target and every qualified trait
+    # path. All five sources below are rustc-compiled and produced ZERO
+    # findings before `IMPL_GATED_ANCHOR_RE` replaced `IMPL_GATED_RE`.
+    (
+        "BP24 BLANKET impl inside detail.rs — `impl<T: Display> GatedDetail "
+        "for T {}` hands the trait to every Display type in one line and was "
+        "INVISIBLE to the old `impl\\s+GatedDetail` regex",
+        ''' impl<T: Display> GatedDetail for T {} ''',
+        {"field": "T", "field_type_prefix": E4_GENERIC},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP25 the same BLANKET impl OUTSIDE detail.rs must fire on the "
+        "file arm — proves the anchor sees it wherever it is written",
+        ''' impl<T: Display> GatedDetail for T {} ''',
+        {"field": "T", "field_type_prefix": E4_OUTSIDE},
+    ),
+    (
+        "BP26 `impl<'a> GatedDetail for &'a str {}` — a lifetime parameter "
+        "defeats `impl\\s+`, and `&`/`'` are outside the old target class",
+        """ impl<'a> GatedDetail for &'a str {} """,
+        {"field": "&'a str", "field_type_prefix": E4_GENERIC},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP27 `impl GatedDetail for &Plain {}` — a REFERENCE target with no "
+        "generics at all; isolates the non-path arm",
+        ''' impl GatedDetail for &Plain {} ''',
+        {"field": "&Plain", "field_type_prefix": E4_NONPATH},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP28 `impl<T: Display> GatedDetail for Wrap<T> {}` — a generic "
+        "application, the shape the reviewer drove end-to-end into an "
+        "ACCEPTED `detail: detail::gated(&Wrap(decrypted_key))`",
+        ''' impl<T: Display> GatedDetail for Wrap<T> {} ''',
+        {"field": "Wrap<T>", "field_type_prefix": E4_GENERIC},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BP29 a FULLY-QUALIFIED trait path — `impl crate::error::detail::"
+        "GatedDetail for SomeType {}` — was invisible too, because the old "
+        "regex demanded the bare trait name straight after `impl `",
+        ''' impl crate::error::detail::GatedDetail for SomeType {} ''',
+        {"field": "SomeType", "field_type_prefix": E4_OUTSIDE},
+    ),
+    # ---- QUEUED ADJUDICATION: E3 detection moved to the literal-blanked
+    # view, which makes THIS pass fail-OPEN on a lexer desync. Each control
+    # below puts a REAL construction site immediately after a literal shape
+    # that has historically desynced a scanner; all four must still fire.
+    (
+        "BP30 a real construction site immediately after a RAW STRING with "
+        "a # run must still be detected (E3 detection is the one fail-OPEN "
+        "view choice in this file)",
+        '''
+        const A: &str = r#"a " b"#;
+        fn f() -> E { E::V { detail: leak() } }
+        ''',
+        {"field": "detail", "rule": "E3"},
+    ),
+    (
+        "BP31 ... immediately after an ESCAPED QUOTE inside an ordinary "
+        "string",
+        '''
+        const A: &str = "quote \\" inside";
+        fn f() -> E { E::V { detail: leak() } }
+        ''',
+        {"field": "detail", "rule": "E3"},
+    ),
+    (
+        "BP32 ... immediately after a BYTE STRING",
+        '''
+        const A: &[u8] = b"bytes \\x00";
+        fn f() -> E { E::V { detail: leak() } }
+        ''',
+        {"field": "detail", "rule": "E3"},
+    ),
+    (
+        "BP33 ... immediately after a LIFETIME / char-literal ambiguity "
+        "(`&'static str` is code, `'\"'` is a literal holding a quote)",
+        '''
+        fn g<'a>(x: &'a str) -> &'static str { x }
+        fn q() -> char { '"' }
+        fn f() -> E { E::V { detail: leak() } }
+        ''',
+        {"field": "detail", "rule": "E3"},
+    ),
+    # ---- IMPORTANT 3: a #[cfg(test)]-gated constructor in detail.rs must
+    # not be sanctioned. `SELF_TEST_DETAIL_SRC` declares `test_only_helper`
+    # behind `#[cfg(test)]`; a shipped call to it must DENY.
+    (
+        "BP34 a #[cfg(test)]-gated `pub(crate) fn` in detail.rs must NOT "
+        "sanction a shipped call to it",
+        ''' fn f(e: X) -> E { E::V { detail: detail::test_only_helper(&e) } } ''',
+        {"field": "detail", "rule": "E3"},
+    ),
+    (
+        "BP35 a `GatedDetail for` anchor with no `impl` keyword in front of "
+        "it fails closed as UNPARSED rather than being classified as though "
+        "the guard knew what declared it",
+        ''' const S: &str = "GatedDetail for Foo"; ''',
+        {"unparsed": True, "rule": "E4"},
+        {"path_label": DETAIL_MODULE_REL},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -4346,6 +4646,17 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         "this is what pins `initializer_end` to the DISCOVERY view",
         ''' fn f() -> E { E::V { detail: "fixed, with a comma" } } ''',
     ),
+    (
+        "BN18 a `detail:` sequence written INSIDE a string literal is not a "
+        "construction site — the queued adjudication that moved E3 DETECTION "
+        "to the literal-blanked view (removed 3 live false positives in "
+        "error/vault/tests.rs)",
+        '''
+        fn f(ok: bool, rendered: String) {
+            assert!(ok, "Display did not include detail: {rendered}");
+        }
+        ''',
+    ),
 ]
 
 
@@ -4379,6 +4690,11 @@ def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
     # the logic it guards.
     prefix = expect.get("field_type_prefix")
     if prefix is not None and not f.field_type.startswith(str(prefix)):
+        return False
+    # `rule` pins WHICH rule produced the finding — a control that must fire
+    # under E3 is not satisfied by an unrelated E2 finding in the same
+    # fixture, which matters for the multi-declaration fixtures.
+    if "rule" in expect and f.rule != expect["rule"]:
         return False
     return True
 
@@ -4505,7 +4821,8 @@ def scan_control(src: str) -> list[Finding]:
 # constructor lookup resolves against. Deliberately a SEPARATE fixture from
 # the real file: a control asserting "only `detail::gated` / `detail::uuid_hex`
 # are sanctioned" must not silently change meaning when someone adds a
-# constructor to the real `error/detail.rs`.
+# constructor to the real `error/detail.rs`. `test_only_helper` is
+# `#[cfg(test)]`-gated and must NOT be sanctioned (`BP34`).
 SELF_TEST_DETAIL_SRC = '''
 pub(crate) trait GatedDetail: std::fmt::Display {}
 
@@ -4515,6 +4832,11 @@ pub(crate) fn gated(e: &impl GatedDetail) -> String {
 
 pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> String {
     hex::encode(uuid)
+}
+
+#[cfg(test)]
+pub(crate) fn test_only_helper(e: &impl GatedDetail) -> String {
+    e.to_string()
 }
 '''
 
