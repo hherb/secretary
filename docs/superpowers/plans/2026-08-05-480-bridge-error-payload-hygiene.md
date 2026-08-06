@@ -709,7 +709,7 @@ bash android/scripts/check-log-hygiene.sh --self-test && bash android/scripts/ch
 bash ffi/scripts/check-lean-binding.sh --self-test && bash ffi/scripts/check-lean-binding.sh
 bash ffi/secretary-ffi-uniffi/tests/swift/run_conformance.sh
 bash ffi/secretary-ffi-uniffi/tests/kotlin/run_conformance.sh
-(cd desktop && pnpm test && pnpm run check)
+(cd desktop && pnpm test && pnpm run svelte-check)
 (cd android && ./gradlew :vault-access:test :kit:compileDebugKotlin)
 git diff main... -- ffi/secretary-ffi-uniffi/src/secretary.udl   # MUST be empty
 ```
