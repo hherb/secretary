@@ -51,17 +51,22 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   impossible is a NEW runtime `String` slipping in unreviewed. Both arms
      *   are therefore no longer redacted here.
      *   As of #480, the bridge half is guard-owned too: both arms' `detail` is
-     *   constructible in `ffi/secretary-ffi-bridge` only via a call into
-     *   `error/detail.rs` (rules E2/E3/E4, CI-enforced) — a hand-rolled `format!`
-     *   into either field now fails in the Rust author's own PR, so both halves
-     *   of the string are structurally gated, not just the `core` half. Two
-     *   residuals are documented guard LIMITS rather than silent gaps: an
-     *   `io::Error` minted from a runtime string and folded through `core`'s
-     *   `VaultError::Io` before reaching a gated field is not itself
-     *   construction-site-checked (#487), and three syntactic re-wrap shapes
-     *   (local binding plus shorthand, `detail: detail`, or a post-construction
-     *   assignment) would need dataflow analysis to catch (#488). See
-     *   `scripts/check-error-payload-hygiene.py` for the full rule set.
+     *   constructible in `ffi/secretary-ffi-bridge` only as a fixed literal or
+     *   a call into `error/detail.rs` (rules E2/E3/E4, CI-enforced) — a
+     *   hand-rolled `format!` into either field now fails in the Rust author's
+     *   own PR, so both halves of the string are structurally gated, not just
+     *   the `core` half. Three residuals are documented guard LIMITS rather
+     *   than silent gaps: an `io::Error` minted from a runtime string and
+     *   folded through `core`'s `VaultError::Io` before reaching a gated field
+     *   is not itself construction-site-checked (#487); three syntactic
+     *   re-wrap shapes (local binding plus shorthand, `detail: detail`, or a
+     *   post-construction assignment) would need dataflow analysis to catch
+     *   (#488); and the already-gated bridge string still crosses the
+     *   UNSCANNED `ffi/secretary-ffi-uniffi` wrapper verbatim
+     *   (`errors/vault.rs:166,170` copy `CorruptVault`/`SaveCryptoFailure`'s
+     *   `detail` through unchanged) — safe today because it is a pure
+     *   pass-through, not a new producer, but not itself CI-checked (#486).
+     *   See `scripts/check-error-payload-hygiene.py` for the full rule set.
      * - [InvalidRecoveryPhrase]: `MnemonicError` Display emits a word INDEX
      *   (`core/src/unlock/mnemonic.rs:54`), a word count (`:46`), or the fixed
      *   `"BIP-39 checksum failed"` (`:59`) — never the word itself.

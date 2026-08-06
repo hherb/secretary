@@ -355,11 +355,16 @@ the guard's own docstring and allowlist, not silent gaps:
   `use detail::GatedDetail as GD;`-style aliasing of the trait's own name.
 
 The binding wrapper crates (`ffi/secretary-ffi-py`, `ffi/secretary-ffi-uniffi`)
-remain entirely unscanned by `E1`-`E4`: `ffi/secretary-ffi-py` constructs zero
-gated-field details, and `ffi/secretary-ffi-uniffi`'s non-`InvalidArgument`
-sites are censused (2026-08-05) as fixed literals or verbatim pass-throughs
-of already-bridge-gated strings. That is a review-only trust boundary today,
-not a CI one — tracked by #486.
+remain entirely unscanned by `E1`-`E4`. Both wrap already-gated bridge values
+only — fixed literals, verbatim field-to-field copies (`uuid_hex: a.uuid_hex`),
+or a `format!` that COMBINES two-or-more already-gated fields into a new
+string (`ffi-py`'s `errors.rs` does this for `NotAuthor`/`RepairRejected`) —
+never a brand-new unreviewed value. Censused 2026-08-05, corrected on
+re-review (an earlier pass of this census wrongly claimed `ffi-py` had zero
+such sites). That is a review-only trust boundary today, not a CI one —
+tracked by #486, whose corrected inventory also flags that the `format!`
+-combination shape doesn't fit any of E3's three accepted construction-site
+shapes, unlike a straight pass-through.
 
 ### Memory hygiene: zeroize discipline
 
