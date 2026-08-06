@@ -8,6 +8,7 @@
 use secretary_core::vault::format_uuid_hyphenated;
 
 use crate::contacts::handle_wiped;
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -28,7 +29,7 @@ pub fn owner_card_export(manifest: &OpenVaultManifest) -> Result<(String, Vec<u8
     let bytes = card
         .to_canonical_cbor()
         .map_err(|e| FfiVaultError::CorruptVault {
-            detail: format!("owner card re-encode failed: {e}"),
+            detail: detail::gated_with_context("owner card re-encode failed", &e),
         })?;
     Ok((file_name, bytes))
 }

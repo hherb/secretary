@@ -30,6 +30,7 @@ use secretary_core::vault::block::BlockPlaintext;
 use secretary_core::vault::record::{Record, RecordField};
 use secretary_core::vault::OpenVault;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::record::orchestration::decrypt_block_plaintext;
@@ -138,7 +139,7 @@ pub fn edit_record(
         .iter()
         .position(|r| r.record_uuid == record_uuid && !r.tombstone)
         .ok_or_else(|| FfiVaultError::RecordNotFound {
-            uuid_hex: hex::encode(record_uuid),
+            uuid_hex: detail::uuid_hex(&record_uuid),
         })?;
 
     let existing = &plaintext.records[idx];
@@ -279,7 +280,7 @@ fn save_plaintext(
     manifest
         .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
         .map_err(|e| FfiVaultError::CorruptVault {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         })
 }
 

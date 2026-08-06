@@ -50,24 +50,34 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   plaintext, a password, a mnemonic, or key bytes; what is structurally
      *   impossible is a NEW runtime `String` slipping in unreviewed. Both arms
      *   are therefore no longer redacted here.
-     *   The guard scans everything under `core/src/` ONLY — `ffi/secretary-ffi-bridge`
-     *   builds its own `format!` detail strings for [CorruptVault] and
-     *   [SaveCryptoFailure] and is NOT scanned, so THAT half is gated by review
-     *   alone. #478 covers only the `VaultSyncError.Failed` /
-     *   `FfiVaultError::SyncFailed` slice of the gap, and only ONE of the two
-     *   alternatives its acceptance offers (extending the guard's scope over all
-     *   of `ffi/secretary-ffi-bridge`) would reach these two arms; the other
-     *   (gating that one fold's producers) would leave them unowned. Read it as a
-     *   partial citation, not as "the bridge is covered."
+     *   As of #480, the bridge half is guard-owned too: both arms' `detail` is
+     *   constructible in `ffi/secretary-ffi-bridge` only as a fixed literal or
+     *   a call into `error/detail.rs` (rules E2/E3/E4, CI-enforced) — a
+     *   hand-rolled `format!` into either field now fails in the Rust author's
+     *   own PR, so both halves of the string are structurally gated, not just
+     *   the `core` half. Three residuals are documented guard LIMITS rather
+     *   than silent gaps: an `io::Error` minted from a runtime string and
+     *   folded through `core`'s `VaultError::Io` before reaching a gated field
+     *   is not itself construction-site-checked (#487); three syntactic
+     *   re-wrap shapes (local binding plus shorthand, `detail: detail`, or a
+     *   post-construction assignment) would need dataflow analysis to catch
+     *   (#488); and the already-gated bridge string still crosses the
+     *   UNSCANNED `ffi/secretary-ffi-uniffi` wrapper verbatim
+     *   (`errors/vault.rs:166,170` copy `CorruptVault`/`SaveCryptoFailure`'s
+     *   `detail` through unchanged) — safe today because it is a pure
+     *   pass-through, not a new producer, but not itself CI-checked (#486).
+     *   See `scripts/check-error-payload-hygiene.py` for the full rule set.
      * - [InvalidRecoveryPhrase]: `MnemonicError` Display emits a word INDEX
      *   (`core/src/unlock/mnemonic.rs:54`), a word count (`:46`), or the fixed
      *   `"BIP-39 checksum failed"` (`:59`) — never the word itself.
-     * - [FolderInvalid]: `format!("{context}: {source}")` — a filesystem path
+     * - [FolderInvalid]: a fixed io-context phrase plus `std::io::Error`,
+     *   built via the `detail::gated` constructors (#480) — a filesystem path
      *   plus an errno. The threat model already treats paths as disclosed.
      * - [DeviceUuidMismatch]: device UUIDs, a public per-device fingerprint.
      * - [BlockNotFound] / [RecordNotFound]: hex-encoded UUIDs. The
-     *   `BlockNotInTrash` / `BlockPurged` folds also `hex::encode`
-     *   (`ffi/.../purge/orchestration.rs:153`), so no block NAME reaches them.
+     *   `BlockNotInTrash` / `BlockPurged` folds also render hex, via
+     *   `detail::uuid_hex` (#480, `ffi/.../purge/orchestration.rs:154`), so
+     *   no block NAME reaches them.
      * - [ReauthFailed]: built Android-side at the biometric gate from fixed
      *   labels.
      * - [Failed]: gated at construction — every producer passes `diagnosticDetail`
@@ -77,11 +87,13 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   UniffiVaultDeviceSlotPort.kt:34`); one hybrid, fixed prefix plus `diagnosticDetail`
      *   (`UniffiVaultOpenPort.kt:253`). Scoped to `VaultBrowseError.Failed` ONLY.
      *   [org.secretary.sync.VaultSyncError] has its own arm of the same name
-     *   ([org.secretary.sync.VaultSyncError.Failed]) that this verdict does
-     *   NOT cover — one of ITS two producers is a raw, ungated pass-through,
-     *   safe by traced Rust content rather than by construction. See that
-     *   class's own payload-origin audit; a shared arm name across two
-     *   sealed types is not a shared verdict.
+     *   ([org.secretary.sync.VaultSyncError.Failed]) that this verdict does NOT
+     *   cover: one of ITS two Kotlin-side producers is a raw pass-through of the
+     *   Rust `detail` string rather than a `diagnosticDetail`/literal wrap — safe
+     *   as of #480 because the Rust side is gated at construction (rules
+     *   E2/E3/E4), not because it follows this class's own Kotlin-side
+     *   convention. See that class's own payload-origin audit; a shared arm name
+     *   across two sealed types is not a shared verdict.
      */
     override val diagnosticDescription: String
         get() = when (this) {

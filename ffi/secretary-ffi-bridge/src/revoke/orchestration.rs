@@ -29,6 +29,7 @@ use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::{BlockUuid, DeviceUuid, OpenVault, RecipientUuid, VaultError};
 use zeroize::Zeroize as _;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -86,7 +87,7 @@ pub fn revoke_block(
         .map(|b| ContactCard::from_canonical_cbor(b))
         .collect::<Result<_, _>>()
         .map_err(|e| FfiVaultError::CardDecodeFailure {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         })?;
 
     // Step 1: snapshot manifest under one lock acquisition. Re-uses save's
@@ -117,7 +118,7 @@ pub fn revoke_block(
     sk_ed_bytes.zeroize();
     let sk_pq = MlDsa65Secret::from_bytes(identity_clone.ml_dsa_65_sk.expose()).map_err(|e| {
         FfiVaultError::CorruptVault {
-            detail: format!("identity ML-DSA-65 secret parse failed: {e:?}"),
+            detail: detail::gated_with_context("identity ML-DSA-65 secret parse failed", &e),
         }
     })?;
     identity_clone.ed25519_sk.zeroize();
@@ -159,7 +160,7 @@ pub fn revoke_block(
         Ok(()) => manifest
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_revoke(e)),
     }
@@ -180,11 +181,11 @@ pub fn revoke_block(
 /// decision at the revoke-mapper boundary.
 fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::Block(_) => FfiVaultError::CorruptVault {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
         // Typed revoke-validation variants delegate to the From impl.
         // RecipientNotPresent / CannotRevokeOwner are the revoke-path
@@ -235,7 +236,7 @@ fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from revoke_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }

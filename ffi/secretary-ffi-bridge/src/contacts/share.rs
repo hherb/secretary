@@ -6,6 +6,7 @@
 use secretary_core::vault::format_uuid_hyphenated;
 
 use crate::contacts::handle_wiped;
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -52,7 +53,7 @@ pub fn share_block_to(
         .iter()
         .find(|b| b.block_uuid == block_uuid)
         .ok_or_else(|| FfiVaultError::BlockNotFound {
-            uuid_hex: hex::encode(block_uuid),
+            uuid_hex: detail::uuid_hex(&block_uuid),
         })?;
 
     // Existing recipient cards (file name = hyphenated; error field = hex).
@@ -95,12 +96,12 @@ pub(crate) fn load_card_bytes(
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(FfiVaultError::ContactNotFound {
-                uuid_hex: hex::encode(uuid),
+                uuid_hex: detail::uuid_hex(uuid),
             })
         }
         Err(e) => {
             return Err(FfiVaultError::FolderInvalid {
-                detail: format!("read contact card {}: {e}", hex::encode(uuid)),
+                detail: detail::gated_for_uuid("read contact card", uuid, &e),
             })
         }
     };

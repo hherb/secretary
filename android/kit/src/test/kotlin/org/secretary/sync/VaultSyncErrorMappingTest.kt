@@ -17,15 +17,14 @@ class VaultSyncErrorMappingTest {
 
     @Test
     fun `maps detail-carrying arms preserving the detail string`() {
-        // The `SyncFailed` line below pins a RAW, UNGATED pass-through of Rust-authored text, and
-        // that is deliberate — see VaultSyncError's payload-origin audit, which traces every Rust
-        // construction site to a fixed literal, an io::Error, or an argument-shape description,
-        // never a fold of an arbitrary VaultError. It is the one arm in either sealed type whose
-        // safety rests on traced CONTENT rather than on construction, so it is the one that a Rust
-        // edit could invalidate with no Kotlin diff (tracked as the #475 follow-up). Do NOT "fix"
-        // it by routing through diagnosticDetail: VaultException is unconformed, so that renders
-        // `<undisclosed …>` and destroys sync diagnostics without closing the drift class — the
-        // same trade #475 had to undo for CloudFolderException.
+        // The `SyncFailed` line below pins a pass-through of Rust-authored text, and that is
+        // deliberate — see VaultSyncError's payload-origin audit. Its safety is now STRUCTURAL,
+        // not traced: #480 gates every `FfiVaultError::SyncFailed` construction site in the
+        // bridge (rules E2/E3/E4 — a literal or a `detail::gated(&e)` call into
+        // `error/detail.rs`, CI-enforced), closing #478. Do NOT "fix" this pass-through by
+        // routing it through diagnosticDetail: VaultException is unconformed, so that renders
+        // `<undisclosed …>` and destroys sync diagnostics without adding safety — the same
+        // trade #475 had to undo for CloudFolderException.
         assertEquals(VaultSyncError.StateCorrupt("boom"), mapVaultSyncError(VaultException.SyncStateCorrupt("boom")))
         assertEquals(VaultSyncError.Failed("nope"), mapVaultSyncError(VaultException.SyncFailed("nope")))
         assertEquals(VaultSyncError.InvalidArgument("bad uuid"), mapVaultSyncError(VaultException.InvalidArgument("bad uuid")))

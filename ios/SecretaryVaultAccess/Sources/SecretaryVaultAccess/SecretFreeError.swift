@@ -109,15 +109,23 @@ extension VaultAccessError: SecretFreeError {
     /// plaintext, a password, a mnemonic, or key bytes. What is structurally
     /// impossible is a NEW runtime `String` slipping in unreviewed.
     ///
-    /// That guard scans `core/src/**` ONLY, and `.corruptVault`'s payload is not
-    /// wholly a `core` payload: `SecretaryKit`'s `VaultErrorMapping.swift:21`
-    /// passes `FfiVaultError.CorruptVault.detail` through verbatim, and the
-    /// bridge (`ffi/secretary-ffi-bridge/**`) builds part of that string with its
-    /// own `format!`. The bridge half is gated by review alone. #478 covers only
-    /// the `VaultSyncError.Failed` / `FfiVaultError::SyncFailed` slice of that
-    /// gap, and only one of the two alternatives its acceptance offers
-    /// (extending the guard's scope to `ffi/secretary-ffi-bridge/src/**`) would
-    /// reach this arm; the other would leave it unowned. Cite it as partial.
+    /// As of #480, the bridge half is guard-owned too: `.corruptVault`'s `detail`
+    /// is constructible in `ffi/secretary-ffi-bridge` only as a fixed literal or
+    /// a call into `error/detail.rs` (rules E2/E3/E4, CI-enforced) — a
+    /// hand-rolled `format!` into that field now fails in the Rust author's own
+    /// PR, so both halves of the string are structurally gated, not just the
+    /// `core` half. Three residuals are documented guard LIMITS rather than
+    /// silent gaps: an `io::Error` minted from a runtime string and folded
+    /// through `core`'s `VaultError::Io` before reaching a gated field is not
+    /// itself construction-site-checked (#487); three syntactic re-wrap shapes
+    /// (local binding plus shorthand, `detail: detail`, or a post-construction
+    /// assignment) would need dataflow analysis to catch (#488); and the
+    /// already-gated bridge string still crosses the UNSCANNED
+    /// `ffi/secretary-ffi-uniffi` wrapper verbatim (`errors/vault.rs:166,170`
+    /// copy `CorruptVault`/`SaveCryptoFailure`'s `detail` through unchanged) —
+    /// safe today because it is a pure pass-through, not a new producer, but not
+    /// itself CI-checked (#486). See `scripts/check-error-payload-hygiene.py`
+    /// for the full rule set.
     ///
     /// `.invalidArgument` above is NOT covered by that guarantee and must stay
     /// redacted: its payload is SWIFT-authored, not Rust-authored. No issue

@@ -304,8 +304,8 @@ fn vault_error_block_not_found_carries_uuid_hex_field() {
 #[test]
 fn vault_error_not_author_display_pins_string() {
     let e = FfiVaultError::NotAuthor {
-        expected_fingerprint_hex: "aa".repeat(16),
-        got_fingerprint_hex: "bb".repeat(16),
+        expected_fingerprint_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        got_fingerprint_hex: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
     };
     assert_eq!(e.to_string(), "only the block author can share this block");
 }
@@ -359,7 +359,7 @@ fn vault_error_cannot_revoke_owner_from_core_preserves_variant() {
 #[test]
 fn vault_error_missing_recipient_card_display_pins_hex() {
     let e = FfiVaultError::MissingRecipientCard {
-        recipient_fingerprint_hex: "cc".repeat(16),
+        recipient_fingerprint_hex: "cccccccccccccccccccccccccccccccc".to_string(),
     };
     let rendered = e.to_string();
     assert!(
@@ -458,6 +458,17 @@ fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
     };
     assert!(detail.contains("sig mismatch"));
     assert!(detail.contains("verification"));
+    // #480: the fold renders core's own Display, whose `{block_uuid:?}` is
+    // a Debug byte array — pin the shape so a drift back to the pre-#480
+    // hand-rolled hex rendering is caught, not silently shipped.
+    assert!(
+        detail.contains("[204, 204,"),
+        "Debug-array uuid rendering missing: {detail}"
+    );
+    assert!(
+        !detail.contains("cccc"),
+        "unexpected hex uuid rendering: {detail}"
+    );
 }
 
 #[test]
@@ -489,7 +500,24 @@ fn from_core_vault_error_restore_target_missing_maps_to_corrupt_vault() {
         expected_tombstoned_at_ms: 1_714_060_900_000,
     };
     let ffi: FfiVaultError = core_err.into();
-    assert!(matches!(ffi, FfiVaultError::CorruptVault { .. }));
+    let FfiVaultError::CorruptVault { detail } = ffi else {
+        panic!("expected CorruptVault, got {ffi:?}");
+    };
+    // #480: content, not just shape — the fold renders core's own Display
+    // (`{block_uuid:?}` Debug byte array + the signed timestamp), and a
+    // type-only assertion here is the exact #475 anti-pattern.
+    assert!(
+        detail.contains("restore target for block"),
+        "context phrase missing: {detail}"
+    );
+    assert!(
+        detail.contains("[17, 17,"),
+        "Debug-array uuid rendering missing: {detail}"
+    );
+    assert!(
+        detail.contains("1714060900000"),
+        "signed tombstoned_at_ms missing: {detail}"
+    );
 }
 
 // =============================================================================

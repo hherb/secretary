@@ -14,6 +14,7 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::{ManifestHash, SyncError};
 use secretary_core::vault::Unlocker;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::sync::dto::{SyncOutcomeDto, VetoDecisionDto};
 use crate::sync::status::map_state_error;
@@ -251,7 +252,7 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         SyncError::VaultUuidMismatch { .. } => FfiVaultError::SyncStateVaultMismatch,
         SyncError::StateDecodeFailed { .. } | SyncError::StateEncodeFailed { .. } => {
             FfiVaultError::SyncStateCorrupt {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }
         }
         SyncError::EvidenceStale => FfiVaultError::SyncEvidenceStale,
@@ -274,7 +275,7 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         SyncError::InvalidArgument { .. }
         | SyncError::ConflictCopyScanIoFailed { .. }
         | SyncError::EmptyDraftWithVetoes => FfiVaultError::SyncFailed {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         },
     }
 }

@@ -6,6 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use secretary_cli::state::{default_state_dir, load, state_file_path, StateError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 
 /// One device's vector-clock entry — public metadata, never secret.
@@ -83,11 +84,11 @@ pub(crate) fn map_state_error(e: StateError) -> FfiVaultError {
     match e {
         StateError::VaultUuidMismatch { .. } => FfiVaultError::SyncStateVaultMismatch,
         StateError::Decode(_) | StateError::Encode(_) => FfiVaultError::SyncStateCorrupt {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         },
         StateError::LockfileHeld(_) => FfiVaultError::SyncInProgress,
         StateError::Io(_) => FfiVaultError::SyncFailed {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         },
     }
 }

@@ -142,7 +142,7 @@ pub enum AppError {
     },
 
     #[error("Settings record uses an unknown schema version")]
-    SettingsUnknownVersion { version: String },
+    SettingsUnknownVersion,
 
     #[error("Auto-lock timeout must be between {min} and {max} ms")]
     SettingsOutOfRange { min: u64, max: u64 },
@@ -233,7 +233,5 @@ pub enum AppWarning {
         original_ms: u64,
         clamped_ms: u64,
     },
-    SettingsUnknownVersion {
-        version: String,
-    },
+    SettingsUnknownVersion,
 }

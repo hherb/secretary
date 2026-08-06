@@ -20,6 +20,12 @@ const FIXTURE: &str = concat!(
     "\n",
     "core/src/a.rs\tE1\t#[error(\"x: {0}\")]\treason one\n",
     "core/src/b.rs\tE1\t#[error(\"y: {detail}\")]\treason two\n",
+    // This E4 line's trailing " {}" is synthetic test data for the
+    // rule-column plumbing only — it deliberately does NOT need to match
+    // the real guard's E4 key shape (which excludes the impl body braces;
+    // see check-error-payload-hygiene.py's `impl_target_text`). The FIXTURE
+    // and the probes below only need to agree with EACH OTHER.
+    "ffi/x/detail.rs\tE4\timpl GatedDetail for std::io::Error {}\treason three\n",
 );
 
 #[test]
@@ -28,31 +34,54 @@ fn python_and_bash_allowlist_parsers_agree() {
     let path = dir.path().join("fixture-allowlist.txt");
     std::fs::write(&path, FIXTURE).expect("write fixture");
 
-    let probes: &[(&str, &str, bool)] = &[
-        ("core/src/a.rs", "#[error(\"x: {0}\")]", true),
-        ("core/src/b.rs", "#[error(\"y: {detail}\")]", true),
+    let probes: &[(&str, &str, &str, bool)] = &[
+        ("core/src/a.rs", "E1", "#[error(\"x: {0}\")]", true),
+        ("core/src/b.rs", "E1", "#[error(\"y: {detail}\")]", true),
         // Right line, wrong file.
-        ("core/src/a.rs", "#[error(\"y: {detail}\")]", false),
-        ("core/src/c.rs", "#[error(\"x: {0}\")]", false),
+        ("core/src/a.rs", "E1", "#[error(\"y: {detail}\")]", false),
+        ("core/src/c.rs", "E1", "#[error(\"x: {0}\")]", false),
         // A SUBSTRING of a real entry must NOT match. This is the property
         // whose absence was demonstrably exploitable in #467.
-        ("core/src/a.rs", "#[error(\"x:", false),
+        ("core/src/a.rs", "E1", "#[error(\"x:", false),
         // Leading/trailing whitespace is trimmed on both sides, so an
         // indentation change must NOT break a valid entry.
-        ("core/src/a.rs", "    #[error(\"x: {0}\")]   ", true),
-        ("core/src/a.rs", "# a comment line, ignored by both", false),
+        ("core/src/a.rs", "E1", "    #[error(\"x: {0}\")]   ", true),
+        (
+            "core/src/a.rs",
+            "E1",
+            "# a comment line, ignored by both",
+            false,
+        ),
+        // The rule column must be honored, not just the path+line: the
+        // E4 entry matches under its own rule ...
+        (
+            "ffi/x/detail.rs",
+            "E4",
+            "impl GatedDetail for std::io::Error {}",
+            true,
+        ),
+        // ... but the identical path+line under the WRONG rule must not
+        // match. This is the #480 analogue of the #467 substring bug: a
+        // reviewed E4 exception must never silently launder an E1 finding
+        // (or vice versa) that happens to share the same file and text.
+        (
+            "ffi/x/detail.rs",
+            "E1",
+            "impl GatedDetail for std::io::Error {}",
+            false,
+        ),
     ];
 
-    for &(file, line, expected) in probes {
-        let py = probe_python(&path, file, line);
-        let sh = probe_bash(&path, file, line);
+    for &(file, rule, line, expected) in probes {
+        let py = probe_python(&path, file, rule, line);
+        let sh = probe_bash(&path, file, rule, line);
         assert_eq!(
             py, expected,
-            "python parser disagreed with the expectation for ({file}, {line:?})"
+            "python parser disagreed with the expectation for ({file}, {rule}, {line:?})"
         );
         assert_eq!(
             sh, py,
-            "bash and python parsers disagreed for ({file}, {line:?})"
+            "bash and python parsers disagreed for ({file}, {rule}, {line:?})"
         );
     }
 }
@@ -66,9 +95,9 @@ fn repo_root() -> std::path::PathBuf {
 
 /// The Python side keys on `path\trule\ttrimmed-line`, so trim here to mirror
 /// what `allowlisted()` does to the hit text before comparing.
-fn probe_python(allowlist: &std::path::Path, file: &str, line: &str) -> bool {
+fn probe_python(allowlist: &std::path::Path, file: &str, rule: &str, line: &str) -> bool {
     let root = repo_root();
-    let key = format!("{file}\tE1\t{}", line.trim());
+    let key = format!("{file}\t{rule}\t{}", line.trim());
     let script = r#"
 import importlib.util as u, pathlib, sys
 spec = u.spec_from_file_location("guard", sys.argv[1])
@@ -106,19 +135,20 @@ print("YES" if sys.argv[3] in entries else "NO")
 /// and reads `$ALLOWLIST` / `$REPO_ROOT` from the SOURCING scope — it does not
 /// take them as arguments. `$ALLOWLIST` must not be `readonly`. See the header
 /// of `scripts/lib/hygiene-allowlist.sh`.
-fn probe_bash(allowlist: &std::path::Path, file: &str, line: &str) -> bool {
+fn probe_bash(allowlist: &std::path::Path, file: &str, rule: &str, line: &str) -> bool {
     let root = repo_root();
     let out = Command::new("bash")
         .arg("-c")
         .arg(
             r#"set -euo pipefail
 source scripts/lib/hygiene-allowlist.sh
-if allowlisted "E1" "$1"; then echo YES; else echo NO; fi"#,
+if allowlisted "$2" "$1"; then echo YES; else echo NO; fi"#,
         )
         .arg("bash")
         // `<file>:<line-number>:<text>` — allowlisted() strips the first two
         // colon-delimited fields, so the line number is arbitrary.
         .arg(format!("{file}:1:{line}"))
+        .arg(rule)
         .env("ALLOWLIST", allowlist)
         .env("REPO_ROOT", &root)
         .current_dir(&root)

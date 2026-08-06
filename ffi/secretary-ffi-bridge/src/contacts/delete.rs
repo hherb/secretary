@@ -10,6 +10,7 @@
 use secretary_core::vault::format_uuid_hyphenated;
 
 use crate::contacts::handle_wiped;
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -39,10 +40,10 @@ pub fn delete_contact_card(
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(FfiVaultError::ContactNotFound {
-            uuid_hex: hex::encode(contact_uuid),
+            uuid_hex: detail::uuid_hex(&contact_uuid),
         }),
         Err(e) => Err(FfiVaultError::FolderInvalid {
-            detail: format!("remove contact card: {e}"),
+            detail: detail::gated_with_context("remove contact card", &e),
         }),
     }
 }

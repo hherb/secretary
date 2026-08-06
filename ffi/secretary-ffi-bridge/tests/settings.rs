@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 mod share_block_helpers;
 
-use secretary_core::crypto::secret::SecretString;
+use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::settings::{read_settings, write_settings, Settings};
 use secretary_ffi_bridge::{
     deterministic_uuid_16, save_block, BlockInput, FieldInput, FieldInputValue, RecordInput,
@@ -110,6 +110,59 @@ fn read_unknown_version_record_falls_back_to_defaults_with_warning() {
             .any(|w| matches!(w, SettingsWarning::Corrupt { .. })),
         "expected a Corrupt warning, got {warnings:?}"
     );
+    let SettingsWarning::Corrupt { detail } = warnings
+        .iter()
+        .find(|w| matches!(w, SettingsWarning::Corrupt { .. }))
+        .expect("Corrupt warning present (checked above)")
+    else {
+        unreachable!("filtered to Corrupt above");
+    };
+    assert!(
+        !detail.contains("secretary.settings.v99"),
+        "decrypted record_type leaked into warning detail: {detail}"
+    );
+}
+
+/// #481/#480 mutation-proof: plant a settings block whose sole field is
+/// NOT text-typed (a `Bytes` field), via the low-level `save_block`. This
+/// exercises `read_settings`'s own "not text-typed" shape-warning site
+/// (`settings/orchestration.rs`), which cannot be reached without a real
+/// vault (`read_block`) and so has no vault-free unit-test home. The
+/// field's decrypted name must never be echoed into the warning detail —
+/// only an ordinal hint may cross.
+#[test]
+fn read_non_text_field_warning_never_echoes_the_field_name() {
+    let (_tmp, identity, manifest) = fresh_writable_vault();
+
+    let block_uuid = deterministic_uuid_16(SETTINGS_BLOCK_NAME);
+    let record_uuid = deterministic_uuid_16(SETTINGS_RECORD_TYPE);
+    let input = BlockInput {
+        block_uuid,
+        block_name: SETTINGS_BLOCK_NAME.to_string(),
+        records: vec![RecordInput {
+            record_uuid,
+            record_type: SETTINGS_RECORD_TYPE.to_string(),
+            tags: Vec::new(),
+            fields: vec![FieldInput {
+                name: "secret_field_name_xyz".to_string(),
+                value: FieldInputValue::Bytes(SecretBytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            }],
+        }],
+    };
+    save_block(&identity, &manifest, input, DEVICE_UUID, NOW_MS_BASE).expect("save_block");
+
+    let (settings, warnings) = read_settings(&identity, &manifest).expect("read");
+    assert_eq!(settings, Settings::default());
+    assert_eq!(warnings.len(), 1);
+    match &warnings[0] {
+        SettingsWarning::Corrupt { detail } => {
+            assert!(
+                !detail.contains("secret_field_name_xyz"),
+                "decrypted field name leaked into shape-warning detail: {detail}"
+            );
+        }
+        other => panic!("expected Corrupt, got {other:?}"),
+    }
 }
 
 /// Plant a valid-v1-record_type settings block whose numeric field text is

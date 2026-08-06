@@ -66,13 +66,13 @@ fn settings_clamped_warning_carries_both_values() {
 }
 
 #[test]
-fn unknown_version_warning_carries_version_string() {
-    let w = AppWarning::SettingsUnknownVersion {
-        version: "secretary.settings.v99".to_string(),
-    };
+fn unknown_version_warning_carries_code_only() {
+    // #481/#480: no `version` payload — the offending record_type is
+    // decrypted vault content and must never cross the IPC seam.
+    let w = AppWarning::SettingsUnknownVersion;
     let v: Value = serde_json::from_str(&serde_json::to_string(&w).expect("ser")).expect("parse");
     assert_eq!(v["code"], "settings_unknown_version");
-    assert_eq!(v["version"], "secretary.settings.v99");
+    assert_eq!(v.as_object().expect("object").len(), 1, "code only");
 }
 
 // Two additional From<FfiVaultError> spot-checks pin the anti-oracle

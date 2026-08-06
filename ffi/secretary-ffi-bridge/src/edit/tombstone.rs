@@ -15,6 +15,7 @@
 //! clock that clears `tombstone`, bumps `last_mod_ms`, and PRESERVES the
 //! original `tombstoned_at_ms`.
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::record::orchestration::decrypt_block_plaintext;
@@ -47,7 +48,7 @@ pub fn tombstone_record(
         .iter_mut()
         .find(|r| r.record_uuid == record_uuid && !r.tombstone)
         .ok_or_else(|| FfiVaultError::RecordNotFound {
-            uuid_hex: hex::encode(record_uuid),
+            uuid_hex: detail::uuid_hex(&record_uuid),
         })?;
 
     record.tombstone = true;
@@ -88,7 +89,7 @@ pub fn resurrect_record(
         .iter_mut()
         .find(|r| r.record_uuid == record_uuid && r.tombstone)
         .ok_or_else(|| FfiVaultError::RecordNotFound {
-            uuid_hex: hex::encode(record_uuid),
+            uuid_hex: detail::uuid_hex(&record_uuid),
         })?;
 
     record.tombstone = false;

@@ -90,11 +90,17 @@ bash android/scripts/check-log-hygiene.sh --self-test
 bash android/scripts/check-log-hygiene.sh
 
 # Assert no `core` error variant interpolates a runtime String into its
-# #[error] message (#474). RecordError::DuplicateKey formatted a decrypted CBOR
-# field name, which is why both platforms once redacted whole error arms. The
-# payload types are now data-free by construction; this keeps them that way, and
-# fails in the Rust author's own PR rather than degrading a platform two layers
-# away. Default-deny: an unrecognised payload type is a FAILURE, not a pass.
+# #[error] message (#474), AND no bridge-authored `detail`/hex-field carries
+# one construction site can't vouch for (#480). RecordError::DuplicateKey
+# formatted a decrypted CBOR field name, which is why both platforms once
+# redacted whole error arms. `core/src/**` payload types are data-free by
+# construction; `ffi/secretary-ffi-bridge/src/**`'s six gated field names
+# (`detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
+# `expected_fingerprint_hex`, `got_fingerprint_hex`) are gated by CONSTRUCTION
+# SITE instead — every one must route through `error/detail.rs` (rules
+# E2/E3/E4). Both scan roots fail in the Rust author's own PR rather than
+# degrading a platform two layers away. Default-deny: an unrecognised payload
+# type is a FAILURE, not a pass.
 uv run scripts/check-error-payload-hygiene.py --self-test
 uv run scripts/check-error-payload-hygiene.py
 ```
@@ -308,17 +314,57 @@ is sectioned by review weight; the highest-weight section (Section 3) holds
 DECLARATIONS (a field's type), not producers (what every call site actually
 passes into that field), so an entry there is a point-in-time claim, verified
 by reading every current constructor, that no producer interpolates vault
-plaintext. Re-verify it whenever a producer changes. The guard scans
-everything under `core/src/` only — the FFI bridge builds its own `format!`
-detail strings (`ffi/secretary-ffi-bridge/**`) and is **not** scanned. That gap
-is real and only PARTLY owned: #478 is scoped to `VaultSyncError.Failed` /
-`FfiVaultError::SyncFailed`, and its acceptance offers two alternatives —
-extending this guard to `ffi/secretary-ffi-bridge/src/**` (which would close
-the gap broadly) or gating that one fold's producers individually (which
-would not). If #478 closes the narrow way, the bridge-authored `detail`
-strings behind `CorruptVault` / `SaveCryptoFailure` — the very arms #474
-un-redacted on both platforms — are owned by nobody. Cite #478 for the slice
-it covers; do not cite it as though the whole gap were tracked.
+plaintext. Re-verify it whenever a producer changes. #480 closed #478 the
+broad way: the guard's scan roots now also cover
+`ffi/secretary-ffi-bridge/src/**`, via three more rules (`E2`/`E3`/`E4`).
+`E2` permits a bridge error's `String` field only under one of six PINNED
+names (`detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
+`expected_fingerprint_hex`, `got_fingerprint_hex`); `E3` requires every
+construction site of a gated field to be a literal or a call into
+[`ffi/secretary-ffi-bridge/src/error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs);
+`E4` pins every `impl GatedDetail for X` enabling such a call to that one
+file, naming a type this guard can see. Gated-field construction is
+therefore CI-enforced: a new bridge producer that hand-rolls a `format!`
+into a gated field fails in the Rust author's own PR — the same sink-pinning
+move `SecretaryLog` (#472) and `diagnosticDetail` (#467) make for their own
+platforms.
+
+That does not mean every byte reaching a gated field is CI-verified from
+here to its ultimate source — three named residuals are documented LIMITS in
+the guard's own docstring and allowlist, not silent gaps:
+
+- **`io::Error` payloads minted from a runtime string.** A bridge site can
+  synthesize a `std::io::Error` from a `format!(...)` and hand it to `core`'s
+  `VaultError::Io { source }`, which then reaches a gated field via the
+  allowlisted `impl GatedDetail for std::io::Error` — `E3` gates the
+  *bridge's* initializer expression, not what feeds `core`'s. One production
+  site exists today
+  ([`ffi/secretary-ffi-bridge/src/repair/orchestration.rs:137-147`](ffi/secretary-ffi-bridge/src/repair/orchestration.rs) —
+  content disclosed today: a `StateError` Display plus the state-dir path); a
+  second site of the same shape, unreachable from any gated fold since the
+  bridge imports only `secretary_cli::{state, pipeline}`, is
+  [`cli/src/daemon.rs:424`](cli/src/daemon.rs). Tracked by #487.
+- **The three documented laundering shapes.** `E3` is a syntactic match on
+  initializer position and field name; a local `let detail = format!(...)`
+  re-wrapped via field shorthand, `detail: detail`, or a post-construction
+  `x.detail = ...` assignment is invisible to it. Closing this needs local
+  dataflow analysis. Tracked by #488.
+- **Macro-generated code and trait aliasing.** Like `E1`, this guard reads
+  text, not expanded macros — a `macro_rules!`-generated `#[error(...)]` or
+  `impl GatedDetail for X` is invisible, and so is
+  `use detail::GatedDetail as GD;`-style aliasing of the trait's own name.
+
+The binding wrapper crates (`ffi/secretary-ffi-py`, `ffi/secretary-ffi-uniffi`)
+remain entirely unscanned by `E1`-`E4`. Both wrap already-gated bridge values
+only — fixed literals, verbatim field-to-field copies (`uuid_hex: a.uuid_hex`),
+or a `format!` that COMBINES two-or-more already-gated fields into a new
+string (`ffi-py`'s `errors.rs` does this for `NotAuthor`/`RepairRejected`) —
+never a brand-new unreviewed value. Censused 2026-08-05, corrected on
+re-review (an earlier pass of this census wrongly claimed `ffi-py` had zero
+such sites). That is a review-only trust boundary today, not a CI one —
+tracked by #486, whose corrected inventory also flags that the `format!`
+-combination shape doesn't fit any of E3's three accepted construction-site
+shapes, unlike a straight pass-through.
 
 ### Memory hygiene: zeroize discipline
 

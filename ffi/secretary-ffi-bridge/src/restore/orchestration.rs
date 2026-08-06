@@ -15,6 +15,7 @@
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -83,7 +84,7 @@ pub fn restore_block(
         Ok(()) => manifest
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_restore(e)),
     }
@@ -98,37 +99,26 @@ pub fn restore_block(
 /// the umbrella variant.
 fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::BlockUuidAlreadyLive { block_uuid } => FfiVaultError::BlockUuidAlreadyLive {
-            detail: hex::encode(block_uuid),
+            detail: detail::uuid_hex(block_uuid),
         },
         VaultError::BlockNotInTrash { block_uuid } => FfiVaultError::BlockNotInTrash {
-            detail: hex::encode(block_uuid),
+            detail: detail::uuid_hex(block_uuid),
         },
         // "Data on disk doesn't match what we signed" — the
         // CorruptVault contract.
-        VaultError::RestoreVerificationFailed { block_uuid, detail } => {
-            FfiVaultError::CorruptVault {
-                detail: format!(
-                    "trashed block {} failed verification: {detail}",
-                    hex::encode(block_uuid),
-                ),
-            }
-        }
+        e @ VaultError::RestoreVerificationFailed { .. } => FfiVaultError::CorruptVault {
+            detail: detail::gated(e),
+        },
         // #205: the file whose suffix equals the signed tombstoned_at_ms is
         // absent (authentic-current trashed file removed/renamed). Same
         // "data on disk doesn't match what we signed" contract as
         // RestoreVerificationFailed → fold to CorruptVault.
-        VaultError::RestoreTargetMissing {
-            block_uuid,
-            expected_tombstoned_at_ms,
-        } => FfiVaultError::CorruptVault {
-            detail: format!(
-                "restore target for block {} is missing (expected tombstoned_at_ms {expected_tombstoned_at_ms})",
-                hex::encode(block_uuid),
-            ),
+        e @ VaultError::RestoreTargetMissing { .. } => FfiVaultError::CorruptVault {
+            detail: detail::gated(e),
         },
         // #399 Task 8: the block's TrashEntry is marked purged. Unlike
         // RestoreVerificationFailed / RestoreTargetMissing this is NOT an
@@ -137,12 +127,12 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         // another device) — so it gets its own typed variant, mirroring
         // `BlockNotInTrash` above, rather than folding to CorruptVault.
         VaultError::BlockPurged { block_uuid } => FfiVaultError::BlockPurged {
-            detail: hex::encode(block_uuid),
+            detail: detail::uuid_hex(block_uuid),
         },
         // The contacts/-scan in restore step 5 surfaces this when a
         // wrap's recipient is not in contacts/.
         VaultError::MissingRecipientCard { fingerprint } => FfiVaultError::MissingRecipientCard {
-            recipient_fingerprint_hex: hex::encode(fingerprint),
+            recipient_fingerprint_hex: detail::fingerprint_hex(fingerprint),
         },
         // The remaining variants either cannot fire from
         // core::restore_block (NotAuthor, RecipientAlreadyPresent,
@@ -182,7 +172,7 @@ fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from restore_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }
@@ -239,6 +229,44 @@ mod tests {
         };
         assert!(detail.contains("sig mismatch"));
         assert!(detail.contains("verification"));
+        // #480: the fold renders core's own Display, whose `{block_uuid:?}`
+        // is a Debug byte array — pin the shape so a drift back to the
+        // pre-#480 hand-rolled hex rendering is caught.
+        assert!(
+            detail.contains("[204, 204,"),
+            "Debug-array uuid rendering missing: {detail}"
+        );
+        assert!(
+            !detail.contains("cccc"),
+            "unexpected hex uuid rendering: {detail}"
+        );
+    }
+
+    #[test]
+    fn map_core_restore_target_missing_folds_to_corrupt_vault() {
+        // #205: the file whose suffix equals the signed tombstoned_at_ms is
+        // absent. Same CorruptVault fold as RestoreVerificationFailed;
+        // asserted on content, not just shape (#475 discipline).
+        let core_err = VaultError::RestoreTargetMissing {
+            block_uuid: [0x11; 16],
+            expected_tombstoned_at_ms: 1_714_060_900_000,
+        };
+        let ffi = map_core_vault_error_restore(core_err);
+        let FfiVaultError::CorruptVault { detail } = ffi else {
+            panic!("expected CorruptVault, got {ffi:?}");
+        };
+        assert!(
+            detail.contains("restore target for block"),
+            "context phrase missing: {detail}"
+        );
+        assert!(
+            detail.contains("[17, 17,"),
+            "Debug-array uuid rendering missing: {detail}"
+        );
+        assert!(
+            detail.contains("1714060900000"),
+            "signed tombstoned_at_ms missing: {detail}"
+        );
     }
 
     #[test]

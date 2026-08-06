@@ -73,7 +73,7 @@ export type AppError =
   | { code: 'already_unlocked' }
   | { code: 'not_unlocked' }
   | { code: 'settings_corrupt' }
-  | { code: 'settings_unknown_version'; version: string }
+  | { code: 'settings_unknown_version' }
   | { code: 'settings_out_of_range'; min: number; max: number }
   | { code: 'io' }
   | { code: 'block_not_found'; block_uuid_hex: string }
@@ -108,7 +108,7 @@ export type AppError =
 export type AppWarning =
   | { code: 'settings_corrupt' }
   | { code: 'settings_clamped'; original_ms: number; clamped_ms: number }
-  | { code: 'settings_unknown_version'; version: string };
+  | { code: 'settings_unknown_version' };
 
 export interface UserMessage {
   title: string;
@@ -173,7 +173,7 @@ export function userMessageFor(err: AppError): UserMessage {
     case 'settings_unknown_version':
       return {
         title: 'Settings format newer than this app',
-        detail: `Schema version "${err.version}" is from a newer Secretary build. Using defaults.`
+        detail: 'This settings record is from a newer Secretary build. Using defaults.'
       };
     case 'settings_out_of_range':
       return {
@@ -343,7 +343,7 @@ export function userMessageForWarning(w: AppWarning): UserMessage {
     case 'settings_unknown_version':
       return {
         title: 'Settings format newer than this app',
-        detail: `Schema "${w.version}" — using defaults.`
+        detail: 'Schema is from a newer Secretary build — using defaults.'
       };
     default:
       console.error('userMessageForWarning: unknown AppWarning code', w);

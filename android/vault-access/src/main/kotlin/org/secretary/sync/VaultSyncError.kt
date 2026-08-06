@@ -13,60 +13,72 @@ import org.secretary.diagnostics.SecretFreeThrowable
  * The singleton (`data object`) arms share a single instance and therefore a single captured
  * stack trace; rely on the arm type, not the stack trace, for diagnosis.
  *
- * PAYLOAD-ORIGIN AUDIT (#472) — no arm here is redacted; every `detail`-carrying arm is
- * safe to render in full, but for TWO DIFFERENT reasons that must not be conflated with
- * [org.secretary.browse.VaultBrowseError]'s audit despite the shared arm name [Failed]:
+ * PAYLOAD-ORIGIN AUDIT (#472, partly structural as of #480) — no arm here is redacted, but
+ * NOT for one shared reason: [Failed] and [StateCorrupt] are gated at their Rust construction
+ * site; [InvalidArgument] is not, and stays safe only by producer trace. Do not flatten these
+ * into one claim — see each bullet:
  *
- * - [Failed] has TWO producers, not one. `VaultSyncErrorMapping.kt`'s `else`-fold (any
- *   sync-relevant `VaultException` arm this file does not name) is GATED AT CONSTRUCTION —
- *   it passes `diagnosticDetail(e)`, which default-denies an unconformed type. But the
- *   explicit `is VaultException.SyncFailed -> VaultSyncError.Failed(e.detail)` arm
- *   (`VaultSyncErrorMapping.kt`) is a RAW pass-through — it is NOT gated. It is safe only
- *   because every Rust construction site of `FfiVaultError::SyncFailed` was traced and
- *   confirmed to emit a fixed literal, a `std::io::Error` Display, or a `SyncError`
- *   internal-consistency-guard Display over an argument-shape description — NEVER a fold of
- *   an arbitrary `VaultError` (contrast [org.secretary.browse.VaultBrowseError.CorruptVault],
- *   which DOES fold an arbitrary `VaultError` and is redacted for exactly that reason).
- *   Traced sites:
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:38,144` — fixed literal
- *       ("no platform data directory available…").
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:173-177,238-240` — fixed
- *       literals (the `manifest_hash`-length guard; the internal "commit unexpectedly
- *       returned ConflictsPending" guard).
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:249-280` (`map_sync_error`,
- *       matched EXHAUSTIVELY — no `_` catch-all): folds `SyncError::InvalidArgument` /
- *       `ConflictCopyScanIoFailed` / `EmptyDraftWithVetoes`. Their Displays
- *       (`core/src/sync/error.rs:27-28,35-39,67-68`) are an argument-shape description, an
- *       `io::Error` (path + errno — already disclosed per the threat model), and a fixed
- *       literal, respectively.
- *     - `ffi/secretary-ffi-bridge/src/sync/status.rs:89-91` — `StateError::Io` Display
- *       (`io::Error`).
- *     - `ffi/secretary-ffi-bridge/src/sync/dto.rs:97,100` — hex-decode / fixed-length-
- *       conversion failures on caller-supplied bytes.
- *   THIS IS A CONTENT-TRACED CLAIM, NOT A STRUCTURAL ONE: unlike `VaultBrowseError`, this
- *   type has NO `diagnosticDescription` override, so nothing stops a future Rust edit from
- *   routing unreviewed content into `SyncFailed.detail` with zero Kotlin diff — exactly the
- *   class of drift that made [org.secretary.browse.VaultBrowseError.SaveCryptoFailure]
- *   unsafe. That is the honest residual risk; re-check this claim whenever
- *   `map_sync_error`/`map_state_error` or a `SyncFailed` construction site changes.
- * - [StateCorrupt]: `FfiVaultError::SyncStateCorrupt`
- *   (`ffi/secretary-ffi-bridge/src/sync/status.rs:85-87`) wraps `StateError::Decode`/`Encode`
- *   (`cli/src/state.rs:59-62`), a CBOR (de)serialization error over the LOCAL sync-state
- *   cache — vector clocks and device UUIDs only. `status.rs`'s own file header states "No
- *   secrets" (line 2). Never vault plaintext.
- * - [InvalidArgument]: the FFI's generic argument-SHAPE error
- *   (`VaultError::InvalidArgument(detail)`, `ffi/secretary-ffi-uniffi/src/secretary.udl:481`)
- *   — e.g. a wrong-length UUID. Unlike its browse-surface namesake
+ * - [Failed]'s `detail` is gated at construction (#480, closing #478): every
+ *   `FfiVaultError::SyncFailed` producer under `ffi/secretary-ffi-bridge/src/sync/`
+ *   passes a string literal or a `detail::gated(&e)` call into
+ *   `ffi/secretary-ffi-bridge/src/error/detail.rs` (rules E2/E3/E4), CI-enforced via
+ *   `scripts/check-error-payload-hygiene.py` — a producer that instead hand-rolls a
+ *   `format!` into `detail` now fails in the Rust author's own PR. `VaultSyncErrorMapping.kt`
+ *   still has two producers (the explicit `is VaultException.SyncFailed -> ...` pass-through,
+ *   and the `else`-fold's `diagnosticDetail(e)`), but both now carry a construction-gated
+ *   string rather than one gated arm and one traced-content arm.
+ *   That claim is about the CONSTRUCTION-SITE shape, not about every value any
+ *   `impl GatedDetail` could ever render: the guard's own documented limits (an `io::Error`
+ *   minted from a runtime string before reaching a gated field, #487; three syntactic
+ *   re-wrap shapes needing dataflow analysis to catch, #488) are real, but neither shape
+ *   appears on today's `SyncFailed` path — every current producer is a literal or
+ *   `detail::gated(&e)`, verified by reading `orchestration.rs`, `status.rs`, and `dto.rs`.
+ * - [StateCorrupt]: `FfiVaultError::SyncStateCorrupt`'s `detail` is gated the same way — TWO
+ *   Rust producers, both `detail::gated(&e)` calls into `error/detail.rs` (rules E2/E3/E4,
+ *   CI-enforced, #480): `ffi/secretary-ffi-bridge/src/sync/status.rs:86` (wraps
+ *   `StateError::Decode`/`Encode`) and `.../sync/orchestration.rs:249-254` (`map_sync_error`,
+ *   wraps `SyncError::StateDecodeFailed`/`StateEncodeFailed`). Both ultimately trace back to
+ *   `core/src/sync/state.rs`'s CBOR (de)serialization over the LOCAL sync-state cache — vector
+ *   clocks and device UUIDs only, never vault plaintext. `cli/src/state.rs`'s `StateError` is
+ *   a thin wrapper: it carries the core `SyncError` unchanged and adds the file-I/O side (the
+ *   `<state-dir>/<vault_uuid_hex>.state.cbor` read/write), not any of the CBOR codec itself.
+ * - [InvalidArgument] is NOT #480-gated. Rules E2/E3/E4 stop at everything under
+ *   `ffi/secretary-ffi-bridge/src/`; this arm's sole producer,
+ *   `ffi/secretary-ffi-uniffi/src/namespace/sync.rs:22`, calls the WRAPPER crate's own
+ *   `uuid_from_vec` helper (`namespace/mod.rs:672-675`), which builds `detail` with
+ *   `format!("{field} must be 16 bytes, got {}", bytes.len())` — a hand-rolled `format!` in a
+ *   crate this guard does not scan at all (#486). It is safe TODAY by PRODUCER TRACE, not by
+ *   construction: THIS arm's sole call site passes `uuid_from_vec` the fixed literal
+ *   `"vault_uuid"` as `field` (never decrypted content), and `bytes.len()` is a length, never
+ *   content. That is a claim about `sync.rs:22` specifically, not about `uuid_from_vec` in
+ *   general — `field` is NOT always a literal across its callers: `namespace/repair.rs:52,65`
+ *   pass `format!("approvals[{idx}].block_uuid")` (a safe loop index, not a fixed literal),
+ *   though that is a different arm's producer, not this one's. Nothing enforces that a future
+ *   producer of THIS arm keeps `field` a literal, unlike [Failed]/[StateCorrupt] above.
+ *   `VaultSyncErrorMapping.kt`'s Kotlin side adds no further risk on top: exactly ONE
+ *   producer, no Kotlin-side interpolation. Unlike its browse-surface namesake
  *   ([org.secretary.browse.VaultBrowseError.InvalidArgument], REDACTED because
- *   `RecordEditModel` ALSO constructs it there with a decrypted field name), the sync
- *   surface has exactly ONE producer (`VaultSyncErrorMapping.kt`'s explicit
- *   `VaultException.InvalidArgument` arm) and no Kotlin-side interpolation site. Do not
- *   assume the two `InvalidArgument` arms share a verdict just because they share a name.
+ *   `RecordEditModel` interpolates a decrypted field name into it), this arm stays RENDERED
+ *   because its one producer's content is provably a parameter-name literal plus a length —
+ *   but that is a TRACED claim about `uuid_from_vec`'s current callers, not a guard
+ *   guarantee. Do not assume the two `InvalidArgument` arms share a verdict just because they
+ *   share a name, and do not assume this arm shares [Failed]'s or [StateCorrupt]'s CI
+ *   enforcement either.
  *
- * NOTE: like [org.secretary.browse.VaultBrowseError]'s audit, this is a point-in-time claim
- * re-verified by tracing, not guaranteed by any type in the sync surface. See that class's
- * `[Failed]` entry: its "gated at construction" verdict is scoped to
- * `VaultBrowseError.Failed` ONLY — do not read it as covering this class's [Failed] too.
+ * NOTE: [Failed] and [StateCorrupt] no longer need their own traced-content justification
+ * separate from [org.secretary.browse.VaultBrowseError.Failed] IN KIND — both are now "gated
+ * at construction, not by tracing" — but NOT via the same guard, and NOT via the same files.
+ * `VaultBrowseError.Failed`'s nine producers are all KOTLIN (`BrowseMapping.kt`,
+ * `RecordEditModel.kt`, `VaultBrowseModel.kt`, `UniffiVaultOpenPort.kt`,
+ * `UniffiVaultDeviceSlotPort.kt`), gated by the `diagnosticDetail`/fixed-literal CONVENTION
+ * from #472 — a Kotlin-side, review-plus-lint discipline with no Rust guard behind it. This
+ * class's [Failed]/[StateCorrupt] are instead gated by the PYTHON guard
+ * (`scripts/check-error-payload-hygiene.py`, rules E2/E3/E4, #480) at their RUST construction
+ * sites under `ffi/secretary-ffi-bridge/src/sync/`. Same PATTERN, different GUARD, different
+ * LAYER — conflating them was a real mistake in an earlier draft of this KDoc; do not repeat
+ * it. Re-verify [Failed]/[StateCorrupt] whenever a `SyncFailed`/`SyncStateCorrupt`
+ * construction site changes to something other than a literal or a `detail::gated(&e)` call;
+ * re-verify [InvalidArgument] whenever `uuid_from_vec` or its callers change.
  */
 sealed class VaultSyncError(message: String? = null) : Exception(message), SecretFreeThrowable {
     /** Re-open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */

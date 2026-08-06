@@ -14,6 +14,7 @@ use secretary_core::vault::block;
 use secretary_core::vault::record::Record as CoreRecord;
 
 use super::{BlockReadOutput, FieldHandle, Record};
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::{ReaderSecretKeysError, UnlockedIdentity};
 use crate::vault::OpenVaultManifest;
@@ -153,7 +154,7 @@ pub(crate) fn decrypt_block_plaintext(
         .iter()
         .find(|b| b.block_uuid == *block_uuid)
         .ok_or_else(|| FfiVaultError::BlockNotFound {
-            uuid_hex: hex::encode(block_uuid),
+            uuid_hex: detail::uuid_hex(block_uuid),
         })?;
 
     // Resolve the block file path using the standard 8-4-4-4-12 UUID
@@ -167,12 +168,12 @@ pub(crate) fn decrypt_block_plaintext(
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(FfiVaultError::CorruptVault {
-                detail: format!("block file missing for {}: {}", hex::encode(block_uuid), e),
+                detail: detail::gated_for_uuid("block file missing for", block_uuid, &e),
             });
         }
         Err(e) => {
             return Err(FfiVaultError::FolderInvalid {
-                detail: format!("failed to read block file: {e}"),
+                detail: detail::gated_with_context("failed to read block file", &e),
             });
         }
     };
@@ -208,7 +209,7 @@ pub(crate) fn decrypt_block_file_bytes(
 ) -> Result<secretary_core::vault::BlockPlaintext, FfiVaultError> {
     // Decode the BlockFile envelope.
     let block_file = block::decode_block_file(bytes).map_err(|e| FfiVaultError::CorruptVault {
-        detail: format!("malformed block file: {e}"),
+        detail: detail::gated_with_context("malformed block file", &e),
     })?;
 
     // Prepare sender + reader handles. v1 single-author: sender =
@@ -217,18 +218,18 @@ pub(crate) fn decrypt_block_file_bytes(
         owner_card
             .to_canonical_cbor()
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: format!("failed to canonicalize owner card: {e}"),
+                detail: detail::gated_with_context("failed to canonicalize owner card", &e),
             })?;
     let owner_fp = fingerprint(&owner_canonical);
     let owner_pk_bundle =
         owner_card
             .pk_bundle_bytes()
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: format!("failed to extract owner pk bundle: {e}"),
+                detail: detail::gated_with_context("failed to extract owner pk bundle", &e),
             })?;
     let owner_pq_pk = MlDsa65Public::from_bytes(&owner_card.ml_dsa_65_pk).map_err(|e| {
         FfiVaultError::CorruptVault {
-            detail: format!("failed to parse owner ML-DSA-65 public key: {e}"),
+            detail: detail::gated_with_context("failed to parse owner ML-DSA-65 public key", &e),
         }
     })?;
 
@@ -261,7 +262,7 @@ pub(crate) fn decrypt_block_file_bytes(
         &reader_pq_sk,
     )
     .map_err(|e| FfiVaultError::CorruptVault {
-        detail: format!("block decryption failed: {e}"),
+        detail: detail::gated_with_context("block decryption failed", &e),
     })?;
     // Pin the drop point so the secret-key bytes are wiped HERE,
     // not at end-of-function scope (the comment-only version was
