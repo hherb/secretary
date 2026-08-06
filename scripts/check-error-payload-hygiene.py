@@ -122,7 +122,11 @@ one line, compiles beside the real impls, and hands the trait to every
 `Display` type — after which E3 accepts `detail::gated(&anything)` and both
 rules mean nothing. Like E1, this reads TEXT: a `macro_rules!`-generated
 impl is invisible, so "every impl must live in that file" is a claim about
-impls this guard can SEE.
+impls this guard can SEE. The same TEXT-only reading has a second blind
+spot: the anchor matches literal `GatedDetail for` text, so
+`use detail::GatedDetail as GD;` followed by `impl GD for X {}` spells the
+trait under an alias and is invisible the same way — the anchor's scope is
+impls that spell the trait's real name, not every impl of the trait.
 
 LIMITS (stated, not hidden)
 ---------------------------

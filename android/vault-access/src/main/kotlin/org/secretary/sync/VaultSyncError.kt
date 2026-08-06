@@ -13,47 +13,33 @@ import org.secretary.diagnostics.SecretFreeThrowable
  * The singleton (`data object`) arms share a single instance and therefore a single captured
  * stack trace; rely on the arm type, not the stack trace, for diagnosis.
  *
- * PAYLOAD-ORIGIN AUDIT (#472) — no arm here is redacted; every `detail`-carrying arm is
- * safe to render in full, but for TWO DIFFERENT reasons that must not be conflated with
- * [org.secretary.browse.VaultBrowseError]'s audit despite the shared arm name [Failed]:
+ * PAYLOAD-ORIGIN AUDIT (#472, structural as of #480) — no arm here is redacted; every
+ * `detail`-carrying arm is safe to render in full, and as of #480 every one of them is
+ * safe for the SAME reason: gated at construction, not by traced content. That collapses
+ * the distinction this audit used to draw against [org.secretary.browse.VaultBrowseError]
+ * (whose [Failed] is gated at construction while its [CorruptVault] is not) — every arm
+ * below is gated the same way [org.secretary.browse.VaultBrowseError.CorruptVault] now is.
  *
- * - [Failed] has TWO producers, not one. `VaultSyncErrorMapping.kt`'s `else`-fold (any
- *   sync-relevant `VaultException` arm this file does not name) is GATED AT CONSTRUCTION —
- *   it passes `diagnosticDetail(e)`, which default-denies an unconformed type. But the
- *   explicit `is VaultException.SyncFailed -> VaultSyncError.Failed(e.detail)` arm
- *   (`VaultSyncErrorMapping.kt`) is a RAW pass-through — it is NOT gated. It is safe only
- *   because every Rust construction site of `FfiVaultError::SyncFailed` was traced and
- *   confirmed to emit a fixed literal, a `std::io::Error` Display, or a `SyncError`
- *   internal-consistency-guard Display over an argument-shape description — NEVER a fold of
- *   an arbitrary `VaultError` (contrast [org.secretary.browse.VaultBrowseError.CorruptVault],
- *   which DOES fold an arbitrary `VaultError` and is redacted for exactly that reason).
- *   Traced sites:
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:38,144` — fixed literal
- *       ("no platform data directory available…").
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:173-177,238-240` — fixed
- *       literals (the `manifest_hash`-length guard; the internal "commit unexpectedly
- *       returned ConflictsPending" guard).
- *     - `ffi/secretary-ffi-bridge/src/sync/orchestration.rs:249-280` (`map_sync_error`,
- *       matched EXHAUSTIVELY — no `_` catch-all): folds `SyncError::InvalidArgument` /
- *       `ConflictCopyScanIoFailed` / `EmptyDraftWithVetoes`. Their Displays
- *       (`core/src/sync/error.rs:27-28,35-39,67-68`) are an argument-shape description, an
- *       `io::Error` (path + errno — already disclosed per the threat model), and a fixed
- *       literal, respectively.
- *     - `ffi/secretary-ffi-bridge/src/sync/status.rs:89-91` — `StateError::Io` Display
- *       (`io::Error`).
- *     - `ffi/secretary-ffi-bridge/src/sync/dto.rs:97,100` — hex-decode / fixed-length-
- *       conversion failures on caller-supplied bytes.
- *   THIS IS A CONTENT-TRACED CLAIM, NOT A STRUCTURAL ONE: unlike `VaultBrowseError`, this
- *   type has NO `diagnosticDescription` override, so nothing stops a future Rust edit from
- *   routing unreviewed content into `SyncFailed.detail` with zero Kotlin diff — exactly the
- *   class of drift that made [org.secretary.browse.VaultBrowseError.SaveCryptoFailure]
- *   unsafe. That is the honest residual risk; re-check this claim whenever
- *   `map_sync_error`/`map_state_error` or a `SyncFailed` construction site changes.
- * - [StateCorrupt]: `FfiVaultError::SyncStateCorrupt`
- *   (`ffi/secretary-ffi-bridge/src/sync/status.rs:85-87`) wraps `StateError::Decode`/`Encode`
- *   (`cli/src/state.rs:59-62`), a CBOR (de)serialization error over the LOCAL sync-state
- *   cache — vector clocks and device UUIDs only. `status.rs`'s own file header states "No
- *   secrets" (line 2). Never vault plaintext.
+ * - [Failed]'s `detail` is gated at construction (#480, closing #478): every
+ *   `FfiVaultError::SyncFailed` producer under `ffi/secretary-ffi-bridge/src/sync/`
+ *   passes a string literal or a `detail::gated(&e)` call into
+ *   `ffi/secretary-ffi-bridge/src/error/detail.rs` (rules E2/E3/E4), CI-enforced via
+ *   `scripts/check-error-payload-hygiene.py` — a producer that instead hand-rolls a
+ *   `format!` into `detail` now fails in the Rust author's own PR. `VaultSyncErrorMapping.kt`
+ *   still has two producers (the explicit `is VaultException.SyncFailed -> ...` pass-through,
+ *   and the `else`-fold's `diagnosticDetail(e)`), but both now carry a construction-gated
+ *   string rather than one gated arm and one traced-content arm.
+ *   That claim is about the CONSTRUCTION-SITE shape, not about every value any
+ *   `impl GatedDetail` could ever render: the guard's own documented limits (an `io::Error`
+ *   minted from a runtime string before reaching a gated field, #487; three syntactic
+ *   re-wrap shapes needing dataflow analysis to catch, #488) are real, but neither shape
+ *   appears on today's `SyncFailed` path — every current producer is a literal or
+ *   `detail::gated(&e)`, verified by reading `orchestration.rs`, `status.rs`, and `dto.rs`.
+ * - [StateCorrupt]: `FfiVaultError::SyncStateCorrupt`'s `detail` is gated the same way —
+ *   `ffi/secretary-ffi-bridge/src/sync/status.rs` constructs it only via `detail::gated(&e)`
+ *   into `error/detail.rs` (rules E2/E3/E4, CI-enforced, #480). It wraps
+ *   `StateError::Decode`/`Encode` (`cli/src/state.rs`), a CBOR (de)serialization error over
+ *   the LOCAL sync-state cache — vector clocks and device UUIDs only, never vault plaintext.
  * - [InvalidArgument]: the FFI's generic argument-SHAPE error
  *   (`VaultError::InvalidArgument(detail)`, `ffi/secretary-ffi-uniffi/src/secretary.udl:481`)
  *   — e.g. a wrong-length UUID. Unlike its browse-surface namesake
@@ -63,10 +49,12 @@ import org.secretary.diagnostics.SecretFreeThrowable
  *   `VaultException.InvalidArgument` arm) and no Kotlin-side interpolation site. Do not
  *   assume the two `InvalidArgument` arms share a verdict just because they share a name.
  *
- * NOTE: like [org.secretary.browse.VaultBrowseError]'s audit, this is a point-in-time claim
- * re-verified by tracing, not guaranteed by any type in the sync surface. See that class's
- * `[Failed]` entry: its "gated at construction" verdict is scoped to
- * `VaultBrowseError.Failed` ONLY — do not read it as covering this class's [Failed] too.
+ * NOTE: unlike the pre-#480 state of this audit, [Failed] here no longer needs its own
+ * traced-content justification separate from
+ * [org.secretary.browse.VaultBrowseError.Failed] — both are gated at construction by the
+ * same guard, via different files under `ffi/secretary-ffi-bridge/src/`. Re-verify this
+ * claim whenever a `SyncFailed`/`SyncStateCorrupt` construction site changes to something
+ * other than a literal or a `detail::gated(&e)` call.
  */
 sealed class VaultSyncError(message: String? = null) : Exception(message), SecretFreeThrowable {
     /** Re-open failed: wrong password OR corrupt vault. Conflated on purpose (§13). */

@@ -1,5 +1,6 @@
-# Allowlist for check-error-payload-hygiene.sh's Python sibling,
-# scripts/check-error-payload-hygiene.py (#474).
+# Allowlist for scripts/check-error-payload-hygiene.py (#474 + #480). There
+# is no shell counterpart for this guard — unlike the iOS/Android log-hygiene
+# guards, this one was Python from the start.
 #
 # THE RULE: an error payload — a `core` variant under core/src/**, OR
 # anything under ffi/secretary-ffi-bridge/src/** (#480 adds this second
@@ -14,7 +15,7 @@
 # parses this file unchanged (core/tests/error_payload_hygiene_parity.rs
 # exercises exactly that claim, rather than leaving it asserted-but-unchecked):
 #
-#   <repo-relative-path><TAB><rule><TAB><whole collapsed #[error(...)] attribute text><TAB><reason>
+#   <repo-relative-path><TAB><rule><TAB><whole collapsed #[error(...)] attribute text — or, for E4, the impl header —><TAB><reason>
 #
 # This guard has FOUR rules (#474 + #480). `E1` scans BOTH roots
 # (core/src/** and ffi/secretary-ffi-bridge/src/**): a `#[error(...)]`
@@ -132,8 +133,12 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 #     renders whatever it was constructed with, so its safety is a
 #     PRODUCER-DEPENDENT claim (like Section 3's) about every current
 #     construction site in this repo, not a type-level guarantee. Re-review
-#     on any NEW `std::io::Error` construction site anywhere in the tree —
-#     see its entry below for the one that exists today.
+#     on any NEW `std::io::Error` construction site in `ffi/secretary-ffi-
+#     bridge/src/` (this guard's own scan root) — see its entry below for
+#     the one that exists there today. A second site of the same SHAPE,
+#     `cli/src/daemon.rs:424`, sits outside this guard's scan roots
+#     entirely and is unreachable from any gated fold (tracked by #487, not
+#     a live exposure today).
 #   - `ParseIntError` / `ParseBoolError` render std-fixed phrases with no
 #     runtime input echoed, but `IntErrorKind` is `#[non_exhaustive]`, so
 #     that claim is scoped to the std library version in use. Re-review on
@@ -142,7 +147,7 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 #     variants") is stated in its own entry below.
 # =============================================================================
 
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are all OS-returned (path + errno, disclosed); the bridge can also synthesize one via std::io::Error::new(kind, format!(...)). The one such site today is ffi/secretary-ffi-bridge/src/repair/orchestration.rs:137-147, whose format! embeds StateError's Display (E4-gated below) plus the state-dir file path (disclosed, same class as core Section 2) — currently safe, but producer-dependent like Section 3, not type-safe. Re-review on any NEW io::Error construction site in this repo
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are OS-returned or literal-payload (path + errno, disclosed; or a fixed string with no runtime content — core/src/vault/io.rs:62, core/src/vault/orchestrators.rs:143,156); the bridge can also synthesize one via std::io::Error::new(kind, format!(...)). The one such site today is ffi/secretary-ffi-bridge/src/repair/orchestration.rs:137-147, whose format! embeds StateError's Display (E4-gated below) plus the state-dir file path (disclosed, same class as core Section 2) — currently safe, but producer-dependent like Section 3, not type-safe. Re-review on any NEW io::Error construction site in this repo (#487 tracks the general shape structurally)
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed. IntErrorKind is #[non_exhaustive]; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	all 5 arms are secret-free: Io renders an OS errno (state.rs mints no custom io::Error); Decode/Encode render core-gated SyncError; LockfileHeld renders a host-local <state-dir>/<hex>.lock path (disclosed class, per core Section 2); VaultUuidMismatch renders two vault-UUID hex strings (vault.toml is cleartext, vault-format §2). Re-verify if cli adds variants
