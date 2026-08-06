@@ -666,7 +666,9 @@ Expected: self-test OK (with the new control counts), real scan exit 0, zero fin
 - [ ] **Step 6:** Confirm `.github/workflows/test.yml`'s hygiene job invokes the script with no path arguments (it does — the new roots ride along; only update the job's display name if it says "core"). `grep -n -A5 'error payload hygiene' .github/workflows/test.yml`
 - [ ] **Step 7: Commit.**
 
----### Task 9: Docs, citation re-pointing, #478 Kotlin updates, follow-up issue
+---
+
+### Task 9: Docs, citation re-pointing, #478 Kotlin updates, follow-up issue
 
 **Files:**
 - Modify: `CLAUDE.md` (§"Rust error payloads" + the Commands block guard description)
