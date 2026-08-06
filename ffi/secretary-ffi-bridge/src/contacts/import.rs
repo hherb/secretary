@@ -6,6 +6,7 @@ use std::io::Write;
 use secretary_core::vault::format_uuid_hyphenated;
 
 use crate::contacts::{handle_wiped, read_verified_card, ContactSummary};
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -28,7 +29,7 @@ pub fn import_contact_card(
     let folder = manifest.vault_folder().ok_or_else(handle_wiped)?;
     let contacts_dir = folder.join("contacts");
     std::fs::create_dir_all(&contacts_dir).map_err(|e| FfiVaultError::FolderInvalid {
-        detail: format!("ensure contacts/: {e}"),
+        detail: detail::gated_with_context("ensure contacts/", &e),
     })?;
     let path = contacts_dir.join(format!(
         "{}.card",
@@ -42,17 +43,17 @@ pub fn import_contact_card(
     // the winner's trusted card.
     if path.exists() {
         return Err(FfiVaultError::ContactAlreadyExists {
-            uuid_hex: hex::encode(card.contact_uuid),
+            uuid_hex: detail::uuid_hex(&card.contact_uuid),
         });
     }
     write_card_atomic(&contacts_dir, &path, card_bytes).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             FfiVaultError::ContactAlreadyExists {
-                uuid_hex: hex::encode(card.contact_uuid),
+                uuid_hex: detail::uuid_hex(&card.contact_uuid),
             }
         } else {
             FfiVaultError::FolderInvalid {
-                detail: format!("write contact card: {e}"),
+                detail: detail::gated_with_context("write contact card", &e),
             }
         }
     })?;

@@ -14,6 +14,7 @@
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -86,7 +87,7 @@ pub fn trash_block(
         Ok(()) => manifest
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_trash(e)),
     }
@@ -99,11 +100,11 @@ pub fn trash_block(
 /// than a silent fold to `SaveCryptoFailure`.
 fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::BlockNotFound { block_uuid } => FfiVaultError::BlockNotFound {
-            uuid_hex: hex::encode(block_uuid),
+            uuid_hex: detail::uuid_hex(block_uuid),
         },
         // The remaining variants either cannot fire from
         // core::trash_block (e.g. NotAuthor, RecipientAlreadyPresent,
@@ -153,7 +154,7 @@ fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from trash_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }

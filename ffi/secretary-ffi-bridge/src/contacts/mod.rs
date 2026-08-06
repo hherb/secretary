@@ -32,6 +32,7 @@ pub use revoke::revoke_block_from;
 
 use secretary_core::identity::card::ContactCard;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 
 /// Secret-free projection of one contact card — the only contact data that
@@ -57,11 +58,14 @@ pub struct ContactSummary {
 pub(crate) fn read_verified_card(bytes: &[u8]) -> Result<ContactCard, FfiVaultError> {
     let card =
         ContactCard::from_canonical_cbor(bytes).map_err(|e| FfiVaultError::CardDecodeFailure {
-            detail: e.to_string(),
+            detail: detail::gated(&e),
         })?;
     card.verify_self()
         .map_err(|e| FfiVaultError::CardDecodeFailure {
-            detail: format!("contact card self-signature verification failed: {e:?}"),
+            detail: detail::gated_with_context(
+                "contact card self-signature verification failed",
+                &e,
+            ),
         })?;
     Ok(card)
 }

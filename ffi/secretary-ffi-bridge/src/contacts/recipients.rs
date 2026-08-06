@@ -6,6 +6,7 @@
 use secretary_core::vault::format_uuid_hyphenated;
 
 use crate::contacts::{handle_wiped, read_verified_card};
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -61,7 +62,7 @@ pub fn block_recipients(
         .iter()
         .find(|b| b.block_uuid == block_uuid)
         .ok_or_else(|| FfiVaultError::BlockNotFound {
-            uuid_hex: hex::encode(block_uuid),
+            uuid_hex: detail::uuid_hex(&block_uuid),
         })?;
 
     let summaries = entry

@@ -7,6 +7,7 @@
 
 use crate::contacts::handle_wiped;
 use crate::contacts::share::load_card_bytes;
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -53,7 +54,7 @@ pub fn revoke_block_from(
         .iter()
         .find(|b| b.block_uuid == block_uuid)
         .ok_or_else(|| FfiVaultError::BlockNotFound {
-            uuid_hex: hex::encode(block_uuid),
+            uuid_hex: detail::uuid_hex(&block_uuid),
         })?;
 
     // Current recipient cards (file name = hyphenated; error field = hex).

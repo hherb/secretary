@@ -3,6 +3,7 @@
 //! unverifiable files rather than silently dropping them (spec §3, §9.5).
 
 use crate::contacts::{handle_wiped, read_verified_card, ContactSummary};
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::vault::OpenVaultManifest;
 
@@ -31,14 +32,14 @@ pub fn enumerate_contact_cards(
         }
         Err(e) => {
             return Err(FfiVaultError::FolderInvalid {
-                detail: format!("read_dir contacts/: {e}"),
+                detail: detail::gated_with_context("read_dir contacts/", &e),
             })
         }
     };
 
     for entry in read_dir {
         let entry = entry.map_err(|e| FfiVaultError::FolderInvalid {
-            detail: format!("iterate contacts/: {e}"),
+            detail: detail::gated_with_context("iterate contacts/", &e),
         })?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("card") {

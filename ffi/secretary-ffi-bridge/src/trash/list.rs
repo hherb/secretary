@@ -23,6 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::record::orchestration::{decrypt_block_file_bytes, handle_wiped, uuid_hyphenated};
@@ -105,9 +106,9 @@ pub fn list_trashed_blocks(
 
         let (path, ts) = newest_trash_file(&trash_dir, &entry.block_uuid)?.ok_or_else(|| {
             FfiVaultError::CorruptVault {
-                detail: format!(
-                    "trash entry has no matching file for {}",
-                    hex::encode(entry.block_uuid)
+                detail: detail::literal_for_uuid(
+                    "trash entry has no matching file for",
+                    &entry.block_uuid,
                 ),
             }
         })?;
@@ -117,7 +118,7 @@ pub fn list_trashed_blocks(
             name
         } else {
             let bytes = std::fs::read(&path).map_err(|e| FfiVaultError::FolderInvalid {
-                detail: format!("failed to read trash file: {e}"),
+                detail: detail::gated_with_context("failed to read trash file", &e),
             })?;
             // Decrypt only to read the name. `plaintext` drops (zeroizes)
             // at the end of this block — record material never escapes.
@@ -164,7 +165,7 @@ fn newest_trash_file(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(FfiVaultError::FolderInvalid {
-                detail: format!("failed to read trash directory: {e}"),
+                detail: detail::gated_with_context("failed to read trash directory", &e),
             })
         }
     };
@@ -172,7 +173,7 @@ fn newest_trash_file(
     let mut best: Option<(u64, PathBuf)> = None;
     for dirent in read_dir {
         let dirent = dirent.map_err(|e| FfiVaultError::FolderInvalid {
-            detail: format!("failed to read trash directory entry: {e}"),
+            detail: detail::gated_with_context("failed to read trash directory entry", &e),
         })?;
         let name = dirent.file_name();
         let Some(name) = name.to_str() else { continue };

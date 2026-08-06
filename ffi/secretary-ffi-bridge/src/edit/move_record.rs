@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::record::orchestration::decrypt_block_plaintext;
@@ -125,7 +126,7 @@ fn copy_record_into_target(
         .iter()
         .find(|r| r.record_uuid == source_record_uuid && !r.tombstone)
         .ok_or_else(|| FfiVaultError::RecordNotFound {
-            uuid_hex: hex::encode(source_record_uuid),
+            uuid_hex: detail::uuid_hex(&source_record_uuid),
         })?;
 
     // Step 2: Decrypt target block before any write (decrypt-target-before-write).
