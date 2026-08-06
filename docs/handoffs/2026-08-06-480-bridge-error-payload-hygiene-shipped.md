@@ -35,6 +35,18 @@ The branch closes the class the same way this repo closed logcat (#472) and `pri
 | `b967c7c` `1f3b7c1` | two plan-doc fixes (script name; fused heading) |
 | `146d40e` | final-review fix wave (2 KDoc clauses, 2 test assertions) |
 
+**Post-review fix wave (2026-08-07, PR #489 review):** the review found one
+low-severity gap plus two nits, all fixed on-branch after the table above was
+written. The deliberate hex→Debug-array rendering change on the two restore
+folds is now PINNED by content assertions (`error/vault/tests.rs`,
+`restore/orchestration.rs` — including a previously-missing
+`RestoreTargetMissing` mapping test; these were the one pair of sites the
+#475 content-assertion discipline had missed) and its stale "Hex-encoded for
+parity" comment reworded (`error/vault/mod.rs`); `VaultBrowseError.kt`'s
+`FolderInvalid`/`uuid_hex` KDoc wording caught up to the #480 rewrite; the
+`Box::leak` → `&'static str` laundering shape (a fourth, same class as E3's
+three) recorded on #488 rather than left rediscoverable.
+
 ### The reviews are the story, again
 
 Every task got a fresh implementer and an independent reviewer; the reviewers verified **by execution** — rustc-compiled witnesses fed through the guard, planted regressions, counterfactual reimplementations of rejected rules.
