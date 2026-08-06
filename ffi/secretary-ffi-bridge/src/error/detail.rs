@@ -30,9 +30,8 @@ impl GatedDetail for secretary_core::crypto::sig::SigError {}
 impl GatedDetail for secretary_core::sync::SyncError {}
 
 // Bridge-local, guard-scanned (rule E2 covers their declarations).
-// NOTE: SettingsParseError's impl is added in Task 7, when that type gains
-// Display (thiserror conversion) — adding it here would not compile.
 impl GatedDetail for crate::vault::manifest::ReplaceManifestError {}
+impl GatedDetail for crate::settings::parse::SettingsParseError {}
 
 // Reviewed claims OUTSIDE the guard's registries — each is an E4 allowlist
 // entry (Task 8) and the claim lives in the allowlist reason column:

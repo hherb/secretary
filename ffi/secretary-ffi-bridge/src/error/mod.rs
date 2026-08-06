@@ -69,8 +69,6 @@
 //!   `detail: String` payload above must be built through.
 
 pub mod conversions;
-// TODO(#480 Task 7): remove once call sites land
-#[allow(dead_code)]
 pub(crate) mod detail;
 pub mod unlock;
 pub mod vault;

@@ -8,6 +8,7 @@ use secretary_core::crypto::secret::SecretString;
 
 use super::parse::{parse_settings_fields, serialize_settings, SettingsWarning};
 use super::schema::{deterministic_uuid_16, Settings, SETTINGS_BLOCK_NAME, SETTINGS_RECORD_TYPE};
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
@@ -50,9 +51,9 @@ pub fn read_settings(
         return Ok((
             Settings::default(),
             vec![SettingsWarning::Corrupt {
-                detail: format!(
-                    "settings block has {} records (expected 1)",
-                    block.record_count()
+                detail: detail::counted(
+                    "settings block record count (expected 1)",
+                    block.record_count(),
                 ),
             }],
         ));
@@ -67,7 +68,7 @@ pub fn read_settings(
         let field = record.field_at(i).expect("i < field_count ⇒ Some");
         if !field.is_text() {
             shape_warnings.push(SettingsWarning::Corrupt {
-                detail: format!("settings field '{}' is not text-typed", field.name()),
+                detail: detail::counted("settings field is not text-typed; field index", i),
             });
             continue;
         }
@@ -100,7 +101,7 @@ pub fn read_settings(
         Err(e) => Ok((
             Settings::default(),
             vec![SettingsWarning::Corrupt {
-                detail: format!("settings record unparseable: {e:?}"),
+                detail: detail::gated_with_context("settings record unparseable", &e),
             }],
         )),
     }

@@ -9,6 +9,7 @@ use super::schema::{
     SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS, SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS,
     SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
 };
+use crate::error::detail;
 
 /// A non-fatal condition surfaced while loading a settings record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,14 +29,14 @@ pub enum SettingsWarning {
 }
 
 /// A fatal condition parsing a settings record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SettingsParseError {
-    /// `record_type` is not `secretary.settings.v1`.
-    UnknownVersion {
-        /// The unrecognized `record_type` value.
-        version: String,
-    },
+    /// `record_type` is not `secretary.settings.v1`. Carries NO payload:
+    /// the offending value is decrypted record content (#481/#480).
+    #[error("settings record_type is not secretary.settings.v1")]
+    UnknownVersion,
     /// A known field failed to parse (integer or boolean).
+    #[error("settings field parse failure: {detail}")]
     Corrupt {
         /// Human-readable detail about the parse failure.
         detail: String,
@@ -65,19 +66,17 @@ pub fn parse_settings_fields(
     fields: &[(String, String)],
 ) -> Result<(Settings, Vec<SettingsWarning>), SettingsParseError> {
     if record_type != SETTINGS_RECORD_TYPE {
-        return Err(SettingsParseError::UnknownVersion {
-            version: record_type.to_string(),
-        });
+        return Err(SettingsParseError::UnknownVersion);
     }
 
     let mut settings = Settings::default();
     let mut warnings = Vec::new();
 
-    for (name, value) in fields {
+    for (i, (name, value)) in fields.iter().enumerate() {
         match name.as_str() {
             SETTINGS_FIELD_AUTO_LOCK_TIMEOUT_MS => {
                 let raw: u64 = value.parse().map_err(|e| SettingsParseError::Corrupt {
-                    detail: format!("auto_lock_timeout_ms parse failure: {e}"),
+                    detail: detail::gated_with_context("auto_lock_timeout_ms parse failure", &e),
                 })?;
                 let (v, mut w) = clamp_ms_with_warning(raw, AUTO_LOCK_MIN_MS, AUTO_LOCK_MAX_MS);
                 settings.auto_lock_timeout_ms = v;
@@ -85,7 +84,7 @@ pub fn parse_settings_fields(
             }
             SETTINGS_FIELD_REAUTH_GRACE_WINDOW_MS => {
                 let raw: u64 = value.parse().map_err(|e| SettingsParseError::Corrupt {
-                    detail: format!("reauth_grace_window_ms parse failure: {e}"),
+                    detail: detail::gated_with_context("reauth_grace_window_ms parse failure", &e),
                 })?;
                 let (v, mut w) =
                     clamp_ms_with_warning(raw, REAUTH_WINDOW_MIN_MS, REAUTH_WINDOW_MAX_MS);
@@ -95,24 +94,29 @@ pub fn parse_settings_fields(
             SETTINGS_FIELD_REQUIRE_PASSWORD_BEFORE_EDITS => {
                 settings.require_password_before_edits =
                     value.parse().map_err(|e| SettingsParseError::Corrupt {
-                        detail: format!("require_password_before_edits parse failure: {e}"),
+                        detail: detail::gated_with_context(
+                            "require_password_before_edits parse failure",
+                            &e,
+                        ),
                     })?;
             }
             SETTINGS_FIELD_RETENTION_WINDOW_MS => {
                 let raw: u64 = value.parse().map_err(|e| SettingsParseError::Corrupt {
-                    detail: format!("retention_window_ms parse failure: {e}"),
+                    detail: detail::gated_with_context("retention_window_ms parse failure", &e),
                 })?;
                 let (v, mut w) =
                     clamp_ms_with_warning(raw, RETENTION_WINDOW_MIN_MS, RETENTION_WINDOW_MAX_MS);
                 settings.retention_window_ms = v;
                 warnings.append(&mut w);
             }
-            other => {
+            _ => {
                 // Forward-compat: a field this build doesn't know about is a
                 // warning, not a hard error — a newer client may have written
-                // it, and we must still load the fields we DO understand.
+                // it, and we must still load the fields we DO understand. The
+                // field NAME is decrypted record content (#481/#480) and must
+                // never be echoed; only its ordinal position crosses.
                 warnings.push(SettingsWarning::Corrupt {
-                    detail: format!("unknown settings field ignored: {other}"),
+                    detail: detail::counted("unknown settings field ignored; field index", i),
                 });
             }
         }
@@ -364,12 +368,7 @@ mod tests {
     #[test]
     fn parse_unknown_version_errors() {
         let err = parse_settings_fields("secretary.settings.v99", &[]).expect_err("must error");
-        assert_eq!(
-            err,
-            SettingsParseError::UnknownVersion {
-                version: "secretary.settings.v99".into()
-            }
-        );
+        assert_eq!(err, SettingsParseError::UnknownVersion);
     }
 
     #[test]
@@ -379,12 +378,7 @@ mod tests {
             "600000".to_string(),
         )];
         let err = parse_settings_fields("secretary.settings.v99", &fields).expect_err("must error");
-        match err {
-            SettingsParseError::UnknownVersion { version } => {
-                assert_eq!(version, "secretary.settings.v99");
-            }
-            other => panic!("expected UnknownVersion, got {other:?}"),
-        }
+        assert_eq!(err, SettingsParseError::UnknownVersion);
     }
 
     #[test]
@@ -423,6 +417,35 @@ mod tests {
             SettingsParseError::Corrupt { .. } => {}
             other => panic!("expected Corrupt, got {other:?}"),
         }
+    }
+
+    // =========================================================================
+    // #481/#480 mutation-proof: decrypted record content must never be
+    // echoed into a warning/error detail string.
+    // =========================================================================
+
+    #[test]
+    fn unknown_field_warning_never_echoes_the_field_name() {
+        let fields = vec![("secret_field_name_xyz".to_string(), "v".to_string())];
+        let (_, warnings) = parse_settings_fields(SETTINGS_RECORD_TYPE, &fields).expect("lenient");
+        let SettingsWarning::Corrupt { detail } = &warnings[0] else {
+            panic!("expected Corrupt, got {warnings:?}");
+        };
+        assert!(
+            !detail.contains("secret_field_name_xyz"),
+            "decrypted field name leaked into warning detail: {detail}"
+        );
+        assert!(detail.contains("field index"), "ordinal hint missing: {detail}");
+    }
+
+    #[test]
+    fn unknown_version_error_never_echoes_the_record_type() {
+        let err = parse_settings_fields("secret.record.type.v9", &[]).unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("secret.record.type.v9"),
+            "decrypted record_type leaked: {rendered}"
+        );
     }
 
     // =========================================================================

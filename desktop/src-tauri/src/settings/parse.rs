@@ -63,9 +63,7 @@ pub(crate) fn map_warning(w: SettingsWarning) -> AppWarning {
 pub fn parse_settings_fields(record_type: &str, fields: &[(String, String)]) -> ParseResult {
     match bridge_parse(record_type, fields) {
         Ok((settings, warnings)) => Ok((settings, warnings.into_iter().map(map_warning).collect())),
-        Err(SettingsParseError::UnknownVersion { version }) => {
-            Err(AppError::SettingsUnknownVersion { version })
-        }
+        Err(SettingsParseError::UnknownVersion) => Err(AppError::SettingsUnknownVersion),
         Err(SettingsParseError::Corrupt { detail }) => Err(AppError::SettingsCorrupt { detail }),
     }
 }
@@ -244,12 +242,7 @@ mod tests {
             "600000".to_string(),
         )];
         let err = parse_settings_fields("secretary.settings.v99", &fields).expect_err("must error");
-        match err {
-            AppError::SettingsUnknownVersion { version } => {
-                assert_eq!(version, "secretary.settings.v99");
-            }
-            other => panic!("expected SettingsUnknownVersion, got {other:?}"),
-        }
+        assert!(matches!(err, AppError::SettingsUnknownVersion));
     }
 
     #[test]

@@ -27,7 +27,7 @@ describe('userMessageFor', () => {
     { code: 'already_unlocked' },
     { code: 'not_unlocked' },
     { code: 'settings_corrupt' },
-    { code: 'settings_unknown_version', version: 'v99' },
+    { code: 'settings_unknown_version' },
     { code: 'settings_out_of_range', min: 60_000, max: 86_400_000 },
     { code: 'io' },
     { code: 'invalid_field_value', field_name: 'seed' },
@@ -94,9 +94,9 @@ describe('userMessageFor', () => {
     expect(msg.detail).toContain('86400s');
   });
 
-  it('settings_unknown_version surfaces the version string', () => {
-    const msg = userMessageFor({ code: 'settings_unknown_version', version: 'v99' });
-    expect(msg.detail).toContain('v99');
+  it('settings_unknown_version has a fixed newer-build message (#481: no version payload)', () => {
+    const msg = userMessageFor({ code: 'settings_unknown_version' });
+    expect(msg.detail).toContain('newer Secretary build');
   });
 });
 
@@ -104,7 +104,7 @@ describe('userMessageForWarning', () => {
   const variants: AppWarning[] = [
     { code: 'settings_corrupt' },
     { code: 'settings_clamped', original_ms: 30_000, clamped_ms: 60_000 },
-    { code: 'settings_unknown_version', version: 'v99' }
+    { code: 'settings_unknown_version' }
   ];
 
   it.each(variants)('returns non-empty title for $code', (w) => {
