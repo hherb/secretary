@@ -17,6 +17,7 @@ use secretary_core::identity::card::ContactCard;
 use secretary_core::vault::{format_uuid_hyphenated, BlockUuid, DeviceUuid, OpenVault, VaultError};
 use zeroize::Zeroize as _;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -132,7 +133,7 @@ pub fn share_block(
     sk_ed_bytes.zeroize();
     let sk_pq = MlDsa65Secret::from_bytes(identity_clone.ml_dsa_65_sk.expose()).map_err(|e| {
         FfiVaultError::CorruptVault {
-            detail: format!("identity ML-DSA-65 secret parse failed: {e:?}"),
+            detail: detail::gated_with_context("identity ML-DSA-65 secret parse failed", &e),
         }
     })?;
     identity_clone.ed25519_sk.zeroize();
@@ -172,7 +173,7 @@ pub fn share_block(
         Ok(()) => manifest
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_share(e)),
     }
@@ -200,12 +201,15 @@ fn guard_new_recipient_no_substitution(
         .join(format!("{}.card", format_uuid_hyphenated(card_uuid)));
     match std::fs::read(&path) {
         Ok(on_disk) if on_disk != new_bytes => Err(FfiVaultError::ContactAlreadyExists {
-            uuid_hex: hex::encode(card_uuid),
+            uuid_hex: detail::uuid_hex(card_uuid),
         }),
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(FfiVaultError::FolderInvalid {
-            detail: format!("read existing contact card for overwrite check: {e}"),
+            detail: detail::gated_with_context(
+                "read existing contact card for overwrite check",
+                &e,
+            ),
         }),
     }
 }
@@ -229,11 +233,11 @@ fn guard_new_recipient_no_substitution(
 /// decision at the share-mapper boundary.
 fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::Block(_) => FfiVaultError::CorruptVault {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
         // Typed share-validation variants delegate to the From impl.
         // RecipientNotPresent / CannotRevokeOwner are the revoke-path
@@ -283,7 +287,7 @@ fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from share_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }

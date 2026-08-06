@@ -21,9 +21,10 @@
 use std::path::Path;
 
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::vault::{format_uuid_hyphenated, preview_repair, Unlocker};
+use secretary_core::vault::{preview_repair, Unlocker};
 
 use super::orchestration::baseline_provider;
+use crate::error::detail;
 use crate::error::FfiVaultError;
 
 /// One recipient a consent-eligible widening would add, projected across
@@ -88,7 +89,7 @@ fn project_preview(core_preview: secretary_core::vault::RepairPreview) -> FfiRep
             .widenings
             .into_iter()
             .map(|w| FfiWideningReport {
-                block_uuid_hex: format_uuid_hyphenated(&w.block_uuid),
+                block_uuid_hex: detail::uuid_hyphenated(&w.block_uuid),
                 block_name: w.block_name,
                 file_fingerprint_hex: hex::encode(w.file_fingerprint),
                 committed_fingerprint_hex: hex::encode(w.committed_fingerprint),
@@ -96,7 +97,7 @@ fn project_preview(core_preview: secretary_core::vault::RepairPreview) -> FfiRep
                     .added
                     .into_iter()
                     .map(|a| FfiAddedRecipient {
-                        uuid_hex: format_uuid_hyphenated(&a.uuid),
+                        uuid_hex: detail::uuid_hyphenated(&a.uuid),
                         display_name: a.display_name,
                         card_fingerprint_hex: hex::encode(a.card_fingerprint),
                     })

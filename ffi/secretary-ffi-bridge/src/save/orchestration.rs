@@ -15,6 +15,7 @@
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::save::input::BlockInput;
@@ -132,7 +133,7 @@ pub fn save_block(
             manifest
                 .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
                 .map_err(|e| FfiVaultError::CorruptVault {
-                    detail: e.to_string(),
+                    detail: detail::gated(&e),
                 })
             // open_vault has been consumed by replace_manifest_and_file
             // (manifest + manifest_file moved out). The remaining fields
@@ -162,8 +163,8 @@ pub fn save_block(
 /// `SaveCryptoFailure` is the right surface.
 pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::Record(_)
         | VaultError::Block(_)
@@ -207,7 +208,7 @@ pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from save_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }

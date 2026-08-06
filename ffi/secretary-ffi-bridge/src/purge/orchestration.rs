@@ -20,6 +20,7 @@
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -133,7 +134,7 @@ pub fn purge_block(
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map(|()| PurgeReport::from(report))
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_purge(e)),
     }
@@ -146,11 +147,11 @@ pub fn purge_block(
 /// than a silent fold to `SaveCryptoFailure`.
 fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::BlockNotInTrash { block_uuid } => FfiVaultError::BlockNotInTrash {
-            detail: hex::encode(block_uuid),
+            detail: detail::uuid_hex(block_uuid),
         },
         // The remaining variants either cannot fire from
         // core::purge_block (e.g. NotAuthor, RecipientAlreadyPresent,
@@ -202,7 +203,7 @@ fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from purge_block; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }
@@ -314,7 +315,7 @@ pub fn empty_trash(
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map(|()| EmptyTrashReport::from(report))
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_empty_trash(e)),
     }
@@ -327,8 +328,8 @@ pub fn empty_trash(
 /// than a silent fold to `SaveCryptoFailure`.
 fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         // `core::empty_trash` takes no `block_uuid` and never looks one
         // up — BlockNotInTrash cannot fire from this path (unlike
@@ -374,7 +375,7 @@ fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
         // ADR 0009 (B.1): unreachable from empty_trash; listed for
         // exhaustiveness per issue #40.
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }

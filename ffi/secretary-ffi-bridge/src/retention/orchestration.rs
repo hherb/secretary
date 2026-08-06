@@ -8,6 +8,7 @@
 use rand_core::OsRng;
 use secretary_core::vault::{OpenVault, VaultError};
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 use crate::vault::OpenVaultManifest;
@@ -157,7 +158,7 @@ pub fn auto_purge_expired(
             .replace_manifest_and_file(open_vault.manifest, open_vault.manifest_file)
             .map(|()| RetentionPurgeReport::from(report))
             .map_err(|e| FfiVaultError::CorruptVault {
-                detail: e.to_string(),
+                detail: detail::gated(&e),
             }),
         Err(e) => Err(map_core_vault_error_retention(e)),
     }
@@ -171,8 +172,8 @@ pub fn auto_purge_expired(
 /// Adding a new `core::VaultError` variant becomes a compile error here.
 fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
     match &e {
-        VaultError::Io { context, source } => FfiVaultError::FolderInvalid {
-            detail: format!("{context}: {source}"),
+        e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
+            detail: detail::gated(e),
         },
         VaultError::BlockNotInTrash { .. }
         | VaultError::Record(_)
@@ -203,7 +204,7 @@ fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
         | VaultError::BlockFileMissing { .. }
         | VaultError::RepairRejected { .. }
         | VaultError::DeviceSlotNotFound => FfiVaultError::SaveCryptoFailure {
-            detail: format!("{e}"),
+            detail: detail::gated(&e),
         },
     }
 }
