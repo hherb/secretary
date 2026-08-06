@@ -70,12 +70,14 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      * - [InvalidRecoveryPhrase]: `MnemonicError` Display emits a word INDEX
      *   (`core/src/unlock/mnemonic.rs:54`), a word count (`:46`), or the fixed
      *   `"BIP-39 checksum failed"` (`:59`) — never the word itself.
-     * - [FolderInvalid]: `format!("{context}: {source}")` — a filesystem path
+     * - [FolderInvalid]: a fixed io-context phrase plus `std::io::Error`,
+     *   built via the `detail::gated` constructors (#480) — a filesystem path
      *   plus an errno. The threat model already treats paths as disclosed.
      * - [DeviceUuidMismatch]: device UUIDs, a public per-device fingerprint.
      * - [BlockNotFound] / [RecordNotFound]: hex-encoded UUIDs. The
-     *   `BlockNotInTrash` / `BlockPurged` folds also `hex::encode`
-     *   (`ffi/.../purge/orchestration.rs:153`), so no block NAME reaches them.
+     *   `BlockNotInTrash` / `BlockPurged` folds also render hex, via
+     *   `detail::uuid_hex` (#480, `ffi/.../purge/orchestration.rs:154`), so
+     *   no block NAME reaches them.
      * - [ReauthFailed]: built Android-side at the biometric gate from fixed
      *   labels.
      * - [Failed]: gated at construction — every producer passes `diagnosticDetail`
