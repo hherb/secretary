@@ -11,9 +11,21 @@
 #
 #   <repo-relative-path><TAB><rule><TAB><whole collapsed #[error(...)] attribute text><TAB><reason>
 #
-# This guard has exactly ONE rule, `E1`. The column exists for format parity
-# with the shell guards' three/four-rule allowlists, not because a second
-# rule is planned here.
+# This guard has FOUR rules (#474 + #480). `E1` scans BOTH roots
+# (core/src/** and ffi/secretary-ffi-bridge/src/**): a `#[error(...)]`
+# message must not interpolate a field whose type is not provably
+# data-free. `E2`/`E3`/`E4` apply to ffi/secretary-ffi-bridge/src/** only —
+# the bridge's error types genuinely need prose, so instead of denying by
+# TYPE they are gated by DECLARATION, CONSTRUCTION SITE, and IMPL
+# respectively: `E2` requires a bridge error's `String` fields to be
+# declared under one of the pinned GATED_FIELD_NAMES; `E3` requires the
+# expression at a gated field's construction site to be a literal, a
+# `detail::*` constructor call, or the field's own name; `E4` requires
+# every `impl GatedDetail for X` to live in
+# ffi/secretary-ffi-bridge/src/error/detail.rs and name a type this guard
+# itself scans. The column exists for format parity with the shell guards'
+# three/four-rule allowlists AND because a second rule really is present
+# here now.
 #
 # THE KEY is the ENTIRE `#[error(...)]` attribute, not just its first source
 # line: for a multi-line attribute (e.g. sync/error.rs's
@@ -91,6 +103,20 @@ core/src/unlock/vault_toml.rs	E1	#[error("unsupported KDF version: {0}")]	vault.
 
 core/src/sync/error.rs	E1	#[error("conflict-copy scan failed: failed to enumerate folder: {source}")]	io::Error (path + errno — already disclosed per the threat model, per #472's identical verdict)
 core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::Error (path + errno — already disclosed per the threat model, per #472's identical verdict)
+
+# =============================================================================
+# SECTION 2b — GatedDetail IMPLS FOR TYPES OUTSIDE THE GUARD'S REGISTRIES (#480)
+#
+# Rule E4 verifies that every `impl GatedDetail for X` in the bridge's
+# error/detail.rs names a type this guard itself scans. These four types are
+# NOT scanned, so each impl is a reviewed claim about what the type's Display
+# renders. Re-review on any dependency bump that touches them.
+# =============================================================================
+
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	path + errno — already disclosed per the threat model (same verdict as core Section 2)
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	Display folds a fixed prefix over io::Error (disclosed) or core-gated SyncError (cli/src/state.rs:51-62); re-verify if cli adds variants
 
 # =============================================================================
 # SECTION 3 — SAFE BY CONSTRUCTION SITE, NOT BY TYPE
