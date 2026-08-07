@@ -48,6 +48,13 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.github/workflows/macos-host.yml'
+  # Manual trigger — see the note in test.yml. Two uses here: recovering from a
+  # dropped webhook (#490), and forcing a run when the path filter above would
+  # skip it. The latter is worth having because this is the ONLY job that
+  # cross-compiles the four Apple triples, and the paths above cannot enumerate
+  # every input to that build — a desktop/ or android/ change that moves a
+  # shared workspace dependency is invisible to this filter (#491).
+  workflow_dispatch:
 
 concurrency:
   group: macos-host-${{ github.ref }}
