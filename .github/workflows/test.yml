@@ -9,6 +9,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger. GitHub can drop push/pull_request webhooks WHOLESALE during
+  # an Actions incident — on 2026-08-06 deliveries were throttled to ~15%, so
+  # PR #489's last three commits got zero runs and were merged un-CI'd (#490).
+  # `gh run rerun` cannot recover that: it needs a run that was never created,
+  # and an already-merged commit cannot be re-pushed. This is the only way to
+  # summon the gate by hand (#491). It matters most here — this workflow carries
+  # the hygiene guards, which are CI-enforced security controls.
+  workflow_dispatch:
 
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}

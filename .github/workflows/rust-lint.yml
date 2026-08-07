@@ -12,6 +12,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger — see the note in test.yml. A dropped webhook (Actions
+  # incident of 2026-08-06, #490) leaves no run to `gh run rerun`, so without
+  # this the fmt/clippy/doc gate cannot be summoned at all (#491).
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:

@@ -18,6 +18,12 @@ on:
     paths:
       - 'ios/**'
       - '.github/workflows/ios-tsan.yml'
+  # Manual trigger — see the note in test.yml. Two uses here: recovering from a
+  # dropped webhook (#490), and forcing a run when the path filter above would
+  # skip it. The latter matters because a TSan-visible race can be introduced
+  # from OUTSIDE ios/ — a bridge or uniffi change alters what UniffiVaultSession
+  # locks over, yet touches no path in this list (#491).
+  workflow_dispatch:
 
 concurrency:
   group: ios-tsan-${{ github.ref }}
