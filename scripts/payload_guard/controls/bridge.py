@@ -420,6 +420,22 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
+    (
+        "BP44 final-review regression: a DEFERRED-INIT `let` with no "
+        "initializer (`let detail: String;`, value written on a LATER "
+        "statement with no receiver dot) reads to GATED_INIT_RE exactly "
+        "like a declaration and, after #488 added `;` as a terminator, "
+        "extracted a clean bare `String` that arm 3 waved through — this "
+        "control DENIED at merge-base 7fa210c (garbled slice, matched no "
+        "accepted shape) and produced ZERO findings on this branch before "
+        "the terminator-aware fix; must deny again",
+        ''' fn f(e: &SomeErr) -> FfiVaultError {
+                let detail: String;
+                detail = format!("{e}");
+                FfiVaultError::Boom { detail }
+            } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [

@@ -351,7 +351,21 @@ named as open, all structurally:
 - **#486 — the wrapper-crate boundary.** `ffi/secretary-ffi-py/src/**` and
   `ffi/secretary-ffi-uniffi/src/**` are now scan roots under `E1`/`E2`/`E3`
   plus the new `E5`; previously a review-only trust boundary, now CI-enforced
-  the same way the bridge is.
+  under the rule set `roots.py` records for each root (not identical to the
+  bridge's — see the paragraph above: the wrapper roots get an extra `E3`
+  acceptance the bridge is denied, and do not take `E4` at all).
+- **DEFERRED-INIT regression, found in this branch's own final review.** A
+  type-annotated `let` with NO initializer (`let detail: String;`, its
+  value written on a later, separate `detail = <expr>;` statement) reads to
+  `GATED_INIT_RE` exactly like a genuine declaration, and once #488 added
+  `;` as an `initializer_end` terminator its extracted slice went from a
+  garbled, accidentally-denied mess to a clean bare `String` — which arm
+  3's declaration acceptance then waved through, a real regression against
+  the pre-#488 guard (DENIED at merge-base `7fa210c`; ZERO findings before
+  this fix). Closed by denying arm 3's bare-`String` acceptance whenever its
+  terminator is `;`: none of the three genuine declaration positions
+  (struct field, enum field, fn parameter) is ever itself `;`-terminated —
+  only a `let` statement is. Pinned by `BP44`.
 
 What is genuinely **not** closed — stated precisely, not dropped, because the
 single most repeated review finding on this branch was documentation
@@ -368,24 +382,44 @@ claiming more coverage than the code delivers:
   PATTERN-DESTRUCTURING binds of a gated name (tuple, tuple-struct, struct,
   slice), `if let` / `while let` / `for` bindings, BUILD-THEN-MUTATE through
   a method call (`let mut d = "".to_string(); d.push_str(&format!(..));`),
-  and the function-PARAMETER case. Closing these needs local dataflow /
-  interprocedural analysis this construction-site guard does not do. There
-  is also a documented FALSE POSITIVE, fail-closed but worth knowing before
-  reaching for the allowlist: a type-annotated legitimate re-wrap
-  (`let detail: String = detail::gated(e);`) is itself denied, by the
-  interaction of two rules rather than by design.
+  the function-PARAMETER case, and DOTLESS LOCAL REASSIGNMENT — `detail =
+  <expr>;` in statement position, reassigning a local bound WITHOUT a `let`
+  this rule can see (a function parameter, or a type-less `let detail;`).
+  `GATED_ASSIGN_RE` requires a RECEIVER DOT before the name (it exists for
+  `x.detail = <expr>`, a write to a FIELD); a bare local has no receiver, so
+  the regex was never scoped to see it. (The DEFERRED-INIT shape that used
+  to share this bullet — `let detail: String;` with the value assigned
+  later — is a DIFFERENT gap, and is now closed; see above.) Closing any of
+  these needs local dataflow / interprocedural analysis this construction-
+  site guard does not do. There is also a documented FALSE POSITIVE,
+  fail-closed but worth knowing before reaching for the allowlist: a
+  type-annotated legitimate re-wrap (`let detail: String = detail::gated(e);`)
+  is itself denied, by the interaction of two rules rather than by design.
 - **The `use std::io::Error;` aliasing blind spot**, specific to the NEW
   `io::Error` payload position: the rule matches the type spelled out
   (`io::Error::new(...)`), so an aliased import is invisible to it — the same
   blind spot `E4` has for `GatedDetail`.
-- **`E5` covers `format!`, not `.to_string()`.** `format!` COMPOSES a new
-  string from runtime parts; `.to_string()` only ever RENDERS one value.
-  Censused across every production `.to_string()` receiver in both wrapper
-  crates, the receiver is always one of two shapes that cannot carry runtime
-  secret content — an already-gated bridge error type's `Display`, or a
-  compile-time string literal — so leaving it out of `E5`'s scope is a
-  reviewed decision, not an oversight; if that census stops holding, `E5`
-  widens to cover it.
+- **`E5` covers `format!` only, and that scope is a census finding, not a
+  claim that `format!` is the only construct CAPABLE of composing a runtime
+  string from several parts.** It is not: `push_str`, `write!`/`writeln!`,
+  the `+` operator on an owned `String`, and `.join()` can all do the same
+  thing, and none of them is a site `E5` inspects — a producer using any of
+  them to build a gated-field argument passes silently. Re-running
+  `grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\("
+  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` today returns seven
+  hits and zero live composition sites: three are `String::from\s*\(`
+  matching as a substring of `SecretString::from(`, and four are
+  `core_test_data_dir().join(...)` — `Path::join`, not `str`/`String`
+  `.join()`, all four inside `#[cfg(test)]`. `push_str` / `write!` /
+  `writeln!` do not appear at all; `+` string concatenation isn't
+  census-able by grep and is named here on its construction merits alone.
+  Separately, `.to_string()` — which by itself only ever RENDERS one value —
+  IS censused across every production receiver in both wrapper crates: the
+  receiver is always one of two shapes that cannot carry runtime secret
+  content, an already-gated bridge error type's `Display` or a compile-time
+  string literal. Leaving all five constructs out of `E5`'s scope is a
+  reviewed, point-in-time decision, not a structural guarantee — if any
+  census stops holding, `E5` widens to cover it.
 
 Read the guard's own module docstring's LIMITS section
 ([`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py))

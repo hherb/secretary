@@ -229,10 +229,23 @@ def initializer_end(view: str, start: int) -> int:
     its own `;`, not at any enclosing `)`/`]`/`}` — `let detail =
     detail::gated(e); detail` must stop at the `;`, or the extracted
     "initializer" swallows the trailing `detail` expression-statement too and
-    a legitimate re-wrap misreads as an unrecognised shape. A bare `;` cannot
-    legally appear inside a field-initializer or fn-parameter expression at
-    depth zero, so adding this terminator changes nothing for `GATED_INIT_RE`
-    candidates.
+    a legitimate re-wrap misreads as an unrecognised shape.
+
+    It is true that a bare `;` cannot legally appear inside a
+    field-initializer or fn-parameter expression at depth zero — but that
+    does NOT mean the terminator "changes nothing" for `GATED_INIT_RE`
+    candidates, because `GATED_INIT_RE` fires on any `<name>:` sequence, not
+    only on those two shapes. A type-annotated `let` with NO initializer —
+    `let detail: String;` — reads to `GATED_INIT_RE` exactly like a field or
+    parameter declaration (`detail:` followed by a type), and its `;`
+    terminator IS legal Rust at depth zero: `let` always ends in `;`,
+    initializer or not. Adding the `;` terminator therefore changes the
+    SLICE this shape extracts — from "everything up to whatever brace
+    happened to enclose it" (previously, typically garbled and denied by
+    accident) to exactly `String` (now cleanly extracted) — and it is
+    `initializer_is_gated`'s job, not this function's, to tell that
+    terminator apart from a genuine declaration's `)`/`,`/`}` before trusting
+    the bare-`String` shape it now yields. See its terminator-aware arm 3.
     """
     depth = 0
     i, n = start, len(view)
@@ -258,6 +271,7 @@ def initializer_is_gated(
     literal_ends: dict[int, int],
     sanctioned: frozenset[str],
     allow_field_access: bool,
+    terminator: str,
 ) -> bool:
     """Rule E3's ACCEPT test for the (already whitespace-trimmed) expression
     `view[start:end]` assigned to gated field `name` (#480).
@@ -286,6 +300,30 @@ def initializer_is_gated(
        not a construction. `String::new()` is NOT this shape and denies,
        which is what keeps the acceptance from becoming "any expression
        starting with String".
+
+       GATED BEHIND THE TERMINATOR (regression fix, found in final review):
+       a genuine declaration's type position is always closed by `)` (a
+       function parameter), `,` (a non-last struct/enum field), or `}` (the
+       last field before the closing brace) — never by a depth-zero `;`,
+       because none of those three constructs is itself terminated by one.
+       The ONE construct that reads identically to `GATED_INIT_RE` (a
+       `<name>:` token) and IS terminated by `;` is a type-annotated `let`
+       with NO initializer — `let detail: String;` — which is not a
+       declaration this arm exists to serve; it is a value-less binding
+       whose value is written on a LATER, separate statement
+       (`detail = format!(...);`) that neither `GATED_LET_RE` (no `=` on
+       the `let` itself) nor `GATED_ASSIGN_RE` (no receiver dot on a bare
+       local) can see. Before this fix, that shape's initializer slice ran
+       on into the enclosing block and typically stopped on an unrelated
+       `}`, producing a garbled expression that matched no accepted shape
+       and DENIED by accident; adding `;` as a terminator in
+       `initializer_end` (#488) cleanly extracts `String` instead — which
+       then hit this arm's bare-token acceptance and produced ZERO findings,
+       a real regression against the pre-#488 guard (see `BP44`). Denying
+       arm 3 whenever `terminator == ";"` closes it: a `String` extracted up
+       to a depth-zero `;` is never a struct field, enum field, or function
+       parameter, so refusing it there costs none of the three legitimate
+       declaration shapes arm 3 exists to serve.
     4. The exact same identifier as the field name — the `detail: detail`
        re-wrap. THIS ARM TRUSTS THE NAME, NOT THE VALUE'S PROVENANCE, and
        saying otherwise would be a false claim about a security control. An
@@ -360,8 +398,16 @@ def initializer_is_gated(
     if start >= end:
         return False
     stripped = view[start:end].strip()
-    # (3) declaration type position, and (4) the same-name re-wrap.
-    if stripped == "String" or stripped == name:
+    # (4) the same-name re-wrap — trusted regardless of terminator, since a
+    # `let detail = detail;` or `x.detail = detail` is not a declaration.
+    if stripped == name:
+        return True
+    # (3) declaration type position — DENIED when `terminator` is `;`: the
+    # only construct that extracts a bare `String` up to a depth-zero `;`
+    # is a type-annotated `let` with NO initializer (`let detail: String;`,
+    # #488/regression fix, `BP44`), never a struct field, enum field, or
+    # function parameter — those are always closed by `)`, `,`, or `}`.
+    if stripped == "String" and terminator != ";":
         return True
     # (1) a single string literal, optionally `.into()` / `.to_string()`.
     lit_end = literal_ends.get(start)
@@ -466,12 +512,29 @@ def scan_bridge_construction_sites(
         if _inside(m_start, excluded):
             continue
         start, end = m_end, initializer_end(depth_view, m_end)
+        # Captured BEFORE the trailing-whitespace trim below moves `end`:
+        # `initializer_end` returns the offset of the terminator itself (or
+        # `len(depth_view)` if none was found before EOF), so this is the
+        # literal character that closed the expression — `)`/`,`/`}` for a
+        # genuine declaration or top-level comma/assignment, `;` ONLY for a
+        # `let` statement (with or without initializer). Threaded into
+        # `initializer_is_gated` so its arm 3 (bare `String`) can tell a
+        # real declaration apart from a deferred-init `let`'s empty type
+        # position — see that function's regression-fix note and `BP44`.
+        terminator = depth_view[end] if end < len(depth_view) else ""
         while start < end and src[start] in " \t\r\n":
             start += 1
         while end > start and src[end - 1] in " \t\r\n":
             end -= 1
         if initializer_is_gated(
-            src, start, end, name, literal_ends, sanctioned, allow_field_access
+            src,
+            start,
+            end,
+            name,
+            literal_ends,
+            sanctioned,
+            allow_field_access,
+            terminator,
         ):
             continue
         expr = " ".join(src[start:end].split()) or "<empty>"

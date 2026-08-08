@@ -142,13 +142,18 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 #   - `std::io::Error` is a CARRIER, not a fixed-format type: its Display
 #     renders whatever it was constructed with, so its safety is a
 #     PRODUCER-DEPENDENT claim (like Section 3's) about every current
-#     construction site in this repo, not a type-level guarantee. Re-review
-#     on any NEW `std::io::Error` construction site in `ffi/secretary-ffi-
-#     bridge/src/` (this guard's own scan root) — see its entry below for
-#     the one that exists there today. A second site of the same SHAPE,
-#     `cli/src/daemon.rs:424`, sits outside this guard's scan roots
-#     entirely and is unreachable from any gated fold (tracked by #487, not
-#     a live exposure today).
+#     construction site in this repo, not a type-level guarantee. The
+#     original trigger here — "re-review on any NEW `std::io::Error`
+#     construction site in `ffi/secretary-ffi-bridge/src/` (this guard's
+#     own scan root)" — is now DISCHARGED for that in-root half (#487): the
+#     payload argument of every `io::Error::new` / `io::Error::other` call
+#     there is itself a rule-E3 candidate, so a new hand-rolled site fails
+#     CI in the author's own PR rather than needing a human to notice (see
+#     the entry below for detail). What remains a MANUAL re-review item is
+#     `cli/src/daemon.rs:424`, a same-shape site that sits outside every
+#     scan root entirely and is unreachable from any gated fold — tracked
+#     by #494 (not a live exposure today, since the bridge never calls into
+#     `cli/src/daemon.rs`).
 #   - `ParseIntError` / `ParseBoolError` render std-fixed phrases with no
 #     runtime input echoed, but `IntErrorKind` is `#[non_exhaustive]`, so
 #     that claim is scoped to the std library version in use. Re-review on
@@ -157,7 +162,7 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 #     variants") is stated in its own entry below.
 # =============================================================================
 
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are OS-returned or literal-payload (path + errno, disclosed; or a fixed string with no runtime content — core/src/vault/io.rs:62, core/src/vault/orchestrators.rs:143,156). Inside ffi/secretary-ffi-bridge/src/ (this guard's own scan root) the payload argument of every io::Error::new / io::Error::other call is now itself a rule-E3 candidate (#487: the second argument of new, the first of other) — a hand-rolled format! there fails CI in the author's own PR, same as any other gated field. repair/orchestration.rs:137-147, the one site that used to hand-roll a format! embedding StateError's Display (E4-gated below) plus the state-dir path (disclosed, same class as core Section 2), now routes through detail::io_gated_with_path (layered on detail::io_gated). That DISCHARGES this entry's former trigger — "re-review on any NEW io::Error construction site in ffi/secretary-ffi-bridge/src/" — for the in-root half: a new hand-rolled site there is now a CI failure, not a silent gap needing manual re-review. cli/src/daemon.rs:424 remains the one residual: a same-shape site outside every scan root entirely, unreachable from any gated fold, tracked by #487 (not a live exposure today, since the bridge never calls into cli/src/daemon.rs)
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are OS-returned or literal-payload (path + errno, disclosed; or a fixed string with no runtime content — core/src/vault/io.rs:62, core/src/vault/orchestrators.rs:143,156). Inside ffi/secretary-ffi-bridge/src/ (this guard's own scan root) the payload argument of every io::Error::new / io::Error::other call is now itself a rule-E3 candidate (#487: the second argument of new, the first of other) — a hand-rolled format! there fails CI in the author's own PR, same as any other gated field. repair/orchestration.rs:137-147, the one site that used to hand-roll a format! embedding StateError's Display (E4-gated below) plus the state-dir path (disclosed, same class as core Section 2), now routes through detail::io_gated_with_path (layered on detail::io_gated). That DISCHARGES this entry's former trigger — "re-review on any NEW io::Error construction site in ffi/secretary-ffi-bridge/src/" — for the in-root half: a new hand-rolled site there is now a CI failure, not a silent gap needing manual re-review. cli/src/daemon.rs:424 remains the one residual: a same-shape site outside every scan root entirely, unreachable from any gated fold, tracked by #494 (this branch closes #487; not a live exposure today, since the bridge never calls into cli/src/daemon.rs)
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed. IntErrorKind is #[non_exhaustive]; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	all 5 arms are secret-free: Io renders an OS errno (state.rs mints no custom io::Error); Decode/Encode render core-gated SyncError; LockfileHeld renders a host-local <state-dir>/<hex>.lock path (disclosed class, per core Section 2); VaultUuidMismatch renders two vault-UUID hex strings (vault.toml is cleartext, vault-format §2). Re-verify if cli adds variants
