@@ -115,15 +115,28 @@ def test_open_absent_slot_raises_device_slot_not_found(tmp_path: Path) -> None:
 
 
 def test_open_wrong_length_secret_raises_value_error(tmp_path: Path) -> None:
-    """31-byte device_secret (not 32) → ValueError (programmer error, not
-    data error)."""
+    """31-byte device_secret (not 32) -> ValueError (programmer error, not
+    data error), and the message reports the ACTUAL wrong length.
+
+    Regression test (#486 task-11 review finding): `open_with_device_secret`
+    used to call `device_secret.zeroize()` (which clears the underlying
+    `Vec<u8>`) BEFORE reading its length for this message, so every
+    wrong-length `device_secret` reported "got 0" regardless of what was
+    actually passed. Asserting only `pytest.raises(ValueError)` (the
+    pre-fix version of this test) cannot catch that: type-only assertions
+    pass whether the reported length is right or always-zero. Asserting on
+    message CONTENT is the only way this test can fail if the bug comes
+    back.
+    """
     vault = _fresh_writable_vault(tmp_path)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         secretary_ffi_py.open_with_device_secret(
             str(vault).encode(),
             bytes(16),
             bytes(31),   # wrong length — must be 32
         )
+    assert "32 bytes" in str(exc_info.value)
+    assert "got 31" in str(exc_info.value)
 
 
 def test_remove_twice_raises_device_slot_not_found(tmp_path: Path) -> None:

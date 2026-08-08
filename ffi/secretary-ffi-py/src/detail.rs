@@ -23,13 +23,17 @@
 //! Every constructor below takes `&'static str` and integers only, WITH ONE
 //! DELIBERATE EXCEPTION: [`fingerprint_mismatch`] and [`uuid_prefixed`] each
 //! take `&str`, because their inputs are not authored here — they are
-//! already-gated bridge fields (`FfiVaultError::NotAuthor`'s two fingerprint
-//! hexes; `FfiVaultError::RepairRejected`'s `block_uuid_hex` and `detail`),
-//! gated by rules E2/E3 at their construction site in the bridge crate. This
-//! crate COMBINES those two already-gated `String`s into one message; it
-//! does not author new runtime content. Every other constructor's inputs
-//! are authored by THIS crate (a field name, a byte-length count, a bounds
-//! value), so they stay `&'static str`/integer-only, holding the line
+//! already bridge-owned `String`s this crate only COMBINES into one
+//! message, never authoring new runtime content into either. The PROVENANCE
+//! differs per parameter, though, and is NOT uniformly "E3-gated" — each
+//! constructor's own doc comment states exactly what backs its inputs
+//! (review finding, #486 task-11 follow-up: an earlier version of this
+//! paragraph claimed both constructors' inputs are "gated by rules E2/E3 at
+//! their construction site in the bridge crate," which is accurate for
+//! `fingerprint_mismatch` but not for `uuid_prefixed`'s `detail_part` — see
+//! there). Every other constructor's inputs are authored by THIS crate (a
+//! field name, a byte-length count, a bounds value), so they stay
+//! `&'static str`/integer-only, holding the line
 //! `ffi/secretary-ffi-uniffi/src/detail.rs` set in task 10.
 //!
 //! Guard rule E5 enforces that this module is the only source of these
@@ -75,20 +79,37 @@ pub(crate) fn fingerprint_mismatch(expected_hex: &str, got_hex: &str) -> String 
 /// this crate's `create_exception!` convention requires (the bridge's two
 /// structured fields collapse into one message; uniffi/desktop keep them
 /// separate). Python callers split on the first `": "`; a hyphenated UUID
-/// has no embedded `": "`, so that split is exact. Both inputs are
-/// already-gated bridge fields (`FfiVaultError::RepairRejected`'s
-/// `block_uuid_hex` and `detail`, gated by rules E2/E3 in the bridge). This
-/// crate composes them; it does not author them.
+/// has no embedded `": "`, so that split is exact.
 ///
-/// Parameters are deliberately NOT named `block_uuid_hex` / `detail` — both
-/// are themselves members of `GATED_FIELD_NAMES`
-/// (`scripts/payload_guard/config.py`), and rule E3's `GATED_INIT_RE` reads
-/// ANY `<gated-name>:` text tree-wide, including a plain function
-/// PARAMETER declaration, not only a struct/enum field initializer. Naming
-/// a parameter here after the field it receives would make this file's own
-/// declaration look like an unsanctioned construction site of a gated
-/// field and deny — verified by execution during this rule's own
-/// development.
+/// PROVENANCE — the two parameters are NOT backed the same way, and an
+/// earlier version of this comment overclaimed that they were (review
+/// finding, #486 task-11 follow-up):
+///
+/// - `uuid_part` arrives as `FfiVaultError::RepairRejected.block_uuid_hex`,
+///   built at `ffi/secretary-ffi-bridge/src/error/vault/mod.rs` via
+///   `detail::uuid_hyphenated(&block_uuid)` — a sanctioned-constructor call
+///   rule E3 genuinely recognises and re-verifies at every scan.
+/// - `detail_part` arrives as that SAME variant's `detail` field, built at
+///   the SAME match arm via bare field-init SHORTHAND — `detail,` from a
+///   `VE::RepairRejected { block_uuid, detail } => FfiVaultError::
+///   RepairRejected { block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
+///   detail, }` pattern binding. Shorthand produces no `:` token, no `let`,
+///   and no `.field =` — all three of rule E3's candidate positions miss
+///   it. This is the legitimate re-wrap shape the design deliberately
+///   preserves (E3's arm 4 trusts a same-named re-wrap BY NAME, not by
+///   re-deriving its provenance), not a defect — but it means E3 does NOT
+///   independently re-verify THIS construction site. `detail_part`'s
+///   safety instead rests on rule E2 (pins `RepairRejected.detail` to
+///   `String` under a `GATED_FIELD_NAMES` name — a type-level constraint)
+///   plus `core`'s own rule E1, which reviewed and allowlisted
+///   `VaultError::RepairRejected`'s `#[error(...)]` message at
+///   `core/src/vault/mod.rs` ("producers pass literals plus format!({e})
+///   over other core-gated, already-scanned errors") — not on E3
+///   re-verifying this specific site.
+///
+/// Both inputs are still already bridge-owned, already-reviewed `String`s
+/// either way; this crate composes them into one message and authors no
+/// new runtime content into either.
 pub(crate) fn uuid_prefixed(uuid_part: &str, detail_part: &str) -> String {
     format!("{uuid_part}: {detail_part}")
 }
