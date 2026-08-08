@@ -22,6 +22,7 @@ from payload_guard.rules.e1 import scan_source
 from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import sanctioned_constructor_names, scan_bridge_construction_sites
 from payload_guard.rules.e4 import is_detail_module, scan_bridge_gated_detail_impls
+from payload_guard.rules.e5 import scan_wrapper_format_confinement
 from payload_guard.types import Finding
 
 
@@ -87,6 +88,10 @@ def run_real_scan() -> int:
                 findings += scan_bridge_gated_detail_impls(
                     label, raw, scanned_error_type_names
                 )
+            if root.format_confinement:
+                findings += scan_wrapper_format_confinement(
+                    label, raw, root.detail_module_rel
+                )
             for f in findings:
                 if f"{f.path}\t{f.rule}\t{f.source_line}" in allowlist:
                     continue
@@ -111,6 +116,11 @@ def run_real_scan() -> int:
                 )
             elif v.rule == "E4":
                 detail = f"impl GatedDetail for `{v.field}`: {v.field_type}"
+            elif v.rule == "E5":
+                detail = (
+                    f"`format!` outside the sanctioned detail module — "
+                    f"{v.field_type}"
+                )
             else:
                 detail = f"variant {v.variant} interpolates `{v.field}: {v.field_type}`"
             print(
@@ -125,8 +135,9 @@ def run_real_scan() -> int:
             "reaches both platform UIs and their logs (#474/#480/#486). "
             "Carry a &'static str hint plus an ordinal (E1/E2), build the "
             "value through a `detail::*` constructor (E3), move the impl "
-            f"into {DETAIL_MODULE_REL} (E4), or record a reviewed exception "
-            "in"
+            f"into {DETAIL_MODULE_REL} (E4), confine a wrapper crate's "
+            "format! to its own detail.rs (E5), or record a reviewed "
+            "exception in"
             "\n  "
             f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)}",
             file=sys.stderr,

@@ -227,17 +227,24 @@ pub(crate) fn open_with_device_secret(
     // Length pre-checks: zeroize device_secret before every early return.
     if device_uuid.len() != 16 {
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
     if device_secret.len() != 32 {
+        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
+        // `self.clear()` (zeroize crate's Vec impl), so reading
+        // `device_secret.len()` after zeroizing would always report 0
+        // rather than the actual wrong length (mirrors
+        // `repair::repair_with_device_secret`). This was a live bug here —
+        // the previous version read `device_secret.len()` for the message
+        // AFTER zeroizing, so a wrong-length `device_secret` always
+        // reported "got 0" regardless of what was actually received.
+        let got = device_secret.len();
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_secret must be 32 bytes, got {}",
-            device_secret.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_secret", 32, got),
+        ));
     }
 
     let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
@@ -284,10 +291,9 @@ pub(crate) fn open_with_device_secret(
 #[pyfunction]
 pub(crate) fn remove_device_slot(folder_path: &[u8], device_uuid: &[u8]) -> PyResult<()> {
     if device_uuid.len() != 16 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
     let folder_str = std::str::from_utf8(folder_path)
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;

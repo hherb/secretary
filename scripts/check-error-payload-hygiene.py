@@ -137,6 +137,20 @@ spot: the anchor matches literal `GatedDetail for` text, so
 trait under an alias and is invisible the same way — the anchor's scope is
 impls that spell the trait's real name, not every impl of the trait.
 
+`E5` — FORMAT! CONFINEMENT (#486, wrapper roots only). E3 gates GATED-FIELD
+INITIALIZERS; a binding wrapper's platform sink is not one — ffi-py's
+`VaultNotAuthor::new_err(format!("expected={a}, got={b}"))` hands `format!`'s
+result to a function ARGUMENT, a shape no extension of E3's initializer model
+reaches. E5 gates the SOURCE instead of the sink: `format!` is confined to
+each wrapper crate's own sanctioned `detail.rs`, the same sink-pinning move
+`error/detail.rs` makes for the bridge (E3/E4). Viable because, censused,
+100% of production `format!` in the wrapper crates is error-bound — zero
+legitimate-use allowlist entries. The bridge is deliberately EXCLUDED: most
+of its `format!` sites build filenames, a legitimate non-error use that would
+cost ~9 allowlist entries for path building if confined the same way. See
+`payload_guard/rules/e5.py` for the full rationale and the scope decision
+around `.to_string()` (which E5 does NOT cover).
+
 LIMITS (stated, not hidden — each one points at the module that owns it)
 --------------------------------------------------------------------------
 - Rule E1 (`payload_guard/rules/e1.py`) sees DECLARATIONS, not construction
@@ -158,7 +172,12 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   E3 ACCEPTANCE the bridge does not (`ScanRoot.allow_field_access`, rule
   E3's "shape 5" — a SINGLE-HOP field access ending in the gated name, the
   DTO pass-through `uuid_hex: a.uuid_hex`, not a multi-hop `a.b.uuid_hex`),
-  but NOT rule E4: `GatedDetail` is
+  and rule E5 (#486 task 11, `payload_guard/rules/e5.py`), which the bridge
+  does NOT take either — every `format!` in a wrapper crate outside its own
+  `detail.rs` is a finding, gating the SOURCE (a hand-rolled `format!`)
+  rather than the SINK (E3's gated-field initializer), since a wrapper's
+  platform sink hands `format!`'s result to a function ARGUMENT, not an
+  initializer. The wrapper roots do NOT take rule E4: `GatedDetail` is
   `pub(crate)` in the bridge crate, so no wrapper crate can implement it,
   and E4's premise is unaffected by scanning these roots at all. Nothing
   ELSE is scanned: `secretary-cli` / `desktop/src-tauri` build their own

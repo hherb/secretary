@@ -34,6 +34,7 @@ from payload_guard.rules.e3 import (
     sanctioned_constructor_names, scan_bridge_construction_sites,
 )
 from payload_guard.rules.e4 import scan_bridge_gated_detail_impls
+from payload_guard.rules.e5 import scan_wrapper_format_confinement
 from payload_guard.types import Finding
 
 # `(variant, field, field_type, field_type_prefix)` claims a POSITIVE control
@@ -282,14 +283,29 @@ def scan_bridge_control(
     return found
 
 
+# Rule E5's default self-test detail-module path (#486, task 11): read off
+# the ffi-py `ScanRoot` rather than duplicated as a bare string literal here,
+# for the same reason `_ROOTS_BY_LABEL`'s module comment gives for
+# `allow_field_access` — a control corpus that hardcodes the very path it
+# exists to test cannot catch a `roots.py` edit that changes it. Unlike
+# `allow_field_access`, the two wrapper roots' `detail_module_rel` values are
+# LEGITIMATELY different (different crates, different files), so there is no
+# "must agree" check to make here: picking ONE root's value is enough to
+# exercise `scan_wrapper_format_confinement`'s equality test in both
+# directions (`WP4` proves a non-matching `path_label` still scans; `WN2`
+# points its fixture's `path_label` at this exact value to prove a matching
+# one is skipped).
+_WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST = _ROOTS_BY_LABEL["ffi-py"].detail_module_rel
+
+
 def scan_wrapper_control(
     src: str,
     path_label: str = "<self-test-wrapper>",
     detail_src: str = SELF_TEST_DETAIL_SRC,
 ) -> list[Finding]:
     """`scan_bridge_control`, but for a WRAPPER ROOT (#486): `bridge_mode=True`
-    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) turned ON —
-    and NO rule E4 at all.
+    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) turned ON,
+    plus rule E5 (`format!` confinement, task 11) — and NO rule E4 at all.
 
     `gated_detail_impls` is `False` on both wrapper `ScanRoot`s
     (`payload_guard.roots.SCAN_ROOTS`) because `GatedDetail` is `pub(crate)`
@@ -306,6 +322,10 @@ def scan_wrapper_control(
     module-level comment above `_ROOTS_BY_LABEL` for why. It is `True` today;
     `WN1` proves the DTO pass-through stays accepted, and flipping either
     wrapper root's flag to `False` in `roots.py` must make `WN1` fire.
+
+    Rule E5's `detail_module_rel` is read the same way, off ONE wrapper root
+    (`_WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST`) — see that constant's
+    comment for why one root suffices here.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
@@ -319,6 +339,9 @@ def scan_wrapper_control(
         src,
         sanctioned_constructor_names(detail_src),
         allow_field_access=_wrapper_allow_field_access(),
+    )
+    found += scan_wrapper_format_confinement(
+        path_label, src, _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST
     )
     return found
 
