@@ -395,6 +395,23 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: &std::io::Error) -> String { let detail: String = format!("{e}"); detail } ''',
         {"rule": "E3", "field": "detail"},
     ),
+    (
+        "BP41 #487: `io::Error` is E4-allowlisted as a CARRIER — its Display "
+        "renders whatever it was built with. A bridge site can mint one from "
+        "a format!, hand it to core's VaultError::Io { source }, and reach a "
+        "gated field through the allowlisted impl, bypassing E3 entirely "
+        "because E3 gated the BRIDGE's initializer, not what feeds core's",
+        ''' fn f(p: &std::path::Path) -> std::io::Error {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}", p.display()))
+            } ''',
+        {"rule": "E3", "field": "<io::Error payload>"},
+    ),
+    (
+        "BP42 #487: the `other` constructor takes the payload as its FIRST "
+        "argument — a distinct argument position from `new`",
+        ''' fn f(e: &SomeError) -> std::io::Error { std::io::Error::other(e.to_string()) } ''',
+        {"rule": "E3", "field": "<io::Error payload>"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -553,6 +570,18 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         "true of the base pattern, and was previously unstated by any "
         "control",
         ''' fn f(x: &E, s: &str) -> bool { x.detail != s } ''',
+    ),
+    (
+        "BN23 #487: a LITERAL payload is the shape the four production "
+        "io::Error sites already use and must not fire",
+        ''' fn f() -> std::io::Error { std::io::Error::new(std::io::ErrorKind::NotFound, "missing") } ''',
+    ),
+    (
+        "BN24 #487: a payload built through a sanctioned constructor passes, "
+        "which is what makes the rewrite of repair/orchestration.rs possible",
+        ''' fn f(e: &impl GatedDetail) -> std::io::Error {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, detail::gated(e))
+            } ''',
     ),
 ]
 

@@ -120,6 +120,58 @@ DETAIL_CALL_RE = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*detail\s*::\s*([a-z_][a-z0-9_]*)\s*\("
 )
 
+# #487: `std::io::Error` is E4-allowlisted as a CARRIER — unlike ParseIntError,
+# its Display renders whatever it was CONSTRUCTED with, so its safety is a
+# claim about producers, not about the type. A bridge site can mint one from a
+# runtime string, fold it into core's `VaultError::Io { source }`, and reach a
+# gated field via that impl — a path E3's initializer rule never crossed,
+# because it gates the BRIDGE's own `detail:` expression, not what feeds
+# core's.
+#
+# The payload argument therefore becomes a candidate position in its own
+# right. `new` takes it SECOND (after the ErrorKind); `other` takes it FIRST.
+#
+# LIMIT, inherited from every rule here: this matches the trait/type spelled
+# out. `use std::io::Error;` followed by a bare `Error::new(...)` is invisible,
+# the same aliasing blind spot rule E4 records for `GatedDetail`.
+IO_ERROR_NEW_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*io\s*::\s*Error\s*::\s*new\s*\("
+)
+IO_ERROR_OTHER_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*io\s*::\s*Error\s*::\s*other\s*\("
+)
+# The synthetic `field` name reported for an io payload finding. Deliberately
+# NOT a valid Rust identifier: `initializer_is_gated`'s arm 4 (and shape 5)
+# compare the expression against the field NAME, and an io payload has no
+# field name to re-wrap, so a name no expression can equal keeps those arms
+# structurally unreachable here rather than relying on them happening not to
+# match.
+IO_PAYLOAD_FIELD = "<io::Error payload>"
+
+
+def io_payload_candidates(depth_view: str) -> list[tuple[int, int, str]]:
+    """`(match_start, payload_start, IO_PAYLOAD_FIELD)` for every
+    `io::Error::new(kind, PAYLOAD)` and `io::Error::other(PAYLOAD)` in
+    `depth_view` (#487).
+
+    For `new`, the payload begins after the first top-level comma inside the
+    call — located with `initializer_end`, which stops at exactly that comma.
+    A call with no top-level comma (a macro-built argument list, a `new` with
+    one argument that does not compile) yields NO candidate rather than a
+    mis-sliced one; that is the fail-closed reading for a helper whose job is
+    to find a slice, since a wrong slice would be classified as some OTHER
+    expression and could be accepted.
+    """
+    out: list[tuple[int, int, str]] = []
+    for m in IO_ERROR_OTHER_RE.finditer(depth_view):
+        out.append((m.start(), m.end(), IO_PAYLOAD_FIELD))
+    for m in IO_ERROR_NEW_RE.finditer(depth_view):
+        comma = initializer_end(depth_view, m.end())
+        if comma >= len(depth_view) or depth_view[comma] != ",":
+            continue
+        out.append((m.start(), comma + 1, IO_PAYLOAD_FIELD))
+    return out
+
 
 def initializer_end(view: str, start: int) -> int:
     """The offset at which the initializer expression beginning at `start`
@@ -319,15 +371,17 @@ def scan_bridge_construction_sites(
     excluded = discovery_cfg_test_spans(raw)
     literal_ends = string_literal_token_ends(raw)
     findings: list[Finding] = []
-    # THREE candidate forms, one shared gate (#480 initializer, #488 let and
-    # assignment). Ordering is by match offset so findings stay in source
-    # order regardless of which form produced them.
+    # FOUR candidate forms, one shared gate (#480 initializer, #488 let and
+    # assignment, #487 the io::Error payload argument). Ordering is by match
+    # offset so findings stay in source order regardless of which form
+    # produced them.
     candidates = sorted(
         [
             (m.start(), m.end(), m.group(1))
             for regex in (GATED_INIT_RE, GATED_LET_RE, GATED_ASSIGN_RE)
             for m in regex.finditer(depth_view)
         ]
+        + io_payload_candidates(depth_view)
     )
     for m_start, m_end, name in candidates:
         if _inside(m_start, excluded):
