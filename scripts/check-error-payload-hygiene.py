@@ -149,19 +149,54 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   review alone.
 - RULE E3 READS THREE CANDIDATE POSITIONS — a gated field's INITIALIZER
   (`detail: <expr>`), a `let` BINDING to a gated name
-  (`let detail = <expr>`), and an ASSIGNMENT to one
-  (`x.detail = <expr>`) — plus the `io::Error` payload position (see
-  below). #488's three laundering shapes are closed by the second and
-  third: a `let` binding to a gated name is ITSELF a construction of a
-  gated value, so gating its initializer catches the launder where it
-  happens, and no dataflow is required.
-  WHAT REMAINS is arm 4's PARAMETER case: `fn f(detail: String) -> E {
-  E::V { detail } }` trusts the name of a value this guard did not watch
-  being built. The design mandates the re-wrap form and pattern bindings
-  (`FfiVaultError::X { detail } =>`) take it legitimately, so the arm
-  stays; the residual has shrunk from "any local binding" to "a function
-  parameter named exactly like the field", and closing THAT needs
-  interprocedural analysis, not a construction-site matcher.
+  (`let detail = <expr>`), and an ASSIGNMENT to one, including every Rust
+  COMPOUND form (`x.detail = <expr>`, `x.detail += <expr>`, `-=`, `*=`,
+  `/=`, `%=`, `^=`, `&=`, `|=`, `<<=`, `>>=`) — plus the `io::Error`
+  payload position (see below). #488's three laundering shapes are closed
+  by the second and third, but only for the SIMPLE forms of each: a plain
+  `let <name> = <expr>` or a plain `<recv>.<name> <op>= <expr>` is ITSELF
+  a construction of a gated value, so gating its initializer/RHS catches
+  the launder where it happens, and no dataflow is required for those two
+  shapes.
+  WHAT REMAINS is everything that reaches a gated field through NEITHER
+  syntactic form — verified by execution, not assumed:
+    (a) PATTERN-DESTRUCTURING binds of the same name: tuple
+        (`let (a, detail) = ..`), tuple-struct (`let Wrap(detail) = ..`),
+        struct (`let SomeErr { detail } = ..`), slice
+        (`let [detail] = ..`), and `if let` / `while let` / `for`. None of
+        these produce the `let <name> =` token `GATED_LET_RE` matches.
+    (b) BUILD-THEN-MUTATE through a method call, e.g. `let mut detail =
+        "".to_string(); detail.push_str(&format!("{e}"));` — the `let`
+        initializer is the accepted literal-plus-`.to_string()` shape
+        (arm 1), and `push_str` is a method call on the receiver
+        `detail`, not an assignment TO a field named `detail`, so
+        `GATED_ASSIGN_RE` — which matches `.<name> <op>=`, name AFTER the
+        dot — never sees it: the dot in `detail.push_str(` precedes the
+        method name, not the gated name.
+    (c) arm 4's PARAMETER case: `fn f(detail: String) -> E { E::V { detail }
+        }` trusts the name of a value this guard never watched being
+        built.
+  The design mandates the re-wrap form, and pattern bindings
+  (`FfiVaultError::X { detail } =>`) take it legitimately, so arm 4 stays
+  as an explicit, named ACCEPT. Closing (a) or (b) needs pattern-matching
+  / local dataflow analysis this text-based, construction-site guard does
+  not do; closing (c) needs interprocedural analysis for the same reason.
+  None of (a)/(b)/(c) has a live producer in `ffi/secretary-ffi-bridge/src/`
+  today (verified by reading every current producer, the same discipline
+  the allowlist's Section 3 claims rest on) — a disclosed gap, not a
+  silent one.
+  A related coincidence, stated for completeness rather than danger: a
+  TYPE-ANNOTATED `let` (`let detail: String = <expr>`) IS caught, but not
+  by `GATED_LET_RE` — the type annotation sits between the name and `=`,
+  so that regex never matches it. `GATED_INIT_RE` catches it instead,
+  reading the `detail:` as a field-initializer colon and denying the
+  `String = <expr>` tail as an unrecognised shape (`BP40` pins this).
+  Fail-closed, but a coincidence of two rules interacting, not a designed
+  property — and the same coincidence produces a FALSE POSITIVE on the
+  legitimate annotated re-wrap `let detail: String = detail::gated(e);`
+  (`GATED_INIT_RE` extracts `String = detail::gated(e)`, which also
+  matches none of `initializer_is_gated`'s four accepted shapes). No such
+  site exists in the tree today.
 - `#[cfg(test)]` exclusion is PER FILE. A module whose `mod` declaration is
   gated in its PARENT (`#[cfg(test)] mod tests;` in `error/vault/mod.rs`)
   is a whole test-only FILE this guard has no way to recognise from inside,

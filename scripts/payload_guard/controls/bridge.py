@@ -375,6 +375,26 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(x: &mut E, e: &std::io::Error) { x.detail = format!("{e}"); } ''',
         {"rule": "E3", "field": "detail"},
     ),
+    (
+        "BP39 review finding: compound assignment (`+=`) is a WRITE too, "
+        "and the base pattern's bare `=` never matched the two-character "
+        "compound forms at all — `x.detail += &format!(...)` is a "
+        "build-then-mutate write that GATED_ASSIGN_RE must also catch",
+        ''' fn f(x: &mut E, e: &std::io::Error) { x.detail += &format!("{e}"); } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP40 review finding: `let detail: String = <ungated>` IS caught, "
+        "but not by GATED_LET_RE — the type annotation sits between the "
+        "name and `=`, so GATED_LET_RE never matches it. It is caught "
+        "coincidentally by GATED_INIT_RE reading the `detail:` as a "
+        "field-initializer colon and extracting `String = <expr>`, which "
+        "matches none of initializer_is_gated's four accepted shapes. "
+        "Fail-closed, but luck, not design — pinned so a future "
+        "GATED_INIT_RE edit cannot silently drop it",
+        ''' fn f(e: &std::io::Error) -> String { let detail: String = format!("{e}"); detail } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -525,6 +545,14 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         "BN21 #488: `==` is not an assignment — the assign rule must not "
         "match a comparison",
         ''' fn f(x: &E, s: &str) -> bool { x.detail == s } ''',
+    ),
+    (
+        "BN22 review finding: `!=` is not an assignment either — `!` is "
+        "not one of the admitted compound-operator characters, so the "
+        "required `=` never lines up with it; unlike BN21 this was already "
+        "true of the base pattern, and was previously unstated by any "
+        "control",
+        ''' fn f(x: &E, s: &str) -> bool { x.detail != s } ''',
     ),
 ]
 

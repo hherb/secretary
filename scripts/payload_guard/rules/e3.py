@@ -93,11 +93,23 @@ GATED_LET_RE = re.compile(
     r"\blet\s+(?:mut\s+)?(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*=(?!=)"
 )
 # #488 shape 1: post-construction assignment. `e.detail = format!("{x}")` is a
-# WRITE, and the initializer-position rule never saw a write. `(?!=)` is
-# load-bearing here — `x.detail == s` is a comparison, not a construction, and
-# matching it would produce a false positive on every equality test.
+# WRITE, and the initializer-position rule never saw a write. The optional
+# `(?:[+\-*/%^&|]|<<|>>)?` admits every Rust COMPOUND assignment operator
+# (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `&=`, `|=`, `<<=`, `>>=`) as well as
+# plain `=` — `x.detail += &format!("{e}")` is exactly the class this rule
+# exists to catch (a build-then-mutate write), and the base pattern's bare
+# `=` never matched the two-character forms at all; review caught this gap
+# after the initial #488 landing, before it shipped.
+# `(?!=)` is still load-bearing on the trailing `=` — `x.detail == s` is a
+# comparison, not a construction, and matching it would produce a false
+# positive on every equality test; `x.detail != s` was already excluded
+# without help (`!` is not one of the admitted operator characters, so the
+# required literal `=` never lines up with the `!`), and is now pinned by a
+# control rather than left as an unstated fact about the regex.
 GATED_ASSIGN_RE = re.compile(
-    r"\.\s*(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*=(?!=)"
+    r"\.\s*("
+    + "|".join(sorted(GATED_FIELD_NAMES))
+    + r")\s*(?:[+\-*/%^&|]|<<|>>)?=(?!=)"
 )
 # A call whose path ENDS in `detail::<name>(`. The leading segments are
 # unconstrained so both the in-module spelling (`detail::gated(`) and the
@@ -194,24 +206,51 @@ def initializer_is_gated(
        saying otherwise would be a false claim about a security control. An
        earlier version of this docstring asserted the value "is gated where
        it was built"; that is only true for the shape this arm exists to
-       serve (re-wrapping a field of an already-gated error), and it is
-       FALSE in general — verified by execution:
+       serve (re-wrapping a field of an already-gated error).
+
+       #488 closed the plainest counterexample: a SIMPLE `let` binding is
+       now itself a candidate (`GATED_LET_RE`), so
 
            fn f() -> E { let detail = format!("{}", leak());
-                         E::V { detail: detail } }      // zero findings
+                         E::V { detail: detail } }
 
-       A local binding (or a function parameter) named `detail` launders any
-       expression through this arm. The rule keeps the form because the
-       approved plan mandates it and because the alternative — denying every
-       re-wrap — would flag the legitimate sites and teach reviewers to wave
-       E3 findings through. It is an explicit, named ACCEPT with a stated
-       gap, recorded in the module docstring's LIMITS beside the other two.
+       now produces ONE finding — from the `let`, not from this arm — where
+       it used to produce zero (verified by execution; pinned by
+       `BP36`/`BP37`). The trust this arm places in the NAME is still real,
+       though, for any binding shape that produces no `let ... =` token and
+       no `.name =` write, because those are the only two positions this
+       rule watches. A PATTERN-DESTRUCTURING bind is one such shape,
+       verified by execution to still produce zero findings:
+
+           fn f(e: SomeErr) -> E { let SomeErr { detail } = e;
+                                    E::V { detail: detail } }   // zero findings
+
+       Tuple (`let (a, detail) = ...`), tuple-struct (`let Wrap(detail) =
+       ...`), slice (`let [detail] = ...`) patterns, and `if let` / `while
+       let` / `for` bindings share the same gap — none produce the
+       `let <name> =` token `GATED_LET_RE` matches. A function PARAMETER of
+       the same name (`fn f(detail: String) -> E { E::V { detail: detail }
+       }`, `BN10`) shares it too, and is the legitimate shape every shipped
+       re-wrap site today actually is. The rule keeps the arm because the
+       approved plan mandates the re-wrap form and because the alternative
+       — denying every re-wrap — would flag the legitimate sites and teach
+       reviewers to wave E3 findings through. It is an explicit, named
+       ACCEPT with a stated gap, recorded in the module docstring's LIMITS
+       beside the other two.
+
        Field shorthand (`E::V { detail }`) has no `:` at all and never
-       becomes a candidate in the first place — same gap, different door.
+       becomes a candidate AT THIS POSITION — but where the value feeding
+       it comes from a SIMPLE `let`, that `let`'s own initializer is now the
+       candidate that catches it (`BP36`); only a pattern bind or a
+       parameter still reaches the shorthand door unwatched.
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
-    a field assigned AFTER construction (`x.detail = format!(...)`) is a
-    write this rule never sees. That is a real blind spot, recorded in the
+    a value reaching a gated field through a PATTERN bind (tuple,
+    tuple-struct, struct, slice, `if let`, `while let`, `for`) or through a
+    function PARAMETER is not checked — see arm 4 above. #488 closed the
+    shape this note used to name here, PLAIN post-construction assignment
+    (`x.detail = format!(...)`, now `GATED_ASSIGN_RE`, pinned by `BP38`);
+    that is no longer a blind spot. The remaining gaps are recorded in the
     module docstring's LIMITS.
     """
     if start >= end:
