@@ -488,10 +488,18 @@ mod tests {
     fn convert_approvals_rejects_wrong_length_added_recipient_at_nonzero_outer_index() {
         // A single approval at index 0 can't distinguish "both indices
         // preserved" from "the outer index was silently dropped and the
-        // inner one happens to read 0" — a two-approval list where the
-        // SECOND entry's SECOND recipient is malformed can: if the outer
-        // index were lost (the plan's original, rejected "diagnostic
-        // reduction"), this would misreport `[0][1]` instead of `[1][1]`.
+        // inner one happens to read 0" — a two-approval list where a LATER
+        // entry's malformed recipient sits at a DIFFERENT inner offset can:
+        // if the outer index were lost (the plan's original, rejected
+        // "diagnostic reduction"), this would misreport `[0][2]`.
+        //
+        // The indices are deliberately ASYMMETRIC (#496): the earlier
+        // fixture asserted `[1][1]`, and swapping the two arguments at the
+        // `indexed_arg_len` call site left all tests passing — a symmetric
+        // expectation cannot tell outer from inner. `[1][2]` fails loudly if
+        // they are transposed. (`detail.rs`'s own
+        // `nested_indexed_arg_len_distinguishes_outer_from_inner` pins the
+        // CONSTRUCTOR; this pins the CALLER, which is a separate claim.)
         let good = ApprovedWidening {
             block_uuid: vec![1u8; 16],
             file_fingerprint: vec![2u8; 32],
@@ -502,13 +510,14 @@ mod tests {
             block_uuid: vec![6u8; 16],
             file_fingerprint: vec![7u8; 32],
             committed_fingerprint: vec![8u8; 32],
-            added_recipients: vec![vec![9u8; 16], vec![0u8; 15]], // index 1 is wrong: must be 16
+            // index 2 is wrong: must be 16
+            added_recipients: vec![vec![9u8; 16], vec![4u8; 16], vec![0u8; 15]],
         };
         match convert_approvals(vec![good, bad]) {
             Err(VaultError::InvalidArgument { detail }) => {
                 assert_eq!(
                     detail,
-                    "approvals.added_recipients[1][1] must be 16 bytes, got 15"
+                    "approvals.added_recipients[1][2] must be 16 bytes, got 15"
                 );
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
