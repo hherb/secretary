@@ -412,6 +412,14 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: &SomeError) -> std::io::Error { std::io::Error::other(e.to_string()) } ''',
         {"rule": "E3", "field": "<io::Error payload>"},
     ),
+    (
+        "BP43 #486: E3 shape 5 (field access) is scoped to the WRAPPER roots "
+        "and must still DENY in the bridge, where nothing needs it. A new "
+        "acceptance granted where it is not required is a laundering door "
+        "for free",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
+        {"rule": "E3", "field": "uuid_hex"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [

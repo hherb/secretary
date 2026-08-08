@@ -1,11 +1,12 @@
 """The self-test harness (#474, #480, #486): `run_self_test` drives every
-control in `payload_guard.controls.core` / `payload_guard.controls.bridge`
-through the real scan pipeline and asserts each fires (or does not fire)
-for the reason its label claims.
+control in `payload_guard.controls.core` / `payload_guard.controls.bridge` /
+`payload_guard.controls.wrapper` through the real scan pipeline and asserts
+each fires (or does not fire) for the reason its label claims.
 
 Moved out of the former single-file `scripts/check-error-payload-hygiene.py`
-in #486 (task 5). Nothing in this package may import `selftest` — it sits
-at the TOP of the dependency order, alongside `controls/*`, consuming
+in #486 (task 5); extended with the wrapper-root controls in #486 (task 9).
+Nothing in this package may import `selftest` — it sits at the TOP of the
+dependency order, alongside `controls/*`, consuming
 `config` -> `lexer`, `parsing` -> `types` -> `discovery` -> `rules/*` ->
 `scan` from below. Read the entry point's module docstring first for the WHY.
 """
@@ -18,11 +19,15 @@ from payload_guard.controls.bridge import (
     BRIDGE_NEGATIVE_CONTROLS, BRIDGE_POSITIVE_CONTROLS, SELF_TEST_DETAIL_SRC,
 )
 from payload_guard.controls.core import NEGATIVE_CONTROLS, POSITIVE_CONTROLS
+from payload_guard.controls.wrapper import (
+    WRAPPER_NEGATIVE_CONTROLS, WRAPPER_POSITIVE_CONTROLS,
+)
 from payload_guard.discovery import (
     discover_declarations, discover_scanned_error_type_names, foreign_use_names,
     resolve_consts,
 )
 from payload_guard.lexer import LEXER_SAMPLE, discovery_view, lex_spans, strip_comments
+from payload_guard.roots import SCAN_ROOTS
 from payload_guard.rules.e1 import scan_source
 from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import (
@@ -92,6 +97,8 @@ def check_view_invariants() -> list[str]:
     samples += [src for _, src in NEGATIVE_CONTROLS]
     samples += [src for _, src, *_ in BRIDGE_POSITIVE_CONTROLS]
     samples += [src for _, src, *_ in BRIDGE_NEGATIVE_CONTROLS]
+    samples += [src for _, src, *_ in WRAPPER_POSITIVE_CONTROLS]
+    samples += [src for _, src, *_ in WRAPPER_NEGATIVE_CONTROLS]
     samples.append(SELF_TEST_DETAIL_SRC)
     samples.append(LEXER_SAMPLE)
     failures: list[str] = []
@@ -166,6 +173,37 @@ def scan_control(src: str) -> list[Finding]:
 
 
 
+# Rule E3's `allow_field_access` (shape 5, #486) is read from `SCAN_ROOTS`
+# here rather than hardcoded separately in `scan_bridge_control` /
+# `scan_wrapper_control`: a control corpus that hardcodes the very flag it
+# exists to test cannot catch a `roots.py` edit that changes it. Mutating
+# `ScanRoot.allow_field_access` must be OBSERVABLE through `--self-test` —
+# that is exactly what `BP43` (bridge, must stay denied) and `WN1` (wrapper,
+# must stay accepted) exist to prove, and neither proves anything if the
+# value under test is a literal sitting beside them instead of the one
+# `run_real_scan` itself reads.
+_ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
+
+
+def _wrapper_allow_field_access() -> bool:
+    """The ONE `allow_field_access` value the wrapper-root rule set uses,
+    read off BOTH wrapper `ScanRoot`s and asserted to agree.
+
+    The design's premise (`payload_guard.roots` module docstring) is a
+    single shared wrapper-root rule set, not two independently configurable
+    ones — a control corpus that silently tolerated the two wrapper roots
+    drifting apart on this flag would be testing less than it claims to.
+    """
+    values = {
+        _ROOTS_BY_LABEL[label].allow_field_access for label in ("ffi-py", "ffi-uniffi")
+    }
+    assert len(values) == 1, (
+        f"wrapper roots disagree on allow_field_access: {values} — "
+        "scan_wrapper_control assumes one shared wrapper-root rule set"
+    )
+    return next(iter(values))
+
+
 def scan_bridge_control(
     src: str,
     path_label: str = "<self-test-bridge>",
@@ -192,6 +230,12 @@ def scan_bridge_control(
     "core" and "bridge" halves collapse to this one source), so a control
     that wants a name registered declares the `#[error]`-bearing type in the
     same string — the same self-contained design every other control uses.
+
+    Rule E3's `allow_field_access` (shape 5, #486) is read from the BRIDGE
+    `ScanRoot` (`_ROOTS_BY_LABEL["bridge"]`), not hardcoded — see the module-
+    level comment above `_ROOTS_BY_LABEL` for why. It is `False` today, so
+    every existing bridge control's behaviour is unchanged; `BP43` proves
+    shape 5 stays denied here even when a WRAPPER root grants it elsewhere.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
@@ -201,12 +245,56 @@ def scan_bridge_control(
     )
     found += scan_bridge_plain_declarations(path_label, src, enums, aliases, foreign)
     found += scan_bridge_construction_sites(
-        path_label, src, sanctioned_constructor_names(detail_src)
+        path_label,
+        src,
+        sanctioned_constructor_names(detail_src),
+        allow_field_access=_ROOTS_BY_LABEL["bridge"].allow_field_access,
     )
     found += scan_bridge_gated_detail_impls(
         path_label,
         src,
         discover_scanned_error_type_names([], [(path_label, src)], enums, enums),
+    )
+    return found
+
+
+def scan_wrapper_control(
+    src: str,
+    path_label: str = "<self-test-wrapper>",
+    detail_src: str = SELF_TEST_DETAIL_SRC,
+) -> list[Finding]:
+    """`scan_bridge_control`, but for a WRAPPER ROOT (#486): `bridge_mode=True`
+    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) turned ON —
+    and NO rule E4 at all.
+
+    `gated_detail_impls` is `False` on both wrapper `ScanRoot`s
+    (`payload_guard.roots.SCAN_ROOTS`) because `GatedDetail` is `pub(crate)`
+    in the bridge crate: no wrapper crate can implement it even if a future
+    author tried, so E4's premise — the set of types a detail string can be
+    built from is exactly the set of impls in one reviewed file — is
+    unaffected by scanning these roots at all. Mirroring that omission here
+    means a wrapper control can never accidentally pass BECAUSE E4 fired for
+    an unrelated reason, the same shape-of-control discipline
+    `scan_bridge_control` keeps for its own rule set.
+
+    Rule E3's `allow_field_access` (shape 5) is read from BOTH wrapper
+    `ScanRoot`s via `_wrapper_allow_field_access()`, not hardcoded — see the
+    module-level comment above `_ROOTS_BY_LABEL` for why. It is `True` today;
+    `WN1` proves the DTO pass-through stays accepted, and flipping either
+    wrapper root's flag to `False` in `roots.py` must make `WN1` fire.
+    """
+    enums, aliases, declared_consts, shadows = discover_declarations(src)
+    consts = resolve_consts(declared_consts, shadows)
+    foreign = foreign_use_names(src)
+    found = scan_source(
+        path_label, src, enums, aliases, consts, foreign, bridge_mode=True
+    )
+    found += scan_bridge_plain_declarations(path_label, src, enums, aliases, foreign)
+    found += scan_bridge_construction_sites(
+        path_label,
+        src,
+        sanctioned_constructor_names(detail_src),
+        allow_field_access=_wrapper_allow_field_access(),
     )
     return found
 
@@ -336,6 +424,29 @@ def run_self_test() -> int:
                 f"{[(f.variant, f.field, f.field_type) for f in found]}"
             )
     failures += check_bridge_key_distinctness()
+    for entry in WRAPPER_POSITIVE_CONTROLS:
+        label, src = entry[0], entry[1]
+        wrapper_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None
+        wrapper_opts: dict = entry[3] if len(entry) > 3 else {}
+        found = scan_wrapper_control(src, **wrapper_opts)
+        failures += check_key_shape(label, found)
+        if not found:
+            failures.append(f"POSITIVE control did not fire: {label}")
+        elif wrapper_expect and not any(_finding_matches(f, wrapper_expect) for f in found):
+            failures.append(
+                f"POSITIVE control fired for the WRONG REASON: {label} -> "
+                f"expected {wrapper_expect}, got "
+                f"{[(f.variant, f.field, f.field_type) for f in found]}"
+            )
+    for entry in WRAPPER_NEGATIVE_CONTROLS:
+        label, src = entry[0], entry[1]
+        wrapper_neg_opts: dict = entry[2] if len(entry) > 2 else {}
+        found = scan_wrapper_control(src, **wrapper_neg_opts)
+        if found:
+            failures.append(
+                f"NEGATIVE control fired: {label} -> "
+                f"{[(f.variant, f.field, f.field_type) for f in found]}"
+            )
     if failures:
         print("self-test: FAIL", file=sys.stderr)
         for f in failures:
@@ -345,6 +456,8 @@ def run_self_test() -> int:
         f"self-test: OK ({len(POSITIVE_CONTROLS)} positive / "
         f"{len(NEGATIVE_CONTROLS)} negative / "
         f"{len(BRIDGE_POSITIVE_CONTROLS)} bridge positive / "
-        f"{len(BRIDGE_NEGATIVE_CONTROLS)} bridge negative)"
+        f"{len(BRIDGE_NEGATIVE_CONTROLS)} bridge negative / "
+        f"{len(WRAPPER_POSITIVE_CONTROLS)} wrapper positive / "
+        f"{len(WRAPPER_NEGATIVE_CONTROLS)} wrapper negative)"
     )
     return 0

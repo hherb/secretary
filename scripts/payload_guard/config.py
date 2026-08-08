@@ -5,16 +5,18 @@ from pathlib import Path
 # `scripts/payload_guard/config.py` -> repo root is three parents up.
 # (It was two in the pre-#486 single-file entry point at `scripts/`.)
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCAN_ROOT = REPO_ROOT / "core" / "src"
-# #480: the FFI bridge builds its own detail strings with `format!` and was,
-# until rules E2/E3/E4, entirely unscanned. Bridge files get their OWN
-# discovery pass (`bridge_mode`) rather than being folded into `SCAN_ROOT`'s:
-# a bridge-local alias/const/enum must not vouch for a core field, or vice
-# versa.
-BRIDGE_SCAN_ROOT = REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src"
+# #480/#486: each scanned source tree, and which rules apply to it, is now
+# DATA — `payload_guard.roots.SCAN_ROOTS` — rather than a module-level
+# constant here plus open-coded rule selection in `run_real_scan`. This
+# module used to also hold `SCAN_ROOT` / `BRIDGE_SCAN_ROOT`; both retired in
+# #486 (task 9) once `roots.py` carried the same paths as `ScanRoot.path`.
+#
 # #480 rule E4: the ONE file permitted to declare `impl GatedDetail for X`.
 # Repo-relative and POSIX-spelled, matching `run_real_scan`'s `path_label`
-# (`str(path.relative_to(REPO_ROOT))`); compared via `is_detail_module`.
+# (`str(path.relative_to(REPO_ROOT))`); compared via `is_detail_module`. Not
+# folded into `ScanRoot.detail_module_rel` because rule E4 (unlike E3's
+# sanctioned-constructor lookup, which IS per-root) only ever runs over the
+# bridge root — see `ScanRoot.gated_detail_impls`.
 DETAIL_MODULE_REL = "ffi/secretary-ffi-bridge/src/error/detail.rs"
 ALLOWLIST_PATH = REPO_ROOT / "scripts" / "error-payload-hygiene-allowlist.txt"
 

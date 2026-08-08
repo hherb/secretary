@@ -51,10 +51,13 @@ IMPL_HEADER_WINDOW = 512
 # something other than one named type this guard can look up.
 PLAIN_TYPE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$")
 # The path roots that name a crate THIS GUARD SCANS. `crate` / `self` /
-# `super` resolve inside `secretary-ffi-bridge` itself (BRIDGE_SCAN_ROOT),
-# `secretary_core` is SCAN_ROOT's crate, and `secretary_ffi_bridge` is the
-# bridge spelled by its own crate name. Anything else — `std`, `secretary_cli`,
-# any third-party crate — names a type no registry here has scanned.
+# `super` resolve inside `secretary-ffi-bridge` itself (the bridge `ScanRoot`
+# in `payload_guard.roots`, the only one this rule ever runs over — see
+# `ScanRoot.gated_detail_impls`), `secretary_core` is the core `ScanRoot`'s
+# crate, and `secretary_ffi_bridge` is the bridge spelled by its own crate
+# name. Anything else — `std`, `secretary_cli`, any third-party crate, or
+# either WRAPPER crate's own name — names a type no registry here has
+# scanned.
 SCANNED_IMPL_ROOTS: frozenset[str] = frozenset(
     {"crate", "self", "super", "secretary_core", "secretary_ffi_bridge"}
 )

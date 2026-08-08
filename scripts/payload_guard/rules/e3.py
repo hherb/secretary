@@ -148,6 +148,10 @@ IO_ERROR_OTHER_RE = re.compile(
 # match.
 IO_PAYLOAD_FIELD = "<io::Error payload>"
 
+# Rule E3 shape 5 (#486): a FIELD ACCESS whose final segment is the gated
+# field's own name — `uuid_hex: a.uuid_hex`. Wrapper roots only.
+FIELD_ACCESS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+$")
+
 
 def io_payload_candidates(depth_view: str) -> list[tuple[int, int, str]]:
     """`(match_start, payload_start, IO_PAYLOAD_FIELD)` for every
@@ -227,12 +231,15 @@ def initializer_is_gated(
     name: str,
     literal_ends: dict[int, int],
     sanctioned: frozenset[str],
+    allow_field_access: bool,
 ) -> bool:
     """Rule E3's ACCEPT test for the (already whitespace-trimmed) expression
     `view[start:end]` assigned to gated field `name` (#480).
 
-    FOUR shapes are accepted, and nothing else — this is a default-DENY
-    predicate, so a construct this function does not recognise is a finding:
+    FOUR shapes are accepted everywhere, plus a FIFTH gated behind
+    `allow_field_access` (#486, wrapper roots only) — and nothing else: this
+    is a default-DENY predicate, so a construct this function does not
+    recognise is a finding.
 
     1. A single STRING LITERAL, optionally followed by exactly `.into()` or
        `.to_string()`. The literal is identified by an exact offset match
@@ -295,6 +302,20 @@ def initializer_is_gated(
        it comes from a SIMPLE `let`, that `let`'s own initializer is now the
        candidate that catches it (`BP36`); only a pattern bind or a
        parameter still reaches the shorthand door unwatched.
+    5. WRAPPER ROOTS ONLY (`allow_field_access`, #486): a FIELD ACCESS whose
+       FINAL segment is the gated field's own name — `uuid_hex: a.uuid_hex`,
+       the DTO pass-through shape all four live wrapper sites take. THIS ARM
+       TRUSTS THE NAME TOO, one level deeper than arm 4: it claims that a
+       field named `uuid_hex` on some OTHER type was gated where THAT type
+       declared it. For the four live sites that claim holds (the source is
+       a bridge DTO whose fields rules E2/E3 already gate), but it is a
+       trust RELATION, not provenance — the same honesty arm 4's docstring
+       insists on. Scoped OUT of the bridge root on purpose: nothing there
+       needs it, and granting it anyway would be a laundering door opened
+       for free (`BP43` pins the bridge still denying the identical
+       expression). A field access whose LAST segment is NOT the gated
+       name — `uuid_hex: a.some_other_field` — is not this shape and denies
+       (`WP1`).
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
     a value reaching a gated field through a PATTERN bind (tuple,
@@ -323,14 +344,38 @@ def initializer_is_gated(
         _, after = balanced_slice(view, cm.end() - 1)
         if after <= end and not view[after:end].strip():
             return True
+    # (5) a field access ending in the gated name — the DTO pass-through
+    #     (#486). WRAPPER ROOTS ONLY.
+    #
+    #     THIS ARM TRUSTS A NAME, one level deeper than arm 4 does: it claims
+    #     that a field spelled `uuid_hex` on some OTHER type was gated where
+    #     THAT type declared it. For the four live sites that claim holds —
+    #     the source is a bridge DTO whose field rules E2/E3 gate — but it is
+    #     a trust RELATION, not provenance, and this comment says so rather
+    #     than dressing it up. It is scoped to the wrapper roots because all
+    #     four sites are there; granting it in the bridge would open the same
+    #     door for nothing in return (BP43 pins that).
+    if allow_field_access and FIELD_ACCESS_RE.match(stripped):
+        if stripped.split(".")[-1].strip() == name:
+            return True
     return False
 
 
 def scan_bridge_construction_sites(
-    path_label: str, raw: str, sanctioned: frozenset[str]
+    path_label: str,
+    raw: str,
+    sanctioned: frozenset[str],
+    allow_field_access: bool = False,
 ) -> list[Finding]:
     """Rule E3 (#480): every CONSTRUCTION SITE of a gated field must build
     its value from a sanctioned source.
+
+    `allow_field_access` (#486) enables shape 5 — a field access ending in
+    the gated name (`uuid_hex: a.uuid_hex`) — and defaults to `False` so a
+    caller that does not pass it explicitly gets the bridge's stricter
+    behaviour, not the wrapper roots' looser one. See
+    `initializer_is_gated`'s shape 5 and `payload_guard.roots.ScanRoot.
+    allow_field_access` for why it is scoped to the wrapper roots only.
 
     Rule E2 lets a bridge error carry a `String` under one of the six
     `GATED_FIELD_NAMES` instead of denying it by TYPE. That carve-out is only
@@ -391,7 +436,9 @@ def scan_bridge_construction_sites(
             start += 1
         while end > start and src[end - 1] in " \t\r\n":
             end -= 1
-        if initializer_is_gated(src, start, end, name, literal_ends, sanctioned):
+        if initializer_is_gated(
+            src, start, end, name, literal_ends, sanctioned, allow_field_access
+        ):
             continue
         expr = " ".join(src[start:end].split()) or "<empty>"
         findings.append(

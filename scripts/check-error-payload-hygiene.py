@@ -78,12 +78,15 @@ that doesn't match any parsed field, produces an `UNPARSED` finding rather
 than being silently skipped. If the guard cannot understand a construct, a
 human must look at it; "we didn't understand this" is not a pass.
 
-THE BRIDGE RULES (#480: E2, E3, E4)
------------------------------------
-Everything above is rule `E1`, and it applies to BOTH scan roots. Three more
-rules apply to `ffi/secretary-ffi-bridge/src/**` only. The rule id is the
-allowlist's second column, so an exception is scoped to the rule that raised
-it.
+THE BRIDGE RULES (#480: E2, E3, E4; #486 extends E2/E3 to the wrapper crates)
+------------------------------------------------------------------------------
+Everything above is rule `E1`, and it applies to ALL FOUR scan roots
+(`payload_guard/roots.py`'s `SCAN_ROOTS`). Three more rules apply to
+`ffi/secretary-ffi-bridge/src/**`; as of #486, E2 and E3 ALSO apply to the
+two binding wrapper crates (`ffi/secretary-ffi-py/src/**`,
+`ffi/secretary-ffi-uniffi/src/**`) — E4 does not (see `ScanRoot.
+gated_detail_impls`'s docstring for why). The rule id is the allowlist's
+second column, so an exception is scoped to the rule that raised it.
 
 `E2` — DECLARATIONS. Every field of a bridge error declaration must be
 data-free by `E1`'s tiers, OR be declared EXACTLY `String` under one of the
@@ -110,7 +113,12 @@ be a string LITERAL (optionally `.into()` / `.to_string()`), a call into
 `String`-token acceptance is what keeps a DECLARATION (`detail: String` in an
 enum body, or a function parameter) from being read as a construction: E2
 already decides whether that declaration is acceptable, and a declaration
-declares no value. `String::new()` is NOT that shape and denies.
+declares no value. `String::new()` is NOT that shape and denies. On the two
+WRAPPER roots only (#486), a FIFTH shape is also accepted: a field access
+ending in the gated name (`uuid_hex: a.uuid_hex`) — the DTO pass-through all
+four live wrapper sites use. See `ScanRoot.allow_field_access` and
+`rules/e3.py`'s `initializer_is_gated` for why it is scoped out of the
+bridge root.
 
 `E4` — THE IMPL ALLOWLIST. `impl GatedDetail for X` is a security decision:
 it claims `X`'s `Display` output carries no secret. Every such impl must live
@@ -135,18 +143,25 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   payload is `&'static str` is provably safe; a `core` variant allowlisted
   because "its producers all pass literals" is a point-in-time claim this
   guard cannot verify. Those entries say so in the allowlist. Rule E3
-  (`payload_guard/rules/e3.py`) DOES read construction sites, but only
-  under `ffi/secretary-ffi-bridge/src/**` and only for the six gated field
+  (`payload_guard/rules/e3.py`) DOES read construction sites, under
+  `ffi/secretary-ffi-bridge/src/**` and, as of #486, `ffi/secretary-ffi-py/src/**`
+  and `ffi/secretary-ffi-uniffi/src/**` too, and only for the six gated field
   names.
-- It covers `core/src/**` AND `ffi/secretary-ffi-bridge/src/**` (#480), with
-  separate discovery per root (the two roots are named in
-  `payload_guard/config.py`; `payload_guard/scan.py`'s `run_real_scan` walks
-  them separately) — a bridge-local alias/const/enum must not vouch for a
-  `core` field, or vice versa. Nothing ELSE is scanned: the uniffi and PyO3
-  binding crates each build their own error values from the bridge's, and
-  `secretary-cli` / `desktop/src-tauri` build theirs independently. A
-  `String` authored in one of those and handed to a platform is gated by
-  review alone.
+- It covers `core/src/**`, `ffi/secretary-ffi-bridge/src/**` (#480), and, as
+  of #486, the two binding wrapper crates (`ffi/secretary-ffi-py/src/**`,
+  `ffi/secretary-ffi-uniffi/src/**`) — four roots, each described as data by
+  `payload_guard/roots.py`'s `SCAN_ROOTS`, with separate discovery per root
+  (`payload_guard/scan.py`'s `run_real_scan` walks them independently) — a
+  wrapper-local (or bridge-local) alias/const/enum must not vouch for a
+  field in a DIFFERENT root. The wrapper roots take rules E1/E2/E3, plus an
+  E3 ACCEPTANCE the bridge does not (`ScanRoot.allow_field_access`, rule
+  E3's "shape 5" — a field access ending in the gated name, the DTO
+  pass-through `uuid_hex: a.uuid_hex`), but NOT rule E4: `GatedDetail` is
+  `pub(crate)` in the bridge crate, so no wrapper crate can implement it,
+  and E4's premise is unaffected by scanning these roots at all. Nothing
+  ELSE is scanned: `secretary-cli` / `desktop/src-tauri` build their own
+  error values independently. A `String` authored in one of those and
+  handed to a platform is gated by review alone.
 - RULE E3 READS THREE CANDIDATE POSITIONS — a gated field's INITIALIZER
   (`detail: <expr>`), a `let` BINDING to a gated name
   (`let detail = <expr>`), and an ASSIGNMENT to one, including every Rust
