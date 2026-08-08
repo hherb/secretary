@@ -45,7 +45,7 @@ import org.secretary.diagnostics.SecretFreeThrowable
  * - [InvalidArgument] IS gated at construction as of #486 — this bullet described deleted
  *   code until #496 corrected it, and understated the enforcement in four separate ways.
  *   Rules E1/E2/E3 (plus the wrapper-only E5) now cover
- *   `ffi/secretary-ffi-uniffi/src/**` and `ffi/secretary-ffi-py/src/**` as scan roots, so
+ *   the `ffi/secretary-ffi-uniffi` and `ffi/secretary-ffi-py` source trees as scan roots, so
  *   "a crate this guard does not scan at all" is no longer true. This arm's sole producer,
  *   `ffi/secretary-ffi-uniffi/src/namespace/sync.rs:22`, calls the wrapper crate's own
  *   `uuid_from_vec` helper, which no longer hand-rolls a `format!` — it routes through
