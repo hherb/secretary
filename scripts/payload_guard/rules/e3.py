@@ -74,6 +74,31 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
 GATED_INIT_RE = re.compile(
     r"\b(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*:(?!:)"
 )
+# #488 shapes 2 and 3: a `let` binding to a gated name. E3's arm 4 accepts an
+# initializer that is the field's own name, which means
+# `let detail = format!("{x}"); E::V { detail: detail }` — and the shorthand
+# `E::V { detail }`, which produces no `detail:` token at all — launder any
+# expression through a local variable.
+#
+# The closure needs no dataflow: a `let` binding to a gated name IS a
+# construction of a gated value, so its initializer is gated by the same test
+# as a field's. The launder becomes the candidate. Pattern bindings
+# (`FfiVaultError::X { detail } =>`) and function parameters produce no `let`
+# and are untouched — which is what lets arm 4 stay as it is.
+#
+# `(?!=)` excludes `==`; `let` cannot introduce a comparison, but the same
+# guard on GATED_ASSIGN_RE below genuinely matters, so both carry it for
+# symmetry and to keep a future edit from splitting the behaviour.
+GATED_LET_RE = re.compile(
+    r"\blet\s+(?:mut\s+)?(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*=(?!=)"
+)
+# #488 shape 1: post-construction assignment. `e.detail = format!("{x}")` is a
+# WRITE, and the initializer-position rule never saw a write. `(?!=)` is
+# load-bearing here — `x.detail == s` is a comparison, not a construction, and
+# matching it would produce a false positive on every equality test.
+GATED_ASSIGN_RE = re.compile(
+    r"\.\s*(" + "|".join(sorted(GATED_FIELD_NAMES)) + r")\s*=(?!=)"
+)
 # A call whose path ENDS in `detail::<name>(`. The leading segments are
 # unconstrained so both the in-module spelling (`detail::gated(`) and the
 # fully-qualified one (`crate::error::detail::gated(`) match; what is pinned
@@ -86,23 +111,34 @@ DETAIL_CALL_RE = re.compile(
 
 def initializer_end(view: str, start: int) -> int:
     """The offset at which the initializer expression beginning at `start`
-    ends: the first `,` at top-level nesting, or the first `)`, `]` or `}`
-    that CLOSES the construct the initializer sits in (i.e. appears at depth
-    zero). `(`, `[` and `{` open a nesting level.
+    ends: the first `,` or `;` at top-level nesting, or the first `)`, `]`
+    or `}` that CLOSES the construct the initializer sits in (i.e. appears
+    at depth zero). `(`, `[` and `{` open a nesting level.
 
-    `view` must be the DISCOVERY VIEW: with string contents blanked, a comma
-    or brace inside a literal (`format!("a, b")`, `"}"`) cannot end the
-    expression early. That choice is fail-closed in both directions — every
-    view here only ever BLANKS, and blanking can neither introduce a `,` that
-    truncates an expression nor remove one in a way that shortens it, so a
-    lexer desync can only ever make the extracted expression LONGER, which
-    makes it LESS likely to match one of the narrow accepted shapes.
+    `view` must be the DISCOVERY VIEW: with string contents blanked, a comma,
+    semicolon or brace inside a literal (`format!("a, b")`, `"}"`) cannot end
+    the expression early. That choice is fail-closed in both directions —
+    every view here only ever BLANKS, and blanking can neither introduce a
+    `,`/`;` that truncates an expression nor remove one in a way that
+    shortens it, so a lexer desync can only ever make the extracted
+    expression LONGER, which makes it LESS likely to match one of the narrow
+    accepted shapes.
 
     Closing delimiters at depth zero are genuine terminators, not a
     heuristic: they are the `)` of `fn f(detail: String)`, the `}` of
     `E::V { detail: x }`. Without them a function parameter's type would run
     on into the function BODY and every such parameter would produce a
     spurious finding.
+
+    The `;` terminator (#488) is what makes this function usable for
+    `GATED_LET_RE`'s candidates too: a `let` statement's initializer ends at
+    its own `;`, not at any enclosing `)`/`]`/`}` — `let detail =
+    detail::gated(e); detail` must stop at the `;`, or the extracted
+    "initializer" swallows the trailing `detail` expression-statement too and
+    a legitimate re-wrap misreads as an unrecognised shape. A bare `;` cannot
+    legally appear inside a field-initializer or fn-parameter expression at
+    depth zero, so adding this terminator changes nothing for `GATED_INIT_RE`
+    candidates.
     """
     depth = 0
     i, n = start, len(view)
@@ -114,7 +150,7 @@ def initializer_end(view: str, start: int) -> int:
             if depth == 0:
                 break
             depth -= 1
-        elif ch == "," and depth == 0:
+        elif ch in ",;" and depth == 0:
             break
         i += 1
     return i
@@ -244,11 +280,20 @@ def scan_bridge_construction_sites(
     excluded = discovery_cfg_test_spans(raw)
     literal_ends = string_literal_token_ends(raw)
     findings: list[Finding] = []
-    for m in GATED_INIT_RE.finditer(depth_view):
-        if _inside(m.start(), excluded):
+    # THREE candidate forms, one shared gate (#480 initializer, #488 let and
+    # assignment). Ordering is by match offset so findings stay in source
+    # order regardless of which form produced them.
+    candidates = sorted(
+        [
+            (m.start(), m.end(), m.group(1))
+            for regex in (GATED_INIT_RE, GATED_LET_RE, GATED_ASSIGN_RE)
+            for m in regex.finditer(depth_view)
+        ]
+    )
+    for m_start, m_end, name in candidates:
+        if _inside(m_start, excluded):
             continue
-        name = m.group(1)
-        start, end = m.end(), initializer_end(depth_view, m.end())
+        start, end = m_end, initializer_end(depth_view, m_end)
         while start < end and src[start] in " \t\r\n":
             start += 1
         while end > start and src[end - 1] in " \t\r\n":
@@ -259,7 +304,7 @@ def scan_bridge_construction_sites(
         findings.append(
             Finding(
                 path=path_label,
-                line=src.count("\n", 0, m.start()) + 1,
+                line=src.count("\n", 0, m_start) + 1,
                 source_line=" ".join(f"{name}: {expr}".split()),
                 variant="<construction site>",
                 field=name,

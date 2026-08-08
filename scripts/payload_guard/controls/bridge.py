@@ -355,6 +355,26 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         {"unparsed": True, "rule": "E4"},
         {"path_label": DETAIL_MODULE_REL},
     ),
+    (
+        "BP36 #488 shape 2/3: a `let` binding to a gated name launders any "
+        "expression through E3's arm 4. The `let` is ITSELF a construction "
+        "of a gated value, so it is a candidate in its own right — no "
+        "dataflow needed",
+        ''' fn f(e: &std::io::Error) -> String { let detail = format!("{e}"); detail } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP37 #488 shape 2/3 with `mut` — the binding form must not be a "
+        "bypass",
+        ''' fn f(e: &std::io::Error) -> String { let mut detail = format!("{e}"); detail } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP38 #488 shape 1: post-construction assignment is a WRITE, which "
+        "the initializer-position rule never saw",
+        ''' fn f(x: &mut E, e: &std::io::Error) { x.detail = format!("{e}"); } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -484,6 +504,27 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
             assert!(ok, "Display did not include detail: {rendered}");
         }
         ''',
+    ),
+    (
+        "BN19 #488: a `let` bound to a SANCTIONED constructor call is the "
+        "legitimate shape and must not fire",
+        ''' fn f(e: &impl GatedDetail) -> String { let detail = detail::gated(e); detail } ''',
+    ),
+    (
+        "BN20 #488: a PATTERN binding is the legitimate re-wrap the design "
+        "mandates — it is not a `let`, and arm 4 keeps serving it",
+        '''
+        fn f(e: FfiVaultError) -> FfiVaultError {
+            match e {
+                FfiVaultError::CorruptVault { detail } => FfiVaultError::CorruptVault { detail },
+            }
+        }
+        ''',
+    ),
+    (
+        "BN21 #488: `==` is not an assignment — the assign rule must not "
+        "match a comparison",
+        ''' fn f(x: &E, s: &str) -> bool { x.detail == s } ''',
     ),
 ]
 

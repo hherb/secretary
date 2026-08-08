@@ -147,29 +147,21 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   `secretary-cli` / `desktop/src-tauri` build theirs independently. A
   `String` authored in one of those and handed to a platform is gated by
   review alone.
-- RULE E3 (`payload_guard/rules/e3.py`) IS A SYNTACTIC MATCH ON INITIALIZER
-  POSITION AND ON THE FIELD'S NAME, so a value that reaches a gated field
-  without passing through an initializer — or that passes through one under
-  the right name — is not checked. THREE shapes do exactly that, all of
-  them ordinary Rust, and all three were verified by execution rather than
-  assumed:
-    1. POST-CONSTRUCTION ASSIGNMENT. `e.detail = format!("{x}");` is a
-       write, not an initializer, and this rule never sees a write.
-    2. LOCAL BINDING PLUS FIELD SHORTHAND.
-       `let detail = format!("{x}"); E::V { detail }` never produces a
-       `detail:` token at all.
-    3. LOCAL BINDING PLUS THE `detail: detail` ACCEPT. E3 accepts an
-       initializer that is the field's own name, so
-       `let detail = format!("{x}"); E::V { detail: detail }` passes — as
-       does a function parameter of the same name. That arm trusts the NAME,
-       not where the value came from; it exists because the approved design
-       mandates the re-wrap form, and its gap is stated here rather than
-       dressed up as a provenance argument (see `initializer_is_gated`, in
-       the same `payload_guard/rules/e3.py`).
-  The three re-wrap sites in the tree today ARE re-wraps of an already-gated
-  payload, but "a value named `detail` was gated where it was built" is a
-  convention this guard does not establish. Closing any of the three needs
-  dataflow, which is a different kind of tool.
+- RULE E3 READS THREE CANDIDATE POSITIONS — a gated field's INITIALIZER
+  (`detail: <expr>`), a `let` BINDING to a gated name
+  (`let detail = <expr>`), and an ASSIGNMENT to one
+  (`x.detail = <expr>`) — plus the `io::Error` payload position (see
+  below). #488's three laundering shapes are closed by the second and
+  third: a `let` binding to a gated name is ITSELF a construction of a
+  gated value, so gating its initializer catches the launder where it
+  happens, and no dataflow is required.
+  WHAT REMAINS is arm 4's PARAMETER case: `fn f(detail: String) -> E {
+  E::V { detail } }` trusts the name of a value this guard did not watch
+  being built. The design mandates the re-wrap form and pattern bindings
+  (`FfiVaultError::X { detail } =>`) take it legitimately, so the arm
+  stays; the residual has shrunk from "any local binding" to "a function
+  parameter named exactly like the field", and closing THAT needs
+  interprocedural analysis, not a construction-site matcher.
 - `#[cfg(test)]` exclusion is PER FILE. A module whose `mod` declaration is
   gated in its PARENT (`#[cfg(test)] mod tests;` in `error/vault/mod.rs`)
   is a whole test-only FILE this guard has no way to recognise from inside,
