@@ -209,10 +209,12 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   table was ever consulted, and the guard reported ZERO findings.
   `alias_shadowed_names` (`payload_guard/types.py`) now DROPS any spelling a
   discovered alias shadows out of tier 1 or tier 2, on `run_real_scan`'s
-  (`payload_guard/scan.py`) existing collision-drop discipline. Note that
-  rustc closed only the `type usize = String;` costume of this
-  (`non_camel_case_types`, a `-D warnings` error here); `CborFault` is
-  already CamelCase and compiled clean. P34-P36
+  (`payload_guard/scan.py`) existing collision-drop discipline.
+  Note that rustc closes only the LOWERCASE costumes of this:
+  `type usize = String;` and `type bool = String;` both trip
+  `non_camel_case_types` (a `-D warnings` error here). A CamelCase shadow
+  — `type CborFault = String;` — is lint-invisible and compiled clean,
+  which is the shape that matters. P34-P36
   (`payload_guard/controls/core.py`) pin all three.
     STILL OPEN: a shadow whose name is in NO trusted set, i.e. one that gets
   its credit from the alias tier itself. Such a name is believed at its

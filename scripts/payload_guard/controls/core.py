@@ -678,6 +678,37 @@ POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"unparsed": True, "variant": "Leak"},
     ),
+    (
+        "P41 an INLINE block comment inside a use tree must not hide the "
+        "`use` from the withdrawal pass. P38/P39 pin the RAW half of "
+        "`foreign_use_names`' union; this pins the COMMENTS-BLANKED half, "
+        "which was the one direction the self-test did not cover (#482). "
+        "The raw read returns [] for this shape — `/` is not in "
+        "USE_TREE_CHARS_RE, so an inline `/*...*/` is rejected by "
+        "`_looks_like_use_tree`'s character-class gate before its adjacency "
+        "check ever runs — so the blanked read is solely load-bearing here. "
+        "Pointing the pass at the raw source "
+        "ALONE left the entire self-test green at exit 0, which is "
+        "fail-OPEN in the one pass where hiding text GRANTS trust",
+        '''
+        mod local {
+            #[derive(thiserror::Error, Debug)]
+            pub enum Error {
+                #[error("inner failure code {code}")]
+                Failure { code: u32 },
+            }
+        }
+
+        use std::/*why*/io::Error;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum E {
+            #[error("io: {0}")]
+            BareIoError(#[from] Error),
+        }
+        ''',
+        {"variant": "BareIoError", "field": "0", "field_type": "#[from] Error"},
+    ),
 ]
 
 NEGATIVE_CONTROLS: list[tuple[str, str]] = [

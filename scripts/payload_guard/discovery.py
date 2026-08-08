@@ -434,6 +434,20 @@ def foreign_use_names(raw: str) -> frozenset[str]:
     `use proptest::prelude::*;`. A future foreign glob would leave the
     bare-name credit in place — the same residual "not a real import
     resolver" risk the module docstring's LIMITS already records.
+
+    BOTH HALVES OF THE UNION ARE LOAD-BEARING, AND BOTH ARE NOW PINNED.
+    P38/P39 fail if this pass reads the BLANKED view alone (an unterminated
+    block comment runs to end-of-input and swallows the `use`). P41 fails if
+    it reads the RAW source alone (`use std::/*why*/io::Error;` — `/` is not
+    in `USE_TREE_CHARS_RE`, so an inline `/*...*/` is rejected by
+    `_looks_like_use_tree`'s character-class gate before its adjacency check
+    ever runs, and the raw read returns nothing). Until #482 only the first
+    direction was covered, and the uncovered one is the fail-OPEN direction:
+    this is the single pass in this guard where HIDING text GRANTS trust
+    rather than withholding it, so
+    "blanking can only ever HIDE text, therefore discovery is fail-closed" —
+    true for the three CREDIT registries — is FALSE here. That asymmetry is
+    exactly what made the missing control easy to miss.
     """
     local_roots = LOCAL_USE_ROOTS | top_level_mod_names(discovery_view(raw))
     # Two independent reads, unioned. Neither is trusted alone:
