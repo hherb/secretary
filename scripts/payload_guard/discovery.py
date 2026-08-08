@@ -68,6 +68,38 @@ MOD_HEADER_RE = re.compile(r"(?:^|[^A-Za-z0-9_])mod\s+[A-Za-z_][A-Za-z0-9_]*\s*$
 # over-match it and drop a declaration — the fail-CLOSED direction.
 CFG_TEST_RE = re.compile(r"#\[cfg(?:_attr)?\s*\([^\]]*\btest\b[^\]]*\)\s*\]")
 
+# The STRICT form, for the consumers where an exclusion is fail-OPEN (#496).
+#
+# `CFG_TEST_RE` matches on the PRESENCE of the token `test` anywhere in the
+# attribute's parentheses. For the CREDIT registries above that is the
+# fail-CLOSED direction, exactly as their docstrings say: over-matching drops
+# a declaration, so fewer names vouch for anything.
+#
+# For the three rules that consume these spans as a SKIP LIST
+# (`rules/e2.py`, `rules/e3.py`'s construction sites, `rules/e5.py`, plus
+# `discover_error_struct_declarations` below) the polarity INVERTS: dropping
+# an item means NOT SCANNING it. Under `CFG_TEST_RE` three ordinary,
+# compiling, shipped-code spellings therefore silenced a real violation
+# (verified by execution in #496's review):
+#
+#   #[cfg(not(test))]                    -- the strongest "this is production"
+#                                           marker there is
+#   #[cfg_attr(test, allow(dead_code))]  -- and every other `cfg_attr(test, ..)`
+#   #[cfg(all(feature = "x", not(test)))]
+#
+# This matcher recognises ONLY the two spellings that genuinely mean
+# "test-only": `#[cfg(test)]` and `#[cfg(all(test, ...))]`. Anything else
+# containing `test` is not an exclusion, so it gets SCANNED — the fail-closed
+# reading for a skip list. `cfg_attr` is excluded outright: it never removes
+# an item from the build, it only adds attributes to it under a predicate.
+#
+# This is the "the fail-closed argument is per-PASS, not global" lesson from
+# the entry point's LIMITS section, recurring in a different pass.
+CFG_TEST_STRICT_RE = re.compile(
+    r"#\[cfg\s*\(\s*test\s*\)\s*\]"
+    r"|#\[cfg\s*\(\s*all\s*\(\s*test\s*,[^\]]*\)\s*\)\s*\]"
+)
+
 
 def non_module_block_spans(src: str) -> list[tuple[int, int]]:
     """Character-offset `[start, end)` ranges of every brace block in the
@@ -102,9 +134,16 @@ def non_module_block_spans(src: str) -> list[tuple[int, int]]:
     return spans
 
 
-def cfg_test_spans(src: str) -> list[tuple[int, int]]:
+def cfg_test_spans(
+    src: str, pattern: re.Pattern[str] = CFG_TEST_RE
+) -> list[tuple[int, int]]:
     """Character-offset `[start, end)` ranges of every `#[cfg(test)]`-gated
     item in the DISCOVERY VIEW, attribute included.
+
+    `pattern` selects the polarity: the default `CFG_TEST_RE` is the
+    permissive matcher the CREDIT registries want (over-matching = fewer
+    credits = fail-closed), and `CFG_TEST_STRICT_RE` is what a fail-OPEN
+    SKIP-LIST consumer must pass instead. See `CFG_TEST_STRICT_RE`.
 
     A test-only declaration is not part of the shipped crate and must not
     vouch for a name a shipped `#[error("...")]` message captures. Six of the
@@ -114,7 +153,7 @@ def cfg_test_spans(src: str) -> list[tuple[int, int]]:
     """
     spans: list[tuple[int, int]] = []
     n = len(src)
-    for m in CFG_TEST_RE.finditer(src):
+    for m in pattern.finditer(src):
         i = m.end()
         # Skip whitespace and any further attributes stacked on the item.
         while i < n:
@@ -728,8 +767,24 @@ def discovery_cfg_test_spans(raw: str) -> list[tuple[int, int]]:
     Despite the name, this is general-purpose — not bridge-specific — and
     is used for BOTH scan roots wherever a `#[cfg(test)]` exclusion is
     needed against test-only content vouching for something shipped.
+
+    CREDIT-registry polarity: over-matching drops a declaration, so fewer
+    names vouch for anything. A fail-OPEN skip-list consumer must call
+    `discovery_cfg_test_spans_strict` instead.
     """
     return cfg_test_spans(discovery_view(raw))
+
+
+def discovery_cfg_test_spans_strict(raw: str) -> list[tuple[int, int]]:
+    """`discovery_cfg_test_spans` under `CFG_TEST_STRICT_RE` (#496).
+
+    For every consumer that treats these spans as a SKIP LIST — rules E2,
+    E3's construction sites, E5, and `discover_error_struct_declarations` —
+    an over-match means NOT SCANNING a shipped item. Read
+    `CFG_TEST_STRICT_RE` for the three compiling spellings that silenced a
+    real violation before this split existed.
+    """
+    return cfg_test_spans(discovery_view(raw), CFG_TEST_STRICT_RE)
 
 
 # Needed by `discover_error_struct_declarations` below (#486 task 3: moved
@@ -803,7 +858,8 @@ def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
     pins it.
     """
     src = discovery_view(raw)
-    excluded = discovery_cfg_test_spans(raw)
+    # STRICT: this exclusion removes a candidate from being SWEPT (#496).
+    excluded = discovery_cfg_test_spans_strict(raw)
     out: list[tuple[str, int, int]] = []
     for m in ERROR_ATTR_RE.finditer(src):
         if _inside(m.start(), excluded):

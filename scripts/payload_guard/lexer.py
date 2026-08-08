@@ -29,8 +29,19 @@ KIND_COMMENT = "#"
 KIND_DELIM = "d"  # a literal's delimiter bytes (quotes, `r##` prefix, ...)
 KIND_LITERAL = "s"  # a literal's CONTENT bytes
 
-# `r"`, `r#"`, `r##"`, and the byte-string forms `br"`, `br#"`, ...
-RAW_STRING_START_RE = re.compile(r"(?:b?r)(?P<hashes>#*)\"")
+# `r"`, `r#"`, `r##"`, the byte-string forms `br"`, `br#"`, ... and the C-string
+# forms `cr"`, `cr#"`, ... (Rust 1.77+; this workspace pins 1.97.0).
+#
+# `c`/`cr` were MISSING here until #496's review. The omission was not a
+# cosmetic gap: for `cr#"a " b"#` the `c` fell through to the ordinary-string
+# branch, which terminated at the `"` INSIDE the raw body and paired every
+# subsequent quote in the file off by one. Rules E3 and E5 detect on
+# `discovery_view`, which `rules/e3.py` names as the ONE pass in this guard
+# where a lexer desync is fail-OPEN — so a single `cr#"a " b"#` line above a
+# violation silently blanked it (verified by execution). This is the same
+# class `BP30`-`BP33` pin for `r#`/`br`/escapes/lifetimes; `BP45`/`BP46` now
+# pin the C-string forms.
+RAW_STRING_START_RE = re.compile(r"(?:[bc]?r)(?P<hashes>#*)\"")
 # `'x'`, `'\n'`, `'\''`, `'\\'`, `'\u{1F600}'`, and the byte forms `b'x'`.
 # Deliberately NOT matched: `'static` / `'a` / `'outer` -- a `'` that is not
 # closed by a matching `'` two-ish characters later is a LIFETIME or a loop
@@ -55,7 +66,8 @@ def lex_spans(src: str) -> list[tuple[int, int, str]]:
     - ordinary and byte strings with escapes, including the `\` + newline
       line continuation;
     - RAW strings with a variable `#` run (`r"..."`, `r#"..."#`, `r##"..."##`,
-      `br#"..."#`), where `"` inside the body is an ordinary character;
+      `br#"..."#`, `cr#"..."#`), where `"` inside the body is an ordinary
+      character, plus the non-raw prefixed forms `b"..."` / `c"..."`;
     - char and byte-char literals, including `'"'`, `'{'`, `'}'`, `'\''`,
       `'\\'`;
     - the lifetime-vs-char ambiguity (`&'static str` is code, not a literal).
@@ -97,10 +109,10 @@ def lex_spans(src: str) -> list[tuple[int, int, str]]:
             i = j
             continue
 
-        # `r` / `b` / `br` are literal prefixes only when they are not the
-        # tail of a longer identifier (`membr"` is not a thing in valid Rust,
-        # but refusing to guess costs nothing).
-        if ch in "rb" and (i == 0 or not _ident_char(src[i - 1])):
+        # `r` / `b` / `c` / `br` / `cr` are literal prefixes only when they are
+        # not the tail of a longer identifier (`membr"` is not a thing in valid
+        # Rust, but refusing to guess costs nothing).
+        if ch in "rbc" and (i == 0 or not _ident_char(src[i - 1])):
             m = RAW_STRING_START_RE.match(src, i)
             if m:
                 closer = '"' + m.group("hashes")
@@ -124,10 +136,21 @@ def lex_spans(src: str) -> list[tuple[int, int, str]]:
                     spans.append((m.end() - 1, m.end(), KIND_DELIM))
                     i = m.end()
                     continue
-                if nxt == '"':
-                    i, added = _lex_quoted(src, i, 2, spans)
-                    if added:
-                        continue
+            # Non-raw prefixed strings: `b"..."` and `c"..."`. There is no
+            # `c'x'` char literal in Rust, so the char-literal branch above
+            # stays `b`-only.
+            #
+            # The `c` here is CONSISTENCY, not a fix: without it the `c` fell
+            # through as code and the following `"` opened an ordinary string,
+            # which terminates and handles escapes identically — no verdict
+            # ever differed. Verified by mutation while writing #496, and a
+            # control pinning it would be vacuous, so none exists. Only the
+            # RAW form (`cr#"..."#`, where an inner `"` is literal) was a real
+            # bypass; `BP45` pins that one.
+            if ch in "bc" and nxt == '"':
+                i, added = _lex_quoted(src, i, 2, spans)
+                if added:
+                    continue
 
         if ch == '"':
             i, added = _lex_quoted(src, i, 1, spans)
@@ -334,6 +357,11 @@ LEXER_SAMPLE = (
     'let r2 = r##"raw "# inner"##;\n'
     'let b = b"bytes \\x00";\n'
     'let br = br#"raw " bytes"#;\n'
+    # C strings (Rust 1.77+). The RAW form desynced the scanner until #496 —
+    # see `RAW_STRING_START_RE`; the non-raw form never did, and is here only
+    # to keep `check_view_invariants` covering both spellings.
+    'let c = c"cstr \\" inside";\n'
+    'let cr = cr#"raw " cstr"#;\n'
     "let q = '\"';\n"
     "let ob = '{';\n"
     "let cb = '}';\n"

@@ -12,17 +12,91 @@ from __future__ import annotations
 import re
 
 from payload_guard.config import GATED_FIELD_NAMES
-from payload_guard.discovery import _inside, discovery_cfg_test_spans
+from payload_guard.discovery import (
+    _inside, discovery_cfg_test_spans, discovery_cfg_test_spans_strict,
+)
 from payload_guard.lexer import (
     balanced_slice, discovery_view, strip_comments, string_literal_token_ends,
 )
+from payload_guard.parsing import split_top_level
 from payload_guard.types import Finding
 
 # `pub(crate) fn name(` in `error/detail.rs` — the sanctioned detail
 # constructors rule E3 accepts a call to. Private-to-the-crate by design: a
 # `pub fn` would be callable from outside the bridge, and a bare `fn` is not
 # reachable from the call sites this rule gates.
-SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)")
+SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
+
+# Parameter types a sanctioned constructor may take (#496).
+#
+# Until #496 this registry captured the constructor's NAME and never looked
+# at its SIGNATURE, which made it self-authorising in a way nothing recorded:
+# `detail.rs` granted acceptance for whatever it declared, and E3 re-verified
+# nothing about the arguments. Appending
+#
+#     pub(crate) fn passthrough(anything: &str) -> String { anything.to_owned() }
+#
+# to any root's sanctioned module made `detail::passthrough(<any runtime
+# string>)` legal in a gated field at every call site, with the whole guard
+# reporting OK (verified by execution).
+#
+# Every type here is one that cannot carry runtime secret content: a
+# compile-time string, an integer, a fixed-size byte array (rendered as hex
+# by the constructor), a filesystem path (the ALREADY-DISCLOSED class — see
+# allowlist Section 1), an `ErrorKind` discriminant, or an
+# `impl GatedDetail`, whose impl set rule E4 pins to one reviewed file.
+#
+# A constructor with ANY parameter outside this set is DROPPED from the
+# sanctioned set, so its call sites deny — the same fail-closed direction a
+# missing `detail.rs` takes.
+SAFE_PARAM_TYPES = frozenset(
+    {
+        "&'static str",
+        "usize", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+        "&[u8; 16]", "&[u8; 32]",
+        "&Path", "&std::path::Path",
+        "&impl GatedDetail",
+        "std::io::ErrorKind", "io::ErrorKind", "ErrorKind",
+    }
+)
+
+# The two REVIEWED exceptions permitted a `&str` parameter, keyed on
+# constructor name (#496).
+#
+# Both live in `ffi/secretary-ffi-py/src/detail.rs` and both only COMBINE
+# values the bridge already owns and rules E2/E1 already gate — they author
+# no new runtime content. Their own doc comments state the per-parameter
+# provenance, including the one parameter (`uuid_prefixed`'s `detail_part`)
+# whose backing is E2 + core E1 rather than E3.
+#
+# This is a point-in-time review claim the guard cannot verify, deliberately
+# spelled as a SHORT pinned list rather than a blanket `&str` acceptance: a
+# THIRD `&str`-taking constructor fails this guard until someone edits this
+# set, which is the review checkpoint the bare-name registry never had.
+STR_PARAM_CTOR_EXCEPTIONS = frozenset({"fingerprint_mismatch", "uuid_prefixed"})
+
+
+def _ctor_params_are_safe(name: str, params_text: str) -> bool:
+    """Every parameter of a candidate sanctioned constructor must carry a
+    type from `SAFE_PARAM_TYPES` (or be one of the two reviewed `&str`
+    exceptions). An unparseable parameter is NOT safe — default-deny."""
+    allowed = SAFE_PARAM_TYPES | ({"&str"} if name in STR_PARAM_CTOR_EXCEPTIONS else set())
+    inner = params_text.strip()
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1]
+    if not inner.strip():
+        return True
+    for part in split_top_level(inner):
+        part = part.strip()
+        if not part:
+            continue
+        # `name: Type` — a parameter with no `:` is unparseable, hence unsafe.
+        if ":" not in part:
+            return False
+        ty = " ".join(part.split(":", 1)[1].split())
+        if ty not in allowed:
+            return False
+    return True
 
 
 def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
@@ -45,6 +119,15 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
     A lexer desync that HID a real constructor would instead cost a
     fail-closed E3 finding at each of its call sites.
 
+    The constructor's SIGNATURE is checked, not just its name (#496): every
+    parameter type must sit in `SAFE_PARAM_TYPES`, or the constructor is
+    dropped from the set and its call sites deny. Without that check this
+    registry was self-authorising — it derived its allowlist from the very
+    file it constrains and read only the name, so one `pub(crate) fn
+    passthrough(anything: &str) -> String` added to `detail.rs` sanctioned an
+    arbitrary runtime string at every call site. The two reviewed `&str`
+    exceptions are pinned by name in `STR_PARAM_CTOR_EXCEPTIONS`.
+
     `#[cfg(test)]`-gated declarations are excluded, like every other
     discovery walk in this file. This one was missed on the first pass, and
     it is a GRANT: a `#[cfg(test)] pub(crate) fn evil_toplevel(...)` added to
@@ -58,11 +141,18 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
         return frozenset()
     view = discovery_view(detail_src)
     excluded = discovery_cfg_test_spans(detail_src)
-    return frozenset(
-        m.group(1)
-        for m in SANCTIONED_CTOR_RE.finditer(view)
-        if not _inside(m.start(), excluded)
-    )
+    names: set[str] = set()
+    for m in SANCTIONED_CTOR_RE.finditer(view):
+        if _inside(m.start(), excluded):
+            continue
+        name = m.group(1)
+        # SIGNATURE gate (#496): the match ends just past the `(`, so
+        # `m.end() - 1` is the opening paren `balanced_slice` needs.
+        params_text, _ = balanced_slice(view, m.end() - 1)
+        if not _ctor_params_are_safe(name, params_text):
+            continue
+        names.add(name)
+    return frozenset(names)
 
 
 # A gated field name in INITIALIZER position: `<name>:` not followed by a
@@ -493,7 +583,11 @@ def scan_bridge_construction_sites(
     """
     src = strip_comments(raw)
     depth_view = discovery_view(raw)
-    excluded = discovery_cfg_test_spans(raw)
+    # STRICT: a skip here means the construction site is not scanned
+    # (#496). `sanctioned_constructor_names` above keeps the PERMISSIVE
+    # matcher on purpose — it GRANTS acceptance, so over-matching there
+    # finds fewer sanctioned names, which is fail-closed.
+    excluded = discovery_cfg_test_spans_strict(raw)
     literal_ends = string_literal_token_ends(raw)
     findings: list[Finding] = []
     # FOUR candidate forms, one shared gate (#480 initializer, #488 let and

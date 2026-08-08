@@ -69,6 +69,16 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(a: &str, b: &str) -> PyErr { VaultNotAuthor::new_err(format!("{a}/{b}")) } ''',
         {"rule": "E5"},
     ),
+    (
+        "WP5 #496: rule E5 consumes the cfg spans as a SKIP LIST too, so the "
+        "permissive `\\btest\\b` matcher let `#[cfg(not(test))]` — a "
+        "PRODUCTION marker — silence a wrapper `format!`. The E3 half of this "
+        "class is BP47/BP48; this is the E5 half, and it is a separate "
+        "consumer that would not have been covered by those",
+        ''' #[cfg(not(test))]
+            fn f(a: &str) -> PyErr { VaultNotAuthor::new_err(format!("{a}")) } ''',
+        {"rule": "E5"},
+    ),
 ]
 
 WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [

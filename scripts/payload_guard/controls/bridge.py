@@ -27,7 +27,25 @@ from payload_guard.rules.e4 import (
 # needs because its verdict DEPENDS on whether the file being scanned is
 # `detail.rs` (the one file permitted to declare an impl) or any other.
 # A positive entry needing options but making no finding-shape claim passes
-# `None` for the expectation.
+# `None` for the expectation. `detail_src` is the other supported option
+# (#496): a control that needs the SANCTIONED MODULE to look different from
+# the default fixture passes its own.
+#
+# The default `SELF_TEST_DETAIL_SRC` lives at the bottom of this file (it is
+# read by `scan_bridge_control`'s signature default, not by this list), but
+# this variant must be defined BEFORE the list literal that references it.
+SELF_TEST_DETAIL_SRC_WITH_UNSAFE_CTOR = '''
+pub(crate) trait GatedDetail: std::fmt::Display {}
+
+pub(crate) fn gated(e: &impl GatedDetail) -> String {
+    e.to_string()
+}
+
+pub(crate) fn passthrough(anything: &str) -> String {
+    anything.to_owned()
+}
+'''
+
 BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
     (
         "BP1 String field under an unsanctioned name in a thiserror enum",
@@ -436,6 +454,55 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
             } ''',
         {"rule": "E3", "field": "detail"},
     ),
+    (
+        "BP45 #496: a RAW C STRING (`cr#\"...\"#`, Rust 1.77+) carrying an "
+        "inner quote must not desync the lexer. `RAW_STRING_START_RE` covered "
+        "`r`/`br` only, so the `c` fell through to the ordinary-string branch, "
+        "which terminated at the quote INSIDE the raw body and paired every "
+        "later quote in the file off by one — blanking this construction site "
+        "entirely. Same class BP30-BP33 pin for `r#`/`br`, and fail-OPEN "
+        "because E3 detects on discovery_view",
+        ''' const C: &CStr = cr#"a " b"#;
+            fn f(e: &SomeErr) -> FfiVaultError {
+                FfiVaultError::Boom { detail: format!("{e}") }
+            } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP47 #496: `#[cfg(not(test))]` is the strongest PRODUCTION marker "
+        "there is, and CFG_TEST_RE matched it on bare `\\btest\\b` — so one "
+        "attribute line excluded the item from E2/E3/E5, which consume these "
+        "spans as a SKIP LIST (fail-OPEN, unlike the credit registries the "
+        "permissive matcher was written for). Must be SCANNED",
+        ''' #[cfg(not(test))]
+            fn f(e: &SomeErr) -> FfiVaultError {
+                FfiVaultError::Boom { detail: format!("{e}") }
+            } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP48 #496: `#[cfg_attr(test, ...)]` never removes an item from the "
+        "build — it only adds attributes under a predicate — so it must never "
+        "act as a test-only exclusion either",
+        ''' #[cfg_attr(test, allow(dead_code))]
+            fn f(e: &SomeErr) -> FfiVaultError {
+                FfiVaultError::Boom { detail: format!("{e}") }
+            } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP49 #496: the sanctioned-constructor registry read the NAME and "
+        "never the SIGNATURE, so `detail.rs` granted acceptance for whatever "
+        "it declared — self-authorising. A `pub(crate) fn passthrough(x: "
+        "&str)` there made an arbitrary runtime string legal in a gated field "
+        "at every call site. The ctor must be DROPPED from the sanctioned "
+        "set, so this call denies",
+        ''' fn f(s: &str) -> FfiVaultError {
+                FfiVaultError::Boom { detail: detail::passthrough(s) }
+            } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_DETAIL_SRC_WITH_UNSAFE_CTOR},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -605,6 +672,37 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         "which is what makes the rewrite of repair/orchestration.rs possible",
         ''' fn f(e: &impl GatedDetail) -> std::io::Error {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, detail::gated(e))
+            } ''',
+    ),
+    (
+        "BN25 #496: the STRICT cfg matcher must not over-tighten — a genuine "
+        "`#[cfg(test)]` item is still test-only and must stay excluded. "
+        "Without this, BP47/BP48 could be 'satisfied' by a matcher that "
+        "simply stopped excluding anything",
+        ''' #[cfg(test)]
+            mod tests {
+                fn f(e: &SomeErr) -> FfiVaultError {
+                    FfiVaultError::Boom { detail: format!("{e}") }
+                }
+            } ''',
+    ),
+    (
+        "BN26 #496: `#[cfg(all(test, feature = \"x\"))]` is the other genuine "
+        "test-only spelling the strict matcher admits",
+        ''' #[cfg(all(test, feature = "x"))]
+            mod tests {
+                fn f(e: &SomeErr) -> FfiVaultError {
+                    FfiVaultError::Boom { detail: format!("{e}") }
+                }
+            } ''',
+    ),
+    (
+        "BN27 #496: the SIGNATURE gate must not drop a constructor whose "
+        "parameters are all safe — every real sanctioned constructor takes "
+        "`&'static str` / integers / `&[u8; 16]` / `&Path` / `&impl "
+        "GatedDetail`, and BP49 is only meaningful if those still pass",
+        ''' fn f(e: &impl GatedDetail) -> FfiVaultError {
+                FfiVaultError::Boom { detail: detail::gated(e) }
             } ''',
     ),
 ]

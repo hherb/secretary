@@ -1,11 +1,20 @@
-"""Rule E2: every field of a bridge error declaration must be data-free or a
-`String` under a `GATED_FIELD_NAMES` name. Two sweeps — `scan_source`'s
-`bridge_mode` (thiserror-derived declarations, rule module `e1`) and this
-module's `scan_bridge_plain_declarations` (plain-derive `*Error`/`*Warning`
-declarations with no `#[error(...)]` attribute to anchor on) both funnel
-into `bridge_declaration_findings` here. Moved out of the former single-file
-`scripts/check-error-payload-hygiene.py` in #486 (task 4). Read the entry
-point's module docstring first for the WHY and THE BRIDGE RULES.
+"""Rule E2: every field of a bridge- OR WRAPPER-root error declaration must
+be data-free or a `String` under a `GATED_FIELD_NAMES` name.
+
+Two sweeps — `scan_source`'s `bridge_mode` (thiserror-derived declarations,
+rule module `e1`) and this module's `scan_bridge_plain_declarations`
+(plain-derive `*Error`/`*Warning` declarations with no `#[error(...)]`
+attribute to anchor on) both funnel into `bridge_declaration_findings` here.
+Moved out of the former single-file `scripts/check-error-payload-hygiene.py`
+in #486 (task 4). Read the entry point's module docstring first for the WHY
+and THE BRIDGE RULES.
+
+Despite every "bridge" in the names below, this rule runs over THREE crates
+as of #486: the FFI bridge and both binding wrapper crates, each carrying
+`bridge_mode=True` in `payload_guard/roots.py`. That includes sweep 2's
+`*Error`/`*Warning` NAMING HEURISTIC — so its blind spot (a plain-derive
+error type named against convention is never swept) now applies to those two
+crates as well. These docstrings kept saying "bridge" until #496.
 """
 
 from __future__ import annotations
@@ -13,7 +22,7 @@ from __future__ import annotations
 import re
 
 from payload_guard.discovery import (
-    _inside, discover_error_struct_declarations, discovery_cfg_test_spans,
+    _inside, discover_error_struct_declarations, discovery_cfg_test_spans_strict,
 )
 from payload_guard.lexer import balanced_braces, balanced_slice, strip_comments
 from payload_guard.parsing import skip_attributes, split_top_level
@@ -291,7 +300,8 @@ def scan_bridge_plain_declarations(
     continuation after its name is none of `{`, `(`, or `;`.
     """
     src = strip_comments(raw)
-    excluded = discovery_cfg_test_spans(raw)
+    # STRICT: a skip here means the declaration is not swept (#496).
+    excluded = discovery_cfg_test_spans_strict(raw)
     findings: list[Finding] = []
 
     for m in BRIDGE_PLAIN_ENUM_RE.finditer(src):

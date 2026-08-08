@@ -44,7 +44,21 @@ only ever RENDERS ..." — true as a comparison of exactly those two
 constructs, but reviewed language that reads as a dichotomy between "can
 combine" and "can only render" wrongly implies every OTHER combining
 construct is covered by the same argument. It is not; the four named above
-are covered by nothing but this census, re-run and quoted here (2026-08-09):
+are covered by nothing but this census, re-run and quoted here (2026-08-09).
+
+Two further evasions of this rule were found in #496's review and are NOT
+`format!`-alternatives but `format!` ITSELF, spelled so the matcher misses
+it. Both compile; both produce zero findings today; neither has a live
+producer:
+
+    use std::format as fmt2;                       // macro RENAME
+    ... fmt2!("{e}")
+    std::fmt::format(format_args!("{e}"))          // what format! expands to
+
+The first is structurally the same blind spot rule E4 discloses for
+`use detail::GatedDetail as GD;` — a text matcher cannot see through an
+alias. Closing either is cheap (both are zero-false-positive greps today)
+and deliberately deferred rather than silently omitted.
 
     $ grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\(" \
         ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src
@@ -103,7 +117,7 @@ from __future__ import annotations
 
 import re
 
-from payload_guard.discovery import _inside, discovery_cfg_test_spans
+from payload_guard.discovery import _inside, discovery_cfg_test_spans_strict
 from payload_guard.lexer import discovery_view, strip_comments
 from payload_guard.types import Finding
 
@@ -118,7 +132,8 @@ def scan_wrapper_format_confinement(
         return []
     depth_view = discovery_view(raw)
     src = strip_comments(raw)
-    excluded = discovery_cfg_test_spans(raw)
+    # STRICT: a skip here means the `format!` is not scanned (#496).
+    excluded = discovery_cfg_test_spans_strict(raw)
     findings: list[Finding] = []
     for m in FORMAT_MACRO_RE.finditer(depth_view):
         if _inside(m.start(), excluded):
