@@ -26,6 +26,9 @@
 //!   `wrappers::vault`, `wrappers::block`).
 //! - `namespace` — the namespace functions declared in `secretary.udl`
 //!   (open, create, read_block, ...).
+//! - `detail` — the only place in this crate permitted to build a
+//!   `VaultError::InvalidArgument` detail string (#486); see its module
+//!   docs.
 //!
 //! Everything declared in those modules is `pub use`d at crate root so
 //! uniffi's generated scaffolding (which references types via
@@ -51,6 +54,7 @@
 
 #![allow(unsafe_code)]
 
+mod detail;
 mod errors;
 mod namespace;
 mod wrappers;
