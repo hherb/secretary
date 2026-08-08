@@ -1,14 +1,17 @@
-# Allowlist for scripts/check-error-payload-hygiene.py (#474 + #480). There
-# is no shell counterpart for this guard — unlike the iOS/Android log-hygiene
-# guards, this one was Python from the start.
+# Allowlist for scripts/check-error-payload-hygiene.py (#474 + #480 + #486).
+# There is no shell counterpart for this guard — unlike the iOS/Android
+# log-hygiene guards, this one was Python from the start.
 #
-# THE RULE: an error payload — a `core` variant under core/src/**, OR
-# anything under ffi/secretary-ffi-bridge/src/** (#480 adds this second
-# root) — must not carry a runtime String nobody has vouched for. `E1`
-# covers interpolation in BOTH roots; `E2`/`E3`/`E4` are bridge-only rules
-# covering declaration, construction site, and `impl GatedDetail`
-# respectively — see the four-rule paragraph below for the full definitions.
-# These are the reviewed exceptions.
+# THE RULE: an error payload — a `core` variant under core/src/**, an FFI
+# bridge type under ffi/secretary-ffi-bridge/src/** (#480 adds this root),
+# or a binding-wrapper type under ffi/secretary-ffi-py/src/** or
+# ffi/secretary-ffi-uniffi/src/** (#486 adds these two) — must not carry a
+# runtime String nobody has vouched for. `E1` covers interpolation in ALL
+# FOUR roots; `E2`/`E3` cover declaration and construction site in the
+# bridge AND the two wrapper roots; `E4` (`impl GatedDetail`) is bridge-only
+# (the trait is `pub(crate)` there, so no wrapper crate can implement it);
+# `E5` (`format!` confinement) is wrapper-only — see the five-rule paragraph
+# below for the full definitions. These are the reviewed exceptions.
 #
 # Format, one per line, TAB-separated — IDENTICAL to the two shell log-hygiene
 # guards' allowlists, so that scripts/lib/hygiene-allowlist.sh::allowlisted
@@ -17,23 +20,30 @@
 #
 #   <repo-relative-path><TAB><rule><TAB><whole collapsed #[error(...)] attribute text — or, for E4, the impl header —><TAB><reason>
 #
-# This guard has FOUR rules (#474 + #480). `E1` scans BOTH roots
-# (core/src/** and ffi/secretary-ffi-bridge/src/**): a `#[error(...)]`
-# message must not interpolate a field whose type is not provably
-# data-free. `E2`/`E3`/`E4` apply to ffi/secretary-ffi-bridge/src/** only —
-# the bridge's error types genuinely need prose, so instead of denying by
-# TYPE they are gated by DECLARATION, CONSTRUCTION SITE, and IMPL
-# respectively: `E2` requires a bridge error's `String` fields to be
-# declared under one of the pinned GATED_FIELD_NAMES; `E3` requires the
-# expression at a gated field's construction site to be a literal, a
-# `detail::*` constructor call, or the field's own name; `E4` requires
-# every `impl GatedDetail for X` to live in
+# This guard has FIVE rules (#474 + #480 + #486) across FOUR roots
+# (core/src/**, ffi/secretary-ffi-bridge/src/**, ffi/secretary-ffi-py/src/**,
+# ffi/secretary-ffi-uniffi/src/**). `E1` scans ALL FOUR roots: a
+# `#[error(...)]` message must not interpolate a field whose type is not
+# provably data-free. `E2`/`E3` apply to the bridge AND the two binding
+# wrapper crates — their error types genuinely need prose, so instead of
+# denying by TYPE they are gated by DECLARATION and CONSTRUCTION SITE: `E2`
+# requires a `String` field to be declared under one of the pinned
+# GATED_FIELD_NAMES; `E3` requires the expression at a gated field's
+# construction site to be a literal, a `detail::*` constructor call, the
+# field's own name, or (wrapper roots only) a single-hop field access
+# ending in the gated name (`uuid_hex: a.uuid_hex`). `E4` requires every
+# `impl GatedDetail for X` to live in
 # ffi/secretary-ffi-bridge/src/error/detail.rs and name a type this guard
-# itself scans. The column exists for format parity with the shell guards'
-# three/four-rule allowlists — and, now that this guard genuinely has four
-# rules of its own, for the identical load-bearing reason those guards have
-# it: telling readers and `allowlisted()` alike which rule a given entry
-# exempts.
+# itself scans — BRIDGE-ONLY, since `GatedDetail` is `pub(crate)` there and
+# no wrapper crate can implement it. `E5` confines `format!` to each
+# wrapper crate's own sanctioned detail.rs — WRAPPER-ONLY, since the bridge
+# is deliberately excluded (most of its `format!` sites build filenames, a
+# legitimate non-error use that confinement would cost ~9 allowlist entries
+# to accommodate). The column exists for format parity with the shell
+# guards' three/four-rule allowlists — and, now that this guard genuinely
+# has five rules of its own, for the identical load-bearing reason those
+# guards have it: telling readers and `allowlisted()` alike which rule a
+# given entry exempts.
 #
 # THE KEY is the ENTIRE `#[error(...)]` attribute, not just its first source
 # line: for a multi-line attribute (e.g. sync/error.rs's

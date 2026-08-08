@@ -4,7 +4,8 @@
 # dependencies = []
 # ///
 r"""Fail-closed guard: no error payload crossing the FFI may carry a runtime
-String that nobody has vouched for — in `core/src/**` OR in the FFI bridge.
+String that nobody has vouched for — in `core/src/**`, in the FFI bridge, or
+in either binding wrapper crate (`ffi/secretary-ffi-py`, `ffi/secretary-ffi-uniffi`).
 
 WHY THIS EXISTS (#474, extended by #480)
 ----------------------------------------
@@ -78,7 +79,8 @@ that doesn't match any parsed field, produces an `UNPARSED` finding rather
 than being silently skipped. If the guard cannot understand a construct, a
 human must look at it; "we didn't understand this" is not a pass.
 
-THE BRIDGE RULES (#480: E2, E3, E4; #486 extends E2/E3 to the wrapper crates)
+THE BRIDGE RULES (#480: E2, E3, E4; #486 extends E2/E3 to the wrapper crates
+and adds a wrapper-only E5)
 ------------------------------------------------------------------------------
 Everything above is rule `E1`, and it applies to ALL FOUR scan roots
 (`payload_guard/roots.py`'s `SCAN_ROOTS`). Three more rules apply to
@@ -183,13 +185,17 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   ELSE is scanned: `secretary-cli` / `desktop/src-tauri` build their own
   error values independently. A `String` authored in one of those and
   handed to a platform is gated by review alone.
-- RULE E3 READS THREE CANDIDATE POSITIONS — a gated field's INITIALIZER
+- RULE E3 READS FOUR CANDIDATE POSITIONS — a gated field's INITIALIZER
   (`detail: <expr>`), a `let` BINDING to a gated name
-  (`let detail = <expr>`), and an ASSIGNMENT to one, including every Rust
+  (`let detail = <expr>`), an ASSIGNMENT to one, including every Rust
   COMPOUND form (`x.detail = <expr>`, `x.detail += <expr>`, `-=`, `*=`,
-  `/=`, `%=`, `^=`, `&=`, `|=`, `<<=`, `>>=`) — plus the `io::Error`
-  payload position (see below). #488's three laundering shapes are closed
-  by the second and third, but only for the SIMPLE forms of each: a plain
+  `/=`, `%=`, `^=`, `&=`, `|=`, `<<=`, `>>=`), and the `io::Error` payload
+  ARGUMENT of `io::Error::new(kind, PAYLOAD)` / `io::Error::other(PAYLOAD)`
+  (#487 — `payload_guard/rules/e3.py`'s `IO_ERROR_NEW_RE` / `IO_ERROR_OTHER_RE`
+  and `io_payload_candidates`; that position has its own LIMIT, a turbofish
+  or generic comma in the `ErrorKind` argument mis-slicing the payload span,
+  documented there and always fail-closed). #488's three laundering shapes
+  are closed by the second and third, but only for the SIMPLE forms of each: a plain
   `let <name> = <expr>` or a plain `<recv>.<name> <op>= <expr>` is ITSELF
   a construction of a gated value, so gating its initializer/RHS catches
   the launder where it happens, and no dataflow is required for those two

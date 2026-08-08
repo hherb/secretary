@@ -160,7 +160,7 @@ IO_PAYLOAD_FIELD = "<io::Error payload>"
 # is a claim about an intermediate value this rule has no way to vouch for,
 # and granting it anyway would be exactly the "new acceptance nothing
 # needs" laundering door this task's own commit message warns against.
-# `WN2` pins a depth-2 chain (`a.b.uuid_hex`) denying.
+# `WP3` pins a depth-2 chain (`a.b.uuid_hex`) denying.
 FIELD_ACCESS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\.\s*[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -176,6 +176,21 @@ def io_payload_candidates(depth_view: str) -> list[tuple[int, int, str]]:
     mis-sliced one; that is the fail-closed reading for a helper whose job is
     to find a slice, since a wrong slice would be classified as some OTHER
     expression and could be accepted.
+
+    LIMIT, undocumented until now: `initializer_end` tracks `(`/`[`/`{`
+    nesting, not `<`/`>` — a turbofish or a generic type in the `ErrorKind`
+    argument (`io::Error::new(SomeEnum::<A, B>::Kind, real_payload)`) has a
+    comma the depth counter reads as top-level, so the located "comma" is the
+    one INSIDE the angle brackets, not the one separating the two `new`
+    arguments. The extracted payload span is then garbled — it starts
+    mid-way through the `ErrorKind` expression instead of at `real_payload`.
+    This is still ALWAYS fail-closed: the mis-sliced text is not one of
+    `initializer_is_gated`'s four accepted shapes (a construction a reviewer
+    could actually compile does not happen to read as a literal, a sanctioned
+    `detail::` call, the bare token `String`, or the field's own name), so it
+    still DENIES — just with a `field_type` in the finding that does not
+    describe the real payload expression. No live `io::Error::new` call site
+    in the tree takes a generic/turbofish `ErrorKind` argument today.
     """
     out: list[tuple[int, int, str]] = []
     for m in IO_ERROR_OTHER_RE.finditer(depth_view):
@@ -330,7 +345,7 @@ def initializer_is_gated(
        (`WP1`). ONE HOP ONLY, not an arbitrary-depth chain: `a.b.uuid_hex`
        is a claim about an INTERMEDIATE value (`a.b`) this rule has no way
        to vouch for, is not the shape any live site takes, and denies
-       (`WN2`) — a review finding on the first version of this arm, which
+       (`WP3`) — a review finding on the first version of this arm, which
        accepted any depth.
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
@@ -363,7 +378,7 @@ def initializer_is_gated(
     # (5) a SINGLE-HOP field access ending in the gated name — the DTO
     #     pass-through (#486). WRAPPER ROOTS ONLY. `FIELD_ACCESS_RE` accepts
     #     EXACTLY ONE DOT, not an arbitrary-depth chain — `a.b.uuid_hex`
-    #     denies (`WN2`), since it is a claim about an intermediate value
+    #     denies (`WP3`), since it is a claim about an intermediate value
     #     this rule cannot vouch for and no live site takes that shape.
     #
     #     THIS ARM TRUSTS A NAME, one level deeper than arm 4 does: it claims
