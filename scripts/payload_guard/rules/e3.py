@@ -148,9 +148,20 @@ IO_ERROR_OTHER_RE = re.compile(
 # match.
 IO_PAYLOAD_FIELD = "<io::Error payload>"
 
-# Rule E3 shape 5 (#486): a FIELD ACCESS whose final segment is the gated
-# field's own name — `uuid_hex: a.uuid_hex`. Wrapper roots only.
-FIELD_ACCESS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+$")
+# Rule E3 shape 5 (#486): a SINGLE-HOP field access whose final segment is
+# the gated field's own name — `uuid_hex: a.uuid_hex`. Wrapper roots only.
+#
+# EXACTLY ONE DOT, on purpose (review finding, task 9): all four live sites
+# are single-hop (`a.uuid_hex`, `w.block_uuid_hex`), arm 5's own docstring
+# describes a single hop, and an earlier unbounded-depth version of this
+# regex accepted `a.b.uuid_hex` / `a.b.c.uuid_hex` too — wider than the
+# shape it was written to recognise, and untested in the extra width. A
+# multi-hop chain is not the DTO pass-through this arm exists to serve; it
+# is a claim about an intermediate value this rule has no way to vouch for,
+# and granting it anyway would be exactly the "new acceptance nothing
+# needs" laundering door this task's own commit message warns against.
+# `WN2` pins a depth-2 chain (`a.b.uuid_hex`) denying.
+FIELD_ACCESS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\.\s*[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def io_payload_candidates(depth_view: str) -> list[tuple[int, int, str]]:
@@ -302,11 +313,12 @@ def initializer_is_gated(
        it comes from a SIMPLE `let`, that `let`'s own initializer is now the
        candidate that catches it (`BP36`); only a pattern bind or a
        parameter still reaches the shorthand door unwatched.
-    5. WRAPPER ROOTS ONLY (`allow_field_access`, #486): a FIELD ACCESS whose
-       FINAL segment is the gated field's own name — `uuid_hex: a.uuid_hex`,
-       the DTO pass-through shape all four live wrapper sites take. THIS ARM
-       TRUSTS THE NAME TOO, one level deeper than arm 4: it claims that a
-       field named `uuid_hex` on some OTHER type was gated where THAT type
+    5. WRAPPER ROOTS ONLY (`allow_field_access`, #486): a SINGLE-HOP field
+       access — `receiver.field`, EXACTLY ONE DOT — whose field segment is
+       the gated field's own name — `uuid_hex: a.uuid_hex`, the DTO
+       pass-through shape all four live wrapper sites take. THIS ARM TRUSTS
+       THE NAME TOO, one level deeper than arm 4: it claims that a field
+       named `uuid_hex` on some OTHER type was gated where THAT type
        declared it. For the four live sites that claim holds (the source is
        a bridge DTO whose fields rules E2/E3 already gate), but it is a
        trust RELATION, not provenance — the same honesty arm 4's docstring
@@ -315,7 +327,11 @@ def initializer_is_gated(
        for free (`BP43` pins the bridge still denying the identical
        expression). A field access whose LAST segment is NOT the gated
        name — `uuid_hex: a.some_other_field` — is not this shape and denies
-       (`WP1`).
+       (`WP1`). ONE HOP ONLY, not an arbitrary-depth chain: `a.b.uuid_hex`
+       is a claim about an INTERMEDIATE value (`a.b`) this rule has no way
+       to vouch for, is not the shape any live site takes, and denies
+       (`WN2`) — a review finding on the first version of this arm, which
+       accepted any depth.
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
     a value reaching a gated field through a PATTERN bind (tuple,
@@ -344,8 +360,11 @@ def initializer_is_gated(
         _, after = balanced_slice(view, cm.end() - 1)
         if after <= end and not view[after:end].strip():
             return True
-    # (5) a field access ending in the gated name — the DTO pass-through
-    #     (#486). WRAPPER ROOTS ONLY.
+    # (5) a SINGLE-HOP field access ending in the gated name — the DTO
+    #     pass-through (#486). WRAPPER ROOTS ONLY. `FIELD_ACCESS_RE` accepts
+    #     EXACTLY ONE DOT, not an arbitrary-depth chain — `a.b.uuid_hex`
+    #     denies (`WN2`), since it is a claim about an intermediate value
+    #     this rule cannot vouch for and no live site takes that shape.
     #
     #     THIS ARM TRUSTS A NAME, one level deeper than arm 4 does: it claims
     #     that a field spelled `uuid_hex` on some OTHER type was gated where
@@ -370,10 +389,10 @@ def scan_bridge_construction_sites(
     """Rule E3 (#480): every CONSTRUCTION SITE of a gated field must build
     its value from a sanctioned source.
 
-    `allow_field_access` (#486) enables shape 5 — a field access ending in
-    the gated name (`uuid_hex: a.uuid_hex`) — and defaults to `False` so a
-    caller that does not pass it explicitly gets the bridge's stricter
-    behaviour, not the wrapper roots' looser one. See
+    `allow_field_access` (#486) enables shape 5 — a SINGLE-HOP field access
+    ending in the gated name (`uuid_hex: a.uuid_hex`, not `a.b.uuid_hex`) —
+    and defaults to `False` so a caller that does not pass it explicitly gets
+    the bridge's stricter behaviour, not the wrapper roots' looser one. See
     `initializer_is_gated`'s shape 5 and `payload_guard.roots.ScanRoot.
     allow_field_access` for why it is scoped to the wrapper roots only.
 

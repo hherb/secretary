@@ -185,23 +185,47 @@ def scan_control(src: str) -> list[Finding]:
 _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 
 
-def _wrapper_allow_field_access() -> bool:
-    """The ONE `allow_field_access` value the wrapper-root rule set uses,
-    read off BOTH wrapper `ScanRoot`s and asserted to agree.
-
-    The design's premise (`payload_guard.roots` module docstring) is a
+def _check_wrapper_roots_agree() -> list[str]:
+    """The design's premise (`payload_guard.roots` module docstring) is a
     single shared wrapper-root rule set, not two independently configurable
     ones — a control corpus that silently tolerated the two wrapper roots
-    drifting apart on this flag would be testing less than it claims to.
+    drifting apart on `allow_field_access` would be testing less than it
+    claims to. This surfaces that disagreement as a NORMAL harness failure
+    (review finding, task 9): the check used to be a bare `assert` inside
+    `_wrapper_allow_field_access`, and `run_self_test` is not wrapped at its
+    call site, so a real disagreement would have escaped as a raw Python
+    traceback instead of the usual `self-test: FAIL` reporting — loud in the
+    wrong way for a CI security gate. Wired into `run_self_test` alongside
+    `check_view_invariants` / `check_bridge_key_distinctness`.
     """
     values = {
-        _ROOTS_BY_LABEL[label].allow_field_access for label in ("ffi-py", "ffi-uniffi")
+        label: _ROOTS_BY_LABEL[label].allow_field_access
+        for label in ("ffi-py", "ffi-uniffi")
     }
-    assert len(values) == 1, (
-        f"wrapper roots disagree on allow_field_access: {values} — "
-        "scan_wrapper_control assumes one shared wrapper-root rule set"
+    if len(set(values.values())) != 1:
+        return [
+            "WRAPPER ROOT AGREEMENT: ffi-py and ffi-uniffi disagree on "
+            f"allow_field_access ({values}) — scan_wrapper_control assumes "
+            "one shared wrapper-root rule set"
+        ]
+    return []
+
+
+def _wrapper_allow_field_access() -> bool:
+    """The `allow_field_access` value the wrapper-root rule set uses, read
+    off BOTH wrapper `ScanRoot`s.
+
+    Requires BOTH roots to grant it (`all(...)`) rather than picking either
+    one arbitrarily: if the two ever disagree, the fail-closed reading is
+    "shape 5 is not uniformly authorised", which DENIES rather than
+    ACCEPTS — narrowing what shape 5 accepts, never widening it. The
+    disagreement itself is what `_check_wrapper_roots_agree` reports as a
+    self-test failure; this function only has to stay safe while that
+    failure is being read.
+    """
+    return all(
+        _ROOTS_BY_LABEL[label].allow_field_access for label in ("ffi-py", "ffi-uniffi")
     )
-    return next(iter(values))
 
 
 def scan_bridge_control(
@@ -380,6 +404,7 @@ def check_bridge_key_distinctness() -> list[str]:
 
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
+    failures += _check_wrapper_roots_agree()
     for entry in POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None

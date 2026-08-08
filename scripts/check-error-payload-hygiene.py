@@ -114,10 +114,11 @@ be a string LITERAL (optionally `.into()` / `.to_string()`), a call into
 enum body, or a function parameter) from being read as a construction: E2
 already decides whether that declaration is acceptable, and a declaration
 declares no value. `String::new()` is NOT that shape and denies. On the two
-WRAPPER roots only (#486), a FIFTH shape is also accepted: a field access
-ending in the gated name (`uuid_hex: a.uuid_hex`) — the DTO pass-through all
-four live wrapper sites use. See `ScanRoot.allow_field_access` and
-`rules/e3.py`'s `initializer_is_gated` for why it is scoped out of the
+WRAPPER roots only (#486), a FIFTH shape is also accepted: a SINGLE-HOP
+field access ending in the gated name (`uuid_hex: a.uuid_hex`, not a
+multi-hop `a.b.uuid_hex`) — the DTO pass-through all four live wrapper
+sites use. See `ScanRoot.allow_field_access` and `rules/e3.py`'s
+`initializer_is_gated` for why it is scoped out of the
 bridge root.
 
 `E4` — THE IMPL ALLOWLIST. `impl GatedDetail for X` is a security decision:
@@ -155,8 +156,9 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   wrapper-local (or bridge-local) alias/const/enum must not vouch for a
   field in a DIFFERENT root. The wrapper roots take rules E1/E2/E3, plus an
   E3 ACCEPTANCE the bridge does not (`ScanRoot.allow_field_access`, rule
-  E3's "shape 5" — a field access ending in the gated name, the DTO
-  pass-through `uuid_hex: a.uuid_hex`), but NOT rule E4: `GatedDetail` is
+  E3's "shape 5" — a SINGLE-HOP field access ending in the gated name, the
+  DTO pass-through `uuid_hex: a.uuid_hex`, not a multi-hop `a.b.uuid_hex`),
+  but NOT rule E4: `GatedDetail` is
   `pub(crate)` in the bridge crate, so no wrapper crate can implement it,
   and E4's premise is unaffected by scanning these roots at all. Nothing
   ELSE is scanned: `secretary-cli` / `desktop/src-tauri` build their own

@@ -49,10 +49,11 @@ class ScanRoot:
     bridge is excluded (its `format!` mostly builds filenames)."""
 
     allow_field_access: bool
-    """Rule E3 shape 5: accept `a.uuid_hex` for field `uuid_hex`. Wrapper
-    roots only. It is a new ACCEPTANCE, so granting it where nothing needs it
-    would open a laundering door for free — all four DTO pass-through sites
-    are in the wrapper crates."""
+    """Rule E3 shape 5: accept a SINGLE-HOP `a.uuid_hex` for field
+    `uuid_hex` (not a multi-hop `a.b.uuid_hex`). Wrapper roots only. It is a
+    new ACCEPTANCE, so granting it where nothing needs it would open a
+    laundering door for free — all four DTO pass-through sites are in the
+    wrapper crates, and all four are single-hop."""
 
 
 SCAN_ROOTS: tuple[ScanRoot, ...] = (

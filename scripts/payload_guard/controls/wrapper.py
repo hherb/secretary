@@ -8,6 +8,14 @@ The BRIDGE-scoping half of shape 5's story is NOT here: it is a BRIDGE
 control (`BP43` in `payload_guard.controls.bridge`), because it asserts what
 the bridge root does, not what a wrapper root does. Read the entry point's
 module docstring first for the WHY.
+
+A fixture asserting a construct MUST DENY (produce a finding) is a
+POSITIVE control here, matching `WP1`'s own precedent ("... is not a
+pass-through and must deny") — `WRAPPER_NEGATIVE_CONTROLS` fails the
+self-test the moment its fixture produces ANY finding
+(`payload_guard.selftest.run_self_test`'s `if found: failures.append(...)`),
+so a "must deny" claim can only be encoded as a POSITIVE entry regardless of
+how the English reads. `WP3` (task 9 review finding) is placed accordingly.
 """
 
 from __future__ import annotations
@@ -26,6 +34,17 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         "set, it does not disable the rule",
         ''' fn f(n: usize) -> E { E::V { detail: format!("got {n}") } } ''',
         {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "WP3 review finding (task 9): shape 5 is SINGLE-HOP only — a "
+        "depth-2 chain `a.b.uuid_hex` is a claim about an intermediate "
+        "value (`a.b`) this rule has no way to vouch for, is not the shape "
+        "any live site takes, and must DENY even though its final segment "
+        "is the gated name. An earlier, unbounded-depth version of "
+        "`FIELD_ACCESS_RE` accepted this — wider than the shape it was "
+        "written to recognise, and untested in the extra width",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: a.b.uuid_hex } } ''',
+        {"rule": "E3", "field": "uuid_hex"},
     ),
 ]
 
